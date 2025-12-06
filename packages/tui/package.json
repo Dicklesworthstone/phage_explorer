@@ -13,6 +13,7 @@
     "@phage-explorer/state": "workspace:*",
     "@phage-explorer/renderer-3d": "workspace:*",
     "ink": "^5.1.0",
+    "ink-text-input": "^6.0.0",
     "react": "^18.3.1"
   }
 }
