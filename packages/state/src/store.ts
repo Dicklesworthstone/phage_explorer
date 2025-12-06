@@ -46,6 +46,8 @@ export interface PhageExplorerState {
   show3DModel: boolean;
   model3DPaused: boolean;
   model3DSpeed: number;
+  model3DFullscreen: boolean;
+  model3DQuality: 'low' | 'medium' | 'high' | 'ultra';
 
   // Mouse hover
   mouseX: number;
@@ -97,6 +99,8 @@ export interface PhageExplorerActions {
   toggle3DModel: () => void;
   toggle3DModelPause: () => void;
   set3DModelSpeed: (speed: number) => void;
+  toggle3DModelFullscreen: () => void;
+  cycle3DModelQuality: () => void;
 
   // Overlays
   setActiveOverlay: (overlay: OverlayType) => void;
@@ -135,8 +139,10 @@ const initialState: PhageExplorerState = {
   diffReferenceSequence: null,
   currentTheme: CLASSIC_THEME,
   show3DModel: true,
-  model3DPaused: false,
+  model3DPaused: true, // Paused by default to prevent flickering
   model3DSpeed: 1,
+  model3DFullscreen: false,
+  model3DQuality: 'medium',
   mouseX: 0,
   mouseY: 0,
   hoveredAminoAcid: null,
@@ -277,6 +283,33 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
   },
 
   set3DModelSpeed: (speed) => set({ model3DSpeed: speed }),
+
+  toggle3DModelFullscreen: () => {
+    const { model3DFullscreen } = get();
+    // When entering fullscreen:
+    // - Automatically use high quality
+    // - Unpause the animation
+    // - Close any active overlay (so it doesn't appear when exiting)
+    // When exiting:
+    // - Return to medium quality
+    // - Pause the animation to prevent flickering
+    const enteringFullscreen = !model3DFullscreen;
+    set({
+      model3DFullscreen: enteringFullscreen,
+      model3DQuality: enteringFullscreen ? 'high' : 'medium',
+      model3DPaused: !enteringFullscreen, // Pause when exiting, unpause when entering
+      // Close overlays when entering fullscreen to avoid hidden state
+      ...(enteringFullscreen ? { activeOverlay: null, searchQuery: '', searchResults: [] } : {}),
+    });
+  },
+
+  cycle3DModelQuality: () => {
+    const { model3DQuality } = get();
+    const qualities: Array<'low' | 'medium' | 'high' | 'ultra'> = ['low', 'medium', 'high', 'ultra'];
+    const currentIndex = qualities.indexOf(model3DQuality);
+    const nextIndex = (currentIndex + 1) % qualities.length;
+    set({ model3DQuality: qualities[nextIndex] });
+  },
 
   // Overlays
   setActiveOverlay: (overlay) => set({ activeOverlay: overlay }),
