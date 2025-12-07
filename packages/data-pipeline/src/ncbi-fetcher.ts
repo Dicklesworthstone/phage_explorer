@@ -46,7 +46,7 @@ export async function fetchFasta(accession: string): Promise<string> {
 
 // Fetch sequence in GenBank format (includes features)
 export async function fetchGenBank(accession: string): Promise<string> {
-  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${accession}&rettype=gb&retmode=text`;
+  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${accession}&rettype=gbwithparts&retmode=text`;
 
   const response = await fetch(url);
   if (!response.ok) {
