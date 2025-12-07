@@ -1,0 +1,285 @@
+/**
+ * Typography System for Phage Explorer Web
+ *
+ * Design principles:
+ * - Monospace-first for code/data display
+ * - Clear hierarchy with consistent scale
+ * - Optimized for terminal aesthetic
+ */
+
+/* Font imports - JetBrains Mono for primary monospace */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+
+/* Typography scale based on 1rem = 16px, using minor third ratio (1.2) */
+:root {
+  /* Font families */
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', ui-monospace, Menlo, Monaco,
+    Consolas, 'Liberation Mono', 'Courier New', monospace;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+
+  /* Type scale - minor third (1.2) */
+  --text-xs: 0.694rem;     /* 11.1px */
+  --text-sm: 0.833rem;     /* 13.3px */
+  --text-base: 1rem;       /* 16px */
+  --text-lg: 1.2rem;       /* 19.2px */
+  --text-xl: 1.44rem;      /* 23px */
+  --text-2xl: 1.728rem;    /* 27.6px */
+  --text-3xl: 2.074rem;    /* 33.2px */
+  --text-4xl: 2.488rem;    /* 39.8px */
+
+  /* Line heights */
+  --leading-none: 1;
+  --leading-tight: 1.1;
+  --leading-snug: 1.3;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
+  --leading-loose: 2;
+
+  /* Letter spacing */
+  --tracking-tighter: -0.05em;
+  --tracking-tight: -0.025em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.025em;
+  --tracking-wider: 0.05em;
+  --tracking-widest: 0.1em;
+
+  /* Font weights */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-bold: 700;
+
+  /* Font feature settings for code */
+  --font-features-code: 'calt' 1, 'liga' 1, 'zero' 1, 'ss01' 1;
+}
+
+/* Base typography */
+html {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  line-height: var(--leading-normal);
+  font-feature-settings: var(--font-features-code);
+  font-variant-ligatures: contextual;
+}
+
+body {
+  font-size: var(--text-sm);
+  color: var(--color-text, #e0e0ff);
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: var(--font-bold);
+  letter-spacing: var(--tracking-wide);
+  color: var(--color-text, #e0e0ff);
+}
+
+h1 {
+  font-size: var(--text-3xl);
+  line-height: var(--leading-tight);
+}
+
+h2 {
+  font-size: var(--text-2xl);
+  line-height: var(--leading-tight);
+}
+
+h3 {
+  font-size: var(--text-xl);
+  line-height: var(--leading-snug);
+}
+
+h4 {
+  font-size: var(--text-lg);
+  line-height: var(--leading-snug);
+}
+
+h5 {
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+}
+
+h6 {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+
+/* Paragraphs and body text */
+p {
+  margin-bottom: 1em;
+  max-width: 65ch; /* Optimal reading width */
+}
+
+/* Small text */
+small,
+.text-sm {
+  font-size: var(--text-sm);
+}
+
+.text-xs {
+  font-size: var(--text-xs);
+}
+
+/* Dimmed text */
+.text-dim {
+  color: var(--color-text-dim, #8888aa);
+}
+
+.text-muted {
+  color: var(--color-text-muted, #555577);
+}
+
+/* Code blocks */
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-feature-settings: var(--font-features-code);
+}
+
+pre {
+  font-size: var(--text-sm);
+  line-height: var(--leading-relaxed);
+  overflow-x: auto;
+  padding: 1rem;
+  background: var(--color-background-alt, #1a1a2e);
+  border-radius: 4px;
+  border: 1px solid var(--color-border, #3d3d5c);
+}
+
+code {
+  font-size: 0.9em;
+  padding: 0.125em 0.25em;
+  background: var(--color-background-alt, #1a1a2e);
+  border-radius: 2px;
+}
+
+pre code {
+  padding: 0;
+  background: none;
+}
+
+kbd {
+  font-size: var(--text-xs);
+  padding: 0.125em 0.375em;
+  background: var(--color-background-alt, #1a1a2e);
+  border: 1px solid var(--color-border, #3d3d5c);
+  border-radius: 3px;
+  box-shadow: 0 1px 0 var(--color-border, #3d3d5c);
+}
+
+/* Links */
+a {
+  color: var(--color-primary, #00ffff);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+a:hover {
+  color: var(--color-accent, #ffff00);
+  text-decoration: underline;
+}
+
+/* Lists */
+ul,
+ol {
+  padding-left: 1.5em;
+  margin-bottom: 1em;
+}
+
+li {
+  margin-bottom: 0.25em;
+}
+
+/* Definition lists */
+dl {
+  margin-bottom: 1em;
+}
+
+dt {
+  font-weight: var(--font-bold);
+  color: var(--color-text, #e0e0ff);
+}
+
+dd {
+  margin-left: 1.5em;
+  margin-bottom: 0.5em;
+  color: var(--color-text-dim, #8888aa);
+}
+
+/* Blockquotes */
+blockquote {
+  margin: 1em 0;
+  padding-left: 1em;
+  border-left: 3px solid var(--color-primary, #00ffff);
+  color: var(--color-text-dim, #8888aa);
+  font-style: italic;
+}
+
+/* Horizontal rules */
+hr {
+  border: none;
+  border-top: 1px solid var(--color-border, #3d3d5c);
+  margin: 1.5em 0;
+}
+
+/* Tabular numbers for data */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Uppercase utility */
+.uppercase {
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-wider);
+}
+
+/* Truncate text */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* No wrap */
+.nowrap {
+  white-space: nowrap;
+}
+
+/* Glow effect for emphasized text */
+.text-glow {
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* Phosphor glow (cyberpunk effect) */
+.phosphor-glow {
+  text-shadow:
+    0 0 4px currentColor,
+    0 0 8px currentColor,
+    0 0 16px currentColor;
+}

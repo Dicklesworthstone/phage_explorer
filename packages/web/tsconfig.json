@@ -3,9 +3,34 @@
   "compilerOptions": {
     "types": ["vite/client"],
     "baseUrl": "../..",
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@phage-explorer/core": ["packages/core/src"],
+      "@phage-explorer/core/*": ["packages/core/src/*"],
+      "@phage-explorer/db-schema": ["packages/db-schema/src"],
+      "@phage-explorer/db-schema/*": ["packages/db-schema/src/*"],
+      "@phage-explorer/db-runtime": ["packages/db-runtime/src"],
+      "@phage-explorer/db-runtime/*": ["packages/db-runtime/src/*"],
+      "@phage-explorer/state": ["packages/state/src"],
+      "@phage-explorer/state/*": ["packages/state/src/*"],
+      "@phage-explorer/renderer-3d": ["packages/renderer-3d/src"],
+      "@phage-explorer/renderer-3d/*": ["packages/renderer-3d/src/*"],
+      "@phage-explorer/data-pipeline": ["packages/data-pipeline/src"],
+      "@phage-explorer/data-pipeline/*": ["packages/data-pipeline/src/*"],
+      "@phage-explorer/comparison": ["packages/comparison/src"],
+      "@phage-explorer/comparison/*": ["packages/comparison/src/*"],
+      "@phage-explorer/tui": ["packages/tui/src"],
+      "@phage-explorer/tui/*": ["packages/tui/src/*"],
+      "@phage/wasm-compute": ["packages/wasm-compute/pkg/wasm_compute.js"],
+      "@phage/wasm-compute/pkg/*": ["packages/wasm-compute/pkg/*"],
+      "@phage-explorer/web/*": ["packages/web/src/*"]
+    }
   },
-  "include": ["./src/**/*", "./vite.config.ts", "./tsconfig.node.json", "./index.html"],
+  "include": [
+    "./src/**/*.ts",
+    "./src/**/*.tsx",
+    "./vite.config.ts"
+  ],
   "exclude": ["./node_modules", "./dist"]
 }
 

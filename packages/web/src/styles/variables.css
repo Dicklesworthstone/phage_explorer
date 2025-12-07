@@ -1,0 +1,162 @@
+/**
+ * CSS Custom Properties (Variables) for Phage Explorer Web
+ *
+ * These are the base variables that get overridden by themes.
+ * Default values are from the Cyberpunk theme.
+ */
+
+:root {
+  /* Color scheme declaration */
+  color-scheme: dark;
+
+  /* === CORE COLORS === */
+  --color-primary: #00ffff;
+  --color-secondary: #ff00ff;
+  --color-accent: #ffff00;
+  --color-background: #0d0d1a;
+  --color-background-alt: #1a1a2e;
+
+  /* === TEXT HIERARCHY === */
+  --color-text: #e0e0ff;
+  --color-text-dim: #8888aa;
+  --color-text-muted: #555577;
+
+  /* === BORDERS === */
+  --color-border: #ff00ff;
+  --color-border-focus: #00ffff;
+  --color-border-light: #4a4a6a;
+
+  /* === STATUS COLORS === */
+  --color-success: #00ff88;
+  --color-warning: #ffff00;
+  --color-error: #ff0055;
+  --color-info: #00e5ff;
+
+  /* === VISUALIZATION === */
+  --color-diff-highlight: #ff00ff;
+  --color-gene-forward: #00ffff;
+  --color-gene-reverse: #ff00ff;
+  --color-gene-highlight: #ffff00;
+
+  /* === GRADIENTS === */
+  --color-gradient-low: #1a0a2e;
+  --color-gradient-mid: #ff00ff;
+  --color-gradient-high: #00ffff;
+
+  /* === K-MER === */
+  --color-kmer-normal: #6666aa;
+  --color-kmer-anomaly: #ff0055;
+
+  /* === EFFECTS === */
+  --color-shadow: #000000;
+  --color-highlight: #ffffff;
+  --color-glow: #ff00ff;
+
+  /* === BADGES === */
+  --color-badge: #2a2a4a;
+  --color-badge-text: #00ffff;
+  --color-separator: #ff00ff;
+
+  /* === ICONS === */
+  --color-icon-primary: #00ffff;
+  --color-icon-secondary: #ff00ff;
+
+  /* === PANELS === */
+  --color-panel-header: #1a1a3a;
+  --color-panel-border: #ff00ff;
+  --color-panel-shadow: #050510;
+
+  /* === SPARKLINE GRADIENT (as individual stops) === */
+  --sparkline-0: #1a0a2e;
+  --sparkline-1: #7b1fa2;
+  --sparkline-2: #ff00ff;
+  --sparkline-3: #00ffff;
+  --sparkline-4: #00ff88;
+
+  /* === NUCLEOTIDE COLORS === */
+  --nucleotide-a-fg: #000000;
+  --nucleotide-a-bg: #00ffff;
+  --nucleotide-c-fg: #000000;
+  --nucleotide-c-bg: #ff00ff;
+  --nucleotide-g-fg: #000000;
+  --nucleotide-g-bg: #ffff00;
+  --nucleotide-t-fg: #000000;
+  --nucleotide-t-bg: #ff0080;
+  --nucleotide-n-fg: #ffffff;
+  --nucleotide-n-bg: #2a2a3a;
+
+  /* === SPACING SCALE === */
+  --space-0: 0;
+  --space-1: 0.25rem;   /* 4px */
+  --space-2: 0.5rem;    /* 8px */
+  --space-3: 0.75rem;   /* 12px */
+  --space-4: 1rem;      /* 16px */
+  --space-5: 1.25rem;   /* 20px */
+  --space-6: 1.5rem;    /* 24px */
+  --space-8: 2rem;      /* 32px */
+  --space-10: 2.5rem;   /* 40px */
+  --space-12: 3rem;     /* 48px */
+  --space-16: 4rem;     /* 64px */
+  --space-20: 5rem;     /* 80px */
+  --space-24: 6rem;     /* 96px */
+
+  /* === BORDER RADIUS === */
+  --radius-none: 0;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* === SHADOWS === */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 8px var(--color-glow), 0 0 16px var(--color-glow);
+  --shadow-glow-lg: 0 0 16px var(--color-glow), 0 0 32px var(--color-glow);
+
+  /* === Z-INDEX SCALE === */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-fixed: 300;
+  --z-modal-backdrop: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-tooltip: 700;
+  --z-toast: 800;
+  --z-overlay: 900;
+  --z-max: 9999;
+
+  /* === LAYOUT === */
+  --header-height: 3rem;
+  --footer-height: 2rem;
+  --sidebar-width: 16rem;
+  --panel-max-width: 1200px;
+  --content-max-width: 80ch;
+}
+
+/* Utility classes for spacing */
+.p-0 { padding: var(--space-0); }
+.p-1 { padding: var(--space-1); }
+.p-2 { padding: var(--space-2); }
+.p-3 { padding: var(--space-3); }
+.p-4 { padding: var(--space-4); }
+.p-6 { padding: var(--space-6); }
+.p-8 { padding: var(--space-8); }
+
+.m-0 { margin: var(--space-0); }
+.m-1 { margin: var(--space-1); }
+.m-2 { margin: var(--space-2); }
+.m-3 { margin: var(--space-3); }
+.m-4 { margin: var(--space-4); }
+.m-6 { margin: var(--space-6); }
+.m-8 { margin: var(--space-8); }
+
+.gap-1 { gap: var(--space-1); }
+.gap-2 { gap: var(--space-2); }
+.gap-3 { gap: var(--space-3); }
+.gap-4 { gap: var(--space-4); }
+.gap-6 { gap: var(--space-6); }
+.gap-8 { gap: var(--space-8); }
