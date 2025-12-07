@@ -20,7 +20,9 @@
       "@phage-explorer/renderer-3d": ["packages/renderer-3d/src"],
       "@phage-explorer/data-pipeline": ["packages/data-pipeline/src"],
       "@phage-explorer/comparison": ["packages/comparison/src"],
-      "@phage-explorer/tui": ["packages/tui/src"]
+      "@phage-explorer/tui": ["packages/tui/src"],
+      "@phage/wasm-compute": ["packages/wasm-compute/pkg/wasm_compute.js"],
+      "@phage/wasm-compute/pkg/*": ["packages/wasm-compute/pkg/*"]
     }
   },
   "include": [

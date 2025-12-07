@@ -13,7 +13,22 @@
  */
 
 import type { EditDistanceMetrics } from './types';
-import { levenshtein_distance as wasmLevenshtein } from '@phage/rust-core';
+import initWasm, { initSync as initWasmSync, levenshtein_distance as wasmLevenshtein } from '@phage/wasm-compute/pkg/wasm_compute.js';
+
+let wasmReady = false;
+try {
+  // Prefer synchronous init (uses inlined bytes after build step)
+  // Type cast: wasm-pack d.ts expects a module; we rely on patched default bytes fallback.
+  initWasmSync(undefined as unknown as { module: unknown });
+  wasmReady = true;
+} catch {
+  // Fallback to async init; we'll await lazily when needed.
+  initWasm().then(() => {
+    wasmReady = true;
+  }).catch(() => {
+    wasmReady = false;
+  });
+}
 
 /**
  * Compute Levenshtein distance using dynamic programming.
@@ -28,6 +43,11 @@ export function levenshteinDistance(
 ): { distance: number; isApproximate: boolean } {
   // Try using Rust implementation first
   try {
+    if (!wasmReady) {
+      // Best-effort lazy init if sync failed and async not yet resolved
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises
+      initWasm().then(() => { wasmReady = true; });
+    }
     // Rust is significantly faster, so we can increase the exact calculation threshold.
     // 100kb x 100kb is feasible in Wasm/Rust whereas it would choke JS.
     if (a.length <= 100000 && b.length <= 100000) {

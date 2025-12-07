@@ -53,3 +53,8 @@ test-output/
 
 # Installer lock
 /tmp/phage-explorer-install.lock
+
+# Rust / Wasm build artifacts
+packages/wasm-compute/target/
+packages/wasm-compute/pkg/
+packages/wasm-compute/node_modules/
