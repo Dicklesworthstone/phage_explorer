@@ -42,6 +42,12 @@ export interface PhageRepository {
   getPreference(key: string): Promise<string | null>;
   setPreference(key: string, value: string): Promise<void>;
 
+  // Bias/codon cache (optional)
+  getBiasVector?(phageId: number): Promise<number[] | null>;
+  setBiasVector?(phageId: number, vector: number[]): Promise<void>;
+  getCodonVector?(phageId: number): Promise<number[] | null>;
+  setCodonVector?(phageId: number, vector: number[]): Promise<void>;
+
   // Close database connection
   close(): Promise<void>;
 }

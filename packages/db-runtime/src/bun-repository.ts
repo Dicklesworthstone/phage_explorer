@@ -240,7 +240,7 @@ export class BunSqliteRepository implements PhageRepository {
     for (let i = start; i <= end; i++) {
       if (i !== index) {
         // Don't await - run in background
-        this.getPhageById(list[i].id);
+        void this.getPhageById(list[i].id);
       }
     }
   }
@@ -302,5 +302,24 @@ export class BunSqliteRepository implements PhageRepository {
     this.sqlite.close();
     this.cache.clear();
     this.phageList = null;
+  }
+
+  // Optional bias/codon caches: stored in in-memory cache only (no schema support)
+  async getBiasVector(phageId: number): Promise<number[] | null> {
+    const cached = this.cache.get(`bias:${phageId}`) as CacheEntry<number[]> | undefined;
+    return cached?.data ?? null;
+  }
+
+  async setBiasVector(phageId: number, vector: number[]): Promise<void> {
+    this.cache.set(`bias:${phageId}`, { data: vector, timestamp: Date.now() });
+  }
+
+  async getCodonVector(phageId: number): Promise<number[] | null> {
+    const cached = this.cache.get(`codonvec:${phageId}`) as CacheEntry<number[]> | undefined;
+    return cached?.data ?? null;
+  }
+
+  async setCodonVector(phageId: number, vector: number[]): Promise<void> {
+    this.cache.set(`codonvec:${phageId}`, { data: vector, timestamp: Date.now() });
   }
 }
