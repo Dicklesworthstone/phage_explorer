@@ -27,11 +27,15 @@
   },
   "include": [
     "packages/*/src/**/*.ts",
-    "packages/*/src/**/*.tsx"
+    "packages/*/src/**/*.tsx",
+    "packages/wasm-compute/**/*.ts",
+    "packages/wasm-compute/**/*.tsx",
+    "packages/wasm-compute/pkg/*.d.ts"
   ],
   "exclude": [
     "node_modules",
     "dist",
-    "**/dist"
+    "**/dist",
+    "packages/wasm-compute/test-wasm.ts"
   ]
 }

@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint'
 
 export default [
   {
-    ignores: ['dist/**', 'node_modules/**', 'packages/**/dist/**']
+    ignores: ['dist/**', 'node_modules/**', 'packages/**/dist/**', 'packages/wasm-compute/pkg/**']
   },
   ...tseslint.configs.recommended,
   {

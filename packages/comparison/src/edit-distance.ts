@@ -13,22 +13,23 @@
  */
 
 import type { EditDistanceMetrics } from './types';
-import initWasm, { initSync as initWasmSync, levenshtein_distance as wasmLevenshtein } from '@phage/wasm-compute/pkg/wasm_compute.js';
+import initWasm, { levenshtein_distance as wasmLevenshtein } from '@phage/wasm-compute';
+import { file } from 'bun';
 
 let wasmReady = false;
-try {
-  // Prefer synchronous init (uses inlined bytes after build step)
-  // Type cast: wasm-pack d.ts expects a module; we rely on patched default bytes fallback.
-  initWasmSync(undefined as unknown as { module: unknown });
-  wasmReady = true;
-} catch {
-  // Fallback to async init; we'll await lazily when needed.
-  initWasm().then(() => {
+
+// Initialize WASM asynchronously
+(async () => {
+  try {
+    // Resolve path to WASM binary using Bun's resolution
+    const wasmUrl = await import.meta.resolve('@phage/wasm-compute/wasm_compute_bg.wasm');
+    const wasmBuffer = await file(new URL(wasmUrl)).arrayBuffer();
+    await initWasm(wasmBuffer);
     wasmReady = true;
-  }).catch(() => {
-    wasmReady = false;
-  });
-}
+  } catch (e) {
+    console.warn('Failed to initialize WASM for edit-distance, falling back to JS:', e);
+  }
+})();
 
 /**
  * Compute Levenshtein distance using dynamic programming.

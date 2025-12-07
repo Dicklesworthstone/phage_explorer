@@ -18,8 +18,19 @@ const wasmBase64 = "${wasmBase64}";
 const wasmBytes = Uint8Array.from(Buffer.from(wasmBase64, "base64"));
 `;
 
-  if (!jsContent.includes("const wasmBytes = Uint8Array.from(Buffer.from(wasmBase64"))) {
-    jsContent = inject + jsContent;
+  // Pattern for NodeJS target output
+  const nodeFsPattern = /const wasmPath = .*?;[\s\S]*?const wasmBytes = require\('fs'\)\.readFileSync\(wasmPath\);/;
+  
+  if (nodeFsPattern.test(jsContent)) {
+    jsContent = jsContent.replace(nodeFsPattern, inject);
+  } else if (!jsContent.includes(searchStr)) {
+    // Fallback for Web target or if pattern mismatch (prepend)
+    // But check for existing wasmBytes to avoid collision
+    if (!jsContent.includes("const wasmBytes =")) {
+       jsContent = inject + jsContent;
+    } else {
+       console.warn("wasmBytes already defined but pattern not matched. Skipping injection.");
+    }
   }
 
   const fallbackRegex = /if \(typeof module_or_path === 'undefined'\) \{\s+module_or_path = new URL\('wasm_compute_bg\.wasm', import\.meta\.url\);\s+\}/;
