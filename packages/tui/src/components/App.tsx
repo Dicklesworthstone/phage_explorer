@@ -24,6 +24,11 @@ import { RepeatOverlay } from './RepeatOverlay';
 import { computeAllOverlays } from '../overlay-computations';
 import { SimulationHubOverlay } from './SimulationHubOverlay';
 import { SimulationView } from './SimulationView';
+import { KmerAnomalyOverlay } from './KmerAnomalyOverlay';
+import type { KmerAnomalyOverlay as KmerOverlayType } from '../overlay-computations';
+import { ModuleOverlay } from './ModuleOverlay';
+import { FoldQuickview } from './FoldQuickview';
+import type { FoldEmbedding } from '@phage-explorer/core';
 import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
 
 const ANALYSIS_MENU_ID: OverlayId = 'analysisMenu';
@@ -34,15 +39,29 @@ const GC_SKEW_ID: OverlayId = 'gcSkew';
 const BENDABILITY_ID: OverlayId = 'bendability';
 const PROMOTER_ID: OverlayId = 'promoter';
 const REPEAT_ID: OverlayId = 'repeats';
+const KMER_ID: OverlayId = 'kmerAnomaly';
+const MODULES_ID: OverlayId = 'modules';
 
 interface AppProps {
   repository: PhageRepository;
+  foldEmbeddings?: FoldEmbedding[]; // Optional preloaded embeddings
 }
 
-export function App({ repository }: AppProps): React.ReactElement {
+export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
-  const overlayCacheRef = React.useRef<Map<number, { length: number; data: ReturnType<typeof computeAllOverlays> }>>(new Map());
+  const overlayCacheRef = React.useRef<Map<number, { length: number; hash: number; data: ReturnType<typeof computeAllOverlays> }>>(new Map());
+
+  const hashSeq = React.useCallback((seq: string): number => {
+    let h = 0;
+    // Sample every ~5000 chars to keep it fast on long genomes
+    const step = Math.max(1, Math.floor(seq.length / 5000));
+    for (let i = 0; i < seq.length; i += step) {
+      h = (h * 31 + seq.charCodeAt(i)) >>> 0;
+    }
+    h = (h ^ seq.length) >>> 0;
+    return h;
+  }, []);
 
   // Store state
   const phages = usePhageStore(s => s.phages);
@@ -59,6 +78,7 @@ export function App({ repository }: AppProps): React.ReactElement {
   const setTerminalSize = usePhageStore(s => s.setTerminalSize);
   const error = usePhageStore(s => s.error);
   const setError = usePhageStore(s => s.setError);
+  const overlayData = usePhageStore(s => s.overlayData);
 
   // Actions
   const nextPhage = usePhageStore(s => s.nextPhage);
@@ -88,7 +108,7 @@ export function App({ repository }: AppProps): React.ReactElement {
 
   // Sequence state
   const [sequence, setSequence] = useState<string>('');
-  const [experienceTimerId, setExperienceTimerId] = useState<NodeJS.Timeout | null>(null);
+  const [experienceTimers, setExperienceTimers] = useState<NodeJS.Timeout[]>([]);
 
   // Update terminal size
   useEffect(() => {
@@ -134,12 +154,13 @@ export function App({ repository }: AppProps): React.ReactElement {
           const seq = await repository.getSequenceWindow(phage.id, 0, length);
           setSequence(seq);
           // Use cache if available, else compute and store
+          const seqHash = hashSeq(seq);
           const cache = overlayCacheRef.current.get(phage.id);
-          if (cache && cache.length === length) {
+          if (cache && cache.length === length && cache.hash === seqHash) {
             setOverlayData(cache.data);
           } else {
             const data = computeAllOverlays(seq);
-            overlayCacheRef.current.set(phage.id, { length, data });
+            overlayCacheRef.current.set(phage.id, { length, hash: seqHash, data });
             setOverlayData(data);
           }
         }
@@ -156,16 +177,16 @@ export function App({ repository }: AppProps): React.ReactElement {
     loadPhage();
   }, [repository, phages, currentPhageIndex, setCurrentPhage, setLoadingPhage, setError]);
 
-  // Progressive disclosure: auto-promote after time in app
+  // Progressive disclosure: auto-promote after time in app (5m -> intermediate, 60m -> power)
   useEffect(() => {
-    if (experienceTimerId) {
-      clearTimeout(experienceTimerId);
-    }
-    const timer = setTimeout(() => {
-      promoteExperienceLevel('intermediate' as ExperienceLevel);
-    }, 5 * 60 * 1000); // 5 minutes
-    setExperienceTimerId(timer);
-    return () => clearTimeout(timer);
+    experienceTimers.forEach(clearTimeout);
+    const timers: NodeJS.Timeout[] = [];
+    timers.push(setTimeout(() => promoteExperienceLevel('intermediate' as ExperienceLevel), 5 * 60 * 1000));
+    timers.push(setTimeout(() => promoteExperienceLevel('power' as ExperienceLevel), 60 * 60 * 1000));
+    setExperienceTimers(timers);
+    return () => {
+      timers.forEach(clearTimeout);
+    };
   }, [promoteExperienceLevel]);
 
   // Layout constants
@@ -205,6 +226,9 @@ export function App({ repository }: AppProps): React.ReactElement {
     }
 
     const promote = (level: ExperienceLevel) => promoteExperienceLevel(level);
+    const isNovice = experienceLevel === 'novice';
+    const isIntermediate = experienceLevel !== 'novice';
+    const isPower = experienceLevel === 'power';
 
     // If overlay is active, don't process other keys (comparison/search/menus handle their own input)
     if (activeOverlay) {
@@ -258,6 +282,10 @@ export function App({ repository }: AppProps): React.ReactElement {
     } else if (input === 'd' || input === 'D') {
       toggleDiff();
     } else if (input === 'g' || input === 'G') {
+      if (!isIntermediate) {
+        setError('Advanced overlays unlock after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       toggleOverlay(GC_SKEW_ID);
     } else if (input === 'm' || input === 'M') {
@@ -267,14 +295,35 @@ export function App({ repository }: AppProps): React.ReactElement {
     } else if (input === 'q' || input === 'Q') {
       cycle3DModelQuality();
     } else if (input === 'b' || input === 'B') {
+      if (!isIntermediate) {
+        setError('Bendability overlay unlocks after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       toggleOverlay(BENDABILITY_ID);
     } else if (input === 'p' || input === 'P') {
+      if (!isIntermediate) {
+        setError('Promoter overlay unlocks after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       toggleOverlay(PROMOTER_ID);
+    } else if (input === 'j' || input === 'J') {
+      promote('intermediate');
+      toggleOverlay(KMER_ID);
+    } else if (input === 'l' || input === 'L') {
+      promote('intermediate');
+      toggleOverlay(MODULES_ID);
+    } else if (key.ctrl && (input === 'f' || input === 'F')) {
+      promote('power');
+      openOverlay('foldQuickview');
     } else if (input === 'v' || input === 'V') {
       toggle3DModelPause();
     } else if (input === 'r' || input === 'R') {
+      if (!isIntermediate) {
+        setError('Repeat overlay unlocks after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       toggleOverlay(REPEAT_ID);
     }
@@ -285,12 +334,24 @@ export function App({ repository }: AppProps): React.ReactElement {
     } else if (input === 'k' || input === 'K') {
       toggleOverlay('aaKey');
     } else if (key.shift && input === 'S') {
+      if (!isPower) {
+        setError('Simulation hub unlocks at power tier (≈60 min or manual promotion).');
+        return;
+      }
       promote('power');
       openOverlay(SIMULATION_MENU_ID);
     } else if (input === 'a' || input === 'A') {
+      if (!isIntermediate) {
+        setError('Analysis menu unlocks after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       openOverlay(ANALYSIS_MENU_ID);
     } else if (input === 'x' || input === 'X') {
+      if (!isIntermediate) {
+        setError('Complexity overlay unlocks after ~5 minutes or once promoted.');
+        return;
+      }
       promote('intermediate');
       toggleOverlay(COMPLEXITY_ID);
     } else if (input === 's' || input === '/') {
@@ -298,6 +359,10 @@ export function App({ repository }: AppProps): React.ReactElement {
     } else if (input === 'w' || input === 'W') {
       openComparison();
     } else if (input === ':' || (key.ctrl && (input === 'p' || input === 'P'))) {
+      if (!isPower) {
+        setError('Command palette unlocks at power tier.');
+        return;
+      }
       openOverlay('commandPalette');
     }
   });
@@ -362,6 +427,8 @@ export function App({ repository }: AppProps): React.ReactElement {
           sequence={sequence}
           width={gridWidth}
           height={mainHeight}
+          genomeLength={currentPhage?.genomeLength ?? sequence.length}
+          kmerOverlay={overlayData.kmerAnomaly as KmerOverlayType | null}
         />
       </Box>
 
@@ -466,6 +533,36 @@ export function App({ repository }: AppProps): React.ReactElement {
           marginTop={Math.floor((terminalRows - 12) / 2)}
         >
           <RepeatOverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'modules' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 84) / 2)}
+          marginTop={Math.floor((terminalRows - 18) / 2)}
+        >
+          <ModuleOverlay />
+        </Box>
+      )}
+
+      {activeOverlay === 'foldQuickview' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 90) / 2)}
+          marginTop={Math.floor((terminalRows - 22) / 2)}
+        >
+          <FoldQuickview embeddings={foldEmbeddings ?? []} />
+        </Box>
+      )}
+
+      {activeOverlay === 'kmerAnomaly' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 80) / 2)}
+          marginTop={Math.floor((terminalRows - 16) / 2)}
+        >
+          <KmerAnomalyOverlay />
         </Box>
       )}
 

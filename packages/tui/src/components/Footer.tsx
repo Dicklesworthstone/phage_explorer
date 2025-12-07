@@ -50,11 +50,13 @@ export function Footer(): React.ReactElement {
       <Box gap={2} alignItems="center">
         <Text color={colors.textDim}>
           Overlays: {overlays.filter(o =>
-            o === 'gcSkew' || o === 'complexity' || o === 'bendability' || o === 'promoter' || o === 'repeats'
+            o === 'gcSkew' || o === 'complexity' || o === 'bendability' || o === 'promoter' || o === 'repeats' || o === 'kmerAnomaly' || o === 'modules'
           ).map(o => {
             if (o === 'gcSkew') return 'G';
             if (o === 'complexity') return 'X';
             if (o === 'bendability') return 'B';
+            if (o === 'kmerAnomaly') return 'J';
+            if (o === 'modules') return 'L';
             if (o === 'promoter') return 'P';
             if (o === 'repeats') return 'R';
             return o;

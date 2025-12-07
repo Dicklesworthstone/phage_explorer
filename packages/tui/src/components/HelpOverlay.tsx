@@ -49,6 +49,9 @@ export function HelpOverlay(): React.ReactElement {
     { key: 'X', desc: 'Sequence complexity (entropy)', note: 'HGT / repeats' },
     { key: 'G', desc: 'GC skew overlay', note: 'origin / terminus' },
     { key: 'B', desc: 'DNA bendability (AT proxy)' },
+    { key: 'J', desc: 'K-mer anomaly map', note: 'local composition shifts' },
+    { key: 'L', desc: 'Module coherence / stoichiometry', note: 'capsid/tail/lysis' },
+    { key: 'Ctrl+F', desc: 'Fold quickview (embeddings)', note: 'structure novelty' },
     { key: 'P', desc: 'Promoter / RBS motifs' },
     { key: 'R', desc: 'Repeats / palindromes' },
     { key: 'K', desc: 'AA legend (AA view)', note: 'AA only' },
@@ -87,6 +90,9 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'X', desc: 'Complexity (HGT / repeats)' },
             { key: 'G', desc: 'GC skew (origin/terminus)' },
             { key: 'B', desc: 'Bendability (AT proxy)' },
+            { key: 'J', desc: 'K-mer anomaly (composition islands)' },
+            { key: 'L', desc: 'Module coherence (stoichiometry)' },
+            { key: 'Ctrl+F', desc: 'Fold quickview (embeddings)' },
             { key: 'P', desc: 'Promoter / RBS motifs' },
             { key: 'R', desc: 'Repeats / palindromes' },
             { key: 'W', desc: 'Comparison overlay' },
@@ -99,6 +105,7 @@ export function HelpOverlay(): React.ReactElement {
           rows: [
             { key: 'S / /', desc: 'Search phages' },
             { key: '?', desc: 'More help detail' },
+            { key: 'A', desc: 'Analysis menu (unlocks at intermediate)' },
             { key: 'Esc', desc: 'Close top overlay' },
             { key: 'Q', desc: 'Quit' },
           ],
@@ -115,7 +122,7 @@ export function HelpOverlay(): React.ReactElement {
         rows: [
           { key: 'Mode', desc: viewMode === 'aa' ? 'Amino acids (translated)' : 'DNA (nucleotides)' },
           { key: 'Diff', desc: diffEnabled ? 'Comparing vs reference' : 'Single genome view' },
-          { key: '3D', desc: 'M toggles, O pause/resume, Z fullscreen, R quality (fullscreen)' },
+          { key: '3D', desc: 'M toggles, O pause/resume, Z fullscreen, Q quality' },
           { key: 'Overlays', desc: overlays.join(', ') || 'None' },
         ],
       },
@@ -138,8 +145,8 @@ export function HelpOverlay(): React.ReactElement {
         rows: [
           { key: 'M', desc: 'Toggle 3D model' },
           { key: 'O', desc: 'Pause/resume model' },
-          { key: 'Z', desc: 'Fullscreen model' },
-          { key: 'R', desc: 'Cycle model quality (fullscreen)' },
+            { key: 'Z', desc: 'Fullscreen model' },
+            { key: 'Q', desc: 'Cycle model quality' },
         ],
       },
       {

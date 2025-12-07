@@ -34,7 +34,9 @@ export type OverlayId =
   | 'bendability'
   | 'promoter'
   | 'repeats'
+  | 'modules'
   | 'kmerAnomaly'
+  | 'foldQuickview'
   | 'commandPalette';
 
 export type HelpDetailLevel = 'essential' | 'detailed';
