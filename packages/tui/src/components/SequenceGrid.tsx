@@ -8,11 +8,14 @@ import {
   type GridRow,
   type Theme,
 } from '@phage-explorer/core';
+import type { KmerAnomalyOverlay } from '../overlay-computations';
 
 interface SequenceGridProps {
   sequence: string;
   width?: number;
   height?: number;
+  genomeLength?: number;
+  kmerOverlay?: KmerAnomalyOverlay | null;
 }
 
 // Group consecutive cells with same color for efficient rendering
@@ -69,6 +72,8 @@ export function SequenceGrid({
   sequence,
   width = 60,
   height = 15,
+  genomeLength,
+  kmerOverlay = null,
 }: SequenceGridProps): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const viewMode = usePhageStore(s => s.viewMode);
@@ -107,6 +112,37 @@ export function SequenceGrid({
       frame: readingFrame,
     });
   }, [sequence, scrollPosition, viewMode, readingFrame, width, height]);
+
+  // K-mer anomaly mini-strip aligned to current viewport
+  const kmerStrip = useMemo(() => {
+    if (!kmerOverlay || !kmerOverlay.values || kmerOverlay.values.length === 0 || !genomeLength) {
+      return null;
+    }
+
+    // approximate visible base range
+    const charsPerScreen = width * height;
+    const startBase = viewMode === 'aa'
+      ? scrollPosition * 3
+      : scrollPosition;
+    const endBase = Math.min(genomeLength, startBase + (viewMode === 'aa' ? charsPerScreen * 3 : charsPerScreen));
+
+    const gradient = ' .:-=+*#%@';
+    const strip: string[] = Array(width).fill(' ');
+
+    for (let col = 0; col < width; col++) {
+      const pos = startBase + (viewMode === 'aa' ? col * 3 : col);
+      const idx = Math.min(
+        kmerOverlay.values.length - 1,
+        Math.max(0, Math.floor((pos / genomeLength) * kmerOverlay.values.length))
+      );
+      const v = kmerOverlay.values[idx];
+      const gIdx = Math.min(gradient.length - 1, Math.max(0, Math.round(v * (gradient.length - 1))));
+      strip[col] = gradient[gIdx];
+    }
+
+    const coverage = ((endBase - startBase) / genomeLength) * 100;
+    return { strip: strip.join(''), coverage };
+  }, [kmerOverlay, genomeLength, viewMode, scrollPosition, width, height]);
 
   const colors = theme.colors;
 
@@ -169,6 +205,15 @@ export function SequenceGrid({
           Array(height - grid.length).fill(0).map((_, i) => (
             <Text key={`empty-${i}`}>{' '.repeat(Math.max(0, width))}</Text>
           ))
+        )}
+
+        {/* K-mer anomaly inline strip */}
+        {kmerStrip && (
+          <Box>
+            <Text color={colors.textDim}>K-mer </Text>
+            <Text color={colors.warning}>{kmerStrip.strip}</Text>
+            <Text color={colors.textDim}> · {kmerStrip.coverage.toFixed(1)}% of genome window</Text>
+          </Box>
         )}
       </Box>
     </Box>

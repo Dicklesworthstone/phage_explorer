@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { GeneInfo } from '@phage-explorer/core';
+import type { KmerAnomalyOverlay } from '../overlay-computations';
 
 interface GeneMapProps {
   width?: number;
@@ -12,6 +12,7 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
   const scrollPosition = usePhageStore(s => s.scrollPosition);
   const viewMode = usePhageStore(s => s.viewMode);
   const theme = usePhageStore(s => s.currentTheme);
+  const kmerOverlay = usePhageStore(s => s.overlayData.kmerAnomaly) as KmerAnomalyOverlay | undefined;
 
   const colors = theme.colors;
   const genes = currentPhage?.genes ?? [];
@@ -91,6 +92,29 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
     };
   }, [genes, genomeLength, scrollPosition, viewMode, barWidth]);
 
+  // K-mer anomaly strip aligned to genome
+  const kmerStrip = useMemo(() => {
+    if (!kmerOverlay || !kmerOverlay.values || kmerOverlay.values.length === 0 || genomeLength === 0) {
+      return null;
+    }
+    const gradient = ' .:-=+*#%@';
+    const values = kmerOverlay.values;
+    const stripChars: string[] = Array(barWidth).fill(' ');
+
+    for (let i = 0; i < barWidth; i++) {
+      const pos = (i / barWidth) * genomeLength;
+      const idx = Math.min(
+        values.length - 1,
+        Math.max(0, Math.floor((pos / genomeLength) * values.length))
+      );
+      const v = values[idx];
+      const gIdx = Math.min(gradient.length - 1, Math.max(0, Math.round(v * (gradient.length - 1))));
+      stripChars[i] = gradient[gIdx];
+    }
+
+    return stripChars.join('');
+  }, [kmerOverlay, genomeLength, barWidth]);
+
   // Find current gene
   const currentGene = useMemo(() => {
     const effectivePos = viewMode === 'aa' ? scrollPosition * 3 : scrollPosition;
@@ -109,6 +133,14 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
         <Text color={colors.textDim}>Genes:</Text>
         <Text color={colors.accent}>{geneBar.bar}</Text>
       </Box>
+
+      {/* K-mer anomaly strip */}
+      {kmerStrip && (
+        <Box gap={1}>
+          <Text color={colors.textDim}>K-mer:</Text>
+          <Text color={colors.warning}>{kmerStrip}</Text>
+        </Box>
+      )}
 
       {/* Gene labels */}
       <Box gap={1}>
