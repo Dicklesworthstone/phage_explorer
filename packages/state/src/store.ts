@@ -34,6 +34,7 @@ export type OverlayId =
   | 'bendability'
   | 'promoter'
   | 'repeats'
+  | 'transcriptionFlow'
   | 'pressure'
   | 'modules'
   | 'kmerAnomaly'

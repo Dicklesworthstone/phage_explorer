@@ -103,6 +103,8 @@ export interface PlaqueAutomataState extends SimStateBase {
   gridSize: number;
   /** Cell states: 0=empty, 1=bacteria, 2=infected, 3=lysed, 4=phage */
   grid: Uint8Array;
+  /** Track time since infection for each cell */
+  infectionTimes: Float32Array;
   /** Phage count */
   phageCount: number;
   /** Bacteria count */
@@ -119,9 +121,11 @@ export interface EvolutionReplayState extends SimStateBase {
   /** Current generation */
   generation: number;
   /** Mutation positions accumulated */
-  mutations: Array<{ position: number; from: string; to: string; generation: number }>;
+  mutations: Array<{ position: number; from: string; to: string; generation: number; s?: number }>;
   /** Fitness trajectory */
   fitnessHistory: number[];
+  /** Effective population size trajectory */
+  neHistory: number[];
 }
 
 /**
