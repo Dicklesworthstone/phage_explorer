@@ -15,9 +15,15 @@ export {
 // Base component
 export { Overlay, type OverlaySize, type OverlayPosition } from './Overlay';
 
-// Overlay implementations
+// Core overlays
 export { HelpOverlay } from './HelpOverlay';
 export { CommandPalette } from './CommandPalette';
 export { AnalysisMenu } from './AnalysisMenu';
 export { SimulationHub } from './SimulationHub';
+
+// Layer 1 Analysis Overlays
 export { GCSkewOverlay } from './GCSkewOverlay';
+export { ComplexityOverlay } from './ComplexityOverlay';
+export { BendabilityOverlay } from './BendabilityOverlay';
+export { PromoterOverlay } from './PromoterOverlay';
+export { RepeatsOverlay } from './RepeatsOverlay';
