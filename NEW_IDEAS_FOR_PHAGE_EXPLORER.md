@@ -18273,32 +18273,683 @@ export function renderPassportStamp(stamp: PassportStamp): string[] {
 
 ---
 
----
-
 ## 44) Functional Module Coherence & Stoichiometry Checker
 
 ### Concept
 Segment genomes into functional modules (replication, morphogenesis, lysis, regulation) and evaluate stoichiometric balance (e.g., capsid:scaffold, tail fiber sets), flagging incomplete or overrepresented modules.
 
-### How to Build
-- **Module detection**: HMMER/domain co-occurrence graphs; rule-based module assignment stored in SQLite.
-- **Stoichiometry**: Expected copy ratios per module from literature/structural heuristics; compare to gene presence/duplication.
-- **Coherence score**: Penalize missing essentials or excess paralogs; suggest likely missing partners.
+### Extended Concept
 
-### Why It’s Good
-Gives a quick “is this genome complete and balanced?” readout; great for QC and design.
+Phage genomes are organized into **functional modules** - clusters of genes that work together for specific functions like DNA replication, particle assembly, or host lysis. This feature performs a comprehensive "genome health check" by:
 
-### Novelty
-Stoichiometry checks inside a TUI phage browser are uncommon.
+1. **Module detection**: Identifying and classifying genes into functional categories using domain annotations and gene neighborhood analysis
 
-### Pedagogical Value
-Shows structural/assembly stoichiometry and why certain components must be balanced.
+2. **Completeness scoring**: Checking whether each module has all essential components (e.g., a morphogenesis module needs major capsid protein, portal, scaffold, etc.)
 
-### Wow / TUI Visualization
-Module ribbon with green/amber/red indicators; hover shows expected vs found counts; “suggest” button highlights nearest homologs that could fill gaps.
+3. **Stoichiometric balance**: Verifying that genes appear in expected ratios. For example, tailed phages typically need ~300 copies of major tail protein but only ~12 portal proteins - the gene copy numbers and expression signals should reflect this
 
-### Implementation Stack
-HMMER precompute; TS scoring; optional Rust+WASM for fast domain co-occurrence; SQLite cache; Ink module ribbon UI.
+4. **Gap identification**: Suggesting what might be missing and where to find homologs in related phages
+
+### Mathematical Foundations
+
+**Module Completeness Score**:
+
+```
+C_module = Σ(w_i × present_i) / Σ(w_i)
+
+where:
+- w_i: weight of essential gene i (1.0 for critical, 0.5 for common, 0.2 for optional)
+- present_i: 1 if gene is found, 0 otherwise
+```
+
+**Stoichiometric Balance Score**:
+
+```
+For each gene pair (i, j) with expected ratio r_ij:
+
+imbalance_ij = |log2(observed_i / observed_j) - log2(r_ij)|
+
+S_balance = 1 - tanh(Σ imbalance_ij / n_pairs)
+```
+
+**Module Coherence (Gene Neighborhood)**:
+
+```
+Coherence = Σ(adjacent_same_module) / (Σ genes_in_module - 1)
+
+Values close to 1.0 indicate tightly clustered modules
+Values close to 0.0 indicate scattered/fragmented modules
+```
+
+**Expression Proxy from RBS Strength**:
+
+```
+RBS_strength = PSSM_score(Shine-Dalgarno motif, -15 to -5 upstream)
+
+Expected_copies ∝ RBS_strength × codon_adaptation_index
+```
+
+### TypeScript Implementation
+
+```typescript
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+type ModuleType =
+  | 'replication'
+  | 'morphogenesis_head'
+  | 'morphogenesis_tail'
+  | 'packaging'
+  | 'lysis'
+  | 'lysogeny'
+  | 'host_interaction'
+  | 'auxiliary'
+  | 'unknown';
+
+interface ModuleGene {
+  gene: GeneInfo;
+  role: string;
+  essentiality: 'critical' | 'common' | 'optional';
+  expectedCopyNumber: number;
+  rbsStrength: number;
+  expressionProxy: number;
+}
+
+interface FunctionalModule {
+  type: ModuleType;
+  genes: ModuleGene[];
+  genomicRange: { start: number; end: number };
+  completenessScore: number;
+  balanceScore: number;
+  coherenceScore: number;
+  missingEssentials: string[];
+  overrepresented: string[];
+  underrepresented: string[];
+}
+
+interface StoichiometryRule {
+  geneA: string;
+  geneB: string;
+  expectedRatio: number;
+  tolerance: number;
+  rationale: string;
+}
+
+interface ModuleAnalysis {
+  phageId: number;
+  phageName: string;
+  genomeLength: number;
+  modules: FunctionalModule[];
+  overallCompleteness: number;
+  overallBalance: number;
+  overallCoherence: number;
+  qualityGrade: 'A' | 'B' | 'C' | 'D' | 'F';
+  suggestions: ModuleSuggestion[];
+}
+
+interface ModuleSuggestion {
+  type: 'missing' | 'imbalanced' | 'fragmented';
+  module: ModuleType;
+  message: string;
+  priority: 'high' | 'medium' | 'low';
+  suggestedHomologs?: { phage: string; gene: string; similarity: number }[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module Classification Rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MODULE_KEYWORDS: Record<ModuleType, RegExp[]> = {
+  replication: [
+    /dna.*polymerase/i, /primase/i, /helicase/i, /ligase/i,
+    /recombinase/i, /nuclease/i, /ssb/i, /replication/i
+  ],
+  morphogenesis_head: [
+    /major.*capsid/i, /portal/i, /scaffold/i, /head.*matura/i,
+    /prohead/i, /mcp/i, /capsid.*protein/i
+  ],
+  morphogenesis_tail: [
+    /tail.*protein/i, /tail.*fiber/i, /baseplate/i, /tail.*tube/i,
+    /tail.*sheath/i, /tail.*spike/i, /tape.*measure/i
+  ],
+  packaging: [
+    /terminase/i, /packaging/i, /portal.*vertex/i, /dna.*transloca/i
+  ],
+  lysis: [
+    /lysin/i, /holin/i, /spanin/i, /endolysin/i, /lysis/i,
+    /peptidoglycan/i, /muramidase/i
+  ],
+  lysogeny: [
+    /integrase/i, /repressor/i, /excisionase/i, /antirepressor/i,
+    /^ci$/i, /^cro$/i, /lysogen/i
+  ],
+  host_interaction: [
+    /receptor.*bind/i, /host.*specificity/i, /anti.*defense/i,
+    /anti.*crispr/i, /anti.*restriction/i
+  ],
+  auxiliary: [
+    /amg/i, /metabolic/i, /photosyn/i, /phosphate/i, /carbon/i
+  ],
+  unknown: []
+};
+
+const ESSENTIAL_GENES: Record<ModuleType, { name: string; weight: number }[]> = {
+  replication: [
+    { name: 'DNA polymerase', weight: 1.0 },
+    { name: 'Helicase', weight: 0.8 },
+    { name: 'Primase', weight: 0.7 },
+    { name: 'SSB', weight: 0.5 }
+  ],
+  morphogenesis_head: [
+    { name: 'Major capsid protein', weight: 1.0 },
+    { name: 'Portal protein', weight: 1.0 },
+    { name: 'Scaffold protein', weight: 0.7 },
+    { name: 'Head maturation protease', weight: 0.5 }
+  ],
+  morphogenesis_tail: [
+    { name: 'Major tail protein', weight: 1.0 },
+    { name: 'Tail tape measure', weight: 0.8 },
+    { name: 'Tail fiber', weight: 0.7 },
+    { name: 'Baseplate', weight: 0.6 }
+  ],
+  packaging: [
+    { name: 'Large terminase', weight: 1.0 },
+    { name: 'Small terminase', weight: 0.8 }
+  ],
+  lysis: [
+    { name: 'Endolysin', weight: 1.0 },
+    { name: 'Holin', weight: 0.9 },
+    { name: 'Spanin', weight: 0.5 }
+  ],
+  lysogeny: [
+    { name: 'Integrase', weight: 1.0 },
+    { name: 'Repressor (CI)', weight: 0.9 },
+    { name: 'Excisionase', weight: 0.5 }
+  ],
+  host_interaction: [],
+  auxiliary: [],
+  unknown: []
+};
+
+const STOICHIOMETRY_RULES: StoichiometryRule[] = [
+  {
+    geneA: 'major capsid protein',
+    geneB: 'portal protein',
+    expectedRatio: 25,  // ~415 MCP : 12 portal = ~35:1, but gene count usually 1:1
+    tolerance: 2.0,
+    rationale: 'Single copy genes, but MCP should have stronger RBS'
+  },
+  {
+    geneA: 'major tail protein',
+    geneB: 'tape measure protein',
+    expectedRatio: 1,
+    tolerance: 1.5,
+    rationale: 'Usually single-copy genes'
+  },
+  {
+    geneA: 'large terminase',
+    geneB: 'small terminase',
+    expectedRatio: 1,
+    tolerance: 1.0,
+    rationale: 'Work as a complex, should be balanced'
+  },
+  {
+    geneA: 'endolysin',
+    geneB: 'holin',
+    expectedRatio: 1,
+    tolerance: 1.5,
+    rationale: 'Coordinated lysis requires balanced expression'
+  }
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RBS Strength Estimation
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SHINE_DALGARNO_CONSENSUS = 'AGGAGG';
+
+function estimateRBSStrength(
+  sequence: string,
+  geneStart: number
+): number {
+  // Look at -15 to -5 upstream of gene start
+  const upstreamStart = Math.max(0, geneStart - 15);
+  const upstreamEnd = Math.max(0, geneStart - 5);
+  const upstream = sequence.substring(upstreamStart, upstreamEnd).toUpperCase();
+
+  if (upstream.length < 6) return 0.5;
+
+  // Score by best match to Shine-Dalgarno
+  let bestScore = 0;
+  for (let i = 0; i <= upstream.length - 6; i++) {
+    const window = upstream.substring(i, i + 6);
+    let score = 0;
+    for (let j = 0; j < 6; j++) {
+      if (window[j] === SHINE_DALGARNO_CONSENSUS[j]) {
+        score += 1;
+      }
+    }
+    bestScore = Math.max(bestScore, score / 6);
+  }
+
+  return bestScore;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module Classification
+// ─────────────────────────────────────────────────────────────────────────────
+
+function classifyGene(gene: GeneInfo): { module: ModuleType; role: string } {
+  const product = gene.product ?? gene.name ?? '';
+
+  for (const [moduleType, patterns] of Object.entries(MODULE_KEYWORDS)) {
+    for (const pattern of patterns) {
+      if (pattern.test(product)) {
+        return { module: moduleType as ModuleType, role: product };
+      }
+    }
+  }
+
+  return { module: 'unknown', role: product || 'hypothetical protein' };
+}
+
+function determineEssentiality(
+  moduleType: ModuleType,
+  role: string
+): 'critical' | 'common' | 'optional' {
+  const essentials = ESSENTIAL_GENES[moduleType] ?? [];
+
+  for (const essential of essentials) {
+    if (role.toLowerCase().includes(essential.name.toLowerCase())) {
+      return essential.weight >= 0.9 ? 'critical' :
+             essential.weight >= 0.6 ? 'common' : 'optional';
+    }
+  }
+
+  return 'optional';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Module Assembly
+// ─────────────────────────────────────────────────────────────────────────────
+
+function assembleModules(
+  genes: GeneInfo[],
+  sequence: string
+): Map<ModuleType, ModuleGene[]> {
+  const moduleMap = new Map<ModuleType, ModuleGene[]>();
+
+  for (const gene of genes) {
+    const { module, role } = classifyGene(gene);
+    const essentiality = determineEssentiality(module, role);
+    const rbsStrength = estimateRBSStrength(sequence, gene.start);
+
+    const moduleGene: ModuleGene = {
+      gene,
+      role,
+      essentiality,
+      expectedCopyNumber: 1,  // Default, can be refined
+      rbsStrength,
+      expressionProxy: rbsStrength  // Simplified
+    };
+
+    if (!moduleMap.has(module)) {
+      moduleMap.set(module, []);
+    }
+    moduleMap.get(module)!.push(moduleGene);
+  }
+
+  return moduleMap;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Scoring Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeCompletenessScore(
+  moduleType: ModuleType,
+  moduleGenes: ModuleGene[]
+): { score: number; missing: string[] } {
+  const essentials = ESSENTIAL_GENES[moduleType] ?? [];
+  if (essentials.length === 0) {
+    return { score: 1.0, missing: [] };  // No requirements
+  }
+
+  let totalWeight = 0;
+  let foundWeight = 0;
+  const missing: string[] = [];
+
+  for (const essential of essentials) {
+    totalWeight += essential.weight;
+
+    const found = moduleGenes.some(mg =>
+      mg.role.toLowerCase().includes(essential.name.toLowerCase())
+    );
+
+    if (found) {
+      foundWeight += essential.weight;
+    } else {
+      missing.push(essential.name);
+    }
+  }
+
+  return {
+    score: totalWeight > 0 ? foundWeight / totalWeight : 1.0,
+    missing
+  };
+}
+
+function computeBalanceScore(
+  moduleGenes: ModuleGene[]
+): { score: number; over: string[]; under: string[] } {
+  const geneExpressionMap = new Map<string, number>();
+
+  for (const mg of moduleGenes) {
+    const key = mg.role.toLowerCase();
+    geneExpressionMap.set(key, mg.expressionProxy);
+  }
+
+  let imbalanceSum = 0;
+  let ruleCount = 0;
+  const over: string[] = [];
+  const under: string[] = [];
+
+  for (const rule of STOICHIOMETRY_RULES) {
+    const exprA = geneExpressionMap.get(rule.geneA.toLowerCase());
+    const exprB = geneExpressionMap.get(rule.geneB.toLowerCase());
+
+    if (exprA !== undefined && exprB !== undefined && exprB > 0) {
+      const observedRatio = exprA / exprB;
+      const imbalance = Math.abs(
+        Math.log2(observedRatio) - Math.log2(rule.expectedRatio)
+      );
+
+      if (imbalance > rule.tolerance) {
+        if (observedRatio > rule.expectedRatio * 2) {
+          over.push(rule.geneA);
+        } else if (observedRatio < rule.expectedRatio / 2) {
+          under.push(rule.geneA);
+        }
+      }
+
+      imbalanceSum += imbalance;
+      ruleCount++;
+    }
+  }
+
+  const avgImbalance = ruleCount > 0 ? imbalanceSum / ruleCount : 0;
+  const score = 1 - Math.tanh(avgImbalance);
+
+  return { score, over, under };
+}
+
+function computeCoherenceScore(
+  moduleType: ModuleType,
+  moduleGenes: ModuleGene[],
+  allGenes: GeneInfo[]
+): number {
+  if (moduleGenes.length <= 1) return 1.0;
+
+  // Sort genes by position
+  const sortedModuleGenes = [...moduleGenes].sort(
+    (a, b) => a.gene.start - b.gene.start
+  );
+
+  // Find gene indices in full gene list
+  const modulePositions = sortedModuleGenes.map(mg =>
+    allGenes.findIndex(g => g.start === mg.gene.start)
+  );
+
+  // Count adjacent pairs in same module
+  let adjacentCount = 0;
+  for (let i = 0; i < modulePositions.length - 1; i++) {
+    if (modulePositions[i + 1] - modulePositions[i] === 1) {
+      adjacentCount++;
+    }
+  }
+
+  return adjacentCount / (modulePositions.length - 1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Analysis Function
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function analyzeModuleCoherence(
+  phage: PhageFull,
+  sequence: string,
+  genes: GeneInfo[]
+): ModuleAnalysis {
+  const moduleMap = assembleModules(genes, sequence);
+  const modules: FunctionalModule[] = [];
+
+  for (const [moduleType, moduleGenes] of moduleMap) {
+    if (moduleGenes.length === 0) continue;
+
+    const { score: completeness, missing } = computeCompletenessScore(
+      moduleType,
+      moduleGenes
+    );
+    const { score: balance, over, under } = computeBalanceScore(moduleGenes);
+    const coherence = computeCoherenceScore(moduleType, moduleGenes, genes);
+
+    // Compute genomic range
+    const starts = moduleGenes.map(mg => mg.gene.start);
+    const ends = moduleGenes.map(mg => mg.gene.end);
+
+    modules.push({
+      type: moduleType,
+      genes: moduleGenes,
+      genomicRange: {
+        start: Math.min(...starts),
+        end: Math.max(...ends)
+      },
+      completenessScore: completeness,
+      balanceScore: balance,
+      coherenceScore: coherence,
+      missingEssentials: missing,
+      overrepresented: over,
+      underrepresented: under
+    });
+  }
+
+  // Compute overall scores (weighted by module size)
+  const totalGenes = genes.length;
+  let overallCompleteness = 0;
+  let overallBalance = 0;
+  let overallCoherence = 0;
+
+  for (const module of modules) {
+    const weight = module.genes.length / totalGenes;
+    overallCompleteness += module.completenessScore * weight;
+    overallBalance += module.balanceScore * weight;
+    overallCoherence += module.coherenceScore * weight;
+  }
+
+  // Determine quality grade
+  const avgScore = (overallCompleteness + overallBalance + overallCoherence) / 3;
+  const qualityGrade: 'A' | 'B' | 'C' | 'D' | 'F' =
+    avgScore >= 0.9 ? 'A' :
+    avgScore >= 0.75 ? 'B' :
+    avgScore >= 0.6 ? 'C' :
+    avgScore >= 0.4 ? 'D' : 'F';
+
+  // Generate suggestions
+  const suggestions: ModuleSuggestion[] = [];
+
+  for (const module of modules) {
+    if (module.missingEssentials.length > 0) {
+      suggestions.push({
+        type: 'missing',
+        module: module.type,
+        message: `Missing essential genes: ${module.missingEssentials.join(', ')}`,
+        priority: module.missingEssentials.length > 2 ? 'high' : 'medium'
+      });
+    }
+
+    if (module.coherenceScore < 0.5) {
+      suggestions.push({
+        type: 'fragmented',
+        module: module.type,
+        message: `${module.type} genes are scattered across genome (coherence: ${(module.coherenceScore * 100).toFixed(0)}%)`,
+        priority: 'low'
+      });
+    }
+
+    if (module.overrepresented.length > 0) {
+      suggestions.push({
+        type: 'imbalanced',
+        module: module.type,
+        message: `Possible overexpression: ${module.overrepresented.join(', ')}`,
+        priority: 'medium'
+      });
+    }
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    genomeLength: sequence.length,
+    modules,
+    overallCompleteness,
+    overallBalance,
+    overallCoherence,
+    qualityGrade,
+    suggestions
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Rendering Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function renderModuleRibbon(
+  analysis: ModuleAnalysis,
+  width: number = 60
+): string[] {
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`Module Health: Grade ${analysis.qualityGrade}`);
+  lines.push('─'.repeat(width));
+
+  // Module bars
+  for (const module of analysis.modules) {
+    if (module.type === 'unknown') continue;
+
+    const label = module.type.padEnd(18);
+    const barWidth = 20;
+    const filled = Math.round(module.completenessScore * barWidth);
+
+    // Color indicator
+    const indicator = module.completenessScore >= 0.8 ? '●' :
+                     module.completenessScore >= 0.5 ? '◐' : '○';
+
+    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const pct = `${(module.completenessScore * 100).toFixed(0)}%`;
+
+    lines.push(`${indicator} ${label} ${bar} ${pct} (${module.genes.length} genes)`);
+
+    // Show missing essentials
+    if (module.missingEssentials.length > 0) {
+      lines.push(`  ⚠ Missing: ${module.missingEssentials.slice(0, 3).join(', ')}`);
+    }
+  }
+
+  return lines;
+}
+
+export function renderStoichiometryChart(
+  module: FunctionalModule
+): string[] {
+  const lines: string[] = [];
+
+  lines.push(`╭─ ${module.type} Stoichiometry ─${'─'.repeat(40)}╮`);
+
+  for (const gene of module.genes.slice(0, 8)) {
+    const barWidth = 30;
+    const filled = Math.round(gene.expressionProxy * barWidth);
+    const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
+    const label = gene.role.substring(0, 20).padEnd(20);
+
+    lines.push(`│ ${label} ${bar} │`);
+  }
+
+  lines.push(`╰${'─'.repeat(56)}╯`);
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Functional Module Coherence & Stoichiometry Checker                [Shift+M] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phage: T4                      Genome: 168,903 bp        Quality: Grade A    │
+│                                                                              │
+│ ╭─ Module Health Overview ───────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ ● Replication         ████████████████████  100%  (12 genes)          │  │
+│ │ ● Morphogenesis Head  ██████████████████░░   90%  (8 genes)           │  │
+│ │   ⚠ Missing: scaffold protein                                         │  │
+│ │ ● Morphogenesis Tail  ████████████████████  100%  (15 genes)          │  │
+│ │ ● Packaging           ████████████████████  100%  (3 genes)           │  │
+│ │ ● Lysis               ████████████████████  100%  (4 genes)           │  │
+│ │ ◐ Lysogeny            ░░░░░░░░░░░░░░░░░░░░    0%  (0 genes)           │  │
+│ │   ℹ T4 is strictly lytic - no lysogeny expected                       │  │
+│ │ ● Host Interaction    ██████████████████░░   90%  (6 genes)           │  │
+│ │ ● Auxiliary           ████████████████░░░░   80%  (22 genes)          │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Stoichiometry Check: Morphogenesis Head ──────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Gene                     Expression   Expected   Status                │  │
+│ │ ─────────────────────────────────────────────────────────────────────  │  │
+│ │ Major capsid (gp23)      ██████████   ██████████  ✓ Balanced          │  │
+│ │ Portal (gp20)            ████░░░░░░   ████░░░░░░  ✓ Balanced          │  │
+│ │ Prohead protease (gp21)  ███░░░░░░░   ███░░░░░░░  ✓ Balanced          │  │
+│ │ Head vertex (gp24)       ██░░░░░░░░   ██░░░░░░░░  ✓ Balanced          │  │
+│ │                                                                        │  │
+│ │ Balance Score: 95%      Coherence: 87% (genes are clustered)          │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Suggestions ──────────────────────────────────────────────────────────╮  │
+│ │ ⚠ [Medium] Morphogenesis Head: Missing scaffold protein               │  │
+│ │   → Similar genes found in: T7 (gp9, 67%), Lambda (gpNu3, 54%)       │  │
+│ │ ℹ [Low] Auxiliary module genes are scattered (coherence: 42%)         │  │
+│ │   → This is normal for AMG genes acquired via HGT                     │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Tab] Next module  [S] Stoichiometry  [H] Find homologs  [Esc] Close        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Quality control**: Instantly identify whether a phage genome annotation is complete or has gaps that need filling
+
+2. **Engineering guidance**: For synthetic biology, knowing stoichiometric requirements helps design balanced gene expression systems
+
+3. **Evolutionary insight**: Module completeness patterns reveal whether phages have adapted to specific niches (e.g., lytic vs lysogenic)
+
+4. **Pedagogical power**: Teaches the modular organization of phage genomes and why certain genes must work together
+
+5. **Comparative analysis**: Quickly spot differences between phages - which modules are conserved, which are variable
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Clearly shows genome organization and assembly requirements
+- **Novelty**: 8/10 - Stoichiometry checking in a TUI is rare
+- **Wow Factor**: 7/10 - "Health check" metaphor is intuitive and actionable
+
+---
 
 ---
 
@@ -18391,25 +19042,679 @@ TS for CAI/RAI/CPB if performance sufficient; Rust+WASM for batch scoring many h
 ### Concept
 Slide across proteins/ORFs computing property vectors (hydropathy, charge, aromaticity, disorder proxies), then project trajectories (PCA/UMAP) to reveal domain compositional signatures and divergence between phages.
 
-### How to Build
-- **Property vectors**: TS computation per window (e.g., 30–60 aa) for multiple properties; normalize.
-- **Projection**: PCA in TS; optional UMAP via wasm-bindgen to Rust umap-rs for speed; cache embeddings per window.
-- **Comparative mode**: Plot trajectories of two phages’ homologous proteins to show divergence.
+### Extended Concept
 
-### Why It’s Good
-Highlights domain-level shifts invisible to simple alignments; surfaces regions likely affecting folding/interactions.
+Proteins are not just linear chains of amino acids - they have **compositional landscapes** that vary along their length. Different domains have distinct property profiles: transmembrane helices are hydrophobic, DNA-binding regions are positively charged, intrinsically disordered regions have low complexity. This feature creates **phase portraits** that visualize these property trajectories in reduced dimensions:
 
-### Novelty
-Medium-high—trajectory-based property manifolds in a terminal genome tool are rare.
+1. **Property vector computation**: Sliding windows across proteins compute multi-dimensional property vectors (hydropathy, charge, aromaticity, flexibility, disorder propensity)
 
-### Pedagogical Value
-Teaches property landscapes, low-D projection, and links between composition and function.
+2. **Dimensionality reduction**: PCA or UMAP projects these high-dimensional trajectories into 2D for visualization
 
-### Wow / TUI Visualization
-ASCII scatter/trajectory; cursor shows window position; press `d` to jump to the sequence slice; color by property dominance.
+3. **Domain detection**: Clusters in the phase portrait correspond to distinct functional domains
 
-### Implementation Stack
-TS for property calc + PCA; Rust+WASM UMAP optional; SQLite cache for embeddings; Ink plotting with braille blocks.
+4. **Comparative analysis**: Comparing trajectories between homologous proteins reveals evolutionary divergence patterns
+
+### Mathematical Foundations
+
+**Window Property Computation**:
+
+```
+For window w of size W at position i:
+
+P(w) = [H(w), Q(w), A(w), F(w), D(w)]
+
+where:
+- H(w): Mean hydropathy (Kyte-Doolittle scale)
+- Q(w): Net charge ((K+R) - (D+E)) / W
+- A(w): Aromaticity (F+W+Y) / W
+- F(w): Flexibility (B-factor proxy)
+- D(w): Disorder propensity (IUPred-like)
+```
+
+**Kyte-Doolittle Hydropathy**:
+
+```
+Hydropathy values:
+A: 1.8, R: -4.5, N: -3.5, D: -3.5, C: 2.5,
+Q: -3.5, E: -3.5, G: -0.4, H: -3.2, I: 4.5,
+L: 3.8, K: -3.9, M: 1.9, F: 2.8, P: -1.6,
+S: -0.8, T: -0.7, W: -0.9, Y: -1.3, V: 4.2
+
+H(w) = (1/W) × Σ hydropathy[aa_i]
+```
+
+**PCA for Trajectory Projection**:
+
+```
+Given property matrix P (n_windows × n_properties):
+
+1. Center: P_centered = P - mean(P)
+2. Covariance: C = P_centered^T × P_centered / (n-1)
+3. Eigenvectors: Solve C × v = λ × v
+4. Project: P_2D = P_centered × [v1, v2]
+```
+
+**Trajectory Distance (Fréchet Distance)**:
+
+```
+For comparing protein trajectories A and B:
+
+d_F(A, B) = min_{α,β} max_t ||A(α(t)) - B(β(t))||
+
+where α, β are monotonic reparameterizations
+(implemented via dynamic programming)
+```
+
+### TypeScript Implementation
+
+```typescript
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PropertyVector {
+  hydropathy: number;
+  charge: number;
+  aromaticity: number;
+  flexibility: number;
+  disorder: number;
+}
+
+interface ProteinWindow {
+  start: number;
+  end: number;
+  sequence: string;
+  properties: PropertyVector;
+  projection?: { x: number; y: number };
+}
+
+interface ProteinTrajectory {
+  geneId: string;
+  geneName: string;
+  product: string;
+  length: number;
+  windows: ProteinWindow[];
+  domains: DetectedDomain[];
+}
+
+interface DetectedDomain {
+  name: string;
+  start: number;
+  end: number;
+  dominantProperty: keyof PropertyVector;
+  centroid: { x: number; y: number };
+}
+
+interface TrajectoryComparison {
+  proteinA: ProteinTrajectory;
+  proteinB: ProteinTrajectory;
+  frechetDistance: number;
+  divergentRegions: { startA: number; startB: number; distance: number }[];
+}
+
+interface PhasePortraitAnalysis {
+  phageId: number;
+  phageName: string;
+  trajectories: ProteinTrajectory[];
+  pcaExplainedVariance: [number, number];
+  propertyContributions: Record<keyof PropertyVector, [number, number]>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Amino Acid Property Scales
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HYDROPATHY: Record<string, number> = {
+  'A': 1.8, 'R': -4.5, 'N': -3.5, 'D': -3.5, 'C': 2.5,
+  'Q': -3.5, 'E': -3.5, 'G': -0.4, 'H': -3.2, 'I': 4.5,
+  'L': 3.8, 'K': -3.9, 'M': 1.9, 'F': 2.8, 'P': -1.6,
+  'S': -0.8, 'T': -0.7, 'W': -0.9, 'Y': -1.3, 'V': 4.2
+};
+
+const FLEXIBILITY: Record<string, number> = {
+  'A': 0.36, 'R': 0.53, 'N': 0.46, 'D': 0.51, 'C': 0.35,
+  'Q': 0.49, 'E': 0.50, 'G': 0.54, 'H': 0.32, 'I': 0.46,
+  'L': 0.37, 'K': 0.47, 'M': 0.30, 'F': 0.31, 'P': 0.51,
+  'S': 0.51, 'T': 0.44, 'W': 0.31, 'Y': 0.42, 'V': 0.39
+};
+
+const DISORDER_PROPENSITY: Record<string, number> = {
+  'A': 0.06, 'R': 0.18, 'N': 0.01, 'D': 0.19, 'C': -0.02,
+  'Q': 0.32, 'E': 0.74, 'G': 0.17, 'H': 0.30, 'I': -0.49,
+  'L': -0.34, 'K': 0.39, 'M': -0.30, 'F': -0.35, 'P': 0.99,
+  'S': 0.34, 'T': 0.01, 'W': -0.38, 'Y': -0.26, 'V': -0.29
+};
+
+const POSITIVE_CHARGED = new Set(['K', 'R', 'H']);
+const NEGATIVE_CHARGED = new Set(['D', 'E']);
+const AROMATIC = new Set(['F', 'W', 'Y']);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Property Calculation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computePropertyVector(sequence: string): PropertyVector {
+  const len = sequence.length;
+  if (len === 0) {
+    return { hydropathy: 0, charge: 0, aromaticity: 0, flexibility: 0, disorder: 0 };
+  }
+
+  let hydropathy = 0;
+  let positive = 0;
+  let negative = 0;
+  let aromatic = 0;
+  let flexibility = 0;
+  let disorder = 0;
+
+  for (const aa of sequence.toUpperCase()) {
+    hydropathy += HYDROPATHY[aa] ?? 0;
+    flexibility += FLEXIBILITY[aa] ?? 0.4;
+    disorder += DISORDER_PROPENSITY[aa] ?? 0;
+
+    if (POSITIVE_CHARGED.has(aa)) positive++;
+    if (NEGATIVE_CHARGED.has(aa)) negative++;
+    if (AROMATIC.has(aa)) aromatic++;
+  }
+
+  return {
+    hydropathy: hydropathy / len,
+    charge: (positive - negative) / len,
+    aromaticity: aromatic / len,
+    flexibility: flexibility / len,
+    disorder: disorder / len
+  };
+}
+
+function computeTrajectory(
+  proteinSequence: string,
+  windowSize: number = 30,
+  stepSize: number = 5
+): ProteinWindow[] {
+  const windows: ProteinWindow[] = [];
+
+  for (let i = 0; i <= proteinSequence.length - windowSize; i += stepSize) {
+    const windowSeq = proteinSequence.substring(i, i + windowSize);
+    const properties = computePropertyVector(windowSeq);
+
+    windows.push({
+      start: i,
+      end: i + windowSize,
+      sequence: windowSeq,
+      properties
+    });
+  }
+
+  return windows;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PCA Implementation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function matrixMean(matrix: number[][]): number[] {
+  const n = matrix.length;
+  const d = matrix[0]?.length ?? 0;
+  const mean = Array(d).fill(0);
+
+  for (const row of matrix) {
+    for (let j = 0; j < d; j++) {
+      mean[j] += row[j];
+    }
+  }
+
+  return mean.map(v => v / n);
+}
+
+function centerMatrix(matrix: number[][], mean: number[]): number[][] {
+  return matrix.map(row => row.map((v, j) => v - mean[j]));
+}
+
+function computeCovariance(centered: number[][]): number[][] {
+  const n = centered.length;
+  const d = centered[0]?.length ?? 0;
+  const cov = Array(d).fill(0).map(() => Array(d).fill(0));
+
+  for (let i = 0; i < d; i++) {
+    for (let j = 0; j < d; j++) {
+      let sum = 0;
+      for (const row of centered) {
+        sum += row[i] * row[j];
+      }
+      cov[i][j] = sum / (n - 1);
+    }
+  }
+
+  return cov;
+}
+
+// Power iteration for top 2 eigenvectors
+function powerIteration(
+  cov: number[][],
+  numComponents: number = 2,
+  iterations: number = 100
+): { vectors: number[][]; values: number[] } {
+  const d = cov.length;
+  const vectors: number[][] = [];
+  const values: number[] = [];
+
+  for (let c = 0; c < numComponents; c++) {
+    // Random initial vector
+    let v = Array(d).fill(0).map(() => Math.random() - 0.5);
+    let norm = Math.sqrt(v.reduce((s, x) => s + x * x, 0));
+    v = v.map(x => x / norm);
+
+    for (let iter = 0; iter < iterations; iter++) {
+      // Matrix-vector multiplication
+      const newV = Array(d).fill(0);
+      for (let i = 0; i < d; i++) {
+        for (let j = 0; j < d; j++) {
+          newV[i] += cov[i][j] * v[j];
+        }
+      }
+
+      // Deflation: remove contributions from previous eigenvectors
+      for (const prevV of vectors) {
+        const dot = newV.reduce((s, x, i) => s + x * prevV[i], 0);
+        for (let i = 0; i < d; i++) {
+          newV[i] -= dot * prevV[i];
+        }
+      }
+
+      // Normalize
+      norm = Math.sqrt(newV.reduce((s, x) => s + x * x, 0));
+      v = newV.map(x => x / norm);
+    }
+
+    // Compute eigenvalue
+    const Av = Array(d).fill(0);
+    for (let i = 0; i < d; i++) {
+      for (let j = 0; j < d; j++) {
+        Av[i] += cov[i][j] * v[j];
+      }
+    }
+    const eigenvalue = v.reduce((s, x, i) => s + x * Av[i], 0);
+
+    vectors.push(v);
+    values.push(eigenvalue);
+  }
+
+  return { vectors, values };
+}
+
+function projectToPCA(
+  windows: ProteinWindow[],
+  eigenvectors: number[][],
+  mean: number[]
+): void {
+  for (const window of windows) {
+    const props = window.properties;
+    const vec = [
+      props.hydropathy - mean[0],
+      props.charge - mean[1],
+      props.aromaticity - mean[2],
+      props.flexibility - mean[3],
+      props.disorder - mean[4]
+    ];
+
+    window.projection = {
+      x: vec.reduce((s, v, i) => s + v * eigenvectors[0][i], 0),
+      y: vec.reduce((s, v, i) => s + v * eigenvectors[1][i], 0)
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Domain Detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+function detectDomains(
+  windows: ProteinWindow[],
+  minClusterSize: number = 3
+): DetectedDomain[] {
+  if (windows.length === 0) return [];
+
+  const domains: DetectedDomain[] = [];
+
+  // Simple clustering based on dominant property
+  let currentDominant: keyof PropertyVector | null = null;
+  let currentStart = 0;
+  let currentWindows: ProteinWindow[] = [];
+
+  for (let i = 0; i < windows.length; i++) {
+    const props = windows[i].properties;
+    const dominant = getDominantProperty(props);
+
+    if (dominant !== currentDominant) {
+      if (currentWindows.length >= minClusterSize && currentDominant) {
+        domains.push(createDomain(currentDominant, currentStart, currentWindows));
+      }
+      currentDominant = dominant;
+      currentStart = windows[i].start;
+      currentWindows = [windows[i]];
+    } else {
+      currentWindows.push(windows[i]);
+    }
+  }
+
+  // Final domain
+  if (currentWindows.length >= minClusterSize && currentDominant) {
+    domains.push(createDomain(currentDominant, currentStart, currentWindows));
+  }
+
+  return domains;
+}
+
+function getDominantProperty(props: PropertyVector): keyof PropertyVector {
+  const normalized = {
+    hydropathy: Math.abs(props.hydropathy) / 4.5,  // Max ~4.5
+    charge: Math.abs(props.charge) * 5,            // Scale up
+    aromaticity: props.aromaticity * 10,           // Scale up
+    flexibility: props.flexibility * 2,
+    disorder: props.disorder
+  };
+
+  let max = -Infinity;
+  let dominant: keyof PropertyVector = 'hydropathy';
+
+  for (const [key, value] of Object.entries(normalized)) {
+    if (value > max) {
+      max = value;
+      dominant = key as keyof PropertyVector;
+    }
+  }
+
+  return dominant;
+}
+
+function createDomain(
+  dominant: keyof PropertyVector,
+  start: number,
+  windows: ProteinWindow[]
+): DetectedDomain {
+  const projections = windows
+    .map(w => w.projection)
+    .filter((p): p is { x: number; y: number } => p !== undefined);
+
+  const centroid = {
+    x: projections.reduce((s, p) => s + p.x, 0) / projections.length,
+    y: projections.reduce((s, p) => s + p.y, 0) / projections.length
+  };
+
+  const domainNames: Record<keyof PropertyVector, string> = {
+    hydropathy: 'Hydrophobic core',
+    charge: 'Charged region',
+    aromaticity: 'Aromatic cluster',
+    flexibility: 'Flexible linker',
+    disorder: 'Disordered region'
+  };
+
+  return {
+    name: domainNames[dominant],
+    start,
+    end: windows[windows.length - 1].end,
+    dominantProperty: dominant,
+    centroid
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Analysis Function
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function analyzePhasePortraits(
+  phage: PhageFull,
+  genes: GeneInfo[],
+  proteinSequences: Map<string, string>,
+  windowSize: number = 30
+): PhasePortraitAnalysis {
+  // Compute trajectories for all proteins
+  const trajectories: ProteinTrajectory[] = [];
+  const allWindows: ProteinWindow[] = [];
+
+  for (const gene of genes) {
+    const sequence = proteinSequences.get(gene.name ?? '');
+    if (!sequence || sequence.length < windowSize) continue;
+
+    const windows = computeTrajectory(sequence, windowSize);
+    allWindows.push(...windows);
+
+    trajectories.push({
+      geneId: gene.name ?? `gene_${gene.start}`,
+      geneName: gene.name ?? 'Unknown',
+      product: gene.product ?? 'Hypothetical protein',
+      length: sequence.length,
+      windows,
+      domains: []  // Filled after PCA
+    });
+  }
+
+  // Perform PCA on all windows
+  if (allWindows.length > 0) {
+    const matrix = allWindows.map(w => [
+      w.properties.hydropathy,
+      w.properties.charge,
+      w.properties.aromaticity,
+      w.properties.flexibility,
+      w.properties.disorder
+    ]);
+
+    const mean = matrixMean(matrix);
+    const centered = centerMatrix(matrix, mean);
+    const cov = computeCovariance(centered);
+    const { vectors: eigenvectors, values: eigenvalues } = powerIteration(cov, 2);
+
+    // Project all trajectories
+    for (const traj of trajectories) {
+      projectToPCA(traj.windows, eigenvectors, mean);
+      traj.domains = detectDomains(traj.windows);
+    }
+
+    // Compute explained variance
+    const totalVar = eigenvalues.reduce((s, v) => s + v, 0) + 0.001;
+    const explainedVariance: [number, number] = [
+      eigenvalues[0] / totalVar,
+      eigenvalues[1] / totalVar
+    ];
+
+    // Property contributions to PCs
+    const propertyContributions: Record<keyof PropertyVector, [number, number]> = {
+      hydropathy: [eigenvectors[0][0], eigenvectors[1][0]],
+      charge: [eigenvectors[0][1], eigenvectors[1][1]],
+      aromaticity: [eigenvectors[0][2], eigenvectors[1][2]],
+      flexibility: [eigenvectors[0][3], eigenvectors[1][3]],
+      disorder: [eigenvectors[0][4], eigenvectors[1][4]]
+    };
+
+    return {
+      phageId: phage.id,
+      phageName: phage.name,
+      trajectories,
+      pcaExplainedVariance: explainedVariance,
+      propertyContributions
+    };
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    trajectories,
+    pcaExplainedVariance: [0, 0],
+    propertyContributions: {
+      hydropathy: [0, 0],
+      charge: [0, 0],
+      aromaticity: [0, 0],
+      flexibility: [0, 0],
+      disorder: [0, 0]
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Rendering Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRAILLE_BASE = 0x2800;
+const BRAILLE_DOTS = [
+  [0x01, 0x08],
+  [0x02, 0x10],
+  [0x04, 0x20],
+  [0x40, 0x80]
+];
+
+export function renderPhasePortrait(
+  trajectory: ProteinTrajectory,
+  width: number = 40,
+  height: number = 12
+): string[] {
+  const lines: string[] = [];
+
+  // Find bounds
+  const projections = trajectory.windows
+    .map(w => w.projection)
+    .filter((p): p is { x: number; y: number } => p !== undefined);
+
+  if (projections.length === 0) {
+    return ['No projection data'];
+  }
+
+  const minX = Math.min(...projections.map(p => p.x));
+  const maxX = Math.max(...projections.map(p => p.x));
+  const minY = Math.min(...projections.map(p => p.y));
+  const maxY = Math.max(...projections.map(p => p.y));
+
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+
+  // Create braille grid
+  const gridWidth = width * 2;
+  const gridHeight = height * 4;
+  const grid: boolean[][] = Array(gridHeight).fill(0).map(() => Array(gridWidth).fill(false));
+
+  // Plot trajectory
+  for (const proj of projections) {
+    const x = Math.floor(((proj.x - minX) / rangeX) * (gridWidth - 1));
+    const y = Math.floor((1 - (proj.y - minY) / rangeY) * (gridHeight - 1));
+    if (x >= 0 && x < gridWidth && y >= 0 && y < gridHeight) {
+      grid[y][x] = true;
+    }
+  }
+
+  // Convert to braille
+  for (let row = 0; row < height; row++) {
+    let line = '';
+    for (let col = 0; col < width; col++) {
+      let code = BRAILLE_BASE;
+      for (let dy = 0; dy < 4; dy++) {
+        for (let dx = 0; dx < 2; dx++) {
+          const y = row * 4 + dy;
+          const x = col * 2 + dx;
+          if (grid[y]?.[x]) {
+            code += BRAILLE_DOTS[dy][dx];
+          }
+        }
+      }
+      line += String.fromCharCode(code);
+    }
+    lines.push(line);
+  }
+
+  return lines;
+}
+
+export function renderDomainBar(
+  trajectory: ProteinTrajectory,
+  width: number = 60
+): string {
+  const bar = Array(width).fill('░');
+  const scale = width / trajectory.length;
+
+  const domainChars: Record<keyof PropertyVector, string> = {
+    hydropathy: '▓',
+    charge: '±',
+    aromaticity: '◆',
+    flexibility: '~',
+    disorder: '?'
+  };
+
+  for (const domain of trajectory.domains) {
+    const start = Math.floor(domain.start * scale);
+    const end = Math.min(width - 1, Math.floor(domain.end * scale));
+    const char = domainChars[domain.dominantProperty];
+
+    for (let i = start; i <= end; i++) {
+      bar[i] = char;
+    }
+  }
+
+  return bar.join('');
+}
+```
+
+### TUI Visualization
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Amino-Acid Property Phase Portraits                               [Shift+P] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phage: T4                  Protein: Major Capsid (gp23)   Length: 521 aa    │
+│                                                                              │
+│ ╭─ Phase Portrait (PCA) ─────────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Hydrophobic                                    Charged                 │  │
+│ │     ↑                                              ↑                   │  │
+│ │     │          ⣿⣿⣿                                                    │  │
+│ │     │       ⣿⣿⣿⣿⣿⣿⣿⣿                                                │  │
+│ │     │    ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                            │  │
+│ │     │       ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                                     │  │
+│ │     │          ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                             │  │
+│ │     │             ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                       │  │
+│ │     │                  ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                       │  │
+│ │     │                       ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿                          │  │
+│ │     │                            ⣿⣿⣿⣿⣿⣿                              │  │
+│ │     └───────────────────────────────────────────────→ PC1 (67%)        │  │
+│ │ N-term •──────────────────────────────────────────• C-term             │  │
+│ │                                                                        │  │
+│ │ PC1: Hydropathy (0.89)  Flexibility (-0.34)                           │  │
+│ │ PC2: Charge (0.76)      Disorder (0.52)                               │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Domain Map ───────────────────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ ▓▓▓▓▓▓▓▓▓▓░░░░±±±±±░░░░▓▓▓▓▓▓▓▓▓▓▓▓░░░◆◆◆◆░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ │  │
+│ │ ↑          ↑      ↑         ↑           ↑                   ↑          │  │
+│ │ Core     Linker  DNA     Core 2     Aromatic           Core 3         │  │
+│ │ domain           binding             cluster                           │  │
+│ │                                                                        │  │
+│ │ Legend: ▓ Hydrophobic  ± Charged  ◆ Aromatic  ~ Flexible  ? Disordered │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ Detected: 6 domains | Longest: Core 3 (145 aa) | Most variable: Linker     │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [←/→] Navigate proteins  [C] Compare  [D] Jump to domain  [Esc] Close       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Functional insight without structure**: Even without 3D structures, property trajectories reveal domain boundaries and functional regions
+
+2. **Evolution visualization**: Comparing trajectories between homologs shows exactly where proteins have diverged in composition, suggesting functional changes
+
+3. **Engineering guidance**: Identifying hydrophobic cores vs flexible linkers helps with rational protein design and domain swapping
+
+4. **Educational value**: Connects amino acid chemistry (hydropathy, charge) to protein organization in an intuitive visual way
+
+5. **Disorder detection**: Highlights intrinsically disordered regions that are often functionally important but missed by structure prediction
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Beautifully connects amino acid properties to protein organization
+- **Novelty**: 8/10 - Trajectory-based property visualization is uncommon in TUIs
+- **Wow Factor**: 8/10 - Braille scatter plots with domain mapping are visually striking
 
 ---
 
@@ -18418,26 +19723,563 @@ TS for property calc + PCA; Rust+WASM UMAP optional; SQLite cache for embeddings
 ### Concept
 Score mutations against coarse structural constraints (lattice geometry, contact propensities) to flag mechanically fragile regions and assembly cliffs.
 
-### How to Build
-- **Model source**: Use built-in coarse models (renderer-3d) plus optional PDB-derived contact maps.
-- **Constraint scoring**: Rust+WASM coarse-grain contact penalty + lattice geometry checks; per-residue “fragility” scores.
-- **Mutation scanning**: Single AA substitutions scored via protein LM (ESM) delta + structural penalty blend.
-- **Outputs**: Fragility heatmap per structural protein; “do not touch” segments.
+### Extended Concept
 
-### Why It’s Good
-Guides engineering (stability vs escape); surfaces structurally sensitive regions.
+Phage capsids and tails are highly symmetrical molecular machines where individual protein subunits must fit together precisely. This feature integrates **structural constraints** into mutation analysis, helping researchers understand:
 
-### Novelty
-Medium—structure-aware constraint scoring inline with TUI models is uncommon.
+1. **Mechanical fragility**: Which positions, if mutated, would destabilize the structure due to disrupted contacts or steric clashes
 
-### Pedagogical Value
-Shows how structure limits sequence variation; links mutational impact to assembly physics.
+2. **Assembly cliffs**: Positions where even small changes prevent proper oligomerization or cause misfolding
 
-### Wow / TUI Visualization
-Capsid/tail ASCII view with fragility heatmap overlay; hover a residue to see Δstability; “shake test” animation for fragile builds.
+3. **Evolvability map**: Regions that can tolerate variation vs "frozen" core residues that evolution cannot touch
 
-### Implementation Stack
-Rust+WASM scoring; optional ESM offline scoring cached; TS/Ink overlays on existing 3D ASCII renderer; SQLite cache for per-residue penalties.
+4. **Engineering safe zones**: Positions suitable for epitope grafting, affinity tags, or cargo attachment
+
+### Mathematical Foundations
+
+**Contact Penalty Score**:
+
+```
+For mutation at position i:
+
+C_penalty(i) = Σ_j∈contacts(i) |ΔContact_affinity(aa_old → aa_new)|
+
+where contacts(j) are all residues within 8Å in the assembled structure
+```
+
+**Lattice Geometry Constraint**:
+
+```
+For icosahedral capsids (T-number geometry):
+
+Symmetry_violation = |position_new - position_ideal| / tolerance
+
+where position_ideal comes from the T-number lattice model
+```
+
+**Structural Fragility Index**:
+
+```
+F(i) = α × C_penalty(i) + β × Burial(i) + γ × Conservation(i)
+
+where:
+- Burial(i): Fraction of residue buried (0 = surface, 1 = core)
+- Conservation(i): Evolutionary conservation from alignment
+- α, β, γ: Weights (default 0.4, 0.3, 0.3)
+```
+
+**Delta Stability Estimation**:
+
+```
+ΔΔG(mutation) ≈ BLOSUM_penalty × contact_weight + volume_change × packing_penalty
+
+Simplified approximation without full molecular dynamics
+```
+
+### TypeScript Implementation
+
+```typescript
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ContactMapEntry {
+  residueA: number;
+  residueB: number;
+  distance: number;
+  contactType: 'hydrophobic' | 'hbond' | 'ionic' | 'aromatic';
+}
+
+interface ResidueConstraint {
+  position: number;
+  aminoAcid: string;
+  burial: number;           // 0 = surface, 1 = core
+  contactCount: number;
+  fragility: number;        // 0 = robust, 1 = fragile
+  conservation: number;     // 0 = variable, 1 = conserved
+  inSymmetryContact: boolean;
+  inAssemblyInterface: boolean;
+}
+
+interface MutationEffect {
+  position: number;
+  wildtype: string;
+  mutant: string;
+  deltaStability: number;   // Negative = destabilizing
+  contactPenalty: number;
+  volumeChange: number;
+  allowed: boolean;
+  warning?: string;
+}
+
+interface StructuralAnalysis {
+  proteinName: string;
+  geneInfo: GeneInfo;
+  length: number;
+  constraints: ResidueConstraint[];
+  criticalPositions: number[];
+  safeZones: { start: number; end: number; description: string }[];
+  overallFragility: number;
+}
+
+interface CapsidModel {
+  tNumber: number;
+  symmetry: 'icosahedral' | 'prolate' | 'other';
+  subunitCount: number;
+  contactMap: ContactMapEntry[];
+  burialMap: Map<number, number>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Amino Acid Properties for Constraint Scoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+const VOLUME: Record<string, number> = {
+  'A': 88.6, 'R': 173.4, 'N': 114.1, 'D': 111.1, 'C': 108.5,
+  'Q': 143.8, 'E': 138.4, 'G': 60.1, 'H': 153.2, 'I': 166.7,
+  'L': 166.7, 'K': 168.6, 'M': 162.9, 'F': 189.9, 'P': 112.7,
+  'S': 89.0, 'T': 116.1, 'W': 227.8, 'Y': 193.6, 'V': 140.0
+};
+
+const HYDROPHOBICITY: Record<string, number> = {
+  'A': 0.62, 'R': -2.53, 'N': -0.78, 'D': -0.90, 'C': 0.29,
+  'Q': -0.85, 'E': -0.74, 'G': 0.48, 'H': -0.40, 'I': 1.38,
+  'L': 1.06, 'K': -1.50, 'M': 0.64, 'F': 1.19, 'P': 0.12,
+  'S': -0.18, 'T': -0.05, 'W': 0.81, 'Y': 0.26, 'V': 1.08
+};
+
+const CHARGE: Record<string, number> = {
+  'D': -1, 'E': -1, 'K': 1, 'R': 1, 'H': 0.5
+};
+
+// Simplified BLOSUM62-like penalty matrix
+function getBlosum62Penalty(aa1: string, aa2: string): number {
+  if (aa1 === aa2) return 0;
+
+  // Similar amino acids
+  const similar = new Map([
+    ['F', new Set(['Y', 'W'])],
+    ['Y', new Set(['F', 'W'])],
+    ['W', new Set(['F', 'Y'])],
+    ['I', new Set(['L', 'V', 'M'])],
+    ['L', new Set(['I', 'V', 'M'])],
+    ['V', new Set(['I', 'L', 'M'])],
+    ['M', new Set(['I', 'L', 'V'])],
+    ['K', new Set(['R'])],
+    ['R', new Set(['K'])],
+    ['D', new Set(['E', 'N'])],
+    ['E', new Set(['D', 'Q'])],
+    ['N', new Set(['D', 'Q'])],
+    ['Q', new Set(['E', 'N'])],
+    ['S', new Set(['T'])],
+    ['T', new Set(['S'])]
+  ]);
+
+  if (similar.get(aa1)?.has(aa2)) return 0.5;
+
+  // Charge change penalty
+  const c1 = CHARGE[aa1] ?? 0;
+  const c2 = CHARGE[aa2] ?? 0;
+  if (c1 !== 0 && c2 !== 0 && c1 * c2 < 0) return 2.0;  // Charge reversal
+
+  // Hydrophobicity change
+  const h1 = HYDROPHOBICITY[aa1] ?? 0;
+  const h2 = HYDROPHOBICITY[aa2] ?? 0;
+  if (Math.abs(h1 - h2) > 1.5) return 1.5;
+
+  // Proline in/out penalty
+  if (aa1 === 'P' || aa2 === 'P') return 1.5;
+
+  // Glycine change (flexibility)
+  if (aa1 === 'G' || aa2 === 'G') return 1.0;
+
+  return 1.0;  // Default moderate penalty
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contact Map Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateCoarseContactMap(
+  sequence: string,
+  structureType: 'capsid' | 'tail' | 'generic'
+): ContactMapEntry[] {
+  const contacts: ContactMapEntry[] = [];
+  const len = sequence.length;
+
+  // Simplified contact prediction based on structure type
+  // Real implementation would use PDB data or contact prediction
+
+  // Local contacts (helices, sheets)
+  for (let i = 0; i < len - 4; i++) {
+    // Alpha helix i, i+4 contacts
+    contacts.push({
+      residueA: i,
+      residueB: i + 4,
+      distance: 5.4,
+      contactType: 'hbond'
+    });
+  }
+
+  // For capsids, add symmetry interface contacts
+  if (structureType === 'capsid') {
+    // Approximate 5-fold and 3-fold interface contacts
+    // These would normally come from the icosahedral model
+    for (let i = 0; i < Math.min(50, len); i++) {
+      if (i % 10 < 3) {
+        contacts.push({
+          residueA: i,
+          residueB: (i + len / 3) % len,
+          distance: 6.0,
+          contactType: 'hydrophobic'
+        });
+      }
+    }
+  }
+
+  return contacts;
+}
+
+function computeBurial(
+  position: number,
+  contacts: ContactMapEntry[]
+): number {
+  const contactCount = contacts.filter(
+    c => c.residueA === position || c.residueB === position
+  ).length;
+
+  // Normalize: 0-2 contacts = surface, 8+ = buried
+  return Math.min(1, contactCount / 8);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fragility Scoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeFragility(
+  position: number,
+  sequence: string,
+  contacts: ContactMapEntry[],
+  conservation: number
+): number {
+  const aa = sequence[position];
+  const burial = computeBurial(position, contacts);
+
+  // Contact count contribution
+  const positionContacts = contacts.filter(
+    c => c.residueA === position || c.residueB === position
+  );
+
+  let contactScore = 0;
+  for (const contact of positionContacts) {
+    if (contact.contactType === 'ionic') contactScore += 0.3;
+    if (contact.contactType === 'hbond') contactScore += 0.2;
+    if (contact.contactType === 'hydrophobic' && burial > 0.5) contactScore += 0.25;
+  }
+  contactScore = Math.min(1, contactScore);
+
+  // Combine factors
+  const fragility =
+    0.3 * burial +
+    0.3 * contactScore +
+    0.3 * conservation +
+    0.1 * (aa === 'G' || aa === 'P' ? 0.5 : 0);  // Special residues
+
+  return Math.min(1, fragility);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Mutation Effect Prediction
+// ─────────────────────────────────────────────────────────────────────────────
+
+function predictMutationEffect(
+  position: number,
+  wildtype: string,
+  mutant: string,
+  constraint: ResidueConstraint,
+  contacts: ContactMapEntry[]
+): MutationEffect {
+  // BLOSUM penalty
+  const blosum = getBlosum62Penalty(wildtype, mutant);
+
+  // Volume change
+  const volChange = Math.abs(
+    (VOLUME[mutant] ?? 120) - (VOLUME[wildtype] ?? 120)
+  ) / 100;
+
+  // Contact penalty
+  let contactPenalty = 0;
+  const posContacts = contacts.filter(
+    c => c.residueA === position || c.residueB === position
+  );
+
+  for (const contact of posContacts) {
+    // Check if mutation disrupts this contact
+    if (contact.contactType === 'hydrophobic') {
+      const hWt = HYDROPHOBICITY[wildtype] ?? 0;
+      const hMt = HYDROPHOBICITY[mutant] ?? 0;
+      if (hWt > 0.5 && hMt < -0.5) contactPenalty += 0.5;
+    }
+    if (contact.contactType === 'ionic') {
+      const cWt = CHARGE[wildtype] ?? 0;
+      const cMt = CHARGE[mutant] ?? 0;
+      if (cWt !== 0 && cMt === 0) contactPenalty += 0.8;
+    }
+  }
+
+  // Overall stability change (negative = bad)
+  const deltaStability = -(
+    blosum * 0.4 +
+    volChange * constraint.burial * 0.3 +
+    contactPenalty * 0.3
+  );
+
+  // Determine if mutation is allowed
+  const allowed = deltaStability > -1.5 && !constraint.inAssemblyInterface;
+
+  let warning: string | undefined;
+  if (constraint.inAssemblyInterface) {
+    warning = 'Position in assembly interface';
+  } else if (constraint.inSymmetryContact) {
+    warning = 'Position involved in symmetry contacts';
+  } else if (deltaStability < -2) {
+    warning = 'Severely destabilizing mutation';
+  }
+
+  return {
+    position,
+    wildtype,
+    mutant,
+    deltaStability,
+    contactPenalty,
+    volumeChange: volChange,
+    allowed,
+    warning
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Analysis Function
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function analyzeStructuralConstraints(
+  phage: PhageFull,
+  gene: GeneInfo,
+  proteinSequence: string,
+  structureType: 'capsid' | 'tail' | 'generic' = 'generic',
+  conservationScores?: number[]
+): StructuralAnalysis {
+  const contacts = generateCoarseContactMap(proteinSequence, structureType);
+  const constraints: ResidueConstraint[] = [];
+
+  for (let i = 0; i < proteinSequence.length; i++) {
+    const conservation = conservationScores?.[i] ?? 0.5;
+    const burial = computeBurial(i, contacts);
+    const fragility = computeFragility(i, proteinSequence, contacts, conservation);
+
+    const posContacts = contacts.filter(
+      c => c.residueA === i || c.residueB === i
+    );
+
+    constraints.push({
+      position: i,
+      aminoAcid: proteinSequence[i],
+      burial,
+      contactCount: posContacts.length,
+      fragility,
+      conservation,
+      inSymmetryContact: structureType === 'capsid' && i < 50,
+      inAssemblyInterface: posContacts.some(c =>
+        Math.abs(c.residueA - c.residueB) > proteinSequence.length / 3
+      )
+    });
+  }
+
+  // Identify critical positions (top 20% fragility)
+  const sortedByFragility = [...constraints].sort((a, b) => b.fragility - a.fragility);
+  const criticalThreshold = sortedByFragility[Math.floor(constraints.length * 0.2)]?.fragility ?? 0.8;
+  const criticalPositions = constraints
+    .filter(c => c.fragility >= criticalThreshold)
+    .map(c => c.position);
+
+  // Find safe zones (runs of low fragility)
+  const safeZones: { start: number; end: number; description: string }[] = [];
+  let safeStart = -1;
+
+  for (let i = 0; i < constraints.length; i++) {
+    if (constraints[i].fragility < 0.3) {
+      if (safeStart === -1) safeStart = i;
+    } else {
+      if (safeStart !== -1 && i - safeStart >= 5) {
+        safeZones.push({
+          start: safeStart,
+          end: i - 1,
+          description: 'Surface-exposed, low-conservation region'
+        });
+      }
+      safeStart = -1;
+    }
+  }
+
+  const overallFragility = constraints.reduce((s, c) => s + c.fragility, 0) / constraints.length;
+
+  return {
+    proteinName: gene.product ?? gene.name ?? 'Unknown',
+    geneInfo: gene,
+    length: proteinSequence.length,
+    constraints,
+    criticalPositions,
+    safeZones,
+    overallFragility
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Rendering
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function renderFragilityHeatmap(
+  analysis: StructuralAnalysis,
+  width: number = 60
+): string[] {
+  const lines: string[] = [];
+  const scale = width / analysis.length;
+
+  // Fragility gradient characters
+  const gradient = ' ░▒▓█';
+
+  // Build heatmap row
+  let heatmap = '';
+  for (let col = 0; col < width; col++) {
+    const pos = Math.floor(col / scale);
+    const fragility = analysis.constraints[pos]?.fragility ?? 0;
+    const idx = Math.min(gradient.length - 1, Math.floor(fragility * gradient.length));
+    heatmap += gradient[idx];
+  }
+
+  lines.push(`Fragility: ${heatmap}`);
+
+  // Critical positions markers
+  let markers = Array(width).fill(' ');
+  for (const pos of analysis.criticalPositions) {
+    const col = Math.floor(pos * scale);
+    if (col < width) markers[col] = '▼';
+  }
+  lines.push(`Critical:  ${markers.join('')}`);
+
+  // Safe zones
+  let safeBar = Array(width).fill('─');
+  for (const zone of analysis.safeZones) {
+    const start = Math.floor(zone.start * scale);
+    const end = Math.min(width - 1, Math.floor(zone.end * scale));
+    for (let i = start; i <= end; i++) {
+      safeBar[i] = '═';
+    }
+  }
+  lines.push(`Safe:      ${safeBar.join('')}`);
+
+  return lines;
+}
+
+export function renderMutationTable(
+  effects: MutationEffect[]
+): string[] {
+  const lines: string[] = [];
+
+  lines.push('┌─────┬────────┬──────────┬─────────┐');
+  lines.push('│ Pos │ Change │ ΔStab    │ Allowed │');
+  lines.push('├─────┼────────┼──────────┼─────────┤');
+
+  for (const effect of effects.slice(0, 10)) {
+    const pos = effect.position.toString().padStart(4);
+    const change = `${effect.wildtype}→${effect.mutant}`.padEnd(6);
+    const stab = effect.deltaStability.toFixed(2).padStart(6);
+    const allowed = effect.allowed ? '  ✓  ' : '  ✗  ';
+    lines.push(`│${pos} │ ${change} │ ${stab}   │${allowed}│`);
+  }
+
+  lines.push('└─────┴────────┴──────────┴─────────┘');
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Structure-Informed Capsid/Tail Constraint Scanner                 [Shift+C] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phage: T4          Protein: Major Capsid (gp23)        T-number: 13         │
+│ Overall Fragility: 0.62 (Moderate)    Critical Positions: 47/521            │
+│                                                                              │
+│ ╭─ Fragility Heatmap ────────────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Fragility: ▓▓▓▓██░░░░▒▒▓▓▓▓██████░░░░░░▒▒▒▓▓▓▓▓▓████░░░░░▒▒▒▒▓▓▓▓████ │  │
+│ │ Critical:      ▼▼               ▼▼▼▼                  ▼▼        ▼▼▼▼▼  │  │
+│ │ Safe:      ────════════────────────────════════════────────════─────── │  │
+│ │                                                                        │  │
+│ │ ░ Robust  ▒ Low risk  ▓ Moderate  █ Fragile (avoid mutations)         │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ 3D Capsid View with Fragility Overlay ────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │                          ▓▓▓▓▓▓                                       │  │
+│ │                      ▓▓▓▓████████▓▓▓▓                                 │  │
+│ │                   ▓▓██░░░░░░░░░░░░██▓▓                                │  │
+│ │                 ▓██░░░░████████░░░░░░██▓                              │  │
+│ │               ▓██░░░░██▓▓▓▓▓▓▓▓██░░░░░░██▓                            │  │
+│ │              ▓█░░░░██▓▓        ▓▓██░░░░░█▓                            │  │
+│ │              ▓█░░██▓▓            ▓▓██░░░█▓   ← Cursor: Pos 156       │  │
+│ │              ▓█░░██▓    5-fold    ▓██░░░█▓      AA: Gly (G)          │  │
+│ │              ▓█░░░██▓▓  vertex  ▓▓██░░░░█▓      Fragility: 0.89      │  │
+│ │               ▓██░░░░██▓▓▓▓▓▓██░░░░░░██▓       Burial: 0.12         │  │
+│ │                 ▓██░░░░████████░░░░░██▓         Conservation: 0.95   │  │
+│ │                   ▓▓██░░░░░░░░░░██▓▓           Interface: YES        │  │
+│ │                      ▓▓▓▓████████▓▓▓▓                                 │  │
+│ │                          ▓▓▓▓▓▓                                       │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Mutation Analysis at Position 156 ────────────────────────────────────╮  │
+│ │ ┌─────┬────────┬──────────┬─────────┬───────────────────────────────┐ │  │
+│ │ │ Pos │ Change │ ΔStab    │ Allowed │ Warning                       │ │  │
+│ │ ├─────┼────────┼──────────┼─────────┼───────────────────────────────┤ │  │
+│ │ │ 156 │ G→A    │  -0.82   │   ✗    │ Position in assembly interface │ │  │
+│ │ │ 156 │ G→S    │  -0.65   │   ✗    │ Position in assembly interface │ │  │
+│ │ │ 156 │ G→P    │  -2.10   │   ✗    │ Severely destabilizing         │ │  │
+│ │ └─────┴────────┴──────────┴─────────┴───────────────────────────────┘ │  │
+│ │                                                                        │  │
+│ │ ⚠ This position is at a 5-fold symmetry interface. Mutations here    │  │
+│ │   will likely prevent proper capsid assembly.                         │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ Safe zones for engineering: 78-95, 201-218, 345-380 (surface loops)         │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [←/→] Navigate  [M] Scan mutations  [S] Safe zones  [3] Toggle 3D  [Esc]    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Engineering guidance**: Before modifying a phage for therapy or biotechnology, knowing which positions are safe to change prevents wasted effort
+
+2. **Evolution understanding**: Seeing why certain capsid residues are "frozen" connects evolutionary constraints to structural biology
+
+3. **Epitope design**: Surface-exposed, low-fragility regions are ideal for displaying peptides or antibody epitopes
+
+4. **Assembly biology education**: Visualizing symmetry interfaces teaches how T-number geometry constrains phage architecture
+
+5. **Escape prediction**: Understanding structural constraints helps predict which antibody escape mutations are viable
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Beautifully connects structure, evolution, and engineering
+- **Novelty**: 7/10 - Structure-guided mutation scanning exists but rarely in TUI context
+- **Wow Factor**: 8/10 - 3D capsid with fragility overlay is visually compelling
 
 ---
 
@@ -18446,26 +20288,437 @@ Rust+WASM scoring; optional ESM offline scoring cached; TS/Ink overlays on exist
 ### Concept
 Integrate host CRISPR spacer hits, predict anti-CRISPR (Acr) candidates, and visualize the arms race along the genome.
 
-### How to Build
-- **Spacer mapping**: Minimap2/mashmap offline to build spacer-hit table; in-app filtering by host.
-- **Acr detection**: HMMs for known Acr families; small ORF heuristics; embedding similarity (ESM small) for novel Acr-like hits; run in TS or Rust+WASM for batch scoring.
-- **Pressure score**: Combine spacer density, PAM proximity, and coding strand; compute “pressure index” per window.
-- **UI links**: Spacer hits → nearby Acr predictions; suggest escape mutations.
+### Extended Concept
 
-### Why It’s Good
-Turns CRISPR data into actionable escape/pressure interpretation; ties defense vs counter-defense.
+CRISPR-Cas systems represent the adaptive immune system of bacteria, targeting phages through sequence-specific recognition. This feature visualizes the ongoing **evolutionary arms race** between phage and host:
 
-### Novelty
-High—combined spacer pressure + Acr prediction ribbon in a TUI is rare.
+1. **CRISPR pressure mapping**: Identifies regions of the phage genome that are targeted by host CRISPR spacers, indicating historical infection and selection pressure
 
-### Pedagogical Value
-Explains spacer targeting, PAMs, Acrs, and evolutionary pressure.
+2. **Anti-CRISPR (Acr) prediction**: Finds genes that may encode anti-CRISPR proteins, which phages use to evade host immunity
 
-### Wow / TUI Visualization
-Pressure bar under genome; spacer hits as tick marks; Acr candidates glow; pressing `c` centers on strongest Acr-vs-spacer clash.
+3. **Escape potential**: Highlights positions where mutations could evade CRISPR targeting while maintaining protein function
 
-### Implementation Stack
-Offline spacer DB (minimap2); Rust+WASM scoring for windowed pressure; TS/Ink visualization; SQLite for hits and pressure tiles.
+4. **Arms race dynamics**: Shows how targeting and counter-measures are distributed, revealing evolutionary hotspots
+
+### Mathematical Foundations
+
+**CRISPR Pressure Index**:
+
+```
+P(window) = Σ_spacers [ match_score × PAM_score × strand_weight ]
+
+where:
+- match_score: Sequence identity of spacer match (0-1)
+- PAM_score: 1.0 if valid PAM present, 0.3 otherwise
+- strand_weight: 1.0 for coding strand, 0.7 for template strand
+```
+
+**Acr Candidate Score**:
+
+```
+Acr_score = w1 × HMM_hit + w2 × size_fit + w3 × neighborhood + w4 × disorder
+
+where:
+- HMM_hit: Match to known Acr family HMMs
+- size_fit: Penalty for proteins outside 50-200 aa range
+- neighborhood: Proximity to other small genes (Acr operons)
+- disorder: Fraction of intrinsically disordered regions
+```
+
+**Escape Mutation Priority**:
+
+```
+E(position) = CRISPR_coverage × (1 - conservation) × synonymous_option
+
+Prioritize positions that are: heavily targeted, variable, and can mutate synonymously
+```
+
+### TypeScript Implementation
+
+```typescript
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SpacerHit {
+  spacerId: string;
+  hostOrganism: string;
+  crisprType: 'I' | 'II' | 'III' | 'V' | 'VI' | 'unknown';
+  genomeStart: number;
+  genomeEnd: number;
+  matchIdentity: number;
+  strand: '+' | '-';
+  pamPresent: boolean;
+  pamSequence?: string;
+}
+
+interface AcrCandidate {
+  gene: GeneInfo;
+  acrScore: number;
+  predictedFamily?: string;
+  hmmHit: boolean;
+  proteinLength: number;
+  disorder: number;
+  nearbySpacerHits: number;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+interface CRISPRPressureWindow {
+  start: number;
+  end: number;
+  pressureIndex: number;
+  spacerCount: number;
+  dominantCrisprType: string;
+}
+
+interface EscapeMutation {
+  position: number;
+  currentBase: string;
+  suggestedBase: string;
+  escapePotential: number;
+  synonymous: boolean;
+  affectedSpacers: string[];
+}
+
+interface CRISPRAnalysis {
+  phageId: number;
+  phageName: string;
+  spacerHits: SpacerHit[];
+  acrCandidates: AcrCandidate[];
+  pressureWindows: CRISPRPressureWindow[];
+  escapeMutations: EscapeMutation[];
+  summary: {
+    totalSpacerHits: number;
+    targetedFraction: number;
+    acrCandidateCount: number;
+    hotspotRegions: { start: number; end: number }[];
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PAM Recognition
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PAM_PATTERNS: Record<string, { pattern: RegExp; position: 'upstream' | 'downstream' }> = {
+  'Cas9_NGG': { pattern: /[ACGT]GG/, position: 'downstream' },
+  'Cas9_NNGRRT': { pattern: /[ACGT]{2}G[AG][AG]T/, position: 'downstream' },
+  'Cas12_TTTV': { pattern: /TTT[ACG]/, position: 'upstream' },
+  'Cas13_PFS': { pattern: /[ACG]/, position: 'downstream' }
+};
+
+function checkPAM(
+  sequence: string,
+  matchStart: number,
+  matchEnd: number,
+  crisprType: string
+): { present: boolean; sequence?: string } {
+  // Check for common PAM sequences based on CRISPR type
+  const pamConfig = crisprType === 'II' ? PAM_PATTERNS['Cas9_NGG'] :
+                    crisprType === 'V' ? PAM_PATTERNS['Cas12_TTTV'] :
+                    PAM_PATTERNS['Cas9_NGG'];
+
+  const pamStart = pamConfig.position === 'downstream' ? matchEnd : matchStart - 4;
+  const pamEnd = pamConfig.position === 'downstream' ? matchEnd + 4 : matchStart;
+
+  const pamRegion = sequence.substring(Math.max(0, pamStart), Math.min(sequence.length, pamEnd));
+
+  if (pamConfig.pattern.test(pamRegion)) {
+    return { present: true, sequence: pamRegion };
+  }
+
+  return { present: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Acr Prediction
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACR_HMM_PATTERNS = [
+  { family: 'AcrIIA', pattern: /^M.{30,60}[DE].{5,15}[KR].{20,40}$/ },
+  { family: 'AcrIIC', pattern: /^M.{40,80}C.{10,20}H.{30,50}$/ },
+  { family: 'AcrIF', pattern: /^M.{50,100}[WF].{20,40}[DE]{2}/ }
+];
+
+function predictAcrScore(
+  gene: GeneInfo,
+  proteinSequence: string,
+  spacerHits: SpacerHit[]
+): AcrCandidate {
+  const length = proteinSequence.length;
+
+  // Size score (Acrs are typically 50-200 aa)
+  const sizeScore = length >= 50 && length <= 200 ? 1.0 :
+                    length >= 30 && length <= 300 ? 0.5 : 0.1;
+
+  // HMM-like pattern matching (simplified)
+  let hmmHit = false;
+  let predictedFamily: string | undefined;
+
+  for (const hmm of ACR_HMM_PATTERNS) {
+    if (hmm.pattern.test(proteinSequence)) {
+      hmmHit = true;
+      predictedFamily = hmm.family;
+      break;
+    }
+  }
+
+  // Disorder estimation (simplified: high charged + low hydrophobic)
+  let charged = 0;
+  for (const aa of proteinSequence) {
+    if ('DEKR'.includes(aa)) charged++;
+  }
+  const disorder = Math.min(1, charged / length * 3);
+
+  // Nearby spacer hits
+  const nearbySpacerHits = spacerHits.filter(h =>
+    Math.abs(h.genomeStart - gene.start) < 5000 ||
+    Math.abs(h.genomeEnd - gene.end) < 5000
+  ).length;
+
+  // Combined score
+  const acrScore =
+    (hmmHit ? 0.5 : 0) +
+    sizeScore * 0.2 +
+    disorder * 0.15 +
+    Math.min(0.15, nearbySpacerHits * 0.03);
+
+  const confidence: 'high' | 'medium' | 'low' =
+    acrScore > 0.6 ? 'high' :
+    acrScore > 0.35 ? 'medium' : 'low';
+
+  return {
+    gene,
+    acrScore,
+    predictedFamily,
+    hmmHit,
+    proteinLength: length,
+    disorder,
+    nearbySpacerHits,
+    confidence
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pressure Window Computation
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computePressureWindows(
+  spacerHits: SpacerHit[],
+  genomeLength: number,
+  windowSize: number = 1000
+): CRISPRPressureWindow[] {
+  const windows: CRISPRPressureWindow[] = [];
+
+  for (let start = 0; start < genomeLength; start += windowSize) {
+    const end = Math.min(start + windowSize, genomeLength);
+
+    const windowHits = spacerHits.filter(h =>
+      h.genomeStart < end && h.genomeEnd > start
+    );
+
+    let pressureIndex = 0;
+    const typeCount = new Map<string, number>();
+
+    for (const hit of windowHits) {
+      const pamWeight = hit.pamPresent ? 1.0 : 0.3;
+      const strandWeight = hit.strand === '+' ? 1.0 : 0.7;
+      pressureIndex += hit.matchIdentity * pamWeight * strandWeight;
+
+      typeCount.set(hit.crisprType, (typeCount.get(hit.crisprType) ?? 0) + 1);
+    }
+
+    let dominantType = 'unknown';
+    let maxCount = 0;
+    for (const [type, count] of typeCount) {
+      if (count > maxCount) {
+        maxCount = count;
+        dominantType = type;
+      }
+    }
+
+    windows.push({
+      start,
+      end,
+      pressureIndex,
+      spacerCount: windowHits.length,
+      dominantCrisprType: dominantType
+    });
+  }
+
+  return windows;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function analyzeCRISPRPressure(
+  phage: PhageFull,
+  sequence: string,
+  genes: GeneInfo[],
+  spacerHits: SpacerHit[],
+  proteinSequences: Map<string, string>
+): CRISPRAnalysis {
+  // Enhance spacer hits with PAM info
+  for (const hit of spacerHits) {
+    const pam = checkPAM(sequence, hit.genomeStart, hit.genomeEnd, hit.crisprType);
+    hit.pamPresent = pam.present;
+    hit.pamSequence = pam.sequence;
+  }
+
+  // Compute pressure windows
+  const pressureWindows = computePressureWindows(spacerHits, sequence.length);
+
+  // Find Acr candidates
+  const acrCandidates: AcrCandidate[] = [];
+  for (const gene of genes) {
+    const protSeq = proteinSequences.get(gene.name ?? '');
+    if (protSeq && protSeq.length >= 30 && protSeq.length <= 400) {
+      const candidate = predictAcrScore(gene, protSeq, spacerHits);
+      if (candidate.acrScore > 0.2) {
+        acrCandidates.push(candidate);
+      }
+    }
+  }
+
+  // Sort by score
+  acrCandidates.sort((a, b) => b.acrScore - a.acrScore);
+
+  // Identify hotspot regions
+  const hotspotThreshold = Math.max(...pressureWindows.map(w => w.pressureIndex)) * 0.7;
+  const hotspotRegions = pressureWindows
+    .filter(w => w.pressureIndex >= hotspotThreshold)
+    .map(w => ({ start: w.start, end: w.end }));
+
+  // Calculate targeted fraction
+  const targetedBases = new Set<number>();
+  for (const hit of spacerHits) {
+    for (let i = hit.genomeStart; i < hit.genomeEnd; i++) {
+      targetedBases.add(i);
+    }
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    spacerHits,
+    acrCandidates,
+    pressureWindows,
+    escapeMutations: [],  // Would require more detailed analysis
+    summary: {
+      totalSpacerHits: spacerHits.length,
+      targetedFraction: targetedBases.size / sequence.length,
+      acrCandidateCount: acrCandidates.filter(a => a.confidence !== 'low').length,
+      hotspotRegions
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Rendering
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function renderCRISPRPressureBar(
+  analysis: CRISPRAnalysis,
+  width: number = 60
+): string[] {
+  const lines: string[] = [];
+  const maxPressure = Math.max(...analysis.pressureWindows.map(w => w.pressureIndex), 1);
+
+  const gradient = ' ░▒▓█';
+  let pressureBar = '';
+
+  for (let i = 0; i < width; i++) {
+    const windowIdx = Math.floor(i * analysis.pressureWindows.length / width);
+    const pressure = analysis.pressureWindows[windowIdx]?.pressureIndex ?? 0;
+    const normalized = pressure / maxPressure;
+    const charIdx = Math.min(gradient.length - 1, Math.floor(normalized * gradient.length));
+    pressureBar += gradient[charIdx];
+  }
+
+  lines.push(`CRISPR Pressure: ${pressureBar}`);
+
+  // Acr candidate markers
+  const acrMarkers = Array(width).fill(' ');
+  for (const acr of analysis.acrCandidates.filter(a => a.confidence === 'high')) {
+    const pos = Math.floor(acr.gene.start * width / (analysis.pressureWindows.length * 1000));
+    if (pos >= 0 && pos < width) acrMarkers[pos] = '★';
+  }
+  lines.push(`Acr Candidates:  ${acrMarkers.join('')}`);
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ CRISPR Pressure & Anti-CRISPR Landscape                          [Shift+R] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phage: Lambda                Genome: 48,502 bp                              │
+│ CRISPR Hits: 23 spacers      Targeted: 4.2%        Acr Candidates: 2        │
+│                                                                              │
+│ ╭─ CRISPR Pressure Map ──────────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Pressure:  ░░░░▒▒▓▓████▓▓░░░░░░░▒▒▓▓▓▓██████▓▓▒▒░░░░░░▒▒▒▒▓▓▓▓▓▓████░░ │  │
+│ │ Spacers:   ·  · |||| ·  ·    ·· ||||||  · ··    ·   ···· ||||||| · │  │
+│ │ Acr:           ★                                           ★       │  │
+│ │                                                                        │  │
+│ │ Legend: ░ Low pressure  █ High pressure  | Spacer hit  ★ Acr gene    │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Selected Hotspot: 15,234 - 18,456 ────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ ┌─ Spacer Hits (8 total) ────────────────────────────────────────────┐ │  │
+│ │ │ Host             Type   Match   PAM     Position                   │ │  │
+│ │ │ E. coli K-12     II     95%     NGG ✓   15,234-15,266             │ │  │
+│ │ │ E. coli K-12     II     92%     NGG ✓   15,890-15,922             │ │  │
+│ │ │ E. coli BL21     I-E    88%     AAG ✓   16,105-16,137             │ │  │
+│ │ │ Salmonella       II     91%     NGG ✓   17,234-17,266             │ │  │
+│ │ └────────────────────────────────────────────────────────────────────┘ │  │
+│ │                                                                        │  │
+│ │ ⚠ High targeting pressure from multiple E. coli strains              │  │
+│ │   Genes in region: J (tail fiber), K (recombination)                  │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ ╭─ Anti-CRISPR Candidates ───────────────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Gene     Position      Length   Family      Score   Confidence        │  │
+│ │ orf23    12,456        87 aa    AcrIIA4     0.78    ★★★ HIGH          │  │
+│ │ orf47    34,123        124 aa   unknown     0.45    ★★☆ MEDIUM        │  │
+│ │                                                                        │  │
+│ │ orf23 is adjacent to spacer hotspot - possible counter-defense        │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [←/→] Navigate hotspots  [A] View Acr  [E] Escape mutations  [Esc] Close    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Host range insights**: Spacer patterns reveal which hosts have encountered this phage and developed immunity
+
+2. **Therapeutic design**: Understanding CRISPR pressure helps engineer phages that evade host defenses for therapy
+
+3. **Counter-defense discovery**: Acr predictions identify genes that might be engineered into other phages or repurposed
+
+4. **Evolutionary education**: Visualizing the arms race teaches co-evolution between phage and host
+
+5. **Escape engineering**: Identifying escape mutations guides rational design of CRISPR-resistant phages
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Teaches CRISPR biology, PAMs, and evolutionary arms races
+- **Novelty**: 9/10 - Combined pressure + Acr visualization in TUI is rare
+- **Wow Factor**: 8/10 - Arms race visualization is conceptually compelling
+
+---
 
 ---
 
