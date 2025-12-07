@@ -4350,92 +4350,481 @@ Pathway enrichment: Photosynthesis (p = 3.2e-8) ⚡
 
 ### Concept
 
-Gene expression is controlled by **promoter** strength (transcription initiation) and **RBS** strength (translation initiation). Predicting these from sequence enables:
-- Understanding phage gene expression timing
-- Designing synthetic constructs
-- Identifying highly expressed proteins (targets for therapy)
+Gene expression in prokaryotes is a two-stage process: **transcription** (DNA → RNA) initiated at promoters, and **translation** (RNA → protein) initiated at ribosome binding sites (RBS). The strength of these regulatory elements determines how much of each protein is made — and in phages, this controls the entire infection program.
 
-### Implementation
+**Promoter architecture:**
+Bacterial sigma-70 promoters have two conserved hexamers recognized by RNA polymerase:
+- **-35 box**: Consensus TTGACA, recognized by σ70 region 4.2
+- **-10 box** (Pribnow box): Consensus TATAAT, where DNA melting begins
+- **Spacer**: Optimal 17±1 bp; length affects box alignment with RNAP
 
-**Promoter strength features:**
+The relationship isn't simple homology — it's biophysics. The -10 box must be AT-rich because A-T base pairs (2 hydrogen bonds) melt more easily than G-C pairs (3 bonds). The -35 box provides specificity; the -10 box provides strand opening.
+
+**RBS architecture:**
+The Shine-Dalgarno sequence (AGGAGG) base-pairs with the 3' end of 16S rRNA (anti-SD: 5'-CCUCCU-3'). This positions the ribosome's P-site over the start codon. Critical parameters:
+- **SD strength**: Complementarity to anti-SD (ΔG of hybridization)
+- **Spacing**: 5-10 nt between SD and start codon (optimal ~7)
+- **Start codon**: AUG > GUG > UUG (efficiency ratio ~1.0 : 0.14 : 0.03)
+- **mRNA structure**: Secondary structure occluding SD reduces translation
+
+**Why this matters for phages:**
+- **Temporal control**: Early genes have moderate promoters; late genes have strong promoters activated by phage factors
+- **Stoichiometry**: Structural proteins need 100-1000× more expression than regulators
+- **Host takeover**: Some phages replace host sigma factors entirely (T4's AsiA/MotA system)
+- **Therapy design**: Predicting expression helps engineer reporter phages or therapeutic constructs
+
+### Mathematical Foundations
+
+**Position Weight Matrix (PWM) for Promoter Scoring:**
+```
+Given a multiple alignment of known promoters, compute:
+
+PWM[b][i] = log₂(f(b,i) / p(b))
+
+Where:
+  f(b,i) = frequency of base b at position i (with pseudocount)
+  p(b) = background frequency (0.25 for uniform)
+
+Score a candidate sequence:
+  S = Σᵢ PWM[seq[i]][i]
+
+Higher scores = better match to consensus
+```
+
+**Information Content (IC) per position:**
+```
+IC(i) = 2 - H(i)    where H(i) = -Σ_b f(b,i) · log₂(f(b,i))
+
+Maximum IC = 2 bits (completely conserved)
+Minimum IC = 0 bits (all bases equally likely)
+Total promoter IC typically 12-16 bits for functional promoters
+```
+
+**Thermodynamic RBS Model:**
+The Salis Lab RBS Calculator uses free energy minimization:
+```
+ΔG_total = ΔG_mRNA-rRNA + ΔG_spacing + ΔG_start + ΔG_standby + ΔG_mRNA_structure
+
+Where:
+  ΔG_mRNA-rRNA = hybridization energy of SD to anti-SD
+  ΔG_spacing = penalty for non-optimal spacing
+  ΔG_start = bonus/penalty for start codon identity
+  ΔG_standby = penalty for structured standby site
+  ΔG_mRNA_structure = penalty for secondary structure
+
+Translation Initiation Rate ∝ exp(-ΔG_total / RT)
+```
+
+**Nearest-neighbor thermodynamics for RNA:RNA:**
+```
+ΔG°37 for RNA:RNA hybridization (kcal/mol):
+
+5'-AA-3' / 3'-UU-5' = -0.93    5'-AU-3' / 3'-UA-5' = -1.10
+5'-UA-3' / 3'-AU-5' = -1.33    5'-CU-3' / 3'-GA-5' = -2.08
+5'-GA-3' / 3'-CU-5' = -2.35    5'-GU-3' / 3'-CA-5' = -2.11
+5'-CA-3' / 3'-GU-5' = -2.24    5'-GG-3' / 3'-CC-5' = -3.26
+5'-CG-3' / 3'-GC-5' = -2.36    5'-GC-3' / 3'-CG-5' = -3.42
+
+Stacking interactions dominate — adjacent base pairs matter more than individual bases
+```
+
+**Extended Pribnow Box Model (-10 box):**
+```
+Consensus: T₈₂A₈₉T₅₂A₅₉A₅₁T₉₆  (subscripts = % conservation in E. coli)
+
+Extended -10 (TGn motif at -14/-15):
+  - Allows promoters with weak -35 to still function
+  - Contacted by σ70 region 3.0
+  - TG = +3-4 kcal/mol binding energy
+```
+
+### Implementation Approach
+
 ```typescript
+// Core types for promoter/RBS analysis
 interface PromoterPrediction {
-  position: number;
-  minus35: string;
-  minus10: string;
-  spacerLength: number;
-  predictedStrength: number;  // 0-1 scale
-  confidence: number;
+  position: number;           // Position of -35 box (relative to gene start)
+  minus35Sequence: string;    // Actual -35 hexamer
+  minus35Score: number;       // PWM score
+  minus10Sequence: string;    // Actual -10 hexamer
+  minus10Score: number;       // PWM score
+  spacerLength: number;       // Distance between boxes
+  spacerPenalty: number;      // Deviation from optimal
+  extendedMinus10: boolean;   // Has TGn motif?
+  totalScore: number;         // Combined score
+  predictedStrength: 'weak' | 'moderate' | 'strong' | 'very_strong';
+  transcriptsPerMinute: number;  // Estimated expression level
 }
 
-function predictPromoterStrength(upstream: string): PromoterPrediction {
-  // Consensus: TTGACA (-35) and TATAAT (-10), spacer 17±1bp
-  const MINUS35_CONSENSUS = 'TTGACA';
-  const MINUS10_CONSENSUS = 'TATAAT';
+interface RBSPrediction {
+  position: number;           // Position of SD start
+  sdSequence: string;         // Shine-Dalgarno sequence
+  antiSDComplement: string;   // Aligned anti-SD region
+  hybridizationDG: number;    // ΔG of SD:anti-SD (kcal/mol)
+  spacing: number;            // Distance to start codon
+  spacingPenalty: number;     // Deviation from optimal
+  startCodon: string;         // AUG/GUG/UUG
+  startCodonPenalty: number;  // Non-AUG penalty
+  mRNAStructure: number;      // ΔG of local structure (penalty)
+  totalDG: number;            // Combined ΔG
+  predictedStrength: 'very_weak' | 'weak' | 'moderate' | 'strong' | 'very_strong';
+  proteinPerHour: number;     // Estimated translation rate
+}
 
-  let bestScore = 0;
-  let bestPos = -1;
+interface ExpressionPrediction {
+  gene: GeneInfo;
+  promoter: PromoterPrediction | null;
+  rbs: RBSPrediction;
+  combinedStrength: number;   // 0-100 scale
+  expressionCategory: 'low' | 'medium' | 'high' | 'very_high';
+  rank: number;               // Rank among all genes (1 = highest)
+  biologicalRole: string;     // Inferred from expression level
+}
 
-  for (let m35 = 0; m35 <= upstream.length - 35; m35++) {
-    const minus35 = upstream.slice(m35, m35 + 6);
-    const m35Score = sequenceSimilarity(minus35, MINUS35_CONSENSUS);
+// Position Weight Matrices from E. coli promoter alignments
+const MINUS_35_PWM: number[][] = [
+  // Position: 1     2     3     4     5     6
+  /* A */   [-1.2, -1.8, -0.3, -1.5, -1.8, -0.8],
+  /* C */   [-1.5, -1.8, -1.8, -0.5, -1.8, -1.8],
+  /* G */   [-1.8, -1.0, -1.8, -1.8, -1.8, -1.8],
+  /* T */   [ 1.5,  1.2,  0.8,  0.6,  1.5,  1.0],
+];
 
-    for (let spacer = 15; spacer <= 19; spacer++) {
-      const m10Pos = m35 + 6 + spacer;
-      if (m10Pos + 6 > upstream.length) continue;
+const MINUS_10_PWM: number[][] = [
+  // Position: 1     2     3     4     5     6
+  /* A */   [-1.8,  1.4, -1.8,  1.2,  1.0, -1.8],
+  /* C */   [-1.8, -1.8, -1.8, -1.8, -1.8, -1.8],
+  /* G */   [-1.8, -1.8, -1.8, -1.8, -1.8, -1.8],
+  /* T */   [ 1.4, -0.8,  1.5, -0.5, -0.3,  1.6],
+];
 
-      const minus10 = upstream.slice(m10Pos, m10Pos + 6);
-      const m10Score = sequenceSimilarity(minus10, MINUS10_CONSENSUS);
+// Anti-Shine-Dalgarno sequence (E. coli 16S rRNA 3' end)
+const ANTI_SD = 'ACCUCCUUA';  // 3' to 5' orientation
 
-      const spacerPenalty = Math.abs(spacer - 17) * 0.1;
-      const totalScore = (m35Score + m10Score) / 2 - spacerPenalty;
+// Nearest-neighbor parameters for RNA:RNA hybridization
+const NN_PARAMS: Record<string, number> = {
+  'AA/UU': -0.93, 'AU/UA': -1.10, 'UA/AU': -1.33, 'CU/GA': -2.08,
+  'GA/CU': -2.35, 'GU/CA': -2.11, 'CA/GU': -2.24, 'GG/CC': -3.26,
+  'CG/GC': -2.36, 'GC/CG': -3.42, 'UU/AA': -0.93, 'UG/AC': -2.11,
+  'AG/UC': -2.08, 'AC/UG': -2.24, 'UC/AG': -2.35, 'CC/GG': -3.26,
+};
+
+function scorePromoter(upstream: string): PromoterPrediction | null {
+  const baseIndex: Record<string, number> = { 'A': 0, 'C': 1, 'G': 2, 'T': 3 };
+  let bestPrediction: PromoterPrediction | null = null;
+  let bestScore = -Infinity;
+
+  // Scan for -35 box positions
+  for (let m35Start = 0; m35Start <= upstream.length - 45; m35Start++) {
+    const minus35 = upstream.slice(m35Start, m35Start + 6);
+
+    // Score -35 box
+    let m35Score = 0;
+    let valid = true;
+    for (let i = 0; i < 6; i++) {
+      const base = minus35[i];
+      if (!(base in baseIndex)) { valid = false; break; }
+      m35Score += MINUS_35_PWM[baseIndex[base]][i];
+    }
+    if (!valid) continue;
+
+    // Try different spacer lengths (15-20 bp)
+    for (let spacer = 15; spacer <= 20; spacer++) {
+      const m10Start = m35Start + 6 + spacer;
+      if (m10Start + 6 > upstream.length) continue;
+
+      const minus10 = upstream.slice(m10Start, m10Start + 6);
+
+      // Score -10 box
+      let m10Score = 0;
+      valid = true;
+      for (let i = 0; i < 6; i++) {
+        const base = minus10[i];
+        if (!(base in baseIndex)) { valid = false; break; }
+        m10Score += MINUS_10_PWM[baseIndex[base]][i];
+      }
+      if (!valid) continue;
+
+      // Spacer penalty (optimal = 17)
+      const spacerPenalty = Math.pow(Math.abs(spacer - 17), 2) * 0.15;
+
+      // Check for extended -10 (TGn at -14/-15)
+      let extendedBonus = 0;
+      if (m10Start >= 2) {
+        const extended = upstream.slice(m10Start - 2, m10Start);
+        if (extended === 'TG') extendedBonus = 2.0;
+      }
+
+      const totalScore = m35Score + m10Score - spacerPenalty + extendedBonus;
 
       if (totalScore > bestScore) {
         bestScore = totalScore;
-        bestPos = m35;
+        bestPrediction = {
+          position: m35Start - upstream.length, // Relative to gene start
+          minus35Sequence: minus35,
+          minus35Score: m35Score,
+          minus10Sequence: minus10,
+          minus10Score: m10Score,
+          spacerLength: spacer,
+          spacerPenalty,
+          extendedMinus10: extendedBonus > 0,
+          totalScore,
+          predictedStrength: categorizePromoterStrength(totalScore),
+          transcriptsPerMinute: estimateTranscriptionRate(totalScore),
+        };
       }
     }
   }
 
-  return {
-    position: bestPos,
-    minus35: upstream.slice(bestPos, bestPos + 6),
-    minus10: upstream.slice(bestPos + 6 + 17, bestPos + 6 + 17 + 6),
-    spacerLength: 17,
-    predictedStrength: bestScore,
-    confidence: bestScore > 0.7 ? 0.9 : 0.5
-  };
+  return bestPrediction;
 }
-```
 
-**RBS strength (Shine-Dalgarno):**
-```typescript
-function predictRBSStrength(upstream: string): number {
-  const SD_CONSENSUS = 'AGGAGG';
-  let bestScore = 0;
+function categorizePromoterStrength(score: number): PromoterPrediction['predictedStrength'] {
+  if (score >= 8) return 'very_strong';
+  if (score >= 5) return 'strong';
+  if (score >= 2) return 'moderate';
+  return 'weak';
+}
 
-  // Search 5-15 bp upstream of start codon
-  for (let i = upstream.length - 15; i <= upstream.length - 5; i++) {
-    for (let len = 4; len <= 6; len++) {
-      const sd = upstream.slice(i, i + len);
-      const score = sequenceSimilarity(sd, SD_CONSENSUS.slice(0, len));
-      bestScore = Math.max(bestScore, score);
+function estimateTranscriptionRate(score: number): number {
+  // Empirical relationship from promoter strength studies
+  // Strong promoters: ~10-50 transcripts/min
+  // Weak promoters: ~0.1-1 transcripts/min
+  return Math.pow(10, score / 4) * 0.5;
+}
+
+function computeHybridizationEnergy(sd: string, antiSD: string): number {
+  // Convert T to U for RNA
+  const sdRNA = sd.replace(/T/g, 'U');
+  const antiSDRNA = antiSD.replace(/T/g, 'U');
+
+  // Compute ΔG using nearest-neighbor model
+  let dG = 0;
+  const initiation = 4.09; // Initiation penalty for RNA:RNA
+
+  for (let i = 0; i < sdRNA.length - 1; i++) {
+    const pair = `${sdRNA[i]}${sdRNA[i+1]}/${antiSDRNA[i]}${antiSDRNA[i+1]}`;
+    dG += NN_PARAMS[pair] || 0;
+  }
+
+  return dG + initiation;
+}
+
+function scoreRBS(upstream: string, startCodon: string): RBSPrediction {
+  let bestDG = Infinity;
+  let bestPos = -1;
+  let bestAlignment = { sd: '', antiSD: '' };
+
+  // Search for SD sequence 5-15 nt upstream of start codon
+  for (let sdEnd = upstream.length - 5; sdEnd >= upstream.length - 15 && sdEnd >= 4; sdEnd--) {
+    // Try different SD lengths (4-6 nt)
+    for (let len = 4; len <= 6 && sdEnd - len >= 0; len++) {
+      const sd = upstream.slice(sdEnd - len, sdEnd);
+      const antiSD = ANTI_SD.slice(0, len);
+
+      const dG = computeHybridizationEnergy(sd, antiSD);
+
+      if (dG < bestDG) {
+        bestDG = dG;
+        bestPos = sdEnd - len;
+        bestAlignment = { sd, antiSD };
+      }
     }
   }
 
-  return bestScore;
+  // Spacing penalty
+  const spacing = upstream.length - (bestPos + bestAlignment.sd.length);
+  const spacingPenalty = Math.pow(Math.abs(spacing - 7), 2) * 0.3;
+
+  // Start codon penalty
+  let startCodonPenalty = 0;
+  if (startCodon === 'GTG') startCodonPenalty = 2.0;
+  else if (startCodon === 'TTG') startCodonPenalty = 3.5;
+  else if (startCodon !== 'ATG') startCodonPenalty = 5.0;
+
+  const totalDG = bestDG + spacingPenalty + startCodonPenalty;
+
+  return {
+    position: bestPos,
+    sdSequence: bestAlignment.sd,
+    antiSDComplement: bestAlignment.antiSD,
+    hybridizationDG: bestDG,
+    spacing,
+    spacingPenalty,
+    startCodon,
+    startCodonPenalty,
+    mRNAStructure: 0, // Would need folding algorithm
+    totalDG,
+    predictedStrength: categorizeRBSStrength(totalDG),
+    proteinPerHour: estimateTranslationRate(totalDG),
+  };
+}
+
+function categorizeRBSStrength(dG: number): RBSPrediction['predictedStrength'] {
+  if (dG <= -12) return 'very_strong';
+  if (dG <= -8) return 'strong';
+  if (dG <= -5) return 'moderate';
+  if (dG <= -2) return 'weak';
+  return 'very_weak';
+}
+
+function estimateTranslationRate(dG: number): number {
+  // Translation rate inversely proportional to exp(ΔG/RT)
+  const RT = 0.616; // kcal/mol at 37°C
+  return 1000 * Math.exp(-dG / RT);
+}
+
+function analyzeGeneExpression(
+  gene: GeneInfo,
+  sequence: string,
+  upstreamLength: number = 100
+): ExpressionPrediction {
+  // Get upstream region
+  const start = Math.max(0, gene.start - upstreamLength);
+  const upstream = sequence.slice(start, gene.start);
+
+  // Get start codon
+  const startCodon = sequence.slice(gene.start, gene.start + 3);
+
+  // Score promoter and RBS
+  const promoter = scorePromoter(upstream);
+  const rbs = scoreRBS(upstream.slice(-30), startCodon);
+
+  // Combined strength (0-100 scale)
+  const promoterContrib = promoter ? Math.min(promoter.totalScore / 10 * 50, 50) : 25;
+  const rbsContrib = Math.min(-rbs.totalDG / 15 * 50, 50);
+  const combinedStrength = promoterContrib + rbsContrib;
+
+  return {
+    gene,
+    promoter,
+    rbs,
+    combinedStrength,
+    expressionCategory: categorizeExpression(combinedStrength),
+    rank: 0, // Set after analyzing all genes
+    biologicalRole: inferRole(combinedStrength, gene.product),
+  };
+}
+
+function categorizeExpression(strength: number): ExpressionPrediction['expressionCategory'] {
+  if (strength >= 80) return 'very_high';
+  if (strength >= 60) return 'high';
+  if (strength >= 40) return 'medium';
+  return 'low';
+}
+
+function inferRole(strength: number, product: string | undefined): string {
+  if (!product) {
+    if (strength >= 80) return 'Likely structural protein (high abundance)';
+    if (strength >= 40) return 'Possibly enzymatic (moderate expression)';
+    return 'Regulatory or accessory (low expression)';
+  }
+
+  const lower = product.toLowerCase();
+  if (lower.includes('capsid') || lower.includes('coat')) return 'Structural - capsid';
+  if (lower.includes('tail')) return 'Structural - tail assembly';
+  if (lower.includes('polymerase')) return 'Enzymatic - replication';
+  if (lower.includes('lysin') || lower.includes('holin')) return 'Lysis machinery';
+  if (lower.includes('repressor')) return 'Regulatory - lysogeny control';
+
+  return 'Unknown function';
 }
 ```
+
+### Why This Is a Good Idea
+
+1. **Decode the Temporal Program**: Phages execute precise gene expression cascades. Early genes (DNA replication) activate before late genes (structural proteins). Visualizing promoter/RBS strengths reveals this timing without experiments.
+
+2. **Synthetic Biology Gateway**: Anyone designing reporter phages, CRISPR delivery vectors, or therapeutic constructs needs to predict expression levels. This makes Phage Explorer a design tool, not just a viewer.
+
+3. **Discover Unusual Architectures**: Some phages have leaderless mRNAs (no SD), internal promoters, or use alternative sigma factors. Anomalies in prediction highlight these biologically interesting cases.
+
+4. **Compare Host Adaptation**: Phages infecting different hosts (E. coli vs. Bacillus) use different promoter/RBS conventions. Seeing these differences reveals host-specific evolution.
+
+5. **Identify Drug Targets**: The most highly expressed proteins are often essential and abundant — ideal targets for phage-based diagnostics or therapeutic interference.
+
+### Innovation Assessment
+
+**Novelty**: 6/10 — PWM scoring and RBS calculators exist (Salis Lab), but integrating them into a genome-wide TUI visualization with ranking and temporal prediction is new.
+
+### Pedagogical Value: 9/10
+
+Teaches:
+- Central dogma and gene expression regulation
+- Position weight matrices and information theory
+- Thermodynamic principles of nucleic acid hybridization
+- Nearest-neighbor energy models
+- The hierarchical control of phage gene expression
+- Why structural proteins dominate the proteome
+
+### Cool/Wow Factor: 7/10
+
+Seeing expression strength predicted for every gene — and watching how it correlates with function — makes the connection between sequence and biology visceral.
 
 ### TUI Visualization
 
 ```
-Gene expression predictions:
-Gene: ──[P:████░]──[RBS:███░░]──[cI repressor]────────────────
-          strong      medium
-
-       ──[P:██░░░]──[RBS:█████]──[cro]────────────────────────
-          weak        strong      (early lytic gene)
+┌─────────────────────────────────────────────────────────────────────────┐
+│  GENE EXPRESSION PREDICTOR                          Lambda Phage       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Expression Rank (top 10 genes by predicted abundance)                  │
+│  ═══════════════════════════════════════════════════════════════════    │
+│  Rank  Gene      Function              Promoter  RBS     Combined      │
+│  ────────────────────────────────────────────────────────────────────   │
+│   1    gpE       Major capsid          ████████  █████   ██████████ 94 │
+│   2    gpD       Decoration protein    ████████  ████░   █████████░ 88 │
+│   3    gpFII     Tail shaft            ███████░  █████   █████████░ 85 │
+│   4    gpV       Tail tube             ███████░  ████░   ████████░░ 79 │
+│   5    gpJ       Tail fiber            ██████░░  █████   ████████░░ 76 │
+│   6    gpB       Portal protein        ██████░░  ████░   ███████░░░ 71 │
+│   7    gpNu1     Terminase small       █████░░░  ████░   ██████░░░░ 64 │
+│   8    gpA       Terminase large       █████░░░  ███░░   █████░░░░░ 58 │
+│   9    gpO       Replication           ████░░░░  ████░   █████░░░░░ 55 │
+│  10    gpN       Antiterminator        ███░░░░░  ███░░   ████░░░░░░ 47 │
+│                                                                         │
+│  Gene Map with Expression Strength                                      │
+│  ───────────────────────────────────────────────────────────────────    │
+│  0kb        10kb       20kb       30kb       40kb       48kb           │
+│  │──────────│──────────│──────────│──────────│──────────│              │
+│                                                                         │
+│  ░░░▒▒▒░░░░▒▒▒░░▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓██████████████░░░▒▒░░░░    │
+│  ↑          ↑               ↑                    ↑            ↑        │
+│  cI reg     replication     head genes           tail genes   lysis    │
+│                                                                         │
+│  Legend: ░ Low  ▒ Medium  ▓ High  █ Very High                          │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Detail View: gpE (Major capsid protein)                               │
+│  ═══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Promoter (-35 box)                     Promoter (-10 box)              │
+│  Position: -42 to -37                   Position: -18 to -13            │
+│  Sequence: TTGACT                       Sequence: TATAAC                │
+│  Match:    TTGACA (5/6 = 83%)           Match:    TATAAT (5/6 = 83%)    │
+│  Spacer: 17 bp (optimal)                Extended -10: Yes (TG at -15)   │
+│                                                                         │
+│  PWM alignment:                                                         │
+│     -35        spacer             -10                                   │
+│  ───TTGACT─────────────────────TG─TATAAC───────                         │
+│     ││││ │                     ││ │││││                                 │
+│     TTGACA (consensus)         TG TATAAT (consensus)                    │
+│                                                                         │
+│  RBS (Shine-Dalgarno)                                                   │
+│  Position: -12 to -7                    Spacing: 7 bp (optimal)         │
+│  Sequence: AGGAGG                       Start codon: AUG                │
+│  Match:    AGGAGG (6/6 = 100%)          ΔG: -12.3 kcal/mol              │
+│                                                                         │
+│  SD alignment:                                                          │
+│       mRNA 5'──────AGGAGG───7bp───AUG────────────3'                     │
+│                    ||||||                                               │
+│  16S rRNA 3'───────UCCUCC────────────────────────5'                     │
+│                                                                         │
+│  Predicted expression: VERY HIGH (94/100)                               │
+│  Estimated abundance: ~500 copies per virion                            │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+[↑/↓] Select gene  [Enter] Details  [R] Rank by promoter/RBS  [E] Export
 ```
 
 ---
