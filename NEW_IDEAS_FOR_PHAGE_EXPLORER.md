@@ -2,6 +2,65 @@
 
 Ten implementation-ready, high-wattage upgrades that combine advanced math, statistics, and phage biology. Each entry lists how to build it, why it matters, novelty, teaching value, and TUI “wow”.
 
+---
+
+## Top 10 (curated from the 100‑idea brainstorm)
+_Fresh detail on implementation stacks, why it’s worth it, novelty, pedagogy, and TUI wow. Legacy brainstorm remains below for reference._
+
+### 1) Tail Fiber Tropism & Receptor Atlas
+- **Implementation:** Embed tail fiber/tip proteins with ESM2/ProtT5 (Python); cluster via HDBSCAN+UMAP; receptor HMMs with `hmmer`; ONNX Runtime for inference in Bun; cache receptor likelihoods in SQLite; optional AlphaFold2-lite batch for RBD hints; Rust+WASM scoring for fast per-phage matching.
+- **Why good:** Direct molecular evidence for host range; complements codon/tRNA and CRISPR signals; surfaces engineering targets for host-range edits.
+- **Novelty:** 9/10 (interactive receptor map inside a TUI is rare).
+- **Pedagogy:** 8/10 (teaches embeddings, clustering, receptor biology).
+- **Wow/TUI:** Orbit graph of receptors with cluster members; spark bars for confidence; inline RBD sequences.
+
+### 2) CRISPR Pressure & Anti-CRISPR Landscape
+- **Implementation:** Spacer hit ingest (BLAST/Minimap); PAM-aware scoring; Acr prediction via HMMs + small-ORF heuristics + ESM similarity; Rust+WASM for sliding-window pressure; Ink bar with spacer ticks + Acr stars; escape-mutation suggester in TS.
+- **Why good:** Shows arms-race pressure and escape options straight from the genome.
+- **Novelty:** 9/10; **Pedagogy:** 9/10; **Wow:** Heat bar + hotspot drill-down.
+
+### 3) Pan-Phage Graph Pangenome & Variant Cards
+- **Implementation:** Rust graph builder (petgraph + minimap2 bindings) compiled to WASM; bubble compression → SQLite variant cards; TS overlay renders mini graph ribbon; enter opens card with donor hints and gene overlaps.
+- **Why good:** Reveals mosaicism and recombination hotspots beyond linear diffs.
+- **Novelty:** 9/10; **Pedagogy:** 9/10; **Wow:** ASCII bubble ribbon with jump-to-locus.
+
+### 4) Cocktail Resistance Evolution Simulator
+- **Implementation:** Gillespie/tau-leaping core in Rust+WASM (rand, rayon); parameters pulled from genome (receptors, Sie genes, spacers); Ink trajectories using braille; ONNX optional for mutation-rate priors.
+- **Why good:** Turns genomic evidence into dosing/risk guidance.
+- **Novelty:** 9/10; **Pedagogy:** 9/10; **Wow:** Live mono vs cocktail curves with risk meter.
+
+### 5) Amino-Acid Property Phase Portraits
+- **Implementation:** TS pipeline: sliding windows → property vectors (hydropathy, charge, aromaticity, flexibility, disorder) → PCA (power iteration) → braille scatter; optional WASM for PCA speed; domain detection via dominant-property clustering.
+- **Why good:** Visualizes domain structure and composition shifts beyond sequence.
+- **Novelty:** 8/10; **Pedagogy:** 9/10; **Wow:** Animated N→C trajectory with domain bar.
+
+### 6) Dinucleotide & Codon Bias Tensor Decomposition
+- **Implementation:** Build k-mer frequency matrix; NMF/PCA in TS (or Rust+WASM for speed); correlate components with metadata (host, lifecycle); Ink scatter + component bar chart.
+- **Why good:** Exposes hidden compositional fingerprints tied to biology.
+- **Novelty:** 8/10; **Pedagogy:** 8/10; **Wow:** Latent map with toggleable components.
+
+### 7) HGT Provenance Tracer
+- **Implementation:** GC/codon z-scores, dinucleotide odds ratios; MinHash taxonomic matching (Rust+WASM); amelioration timing heuristic; SQLite passport stamps; TUI island bar + donor pie.
+- **Why good:** Forensic view of foreign islands and their donors.
+- **Novelty:** 9/10; **Pedagogy:** 9/10; **Wow:** Passport stamp drilldowns.
+
+### 8) Structure-Informed Capsid/Tail Constraint Scanner
+- **Implementation:** Coarse contact maps + BLOSUM penalties in Rust+WASM; merge with ESM delta scores; TS renders fragility heatmap over capsid/tail schematic; mutation table for ΔΔG-ish estimates.
+- **Why good:** Guides safe engineering vs structural cliffs.
+- **Novelty:** 8/10; **Pedagogy:** 9/10; **Wow:** Shake-test animation + heatmap.
+
+### 9) Regulatory Signal Constellations
+- **Implementation:** PWMs for σ factors, RBS; terminator finder; operator palindrome scan; co-occurrence graph scoring in TS; Ink starfield strip above genes with operon toggles.
+- **Why good:** Makes regulatory logic legible (spacing + motifs).
+- **Novelty:** 8/10; **Pedagogy:** 9/10; **Wow:** Starfield constellations over gene bar.
+
+### 10) Pan-Phage Latent Space Atlas
+- **Implementation:** Protein embeddings via ESM2 → SQLite; UMAP/HDBSCAN (Python) → cached coords; optional genome VAE; Ink “galaxy” scatter with cluster drilldowns; Hungarian proteome match for comparisons.
+- **Why good:** Cracks viral dark matter, finds function without homology.
+- **Novelty:** 9/10; **Pedagogy:** 9/10; **Wow:** Galaxy view with novel outlier glow.
+
+---
+
 
 ## 1) Pan-Phage Latent Space Atlas (Protein Embedding Galaxy)
 
