@@ -48,6 +48,7 @@ export function HelpOverlay(): React.ReactElement {
   const overlayRows: HelpRow[] = [
     { key: 'X', desc: 'Sequence complexity (entropy)', note: 'HGT / repeats' },
     { key: 'G', desc: 'GC skew overlay', note: 'origin / terminus' },
+    { key: 'V', desc: 'Packaging pressure gauge', note: 'force / atm' },
     { key: 'B', desc: 'DNA bendability (AT proxy)' },
     { key: 'J', desc: 'K-mer anomaly map', note: 'local composition shifts' },
     { key: 'L', desc: 'Module coherence / stoichiometry', note: 'capsid/tail/lysis' },

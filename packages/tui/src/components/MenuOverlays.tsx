@@ -78,6 +78,14 @@ export function AnalysisMenuOverlay({ onClose }: MenuOverlayProps): React.ReactE
             action: () => openOverlay('complexity'),
           },
           {
+            id: 'analysis-pressure',
+            label: 'Packaging Pressure Gauge',
+            description: 'Packaging motor pressure vs fill fraction (V)',
+            icon: '📦',
+            shortcut: 'V',
+            action: () => openOverlay('pressure'),
+          },
+          {
             id: 'analysis-gcskew',
             label: 'GC Skew Overlay',
             description: 'Visualize cumulative GC skew (G)',
