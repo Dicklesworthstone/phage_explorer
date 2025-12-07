@@ -6,6 +6,7 @@ import {
   computeDinucleotideFrequencies,
   decomposeBias,
   DINUCLEOTIDES,
+  computeCodonFrequencies,
 } from '@phage-explorer/core';
 
 interface BiasDecompositionOverlayProps {
@@ -17,6 +18,7 @@ interface LoadedVector {
   vector: number[];
   genomeType: string | null;
   lifecycle: string | null;
+  codon?: number[];
 }
 
 export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverlayProps): React.ReactElement {
@@ -30,10 +32,15 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
   const [vectors, setVectors] = useState<LoadedVector[]>([]);
   const [error, setError] = useState<string | null>(null);
   const cacheRef = useRef<Map<number, LoadedVector & { length: number }>>(new Map());
+  const [mode, setMode] = useState<'di' | 'codon'>('di');
 
   useInput((input, key) => {
     if (key.escape) {
       closeOverlay('biasDecomposition');
+    } else if (input === '1') {
+      setMode('di');
+    } else if (input === '2') {
+      setMode('codon');
     }
   });
 
@@ -55,6 +62,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
 
           const seq = await repository.getSequenceWindow(p.id, 0, len);
           const vector = computeDinucleotideFrequencies(seq);
+          const codon = computeCodonFrequencies(seq);
 
           // Try to fetch richer metadata if available
           const meta = await repository.getPhageById?.(p.id);
@@ -64,6 +72,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
             vector,
             genomeType: (meta?.genomeType ?? p as any).genomeType ?? null,
             lifecycle: (meta?.lifecycle ?? p.lifecycle) ?? null,
+            codon,
             length: len,
           };
           cacheRef.current.set(p.id, entry);
@@ -84,8 +93,12 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
 
   const decomposition = useMemo(() => {
     if (vectors.length < 2) return null;
-    return decomposeBias(vectors);
-  }, [vectors]);
+    const rows =
+      mode === 'di'
+        ? vectors.map(v => ({ name: v.name, vector: v.vector }))
+        : vectors.map(v => ({ name: v.name, vector: v.codon ?? v.vector }));
+    return decomposeBias(rows);
+  }, [vectors, mode]);
 
   const currentCoords = useMemo(() => {
     if (!decomposition || !current) return null;
@@ -153,9 +166,9 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>
-          DINUCLEOTIDE BIAS DECOMPOSITION
+          {mode === 'di' ? 'DINUCLEOTIDE' : 'CODON'} BIAS DECOMPOSITION
         </Text>
-        <Text color={colors.textDim}>Esc to close</Text>
+        <Text color={colors.textDim}>Esc to close · 1=di 2=codon</Text>
       </Box>
 
       {!decomposition ? (
