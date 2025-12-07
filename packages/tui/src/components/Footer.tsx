@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { HudTheme } from '@phage-explorer/core';
 
-// Key hint categories with associated colors
+// Key hint categories with associated colors and icons
 type HintCategory = 'navigation' | 'view' | 'analysis' | 'overlay' | 'system';
 
 interface KeyHint {
@@ -11,6 +11,15 @@ interface KeyHint {
   action: string;
   category: HintCategory;
 }
+
+// Category icons for visual grouping
+const CATEGORY_ICONS: Record<HintCategory, string> = {
+  navigation: '⬡',  // Hexagon for navigation
+  view: '◐',        // Half circle for view
+  analysis: '◈',    // Diamond for analysis
+  overlay: '◉',     // Circle for overlay
+  system: '⚙',      // Gear for system
+};
 
 // Get color for category
 function getCategoryColor(category: HintCategory, colors: HudTheme): string {
@@ -22,6 +31,17 @@ function getCategoryColor(category: HintCategory, colors: HudTheme): string {
     case 'system': return colors.textDim;
     default: return colors.text;
   }
+}
+
+// Group hints by category
+function groupHintsByCategory(hints: KeyHint[]): Map<HintCategory, KeyHint[]> {
+  const groups = new Map<HintCategory, KeyHint[]>();
+  for (const hint of hints) {
+    const existing = groups.get(hint.category) ?? [];
+    existing.push(hint);
+    groups.set(hint.category, existing);
+  }
+  return groups;
 }
 
 // Get overlay display character
@@ -117,6 +137,33 @@ export function Footer(): React.ReactElement {
     { key: '?', action: 'help', category: 'system' },
   ];
 
+  // Group hints by category
+  const groupedHints = groupHintsByCategory(keyHints);
+
+  // Separator element
+  const Separator = () => (
+    <Text color={colors.separator ?? colors.textMuted}>│</Text>
+  );
+
+  // Render a hint group
+  const renderHintGroup = (category: HintCategory, hints: KeyHint[]) => {
+    const categoryColor = getCategoryColor(category, colors);
+    const icon = CATEGORY_ICONS[category];
+
+    return (
+      <Box key={category} gap={0}>
+        <Text color={categoryColor}>{icon}</Text>
+        {hints.map((hint, idx) => (
+          <Box key={hint.key} gap={0}>
+            <Text color={categoryColor} bold>[{hint.key}]</Text>
+            <Text color={colors.textDim}>{hint.action}</Text>
+            {idx < hints.length - 1 && <Text color={colors.textMuted}>·</Text>}
+          </Box>
+        ))}
+      </Box>
+    );
+  };
+
   return (
     <Box
       borderStyle="round"
@@ -124,28 +171,24 @@ export function Footer(): React.ReactElement {
       paddingX={1}
       justifyContent="space-between"
     >
-      {/* Key hints grouped by visual category */}
+      {/* Key hints grouped by category with visual separators */}
       <Box gap={1} flexWrap="wrap">
-        {keyHints.map((hint, idx) => (
-          <Box key={hint.key} gap={0}>
-            <Text color={getCategoryColor(hint.category, colors)} bold>
-              [{hint.key}]
-            </Text>
-            <Text color={colors.textDim}>{hint.action}</Text>
-            {idx < keyHints.length - 1 && (
-              <Text color={colors.borderLight}> </Text>
-            )}
+        {Array.from(groupedHints.entries()).map(([category, hints], idx) => (
+          <Box key={category} gap={1}>
+            {renderHintGroup(category, hints)}
+            {idx < groupedHints.size - 1 && <Separator />}
           </Box>
         ))}
       </Box>
 
-      {/* Status section */}
+      {/* Status section with enhanced visuals */}
       <Box gap={2} alignItems="center">
-        {/* Active data overlays */}
+        {/* Active data overlays with icons */}
         {dataOverlays.length > 0 && (
           <Box gap={1}>
-            <Text color={colors.textMuted}>◈</Text>
-            <Text color={colors.textDim}>Layers:</Text>
+            <Text color={colors.warning}>◈</Text>
+            <Text color={colors.textDim}>Layers</Text>
+            <Text color={colors.separator ?? colors.textMuted}>⟨</Text>
             <Box gap={0}>
               {dataOverlays.map((o, i) => (
                 <Text key={o} color={colors.warning} bold>
@@ -153,20 +196,21 @@ export function Footer(): React.ReactElement {
                 </Text>
               ))}
             </Box>
+            <Text color={colors.separator ?? colors.textMuted}>⟩</Text>
           </Box>
         )}
 
-        {/* Active modal */}
+        {/* Active modal with glow effect */}
         {modal && (
-          <Box gap={1}>
-            <Text color={colors.textMuted}>◉</Text>
-            <Text color={colors.accent} bold>
-              {getOverlayName(modal)}
+          <Box gap={0}>
+            <Text color={colors.glow ?? colors.accent}>◉</Text>
+            <Text color={colors.accent} bold backgroundColor={colors.backgroundAlt}>
+              {' '}{getOverlayName(modal)}{' '}
             </Text>
           </Box>
         )}
 
-        {/* Experience level badge */}
+        {/* Experience level badge with enhanced styling */}
         <Box gap={0}>
           <Text
             color={experienceLevel === 'power' ? colors.accent :

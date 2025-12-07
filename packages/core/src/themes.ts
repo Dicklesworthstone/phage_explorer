@@ -611,6 +611,315 @@ export const FOREST_THEME: Theme = {
   aminoAcids: forestAminoAcids,
 };
 
+// Cyberpunk theme - neon on dark, futuristic vibes
+const cyberpunkNucleotides: NucleotideTheme = {
+  'A': { fg: '#000000', bg: '#00ffff' }, // Cyan
+  'C': { fg: '#000000', bg: '#ff00ff' }, // Magenta
+  'G': { fg: '#000000', bg: '#ffff00' }, // Yellow
+  'T': { fg: '#000000', bg: '#ff0080' }, // Hot pink
+  'N': { fg: '#ffffff', bg: '#2a2a3a' }, // Dark
+};
+
+const cyberpunkAminoAcids: AminoTheme = {
+  'A': { fg: '#000000', bg: '#00e5ff' },
+  'V': { fg: '#000000', bg: '#7b1fa2' },
+  'L': { fg: '#000000', bg: '#7b1fa2' },
+  'I': { fg: '#000000', bg: '#7b1fa2' },
+  'M': { fg: '#000000', bg: '#ffea00' },
+  'F': { fg: '#ffffff', bg: '#4a148c' },
+  'W': { fg: '#ffffff', bg: '#311b92' },
+  'P': { fg: '#000000', bg: '#ff6d00' },
+  'S': { fg: '#000000', bg: '#00e676' },
+  'T': { fg: '#000000', bg: '#00e676' },
+  'Y': { fg: '#ffffff', bg: '#4a148c' },
+  'N': { fg: '#000000', bg: '#18ffff' },
+  'Q': { fg: '#000000', bg: '#18ffff' },
+  'C': { fg: '#000000', bg: '#ffea00' },
+  'K': { fg: '#ffffff', bg: '#0091ea' },
+  'R': { fg: '#ffffff', bg: '#0091ea' },
+  'H': { fg: '#000000', bg: '#00b0ff' },
+  'D': { fg: '#ffffff', bg: '#f50057' },
+  'E': { fg: '#ffffff', bg: '#f50057' },
+  'G': { fg: '#000000', bg: '#e0e0e0' },
+  '*': { fg: '#ffffff', bg: '#ff1744' },
+};
+
+const cyberpunkHud: HudTheme = {
+  // Core colors - neon vibes
+  primary: '#00ffff',
+  secondary: '#ff00ff',
+  accent: '#ffff00',
+  background: '#0d0d1a',
+  backgroundAlt: '#1a1a2e',
+
+  // Text hierarchy
+  text: '#e0e0ff',
+  textDim: '#8888aa',
+  textMuted: '#555577',
+
+  // Borders - glowing effect
+  border: '#ff00ff',
+  borderFocus: '#00ffff',
+  borderLight: '#4a4a6a',
+
+  // Status colors
+  success: '#00ff88',
+  warning: '#ffff00',
+  error: '#ff0055',
+  info: '#00e5ff',
+
+  // Diff
+  diffHighlight: '#ff00ff',
+
+  // Gene visualization
+  geneForward: '#00ffff',
+  geneReverse: '#ff00ff',
+  geneHighlight: '#ffff00',
+
+  // Analysis gradients
+  gradientLow: '#1a0a2e',
+  gradientMid: '#ff00ff',
+  gradientHigh: '#00ffff',
+
+  // K-mer
+  kmerNormal: '#6666aa',
+  kmerAnomaly: '#ff0055',
+
+  // Effects
+  shadow: '#000000',
+  highlight: '#ffffff',
+
+  // Enhanced visual elements
+  sparklineGradient: ['#1a0a2e', '#7b1fa2', '#ff00ff', '#00ffff', '#00ff88'],
+  glow: '#ff00ff',
+  badge: '#2a2a4a',
+  badgeText: '#00ffff',
+  separator: '#ff00ff',
+
+  // Unicode decorations
+  iconPrimary: '#00ffff',
+  iconSecondary: '#ff00ff',
+
+  // Panel styling
+  panelHeader: '#1a1a3a',
+  panelBorder: '#ff00ff',
+  panelShadow: '#050510',
+};
+
+export const CYBERPUNK_THEME: Theme = {
+  id: 'cyberpunk',
+  name: 'Cyberpunk',
+  colors: cyberpunkHud,
+  nucleotides: cyberpunkNucleotides,
+  aminoAcids: cyberpunkAminoAcids,
+};
+
+// Pastel theme - soft, accessible colors
+const pastelNucleotides: NucleotideTheme = {
+  'A': { fg: '#2d3436', bg: '#a8e6cf' }, // Mint
+  'C': { fg: '#2d3436', bg: '#dcedc1' }, // Light green
+  'G': { fg: '#2d3436', bg: '#ffd3b6' }, // Peach
+  'T': { fg: '#2d3436', bg: '#ffaaa5' }, // Salmon
+  'N': { fg: '#636e72', bg: '#dfe6e9' }, // Light gray
+};
+
+const pastelAminoAcids: AminoTheme = {
+  'A': { fg: '#2d3436', bg: '#b8e0d2' },
+  'V': { fg: '#2d3436', bg: '#95b8d1' },
+  'L': { fg: '#2d3436', bg: '#95b8d1' },
+  'I': { fg: '#2d3436', bg: '#95b8d1' },
+  'M': { fg: '#2d3436', bg: '#f0e6ef' },
+  'F': { fg: '#2d3436', bg: '#d4a5a5' },
+  'W': { fg: '#2d3436', bg: '#c9b1ff' },
+  'P': { fg: '#2d3436', bg: '#ffd6a5' },
+  'S': { fg: '#2d3436', bg: '#caffbf' },
+  'T': { fg: '#2d3436', bg: '#caffbf' },
+  'Y': { fg: '#2d3436', bg: '#d4a5a5' },
+  'N': { fg: '#2d3436', bg: '#9bf6ff' },
+  'Q': { fg: '#2d3436', bg: '#9bf6ff' },
+  'C': { fg: '#2d3436', bg: '#fdffb6' },
+  'K': { fg: '#2d3436', bg: '#a0c4ff' },
+  'R': { fg: '#2d3436', bg: '#a0c4ff' },
+  'H': { fg: '#2d3436', bg: '#bdb2ff' },
+  'D': { fg: '#2d3436', bg: '#ffc6ff' },
+  'E': { fg: '#2d3436', bg: '#ffc6ff' },
+  'G': { fg: '#2d3436', bg: '#f0f0f0' },
+  '*': { fg: '#2d3436', bg: '#ffb5b5' },
+};
+
+const pastelHud: HudTheme = {
+  // Core colors - soft and pleasant
+  primary: '#74b9ff',
+  secondary: '#a29bfe',
+  accent: '#ffeaa7',
+  background: '#f8f9fa',
+  backgroundAlt: '#ffffff',
+
+  // Text hierarchy
+  text: '#2d3436',
+  textDim: '#636e72',
+  textMuted: '#b2bec3',
+
+  // Borders
+  border: '#dfe6e9',
+  borderFocus: '#74b9ff',
+  borderLight: '#e8eaed',
+
+  // Status colors
+  success: '#00cec9',
+  warning: '#fdcb6e',
+  error: '#ff7675',
+  info: '#74b9ff',
+
+  // Diff
+  diffHighlight: '#fab1a0',
+
+  // Gene visualization
+  geneForward: '#55efc4',
+  geneReverse: '#81ecec',
+  geneHighlight: '#ffeaa7',
+
+  // Analysis gradients
+  gradientLow: '#dfe6e9',
+  gradientMid: '#74b9ff',
+  gradientHigh: '#00b894',
+
+  // K-mer
+  kmerNormal: '#b2bec3',
+  kmerAnomaly: '#e17055',
+
+  // Effects
+  shadow: '#c8d6e5',
+  highlight: '#ffffff',
+
+  // Enhanced visual elements
+  sparklineGradient: ['#dfe6e9', '#a8e6cf', '#74b9ff', '#a29bfe', '#fd79a8'],
+  glow: '#74b9ff',
+  badge: '#e8eaed',
+  badgeText: '#2d3436',
+  separator: '#dfe6e9',
+
+  // Unicode decorations
+  iconPrimary: '#74b9ff',
+  iconSecondary: '#a29bfe',
+
+  // Panel styling
+  panelHeader: '#f1f2f6',
+  panelBorder: '#dfe6e9',
+  panelShadow: '#e8eaed',
+};
+
+export const PASTEL_THEME: Theme = {
+  id: 'pastel',
+  name: 'Pastel',
+  colors: pastelHud,
+  nucleotides: pastelNucleotides,
+  aminoAcids: pastelAminoAcids,
+};
+
+// Monochrome theme - elegant grayscale with accents
+const monochromeNucleotides: NucleotideTheme = {
+  'A': { fg: '#ffffff', bg: '#1a1a1a' }, // Darkest
+  'C': { fg: '#ffffff', bg: '#3a3a3a' }, // Dark
+  'G': { fg: '#000000', bg: '#8a8a8a' }, // Medium
+  'T': { fg: '#000000', bg: '#c0c0c0' }, // Light
+  'N': { fg: '#ffffff', bg: '#555555' }, // Mid-gray
+};
+
+const monochromeAminoAcids: AminoTheme = {
+  'A': { fg: '#000000', bg: '#d0d0d0' },
+  'V': { fg: '#ffffff', bg: '#404040' },
+  'L': { fg: '#ffffff', bg: '#404040' },
+  'I': { fg: '#ffffff', bg: '#404040' },
+  'M': { fg: '#000000', bg: '#b0b0b0' },
+  'F': { fg: '#ffffff', bg: '#303030' },
+  'W': { fg: '#ffffff', bg: '#202020' },
+  'P': { fg: '#000000', bg: '#909090' },
+  'S': { fg: '#000000', bg: '#c0c0c0' },
+  'T': { fg: '#000000', bg: '#c0c0c0' },
+  'Y': { fg: '#ffffff', bg: '#303030' },
+  'N': { fg: '#000000', bg: '#e0e0e0' },
+  'Q': { fg: '#000000', bg: '#e0e0e0' },
+  'C': { fg: '#000000', bg: '#b0b0b0' },
+  'K': { fg: '#ffffff', bg: '#505050' },
+  'R': { fg: '#ffffff', bg: '#505050' },
+  'H': { fg: '#000000', bg: '#707070' },
+  'D': { fg: '#000000', bg: '#a0a0a0' },
+  'E': { fg: '#000000', bg: '#a0a0a0' },
+  'G': { fg: '#000000', bg: '#f0f0f0' },
+  '*': { fg: '#ffffff', bg: '#000000' },
+};
+
+const monochromeHud: HudTheme = {
+  // Core colors - elegant grayscale
+  primary: '#ffffff',
+  secondary: '#b0b0b0',
+  accent: '#ffd700',  // Gold accent for important elements
+  background: '#0a0a0a',
+  backgroundAlt: '#151515',
+
+  // Text hierarchy
+  text: '#e0e0e0',
+  textDim: '#808080',
+  textMuted: '#505050',
+
+  // Borders
+  border: '#404040',
+  borderFocus: '#ffd700',
+  borderLight: '#303030',
+
+  // Status colors
+  success: '#90ee90',
+  warning: '#ffd700',
+  error: '#ff6b6b',
+  info: '#87ceeb',
+
+  // Diff
+  diffHighlight: '#ffd700',
+
+  // Gene visualization
+  geneForward: '#c0c0c0',
+  geneReverse: '#707070',
+  geneHighlight: '#ffd700',
+
+  // Analysis gradients
+  gradientLow: '#202020',
+  gradientMid: '#606060',
+  gradientHigh: '#c0c0c0',
+
+  // K-mer
+  kmerNormal: '#505050',
+  kmerAnomaly: '#ff6b6b',
+
+  // Effects
+  shadow: '#000000',
+  highlight: '#ffffff',
+
+  // Enhanced visual elements
+  sparklineGradient: ['#202020', '#404040', '#606060', '#909090', '#c0c0c0'],
+  glow: '#ffd700',
+  badge: '#303030',
+  badgeText: '#e0e0e0',
+  separator: '#404040',
+
+  // Unicode decorations
+  iconPrimary: '#ffd700',
+  iconSecondary: '#c0c0c0',
+
+  // Panel styling
+  panelHeader: '#1a1a1a',
+  panelBorder: '#505050',
+  panelShadow: '#000000',
+};
+
+export const MONOCHROME_THEME: Theme = {
+  id: 'monochrome',
+  name: 'Monochrome',
+  colors: monochromeHud,
+  nucleotides: monochromeNucleotides,
+  aminoAcids: monochromeAminoAcids,
+};
+
 // All available themes
 export const THEMES: Theme[] = [
   CLASSIC_THEME,
@@ -618,6 +927,9 @@ export const THEMES: Theme[] = [
   MATRIX_THEME,
   SUNSET_THEME,
   FOREST_THEME,
+  CYBERPUNK_THEME,
+  PASTEL_THEME,
+  MONOCHROME_THEME,
 ];
 
 // Get theme by ID

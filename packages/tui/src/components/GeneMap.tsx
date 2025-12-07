@@ -5,6 +5,8 @@ import type { KmerAnomalyOverlay } from '../overlay-computations';
 
 interface GeneMapProps {
   width?: number;
+  showDensityHistogram?: boolean;
+  showStrandLabels?: boolean;
 }
 
 // Characters for gene visualization
@@ -15,12 +17,32 @@ const GENE_CHARS = {
   empty: '·',        // Empty region (subtle dot)
   current: '▼',      // Current position marker
   boundary: '│',     // Gene boundary
+  forwardBar: '▀',   // Top half block for + strand
+  reverseBar: '▄',   // Bottom half block for - strand
+  bothBar: '█',      // Full block for both strands
 } as const;
 
-// K-mer gradient characters (10 levels)
+// Strand labels and decorations
+const STRAND_CHARS = {
+  plus: '+',
+  minus: '−',
+  arrow5: '5′',
+  arrow3: '3′',
+  leftBracket: '⟨',
+  rightBracket: '⟩',
+} as const;
+
+// Histogram characters (8 levels for gene density)
+const HISTOGRAM_CHARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+// K-mer gradient characters (5 levels)
 const KMER_GRADIENT = ' ░▒▓█';
 
-export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
+export function GeneMap({
+  width = 80,
+  showDensityHistogram = true,
+  showStrandLabels = true,
+}: GeneMapProps): React.ReactElement {
   const currentPhage = usePhageStore(s => s.currentPhage);
   const scrollPosition = usePhageStore(s => s.scrollPosition);
   const viewMode = usePhageStore(s => s.viewMode);
@@ -60,7 +82,7 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
     for (const gene of genes) {
       const startPos = Math.floor((gene.startPos / genomeLength) * barWidth);
       const endPos = Math.max(startPos + 1, Math.floor((gene.endPos / genomeLength) * barWidth));
-      const isForward = gene.strand === '+' || gene.strand === undefined;
+      const isForward = gene.strand !== '-';
 
       for (let i = startPos; i < endPos && i < barWidth; i++) {
         if (i >= 0) {
@@ -184,6 +206,54 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
   const effectivePos = viewMode === 'aa' ? scrollPosition * 3 : scrollPosition;
   const posPercent = genomeLength > 0 ? ((effectivePos / genomeLength) * 100).toFixed(1) : '0.0';
 
+  // Gene density histogram - shows overall gene density across genome
+  const densityHistogram = useMemo(() => {
+    if (!showDensityHistogram || genes.length === 0 || genomeLength === 0) {
+      return null;
+    }
+
+    // Calculate density at each position
+    const density: number[] = Array(barWidth).fill(0);
+    for (const gene of genes) {
+      const startPos = Math.floor((gene.startPos / genomeLength) * barWidth);
+      const endPos = Math.max(startPos + 1, Math.floor((gene.endPos / genomeLength) * barWidth));
+      for (let i = startPos; i < endPos && i < barWidth; i++) {
+        if (i >= 0) density[i]++;
+      }
+    }
+
+    // Find max density for normalization
+    const maxDensity = Math.max(...density, 1);
+
+    // Generate histogram characters
+    const chars = density.map(d => {
+      const norm = d / maxDensity;
+      const idx = Math.min(HISTOGRAM_CHARS.length - 1, Math.floor(norm * HISTOGRAM_CHARS.length));
+      return HISTOGRAM_CHARS[idx];
+    });
+
+    return chars;
+  }, [showDensityHistogram, genes, genomeLength, barWidth]);
+
+  // Strand counts for labels
+  const strandCounts = useMemo(() => {
+    let forward = 0;
+    let reverse = 0;
+    for (const gene of genes) {
+      if (gene.strand === '-') {
+        reverse++;
+      } else {
+        // Count null/undefined as forward (default)
+        forward++;
+      }
+    }
+    return { forward, reverse };
+  }, [genes]);
+
+  // Get enhanced colors from theme
+  const glowColor = colors.glow ?? colors.primary;
+  const separatorColor = colors.separator ?? colors.textMuted;
+
   return (
     <Box
       flexDirection="column"
@@ -191,25 +261,47 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
       borderColor={colors.border}
       paddingX={1}
     >
-      {/* Title row with position info */}
+      {/* Title row with enhanced position info and strand counts */}
       <Box justifyContent="space-between">
         <Box gap={1}>
-          <Text color={colors.primary} bold>◉ Gene Map</Text>
-          <Text color={colors.textMuted}>│</Text>
-          <Text color={colors.geneForward}>█ +strand</Text>
-          <Text color={colors.geneReverse}>█ -strand</Text>
-          <Text color={colors.warning}>◆ overlap</Text>
+          <Text color={glowColor} bold>◉</Text>
+          <Text color={colors.primary} bold>Gene Map</Text>
+          <Text color={separatorColor}>│</Text>
+          {showStrandLabels && (
+            <>
+              <Text color={colors.geneForward}>█{STRAND_CHARS.plus}</Text>
+              <Text color={colors.textDim}>({strandCounts.forward})</Text>
+              <Text color={separatorColor}>·</Text>
+              <Text color={colors.geneReverse}>█{STRAND_CHARS.minus}</Text>
+              <Text color={colors.textDim}>({strandCounts.reverse})</Text>
+              <Text color={separatorColor}>·</Text>
+              <Text color={colors.warning}>◆</Text>
+              <Text color={colors.textDim}>overlap</Text>
+            </>
+          )}
         </Box>
         <Box gap={1}>
-          <Text color={colors.textDim}>Position:</Text>
+          <Text color={colors.textMuted}>{STRAND_CHARS.leftBracket}</Text>
           <Text color={colors.accent} bold>
             {effectivePos.toLocaleString()}
           </Text>
-          <Text color={colors.textMuted}>
-            ({posPercent}%)
+          <Text color={colors.textMuted}>/</Text>
+          <Text color={colors.text}>
+            {genomeLength.toLocaleString()}
           </Text>
+          <Text color={colors.textMuted}>{STRAND_CHARS.rightBracket}</Text>
+          <Text color={colors.success}>{posPercent}%</Text>
         </Box>
       </Box>
+
+      {/* Forward strand indicator line */}
+      {showStrandLabels && (
+        <Box gap={1}>
+          <Text color={colors.geneForward}>{STRAND_CHARS.arrow5}→</Text>
+          <Text color={colors.textMuted}>{'─'.repeat(barWidth - 4)}</Text>
+          <Text color={colors.geneForward}>→{STRAND_CHARS.arrow3}</Text>
+        </Box>
+      )}
 
       {/* Gene bar with individual character coloring */}
       <Box gap={1}>
@@ -220,6 +312,18 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
           ))}
         </Box>
       </Box>
+
+      {/* Density histogram */}
+      {densityHistogram && (
+        <Box gap={1}>
+          <Text color={colors.textDim}>Dens. </Text>
+          <Box>
+            {densityHistogram.map((char, i) => (
+              <Text key={i} color={colors.info}>{char}</Text>
+            ))}
+          </Box>
+        </Box>
+      )}
 
       {/* K-mer anomaly strip */}
       {kmerStrip && (
@@ -233,26 +337,35 @@ export function GeneMap({ width = 80 }: GeneMapProps): React.ReactElement {
         </Box>
       )}
 
+      {/* Reverse strand indicator line */}
+      {showStrandLabels && (
+        <Box gap={1}>
+          <Text color={colors.geneReverse}>{STRAND_CHARS.arrow3}←</Text>
+          <Text color={colors.textMuted}>{'─'.repeat(barWidth - 4)}</Text>
+          <Text color={colors.geneReverse}>←{STRAND_CHARS.arrow5}</Text>
+        </Box>
+      )}
+
       {/* Gene labels */}
       <Box gap={1}>
         <Text color={colors.textDim}>{'      '}</Text>
         <Text color={colors.textMuted}>{geneBar.labels}</Text>
       </Box>
 
-      {/* Current gene info */}
+      {/* Current gene info with enhanced styling */}
       {currentGene && (
         <Box gap={1} marginTop={0}>
           <Text color={colors.info}>▶</Text>
           <Text color={colors.text} bold>
             {currentGene.name || currentGene.locusTag || 'Unknown'}
           </Text>
-          <Text color={colors.textMuted}>│</Text>
+          <Text color={separatorColor}>│</Text>
           <Text color={colors.textDim}>
             {currentGene.startPos.toLocaleString()}-{currentGene.endPos.toLocaleString()} bp
           </Text>
-          <Text color={currentGene.strand === '+' || currentGene.strand === undefined
+          <Text color={currentGene.strand !== '-'
             ? colors.geneForward : colors.geneReverse}>
-            ({currentGene.strand === '+' || currentGene.strand === undefined ? '+' : '-'})
+            ({currentGene.strand !== '-' ? '+' : '-'})
           </Text>
           {currentGene.product && (
             <>
