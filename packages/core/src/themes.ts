@@ -124,6 +124,7 @@ const classicAminoAcids: AminoTheme = {
 
   // Special
   'G': { fg: '#000000', bg: '#ebebeb' }, // Glycine - white/light gray
+  'X': { fg: '#ffffff', bg: '#6c757d' }, // Unknown
 
   // Stop codon
   '*': { fg: '#ffffff', bg: '#ff0000' }, // Stop - bright red
@@ -230,6 +231,7 @@ const oceanAminoAcids: AminoTheme = {
   'E': { fg: '#ffffff', bg: '#e63946' },
   'G': { fg: '#000000', bg: '#f1faee' },
   '*': { fg: '#ffffff', bg: '#d62828' },
+  'X': { fg: '#ffffff', bg: '#495057' },
 };
 
 const oceanHud: HudTheme = {
@@ -333,6 +335,7 @@ const matrixAminoAcids: AminoTheme = {
   'E': { fg: '#ff3300', bg: '#140000' },
   'G': { fg: '#ccffcc', bg: '#001c00' },
   '*': { fg: '#ff0000', bg: '#1a0000' },
+  'X': { fg: '#006600', bg: '#000800' },
 };
 
 const matrixHud: HudTheme = {
@@ -435,6 +438,7 @@ const sunsetAminoAcids: AminoTheme = {
   'D': { fg: '#ffffff', bg: '#d62246' },
   'E': { fg: '#ffffff', bg: '#d62246' },
   'G': { fg: '#000000', bg: '#fefae0' },
+  'X': { fg: '#ffffff', bg: '#4a4e69' },
   '*': { fg: '#ffffff', bg: '#9b2335' },
 };
 
@@ -538,6 +542,7 @@ const forestAminoAcids: AminoTheme = {
   'D': { fg: '#ffffff', bg: '#bc4749' },
   'E': { fg: '#ffffff', bg: '#bc4749' },
   'G': { fg: '#000000', bg: '#f0ead2' },
+  'X': { fg: '#ffffff', bg: '#6b705c' },
   '*': { fg: '#ffffff', bg: '#9b2226' },
 };
 
@@ -642,6 +647,7 @@ const cyberpunkAminoAcids: AminoTheme = {
   'E': { fg: '#ffffff', bg: '#f50057' },
   'G': { fg: '#000000', bg: '#e0e0e0' },
   '*': { fg: '#ffffff', bg: '#ff1744' },
+  'X': { fg: '#ffffff', bg: '#2a2a3a' },
 };
 
 const cyberpunkHud: HudTheme = {
@@ -745,6 +751,7 @@ const pastelAminoAcids: AminoTheme = {
   'E': { fg: '#2d3436', bg: '#ffc6ff' },
   'G': { fg: '#2d3436', bg: '#f0f0f0' },
   '*': { fg: '#2d3436', bg: '#ffb5b5' },
+  'X': { fg: '#636e72', bg: '#dfe6e9' },
 };
 
 const pastelHud: HudTheme = {
@@ -848,6 +855,7 @@ const monochromeAminoAcids: AminoTheme = {
   'E': { fg: '#000000', bg: '#a0a0a0' },
   'G': { fg: '#000000', bg: '#f0f0f0' },
   '*': { fg: '#ffffff', bg: '#000000' },
+  'X': { fg: '#ffffff', bg: '#555555' },
 };
 
 const monochromeHud: HudTheme = {

@@ -69,6 +69,7 @@ export const AMINO_ACIDS: Record<AminoAcid, AminoAcidInfo> = {
   'Y': { letter: 'Y', threeCode: 'Tyr', name: 'Tyrosine', property: 'polar' },
   'V': { letter: 'V', threeCode: 'Val', name: 'Valine', property: 'hydrophobic' },
   '*': { letter: '*', threeCode: 'Stop', name: 'Stop codon', property: 'stop' },
+  'X': { letter: 'X', threeCode: '???', name: 'Unknown', property: 'special' },
 };
 
 // Get amino acids by property

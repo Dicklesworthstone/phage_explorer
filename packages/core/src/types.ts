@@ -1,11 +1,11 @@
 // Nucleotide types
 export type Nucleotide = 'A' | 'C' | 'G' | 'T' | 'N';
 
-// Amino acid types - all 20 standard amino acids plus stop codon
+// Amino acid types - all 20 standard amino acids plus stop codon and unknown
 export type AminoAcid =
   | 'A' | 'R' | 'N' | 'D' | 'C' | 'E' | 'Q' | 'G' | 'H' | 'I'
   | 'L' | 'K' | 'M' | 'F' | 'P' | 'S' | 'T' | 'W' | 'Y' | 'V'
-  | '*'; // Stop codon
+  | '*' | 'X'; // Stop codon and Unknown
 
 // Amino acid properties for grouping/coloring
 export type AminoAcidProperty =
