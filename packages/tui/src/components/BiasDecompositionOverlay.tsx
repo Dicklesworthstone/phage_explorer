@@ -55,14 +55,19 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
         for (const p of phages) {
           const cached = cacheRef.current.get(p.id);
           const len = await repository.getFullGenomeLength(p.id);
+
+          // Try repo-level persisted caches first
+          const cachedBias = await repository.getBiasVector?.(p.id);
+          const cachedCodon = await repository.getCodonVector?.(p.id);
+
           if (cached && cached.length === len) {
             items.push(cached);
             continue;
           }
 
           const seq = await repository.getSequenceWindow(p.id, 0, len);
-          const vector = computeDinucleotideFrequencies(seq);
-          const codon = computeCodonFrequencies(seq);
+          const vector = cachedBias ?? computeDinucleotideFrequencies(seq);
+          const codon = cachedCodon ?? computeCodonFrequencies(seq);
 
           // Try to fetch richer metadata if available
           const meta = await repository.getPhageById?.(p.id);
@@ -70,11 +75,20 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
           const entry: LoadedVector & { length: number } = {
             name: p.name,
             vector,
-            genomeType: (meta?.genomeType ?? p as any).genomeType ?? null,
+            genomeType: (meta?.genomeType ?? (p as any).genomeType) ?? null,
             lifecycle: (meta?.lifecycle ?? p.lifecycle) ?? null,
             codon,
             length: len,
           };
+
+          // Persist caches if freshly computed
+          if (!cachedBias && repository.setBiasVector) {
+            repository.setBiasVector(p.id, vector).catch(() => {});
+          }
+          if (!cachedCodon && repository.setCodonVector) {
+            repository.setCodonVector(p.id, codon).catch(() => {});
+          }
+
           cacheRef.current.set(p.id, entry);
           items.push(entry);
         }
@@ -168,7 +182,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
         <Text color={colors.accent} bold>
           {mode === 'di' ? 'DINUCLEOTIDE' : 'CODON'} BIAS DECOMPOSITION
         </Text>
-        <Text color={colors.textDim}>Esc to close · 1=di 2=codon</Text>
+        <Text color={colors.textDim}>Esc to close · 1=dinucleotide PCA · 2=codon PCA</Text>
       </Box>
 
       {!decomposition ? (

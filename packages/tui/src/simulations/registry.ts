@@ -150,28 +150,46 @@ function makeRibosomeSimulation(): Simulation<RibosomeTrafficState> {
       const ribosomes = [...state.ribosomes];
       let stallEvents = state.stallEvents;
 
-      // Attempt initiation
-      const canInitiate = ribosomes.every(pos => pos > footprint);
-      if (canInitiate && Math.random() < initRate * dt) {
-        ribosomes.unshift(0);
-      }
-
-      // Advance ribosomes from front to back to respect exclusion
-      for (let i = 0; i < ribosomes.length; i++) {
+      // Iterate from End (Leading, Oldest) to Start (Trailing, Newest)
+      // Array is [SmallestPos, ..., LargestPos]
+      // So Leading is at index length-1.
+      // But wait, unshift adds to 0. [New, Old].
+      // New = Small pos. Old = Large pos.
+      // So array is [Small, Large].
+      // Leading is at index length-1.
+      // Ahead of 'i' is 'i+1'.
+      
+      for (let i = ribosomes.length - 1; i >= 0; i--) {
         const pos = ribosomes[i];
+        // Remove if finished (though usually we filter at end, but we can just mark/ignore)
         if (pos >= length) continue;
 
         const rate = state.codonRates[Math.min(pos, state.codonRates.length - 1)] ?? 5;
         const stepSize = Math.max(1, Math.floor(rate * dt));
         const target = Math.min(length, pos + stepSize);
 
-        const ahead = ribosomes.slice(0, i).find(p => p >= pos && p < pos + footprint);
-        const blocked = ahead !== undefined && ahead - pos < footprint;
+        // Check collision with ribosome ahead (i+1)
+        let blocked = false;
+        if (i < ribosomes.length - 1) {
+           const aheadPos = ribosomes[i + 1];
+           // If ahead ribosome is still on track and within footprint distance
+           if (aheadPos < length && aheadPos - pos < footprint) {
+             blocked = true;
+           }
+        }
+
         if (blocked) {
           stallEvents += 1;
           continue;
         }
         ribosomes[i] = target;
+      }
+
+      // Attempt initiation at front (index 0)
+      // Check if index 0 (Smallest) is far enough
+      const firstPos = ribosomes.length > 0 ? ribosomes[0] : length + footprint; // effectively inf if empty
+      if (firstPos > footprint && Math.random() < initRate * dt) {
+        ribosomes.unshift(0);
       }
 
       const completed = ribosomes.filter(pos => pos >= length).length;
@@ -237,98 +255,149 @@ function makePlaqueSimulation(): Simulation<PlaqueAutomataState> {
       };
     },
     step: (state: PlaqueAutomataState, dt: number): PlaqueAutomataState => {
-      // Double buffering to prevent sequential update artifacts
       const currentGrid = state.grid;
-      const nextGrid = new Uint8Array(currentGrid); // Start with copy
-      const nextAges = new Float32Array(state.infectionTimes); // Copy ages
-
-      let phage = 0;
-      let bacteria = 0;
-      let infected = 0;
-
+      const currentAges = state.infectionTimes;
+      
+      // Initialize next state with zeros (empty)
       const size = state.gridSize;
+      const len = size * size;
+      const nextGrid = new Uint8Array(len);
+      const nextAges = new Float32Array(len);
+
       const burst = Number(state.params.burst ?? 80);
       const latent = Number(state.params.latent ?? 12);
       const diffusion = Number(state.params.diffusion ?? 0.25);
       const adsorption = Number(state.params.adsorption ?? 0.2);
       const lysogeny = Number(state.params.lysogeny ?? 0.0);
 
-      // We iterate over the CURRENT grid to determine actions
-      for (let i = 0; i < currentGrid.length; i++) {
-        const stateVal = currentGrid[i];
-
-        if (stateVal === 4) { // Free phage
-          // Diffuse randomly
+      // Process Phages (Movement/Infection)
+      for (let i = 0; i < len; i++) {
+        if (currentGrid[i] === 4) { // Phage
+          // Decide move
+          let target = i;
           if (Math.random() < diffusion * dt) {
             const neighbor = randomNeighbor(i, size);
-            // Check if neighbor is valid and what resides there in CURRENT state
             if (neighbor !== null) {
-              const targetState = currentGrid[neighbor];
-              
-              if (targetState === 1 && Math.random() < adsorption) {
-                // Infect bacteria
-                // Check if already infected in NEXT grid by another phage this tick
-                if (nextGrid[neighbor] !== 2 && nextGrid[neighbor] !== 5) {
-                   nextGrid[neighbor] = 2;
-                   nextAges[neighbor] = 0;
-                   // Remove self from old spot (unless replaced by something else in nextGrid? assume 0)
-                   // But what if another phage moved into 'i'?
-                   // If we write 0, we might kill a phage that just arrived.
-                   // Priority: Arrival > Departure? 
-                   // Simplification: We enforce empty.
-                   if (nextGrid[i] === 4) nextGrid[i] = 0; 
-                }
-              } else if (targetState === 0) {
-                // Move to empty space
-                // Only move if target spot in NEXT grid is not occupied by higher priority (Infection/Bacteria)
-                // We allow stacking (overwriting 4 with 4)
-                if (nextGrid[neighbor] === 0 || nextGrid[neighbor] === 4) {
-                   nextGrid[neighbor] = 4;
-                   if (nextGrid[i] === 4) nextGrid[i] = 0;
-                }
+              target = neighbor;
+            }
+          }
+
+          // Handle Interaction at Target
+          // We interact based on what is CURRENTLY at target, but write to NEXT
+          const targetState = currentGrid[target];
+          
+          if (targetState === 1) {
+            // Hit Bacteria -> Try Infect
+            if (Math.random() < adsorption) {
+              // Infect!
+              nextGrid[target] = 2;
+              nextAges[target] = 0;
+            } else {
+              // Failed adsorption, just sit there (overlap bacteria temporarily or bounce?)
+              // Simplified: bounce/stay at i? Or superimpose?
+              // Let's just mark as phage at target. 
+              // If logic below processes bacteria and sees phage, it prioritizes infection/presence.
+              // Actually, if we mark 4, we need to handle it in Bacteria section.
+              // Let's say: if failed adsorption, it stays as phage at target.
+              // But we must ensure we don't overwrite an already successful infection from another phage.
+              if (nextGrid[target] !== 2 && nextGrid[target] !== 5) {
+                 nextGrid[target] = 4;
               }
             }
-          }
-        } else if (stateVal === 2) { // Infected
-          // Age the infection
-          nextAges[i] += dt;
-          if (nextAges[i] >= latent) {
-            // Decision: Lysis vs Lysogeny
-            if (Math.random() < lysogeny) {
-               nextGrid[i] = 5; // Lysogen
-            } else {
-               nextGrid[i] = 3; // Lysed
-               // Burst: scatter phages
-               const burstCount = Math.max(1, Math.floor(burst));
-               for (let b = 0; b < burstCount; b++) {
-                 const nb = randomNeighbor(i, size);
-                 // Can only place phage in empty or on top of other phages
-                 if (nb !== null && (nextGrid[nb] === 0 || nextGrid[nb] === 4)) {
-                   nextGrid[nb] = 4;
-                 }
-               }
-            }
-          }
-        } else if (stateVal === 0) { // Empty
-          // Regrowth
-          if (Math.random() < 0.01 * dt) {
-            // Only grow if not already claimed by a phage in this tick
-            if (nextGrid[i] === 0) {
-              nextGrid[i] = 1;
-            }
+          } else if (targetState === 2 || targetState === 3 || targetState === 5) {
+             // Target occupied by Infection/Lysis/Lysogen -> Blocked?
+             // Simple: Try to stack phage there.
+             if (nextGrid[target] !== 2 && nextGrid[target] !== 5) {
+                nextGrid[target] = 4;
+             }
+          } else {
+             // Empty (0) or Phage (4) -> Move there
+             if (nextGrid[target] !== 2 && nextGrid[target] !== 5) {
+                nextGrid[target] = 4;
+             }
           }
         }
       }
 
-      // Count stats for next frame
-      for (let i = 0; i < nextGrid.length; i++) {
+      // Process Cells (Bacteria, Infected, Lysed)
+      // We must respect if they have already been infected/overwritten by phages in this step.
+      for (let i = 0; i < len; i++) {
+        const stateVal = currentGrid[i];
+
+        if (stateVal === 1) { // Bacteria
+          // If already marked as 2 (infected by phage above), leave it.
+          // If marked as 4 (phage failed adsorption), it's a collision.
+          //   Realistically, phage + bacteria = bacteria (phage floats).
+          //   So we persist Bacteria (1).
+          // If 0, persist Bacteria (1).
+          
+          if (nextGrid[i] === 2) {
+             // Already infected, do nothing (keep 2)
+          } else {
+             // Persist bacteria (overwriting any floating phage 4)
+             nextGrid[i] = 1;
+          }
+        } else if (stateVal === 5) { // Lysogen
+          // Behaves like bacteria, but immune to infection (superinfection exclusion)
+          nextGrid[i] = 5;
+        } else if (stateVal === 2) { // Infected
+          // Continue infection
+          const newAge = currentAges[i] + dt;
+          if (newAge >= latent) {
+            // Lysis or Lysogeny decision
+            if (Math.random() < lysogeny) {
+              nextGrid[i] = 5; // Become lysogen
+              nextAges[i] = 0;
+            } else {
+              nextGrid[i] = 3; // Lysis
+              nextAges[i] = 0;
+              // Burst!
+              const burstCount = Math.max(1, Math.floor(burst));
+              for (let b = 0; b < burstCount; b++) {
+                const nb = randomNeighbor(i, size);
+                if (nb !== null) {
+                  // Release phage to nb
+                  // If nb is Bacteria, infect immediately? Or place 4?
+                  // Simple: Place 4.
+                  // Priority: Don't overwrite existing Infection (2) or Lysogen (5) or Bacteria (1)
+                  // (If we overwrite bacteria with 4, we kill it. If we don't, we lose phage.)
+                  // Solution: If nb is Bacteria, infect it (2) in nextGrid.
+                  const nbState = currentGrid[nb];
+                  if (nbState === 1 && Math.random() < adsorption) {
+                     nextGrid[nb] = 2;
+                     nextAges[nb] = 0;
+                  } else if (nextGrid[nb] === 0) {
+                     nextGrid[nb] = 4;
+                  }
+                }
+              }
+            }
+          } else {
+            nextGrid[i] = 2;
+            nextAges[i] = newAge;
+          }
+        } else if (stateVal === 3) { // Lysed (debris)
+           // Fade away to empty? Or stay?
+           // Let's say it clears quickly.
+           // nextGrid[i] = 0; // implicitly done by init
+        } else if (stateVal === 0) { // Empty
+           // Regrowth
+           if (nextGrid[i] === 0 && Math.random() < 0.01 * dt) {
+             nextGrid[i] = 1;
+           }
+        }
+      }
+
+      let phage = 0;
+      let bacteria = 0;
+      let infected = 0;
+
+      // Count stats
+      for (let i = 0; i < len; i++) {
         const val = nextGrid[i];
-        if (val === 1 || val === 5) bacteria++; // Lysogens count as bacteria
+        if (val === 1 || val === 5) bacteria++;
         if (val === 2) infected++;
         if (val === 4) phage++;
-        // Normalize lysogens to bacteria for display if desired, 
-        // but keeping 5 allows distinctive behavior later.
-        if (val === 5) nextGrid[i] = 1; // Visual simplification
       }
 
       return {

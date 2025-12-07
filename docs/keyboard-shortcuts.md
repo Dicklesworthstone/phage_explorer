@@ -35,6 +35,7 @@ Single-source key map for the TUI and the upcoming web UI. Keep these bindings s
 | `R` | Repeats & palindromes |
 | `J` | K-mer anomaly |
 | `H` | HGT passport |
+| `E` | Tail fiber tropism (receptor atlas) |
 | `L` | Module coherence |
 | `Y` | Transcription flow |
 | `Shift+P` | Phase portraits (AA property PCA) |

@@ -32,12 +32,13 @@ import type { KmerAnomalyOverlay as KmerOverlayType } from '../overlay-computati
 import { ModuleOverlay } from './ModuleOverlay';
 import { FoldQuickview } from './FoldQuickview';
 import { HGTOverlay } from './HGTOverlay';
-import { analyzeHGTProvenance } from '@phage-explorer/comparison';
+import { analyzeHGTProvenance, analyzeTailFiberTropism, type TropismAnalysis } from '@phage-explorer/comparison';
 import type { FoldEmbedding } from '@phage-explorer/core';
 import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
 import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { CRISPROverlay } from './CRISPROverlay';
 import { SyntenyOverlay } from './SyntenyOverlay';
+import { TropismOverlay } from './TropismOverlay';
 
 const ANALYSIS_MENU_ID: OverlayId = 'analysisMenu';
 const SIMULATION_MENU_ID: OverlayId = 'simulationHub';
@@ -55,6 +56,7 @@ const BIAS_ID: OverlayId = 'biasDecomposition';
 const HGT_ID: OverlayId = 'hgt';
 const CRISPR_ID: OverlayId = 'crispr';
 const SYNTENY_ID: OverlayId = 'synteny';
+const TROPISM_ID: OverlayId = 'tropism';
 
 interface AppProps {
   repository: PhageRepository;
@@ -65,7 +67,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const { exit } = useApp();
   const { stdout } = useStdout();
   const overlayCacheRef = React.useRef<
-    Map<number, { length: number; hash: number; refVersion: number; data: ReturnType<typeof computeAllOverlays> }>
+    Map<number, { length: number; hash: number; refVersion: number; data: ReturnType<typeof computeAllOverlays> & { hgt?: unknown; tropism?: TropismAnalysis } }>
   >(new Map());
   const referenceSketchesRef = React.useRef<Record<string, string>>({});
   const referenceVersionRef = React.useRef(0);
@@ -167,7 +169,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         for (const p of phages) {
           const len = await repository.getFullGenomeLength(p.id);
           const seq = await repository.getSequenceWindow(p.id, 0, len);
-          sketches[p.name ?? `phage-${p.id}`] = seq;
+          const label = `${p.name ?? `phage-${p.id}`} (${p.host ?? 'unknown host'}) #${p.id}`;
+          sketches[label] = seq;
         }
         if (!cancelled) {
           referenceSketchesRef.current = sketches;
@@ -208,7 +211,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
          } else {
            const data = computeAllOverlays(seq);
             const hgt = analyzeHGTProvenance(seq, phage.genes ?? [], referenceSketchesRef.current);
-            const enriched = { ...data, hgt };
+            const tropism = analyzeTailFiberTropism(phage);
+            const enriched = { ...data, hgt, tropism };
             overlayCacheRef.current.set(phage.id, { length, hash: seqHash, refVersion: referenceVersionRef.current, data: enriched });
             setOverlayData(enriched);
           }
@@ -412,6 +416,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       promote('intermediate');
       toggleOverlay(CRISPR_ID);
+    } else if (input === 'e' || input === 'E') {
+      if (!isIntermediate) {
+        setError('Tail fiber tropism unlocks after ~5 minutes or once promoted.');
+        return;
+      }
+      promote('intermediate');
+      toggleOverlay(TROPISM_ID);
     } else if (key.shift && (input === 'y' || input === 'Y')) {
       if (!isIntermediate) {
         setError('Synteny alignment unlocks after ~5 minutes or once promoted.');
@@ -669,6 +680,16 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.floor((terminalRows - 24) / 2)}
         >
           <HGTOverlay />
+        </Box>
+      )}
+
+      {activeOverlay === TROPISM_ID && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 84) / 2)}
+          marginTop={Math.floor((terminalRows - 20) / 2)}
+        >
+          <TropismOverlay />
         </Box>
       )}
 

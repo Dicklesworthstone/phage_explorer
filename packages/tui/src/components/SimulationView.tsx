@@ -92,9 +92,17 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
 
   const initialRef = useRef<SimState | null>(simState);
   const latestStateRef = useRef<SimState | null>(simState);
+
+  // Capture initial state only when simulation ID changes
   useEffect(() => {
     if (simState) {
       initialRef.current = simState;
+    }
+  }, [simId]);
+
+  // Keep latest state ref in sync for the runner loop
+  useEffect(() => {
+    if (simState) {
       latestStateRef.current = simState;
     }
   }, [simState]);

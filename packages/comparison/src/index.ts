@@ -89,3 +89,6 @@ export {
 
 // HGT provenance tracer
 export { analyzeHGTProvenance, type HGTOptions } from './hgt-tracer';
+
+// Tail fiber tropism / receptor atlas
+export { analyzeTailFiberTropism, type TropismAnalysis, type ReceptorCandidate } from './tropism';

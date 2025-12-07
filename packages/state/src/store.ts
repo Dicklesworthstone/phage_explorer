@@ -17,7 +17,7 @@ import {
 } from '@phage-explorer/core';
 import type { GenomeComparisonResult } from '@phage-explorer/comparison';
 
-type OverlayData = Partial<Record<'gcSkew' | 'complexity' | 'bendability' | 'promoter' | 'repeats' | 'kmerAnomaly' | 'hgt', unknown>>;
+type OverlayData = Partial<Record<'gcSkew' | 'complexity' | 'bendability' | 'promoter' | 'repeats' | 'kmerAnomaly' | 'hgt' | 'tropism', unknown>>;
 
 // Overlay states
 export type OverlayId =
@@ -44,7 +44,8 @@ export type OverlayId =
   | 'phasePortrait'
   | 'biasDecomposition'
   | 'crispr'
-  | 'synteny';
+  | 'synteny'
+  | 'tropism';
 
 export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';

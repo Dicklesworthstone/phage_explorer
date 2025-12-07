@@ -123,6 +123,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'J', desc: 'K-mer anomaly' },
             { key: 'H', desc: 'HGT passport', note: 'donor islands' },
             { key: 'P', desc: 'Promoter/RBS motifs' },
+            { key: 'E', desc: 'Tail fiber tropism', note: 'receptor atlas' },
           ],
         },
         {
