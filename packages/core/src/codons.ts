@@ -79,7 +79,7 @@ export function getAminoAcidsByProperty(property: AminoAcidProperty): AminoAcidI
 // Translate a single codon to amino acid
 export function translateCodon(codon: string): AminoAcid {
   const upperCodon = codon.toUpperCase();
-  return CODON_TABLE[upperCodon] ?? '*';
+  return CODON_TABLE[upperCodon] ?? 'X'; // Use 'X' for unknown codons
 }
 
 // Translate a DNA sequence to amino acids at a given reading frame
@@ -109,15 +109,27 @@ export function sliceAminoAcids(aaSeq: string, offset: number, length: number): 
 // Get reverse complement of a DNA sequence
 export function reverseComplement(seq: string): string {
   const complement: Record<string, string> = {
+    // Standard
     'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
     'a': 't', 't': 'a', 'g': 'c', 'c': 'g',
+    // Ambiguity codes (IUPAC)
     'N': 'N', 'n': 'n',
+    'R': 'Y', 'r': 'y', // Purine (A/G) -> Pyrimidine (T/C)
+    'Y': 'R', 'y': 'r', // Pyrimidine (T/C) -> Purine (A/G)
+    'S': 'S', 's': 's', // Strong (G/C) -> Strong (C/G)
+    'W': 'W', 'w': 'w', // Weak (A/T) -> Weak (T/A)
+    'K': 'M', 'k': 'm', // Keto (G/T) -> Amino (A/C)
+    'M': 'K', 'm': 'k', // Amino (A/C) -> Keto (T/G)
+    'B': 'V', 'b': 'v', // Not A (C/G/T) -> Not T (G/C/A)
+    'D': 'H', 'd': 'h', // Not C (A/G/T) -> Not G (T/C/A)
+    'H': 'D', 'h': 'd', // Not G (A/C/T) -> Not C (T/G/A)
+    'V': 'B', 'v': 'b', // Not T (A/C/G) -> Not A (T/G/C)
   };
 
   return seq
     .split('')
     .reverse()
-    .map(c => complement[c] ?? c)
+    .map(c => complement[c] ?? c) // Keep unknown chars as-is
     .join('');
 }
 
