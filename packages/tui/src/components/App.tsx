@@ -18,12 +18,18 @@ import { AnalysisMenuOverlay, SimulationMenuOverlay } from './MenuOverlays';
 import { GCOverlay } from './GCOverlay';
 import { CommandPalette } from './CommandPalette';
 import { SequenceComplexityOverlay } from './SequenceComplexityOverlay';
+import { BendabilityOverlay } from './BendabilityOverlay';
+import { PromoterOverlay } from './PromoterOverlay';
+import { RepeatOverlay } from './RepeatOverlay';
 import type { OverlayId } from '@phage-explorer/state';
 
 const ANALYSIS_MENU_ID: OverlayId = 'analysisMenu';
-const SIMULATION_MENU_ID: OverlayId = 'simulationMenu';
+const SIMULATION_MENU_ID: OverlayId = 'simulationHub';
 const COMPLEXITY_ID: OverlayId = 'complexity';
 const GC_SKEW_ID: OverlayId = 'gcSkew';
+const BENDABILITY_ID: OverlayId = 'bendability';
+const PROMOTER_ID: OverlayId = 'promoter';
+const REPEAT_ID: OverlayId = 'repeats';
 
 interface AppProps {
   repository: PhageRepository;
@@ -228,12 +234,14 @@ export function App({ repository }: AppProps): React.ReactElement {
       toggleOverlay(GC_SKEW_ID);
     } else if (input === 'm' || input === 'M') {
       toggle3DModel();
-    } else if (input === 'p' || input === 'P') {
-      toggle3DModelPause();
     } else if (input === 'z' || input === 'Z') {
       toggle3DModelFullscreen();
+    } else if (input === 'b' || input === 'B') {
+      toggleOverlay(BENDABILITY_ID);
+    } else if (input === 'p' || input === 'P') {
+      toggleOverlay(PROMOTER_ID);
     } else if (input === 'r' || input === 'R') {
-      cycle3DModelQuality();
+      toggleOverlay(REPEAT_ID);
     }
 
     // Overlays (we already returned early if overlay is active, so just open)
@@ -363,16 +371,6 @@ export function App({ repository }: AppProps): React.ReactElement {
         </Box>
       )}
 
-      {activeOverlay === 'gcSkew' && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 80) / 2)}
-          marginTop={Math.floor((terminalRows - 12) / 2)}
-        >
-          <GCOverlay sequence={sequence} />
-        </Box>
-      )}
-
       {activeOverlay === ANALYSIS_MENU_ID && (
         <Box
           position="absolute"
@@ -383,13 +381,13 @@ export function App({ repository }: AppProps): React.ReactElement {
         </Box>
       )}
 
-      {activeOverlay === 'simulationMenu' && (
+      {activeOverlay === SIMULATION_MENU_ID && (
         <Box
           position="absolute"
           marginLeft={Math.floor((terminalCols - 70) / 2)}
           marginTop={Math.floor((terminalRows - 20) / 2)}
         >
-          <SimulationMenuOverlay onClose={() => closeOverlay('simulationMenu')} />
+          <SimulationMenuOverlay onClose={() => closeOverlay(SIMULATION_MENU_ID)} />
         </Box>
       )}
 
@@ -400,6 +398,36 @@ export function App({ repository }: AppProps): React.ReactElement {
           marginTop={Math.floor((terminalRows - 14) / 2)}
         >
           <GCOverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'bendability' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 80) / 2)}
+          marginTop={Math.floor((terminalRows - 12) / 2)}
+        >
+          <BendabilityOverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'promoter' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 72) / 2)}
+          marginTop={Math.floor((terminalRows - 12) / 2)}
+        >
+          <PromoterOverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'repeats' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 72) / 2)}
+          marginTop={Math.floor((terminalRows - 12) / 2)}
+        >
+          <RepeatOverlay sequence={sequence} />
         </Box>
       )}
 

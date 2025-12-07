@@ -99,9 +99,12 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
       { id: 'diff-toggle', label: 'Toggle diff', description: 'Diff vs reference', keywords: ['compare'], action: toggleDiff },
       { id: 'search', label: 'Search phages', description: 'Open search overlay', keywords: ['find'], action: () => openOverlay('search') },
       { id: 'analysis-menu', label: 'Analysis menu', description: 'Open analysis menu', keywords: ['menu', 'analysis'], action: () => openOverlay('analysisMenu') },
-      { id: 'simulation-menu', label: 'Simulation hub', description: 'Open simulation menu', keywords: ['menu', 'simulation'], action: () => openOverlay('simulationMenu') },
+      { id: 'simulation-menu', label: 'Simulation hub', description: 'Open simulation menu', keywords: ['menu', 'simulation'], action: () => openOverlay('simulationHub') },
       { id: 'complexity', label: 'Sequence complexity', description: 'Open complexity overlay', keywords: ['entropy', 'complexity'], action: () => toggleOverlay('complexity') },
       { id: 'gc-skew', label: 'GC skew', description: 'Open GC skew overlay', keywords: ['gc'], action: () => toggleOverlay('gcSkew') },
+      { id: 'bendability', label: 'Bendability', description: 'AT-rich bendability proxy overlay', keywords: ['bend', 'at'], action: () => toggleOverlay('bendability') },
+      { id: 'promoter', label: 'Promoter/RBS motifs', description: 'Scan for -10/-35 and Shine-Dalgarno', keywords: ['promoter', 'rbs'], action: () => toggleOverlay('promoter') },
+      { id: 'repeats', label: 'Repeats / palindromes', description: 'Detect short palindromic repeats', keywords: ['repeat', 'palindrome'], action: () => toggleOverlay('repeats') },
       { id: 'comparison', label: 'Genome comparison', description: 'Open comparison overlay', keywords: ['compare', 'genome'], action: openComparison },
       { id: 'model-toggle', label: 'Toggle 3D model', description: 'Show/hide 3D model', keywords: ['3d', 'model'], action: toggle3DModel },
       { id: 'model-pause', label: 'Pause/resume 3D model', description: 'Pause/resume rotation', keywords: ['3d', 'pause'], action: toggle3DModelPause },
@@ -213,4 +216,3 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
     </Box>
   );
 }
-
