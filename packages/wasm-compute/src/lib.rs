@@ -210,8 +210,19 @@ pub fn analyze_kmers(sequence_a: &str, sequence_b: &str, k: usize) -> KmerAnalys
 
 #[wasm_bindgen]
 pub fn min_hash_jaccard(sequence_a: &str, sequence_b: &str, k: usize, num_hashes: usize) -> f64 {
+    if num_hashes == 0 {
+        return 0.0;
+    }
+
     let sig_a = get_min_hash_signature(sequence_a, k, num_hashes);
     let sig_b = get_min_hash_signature(sequence_b, k, num_hashes);
+
+    // If either sequence had no valid k-mers, signatures will be all MAX; treat as zero similarity.
+    let empty_sig_a = sig_a.iter().all(|&v| v == u32::MAX);
+    let empty_sig_b = sig_b.iter().all(|&v| v == u32::MAX);
+    if empty_sig_a || empty_sig_b {
+        return 0.0;
+    }
 
     let mut matches = 0;
     for i in 0..num_hashes {
@@ -227,7 +238,7 @@ fn get_min_hash_signature(seq: &str, k: usize, num_hashes: usize) -> Vec<u32> {
     let mut signature = vec![u32::MAX; num_hashes];
     let seq_bytes = seq.as_bytes(); // Optimization: use bytes
 
-    if seq.len() < k {
+    if seq.len() < k || num_hashes == 0 {
         return signature;
     }
 
