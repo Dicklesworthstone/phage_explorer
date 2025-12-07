@@ -3,6 +3,12 @@ import { min_hash_jaccard } from '@phage/wasm-compute/pkg/wasm_compute.js';
 import type { GeneInfo } from '@phage-explorer/core';
 import type { HGTAnalysis, GenomicIsland, DonorCandidate, PassportStamp } from './types';
 
+export interface HGTOptions {
+  window?: number;
+  step?: number;
+  zThreshold?: number;
+}
+
 interface WindowStat {
   start: number;
   end: number;
@@ -153,11 +159,15 @@ function estimateAmelioration(gcDelta: number): 'recent' | 'intermediate' | 'anc
 export function analyzeHGTProvenance(
   genomeSequence: string,
   genes: GeneInfo[],
-  referenceSketches: Record<string, string> = {}
+  referenceSketches: Record<string, string> = {},
+  options?: HGTOptions
 ): HGTAnalysis {
   const genomeGC = computeGC(genomeSequence);
-  const windows = slidingGC(genomeSequence);
-  const islands = mergeIslands(windows);
+  const windowSize = options?.window ?? 2000;
+  const step = options?.step ?? 1000;
+  const zThreshold = options?.zThreshold ?? 2;
+  const windows = slidingGC(genomeSequence, windowSize, step);
+  const islands = mergeIslands(windows, zThreshold);
   attachGenes(islands, genes);
 
   const stamps: PassportStamp[] = islands.map(island => {
@@ -165,6 +175,7 @@ export function analyzeHGTProvenance(
     const donors = inferDonors(seq, referenceSketches);
     const best = donors[0] ?? null;
     const amelioration = estimateAmelioration(island.gc - genomeGC);
+    island.donors = donors;
 
     return {
       island,
