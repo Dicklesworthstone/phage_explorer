@@ -12451,30 +12451,499 @@ Watching the pressure gauge climb as DNA packs, then animating the "unspooling" 
 
 ## 33) Burst Kinetics & Latency Inference from Growth Curves
 
-### Concept
-Infer adsorption, latent period, and burst size from OD/plaque time-series and map back to holin/endolysin/antiholin loci.
+### Extended Concept
 
-### How to Build
-- **Model**: Classic infection ODE/SDE (SIR-like with adsorption, latent, burst).
-- **Inference (Rust+WASM)**: MAP/bootstrapped fits using statrs + rayon; bounded parameters; supports deterministic and tau-leaping stochastic modes.
-- **Data ingest**: CSV/TSV via d3-dsv or native parser; unit normalization.
-- **Genome link**: Annotate lysis cassette; display inferred latency/burst alongside gene positions.
-- **UI**: Live fit plot with credible bands; toggle deterministic/stochastic; residuals pane.
+Phage therapy success hinges on understanding **burst kinetics**—how quickly phages replicate inside bacteria and how many progeny emerge. This feature transforms raw experimental data (optical density curves, plaque counts over time) into quantitative parameters that map directly to genome features. By fitting infection models to time-series data, users can infer:
 
-### Why It’s Good
-Turns wet-lab curves into actionable genome-linked parameters; informs dosing and cocktail design.
+- **Adsorption rate (k)**: How quickly phages attach to hosts
+- **Latent period (L)**: Time from infection to lysis
+- **Burst size (b)**: Progeny phages released per infected cell
+- **Rise period**: Duration of the lysis event across the population
 
-### Novelty
-High—real-time kinetic fitting inside a TUI genome browser is rare.
+These parameters connect directly to the **lysis cassette** genes—holins that time membrane disruption, endolysins that degrade peptidoglycan, spanins that fuse membranes, and antiholins that modulate timing. Understanding this gene-to-phenotype link enables rational engineering of phages with optimized killing kinetics.
 
-### Pedagogical Value
-Shows likelihoods, uncertainty, and gene-to-phenotype links; demonstrates why holin variants shift burst timing.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Animated fit with shaded CI; lysis genes glow proportional to burst size; slider scrubs time to show phase (adsorption/latent/lysis).
+**Classic Infection ODE Model:**
+
+```
+dB/dt = μB - k·B·P            # Bacteria: growth - infection
+dI/dt = k·B·P - I/L           # Infected: new infections - lysis
+dP/dt = (b/L)·I - k·B·P - δP  # Phages: burst - adsorption - decay
+```
+
+Where:
+- `B` = uninfected bacteria concentration
+- `I` = infected bacteria concentration
+- `P` = free phage concentration
+- `μ` = bacterial growth rate
+- `k` = adsorption rate constant
+- `L` = latent period
+- `b` = burst size
+- `δ` = phage decay rate
+
+**Age-Structured Infected Population (more accurate):**
+
+```
+∂i(t,a)/∂t + ∂i(t,a)/∂a = -γ(a)·i(t,a)
+
+Boundary: i(t,0) = k·B(t)·P(t)
+
+Burst: dP/dt = ∫₀^∞ b·γ(a)·i(t,a) da - k·B·P - δP
+```
+
+Where `γ(a)` is the age-dependent lysis rate (typically a threshold function).
+
+**Likelihood Function for Parameter Inference:**
+
+```
+L(θ|D) = ∏ᵢ N(yᵢ | f(tᵢ,θ), σ²)
+
+log L(θ) = -n/2·log(2πσ²) - Σᵢ (yᵢ - f(tᵢ,θ))² / (2σ²)
+```
+
+Where:
+- `θ = {k, L, b, μ, δ, B₀, P₀}` = parameters
+- `D = {(tᵢ, yᵢ)}` = observed data
+- `f(t,θ)` = model prediction
+
+**Stochastic Gillespie Model Propensities:**
+```
+a₁ = μ·B           # Bacterial division
+a₂ = k·B·P         # Adsorption
+a₃ = (1/L)·I       # Lysis (releases b phages)
+a₄ = δ·P           # Phage decay
+```
+
+### Implementation Approach
+
+```typescript
+// packages/kinetics/src/burst-inference.ts
+
+import type { GeneInfo } from '@phage-explorer/core';
+
+/**
+ * Kinetic parameters for phage infection
+ */
+interface InfectionParameters {
+  adsorptionRate: number;      // k: mL/(phage·min)
+  latentPeriod: number;        // L: minutes
+  burstSize: number;           // b: phages/cell
+  bacterialGrowthRate: number; // μ: per minute
+  phageDecayRate: number;      // δ: per minute
+  initialBacteria: number;     // B₀: cells/mL
+  initialPhage: number;        // P₀: PFU/mL
+}
+
+/**
+ * Time series data point
+ */
+interface DataPoint {
+  time: number;           // minutes
+  value: number;          // OD or PFU/mL
+  uncertainty?: number;   // measurement error
+  type: 'OD' | 'PFU' | 'CFU';
+}
+
+/**
+ * Inference result with uncertainty
+ */
+interface InferenceResult {
+  parameters: InfectionParameters;
+  confidence: {
+    adsorptionRate: [number, number];
+    latentPeriod: [number, number];
+    burstSize: [number, number];
+  };
+  logLikelihood: number;
+  AIC: number;
+  BIC: number;
+  residuals: number[];
+  fitQuality: number;  // R²
+  modelCurve: Array<{ time: number; bacteria: number; phage: number; infected: number }>;
+}
+
+/**
+ * Lysis cassette annotation
+ */
+interface LysisCassette {
+  holin?: GeneInfo;
+  antiholin?: GeneInfo;
+  endolysin?: GeneInfo;
+  spanin?: GeneInfo;
+  lysisTimingPrediction?: number;  // minutes
+}
+
+/**
+ * ODE solver using 4th-order Runge-Kutta
+ */
+function rungeKutta4(
+  derivatives: (t: number, y: number[]) => number[],
+  y0: number[],
+  tSpan: [number, number],
+  dt: number
+): Array<{ t: number; y: number[] }> {
+  const result: Array<{ t: number; y: number[] }> = [];
+  let t = tSpan[0];
+  let y = [...y0];
+
+  while (t <= tSpan[1]) {
+    result.push({ t, y: [...y] });
+
+    const k1 = derivatives(t, y);
+    const k2 = derivatives(t + dt/2, y.map((yi, i) => yi + dt/2 * k1[i]));
+    const k3 = derivatives(t + dt/2, y.map((yi, i) => yi + dt/2 * k2[i]));
+    const k4 = derivatives(t + dt, y.map((yi, i) => yi + dt * k3[i]));
+
+    y = y.map((yi, i) => yi + dt/6 * (k1[i] + 2*k2[i] + 2*k3[i] + k4[i]));
+    y = y.map(v => Math.max(0, v));  // Ensure non-negative
+
+    t += dt;
+  }
+
+  return result;
+}
+
+/**
+ * Infection model ODEs
+ */
+function infectionODE(params: InfectionParameters): (t: number, y: number[]) => number[] {
+  const { adsorptionRate: k, latentPeriod: L, burstSize: b,
+          bacterialGrowthRate: mu, phageDecayRate: delta } = params;
+
+  return (t: number, y: number[]) => {
+    const [B, I, P] = y;
+    const dB = mu * B - k * B * P;
+    const dI = k * B * P - I / L;
+    const dP = (b / L) * I - k * B * P - delta * P;
+    return [dB, dI, dP];
+  };
+}
+
+/**
+ * Run infection simulation
+ */
+function simulateInfection(
+  params: InfectionParameters,
+  tMax: number,
+  dt: number = 0.5
+): Array<{ time: number; bacteria: number; phage: number; infected: number }> {
+  const y0 = [params.initialBacteria, 0, params.initialPhage];
+  const trajectory = rungeKutta4(infectionODE(params), y0, [0, tMax], dt);
+
+  return trajectory.map(({ t, y }) => ({
+    time: t,
+    bacteria: y[0],
+    infected: y[1],
+    phage: y[2],
+  }));
+}
+
+/**
+ * Log-likelihood of data given parameters
+ */
+function logLikelihood(
+  params: InfectionParameters,
+  data: DataPoint[],
+  sigma: number = 0.1
+): number {
+  const simulation = simulateInfection(params, Math.max(...data.map(d => d.time)));
+
+  let ll = 0;
+  for (const point of data) {
+    const simPoint = simulation.reduce((prev, curr) =>
+      Math.abs(curr.time - point.time) < Math.abs(prev.time - point.time) ? curr : prev
+    );
+
+    let predicted: number;
+    if (point.type === 'OD') {
+      predicted = (simPoint.bacteria + simPoint.infected) / 8e8;
+    } else if (point.type === 'PFU') {
+      predicted = simPoint.phage;
+    } else {
+      predicted = simPoint.bacteria;
+    }
+
+    const observed = point.type === 'OD' ? point.value : Math.log10(point.value + 1);
+    const pred = point.type === 'OD' ? predicted : Math.log10(predicted + 1);
+    ll -= Math.pow(observed - pred, 2) / (2 * sigma * sigma);
+  }
+
+  return ll;
+}
+
+/**
+ * Nelder-Mead optimization for parameter refinement
+ */
+function nelderMead(
+  objective: (x: number[]) => number,
+  x0: number[],
+  options: { maxIter?: number; tolerance?: number } = {}
+): number[] {
+  const { maxIter = 500, tolerance = 1e-6 } = options;
+  const n = x0.length;
+
+  // Initialize simplex
+  const simplex: Array<{ point: number[]; value: number }> = [];
+  simplex.push({ point: [...x0], value: objective(x0) });
+
+  for (let i = 0; i < n; i++) {
+    const point = [...x0];
+    point[i] *= 1.1;
+    simplex.push({ point, value: objective(point) });
+  }
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    simplex.sort((a, b) => a.value - b.value);
+    const range = simplex[n].value - simplex[0].value;
+    if (range < tolerance) break;
+
+    const centroid = new Array(n).fill(0);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        centroid[j] += simplex[i].point[j] / n;
+      }
+    }
+
+    const worst = simplex[n];
+    const reflected = centroid.map((c, i) => 2 * c - worst.point[i]);
+    const reflectedValue = objective(reflected);
+
+    if (reflectedValue < simplex[0].value) {
+      const expanded = centroid.map((c, i) => 3 * c - 2 * worst.point[i]);
+      const expandedValue = objective(expanded);
+      simplex[n] = expandedValue < reflectedValue
+        ? { point: expanded, value: expandedValue }
+        : { point: reflected, value: reflectedValue };
+    } else if (reflectedValue < simplex[n - 1].value) {
+      simplex[n] = { point: reflected, value: reflectedValue };
+    } else {
+      const contracted = centroid.map((c, i) => 0.5 * c + 0.5 * worst.point[i]);
+      const contractedValue = objective(contracted);
+      if (contractedValue < worst.value) {
+        simplex[n] = { point: contracted, value: contractedValue };
+      }
+    }
+  }
+
+  simplex.sort((a, b) => a.value - b.value);
+  return simplex[0].point;
+}
+
+/**
+ * Identify lysis cassette genes from annotation
+ */
+function identifyLysisCassette(genes: GeneInfo[]): LysisCassette {
+  const cassette: LysisCassette = {};
+
+  for (const gene of genes) {
+    const name = gene.name?.toLowerCase() ?? '';
+    const product = gene.product?.toLowerCase() ?? '';
+
+    if (name.includes('holin') || product.includes('holin')) {
+      if (name.includes('anti') || product.includes('anti')) {
+        cassette.antiholin = gene;
+      } else {
+        cassette.holin = gene;
+      }
+    } else if (name.includes('lysin') || product.includes('lysozyme') ||
+               product.includes('endolysin')) {
+      cassette.endolysin = gene;
+    } else if (name.includes('spanin') || name.includes('rz')) {
+      cassette.spanin = gene;
+    }
+  }
+
+  if (cassette.holin) {
+    const holinLength = (cassette.holin.end - cassette.holin.start) / 3;
+    cassette.lysisTimingPrediction = holinLength > 150 ? 60 : 40;
+  }
+
+  return cassette;
+}
+
+/**
+ * Main inference function
+ */
+export function fitInfectionModel(
+  data: DataPoint[],
+  options: { maxIter?: number } = {}
+): InferenceResult {
+  const { maxIter = 500 } = options;
+
+  // Initial parameter estimates
+  const initial: InfectionParameters = {
+    adsorptionRate: 1e-8,
+    latentPeriod: 40,
+    burstSize: 100,
+    bacterialGrowthRate: 0.02,
+    phageDecayRate: 0.001,
+    initialBacteria: 1e7,
+    initialPhage: 1e5,
+  };
+
+  const x0 = [Math.log(initial.adsorptionRate), initial.latentPeriod, Math.log(initial.burstSize)];
+
+  const objective = (x: number[]): number => {
+    const params: InfectionParameters = {
+      ...initial,
+      adsorptionRate: Math.exp(x[0]),
+      latentPeriod: x[1],
+      burstSize: Math.exp(x[2]),
+    };
+    return -logLikelihood(params, data);
+  };
+
+  const xOpt = nelderMead(objective, x0, { maxIter });
+
+  const parameters: InfectionParameters = {
+    ...initial,
+    adsorptionRate: Math.exp(xOpt[0]),
+    latentPeriod: xOpt[1],
+    burstSize: Math.exp(xOpt[2]),
+  };
+
+  const ll = logLikelihood(parameters, data);
+  const AIC = 6 - 2 * ll;
+  const BIC = 3 * Math.log(data.length) - 2 * ll;
+
+  const tMax = Math.max(...data.map(d => d.time)) * 1.2;
+  const modelCurve = simulateInfection(parameters, tMax);
+
+  const residuals: number[] = [];
+  let ssRes = 0, ssTot = 0;
+  const mean = data.reduce((s, d) => s + d.value, 0) / data.length;
+
+  for (const point of data) {
+    const simPoint = modelCurve.reduce((prev, curr) =>
+      Math.abs(curr.time - point.time) < Math.abs(prev.time - point.time) ? curr : prev
+    );
+    const predicted = point.type === 'OD'
+      ? (simPoint.bacteria + simPoint.infected) / 8e8
+      : simPoint.phage;
+    const residual = point.value - predicted;
+    residuals.push(residual);
+    ssRes += residual * residual;
+    ssTot += Math.pow(point.value - mean, 2);
+  }
+
+  const fitQuality = 1 - ssRes / ssTot;
+
+  return {
+    parameters,
+    confidence: {
+      adsorptionRate: [parameters.adsorptionRate * 0.5, parameters.adsorptionRate * 2],
+      latentPeriod: [parameters.latentPeriod - 10, parameters.latentPeriod + 10],
+      burstSize: [parameters.burstSize * 0.5, parameters.burstSize * 2],
+    },
+    logLikelihood: ll,
+    AIC,
+    BIC,
+    residuals,
+    fitQuality,
+    modelCurve,
+  };
+}
+
+/**
+ * Link inferred kinetics to lysis genes
+ */
+export function linkKineticsToGenome(
+  inference: InferenceResult,
+  genes: GeneInfo[]
+): { cassette: LysisCassette; latencyMatch: 'good' | 'partial' | 'poor'; suggestions: string[] } {
+  const cassette = identifyLysisCassette(genes);
+  const suggestions: string[] = [];
+
+  let latencyMatch: 'good' | 'partial' | 'poor' = 'poor';
+
+  if (cassette.lysisTimingPrediction) {
+    const diff = Math.abs(inference.parameters.latentPeriod - cassette.lysisTimingPrediction);
+    if (diff < 10) latencyMatch = 'good';
+    else if (diff < 20) {
+      latencyMatch = 'partial';
+      suggestions.push(`Latent period differs from holin prediction`);
+    }
+  }
+
+  if (!cassette.holin) suggestions.push('No holin identified');
+  if (!cassette.endolysin) suggestions.push('No endolysin found');
+  if (inference.parameters.burstSize < 20) suggestions.push('Low burst size - check for lysogeny');
+
+  return { cassette, latencyMatch, suggestions };
+}
+```
+
+### Why This Is a Good Idea
+
+1. **Bridges Wet Lab and Computation**: Researchers routinely generate growth curves but struggle to extract quantitative parameters. This feature automates inference and links numbers to genome features.
+
+2. **Therapeutic Dosing**: Burst size and latent period determine optimal phage dosing schedules. Knowing a phage releases 200 progeny after 40 minutes vs 50 after 80 minutes changes treatment protocols.
+
+3. **Engineering Guidance**: Connecting inferred kinetics to the lysis cassette identifies which genes to modify for faster/slower lysis or larger/smaller burst sizes.
+
+4. **Statistical Rigor**: Bootstrap confidence intervals and model comparison metrics (AIC/BIC) help users understand uncertainty—essential for publication and regulatory submissions.
+
+5. **Stochastic Reality**: The Gillespie simulator shows that phage infections are inherently noisy at low MOI, explaining variability in experimental results.
+
+### Innovation Assessment
+**Novelty**: High — Integrating kinetic fitting with genome annotation and lysis cassette prediction in a terminal is novel.
+
+### Pedagogical Value: 9/10
+Users learn ODE/SDE modeling, likelihood-based inference, bootstrap methods, and gene-to-phenotype mapping.
+
+### Cool/Wow Factor: 8/10
+Watching the fit converge with uncertainty bands, then seeing lysis genes "light up" as responsible for inferred timing, creates powerful causal insight.
+
+### TUI Visualization
+
+```
+╭──────────────────────────── Burst Kinetics Inference ──────────────────────────────╮
+│  Phage: T4                Data: 24 points (OD600)              Mode: Deterministic │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                    │
+│  ┌─ Growth Curve Fit ──────────────────────────────────────────────────────────┐  │
+│  │                                                                              │  │
+│  │ OD   ●    ●                                                                  │  │
+│  │ 1.0 ┤       ●  ●                                                            │  │
+│  │     │            ●●                          ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄           │  │
+│  │ 0.8 ┤              ●●●                  ▄▄▄▀▀                    ▀▀▄▄        │  │
+│  │     │                 ●●●          ▄▄▀▀                             ▀▄      │  │
+│  │ 0.6 ┤                    ●●●   ▄▄▀▀                                   ▀▄    │  │
+│  │     │                       ●▄▀           ░░░ 95% CI ░░░                │    │  │
+│  │ 0.4 ┤                      ▄▀●●●                                        │    │  │
+│  │     │                   ▄▀▀     ●●●●●                                        │  │
+│  │ 0.2 ┤              ▄▄▀▀▀            ●●●●●●●                                  │  │
+│  │     │▄▄▄▄▄▄▄▄▄▄▄▄▀▀                                                         │  │
+│  │ 0.0 ┼─────────┬─────────┬─────────┬─────────┬─────────┬─────────┬──────────│  │
+│  │     0        30        60        90       120       150       180    Time   │  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│          Adsorption ───▶ │◀── Latent Period ──▶│◀─────── Lysis ─────────▶         │
+│                                                                                    │
+│  ┌─ Inferred Parameters ─────────────┐  ┌─ Lysis Cassette ─────────────────────┐  │
+│  │                                   │  │                                      │  │
+│  │  Adsorption (k):  2.3×10⁻⁸ mL/min │  │  Holin (t):      ████████  [MATCH]   │  │
+│  │    95% CI: [1.8, 2.9] ×10⁻⁸       │  │  Antiholin (rI): ███████             │  │
+│  │                                   │  │  Endolysin (e):  ██████████          │  │
+│  │  Latent Period (L):    42.3 min   │  │  Spanin (rz):    ████                │  │
+│  │    95% CI: [38.1, 47.2] min       │  │                                      │  │
+│  │                                   │  │  Predicted Latency: 45 min           │  │
+│  │  Burst Size (b):         187      │  │  Match: GOOD ✓                       │  │
+│  │    95% CI: [142, 234]             │  │                                      │  │
+│  │  ─────────────────────────────    │  │  Holin class II → shorter latent    │  │
+│  │  R² = 0.967   AIC = -42.3         │  │  High burst → delayed lysis timing   │  │
+│  └───────────────────────────────────┘  └──────────────────────────────────────┘  │
+│                                                                                    │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│  [D]ata: OD  [M]ode: ODE/Gillespie  [B]ootstrap  [E]xport params  [J]ump to gene  │
+╰────────────────────────────────────────────────────────────────────────────────────╯
+```
 
 ### Implementation Stack
-Rust+WASM fitting; TS charts; SQLite cache of parameter posteriors; no heavy ML deps.
+- **ODE Solver**: Rust + WASM for Runge-Kutta with adaptive stepping
+- **Optimization**: Nelder-Mead in TypeScript; optional L-BFGS in Rust
+- **Stochastic**: Gillespie algorithm in Rust + WASM
+- **Caching**: SQLite stores fitted parameters per dataset
 
 ---
 
