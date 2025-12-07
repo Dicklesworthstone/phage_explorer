@@ -3,41 +3,62 @@ import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { Simulation, SimulationId, SimState } from '@phage-explorer/core';
 import { getSimulationRegistry } from '../simulations/registry';
+import { RibosomeTrafficView } from './RibosomeTrafficView';
 
 interface SimulationViewProps {
   onClose: () => void;
 }
 
 function renderDetails(sim: Simulation, state: SimState): React.ReactElement {
+  const spark = (values: number[], width = 20): string => {
+    if (values.length === 0) return '';
+    const chars = '▁▂▃▄▅▆▇█';
+    const trimmed = values.slice(-width);
+    const min = Math.min(...trimmed);
+    const max = Math.max(...trimmed);
+    if (max === min) return chars[0].repeat(trimmed.length);
+    return trimmed
+      .map(v => {
+        const idx = Math.min(chars.length - 1, Math.floor(((v - min) / (max - min)) * (chars.length - 1)));
+        return chars[idx];
+      })
+      .join('');
+  };
+
+  const bar = (fraction: number, width = 20): string => {
+    const filled = Math.round(Math.max(0, Math.min(1, fraction)) * width);
+    return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled));
+  };
+
   switch (state.type) {
     case 'lysogeny-circuit':
       return (
         <Text>
           CI {state.ci.toFixed(2)} · Cro {state.cro.toFixed(2)} · Phase {state.phase}
+          {'  '}CI/Cro trend {spark(state.history.map(h => h.ci - h.cro))}
         </Text>
       );
     case 'ribosome-traffic':
-      return (
-        <Text>
-          Ribosomes {state.ribosomes.length} · Proteins {state.proteinsProduced}
-        </Text>
-      );
+      return <RibosomeTrafficView state={state} />;
     case 'plaque-automata':
       return (
         <Text>
           Phage {state.phageCount} · Infected {state.infectionCount} · Bacteria {state.bacteriaCount}
+          {'  '}Grid fill {bar(Math.min(1, state.infectionCount / (state.gridSize * state.gridSize)))}
         </Text>
       );
     case 'evolution-replay':
       return (
         <Text>
           Gen {state.generation} · Mutations {state.mutations.length} · Fitness {(state.fitnessHistory.at(-1) ?? 1).toFixed(2)}
+          {'  '}Fitness trend {spark(state.fitnessHistory)}
         </Text>
       );
     case 'packaging-motor':
       return (
         <Text>
           Fill {(state.fillFraction * 100).toFixed(1)}% · Pressure {state.pressure.toFixed(1)} atm · Force {state.force.toFixed(1)} pN
+          {'  '}Fill gauge {bar(state.fillFraction)}
         </Text>
       );
     default:
