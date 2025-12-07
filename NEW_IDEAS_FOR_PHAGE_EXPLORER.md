@@ -11895,29 +11895,557 @@ The following ten are selected from a broader 100-idea sweep. They avoid overlap
 
 ## 32) Capsid Packaging & Ejection Energetics Simulator
 
-### Concept
-Quantify the physics of packing dsDNA into a confined capsid and its subsequent ejection. Model force–extension, internal pressure (up to ~60 atm), salt/GC effects, and differences among headful vs cos vs phi29 portal strategies.
+### Extended Concept
 
-### How to Build
-- **Physics core (Rust+WASM)**: Worm-Like Chain elasticity + Debye–Hückel electrostatics + bending energy; ndarray + nalgebra; compile to WASM for Bun.
-- **Precompute per phage**: Given genome length, GC%, capsid radius, portal type → force/energy curves; cache in SQLite (dense arrays serialized).
-- **Motor benchmarks**: Table of ATP/bp and stall forces for T4, lambda, phi29 for comparison overlays.
-- **Controls**: Sliders for ionic strength (Na+/Mg2+), temperature; toggle headful/cos; “fill fraction” scrubber animates packing/ejection.
+Bacteriophage capsids are remarkable molecular machines that package DNA under extraordinary conditions. During packaging, motor proteins (terminases, portal proteins) translocate DNA against pressures reaching **40-60 atmospheres**—higher than a champagne bottle and among the highest pressures in biology. This feature simulates the complete thermodynamics of DNA packaging and ejection, revealing why certain genome lengths are viable, how ionic conditions affect stability, and why different packaging strategies (headful, cos-site, protein-primed) evolved.
 
-### Why It’s Good
-Links genome composition to biophysical feasibility and ejection vigor—useful for stability, storage, and therapeutic formulation.
+The physics involves three competing energy terms:
+1. **Entropic confinement**: DNA loses conformational freedom when packed
+2. **Bending energy**: DNA must curve tightly in the capsid interior
+3. **Electrostatic repulsion**: Negatively charged phosphate backbones repel each other
 
-### Novelty
-High. Packaging thermodynamics is almost never interactive; typically buried in PDFs or static plots.
+Understanding these forces explains why phages can't simply scale up indefinitely, why certain GC contents correlate with genome size, and how therapeutic phages might be engineered for stability.
 
-### Pedagogical Value
-Teaches polymer physics, electrostatics, and molecular machines; shows why “longer genome” has real energetic costs.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-ASCII force–distance plot; live pressure gauge flashing at high fill; “unspooling” animation on ejection; overlay motor benchmarks as dashed curves.
+**Worm-Like Chain (WLC) Model for DNA Elasticity:**
+
+The force-extension relationship for confined DNA:
+
+```
+F(x) = (k_B T / L_p) × [1/(4(1-x/L)²) - 1/4 + x/L]
+```
+
+Where:
+- `L_p` = persistence length (~50 nm for dsDNA)
+- `L` = contour length of DNA
+- `x` = end-to-end extension
+- `k_B T` ≈ 4.1 pN·nm at 25°C
+
+**Confinement Free Energy (Odijk regime):**
+
+For DNA packed in a spherical capsid:
+
+```
+ΔG_confinement = (k_B T × L) / (L_p^(1/3) × D^(2/3))
+```
+
+Where `D` = effective confinement diameter.
+
+**Electrostatic Repulsion (Debye-Hückel):**
+
+```
+U_elec(r) = (q² / 4πε₀ε_r) × (e^(-κr) / r)
+
+κ = √(2 × N_A × e² × I / (ε₀ε_r k_B T))
+```
+
+Where:
+- `κ` = inverse Debye length
+- `I` = ionic strength
+- `q` = effective charge per unit length
+
+**Internal Pressure:**
+
+```
+P = -(∂G/∂V) = (k_B T / V) × [N_segments + B₂ × N² / V + ...]
+```
+
+**Motor Work:**
+
+```
+W_motor = ∫ F(x) dx = n_ATP × ΔG_ATP × η
+```
+
+Where:
+- `n_ATP` = ATP molecules consumed
+- `ΔG_ATP` ≈ 50 kJ/mol
+- `η` = motor efficiency (~25-50%)
+
+### Implementation Approach
+
+```typescript
+// packages/physics/src/capsid-energetics.ts
+
+import type { PhageFull } from '@phage-explorer/core';
+
+/**
+ * Physical constants
+ */
+const CONSTANTS = {
+  k_B: 1.380649e-23,        // Boltzmann constant (J/K)
+  T: 298.15,                 // Temperature (K)
+  k_BT: 4.114e-21,          // k_B × T at 25°C (J)
+  k_BT_pN_nm: 4.114,        // k_B × T in pN·nm
+  L_p: 50,                   // Persistence length (nm)
+  DNA_rise: 0.34,            // nm per base pair
+  charge_per_bp: -2,         // Effective charges per bp
+  epsilon_water: 78.5,       // Dielectric constant
+  e: 1.602e-19,              // Elementary charge (C)
+  N_A: 6.022e23,             // Avogadro's number
+  epsilon_0: 8.854e-12,      // Vacuum permittivity
+};
+
+/**
+ * Capsid geometry for different phage types
+ */
+interface CapsidGeometry {
+  innerRadius: number;       // nm
+  portalRadius: number;      // nm
+  volume: number;            // nm³
+  morphology: 'icosahedral' | 'prolate' | 'filamentous';
+}
+
+const CAPSID_MODELS: Record<string, CapsidGeometry> = {
+  'T4': { innerRadius: 43, portalRadius: 3.5, volume: 333000, morphology: 'prolate' },
+  'Lambda': { innerRadius: 29, portalRadius: 3.0, volume: 102000, morphology: 'icosahedral' },
+  'T7': { innerRadius: 28, portalRadius: 3.2, volume: 92000, morphology: 'icosahedral' },
+  'Phi29': { innerRadius: 21, portalRadius: 1.8, volume: 38800, morphology: 'prolate' },
+  'PhiX174': { innerRadius: 13, portalRadius: 2.0, volume: 9200, morphology: 'icosahedral' },
+};
+
+/**
+ * Motor properties for different packaging systems
+ */
+interface MotorProperties {
+  stallForce: number;        // pN
+  velocity: number;          // bp/s at low load
+  atpPerBp: number;          // ATP molecules per bp packaged
+  stepSize: number;          // bp per power stroke
+  efficiency: number;        // fraction
+}
+
+const MOTOR_MODELS: Record<string, MotorProperties> = {
+  'T4-terminase': { stallForce: 60, velocity: 700, atpPerBp: 0.5, stepSize: 2, efficiency: 0.4 },
+  'Lambda-terminase': { stallForce: 50, velocity: 600, atpPerBp: 0.5, stepSize: 2, efficiency: 0.35 },
+  'Phi29-portal': { stallForce: 57, velocity: 100, atpPerBp: 0.25, stepSize: 2.5, efficiency: 0.5 },
+  'T7-terminase': { stallForce: 55, velocity: 500, atpPerBp: 0.5, stepSize: 2, efficiency: 0.38 },
+};
+
+/**
+ * Packaging strategy types
+ */
+type PackagingStrategy = 'headful' | 'cos-site' | 'protein-primed' | 'pac-site';
+
+/**
+ * Complete energetics result
+ */
+interface PackagingEnergetics {
+  // Core energies (in k_BT units)
+  bendingEnergy: number;
+  confinementEntropy: number;
+  electrostaticRepulsion: number;
+  totalFreeEnergy: number;
+
+  // Physical quantities
+  internalPressure: number;      // atmospheres
+  fillFraction: number;          // 0-1
+  dnaPackingDensity: number;     // mg/mL
+  interhelixDistance: number;    // nm
+
+  // Force-extension curve
+  forceExtensionCurve: Array<{ fill: number; force: number; energy: number }>;
+
+  // Motor work
+  totalMotorWork: number;        // k_BT
+  atpRequired: number;           // molecules
+  packagingTime: number;         // seconds
+
+  // Stability metrics
+  ejectionForce: number;         // pN at portal
+  ejectionVelocity: number;      // bp/s initial
+  stabilityScore: number;        // 0-100
+}
+
+/**
+ * Calculate inverse Debye length
+ */
+function calculateDebyeLength(ionicStrength: number): number {
+  // κ in nm⁻¹
+  const numerator = 2 * CONSTANTS.N_A * Math.pow(CONSTANTS.e, 2) * ionicStrength * 1000;
+  const denominator = CONSTANTS.epsilon_0 * CONSTANTS.epsilon_water * CONSTANTS.k_B * CONSTANTS.T;
+  return Math.sqrt(numerator / denominator) * 1e-9;
+}
+
+/**
+ * Worm-Like Chain force-extension
+ */
+function wlcForce(extension: number, contourLength: number): number {
+  const x = extension / contourLength;
+  if (x >= 0.99) return Infinity;
+  if (x <= 0) return 0;
+
+  // Marko-Siggia interpolation formula
+  const term1 = 1 / (4 * Math.pow(1 - x, 2));
+  const term2 = -0.25;
+  const term3 = x;
+
+  return (CONSTANTS.k_BT_pN_nm / CONSTANTS.L_p) * (term1 + term2 + term3);
+}
+
+/**
+ * Calculate bending energy for DNA in capsid
+ */
+function calculateBendingEnergy(
+  genomeLengthBp: number,
+  capsid: CapsidGeometry
+): number {
+  const contourLength = genomeLengthBp * CONSTANTS.DNA_rise;  // nm
+
+  // Spool model: DNA winds in concentric layers
+  // Average radius of curvature
+  const avgRadius = capsid.innerRadius * 0.6;
+
+  // Bending energy = L_p × L / (2 × R²) in k_BT units
+  const bendingEnergy = (CONSTANTS.L_p * contourLength) / (2 * Math.pow(avgRadius, 2));
+
+  return bendingEnergy;
+}
+
+/**
+ * Calculate confinement entropy loss
+ */
+function calculateConfinementEntropy(
+  genomeLengthBp: number,
+  capsid: CapsidGeometry
+): number {
+  const contourLength = genomeLengthBp * CONSTANTS.DNA_rise;
+  const D = capsid.innerRadius * 2;  // Effective diameter
+
+  // Odijk confinement: segments lose entropy
+  const numSegments = contourLength / CONSTANTS.L_p;
+  const deflectionLength = Math.pow(CONSTANTS.L_p * Math.pow(D, 2), 1/3);
+
+  // Entropy loss per deflection segment
+  const entropyLoss = (contourLength / deflectionLength) * 1.0;  // ~1 k_BT per segment
+
+  return entropyLoss;
+}
+
+/**
+ * Calculate electrostatic repulsion energy
+ */
+function calculateElectrostaticEnergy(
+  genomeLengthBp: number,
+  capsid: CapsidGeometry,
+  ionicStrength: number
+): number {
+  const kappa = calculateDebyeLength(ionicStrength);
+  const contourLength = genomeLengthBp * CONSTANTS.DNA_rise;
+
+  // Effective volume and DNA concentration
+  const dnaVolume = Math.PI * Math.pow(1.0, 2) * contourLength;  // DNA as 1nm radius cylinder
+  const fillFraction = dnaVolume / capsid.volume;
+
+  // Average interhelix distance
+  const interhelix = Math.pow(capsid.volume / contourLength, 0.5) * 0.8;
+
+  // Debye-Hückel repulsion between parallel helices
+  const linearChargeDensity = CONSTANTS.charge_per_bp / CONSTANTS.DNA_rise;  // e/nm
+
+  // Repulsion energy per unit length
+  const screenedPotential = Math.exp(-kappa * interhelix) / interhelix;
+  const electrostaticPerLength = Math.pow(linearChargeDensity, 2) * screenedPotential * 0.1;
+
+  // Total electrostatic energy (in k_BT)
+  const totalElectrostatic = electrostaticPerLength * contourLength * fillFraction * 10;
+
+  return totalElectrostatic;
+}
+
+/**
+ * Calculate internal pressure
+ */
+function calculateInternalPressure(
+  totalEnergy: number,  // in k_BT
+  capsid: CapsidGeometry,
+  fillFraction: number
+): number {
+  // P = -dG/dV, approximate as ΔG/ΔV
+  // Convert to atmospheres: 1 k_BT/nm³ ≈ 41 atm
+  const energyDensity = totalEnergy / capsid.volume;
+  const pressure = energyDensity * 41 * fillFraction;
+
+  return Math.min(pressure, 100);  // Cap at 100 atm for stability
+}
+
+/**
+ * Generate force-extension curve during packaging
+ */
+function generateForceExtensionCurve(
+  genomeLengthBp: number,
+  capsid: CapsidGeometry,
+  motor: MotorProperties,
+  ionicStrength: number,
+  steps: number = 100
+): Array<{ fill: number; force: number; energy: number }> {
+  const curve: Array<{ fill: number; force: number; energy: number }> = [];
+
+  for (let i = 0; i <= steps; i++) {
+    const fill = i / steps;
+    const packedBp = Math.floor(genomeLengthBp * fill);
+
+    // Calculate energies at this fill level
+    const bending = calculateBendingEnergy(packedBp, capsid) * fill;
+    const confinement = calculateConfinementEntropy(packedBp, capsid) * Math.pow(fill, 1.5);
+    const electrostatic = calculateElectrostaticEnergy(packedBp, capsid, ionicStrength) * Math.pow(fill, 2);
+    const totalEnergy = bending + confinement + electrostatic;
+
+    // Force = dG/dx, approximate as slope
+    let force = 0;
+    if (i > 0) {
+      const prevEnergy = curve[i - 1].energy;
+      const dE = totalEnergy - prevEnergy;
+      const dx = (genomeLengthBp / steps) * CONSTANTS.DNA_rise;  // nm
+      force = (dE * CONSTANTS.k_BT_pN_nm) / dx;  // pN
+    }
+
+    // Apply motor stall limit
+    force = Math.min(force, motor.stallForce * 1.1);
+
+    curve.push({ fill, force, energy: totalEnergy });
+  }
+
+  return curve;
+}
+
+/**
+ * Calculate complete packaging energetics
+ */
+export function calculatePackagingEnergetics(
+  phage: PhageFull,
+  options: {
+    ionicStrength?: number;     // mM, default 150
+    temperature?: number;       // K, default 298
+    capsidModel?: string;       // Override capsid
+    motorModel?: string;        // Override motor
+  } = {}
+): PackagingEnergetics {
+  const ionicStrength = (options.ionicStrength ?? 150) / 1000;  // Convert to M
+
+  // Select or estimate capsid geometry
+  const capsid = CAPSID_MODELS[options.capsidModel ?? phage.name] ??
+    estimateCapsidFromGenome(phage.genomeLength);
+
+  // Select motor
+  const motor = MOTOR_MODELS[options.motorModel ?? `${phage.name}-terminase`] ??
+    MOTOR_MODELS['Lambda-terminase'];
+
+  // Calculate individual energy terms
+  const bendingEnergy = calculateBendingEnergy(phage.genomeLength, capsid);
+  const confinementEntropy = calculateConfinementEntropy(phage.genomeLength, capsid);
+  const electrostaticRepulsion = calculateElectrostaticEnergy(
+    phage.genomeLength, capsid, ionicStrength
+  );
+
+  const totalFreeEnergy = bendingEnergy + confinementEntropy + electrostaticRepulsion;
+
+  // Physical quantities
+  const dnaContourLength = phage.genomeLength * CONSTANTS.DNA_rise;
+  const dnaVolume = Math.PI * 1.0 * 1.0 * dnaContourLength;  // nm³
+  const fillFraction = Math.min(dnaVolume / capsid.volume, 0.55);
+
+  // DNA concentration: ~500 mg/mL typical for tightly packed phage
+  const dnaMass = phage.genomeLength * 660;  // Daltons
+  const dnaPackingDensity = (dnaMass / CONSTANTS.N_A) / (capsid.volume * 1e-24) * 1e3;
+
+  // Interhelix distance
+  const interhelixDistance = Math.pow(capsid.volume / dnaContourLength, 0.5) * 0.9;
+
+  // Internal pressure
+  const internalPressure = calculateInternalPressure(totalFreeEnergy, capsid, fillFraction);
+
+  // Force-extension curve
+  const forceExtensionCurve = generateForceExtensionCurve(
+    phage.genomeLength, capsid, motor, ionicStrength
+  );
+
+  // Motor work calculation
+  const totalMotorWork = totalFreeEnergy / motor.efficiency;
+  const atpRequired = phage.genomeLength * motor.atpPerBp;
+  const packagingTime = phage.genomeLength / motor.velocity;
+
+  // Ejection dynamics
+  const ejectionForce = internalPressure * 0.1 * Math.PI * Math.pow(capsid.portalRadius, 2);
+  const ejectionVelocity = ejectionForce * 100;  // Simplified model
+
+  // Stability score (0-100)
+  const stabilityScore = Math.max(0, Math.min(100,
+    100 - (internalPressure - 30) * 2 - (fillFraction - 0.4) * 50
+  ));
+
+  return {
+    bendingEnergy,
+    confinementEntropy,
+    electrostaticRepulsion,
+    totalFreeEnergy,
+    internalPressure,
+    fillFraction,
+    dnaPackingDensity,
+    interhelixDistance,
+    forceExtensionCurve,
+    totalMotorWork,
+    atpRequired,
+    packagingTime,
+    ejectionForce,
+    ejectionVelocity,
+    stabilityScore,
+  };
+}
+
+/**
+ * Estimate capsid size from genome length
+ */
+function estimateCapsidFromGenome(genomeLengthBp: number): CapsidGeometry {
+  // Empirical: capsid volume scales with genome length
+  // ~2000 bp per 1000 nm³
+  const volume = genomeLengthBp * 0.5 * 1000;
+  const radius = Math.pow(volume * 3 / (4 * Math.PI), 1/3);
+
+  return {
+    innerRadius: radius,
+    portalRadius: radius * 0.1,
+    volume,
+    morphology: genomeLengthBp > 100000 ? 'prolate' : 'icosahedral',
+  };
+}
+
+/**
+ * Simulate ejection dynamics
+ */
+export function simulateEjection(
+  energetics: PackagingEnergetics,
+  targetOsmolarity: number = 0.3,  // M
+  timeSteps: number = 1000
+): Array<{ time: number; fractionEjected: number; velocity: number; pressure: number }> {
+  const trajectory: Array<{ time: number; fractionEjected: number; velocity: number; pressure: number }> = [];
+
+  let fractionEjected = 0;
+  let currentPressure = energetics.internalPressure;
+  const dt = 0.001;  // seconds
+
+  for (let i = 0; i <= timeSteps; i++) {
+    const time = i * dt;
+
+    // Osmotic pressure opposition
+    const osmoticPressure = targetOsmolarity * 24.6;  // Approximate atm
+    const netPressure = Math.max(0, currentPressure - osmoticPressure);
+
+    // Ejection velocity proportional to net pressure
+    const velocity = netPressure * 500;  // bp/s per atm
+
+    trajectory.push({
+      time,
+      fractionEjected,
+      velocity,
+      pressure: currentPressure,
+    });
+
+    // Update state
+    fractionEjected += velocity * dt / 50000;  // Normalized
+    fractionEjected = Math.min(fractionEjected, 1);
+
+    // Pressure decreases as DNA exits
+    currentPressure = energetics.internalPressure * Math.pow(1 - fractionEjected, 2);
+
+    if (fractionEjected >= 0.99) break;
+  }
+
+  return trajectory;
+}
+
+/**
+ * Compare packaging across phages
+ */
+export function comparePackagingEnergetics(
+  phages: PhageFull[],
+  ionicStrength: number = 150
+): Map<string, PackagingEnergetics> {
+  const results = new Map<string, PackagingEnergetics>();
+
+  for (const phage of phages) {
+    results.set(phage.name, calculatePackagingEnergetics(phage, { ionicStrength }));
+  }
+
+  return results;
+}
+```
+
+### Why This Is a Good Idea
+
+1. **Bridges Theory and Experiment**: The physics of DNA packaging is well-studied but rarely accessible interactively. This feature brings published thermodynamic models into a form where users can explore parameter space and build intuition about why certain genome sizes work for certain capsids.
+
+2. **Therapeutic Relevance**: Phage stability during storage and ejection vigor during infection are critical for therapeutic applications. Understanding how ionic conditions (storage buffer) affect internal pressure helps formulation scientists optimize phage preparations.
+
+3. **Evolutionary Insight**: The packaging capacity constraints explain why phages cluster around certain genome sizes and why headful packaging allows size variation while cos-site packaging is precise. Users learn that evolution operates within physical limits.
+
+4. **Educational Depth**: Students encounter polymer physics, electrostatics, and molecular motors in one integrated context. The force-extension curves connect abstract thermodynamics to measurable quantities from single-molecule experiments.
+
+5. **Comparative Power**: Seeing T4's massive motor stall force versus phi29's elegant protein-primed mechanism side-by-side illuminates convergent and divergent solutions to the same physical problem.
+
+### Innovation Assessment
+**Novelty**: Very High — Interactive packaging thermodynamics in a terminal is essentially unprecedented; these calculations typically live in specialized physics software or static journal figures.
+
+### Pedagogical Value: 9/10
+Covers polymer physics, electrostatics, non-equilibrium thermodynamics, and molecular machines in one cohesive visualization that updates in real time.
+
+### Cool/Wow Factor: 9/10
+Watching the pressure gauge climb as DNA packs, then animating the "unspooling" ejection with velocity decay, creates an visceral understanding of viral physics that no textbook provides.
+
+### TUI Visualization
+
+```
+╭─────────────────────────── Capsid Packaging Energetics ────────────────────────────╮
+│  Phage: Lambda (λ)          Genome: 48,502 bp        Strategy: cos-site           │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                    │
+│  ┌─ Force vs Fill Fraction ──────────────────────────────────────────────────┐    │
+│  │                                                             Motor Stall ──│──  │
+│  │ 60pN ┤                                              ████████████████████  │    │
+│  │      │                                         ▄▄▄▄▄                      │    │
+│  │ 40pN ┤                                   ▄▄▄▄▄▀                           │    │
+│  │      │                              ▄▄▄▄▀                                 │    │
+│  │ 20pN ┤                        ▄▄▄▄▀▀                                      │    │
+│  │      │               ▄▄▄▄▄▄▄▀▀                                            │    │
+│  │  0pN ┼──────────▄▄▄▀▀─────────────────────────────────────────────────────│    │
+│  │      └────┬────────┬────────┬────────┬────────┬────────┬────────┬────────┘    │
+│  │          0%      20%      40%      60%      80%      100%                      │
+│  │                         Fill Fraction ────▶                                    │
+│  └───────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                    │
+│  ┌─ Energy Components ─────────────┐  ┌─ Capsid Status ────────────────────────┐  │
+│  │                                 │  │                                        │  │
+│  │  Bending:        847 k_BT  ████ │  │   ╭────────────────╮                   │  │
+│  │  Confinement:  1,234 k_BT  ████ │  │   │   ░░░▒▒▒▓▓▓███ │  Fill: 42%       │  │
+│  │  Electrostatic:  623 k_BT  ███  │  │   │   ░░░▒▒▒▓▓▓███ │                   │  │
+│  │  ─────────────────────────────  │  │   ╰───────○────────╯  Pressure:       │  │
+│  │  TOTAL:        2,704 k_BT       │  │        Portal        ╔═══════════╗    │  │
+│  │                                 │  │                      ║ 38.2 atm  ║    │  │
+│  │  Motor Work:   6,760 k_BT       │  │                      ╚═══════════╝    │  │
+│  │  ATP Required:  24,251 molecules│  │                      [▓▓▓▓▓▓░░░░]     │  │
+│  │  Pack Time:       81 seconds    │  │                        0   50  100    │  │
+│  └─────────────────────────────────┘  └────────────────────────────────────────┘  │
+│                                                                                    │
+│  ┌─ Ejection Dynamics ─────────────────────────────────────────────────────────┐  │
+│  │  Initial Force: 12.4 pN   Initial Velocity: 19,200 bp/s   Stability: 78/100 │  │
+│  │                                                                              │  │
+│  │  Time (ms):  0    50   100   150   200   250   300   350   400              │  │
+│  │  Ejected:   ░░░░▒▒▒▒▓▓▓▓████████████████████████████████████  → Complete   │  │
+│  │  Pressure:  ████████▓▓▓▓▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  → Equilibrium│  │
+│  └──────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                    │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│  [I]onic: 150mM  [T]emp: 25°C  [S]trategy: cos  [C]ompare motors  [A]nimate pack  │
+╰────────────────────────────────────────────────────────────────────────────────────╯
+```
 
 ### Implementation Stack
-Rust+WASM physics; TS/Bun UI; SQLite cache; minimal deps beyond ndarray/nalgebra/statrs.
+- **Physics Engine**: Rust + nalgebra + ndarray → WASM for high-performance thermodynamic calculations
+- **Caching**: SQLite stores precomputed force-extension curves per phage + ionic condition
+- **UI**: Ink/React components with Braille block plotting for smooth curves
+- **Animation**: requestAnimationFrame-like loop for ejection dynamics
+
+---
 
 ---
 
