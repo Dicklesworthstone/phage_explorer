@@ -1,0 +1,15 @@
+{
+  "name": "@phage/wasm-compute",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./pkg/wasm_compute.js",
+  "types": "./pkg/wasm_compute.d.ts",
+  "files": [
+    "pkg"
+  ],
+  "scripts": {
+    "build": "wasm-pack build --target nodejs --out-dir pkg",
+    "postbuild": "bun run ../../scripts/inline-wasm-compute.ts"
+  }
+}
