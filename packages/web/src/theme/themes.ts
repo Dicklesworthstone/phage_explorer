@@ -87,6 +87,7 @@ export const CYBERPUNK_THEME: Theme = {
   id: 'cyberpunk',
   name: 'Cyberpunk',
   palette: cyberpunkPalette,
+  colors: cyberpunkPalette,
   nucleotides: cyberpunkNucleotides,
   aminoAcids: cyberpunkAminoAcids,
 };
@@ -171,6 +172,7 @@ export const CLASSIC_THEME: Theme = {
   id: 'classic',
   name: 'Classic',
   palette: classicPalette,
+  colors: classicPalette,
   nucleotides: classicNucleotides,
   aminoAcids: classicAminoAcids,
 };
@@ -255,6 +257,7 @@ export const OCEAN_THEME: Theme = {
   id: 'ocean',
   name: 'Ocean',
   palette: oceanPalette,
+  colors: oceanPalette,
   nucleotides: oceanNucleotides,
   aminoAcids: oceanAminoAcids,
 };
@@ -339,6 +342,7 @@ export const MATRIX_THEME: Theme = {
   id: 'matrix',
   name: 'Matrix',
   palette: matrixPalette,
+  colors: matrixPalette,
   nucleotides: matrixNucleotides,
   aminoAcids: matrixAminoAcids,
 };
@@ -423,6 +427,7 @@ export const SUNSET_THEME: Theme = {
   id: 'sunset',
   name: 'Sunset',
   palette: sunsetPalette,
+  colors: sunsetPalette,
   nucleotides: sunsetNucleotides,
   aminoAcids: sunsetAminoAcids,
 };
@@ -507,6 +512,7 @@ export const FOREST_THEME: Theme = {
   id: 'forest',
   name: 'Forest',
   palette: forestPalette,
+  colors: forestPalette,
   nucleotides: forestNucleotides,
   aminoAcids: forestAminoAcids,
 };
@@ -591,6 +597,7 @@ export const PASTEL_THEME: Theme = {
   id: 'pastel',
   name: 'Pastel',
   palette: pastelPalette,
+  colors: pastelPalette,
   nucleotides: pastelNucleotides,
   aminoAcids: pastelAminoAcids,
 };
@@ -675,6 +682,7 @@ export const MONOCHROME_THEME: Theme = {
   id: 'monochrome',
   name: 'Monochrome',
   palette: monochromePalette,
+  colors: monochromePalette,
   nucleotides: monochromeNucleotides,
   aminoAcids: monochromeAminoAcids,
 };

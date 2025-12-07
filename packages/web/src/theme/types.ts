@@ -108,6 +108,8 @@ export interface Theme {
   id: string;
   name: string;
   palette: ThemePalette;
+  /** Alias for palette - for easier access */
+  colors: ThemePalette;
   nucleotides: NucleotideTheme;
   aminoAcids: AminoTheme;
 }
