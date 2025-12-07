@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { MarkOverlay } from '@phage-explorer/tui/overlay-computations';
+import type { MarkOverlay } from '../overlay-computations';
 
 const MOTIFS = ['TATAAT', 'TTGACA', 'AGGAGG'];
 
@@ -76,7 +76,9 @@ export function PromoterOverlay({ sequence }: Props): React.ReactElement {
         <Text color={colors.textDim}>No canonical -10/-35/RBS motifs found (quick scan)</Text>
       ) : (
         <>
-          <Text color={colors.textDim}>Density: {spark}</Text>
+          <Text color={colors.textDim}>
+            Density sparkline: {spark} (▁ low motif density → █ high)
+          </Text>
           <Text color={colors.textDim}>Showing first {hits.length} hits (pos, motif):</Text>
           {hits.map(hit => (
             <Text key={`${hit.pos}-${hit.motif}`} color={colors.text}>

@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { MarkOverlay } from '@phage-explorer/tui/overlay-computations';
+import type { MarkOverlay } from '../overlay-computations';
 
 interface Props {
   sequence: string;
@@ -76,7 +76,9 @@ export function RepeatOverlay({ sequence }: Props): React.ReactElement {
         <Text color={colors.textDim}>No palindromic repeats ≥6 bp detected</Text>
       ) : (
         <>
-          <Text color={colors.textDim}>Density: {spark}</Text>
+          <Text color={colors.textDim}>
+            Density sparkline: {spark} (▁ low repeats → █ high)
+          </Text>
           <Text color={colors.textDim}>Total hits: {hits.length}. Showing first {topHits.length}.</Text>
           {topHits.map(hit => (
             <Text key={`${hit.pos}-${hit.len}`} color={colors.text}>

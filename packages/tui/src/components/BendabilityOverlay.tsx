@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { NumericOverlay } from '@phage-explorer/tui/overlay-computations';
+import type { NumericOverlay } from '../overlay-computations';
 
 const SPARK = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -77,6 +77,7 @@ export function BendabilityOverlay({ sequence }: Props): React.ReactElement {
       ) : (
         <>
           <Text color={colors.text}>Proxy = AT fraction per 400 bp window (higher = more bendable)</Text>
+          <Text color={colors.textDim}>Sparkline: ▁ low AT (stiffer) → █ high AT (bendable)</Text>
           <Text color={colors.text}>{line}</Text>
         </>
       )}

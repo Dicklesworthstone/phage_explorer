@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { NumericOverlay } from '@phage-explorer/tui/overlay-computations';
+import type { NumericOverlay } from '../overlay-computations';
 
 const SPARKLINE_BARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
@@ -129,6 +129,9 @@ export function GCOverlay({ sequence }: GCOverlayProps): React.ReactElement {
           <Box flexDirection="column" marginBottom={1}>
             <Text color={colors.text}>
               GC% {result.gcPercent.toFixed(1)} · Origin ≈ {originPos.toLocaleString()} bp · Terminus ≈ {terminusPos.toLocaleString()} bp
+            </Text>
+            <Text color={colors.textDim}>
+              Bars: cumulative skew (▁ low G-C → █ high G-C). Origin/terminus often near extrema.
             </Text>
           </Box>
 
