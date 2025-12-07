@@ -643,3 +643,5 @@ export const useSimulationState = () => usePhageStore((s) => s.simulationState);
 export const useSimulationPaused = () => usePhageStore((s) => s.simulationPaused);
 export const useSimulationSpeed = () => usePhageStore((s) => s.simulationSpeed);
 export const useIsSimulationActive = () => usePhageStore((s) => s.activeSimulationId !== null);
+export const useExperienceLevel = () => usePhageStore((s) => s.experienceLevel);
+export const useHelpDetail = () => usePhageStore((s) => s.helpDetail);
