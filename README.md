@@ -4,12 +4,40 @@
 ![Runtime](https://img.shields.io/badge/runtime-Bun%201.1+-purple)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A phenomenally impressive Terminal User Interface (TUI) for browsing, visualizing, and analyzing bacteriophage genetic data. Features color-coded DNA/amino acid sequences, rotating 3D ASCII phage models, and instant navigation between genomes.
+A Terminal User Interface (TUI) for browsing, visualizing, and analyzing bacteriophage genetic data. Features color-coded DNA/amino acid sequences, rotating 3D ASCII phage models, and instant navigation between genomes.
 
 **One-liner install:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/main/install.sh | bash
 ```
+
+---
+
+## What are phages, and why do they matter?
+
+- **Bacteriophages (phages)** are viruses that infect bacteria. They are the most abundant biological entities on Earth and shape microbial ecosystems, the ocean carbon cycle, and your own microbiome.
+- **Why people study them**
+  - Medicine: craft phage cocktails to fight antibiotic‑resistant infections.
+  - Biotechnology: enzymes like T7 RNA polymerase and Phi29 polymerase are phage gifts that power PCR, IVT, and genome amplification.
+  - Evolution: phages are modular, recombining “Lego kits” that swap genes and reveal how genomes evolve.
+- **Historical impact:** Classic phage experiments (Hershey–Chase, Luria–Delbrück) established DNA as genetic material and the statistical nature of mutation. Phages helped crack the genetic code and seeded modern molecular biology.
+
+## A 90‑second genetic code primer
+
+- DNA alphabet: A, C, G, T (RNA uses U instead of T).
+- The code is read in **codons**: non‑overlapping triplets of bases.
+- Each codon maps to an amino acid (or a stop signal). Example:
+
+| Codon | Amino acid | Notes |
+|-------|------------|-------|
+| ATG   | M (Methionine) | Start codon |
+| TTT / TTC | F (Phenylalanine) | Aromatic |
+| GAA / GAG | E (Glutamic acid) | Acidic |
+| TGG | W (Tryptophan) | Unique single-codon amino acid |
+| TAA / TAG / TGA | * (Stop) | Terminates translation |
+
+- **Reading frames matter:** shift the starting base by 1 or 2 and every downstream codon changes. Phage Explorer lets you flip frames and watch amino acid strings update instantly.
+- **Color hints:** Amino acids cluster by chemistry (hydrophobic, polar, acidic, basic, special). Themes use those groups so patterns pop visually while you scroll.
 
 ---
 
