@@ -5709,3 +5709,928 @@ The following ten are selected from a broader 100-idea sweep. They avoid overlap
 - Novelty: Cocktail-focused evolutionary simulation inside a TUI is unusual.
 - Pedagogy: Stochastic processes, evolutionary dynamics, and intervention design.
 - Wow/TUI: Live ASCII time-series with multiple trajectories; “risk meter” updates in real time; toggle to compare single-phage vs cocktail curves side-by-side.
+
+---
+
+## 11) Latent Genome Fingerprints (LGFs) via Contrastive Encoders
+- Concept: Learn fixed-length embeddings for phage genomes that capture composition, motifs, and structural signals; explore a “phage universe” to find nearest neighbors and hidden clusters beyond ANI/k-mers.
+- Build plan: Train/finetune a contrastive encoder (BYOL/SimCLR-style) on large phage + host-viral corpora. Core in Python (PyTorch + bitsandbytes), export encoder to ONNX; run inference in Bun via ONNX Runtime Web or WASM. Precompute embeddings for bundled phages and cache to SQLite. Use UMAP/TSNE (Rust + WASM via `umap-js`/`tsne-rs`) for on-device projection.
+- Why it’s good: Captures higher-order signals (motif co-occurrence, periodicity, codon bias) into a single vector; enables fast “find me things like this” beyond simple k-mer overlap.
+- Novelty: Genome embeddings in a TUI with real-time nearest-neighbor search are rare; most tools stop at ANI or Mash.
+- Pedagogy: Teaches representation learning and why distance metrics differ; shows latent space vs classic metrics.
+- Wow/TUI: Interactive 2D “phage universe” scatter with density shading; keyboard to jump to nearest neighbors; hover tooltips show phage meta; pressing `l` recenters on the current phage and animates a zoom.
+
+## 12) Pan-Genome Graph & Variant Hotspot Explorer
+- Concept: Build a pan-genome graph for related phages; spotlight structural variants, accessory gene bubbles, and recombination corridors.
+- Build plan: Construct variation graph with `vg`/`odgi` pipeline offline; slim graph to JSON/flatbuffer. At runtime, traverse graph slices in Rust (petgraph) → WASM. Overlay breakpoint density and accessory gene frequency; store tiles in SQLite for rapid paging.
+- Why it’s good: Shows mosaicism and accessory gene flow, not just linear alignments; reveals conserved backbone vs highly exchanged islands.
+- Novelty: Pan-genome graph visualized in a TUI genome browser is uncommon; most stay in web notebooks.
+- Pedagogy: Introduces graph genomes, bubbles, and paths; clarifies why linear references miss diversity.
+- Wow/TUI: ASCII path stack with bubbles drawn as branches; hotspot heat band under the sequence grid; pressing `g` toggles “graph mode” where cursor walks along the primary path and shows alternate alleles.
+
+## 13) Codon–tRNA Adaptation Radar vs Host Panels
+- Concept: Compare a phage’s codon usage against multiple host tRNA repertoires to quantify translational adaptation or host-jump potential.
+- Build plan: Precompute CAI/tAI/CUB per host using host tRNA gene sets (imported TSV/FASTA). Compute per-gene and genome-level scores in Rust (ndarray) → WASM; cache per-host radar values. Optional ML regressor to predict burst efficiency from adaptation scores.
+- Why it’s good: Connects codon bias to real host compatibility; highlights phages poised to infect alternative hosts.
+- Novelty: Multi-host tRNA adaptation dashboards are rare in terminal tools.
+- Pedagogy: Explains codon bias, tRNA availability, and translational control.
+- Wow/TUI: Radar chart (braille blocks) of hosts vs adaptation; pressing `h` cycles hosts; genes list sorted by adaptation delta; inline badges for over-/under-adapted modules.
+
+## 14) Synonymous Landscape & RNA Structure Stress Map
+- Concept: Map how synonymous changes would alter mRNA folding/ΔG along coding regions to flag structure-constrained segments.
+- Build plan: Use ViennaRNA (via `viennarna-wasm`) for sliding-window MFE/ΔG; compute “synonymous stress” by sampling silent variants in Rust → WASM to estimate ΔΔG distribution. Annotate high-stress windows and link to translation attenuation or regulatory RNA hypotheses.
+- Why it’s good: Finds regions constrained by RNA structure, not just protein sequence; informs safe recoding and understanding of attenuation.
+- Novelty: Synonymous ΔΔG stress maps inside a TUI genome explorer are rare.
+- Pedagogy: Shows interplay of codon choice, RNA structure, and translation kinetics.
+- Wow/TUI: Heat strip under the gene showing ΔG and “stress” percentile; cursor shows example synonymous change and predicted ΔΔG; toggle to overlay on sequence grid.
+
+## 15) Tail Fiber Tropism & Receptor Atlas
+- Concept: Predict receptor-binding specificity by clustering tail fiber/tip proteins and mapping them to known or candidate host receptors.
+- Build plan: Embed tail fibers with ESM/ProtT5 (Python), cluster with HDBSCAN/UMAP; optional AlphaFold2-lite batches for 3D hints; match against receptor HMMs and host surface proteomes. Cache clusters and receptor likelihoods; inference via ONNX Runtime in Bun for new sequences.
+- Why it’s good: Sharpens host-range hypotheses and engineering targets; complements codon/tRNA signals.
+- Novelty: Dedicated tail-fiber tropism mapping in a TUI is uncommon; prior idea #4 focused on broad PPI/docking, this centers on receptor-binding lineage and host-range.
+- Pedagogy: Demonstrates embeddings, clustering, and receptor inference; links sequence to phenotype.
+- Wow/TUI: “Tropism map” with clusters as colored nodes; select a node to see top receptor candidates and host taxa; quick badge for predicted host-range breadth.
+
+## 16) Recombination Mosaic & Ancestry Heatmap
+- Concept: Detect mosaic ancestry along the genome using change-point detection on k-mer/embedding profiles and local phylogenies.
+- Build plan: Segment with ruptures-like change-point (Rust + ndarray) on embedding/k-mer vectors; for each segment, compute nearest clade via sketch (Mash/MinHash) and mini-tree (fast neighbor-joining). Cache segment→clade calls. WASM for change-point + sketching; small phylo in TS for speed.
+- Why it’s good: Reveals chimeric origins and recent recombination donors; useful for surveillance and design.
+- Novelty: Inline ancestry-by-segment in a TUI genome browser is rare.
+- Pedagogy: Teaches recombination, mosaicism, and local phylogeny concepts.
+- Wow/TUI: Genome heat strip with colors per donor clade; cursor shows donor list and support; press `r` to highlight high-confidence recombination breakpoints.
+
+## 17) Arms-Race Timeline: CRISPR/RM/Abi vs Anti-Defense
+- Concept: Integrate host defense genes (CRISPR arrays, RM, Abi) with phage anti-defense (anti-CRISPRs, Ocr-like, anti-RM) to visualize escalation.
+- Build plan: Parse host defenses from provided host genomes/metadata; scan phages for anti-defense HMMs (AcrDB, Ocr-like) and methyltransferases. Score matches (phage defense vs host counter-defense). Store pairs in SQLite. Light inference in TS; heavy HMM in Rust+WASM.
+- Why it’s good: Connects genomic arms-race signals to practical host-range and durability.
+- Novelty: Defense/counter-defense wiring shown live in TUI is uncommon.
+- Pedagogy: Illustrates coevolutionary pressure and molecular fencing.
+- Wow/TUI: Bipartite defense map with “who counters what”; timeline bar if isolation dates known; meter indicating “defense pressure” vs “counter strength.”
+
+## 18) Environmental & Geospatial Provenance Map
+- Concept: Map each phage to nearest metagenomic hits across biomes/locations to infer habitat and novelty.
+- Build plan: Import sketch indexes (Mash/FracMinHash) of public metagenomes (IMG/VIROME, MGnify) prebuilt offline; at runtime, query sketches in Rust → WASM. Store top hits with biome/geo metadata in SQLite. Compute novelty score (1 - max containment).
+- Why it’s good: Adds ecological context and highlights novel clades or constrained niches.
+- Novelty: Geospatial/biome linkage in a TUI phage browser is rare.
+- Pedagogy: Shows metagenomic surveillance, containment vs identity, and biome diversity.
+- Wow/TUI: Mini world/biome map with hit density; novelty badge; press `e` to cycle habitats and see containment bars.
+
+## 19) Capsid Thermal/Ionic Stability & Storage Advisor
+- Concept: Predict capsid stability across temperature and ionic strength for handling/formulation guidance.
+- Build plan: Use empirical models + coarse-grain capsid energetics (Rust + nalgebra) estimating melting/denaturation thresholds from capsid protein composition, salt bridges, and charge. Optional lightweight MD-informed parameters. Precompute stability curves; WASM for quick recalcs when conditions slide.
+- Why it’s good: Practical guidance for storage/shipping; connects sequence to physical robustness.
+- Novelty: Thermal/ionic robustness predictions in a TUI genome explorer are uncommon.
+- Pedagogy: Links protein chemistry (charge, hydrophobics) to macroscopic stability.
+- Wow/TUI: “Stability bar” that shifts as you adjust temperature/salt sliders; warning icon when outside safe envelope; ASCII melting curve plot.
+
+## 20) Transcription Flow & Promoter Strength Explorer
+- Concept: Predict promoter/terminator strengths and simulate transcriptional flow to identify bottlenecks or overexpression risks.
+- Build plan: Promoter/terminator scoring via motif/HMM + CNN-lite (ONNX in Bun). Use a simple queue/flow model in TS or Rust+WASM to propagate polymerase flux, considering pauses and terminators. Link to gene functions to flag likely expression imbalances.
+- Why it’s good: Bridges sequence-level regulatory signals to expression realism; aids redesign.
+- Novelty: Live transcription flow simulation in a TUI genome browser is rare.
+- Pedagogy: Shows promoter strength, termination efficiency, and transcriptional bottlenecks.
+- Wow/TUI: “Flow meter” overlay with thickness proportional to predicted transcription; paused regions glow; toggling σ-factor presets redraws the map live.
+
+---
+
+# Detailed Expansions (matching full-format ideas)
+
+## 32) Capsid Packaging & Ejection Energetics Simulator
+
+### Concept
+Quantify the physics of packing dsDNA into a confined capsid and its subsequent ejection. Model force–extension, internal pressure (up to ~60 atm), salt/GC effects, and differences among headful vs cos vs phi29 portal strategies.
+
+### How to Build
+- **Physics core (Rust+WASM)**: Worm-Like Chain elasticity + Debye–Hückel electrostatics + bending energy; ndarray + nalgebra; compile to WASM for Bun.
+- **Precompute per phage**: Given genome length, GC%, capsid radius, portal type → force/energy curves; cache in SQLite (dense arrays serialized).
+- **Motor benchmarks**: Table of ATP/bp and stall forces for T4, lambda, phi29 for comparison overlays.
+- **Controls**: Sliders for ionic strength (Na+/Mg2+), temperature; toggle headful/cos; “fill fraction” scrubber animates packing/ejection.
+
+### Why It’s Good
+Links genome composition to biophysical feasibility and ejection vigor—useful for stability, storage, and therapeutic formulation.
+
+### Novelty
+High. Packaging thermodynamics is almost never interactive; typically buried in PDFs or static plots.
+
+### Pedagogical Value
+Teaches polymer physics, electrostatics, and molecular machines; shows why “longer genome” has real energetic costs.
+
+### Wow / TUI Visualization
+ASCII force–distance plot; live pressure gauge flashing at high fill; “unspooling” animation on ejection; overlay motor benchmarks as dashed curves.
+
+### Implementation Stack
+Rust+WASM physics; TS/Bun UI; SQLite cache; minimal deps beyond ndarray/nalgebra/statrs.
+
+---
+
+## 33) Burst Kinetics & Latency Inference from Growth Curves
+
+### Concept
+Infer adsorption, latent period, and burst size from OD/plaque time-series and map back to holin/endolysin/antiholin loci.
+
+### How to Build
+- **Model**: Classic infection ODE/SDE (SIR-like with adsorption, latent, burst).
+- **Inference (Rust+WASM)**: MAP/bootstrapped fits using statrs + rayon; bounded parameters; supports deterministic and tau-leaping stochastic modes.
+- **Data ingest**: CSV/TSV via d3-dsv or native parser; unit normalization.
+- **Genome link**: Annotate lysis cassette; display inferred latency/burst alongside gene positions.
+- **UI**: Live fit plot with credible bands; toggle deterministic/stochastic; residuals pane.
+
+### Why It’s Good
+Turns wet-lab curves into actionable genome-linked parameters; informs dosing and cocktail design.
+
+### Novelty
+High—real-time kinetic fitting inside a TUI genome browser is rare.
+
+### Pedagogical Value
+Shows likelihoods, uncertainty, and gene-to-phenotype links; demonstrates why holin variants shift burst timing.
+
+### Wow / TUI Visualization
+Animated fit with shaded CI; lysis genes glow proportional to burst size; slider scrubs time to show phase (adsorption/latent/lysis).
+
+### Implementation Stack
+Rust+WASM fitting; TS charts; SQLite cache of parameter posteriors; no heavy ML deps.
+
+---
+
+## 34) Lysogeny/Lysis Decision Circuit Reconstructor
+
+### Concept
+Rebuild the CI/Cro-like regulatory switch from sequence motifs and simulate bistable decisions under varying MOI/damage.
+
+### How to Build
+- **Motifs**: Promoter/operator/terminator scans in TS; HMMER for CI/Cro-family clustering (precompute).
+- **Simulation**: Boolean fast mode in TS; ODE/Hill kinetics in Rust+WASM for smooth trajectories; parameters from motif strengths.
+- **Inputs**: MOI, UV/damage, inducer; outputs: CI/Cro trajectories, final state.
+- **Overlay**: Operators/promoters highlighted on genome; active elements blink during sim.
+
+### Why It’s Good
+Explains lytic vs lysogenic outcomes; aids design of strictly lytic derivatives.
+
+### Novelty
+High—interactive regulatory switch tied to predicted sites in-terminal is new.
+
+### Pedagogical Value
+Bistability, Hill coefficients, feedback loops, and the role of operator spacing.
+
+### Wow / TUI Visualization
+ASCII phase portrait (CI vs Cro) with attractors; sliders flip basins; promoter/operator bars animate as state flips.
+
+### Implementation Stack
+Rust+WASM ODE core; TS UI; HMMER precompute cached in SQLite; lightweight, no GPU.
+
+---
+
+## 35) Host–Phage Protein Interaction & Effector Docking Map
+
+### Concept
+Predict host targets of phage effectors (anti-defense, RBPs) by fusing embeddings, domains, and optional docking.
+
+### How to Build
+- **Embeddings**: Precompute ESM/ProtT5 vectors offline; store in SQLite as float32 blobs.
+- **Search**: Cosine ANN (Rust+WASM or TS) to shortlist host targets.
+- **Domains**: PFAM/HHPred annotations to filter plausible interactions.
+- **Docking (optional)**: Coarse rigid docking via lightdock/pydock3 offline; store top ranks.
+- **Scoring**: Fuse embedding sim + docking + domain compatibility → confidence.
+- **UI**: Bipartite graph; edges encode confidence; tooltips show docking score, residues; filters for receptor/defense/metabolism.
+
+### Why It’s Good
+Generates mechanistic host-range and anti-defense hypotheses beyond BLAST.
+
+### Novelty
+High—interaction wiring + docking hints in a TUI is rare.
+
+### Pedagogical Value
+Embeddings, docking, domain-function mapping; shows limits of sequence identity.
+
+### Wow / TUI Visualization
+Interactive “wiring” board; hover to see residues/contact score; hit `f` to filter by functional class.
+
+### Implementation Stack
+Offline Python for embeddings/docking; SQLite cache; Rust+WASM or TS ANN; TS/Ink UI.
+
+---
+
+## 36) Metagenomic Co-Occurrence & Ecological Niche Profiler
+
+### Concept
+Infer ecological niches and co-occurring taxa from metagenomic abundance tables; derive niche vectors and networks.
+
+### How to Build
+- **Input**: BIOM/TSV + sample metadata.
+- **Correlations**: SparCC/FlashWeave-like compositional inference in Rust+WASM (ndarray + rayon).
+- **Niche factors**: NMF/PMF in TS for latent “niche vectors”.
+- **Metadata mapping**: Attach habitats/hosts to factors; cache per phage.
+- **UI**: Co-occurrence network colored by niches; stacked niche bars per phage; filters by habitat.
+
+### Why It’s Good
+Adds real-world context to host predictions; complements CRISPR/prophage evidence.
+
+### Novelty
+Medium-high—niche graphs inside a genome TUI are uncommon.
+
+### Pedagogical Value
+Compositional stats, correlation vs causation, niche ecology.
+
+### Wow / TUI Visualization
+Network with niche colors; press `n` to repaint bars; tooltips show top co-occurring taxa/habitats; toggle significance threshold live.
+
+### Implementation Stack
+Rust+WASM for correlations; TS NMF; SQLite cache of niche vectors; BIOM parser in TS.
+
+---
+
+## 37) Auxiliary Metabolic Gene (AMG) Flux Potential Analyzer
+
+### Concept
+Detect AMGs, map to KEGG reactions, and estimate pathway flux gains in target hosts.
+
+### How to Build
+- **Detection**: HMMER vs curated AMG profiles (offline); KO mapping cached.
+- **Flux**: Delta-FBA: small LP solved in TS (simple solver) or Rust+WASM (good_lp) for speed.
+- **Hosts**: Template models for common hosts; map AMGs to reactions; recompute objective (ATP/dNTP).
+- **Outputs**: Δflux per pathway; confidence from KO scores; highlight biggest boosts.
+
+### Why It’s Good
+Turns annotations into quantitative metabolic impact; surfaces hijacking strategies.
+
+### Novelty
+Medium-high—AMG + flux in a TUI is unusual.
+
+### Pedagogical Value
+Stoichiometry, metabolic control, AMG role in ecology.
+
+### Wow / TUI Visualization
+Pathway mini-map with AMG nodes glowing; “flux gain” badges; host-switch toggle to watch deltas change.
+
+### Implementation Stack
+Offline HMMER; Rust+WASM or TS LP; SQLite cache; TS/Ink UI.
+
+---
+
+## 38) Prophage Integration Site & Excision Risk Explorer
+
+### Concept
+Score attB hot spots, classify integrases, and estimate excision precision/risk; simulate integration/excision.
+
+### How to Build
+- **Integrase typing**: HMMER classify tyrosine/serine integrases (offline).
+- **att search**: DR/imperfect repeat scan near tRNA/tmRNA; TS or Rust+WASM for speed.
+- **Risk scoring**: Symmetry/mismatch penalties; recombination likelihood; store per-window scores.
+- **UI**: Genome heatmap of att likelihood; pick a site to see attL/attR/attP/attB reconstruction and risk meter.
+
+### Why It’s Good
+Guides safe integration; anticipates prophage stability/escape.
+
+### Novelty
+Medium-high—att likelihood + risk visualization in-terminal is rare.
+
+### Pedagogical Value
+Recombination fundamentals, repeats, genome stability.
+
+### Wow / TUI Visualization
+Heatmapped genome bar; click peak to animate integration/excision; risk meter updates live.
+
+### Implementation Stack
+TS for scan; optional Rust+WASM repeat finder; SQLite cache for integrase classes/scores.
+
+---
+
+## 39) Periodicity & Tandem Repeat Wavelet Spectrogram
+
+### Concept
+Detect tandem repeats, packaging motifs, and promoter periodicities via wavelets/FFT.
+
+### How to Build
+- **Spectral core**: CWT in Rust+WASM (realfft + wavelet kernel); FFT fallback in TS for short genomes.
+- **Peak picking**: Dominant periods/phases; tag repeats/pack motifs.
+- **Caching**: Store spectrogram slices per phage in SQLite.
+- **UI**: Braille spectrogram under sequence grid; cursor shows dominant period/phase; jump-to-peak hotkey.
+
+### Why It’s Good
+Finds periodic signals missed by motifs; links to packaging/regulation.
+
+### Novelty
+High—wavelet spectrogram in a TUI genome browser is highly unusual.
+
+### Pedagogical Value
+Spectral analysis, periodicity, signal-to-biology mapping.
+
+### Wow / TUI Visualization
+Scrolling spectrogram; highlight strongest bands; “period” badge updates as you move.
+
+### Implementation Stack
+Rust+WASM for speed; TS UI; SQLite cache.
+
+---
+
+## 40) Epistasis & Fitness Landscape Explorer (In Silico DMS)
+
+### Concept
+Map pairwise epistasis for key proteins (capsid/tail/polymerase) to find robust vs fragile regions and likely escape routes.
+
+### How to Build
+- **Singles**: LM-based single-mutant scores (ESM) precomputed offline.
+- **Pairs**: Potts/EVcouplings-like model fit in Rust+WASM (ndarray + statrs); sample top ΔΔ fitness pairs.
+- **Optional**: Ingest sparse experimental DMS to refine weights.
+- **UI**: Braille heatmap (pos×pos); select cell to view Δfitness, example mutants, structural note; protein selector.
+
+### Why It’s Good
+Anticipates escape; guides stable engineering targets.
+
+### Novelty
+High—epistasis maps for phage proteins in-terminal are rare.
+
+### Pedagogical Value
+Fitness landscapes, epistasis, robustness/fragility concepts.
+
+### Wow / TUI Visualization
+Heatmap with hotspot callouts; “mutant card” popup; slider to threshold significance.
+
+### Implementation Stack
+Offline LM scoring; Rust+WASM Potts; SQLite matrix cache; TS UI.
+
+---
+
+## 41) Cocktail Resistance Evolution Simulator
+
+### Concept
+Simulate resistance emergence under single vs cocktail regimens using genome-derived parameters (receptor diversity, anti-defense, spacer proximity).
+
+### How to Build
+- **Engine**: Gillespie/tau-leaping in Rust+WASM (rand + rayon).
+- **Params**: Pull receptor diversity, Sie genes, CRISPR spacer matches from genome; user sets MOI, dosing cadence, population size.
+- **Outputs**: Probability of resistance over time; time-to-resistance distribution; compare mono vs cocktail.
+- **UI**: Live ASCII trajectories; risk meter; side-by-side mono vs cocktail view; sliders for MOI/dose interval.
+
+### Why It’s Good
+Turns genomic evidence into dosing/risk guidance; compares mono vs cocktail robustness.
+
+### Novelty
+High—cocktail-focused evolutionary sim in a TUI is uncommon.
+
+### Pedagogical Value
+Stochastic processes, evolutionary dynamics, intervention strategy.
+
+### Wow / TUI Visualization
+Multiple live trajectories; risk meter updates; toggle “optimize cocktail” to pick best trio and re-run.
+
+### Implementation Stack
+Rust+WASM simulator; TS/Ink UI; SQLite cache for genome-derived parameters.
+
+---
+
+## 35) Pan-Phage Graph Pangenome & Structural Variant Cards
+
+### Concept
+Build a graph pangenome over all bundled phages (plus fetched neighbors) to expose conserved cores, accessory modules, recombination breakpoints, and mosaicism. Let users “open a card” per variant to see the local diff, donor lineage hints, and functional impact.
+
+### How to Build
+- **Graph construction**: Rust (petgraph + rayon) to create an rGFA-like graph; align genomes with minimap2 bindings or rust-bio’s aligners; compress bubbles into variant records (SNP/indel/structural).
+- **Annotation linkage**: Map genes, AMGs, defense/anti-defense loci onto graph nodes; tag breakpoints.
+- **Variant cards**: Store per-bubble metadata in SQLite (size, gene overlap, GC shift, donor similarity).
+- **Query**: WASM-compiled graph summaries; TS-layer renders “variant card” views and filters (size, function, donor).
+
+### Why It’s Good
+Shows modular mosaicism and reassortment—the real evolutionary story—not just linear diffs. Surfaces hotspots that matter for host range or defense evasion.
+
+### Novelty
+Graph pangenomes are common in research papers, almost never interactive in a TUI with per-variant drilldown.
+
+### Pedagogical Value
+Teaches pangenome graphs, bubbles, core vs accessory genomes, and how recombination shapes phages.
+
+### Wow / TUI Visualization
+Mini ASCII graph ribbon with bubbles highlighted; press enter to pop a “variant card” showing diff stats, donor lineage bar, and overlapped genes; jump the sequence grid to the variant locus.
+
+### Implementation Stack
+Rust+WASM graph builder (petgraph, rust-bio); minimap2 binding for alignments; SQLite for cards; TS/Ink UI for cards and bubble strips.
+
+---
+
+## 36) Latent Embedding Atlas (Genome + Proteome, LLM-Augmented)
+
+### Concept
+Learn joint embeddings for genomes and proteomes using k-mer sketches plus protein language-model embeddings (ESM/ProtT5). Cluster phages by functional/evolutionary proximity; explain cluster membership with “semantic diffs.”
+
+### How to Build
+- **Embeddings**: TS pipeline for k-mer MinHash sketches; Python/Rust sidecar (optional) to batch ESM2/ProtT5 embeddings for key proteins (tail fibers, polymerases, repressors). Cache vectors in SQLite/Parquet.
+- **Fusion**: Concatenate or project via PCA/UMAP (Rust+WASM or TS with ml-js) into 2D/3D; store neighbor indices (FAISS-like HNSW via wasm-hnsw or a Rust HNSW).
+- **Explanations**: For a neighbor pair, surface top k-mer deltas, domain differences, and codon/AA usage deltas.
+
+### Why It’s Good
+Gives a “map” of phage space that blends sequence and functional signals; fast neighbor lookup; highlights outliers and novelty.
+
+### Novelty
+Embedding atlases exist for proteins, rarely for whole phages combining genome + key proteins inside a TUI.
+
+### Pedagogical Value
+Shows representation learning, manifold structure, and how different molecular layers agree or disagree.
+
+### Wow / TUI Visualization
+ASCII UMAP scatterplot with live cursor; select a point to list nearest neighbors and “why” (top domains/k-mers); glow outliers; toggle layers (genome-only vs protein-LLM fused).
+
+### Implementation Stack
+MinHash in TS; embeddings via optional Python microservice (ESM2) cached to disk; HNSW in Rust+WASM; UMAP in Rust (umap-rs) or TS (umap-js) for projection; Ink UI.
+
+---
+
+## 37) Host-Range Inference via CRISPR Spacers + Receptor Motifs
+
+### Concept
+Fuse CRISPR spacer hits with receptor-binding motif classifiers to predict host range. Score per host lineage and display evidence (spacer alignments, motif hits on tail fibers/RBPs).
+
+### How to Build
+- **Spacer DB ingest**: Parse spacer FASTAs/TSVs; build MinHash/LSH index (Rust+WASM) for fast lookup; fall back to banded alignments for top hits.
+- **Motif/RBP typing**: HMMER precompute for RBP families; TS classifier on receptor-binding motifs (e.g., beta-helix, depolymerase signatures).
+- **Fusion scoring**: Bayesian or weighted fusion of spacer evidence + motif likelihood; cache per host taxon.
+- **UI**: Evidence table per host; toggle “strict vs permissive” thresholds.
+
+### Why It’s Good
+Host prediction is often weak; combining CRISPR evidence with RBP motifs tightens calls and points to mechanisms.
+
+### Novelty
+Spacer-only predictors exist; fused spacer+motif scoring in-terminal with evidence drilldown is uncommon.
+
+### Pedagogical Value
+Shows complementary evidence types, false positives/negatives, and why motifs matter beyond sequence homology.
+
+### Wow / TUI Visualization
+Host leaderboard with confidence bars; press a host to see spacer hit list and RBP motif hits; “host cloud” ASCII plot sized by probability.
+
+### Implementation Stack
+Rust+WASM LSH for spacers; HMMER precompute for RBP domains; fusion/scoring in TS; SQLite cache; Ink UI tables/plots.
+
+---
+
+## 38) Codon/AA Adaptation Landscape with Host tRNA Supply
+
+### Concept
+Model how well each phage is adapted to different hosts’ tRNA pools. Compute RSCU/CAI against host-specific tRNA atlases and show adaptation gradients across the genome.
+
+### How to Build
+- **tRNA atlas ingest**: Import per-host tRNA copy numbers/anticodon pools (TS ETL).
+- **Metrics**: RSCU, CAI, and tAI per phage gene; sliding-window adaptation scores; Rust+WASM for speed if needed.
+- **Comparisons**: Delta adaptation between two hosts; flag regions with poor match.
+- **UI**: Per-gene bars colored by adaptation; switch host profile live.
+
+### Why It’s Good
+Connects translational efficiency to host preference; highlights adaptation mismatches and imported islands.
+
+### Novelty
+CAI/tAI are classic, but interactive host-switching adaptation maps in a TUI are rare.
+
+### Pedagogical Value
+Teaches codon bias, tRNA availability, and translational selection; shows why context matters.
+
+### Wow / TUI Visualization
+Gradient bar along genome; hover shows gene CAI/tAI for selected host; side-by-side host A vs host B adaptation strips.
+
+### Implementation Stack
+TS for metrics; optional Rust+WASM for sliding windows; SQLite cache of host tRNA pools and per-gene scores; Ink UI with stacked bars.
+
+---
+
+## 39) Recombination & Mosaicism Radar (Sliding-Window Phylo)
+
+### Concept
+Detect recombination breakpoints and donor lineages with bootscan-like sliding-window phylogenetics and similarity spectra.
+
+### How to Build
+- **Windows**: Slice genome; compute k-mer Jaccard/Mash distances to a panel; optional fast neighbor-joining per window (Rust+WASM).
+- **Breakpoint calling**: Change-point detection (PELT/Bayesian) on similarity traces; store segments with top donors.
+- **Donor hints**: Track which reference best matches each window; summarize donor composition.
+- **UI**: Radar or ribbon showing donor colors per window; breakpoint markers.
+
+### Why It’s Good
+Highlights mosaic origins and reassortment that explain phenotypes (host range, defense genes).
+
+### Novelty
+Bootscan tools exist but not integrated, interactive, and donor-colored inside a TUI genome grid.
+
+### Pedagogical Value
+Explains recombination detection, window trade-offs, and donor inference.
+
+### Wow / TUI Visualization
+Circular radar with colored arcs; move cursor to see donor and similarity; press `b` to jump to breakpoints; sparkline of similarity underneath.
+
+### Implementation Stack
+Rust+WASM for windowed k-mer distances and neighbor-joining; change-point in Rust (statrs) or TS; SQLite to cache window summaries; Ink radar/ribbon render.
+
+---
+
+## 40) Protein Structure Quickview via Fold Embeddings
+
+### Concept
+Cluster key structural proteins (capsid, tail fibers, portal, polymerase) using structure-aware embeddings to spot fold-family jumps and receptor-binding innovations.
+
+### How to Build
+- **Embeddings**: TM-Vec/ESMFold distogram embeddings (precompute via Python sidecar); cache vectors.
+- **Clustering**: HNSW/UMAP pipeline (Rust+WASM) for nearest neighbors; novelty score vs known folds.
+- **Delta explainer**: Highlight domain swaps, loop insertions, and charge patches.
+- **UI**: Pick a protein, see its nearest fold neighbors, novelty score, and an ASCII “contact map strip.”
+
+### Why It’s Good
+Captures structural novelty beyond sequence identity; surfaces RBP innovations driving host jumps.
+
+### Novelty
+Structure embedding clustering inside a TUI genome browser is rare.
+
+### Pedagogical Value
+Shows why structure > sequence, and how embeddings encode folds.
+
+### Wow / TUI Visualization
+ASCII contact-map thumbnail; neighbor list with “novelty meter”; highlight loop/patch deltas as inline annotations.
+
+### Implementation Stack
+Embeddings offline via Python (TM-Vec/ESMFold); Rust+WASM HNSW/UMAP; SQLite cache; Ink UI components.
+
+---
+
+## 41) Phage–Defense Arms Race Dashboard
+
+### Concept
+Summarize anti-CRISPRs, RM evasion motifs, Abi counters, retron/CBASS hits, and Sie systems; score offense/defense balance per phage.
+
+### How to Build
+- **Detection**: HMMER for anti-CRISPR families; motif scans for RM evasion; domain scans for Abi/CBASS/retron; Sie heuristics on membrane proteins.
+- **Scoring**: Weighted offense/defense index; store with gene links.
+- **Cross-phage compare**: Rank phages by offense/defense; show missing counters.
+
+### Why It’s Good
+Offers an immediate strategic view of how a phage deals with host defenses; guides cocktail design.
+
+### Novelty
+Defense/anti-defense summaries exist in papers; integrated, scored, interactive TUI view is uncommon.
+
+### Pedagogical Value
+Teaches the landscape of bacterial defenses and phage countermeasures; clarifies combinatorial strategy.
+
+### Wow / TUI Visualization
+Radar/stacked bars for offense vs defense; clicking a wedge jumps to the gene; “missing counter” badges with suggestions.
+
+### Implementation Stack
+HMMER precompute; TS scoring; SQLite cache; Ink radar/stacked bars; all CPU, no GPU.
+
+---
+
+## 42) Integration Site & Lifecycle Propensity Scoring (Expanded)
+
+### Concept
+Score lysogeny propensity and preferred integration hotspots, blending attP/attB motifs, integrase class, local repeats, and host genome context hints (tRNA/tmRNA preferences).
+
+### How to Build
+- **Motifs**: attP/attB/tRNA/tmRNA motif library; scan in TS or Rust+WASM.
+- **Integrase typing**: HMMER precompute for tyrosine/serine/invertase-like integrases; link to known site preferences.
+- **Scoring**: Combine motif strength, symmetry, repeat content, integrase class priors; estimate excision stability.
+- **UI**: Heatmap along genome; site list with confidence and predicted host targets; “simulate integrate here” to see stability.
+
+### Why It’s Good
+Predicts where and how stably a phage will integrate; useful for engineering and safety.
+
+### Novelty
+Goes beyond simple att finding by adding class-specific priors and repeat-driven stability scoring in a TUI.
+
+### Pedagogical Value
+Covers site-specific recombination, integrase specificity, and stability determinants.
+
+### Wow / TUI Visualization
+Genome heatmap with peaks; per-site card showing motif logo + predicted host attB; toggle to see excision risk.
+
+### Implementation Stack
+Rust+WASM motif scanning optional; HMMER precompute; TS scoring; SQLite cache; Ink heatmap/cards.
+
+---
+
+## 43) Horizontal Gene Transfer Provenance Tracer
+
+### Concept
+For each genomic island, infer donor clades using GC/codon atypicality, best-hit taxonomy, and mini phylo placement; generate “passport stamps” per island.
+
+### How to Build
+- **Island detection**: GC/codon Z-scores + dinucleotide bias; sliding window in TS or Rust.
+- **Donor inference**: Fast k-mer taxonomic assignment (Mash/MinHash) vs reference panel; optional short-tree placement via IQ-TREE-lite binding or neighbor-joining (Rust+WASM).
+- **Stamps**: Store donor lineage, confidence, and hallmark genes.
+
+### Why It’s Good
+Explains where novel modules came from and how recent the transfer was; guides risk/host-range hypotheses.
+
+### Novelty
+Inline provenance “stamps” in a TUI with per-island drilldown is rare.
+
+### Pedagogical Value
+Teaches HGT signals (GC/codon skews), taxonomic assignment, and phylogenetic placement.
+
+### Wow / TUI Visualization
+Genome bar with colored islands; opening a stamp shows donor pie, GC/codon plots, and top donor references.
+
+### Implementation Stack
+TS for GC/codon; Rust+WASM for MinHash and small trees; SQLite cache of islands/stamps; Ink UI.
+
+---
+
+## 44) Functional Module Coherence & Stoichiometry Checker
+
+### Concept
+Segment genomes into functional modules (replication, morphogenesis, lysis, regulation) and evaluate stoichiometric balance (e.g., capsid:scaffold, tail fiber sets), flagging incomplete or overrepresented modules.
+
+### How to Build
+- **Module detection**: HMMER/domain co-occurrence graphs; rule-based module assignment stored in SQLite.
+- **Stoichiometry**: Expected copy ratios per module from literature/structural heuristics; compare to gene presence/duplication.
+- **Coherence score**: Penalize missing essentials or excess paralogs; suggest likely missing partners.
+
+### Why It’s Good
+Gives a quick “is this genome complete and balanced?” readout; great for QC and design.
+
+### Novelty
+Stoichiometry checks inside a TUI phage browser are uncommon.
+
+### Pedagogical Value
+Shows structural/assembly stoichiometry and why certain components must be balanced.
+
+### Wow / TUI Visualization
+Module ribbon with green/amber/red indicators; hover shows expected vs found counts; “suggest” button highlights nearest homologs that could fill gaps.
+
+### Implementation Stack
+HMMER precompute; TS scoring; optional Rust+WASM for fast domain co-occurrence; SQLite cache; Ink module ribbon UI.
+
+---
+
+## 42) Pan-Genome Mosaic & Reassortment Radar
+
+### Concept
+Detect mosaicism/recombination by sliding-window lineage assignment and donor likelihoods, revealing which phage lineage best explains each genomic segment and how segments rearrange across a pan-genome.
+
+### How to Build
+- **Segmental likelihoods**: Rust+WASM HMM/phylo-likelihood over sliding windows (e.g., 1–5 kb) using Jukes-Cantor/GTR; cache per phage per window.
+- **Lineage panel**: Build a light neighbor-joining or UPGMA tree on window consensus; assign “best donor lineage” with bootstrap support.
+- **Break detection**: CUSUM/likelihood ratio to flag recombination breakpoints; store break intervals with support scores.
+- **Pan-genome tiles**: SQLite table of window → lineage label + support; index by phage and position for instant retrieval.
+
+### Why It’s Good
+Recombination is central to phage evolution and host shifts; this makes mosaic structure explorable rather than a static alignment.
+
+### Novelty
+High—windowed lineage painting plus breakpoint calling inside a TUI genome viewer is rarely offered.
+
+### Pedagogical Value
+Teaches recombination signatures, breakpoint evidence, and lineage mixing; connects phylogenetics to genome architecture.
+
+### Wow / TUI Visualization
+Genome ribbon colored by donor lineage; breakpoint flags with support bars; pressing `b` jumps between suspected breakpoints; toggle “show lineage confidence” as transparency.
+
+### Implementation Stack
+Rust+WASM for HMM/likelihood + CUSUM; TS/Ink for ribbon view; SQLite for tiled lineage/support cache.
+
+---
+
+## 43) High-Resolution K-mer Anomaly Cartography
+
+### Concept
+Map localized k-mer rarity/novelty (z-scores vs a reference corpus) to expose atypical islands (HGT, AMGs, anti-defense loci) and couple with GC/AT skew and coding density.
+
+### How to Build
+- **Background model**: Global corpus k-mer frequencies (k=3/5/7/9) precomputed; store means/vars per k.
+- **Sliding windows**: Rust+WASM streaming k-mer counter with Welford variance; compute per-window z/LOF (Local Outlier Factor) scores; cache per phage.
+- **Composite score**: Fuse z-score, GC skew, coding density into an anomaly score (weighted, configurable).
+- **Drill-down**: Link anomalous windows to nearby genes and motifs.
+
+### Why It’s Good
+Flags horizontally transferred or defense/AMG islands that simple annotation might miss; prioritizes “what’s weird here?”
+
+### Novelty
+Medium-high—alignment-free anomaly heatmaps in-terminal are uncommon.
+
+### Pedagogical Value
+Shows statistical outlier detection and why compositional shifts imply biology (HGT, defense, AMGs).
+
+### Wow / TUI Visualization
+Scrolling heat-strip under the sequence grid; hotspots pulse; `enter` opens a side panel with top-k k-mers, genes, and putative function.
+
+### Implementation Stack
+Rust+WASM sliding k-mer stats; TS/Ink heat-strip; SQLite window cache; optional LOF in Rust with kd-tree.
+
+---
+
+## 44) Phage–Host Codon/Codon-Pair Adaptation Lens
+
+### Concept
+Quantify codon adaptation (CAI/RAI) and codon-pair bias per gene versus multiple candidate hosts to reveal host tropism and host-switch footprints.
+
+### How to Build
+- **Host profiles**: Precompute host codon/codon-pair frequencies (from known hosts/metagenomes); store in SQLite.
+- **Per-gene CAI/RAI**: TS or Rust+WASM vector ops to score each gene against every host profile; produce deltas.
+- **Codon-pair bias**: Compute CPB per gene; z-score vs host expectations; highlight genes with host-mismatched CPB.
+- **Aggregation**: Summaries per module (structural/replication/lysis).
+
+### Why It’s Good
+Connects sequence to host compatibility; aids host prediction and engineering.
+
+### Novelty
+Medium—CAI/RAI is known, but multi-host per-gene visualization with CPB deltas in a TUI is fresh.
+
+### Pedagogical Value
+Explains translational optimization, host constraints, and adaptation signals.
+
+### Wow / TUI Visualization
+Stacked bars per gene colored by “best host”; host-switch candidates glow; toggle to see CAI vs CPB deltas.
+
+### Implementation Stack
+TS for CAI/RAI/CPB if performance sufficient; Rust+WASM for batch scoring many hosts; SQLite for host frequency tables.
+
+---
+
+## 45) Amino-Acid Property Phase Portraits
+
+### Concept
+Slide across proteins/ORFs computing property vectors (hydropathy, charge, aromaticity, disorder proxies), then project trajectories (PCA/UMAP) to reveal domain compositional signatures and divergence between phages.
+
+### How to Build
+- **Property vectors**: TS computation per window (e.g., 30–60 aa) for multiple properties; normalize.
+- **Projection**: PCA in TS; optional UMAP via wasm-bindgen to Rust umap-rs for speed; cache embeddings per window.
+- **Comparative mode**: Plot trajectories of two phages’ homologous proteins to show divergence.
+
+### Why It’s Good
+Highlights domain-level shifts invisible to simple alignments; surfaces regions likely affecting folding/interactions.
+
+### Novelty
+Medium-high—trajectory-based property manifolds in a terminal genome tool are rare.
+
+### Pedagogical Value
+Teaches property landscapes, low-D projection, and links between composition and function.
+
+### Wow / TUI Visualization
+ASCII scatter/trajectory; cursor shows window position; press `d` to jump to the sequence slice; color by property dominance.
+
+### Implementation Stack
+TS for property calc + PCA; Rust+WASM UMAP optional; SQLite cache for embeddings; Ink plotting with braille blocks.
+
+---
+
+## 46) Structure-Informed Capsid/Tail Constraint Scanner
+
+### Concept
+Score mutations against coarse structural constraints (lattice geometry, contact propensities) to flag mechanically fragile regions and assembly cliffs.
+
+### How to Build
+- **Model source**: Use built-in coarse models (renderer-3d) plus optional PDB-derived contact maps.
+- **Constraint scoring**: Rust+WASM coarse-grain contact penalty + lattice geometry checks; per-residue “fragility” scores.
+- **Mutation scanning**: Single AA substitutions scored via protein LM (ESM) delta + structural penalty blend.
+- **Outputs**: Fragility heatmap per structural protein; “do not touch” segments.
+
+### Why It’s Good
+Guides engineering (stability vs escape); surfaces structurally sensitive regions.
+
+### Novelty
+Medium—structure-aware constraint scoring inline with TUI models is uncommon.
+
+### Pedagogical Value
+Shows how structure limits sequence variation; links mutational impact to assembly physics.
+
+### Wow / TUI Visualization
+Capsid/tail ASCII view with fragility heatmap overlay; hover a residue to see Δstability; “shake test” animation for fragile builds.
+
+### Implementation Stack
+Rust+WASM scoring; optional ESM offline scoring cached; TS/Ink overlays on existing 3D ASCII renderer; SQLite cache for per-residue penalties.
+
+---
+
+## 47) CRISPR Pressure & Anti-CRISPR Landscape
+
+### Concept
+Integrate host CRISPR spacer hits, predict anti-CRISPR (Acr) candidates, and visualize the arms race along the genome.
+
+### How to Build
+- **Spacer mapping**: Minimap2/mashmap offline to build spacer-hit table; in-app filtering by host.
+- **Acr detection**: HMMs for known Acr families; small ORF heuristics; embedding similarity (ESM small) for novel Acr-like hits; run in TS or Rust+WASM for batch scoring.
+- **Pressure score**: Combine spacer density, PAM proximity, and coding strand; compute “pressure index” per window.
+- **UI links**: Spacer hits → nearby Acr predictions; suggest escape mutations.
+
+### Why It’s Good
+Turns CRISPR data into actionable escape/pressure interpretation; ties defense vs counter-defense.
+
+### Novelty
+High—combined spacer pressure + Acr prediction ribbon in a TUI is rare.
+
+### Pedagogical Value
+Explains spacer targeting, PAMs, Acrs, and evolutionary pressure.
+
+### Wow / TUI Visualization
+Pressure bar under genome; spacer hits as tick marks; Acr candidates glow; pressing `c` centers on strongest Acr-vs-spacer clash.
+
+### Implementation Stack
+Offline spacer DB (minimap2); Rust+WASM scoring for windowed pressure; TS/Ink visualization; SQLite for hits and pressure tiles.
+
+---
+
+## 48) Dinucleotide & Codon Bias Tensor Decomposition
+
+### Concept
+Decompose joint di-/tri-nucleotide and codon-usage patterns across phages into latent “bias modes” (e.g., replication strategy, host clade) and position each genome in that space.
+
+### How to Build
+- **Tensor build**: For each phage, compute dinuc/codon frequency vectors; stack into matrix/tensor.
+- **Decomposition**: NMF/PCA in Rust+WASM (ndarray + linfa) for speed; store loadings per phage and per-feature.
+- **Annotation**: Correlate components with metadata (host, lifecycle, genome type).
+- **Per-gene projection**: Optional per-gene loadings to localize bias shifts.
+
+### Why It’s Good
+Exposes hidden biases tied to biology (replication enzymes, host context); aids clustering and anomaly detection.
+
+### Novelty
+Medium—bias decompositions exist, but in-terminal, interactive latent-space navigation is rare.
+
+### Pedagogical Value
+Shows factorization methods and biological interpretation of compositional bias.
+
+### Wow / TUI Visualization
+2D latent map with phages as points; hover shows metadata correlations; bar chart of top contributing k-mers for the selected component.
+
+### Implementation Stack
+Rust+WASM NMF/PCA; TS UI for scatter + bars; SQLite for loadings and component metadata correlations.
+
+---
+
+## 49) Functional Synteny Elastic Alignment
+
+### Concept
+Align gene order between phages using elastic warping on gene families/distances to reveal conserved modules vs shuffled blocks.
+
+### How to Build
+- **Gene families**: Cluster proteins via MMseqs2 offline; store family IDs per gene.
+- **Elastic alignment**: Rust+WASM dynamic time warping on family sequences with gap penalties reflecting distance; output matched blocks and breakpoints.
+- **Scores**: Synteny continuity score; module conservation metrics.
+- **Caching**: Precompute pairwise synteny summaries for the 12 core phages; on-demand for others.
+
+### Why It’s Good
+Highlights modular genome architecture and rearrangements beyond sequence identity.
+
+### Novelty
+Medium-high—elastic synteny with interactive inspection in a TUI is uncommon.
+
+### Pedagogical Value
+Teaches genome modularity, rearrangement, and how function/position co-evolve.
+
+### Wow / TUI Visualization
+Dual gene bars with elastic “bands” linking orthologous modules; breakpoint markers; pressing `m` cycles modules; `s` shows continuity score.
+
+### Implementation Stack
+Rust+WASM DTW; TS/Ink dual-track view; SQLite caches for family IDs and synteny results.
+
+---
+
+## 50) Regulatory Signal Constellations
+
+### Concept
+Scan promoters/terminators/RBS/operators and render co-occurring regulatory motifs as “constellations” to reveal operons and control logic.
+
+### How to Build
+- **Motif scans**: PWMs for sigma factors, Rho-independent terminators, RBS; run in TS (fast) or Rust+WASM for batch; store hits with scores/phases.
+- **Co-occurrence graph**: Build small graph of motifs per region; detect motif “motifs” (e.g., promoter + operator + terminator spacing).
+- **Evidence score**: Combine spacing, orientation, and strength into an operon-likelihood.
+- **Link to genes**: Tie regions to downstream ORFs; annotate likely operons.
+
+### Why It’s Good
+Surfaces regulatory architecture beyond coding genes; aids understanding of control.
+
+### Novelty
+Medium—motif scans are common, but co-occurrence constellations with spacing logic in a TUI are fresh.
+
+### Pedagogical Value
+Spacing/phase matters; shows how multiple motifs compose regulation.
+
+### Wow / TUI Visualization
+Starfield strip above genes; motifs as glyphs; edges show spacing; hover shows PWM score; `o` toggles inferred operons highlighting ORF blocks.
+
+### Implementation Stack
+TS PWMs; optional Rust+WASM for speed; SQLite motif hit cache; Ink starfield rendering with braille.
+
+---
+
+## 51) Phylodynamic Trajectory Explorer
+
+### Concept
+For dated accessions, build time-scaled trees and visualize rate shifts, skyline Ne, and rapidly evolving loci with selection signals.
+
+### How to Build
+- **Tree**: Use a lightweight BEAST-like approximation—rate-smoothed NJ or treetime-style root-to-tip regression in Rust+WASM; infer clock rate.
+- **Skyline**: Coalescent skyline via interval counts; compute Ne(t) with credible bands.
+- **Selection**: dN/dS per branch/window (FEL-like fast approximation) in Rust+WASM; map to genome positions.
+- **Data ingest**: Accession dates + sequences; cache alignments and trees in SQLite.
+
+### Why It’s Good
+Shows evolutionary tempo, expansions, and hotspot loci—connects time to genome changes.
+
+### Novelty
+High—phylodynamics with selection overlays in a TUI genome browser is rare.
+
+### Pedagogical Value
+Teaches molecular clocks, skyline plots, and selection mapping.
+
+### Wow / TUI Visualization
+ASCII time-scaled tree; side skyline plot; genome heat strip for dN/dS; cursor on tree highlights corresponding loci.
+
+### Implementation Stack
+Rust+WASM for clock/regression/selection; TS/Ink for tree + skyline rendering; SQLite caches for alignments/trees.
+
+---
