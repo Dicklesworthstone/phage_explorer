@@ -27,3 +27,7 @@ export { ComplexityOverlay } from './ComplexityOverlay';
 export { BendabilityOverlay } from './BendabilityOverlay';
 export { PromoterOverlay } from './PromoterOverlay';
 export { RepeatsOverlay } from './RepeatsOverlay';
+
+// Layer 2 Advanced Overlays
+export { KmerAnomalyOverlay } from './KmerAnomalyOverlay';
+export { SelectionPressureOverlay } from './SelectionPressureOverlay';
