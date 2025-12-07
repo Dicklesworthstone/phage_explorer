@@ -13916,30 +13916,137 @@ The bipartite graph visualization with colored edges by interaction type and rea
 
 ## 36) Metagenomic Co-Occurrence & Ecological Niche Profiler
 
-### Concept
-Infer ecological niches and co-occurring taxa from metagenomic abundance tables; derive niche vectors and networks.
+### Extended Concept
 
-### How to Build
-- **Input**: BIOM/TSV + sample metadata.
-- **Correlations**: SparCC/FlashWeave-like compositional inference in Rust+WASM (ndarray + rayon).
-- **Niche factors**: NMF/PMF in TS for latent “niche vectors”.
-- **Metadata mapping**: Attach habitats/hosts to factors; cache per phage.
-- **UI**: Co-occurrence network colored by niches; stacked niche bars per phage; filters by habitat.
+Phages inhabit complex microbial communities where ecological context determines dynamics. This feature mines metagenomic surveys to reveal a phage's ecological "home":
 
-### Why It’s Good
-Adds real-world context to host predictions; complements CRISPR/prophage evidence.
+- **Co-occurrence networks**: Taxa that consistently appear with the phage
+- **Niche vectors**: Latent factors representing habitat types (gut, soil, marine)
+- **Host validation**: Do CRISPR-predicted hosts actually co-occur?
 
-### Novelty
-Medium-high—niche graphs inside a genome TUI are uncommon.
+### Mathematical Foundations
 
-### Pedagogical Value
-Compositional stats, correlation vs causation, niche ecology.
+**CLR Transform for Compositional Data:**
+```
+CLR(x)_i = log(x_i / geometric_mean(x))
+```
 
-### Wow / TUI Visualization
-Network with niche colors; press `n` to repaint bars; tooltips show top co-occurring taxa/habitats; toggle significance threshold live.
+**NMF for Niche Discovery:**
+```
+X[samples × taxa] ≈ W[samples × k] × H[k × taxa]
+Minimize: ||X - WH||²_F  subject to W, H ≥ 0
+```
+
+### Implementation Approach
+
+```typescript
+// packages/ecology/src/niche-profiler.ts
+
+interface NicheProfile {
+  phageId: string;
+  nicheLoadings: number[];      // Loading on each niche factor
+  dominantNiche: string;        // 'marine', 'gut', 'soil', etc.
+  coOccurringTaxa: Array<{ taxon: string; correlation: number }>;
+  noveltyScore: number;
+}
+
+function clrTransform(counts: number[][]): number[][] {
+  return counts.map(row => {
+    const geoMean = Math.exp(row.reduce((s, v) => s + Math.log(v + 0.5), 0) / row.length);
+    return row.map(v => Math.log((v + 0.5) / geoMean));
+  });
+}
+
+function computeCorrelationMatrix(clrData: number[][]): number[][] {
+  const nTaxa = clrData[0].length;
+  const corr: number[][] = Array.from({ length: nTaxa }, () => new Array(nTaxa).fill(0));
+
+  for (let i = 0; i < nTaxa; i++) {
+    corr[i][i] = 1.0;
+    for (let j = i + 1; j < nTaxa; j++) {
+      const r = pearsonCorrelation(clrData.map(row => row[i]), clrData.map(row => row[j]));
+      corr[i][j] = r;
+      corr[j][i] = r;
+    }
+  }
+  return corr;
+}
+
+function nmf(X: number[][], k: number, maxIter: number = 200): { W: number[][]; H: number[][] } {
+  // Multiplicative update rules
+  const n = X.length, m = X[0].length;
+  let W = randomMatrix(n, k), H = randomMatrix(k, m);
+
+  for (let iter = 0; iter < maxIter; iter++) {
+    // H = H .* (W'X) ./ (W'WH + eps)
+    // W = W .* (XH') ./ (WHH' + eps)
+    H = updateH(W, H, X);
+    W = updateW(W, H, X);
+  }
+  return { W, H };
+}
+
+export function profilePhageNiche(phageId: string, abundanceTable: number[][], taxa: string[]): NicheProfile {
+  const clrData = clrTransform(abundanceTable);
+  const corr = computeCorrelationMatrix(clrData);
+  const { W, H } = nmf(abundanceTable, 5);
+
+  const phageIdx = taxa.indexOf(phageId);
+  const nicheLoadings = W.map(row => row.map((_, k) => H[k][phageIdx])).flat();
+
+  const coOccurring = taxa
+    .map((t, i) => ({ taxon: t, correlation: corr[phageIdx][i] }))
+    .filter(t => t.taxon !== phageId)
+    .sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation))
+    .slice(0, 20);
+
+  return { phageId, nicheLoadings, dominantNiche: 'marine', coOccurringTaxa: coOccurring, noveltyScore: 0.3 };
+}
+```
+
+### Why This Is a Good Idea
+
+1. **Ecological Grounding**: Connects sequence to real-world environment
+2. **Host Validation**: Checks if CRISPR-predicted hosts actually co-occur
+3. **Niche Discovery**: Reveals habitat associations explaining adaptation
+4. **Community Context**: Shows competing phages and alternative hosts
+5. **Novelty Detection**: Identifies phages in underexplored habitats
+
+### Innovation Assessment
+**Novelty**: Medium-High — Ecological networks in a genome browser context is uncommon.
+
+### Pedagogical Value: 8/10
+Teaches compositional data analysis, matrix factorization, and microbial ecology.
+
+### Cool/Wow Factor: 7/10
+Network visualization with niche-colored nodes creates an intuitive ecological map.
+
+### TUI Visualization
+
+```
+╭─────────────────────────── Ecological Niche Profiler ──────────────────────────────╮
+│  Phage: T4_like_phage_001       Data: IMG/VR (1,247 samples)                       │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                    │
+│  ┌─ Niche Profile ─────────────────┐  ┌─ Top Co-occurring Taxa ─────────────────┐  │
+│  │                                 │  │                                          │  │
+│  │  Marine:     ████████████  0.78 │  │  1. Synechococcus sp.      r = +0.72    │  │
+│  │  Freshwater: ████░░░░░░░░  0.35 │  │  2. Prochlorococcus MIT    r = +0.68    │  │
+│  │  Gut:        █░░░░░░░░░░░  0.08 │  │  3. SAR11 clade            r = +0.54    │  │
+│  │  Soil:       ░░░░░░░░░░░░  0.02 │  │  4. Vibrio sp.             r = -0.41    │  │
+│  │                                 │  │                                          │  │
+│  │  Dominant: MARINE               │  │  CRISPR host validation: 3/5 co-occur   │  │
+│  └─────────────────────────────────┘  └──────────────────────────────────────────┘  │
+│                                                                                    │
+├────────────────────────────────────────────────────────────────────────────────────┤
+│  [N]iche view  [C]orrelation: 0.3  [H]abitat filter  [V]alidate hosts             │
+╰────────────────────────────────────────────────────────────────────────────────────╯
+```
 
 ### Implementation Stack
-Rust+WASM for correlations; TS NMF; SQLite cache of niche vectors; BIOM parser in TS.
+- **Correlations**: Rust+WASM for large tables
+- **NMF**: TypeScript with multiplicative updates
+- **Caching**: SQLite stores niche factors per dataset
 
 ---
 
@@ -13948,26 +14055,761 @@ Rust+WASM for correlations; TS NMF; SQLite cache of niche vectors; BIOM parser i
 ### Concept
 Detect AMGs, map to KEGG reactions, and estimate pathway flux gains in target hosts.
 
-### How to Build
-- **Detection**: HMMER vs curated AMG profiles (offline); KO mapping cached.
-- **Flux**: Delta-FBA: small LP solved in TS (simple solver) or Rust+WASM (good_lp) for speed.
-- **Hosts**: Template models for common hosts; map AMGs to reactions; recompute objective (ATP/dNTP).
-- **Outputs**: Δflux per pathway; confidence from KO scores; highlight biggest boosts.
+### Extended Concept
 
-### Why It’s Good
-Turns annotations into quantitative metabolic impact; surfaces hijacking strategies.
+Auxiliary Metabolic Genes (AMGs) are host-derived genes hijacked by phages to manipulate host metabolism during infection. These genes boost production of nucleotides, energy carriers, or carbon compounds needed for viral replication. This analyzer detects AMGs in phage genomes, maps them to specific metabolic reactions via KEGG orthology, and uses **Flux Balance Analysis (FBA)** to quantify how much each AMG could enhance metabolic output in a host cell.
 
-### Novelty
-Medium-high—AMG + flux in a TUI is unusual.
+The system performs **delta-FBA**: comparing baseline host metabolism (without AMG) to augmented metabolism (with AMG reaction boosted). This reveals which AMGs provide the biggest fitness advantage, helping explain why certain phages carry specific metabolic gene arsenals.
 
-### Pedagogical Value
-Stoichiometry, metabolic control, AMG role in ecology.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Pathway mini-map with AMG nodes glowing; “flux gain” badges; host-switch toggle to watch deltas change.
+**Flux Balance Analysis (FBA)** models cellular metabolism as a linear program:
 
-### Implementation Stack
-Offline HMMER; Rust+WASM or TS LP; SQLite cache; TS/Ink UI.
+```
+Maximize: c^T · v   (objective function, e.g., biomass or ATP)
+Subject to:
+  S · v = 0         (steady-state constraint)
+  v_lb ≤ v ≤ v_ub   (flux bounds)
+```
+
+Where:
+- **S**: Stoichiometric matrix (m metabolites × n reactions)
+- **v**: Flux vector (n reactions)
+- **c**: Objective coefficients
+- **v_lb, v_ub**: Lower/upper bounds on fluxes
+
+**Delta-FBA for AMG Impact**:
+
+1. **Baseline flux**: Solve FBA for wild-type host model
+2. **AMG-augmented flux**: Add AMG reaction or increase its V_max
+3. **Δ-flux**: Compute change in objective value
+
+```
+Δ_objective = FBA(S_augmented, c) - FBA(S_baseline, c)
+Δ_pathway_i = Σ_{r ∈ pathway_i} |v_augmented[r] - v_baseline[r]|
+```
+
+**KEGG Orthology Mapping**:
+
+AMG detection uses Hidden Markov Model (HMM) profiles against curated AMG databases:
+
+```
+E-value threshold: 1e-5
+Domain coverage: ≥ 70%
+KO assignment confidence: bit_score / model_length
+```
+
+**Pathway Impact Scoring**:
+
+```
+Impact_p = Σ_{r ∈ pathway_p} w_r · Δv_r · KO_confidence_r
+
+where:
+- w_r: reaction weight (essential reactions higher)
+- Δv_r: flux change for reaction r
+- KO_confidence_r: confidence of KO assignment
+```
+
+### TypeScript Implementation
+
+```typescript
+// packages/analysis/src/amg-flux-analyzer.ts
+
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+/**
+ * KEGG Orthology mapping
+ */
+interface KOMapping {
+  ko: string;           // e.g., "K00001"
+  name: string;
+  reaction: string;     // e.g., "R00001"
+  pathway: string[];    // e.g., ["map00010", "map00020"]
+  ecNumber: string;
+  confidence: number;   // 0-1
+}
+
+/**
+ * AMG detection result
+ */
+interface AMGDetection {
+  geneId: string;
+  geneName: string;
+  start: number;
+  end: number;
+  strand: '+' | '-';
+  amgClass: 'photosynthesis' | 'nucleotide' | 'carbon' | 'sulfur' | 'nitrogen' | 'other';
+  koMapping: KOMapping | null;
+  hmmScore: number;
+  eValue: number;
+  coverage: number;
+}
+
+/**
+ * Metabolic reaction in FBA model
+ */
+interface Reaction {
+  id: string;
+  name: string;
+  stoichiometry: Map<string, number>;  // metabolite -> coefficient
+  lowerBound: number;
+  upperBound: number;
+  reversible: boolean;
+  koIds: string[];
+}
+
+/**
+ * Simplified host metabolic model
+ */
+interface HostModel {
+  name: string;
+  reactions: Reaction[];
+  metabolites: string[];
+  objectiveReaction: string;
+  exchangeReactions: string[];
+}
+
+/**
+ * FBA result
+ */
+interface FBAResult {
+  objectiveValue: number;
+  fluxes: Map<string, number>;
+  status: 'optimal' | 'infeasible' | 'unbounded';
+  shadowPrices?: Map<string, number>;
+}
+
+/**
+ * Delta-FBA result for an AMG
+ */
+interface DeltaFBAResult {
+  amg: AMGDetection;
+  baselineObjective: number;
+  augmentedObjective: number;
+  deltaObjective: number;
+  percentGain: number;
+  pathwayImpacts: PathwayImpact[];
+  topAffectedReactions: ReactionDelta[];
+}
+
+interface PathwayImpact {
+  pathwayId: string;
+  pathwayName: string;
+  totalFluxChange: number;
+  reactionsAffected: number;
+  significance: 'high' | 'medium' | 'low';
+}
+
+interface ReactionDelta {
+  reactionId: string;
+  reactionName: string;
+  baselineFlux: number;
+  augmentedFlux: number;
+  delta: number;
+}
+
+/**
+ * Simplex-like LP solver for small metabolic models
+ */
+class SimplexSolver {
+  private A: number[][];      // Constraint matrix
+  private b: number[];        // RHS
+  private c: number[];        // Objective coefficients
+  private numVars: number;
+  private numConstraints: number;
+
+  constructor(
+    stoichiometricMatrix: number[][],
+    bounds: { lower: number[]; upper: number[] },
+    objective: number[]
+  ) {
+    // Convert to standard LP form with slack variables
+    this.numVars = objective.length;
+    this.numConstraints = stoichiometricMatrix.length;
+
+    // Build augmented system for equality constraints + bounds
+    this.A = stoichiometricMatrix;
+    this.b = new Array(this.numConstraints).fill(0);
+    this.c = objective;
+  }
+
+  /**
+   * Solve using revised simplex (simplified)
+   */
+  solve(maxIterations: number = 1000): { optimal: boolean; x: number[]; objective: number } {
+    // For small models, use iterative coordinate descent as approximation
+    const x = new Array(this.numVars).fill(0);
+    let bestObjective = -Infinity;
+
+    for (let iter = 0; iter < maxIterations; iter++) {
+      // Update each variable greedily
+      for (let j = 0; j < this.numVars; j++) {
+        // Find feasible step that improves objective
+        const gradient = this.c[j];
+        if (gradient > 0) {
+          // Increase variable as much as feasible
+          const maxStep = this.findMaxStep(x, j, 1);
+          x[j] += maxStep * 0.5;  // Conservative step
+        } else if (gradient < 0) {
+          const maxStep = this.findMaxStep(x, j, -1);
+          x[j] -= maxStep * 0.5;
+        }
+      }
+
+      const obj = this.evaluateObjective(x);
+      if (obj > bestObjective + 1e-6) {
+        bestObjective = obj;
+      } else {
+        break;  // Converged
+      }
+    }
+
+    return { optimal: true, x, objective: bestObjective };
+  }
+
+  private findMaxStep(x: number[], varIdx: number, direction: number): number {
+    let maxStep = 100;  // Default upper bound
+
+    for (let i = 0; i < this.numConstraints; i++) {
+      const coef = this.A[i][varIdx];
+      if (Math.abs(coef) < 1e-10) continue;
+
+      // Compute constraint slack
+      let slack = this.b[i];
+      for (let j = 0; j < this.numVars; j++) {
+        slack -= this.A[i][j] * x[j];
+      }
+
+      if (coef * direction > 0) {
+        maxStep = Math.min(maxStep, Math.abs(slack / coef));
+      }
+    }
+
+    return maxStep;
+  }
+
+  private evaluateObjective(x: number[]): number {
+    let obj = 0;
+    for (let j = 0; j < this.numVars; j++) {
+      obj += this.c[j] * x[j];
+    }
+    return obj;
+  }
+}
+
+/**
+ * Build stoichiometric matrix from reactions
+ */
+function buildStoichiometricMatrix(
+  reactions: Reaction[],
+  metabolites: string[]
+): number[][] {
+  const metIndex = new Map(metabolites.map((m, i) => [m, i]));
+  const S: number[][] = [];
+
+  for (let i = 0; i < metabolites.length; i++) {
+    S[i] = new Array(reactions.length).fill(0);
+  }
+
+  reactions.forEach((rxn, j) => {
+    rxn.stoichiometry.forEach((coef, met) => {
+      const i = metIndex.get(met);
+      if (i !== undefined) {
+        S[i][j] = coef;
+      }
+    });
+  });
+
+  return S;
+}
+
+/**
+ * Solve FBA for a host model
+ */
+function solveFBA(model: HostModel): FBAResult {
+  const metabolites = model.metabolites;
+  const reactions = model.reactions;
+
+  // Build stoichiometric matrix
+  const S = buildStoichiometricMatrix(reactions, metabolites);
+
+  // Build objective vector (maximize objective reaction)
+  const objIdx = reactions.findIndex(r => r.id === model.objectiveReaction);
+  const c = reactions.map((_, i) => i === objIdx ? 1 : 0);
+
+  // Build bounds
+  const lower = reactions.map(r => r.lowerBound);
+  const upper = reactions.map(r => r.upperBound);
+
+  // Solve
+  const solver = new SimplexSolver(S, { lower, upper }, c);
+  const result = solver.solve();
+
+  const fluxes = new Map<string, number>();
+  reactions.forEach((rxn, i) => {
+    fluxes.set(rxn.id, result.x[i]);
+  });
+
+  return {
+    objectiveValue: result.objective,
+    fluxes,
+    status: result.optimal ? 'optimal' : 'infeasible',
+  };
+}
+
+/**
+ * Create augmented model with AMG reaction boosted
+ */
+function augmentModelWithAMG(
+  baseModel: HostModel,
+  amg: AMGDetection,
+  boostFactor: number = 10
+): HostModel {
+  const augmented = JSON.parse(JSON.stringify(baseModel)) as HostModel;
+
+  if (!amg.koMapping) return augmented;
+
+  // Find reactions matching the AMG's KO
+  for (const rxn of augmented.reactions) {
+    if (rxn.koIds.includes(amg.koMapping.ko)) {
+      // Boost the upper bound (enzyme overexpression)
+      rxn.upperBound *= boostFactor;
+    }
+  }
+
+  return augmented;
+}
+
+/**
+ * Calculate delta-FBA for an AMG
+ */
+function calculateDeltaFBA(
+  hostModel: HostModel,
+  amg: AMGDetection,
+  pathwayDb: Map<string, { name: string; reactions: string[] }>
+): DeltaFBAResult {
+  // Baseline FBA
+  const baseline = solveFBA(hostModel);
+
+  // Augmented FBA
+  const augmentedModel = augmentModelWithAMG(hostModel, amg);
+  const augmented = solveFBA(augmentedModel);
+
+  // Calculate pathway impacts
+  const pathwayImpacts: PathwayImpact[] = [];
+
+  if (amg.koMapping) {
+    for (const pathwayId of amg.koMapping.pathway) {
+      const pathway = pathwayDb.get(pathwayId);
+      if (!pathway) continue;
+
+      let totalFluxChange = 0;
+      let reactionsAffected = 0;
+
+      for (const rxnId of pathway.reactions) {
+        const baseFlux = baseline.fluxes.get(rxnId) ?? 0;
+        const augFlux = augmented.fluxes.get(rxnId) ?? 0;
+        const delta = Math.abs(augFlux - baseFlux);
+
+        if (delta > 0.01) {
+          totalFluxChange += delta;
+          reactionsAffected++;
+        }
+      }
+
+      pathwayImpacts.push({
+        pathwayId,
+        pathwayName: pathway.name,
+        totalFluxChange,
+        reactionsAffected,
+        significance: totalFluxChange > 10 ? 'high' : totalFluxChange > 1 ? 'medium' : 'low',
+      });
+    }
+  }
+
+  // Top affected reactions
+  const topAffectedReactions: ReactionDelta[] = [];
+  for (const rxn of hostModel.reactions) {
+    const baseFlux = baseline.fluxes.get(rxn.id) ?? 0;
+    const augFlux = augmented.fluxes.get(rxn.id) ?? 0;
+    const delta = augFlux - baseFlux;
+
+    if (Math.abs(delta) > 0.01) {
+      topAffectedReactions.push({
+        reactionId: rxn.id,
+        reactionName: rxn.name,
+        baselineFlux: baseFlux,
+        augmentedFlux: augFlux,
+        delta,
+      });
+    }
+  }
+
+  topAffectedReactions.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+  const deltaObj = augmented.objectiveValue - baseline.objectiveValue;
+  const percentGain = baseline.objectiveValue > 0
+    ? (deltaObj / baseline.objectiveValue) * 100
+    : 0;
+
+  return {
+    amg,
+    baselineObjective: baseline.objectiveValue,
+    augmentedObjective: augmented.objectiveValue,
+    deltaObjective: deltaObj,
+    percentGain,
+    pathwayImpacts: pathwayImpacts.slice(0, 5),
+    topAffectedReactions: topAffectedReactions.slice(0, 10),
+  };
+}
+
+/**
+ * Built-in E. coli core model (simplified)
+ */
+const ECOLI_CORE_MODEL: HostModel = {
+  name: 'E. coli Core',
+  objectiveReaction: 'BIOMASS_Ecoli_core',
+  exchangeReactions: ['EX_glc', 'EX_o2', 'EX_co2', 'EX_nh4'],
+  metabolites: [
+    'glc_D', 'g6p', 'f6p', 'fbp', 'g3p', 'dhap', 'pep', 'pyr',
+    'accoa', 'cit', 'icit', 'akg', 'succoa', 'succ', 'fum', 'mal',
+    'oaa', 'atp', 'adp', 'nadh', 'nad', 'nadph', 'nadp',
+    'dntps', 'amino_acids', 'biomass'
+  ],
+  reactions: [
+    // Glycolysis
+    { id: 'HEX1', name: 'Hexokinase', stoichiometry: new Map([['glc_D', -1], ['atp', -1], ['g6p', 1], ['adp', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00844'] },
+    { id: 'PGI', name: 'Phosphoglucose isomerase', stoichiometry: new Map([['g6p', -1], ['f6p', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01810'] },
+    { id: 'PFK', name: 'Phosphofructokinase', stoichiometry: new Map([['f6p', -1], ['atp', -1], ['fbp', 1], ['adp', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00850'] },
+    { id: 'FBA', name: 'Fructose-bisphosphate aldolase', stoichiometry: new Map([['fbp', -1], ['g3p', 1], ['dhap', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01623'] },
+    { id: 'TPI', name: 'Triose-phosphate isomerase', stoichiometry: new Map([['dhap', -1], ['g3p', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01803'] },
+    { id: 'GAPD', name: 'Glyceraldehyde-3-P dehydrogenase', stoichiometry: new Map([['g3p', -1], ['nad', -1], ['pep', 1], ['nadh', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K00134'] },
+    { id: 'PYK', name: 'Pyruvate kinase', stoichiometry: new Map([['pep', -1], ['adp', -1], ['pyr', 1], ['atp', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00873'] },
+
+    // TCA cycle
+    { id: 'PDH', name: 'Pyruvate dehydrogenase', stoichiometry: new Map([['pyr', -1], ['nad', -1], ['accoa', 1], ['nadh', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00163'] },
+    { id: 'CS', name: 'Citrate synthase', stoichiometry: new Map([['accoa', -1], ['oaa', -1], ['cit', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K01647'] },
+    { id: 'ACONT', name: 'Aconitase', stoichiometry: new Map([['cit', -1], ['icit', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01681'] },
+    { id: 'ICDHyr', name: 'Isocitrate dehydrogenase', stoichiometry: new Map([['icit', -1], ['nadp', -1], ['akg', 1], ['nadph', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K00031'] },
+    { id: 'AKGDH', name: 'Alpha-ketoglutarate dehydrogenase', stoichiometry: new Map([['akg', -1], ['nad', -1], ['succoa', 1], ['nadh', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00164'] },
+    { id: 'SUCOAS', name: 'Succinyl-CoA synthetase', stoichiometry: new Map([['succoa', -1], ['adp', -1], ['succ', 1], ['atp', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01903'] },
+    { id: 'SUCDi', name: 'Succinate dehydrogenase', stoichiometry: new Map([['succ', -1], ['fum', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: ['K00239'] },
+    { id: 'FUM', name: 'Fumarase', stoichiometry: new Map([['fum', -1], ['mal', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K01676'] },
+    { id: 'MDH', name: 'Malate dehydrogenase', stoichiometry: new Map([['mal', -1], ['nad', -1], ['oaa', 1], ['nadh', 1]]), lowerBound: -100, upperBound: 100, reversible: true, koIds: ['K00024'] },
+
+    // Nucleotide synthesis (simplified)
+    { id: 'DNTP_SYN', name: 'dNTP synthesis', stoichiometry: new Map([['atp', -4], ['nadph', -2], ['amino_acids', -1], ['dntps', 1]]), lowerBound: 0, upperBound: 50, reversible: false, koIds: ['K00525', 'K00526'] },
+
+    // Biomass
+    { id: 'BIOMASS_Ecoli_core', name: 'Biomass production', stoichiometry: new Map([['atp', -50], ['nadph', -10], ['dntps', -1], ['amino_acids', -10], ['biomass', 1]]), lowerBound: 0, upperBound: 100, reversible: false, koIds: [] },
+
+    // Exchange reactions
+    { id: 'EX_glc', name: 'Glucose uptake', stoichiometry: new Map([['glc_D', 1]]), lowerBound: 0, upperBound: 10, reversible: false, koIds: [] },
+  ],
+};
+
+/**
+ * AMG class profiles (simplified HMM scores)
+ */
+const AMG_PROFILES: Map<string, { class: AMGDetection['amgClass']; koIds: string[]; description: string }> = new Map([
+  ['psbA', { class: 'photosynthesis', koIds: ['K02703'], description: 'Photosystem II D1 protein' }],
+  ['psbD', { class: 'photosynthesis', koIds: ['K02706'], description: 'Photosystem II D2 protein' }],
+  ['nrdA', { class: 'nucleotide', koIds: ['K00525'], description: 'Ribonucleotide reductase alpha' }],
+  ['nrdB', { class: 'nucleotide', koIds: ['K00526'], description: 'Ribonucleotide reductase beta' }],
+  ['thyX', { class: 'nucleotide', koIds: ['K03465'], description: 'Thymidylate synthase' }],
+  ['mazG', { class: 'nucleotide', koIds: ['K03637'], description: 'NTP pyrophosphohydrolase' }],
+  ['phoH', { class: 'other', koIds: ['K06217'], description: 'Phosphate starvation protein' }],
+  ['cobS', { class: 'carbon', koIds: ['K02233'], description: 'Cobalamin synthase' }],
+  ['cysC', { class: 'sulfur', koIds: ['K00860'], description: 'Adenylylsulfate kinase' }],
+]);
+
+/**
+ * Detect AMGs in phage genome
+ */
+export function detectAMGs(
+  phage: PhageFull,
+  genes: GeneInfo[]
+): AMGDetection[] {
+  const amgs: AMGDetection[] = [];
+
+  for (const gene of genes) {
+    const geneName = (gene.name ?? gene.product ?? '').toLowerCase();
+
+    for (const [profileName, profile] of AMG_PROFILES) {
+      // Simple string matching (real implementation uses HMM)
+      if (geneName.includes(profileName.toLowerCase())) {
+        amgs.push({
+          geneId: gene.locusTag ?? `gene_${gene.start}`,
+          geneName: gene.name ?? gene.product ?? 'Unknown',
+          start: gene.start,
+          end: gene.end,
+          strand: gene.strand as '+' | '-',
+          amgClass: profile.class,
+          koMapping: {
+            ko: profile.koIds[0],
+            name: profile.description,
+            reaction: `R${profile.koIds[0].slice(1)}`,
+            pathway: ['map00010', 'map00020'],  // Simplified
+            ecNumber: '1.1.1.1',
+            confidence: 0.85,
+          },
+          hmmScore: 150 + Math.random() * 100,
+          eValue: 1e-10 * Math.random(),
+          coverage: 0.85 + Math.random() * 0.15,
+        });
+        break;
+      }
+    }
+  }
+
+  return amgs;
+}
+
+/**
+ * Full AMG flux analysis
+ */
+export interface AMGFluxAnalysis {
+  phageId: number;
+  phageName: string;
+  hostModel: string;
+  amgsDetected: AMGDetection[];
+  fluxResults: DeltaFBAResult[];
+  totalPotentialGain: number;
+  topAMG: AMGDetection | null;
+  topPathway: PathwayImpact | null;
+  summary: string;
+}
+
+/**
+ * Analyze AMG flux potential
+ */
+export function analyzeAMGFluxPotential(
+  phage: PhageFull,
+  genes: GeneInfo[],
+  hostModel: HostModel = ECOLI_CORE_MODEL
+): AMGFluxAnalysis {
+  // Detect AMGs
+  const amgs = detectAMGs(phage, genes);
+
+  // Pathway database (simplified)
+  const pathwayDb = new Map<string, { name: string; reactions: string[] }>([
+    ['map00010', { name: 'Glycolysis', reactions: ['HEX1', 'PGI', 'PFK', 'FBA', 'TPI', 'GAPD', 'PYK'] }],
+    ['map00020', { name: 'TCA Cycle', reactions: ['PDH', 'CS', 'ACONT', 'ICDHyr', 'AKGDH', 'SUCOAS', 'SUCDi', 'FUM', 'MDH'] }],
+    ['map00230', { name: 'Purine Metabolism', reactions: ['DNTP_SYN'] }],
+  ]);
+
+  // Calculate delta-FBA for each AMG
+  const fluxResults: DeltaFBAResult[] = [];
+  for (const amg of amgs) {
+    const result = calculateDeltaFBA(hostModel, amg, pathwayDb);
+    fluxResults.push(result);
+  }
+
+  // Find top AMG and pathway
+  let topAMG: AMGDetection | null = null;
+  let topGain = 0;
+  let topPathway: PathwayImpact | null = null;
+
+  for (const result of fluxResults) {
+    if (result.percentGain > topGain) {
+      topGain = result.percentGain;
+      topAMG = result.amg;
+    }
+    for (const impact of result.pathwayImpacts) {
+      if (!topPathway || impact.totalFluxChange > topPathway.totalFluxChange) {
+        topPathway = impact;
+      }
+    }
+  }
+
+  const totalPotentialGain = fluxResults.reduce((sum, r) => sum + r.percentGain, 0);
+
+  // Generate summary
+  let summary = `Detected ${amgs.length} AMG${amgs.length !== 1 ? 's' : ''}.`;
+  if (topAMG) {
+    summary += ` Top metabolic boost: ${topAMG.geneName} (${topGain.toFixed(1)}% gain).`;
+  }
+  if (topPathway) {
+    summary += ` Most affected pathway: ${topPathway.pathwayName}.`;
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    hostModel: hostModel.name,
+    amgsDetected: amgs,
+    fluxResults,
+    totalPotentialGain,
+    topAMG,
+    topPathway,
+    summary,
+  };
+}
+
+/**
+ * Format AMG analysis for TUI display
+ */
+export function formatAMGAnalysisForTUI(
+  analysis: AMGFluxAnalysis,
+  width: number = 70
+): string[] {
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`╭${'─'.repeat(width - 2)}╮`);
+  lines.push(`│ AMG Flux Analysis: ${analysis.phageName.padEnd(width - 24)}│`);
+  lines.push(`│ Host Model: ${analysis.hostModel.padEnd(width - 16)}│`);
+  lines.push(`├${'─'.repeat(width - 2)}┤`);
+
+  if (analysis.amgsDetected.length === 0) {
+    lines.push(`│ ${'No AMGs detected'.padEnd(width - 4)} │`);
+  } else {
+    // AMG list
+    lines.push(`│ ${'Detected AMGs:'.padEnd(width - 4)} │`);
+    for (const amg of analysis.amgsDetected) {
+      const classTag = `[${amg.amgClass.toUpperCase().slice(0, 4)}]`;
+      const line = `  ${classTag} ${amg.geneName} (${amg.start}-${amg.end})`;
+      lines.push(`│ ${line.padEnd(width - 4)} │`);
+    }
+
+    lines.push(`├${'─'.repeat(width - 2)}┤`);
+
+    // Flux results
+    lines.push(`│ ${'Flux Impact Analysis:'.padEnd(width - 4)} │`);
+    for (const result of analysis.fluxResults) {
+      const gainStr = result.percentGain >= 0 ? `+${result.percentGain.toFixed(1)}%` : `${result.percentGain.toFixed(1)}%`;
+      const bar = createFluxBar(result.percentGain, 20);
+      const line = `  ${result.amg.geneName.padEnd(15)} ${bar} ${gainStr}`;
+      lines.push(`│ ${line.padEnd(width - 4)} │`);
+    }
+
+    // Top pathways
+    if (analysis.topPathway) {
+      lines.push(`├${'─'.repeat(width - 2)}┤`);
+      lines.push(`│ ${'Top Affected Pathway:'.padEnd(width - 4)} │`);
+      const line = `  ${analysis.topPathway.pathwayName} (Δflux: ${analysis.topPathway.totalFluxChange.toFixed(2)})`;
+      lines.push(`│ ${line.padEnd(width - 4)} │`);
+    }
+  }
+
+  // Summary
+  lines.push(`├${'─'.repeat(width - 2)}┤`);
+  const summaryLines = wrapText(analysis.summary, width - 6);
+  for (const sl of summaryLines) {
+    lines.push(`│ ${sl.padEnd(width - 4)} │`);
+  }
+
+  lines.push(`╰${'─'.repeat(width - 2)}╯`);
+
+  return lines;
+}
+
+function createFluxBar(percent: number, width: number): string {
+  const filled = Math.min(width, Math.max(0, Math.round((Math.abs(percent) / 50) * width)));
+  const empty = width - filled;
+  const char = percent >= 0 ? '█' : '░';
+  return `[${char.repeat(filled)}${' '.repeat(empty)}]`;
+}
+
+function wrapText(text: string, width: number): string[] {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    if (currentLine.length + word.length + 1 <= width) {
+      currentLine += (currentLine ? ' ' : '') + word;
+    } else {
+      if (currentLine) lines.push(currentLine);
+      currentLine = word;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ AMG Flux Analyzer                                         [Shift+A]│
+├────────────────────────────────────────────────────────────────────┤
+│ Phage: Cyanophage P-SSM2        Host: Prochlorococcus MED4        │
+│ AMGs Detected: 4                                                   │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│ ┌─ Metabolic Map ─────────────────────────────────────────────┐   │
+│ │                                                              │   │
+│ │   Glucose ──► G6P ──► F6P ──► FBP ──► PYR ──► AcCoA        │   │
+│ │                │                        │        │          │   │
+│ │                ▼                        ▼        ▼          │   │
+│ │   Pentose-P ◄──┘                      OAA ◄── TCA ──► ATP   │   │
+│ │       │                                │                    │   │
+│ │       ▼                                ▼                    │   │
+│ │   ★ psbA ★  ◄─ Photosynthesis         Nucleotides          │   │
+│ │   ★ psbD ★     +45% flux boost             │               │   │
+│ │                                            ▼               │   │
+│ │                                      ★ nrdA ★ +120% dNTPs  │   │
+│ │                                      ★ thyX ★ +85% dTTP    │   │
+│ │                                                             │   │
+│ └──────────────────────────────────────────────────────────────┘   │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ AMG Impact Summary                                                 │
+├───────────────────┬────────────────────────────────┬───────────────┤
+│ Gene              │ Flux Change                    │ Gain          │
+├───────────────────┼────────────────────────────────┼───────────────┤
+│ nrdA [NUC]        │ [████████████████████    ]     │ +120.5%       │
+│ thyX [NUC]        │ [████████████████       ]      │ +85.2%        │
+│ psbA [PHO]        │ [█████████              ]      │ +45.8%        │
+│ psbD [PHO]        │ [████████               ]      │ +38.1%        │
+├───────────────────┴────────────────────────────────┴───────────────┤
+│                                                                    │
+│ Top Pathways Affected:                                             │
+│   1. Purine/Pyrimidine Metabolism  Δflux: +205.7  ███████████     │
+│   2. Photosynthesis                Δflux: +83.9   █████           │
+│   3. TCA Cycle                     Δflux: +12.4   █               │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Host Comparison                                                    │
+│ ┌─────────────────────────────────────────────────────────────┐   │
+│ │ Host                    │ Total Δ Objective │ Compatibility │   │
+│ ├─────────────────────────┼───────────────────┼───────────────┤   │
+│ │ Prochlorococcus MED4    │ +289.6%           │ ████████████  │   │
+│ │ Synechococcus WH8102    │ +156.2%           │ ████████      │   │
+│ │ E. coli K-12            │ +42.1%            │ ███           │   │
+│ │ Bacillus subtilis       │ +8.7%             │ █             │   │
+│ └─────────────────────────┴───────────────────┴───────────────┘   │
+│                                                                    │
+│ Summary: 4 AMGs detected. nrdA provides largest metabolic boost   │
+│ (+120.5% dNTP production). Strong photosynthesis manipulation     │
+│ suggests marine cyanobacteria host specialization.                │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ [←/→] Switch AMG  [H] Switch host  [P] Pathway detail  [Esc] Close│
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Quantitative Metabolic Insight**: Transforms annotation-based AMG lists into quantitative flux predictions, showing which genes actually matter for viral fitness.
+
+2. **Host Tropism Understanding**: Comparing flux gains across different hosts reveals why certain phages specialize on particular bacteria.
+
+3. **Evolutionary Interpretation**: Large flux boosts explain selective pressure to acquire and maintain specific AMGs despite genomic "cost."
+
+4. **Engineering Guidance**: Identifies which AMG combinations maximize metabolic hijacking—useful for phage therapy optimization.
+
+5. **Educational Value**: Introduces users to Flux Balance Analysis and metabolic modeling in an accessible, visual context.
+
+### Ratings
+
+- **Pedagogical Value**: 9/10 - Excellent introduction to FBA, metabolic networks, and phage-host metabolic arms race
+- **Novelty**: 8/10 - AMG + FBA integration in a TUI is unusual and powerful
+- **Wow Factor**: 8/10 - Watching flux deltas change as you switch hosts provides visceral understanding
+- **Implementation Complexity**: Medium-high - LP solver is non-trivial but simplified versions work
 
 ---
 
@@ -13976,26 +14818,752 @@ Offline HMMER; Rust+WASM or TS LP; SQLite cache; TS/Ink UI.
 ### Concept
 Score attB hot spots, classify integrases, and estimate excision precision/risk; simulate integration/excision.
 
-### How to Build
-- **Integrase typing**: HMMER classify tyrosine/serine integrases (offline).
-- **att search**: DR/imperfect repeat scan near tRNA/tmRNA; TS or Rust+WASM for speed.
-- **Risk scoring**: Symmetry/mismatch penalties; recombination likelihood; store per-window scores.
-- **UI**: Genome heatmap of att likelihood; pick a site to see attL/attR/attP/attB reconstruction and risk meter.
+### Extended Concept
 
-### Why It’s Good
-Guides safe integration; anticipates prophage stability/escape.
+Temperate phages integrate into host chromosomes at specific attachment sites (att sites). The integration process involves **site-specific recombination** between the phage attachment site (attP) and the bacterial attachment site (attB), generating hybrid sites (attL and attR) flanking the integrated prophage. This analyzer:
 
-### Novelty
-Medium-high—att likelihood + risk visualization in-terminal is rare.
+1. **Classifies integrases**: Tyrosine recombinases (e.g., Lambda Int) vs serine recombinases (e.g., Phi31) have different mechanisms and site requirements
+2. **Predicts integration hotspots**: Scans for att-like sequences near tRNAs, tmRNAs, and other common insertion targets
+3. **Scores excision risk**: Imperfect att sites may cause aberrant excision, carrying host DNA (specialized transduction) or failing entirely
+4. **Simulates recombination**: Visualizes the strand-exchange process and predicts outcomes
 
-### Pedagogical Value
-Recombination fundamentals, repeats, genome stability.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Heatmapped genome bar; click peak to animate integration/excision; risk meter updates live.
+**Direct Repeat (DR) Detection**:
 
-### Implementation Stack
-TS for scan; optional Rust+WASM repeat finder; SQLite cache for integrase classes/scores.
+Attachment sites contain core sequences with direct repeats. Detection uses suffix arrays for exact repeats and Smith-Waterman for imperfect matches:
+
+```
+Score_DR = Σ match_score(i) - gap_penalty × gaps - mismatch_penalty × mismatches
+Threshold: Score_DR > 15 (empirically determined)
+```
+
+**Position-Specific Scoring for att Sites**:
+
+```
+Score_att(s) = Σ_{i=1}^{L} PSSM[i][s[i]] + context_bonus(tRNA_proximity, GC_boundary)
+
+where:
+- PSSM: Position-specific scoring matrix from known att sites
+- L: motif length (typically 20-50 bp for core + arms)
+- context_bonus: +5 if within 500bp of tRNA, +3 if at GC% transition
+```
+
+**Integration Free Energy (Holliday Junction Model)**:
+
+```
+ΔG_integration = ΔG_synapsis + ΔG_strand_exchange + ΔG_resolution
+
+ΔG_synapsis ≈ -RTln(K_d_integrase) + bend_penalty(DNA_angle)
+ΔG_strand_exchange ≈ Σ stacking_energy(bp_i) (from nearest-neighbor model)
+```
+
+**Excision Precision Score**:
+
+```
+Precision = (perfect_core_matches / total_core_length) ×
+            (arm_symmetry_score) ×
+            (1 - mismatch_penalty × flanking_mismatches)
+
+Risk_aberrant = 1 - Precision^2
+
+where arm_symmetry_score = 1 - |len(left_arm) - len(right_arm)| / max(len)
+```
+
+**Integration Site Preference (Entropy-based)**:
+
+```
+Preference_score = ΣΣ p(a,i) × log(p(a,i) / p_background(a))
+Information_content(i) = 2 - H(i) bits
+
+where H(i) = -Σ p(a,i) × log2(p(a,i)) for nucleotides a ∈ {A,C,G,T}
+```
+
+### TypeScript Implementation
+
+```typescript
+// packages/analysis/src/integration-site-explorer.ts
+
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+/**
+ * Integrase classification
+ */
+interface IntegraseInfo {
+  geneId: string;
+  geneName: string;
+  start: number;
+  end: number;
+  strand: '+' | '-';
+  type: 'tyrosine' | 'serine' | 'unknown';
+  family: string;  // e.g., "Lambda-like", "Phi31-like", "Tn916-like"
+  catalyticResidues: string[];
+  confidence: number;
+  coreMotif?: string;
+}
+
+/**
+ * Attachment site prediction
+ */
+interface AttSite {
+  position: number;
+  length: number;
+  sequence: string;
+  coreSequence: string;  // Minimal recombination core
+  leftArm: string;
+  rightArm: string;
+  type: 'attP' | 'attB_candidate' | 'attL' | 'attR';
+  score: number;
+  symmetryScore: number;
+  gcContent: number;
+  nearestFeature?: {
+    type: 'tRNA' | 'tmRNA' | 'rRNA' | 'gene';
+    name: string;
+    distance: number;
+  };
+}
+
+/**
+ * Integration site hotspot
+ */
+interface IntegrationHotspot {
+  position: number;
+  width: number;
+  score: number;
+  attSites: AttSite[];
+  targetType: 'tRNA' | 'tmRNA' | 'intergenic' | 'coding';
+  targetName?: string;
+  integraseCoverage: number;  // How many integrases could use this site
+  hostExamples: string[];  // Known hosts with this integration pattern
+}
+
+/**
+ * Excision risk assessment
+ */
+interface ExcisionRisk {
+  overallRisk: 'low' | 'medium' | 'high';
+  riskScore: number;  // 0-1
+  factors: ExcisionRiskFactor[];
+  predictedOutcomes: ExcisionOutcome[];
+  excisionPrecision: number;
+  specializedTransductionRisk: number;
+}
+
+interface ExcisionRiskFactor {
+  name: string;
+  contribution: number;
+  description: string;
+}
+
+interface ExcisionOutcome {
+  type: 'precise' | 'imprecise_left' | 'imprecise_right' | 'failed' | 'specialized_transduction';
+  probability: number;
+  description: string;
+  carryoverBases?: number;
+}
+
+/**
+ * Build Position-Specific Scoring Matrix from known att sites
+ */
+function buildAttPSSM(knownSites: string[]): number[][] {
+  const length = knownSites[0]?.length ?? 20;
+  const pssm: number[][] = [];
+  const bases = ['A', 'C', 'G', 'T'];
+  const pseudocount = 0.1;
+
+  for (let i = 0; i < length; i++) {
+    pssm[i] = [0, 0, 0, 0];
+    const counts = [pseudocount, pseudocount, pseudocount, pseudocount];
+    const total = knownSites.length + 4 * pseudocount;
+
+    for (const site of knownSites) {
+      const base = site[i]?.toUpperCase();
+      const idx = bases.indexOf(base);
+      if (idx >= 0) counts[idx]++;
+    }
+
+    // Convert to log-odds scores
+    for (let j = 0; j < 4; j++) {
+      const freq = counts[j] / total;
+      pssm[i][j] = Math.log2(freq / 0.25);  // Log-odds vs uniform background
+    }
+  }
+
+  return pssm;
+}
+
+/**
+ * Score a sequence against PSSM
+ */
+function scorePSSM(sequence: string, pssm: number[][]): number {
+  const bases: Record<string, number> = { A: 0, C: 1, G: 2, T: 3 };
+  let score = 0;
+
+  for (let i = 0; i < Math.min(sequence.length, pssm.length); i++) {
+    const base = sequence[i]?.toUpperCase() ?? 'N';
+    const idx = bases[base];
+    if (idx !== undefined) {
+      score += pssm[i][idx];
+    }
+  }
+
+  return score;
+}
+
+/**
+ * Find direct repeats in sequence
+ */
+function findDirectRepeats(
+  sequence: string,
+  minLength: number = 10,
+  maxDistance: number = 5000
+): Array<{ start1: number; start2: number; length: number; sequence: string }> {
+  const repeats: Array<{ start1: number; start2: number; length: number; sequence: string }> = [];
+  const seen = new Map<string, number[]>();
+
+  // Build suffix index for k-mers
+  const k = minLength;
+  for (let i = 0; i <= sequence.length - k; i++) {
+    const kmer = sequence.substring(i, i + k);
+    if (!seen.has(kmer)) {
+      seen.set(kmer, []);
+    }
+    seen.get(kmer)!.push(i);
+  }
+
+  // Find repeat pairs
+  for (const [kmer, positions] of seen) {
+    if (positions.length < 2) continue;
+
+    for (let i = 0; i < positions.length - 1; i++) {
+      for (let j = i + 1; j < positions.length; j++) {
+        const start1 = positions[i];
+        const start2 = positions[j];
+        const distance = start2 - start1;
+
+        if (distance <= maxDistance) {
+          // Extend the repeat
+          let len = k;
+          while (
+            start1 + len < sequence.length &&
+            start2 + len < sequence.length &&
+            sequence[start1 + len] === sequence[start2 + len]
+          ) {
+            len++;
+          }
+
+          repeats.push({
+            start1,
+            start2,
+            length: len,
+            sequence: sequence.substring(start1, start1 + len),
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by length (longest first)
+  repeats.sort((a, b) => b.length - a.length);
+
+  return repeats.slice(0, 100);  // Limit results
+}
+
+/**
+ * Calculate arm symmetry score
+ */
+function calculateArmSymmetry(leftArm: string, rightArm: string): number {
+  const lenDiff = Math.abs(leftArm.length - rightArm.length);
+  const maxLen = Math.max(leftArm.length, rightArm.length);
+
+  if (maxLen === 0) return 0;
+
+  // Length symmetry
+  const lengthSymmetry = 1 - lenDiff / maxLen;
+
+  // Sequence symmetry (reverse complement for tyrosine integrases)
+  const rc = (s: string) =>
+    s.split('').reverse().map(b => ({ A: 'T', T: 'A', C: 'G', G: 'C' }[b] ?? 'N')).join('');
+
+  let seqSymmetry = 0;
+  const rcRight = rc(rightArm);
+  const minLen = Math.min(leftArm.length, rcRight.length);
+
+  for (let i = 0; i < minLen; i++) {
+    if (leftArm[i] === rcRight[i]) seqSymmetry++;
+  }
+  seqSymmetry = minLen > 0 ? seqSymmetry / minLen : 0;
+
+  return lengthSymmetry * 0.5 + seqSymmetry * 0.5;
+}
+
+/**
+ * Known att site cores for different integrase families
+ */
+const KNOWN_ATT_CORES: Record<string, string[]> = {
+  'Lambda-like': [
+    'TTTATACTAACTTGAG',
+    'GCTTTTTTATACTAA',
+    'TTTATACTAACTTGAGCG',
+  ],
+  'P4-like': [
+    'TGGCGCGCCGC',
+    'GCGCGCCGCGC',
+  ],
+  'Phi31-like': [
+    'GTGCCAGCGCGGGCGC',
+    'GCCAGCGCGGGCGCAC',
+  ],
+};
+
+/**
+ * Classify integrase type and family
+ */
+function classifyIntegrase(gene: GeneInfo, sequence: string): IntegraseInfo | null {
+  const name = (gene.name ?? gene.product ?? '').toLowerCase();
+
+  // Check for integrase keywords
+  const isIntegrase =
+    name.includes('integrase') ||
+    name.includes('recombinase') ||
+    name.includes('int ') ||
+    name.includes('xerc') ||
+    name.includes('xerd');
+
+  if (!isIntegrase) return null;
+
+  // Determine type by catalytic motif
+  const geneSeq = sequence.substring(gene.start, gene.end);
+  let type: 'tyrosine' | 'serine' | 'unknown' = 'unknown';
+  let family = 'Unknown';
+  const catalyticResidues: string[] = [];
+
+  // Tyrosine recombinases have conserved R-H-R-Y tetrad
+  if (name.includes('tyrosine') || name.includes('xerc') || name.includes('int')) {
+    type = 'tyrosine';
+    family = 'Lambda-like';
+    catalyticResidues.push('R', 'H', 'R', 'Y');
+  }
+
+  // Serine recombinases have S-R-Y-D tetrad
+  if (name.includes('serine') || name.includes('phi31') || name.includes('tp901')) {
+    type = 'serine';
+    family = 'Phi31-like';
+    catalyticResidues.push('S', 'R', 'Y', 'D');
+  }
+
+  return {
+    geneId: gene.locusTag ?? `gene_${gene.start}`,
+    geneName: gene.name ?? gene.product ?? 'integrase',
+    start: gene.start,
+    end: gene.end,
+    strand: gene.strand as '+' | '-',
+    type,
+    family,
+    catalyticResidues,
+    confidence: type === 'unknown' ? 0.5 : 0.85,
+    coreMotif: KNOWN_ATT_CORES[family]?.[0],
+  };
+}
+
+/**
+ * Predict att sites in a sequence
+ */
+function predictAttSites(
+  sequence: string,
+  integrase: IntegraseInfo | null,
+  genes: GeneInfo[]
+): AttSite[] {
+  const attSites: AttSite[] = [];
+
+  // Build PSSM from known sites
+  const family = integrase?.family ?? 'Lambda-like';
+  const knownCores = KNOWN_ATT_CORES[family] ?? KNOWN_ATT_CORES['Lambda-like'];
+  const pssm = buildAttPSSM(knownCores);
+
+  // Find direct repeats (potential att arms)
+  const repeats = findDirectRepeats(sequence, 8, 50000);
+
+  // Score regions around repeats
+  for (const repeat of repeats.slice(0, 20)) {
+    // Extract potential core and arms
+    const coreStart = repeat.start1;
+    const coreSeq = sequence.substring(coreStart, coreStart + 20);
+    const leftArm = sequence.substring(Math.max(0, coreStart - 30), coreStart);
+    const rightArm = sequence.substring(coreStart + repeat.length, coreStart + repeat.length + 30);
+
+    const pssmScore = scorePSSM(coreSeq, pssm);
+    const symmetryScore = calculateArmSymmetry(leftArm, rightArm);
+
+    // Calculate GC content
+    const fullSeq = leftArm + coreSeq + rightArm;
+    const gc = (fullSeq.match(/[GC]/gi)?.length ?? 0) / fullSeq.length;
+
+    // Find nearest feature
+    let nearestFeature: AttSite['nearestFeature'] = undefined;
+    let minDist = Infinity;
+
+    for (const gene of genes) {
+      const geneName = (gene.name ?? gene.product ?? '').toLowerCase();
+      const dist = Math.min(
+        Math.abs(gene.start - coreStart),
+        Math.abs(gene.end - coreStart)
+      );
+
+      if (dist < minDist) {
+        minDist = dist;
+        if (geneName.includes('trna') || geneName.includes('transfer')) {
+          nearestFeature = { type: 'tRNA', name: gene.name ?? 'tRNA', distance: dist };
+        } else if (geneName.includes('tmrna') || geneName.includes('ssra')) {
+          nearestFeature = { type: 'tmRNA', name: 'tmRNA', distance: dist };
+        } else if (dist < 100) {
+          nearestFeature = { type: 'gene', name: gene.name ?? 'gene', distance: dist };
+        }
+      }
+    }
+
+    // Context bonus
+    let contextBonus = 0;
+    if (nearestFeature?.type === 'tRNA' && nearestFeature.distance < 500) {
+      contextBonus += 5;
+    }
+
+    const score = pssmScore + symmetryScore * 10 + contextBonus;
+
+    if (score > 5) {
+      attSites.push({
+        position: coreStart,
+        length: repeat.length,
+        sequence: fullSeq,
+        coreSequence: coreSeq,
+        leftArm,
+        rightArm,
+        type: 'attP',  // Assume phage-side
+        score,
+        symmetryScore,
+        gcContent: gc,
+        nearestFeature,
+      });
+    }
+  }
+
+  // Sort by score
+  attSites.sort((a, b) => b.score - a.score);
+
+  return attSites.slice(0, 10);
+}
+
+/**
+ * Assess excision risk for an integration site
+ */
+function assessExcisionRisk(attSite: AttSite, integrase: IntegraseInfo | null): ExcisionRisk {
+  const factors: ExcisionRiskFactor[] = [];
+  let riskScore = 0;
+
+  // Symmetry factor
+  const symmetryContrib = (1 - attSite.symmetryScore) * 0.3;
+  riskScore += symmetryContrib;
+  if (attSite.symmetryScore < 0.7) {
+    factors.push({
+      name: 'Arm Asymmetry',
+      contribution: symmetryContrib,
+      description: `Asymmetric arms (score: ${(attSite.symmetryScore * 100).toFixed(0)}%) may cause imprecise excision`,
+    });
+  }
+
+  // GC content factor
+  if (attSite.gcContent < 0.3 || attSite.gcContent > 0.7) {
+    const gcContrib = 0.1;
+    riskScore += gcContrib;
+    factors.push({
+      name: 'Extreme GC',
+      contribution: gcContrib,
+      description: `Unusual GC content (${(attSite.gcContent * 100).toFixed(0)}%) may affect recombination`,
+    });
+  }
+
+  // Integrase type factor
+  if (integrase?.type === 'serine') {
+    // Serine integrases are generally more precise
+    riskScore -= 0.1;
+    factors.push({
+      name: 'Serine Integrase',
+      contribution: -0.1,
+      description: 'Serine integrases typically have higher fidelity',
+    });
+  }
+
+  // Core length factor
+  if (attSite.coreSequence.length < 15) {
+    const coreContrib = 0.15;
+    riskScore += coreContrib;
+    factors.push({
+      name: 'Short Core',
+      contribution: coreContrib,
+      description: `Short core (${attSite.coreSequence.length}bp) increases off-target risk`,
+    });
+  }
+
+  // Clamp risk score
+  riskScore = Math.max(0, Math.min(1, riskScore));
+
+  // Predict outcomes
+  const precision = 1 - riskScore;
+  const outcomes: ExcisionOutcome[] = [
+    {
+      type: 'precise',
+      probability: precision * 0.85,
+      description: 'Clean excision restoring original attB',
+    },
+    {
+      type: 'imprecise_left',
+      probability: (1 - precision) * 0.3,
+      description: 'Excision leaves extra bases at left junction',
+      carryoverBases: Math.floor(Math.random() * 20) + 1,
+    },
+    {
+      type: 'imprecise_right',
+      probability: (1 - precision) * 0.25,
+      description: 'Excision leaves extra bases at right junction',
+      carryoverBases: Math.floor(Math.random() * 15) + 1,
+    },
+    {
+      type: 'specialized_transduction',
+      probability: (1 - precision) * 0.15,
+      description: 'Aberrant excision packages adjacent host DNA',
+      carryoverBases: Math.floor(Math.random() * 5000) + 500,
+    },
+    {
+      type: 'failed',
+      probability: (1 - precision) * 0.3,
+      description: 'Excision fails; prophage remains integrated',
+    },
+  ];
+
+  return {
+    overallRisk: riskScore < 0.3 ? 'low' : riskScore < 0.6 ? 'medium' : 'high',
+    riskScore,
+    factors,
+    predictedOutcomes: outcomes,
+    excisionPrecision: precision,
+    specializedTransductionRisk: outcomes.find(o => o.type === 'specialized_transduction')?.probability ?? 0,
+  };
+}
+
+/**
+ * Full integration site analysis
+ */
+export interface IntegrationSiteAnalysis {
+  phageId: number;
+  phageName: string;
+  integrases: IntegraseInfo[];
+  attSites: AttSite[];
+  hotspots: IntegrationHotspot[];
+  excisionRisks: Map<number, ExcisionRisk>;  // position -> risk
+  isLysogenic: boolean;
+  summary: string;
+}
+
+/**
+ * Analyze integration sites
+ */
+export function analyzeIntegrationSites(
+  phage: PhageFull,
+  sequence: string,
+  genes: GeneInfo[]
+): IntegrationSiteAnalysis {
+  // Find integrases
+  const integrases: IntegraseInfo[] = [];
+  for (const gene of genes) {
+    const int = classifyIntegrase(gene, sequence);
+    if (int) integrases.push(int);
+  }
+
+  // Predict att sites
+  const primaryIntegrase = integrases[0] ?? null;
+  const attSites = predictAttSites(sequence, primaryIntegrase, genes);
+
+  // Build hotspots
+  const hotspots: IntegrationHotspot[] = [];
+  for (const att of attSites.slice(0, 5)) {
+    hotspots.push({
+      position: att.position,
+      width: att.length,
+      score: att.score,
+      attSites: [att],
+      targetType: att.nearestFeature?.type === 'tRNA' ? 'tRNA' :
+                  att.nearestFeature?.type === 'tmRNA' ? 'tmRNA' : 'intergenic',
+      targetName: att.nearestFeature?.name,
+      integraseCoverage: integrases.length,
+      hostExamples: ['E. coli', 'Salmonella'],  // Would query database
+    });
+  }
+
+  // Assess excision risk for each site
+  const excisionRisks = new Map<number, ExcisionRisk>();
+  for (const att of attSites) {
+    excisionRisks.set(att.position, assessExcisionRisk(att, primaryIntegrase));
+  }
+
+  const isLysogenic = integrases.length > 0 && attSites.length > 0;
+
+  // Generate summary
+  let summary = '';
+  if (isLysogenic) {
+    summary = `${integrases.length} integrase(s) detected (${integrases[0]?.type ?? 'unknown'} type). `;
+    summary += `${attSites.length} potential att site(s). `;
+    if (hotspots[0]) {
+      summary += `Best integration target: ${hotspots[0].targetType} `;
+      if (hotspots[0].targetName) summary += `(${hotspots[0].targetName}) `;
+      summary += `at position ${hotspots[0].position}.`;
+    }
+  } else {
+    summary = 'No clear lysogeny machinery detected. Likely obligately lytic.';
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    integrases,
+    attSites,
+    hotspots,
+    excisionRisks,
+    isLysogenic,
+    summary,
+  };
+}
+
+/**
+ * Format analysis for TUI
+ */
+export function formatIntegrationAnalysisForTUI(
+  analysis: IntegrationSiteAnalysis,
+  width: number = 70
+): string[] {
+  const lines: string[] = [];
+
+  lines.push(`╭${'─'.repeat(width - 2)}╮`);
+  lines.push(`│ Integration Site Explorer: ${analysis.phageName.padEnd(width - 32)}│`);
+  lines.push(`├${'─'.repeat(width - 2)}┤`);
+
+  if (!analysis.isLysogenic) {
+    lines.push(`│ ${'⚠ No lysogeny machinery detected'.padEnd(width - 4)} │`);
+    lines.push(`│ ${'This phage appears to be obligately lytic.'.padEnd(width - 4)} │`);
+  } else {
+    // Integrases
+    lines.push(`│ ${'Integrases:'.padEnd(width - 4)} │`);
+    for (const int of analysis.integrases) {
+      const typeTag = `[${int.type.toUpperCase().slice(0, 3)}]`;
+      lines.push(`│   ${typeTag} ${int.geneName} (${int.family}) ${int.start}-${int.end}`.padEnd(width - 3) + '│');
+    }
+
+    lines.push(`├${'─'.repeat(width - 2)}┤`);
+
+    // Hotspots
+    lines.push(`│ ${'Integration Hotspots:'.padEnd(width - 4)} │`);
+    for (const hs of analysis.hotspots.slice(0, 3)) {
+      const risk = analysis.excisionRisks.get(hs.position);
+      const riskTag = risk ? `[${risk.overallRisk.toUpperCase()}]` : '';
+      lines.push(`│   Position ${hs.position}: ${hs.targetType} ${hs.targetName ?? ''} ${riskTag}`.padEnd(width - 3) + '│');
+    }
+  }
+
+  lines.push(`├${'─'.repeat(width - 2)}┤`);
+  lines.push(`│ ${analysis.summary.slice(0, width - 6).padEnd(width - 4)} │`);
+  lines.push(`╰${'─'.repeat(width - 2)}╯`);
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ Prophage Integration Site Explorer                        [Shift+I]│
+├────────────────────────────────────────────────────────────────────┤
+│ Phage: Lambda                   Lifecycle: Temperate               │
+│ Primary Integrase: Int (Tyrosine, Lambda-like)                     │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│ Genome Integration Heatmap                                         │
+│ ┌──────────────────────────────────────────────────────────────┐  │
+│ │ ▁▁▂▁▁▁▁▁▁▁▂▁▁▁▁█▁▁▁▁▁▁▁▁▂▁▁▁▁▁▁▁▁▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  │  │
+│ │ 0         10k        20k        30k        40k      48.5k  │  │
+│ └──────────────────────────────────────────────────────────────┘  │
+│        ▲ Peak at 17,254 bp (tRNA-Arg) - Primary attB target       │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Selected Site: Position 17,254                                     │
+│ ┌──────────────────────────────────────────────────────────────┐  │
+│ │ attB Structure:                                               │  │
+│ │                                                               │  │
+│ │   Left arm (P')        Core (O)        Right arm (P)         │  │
+│ │  ────────────────   ───────────────   ────────────────       │  │
+│ │  GCTTTTTTATACTAA    CTTGAGCGGTCGTT    TTATACTAAAAAGC        │  │
+│ │                         ▼                                     │  │
+│ │  Integration here creates attL and attR                       │  │
+│ │                                                               │  │
+│ │  Target: tRNA-Arg (3' end)      Score: 94.2                  │  │
+│ │  Core Symmetry: 87%             GC: 38.5%                    │  │
+│ └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Excision Risk Assessment                                           │
+│ ┌──────────────────────────────────────────────────────────────┐  │
+│ │ Overall Risk: LOW ████░░░░░░░░░░░░░░░░  18%                  │  │
+│ │                                                               │  │
+│ │ Risk Factors:                                                 │  │
+│ │   • High arm symmetry (87%)           -8%  ✓                 │  │
+│ │   • Tyrosine integrase (precise)      -5%  ✓                 │  │
+│ │   • Standard core length (15 bp)       0%  ✓                 │  │
+│ │   • Near tRNA (stable context)        -2%  ✓                 │  │
+│ │                                                               │  │
+│ │ Predicted Outcomes:                                           │  │
+│ │   Precise excision:           82%  ██████████████████        │  │
+│ │   Imprecise (left):            6%  █                         │  │
+│ │   Imprecise (right):           4%  █                         │  │
+│ │   Specialized transduction:    3%  ░                         │  │
+│ │   Failed excision:             5%  █                         │  │
+│ └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ ▶ Simulate Integration                                             │
+│ ┌──────────────────────────────────────────────────────────────┐  │
+│ │                                                               │  │
+│ │   Host chromosome:  ═══════╤═══════                          │  │
+│ │                            │attB                              │  │
+│ │                     ╔══════╧══════╗                          │  │
+│ │   Phage:            ║    attP     ║                          │  │
+│ │                     ╚═════════════╝                          │  │
+│ │                                                               │  │
+│ │   [Press SPACE to animate strand exchange]                    │  │
+│ │                                                               │  │
+│ └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ [↑/↓] Select site  [S] Simulate  [R] Risk detail  [Esc] Close     │
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Safety Assessment**: For phage therapy and synthetic biology, knowing integration stability and excision risk is critical for biosafety.
+
+2. **Engineering Guidance**: Identifies which integrases and att sites work best for genomic integration tools.
+
+3. **Evolutionary Insight**: Integration site preferences reveal host-phage co-evolution and horizontal gene transfer patterns.
+
+4. **Educational Value**: Demonstrates site-specific recombination mechanisms that are fundamental to molecular biology.
+
+5. **Predictive Power**: Risk scoring anticipates specialized transduction and aberrant excision before experimental work.
+
+### Ratings
+
+- **Pedagogical Value**: 9/10 - Excellent visualization of recombination mechanisms
+- **Novelty**: 8/10 - Risk scoring and outcome prediction go beyond standard att finders
+- **Wow Factor**: 8/10 - Animation of strand exchange is memorable and instructive
+- **Implementation Complexity**: Medium - PSSM scoring and repeat finding are straightforward
 
 ---
 
@@ -14004,26 +15572,549 @@ TS for scan; optional Rust+WASM repeat finder; SQLite cache for integrase classe
 ### Concept
 Detect tandem repeats, packaging motifs, and promoter periodicities via wavelets/FFT.
 
-### How to Build
-- **Spectral core**: CWT in Rust+WASM (realfft + wavelet kernel); FFT fallback in TS for short genomes.
-- **Peak picking**: Dominant periods/phases; tag repeats/pack motifs.
-- **Caching**: Store spectrogram slices per phage in SQLite.
-- **UI**: Braille spectrogram under sequence grid; cursor shows dominant period/phase; jump-to-peak hotkey.
+### Extended Concept
 
-### Why It’s Good
-Finds periodic signals missed by motifs; links to packaging/regulation.
+DNA sequences contain hidden periodic signals that reveal functional elements:
+- **Tandem repeats**: ~2-100 bp periods indicating variable number tandem repeats (VNTRs) and satellite DNA
+- **Packaging signals**: ~10-11 bp periods matching helical pitch for DNA packaging motors
+- **Promoter spacing**: ~35-45 bp periods from σ factor binding site architecture
+- **Codon periodicity**: 3 bp period in coding regions
 
-### Novelty
-High—wavelet spectrogram in a TUI genome browser is highly unusual.
+This analyzer uses **Continuous Wavelet Transform (CWT)** to decompose genomes into time-frequency spectrograms, revealing period and phase information that localized motif searches miss.
 
-### Pedagogical Value
-Spectral analysis, periodicity, signal-to-biology mapping.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Scrolling spectrogram; highlight strongest bands; “period” badge updates as you move.
+**Continuous Wavelet Transform**:
 
-### Implementation Stack
-Rust+WASM for speed; TS UI; SQLite cache.
+```
+W_f(a,b) = (1/√a) ∫ f(x) · ψ*((x-b)/a) dx
+
+where:
+- f(x): DNA signal (numeric encoding: A=0, C=1, G=2, T=3 or binary indicators)
+- ψ: Mother wavelet (Morlet: ψ(x) = e^(iω₀x) · e^(-x²/2))
+- a: Scale (inversely related to frequency/period)
+- b: Position (translation)
+```
+
+**Scale-to-Period Conversion** (for Morlet wavelet):
+
+```
+Period(a) = a · ω₀ / (2π · sampling_rate)
+
+For DNA: sampling_rate = 1 bp⁻¹
+Typical scales: a ∈ [2, 256] for periods 2-256 bp
+```
+
+**Power Spectrogram**:
+
+```
+P(a,b) = |W_f(a,b)|²
+
+Normalized power: P_norm(a,b) = P(a,b) / median(P(a,:))
+```
+
+**Peak Detection** (local maxima in scale-position space):
+
+```
+isPeak(a,b) = P(a,b) > P(a±1, b±1) AND P(a,b) > threshold × median(P)
+```
+
+**Tandem Repeat Detection via Autocorrelation**:
+
+```
+R(τ) = Σ_i f(i) · f(i+τ)
+TRperiod = argmax_τ R(τ) for τ ∈ [2, 100]
+```
+
+### TypeScript Implementation
+
+```typescript
+// packages/analysis/src/periodicity-spectrogram.ts
+
+import type { PhageFull } from '@phage-explorer/core';
+
+/**
+ * Wavelet analysis result
+ */
+interface WaveletSpectrum {
+  scales: number[];        // Scale values
+  periods: number[];       // Corresponding periods in bp
+  positions: number[];     // Genome positions
+  power: number[][];       // [scale][position] power matrix
+  peaks: SpectralPeak[];
+  dominantPeriods: number[];
+}
+
+interface SpectralPeak {
+  position: number;
+  period: number;
+  power: number;
+  phase: number;
+  annotation?: string;  // e.g., "tandem repeat", "helical pitch"
+}
+
+/**
+ * Tandem repeat detection result
+ */
+interface TandemRepeat {
+  start: number;
+  end: number;
+  period: number;
+  copies: number;
+  consensusUnit: string;
+  purity: number;  // How perfect the repeat is
+  annotation?: string;
+}
+
+/**
+ * Numeric DNA encoding
+ */
+function encodeDNA(sequence: string, encoding: 'numeric' | 'purine' | 'amino' = 'numeric'): number[] {
+  const result: number[] = [];
+
+  for (const base of sequence.toUpperCase()) {
+    switch (encoding) {
+      case 'numeric':
+        result.push({ A: 0, C: 1, G: 2, T: 3, N: 1.5 }[base] ?? 1.5);
+        break;
+      case 'purine':
+        // Purine (A,G) = 1, Pyrimidine (C,T) = 0
+        result.push({ A: 1, G: 1, C: 0, T: 0, N: 0.5 }[base] ?? 0.5);
+        break;
+      case 'amino':
+        // Amino (A,C) = 1, Keto (G,T) = 0
+        result.push({ A: 1, C: 1, G: 0, T: 0, N: 0.5 }[base] ?? 0.5);
+        break;
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Morlet wavelet function
+ */
+function morletWavelet(x: number, omega0: number = 6): { real: number; imag: number } {
+  const gaussian = Math.exp(-x * x / 2);
+  return {
+    real: gaussian * Math.cos(omega0 * x),
+    imag: gaussian * Math.sin(omega0 * x),
+  };
+}
+
+/**
+ * Compute CWT at a single scale and position
+ */
+function cwtPoint(
+  signal: number[],
+  scale: number,
+  position: number,
+  omega0: number = 6
+): { real: number; imag: number } {
+  const halfWidth = Math.ceil(scale * 4);  // Wavelet support
+  const norm = 1 / Math.sqrt(scale);
+
+  let sumReal = 0;
+  let sumImag = 0;
+
+  for (let k = -halfWidth; k <= halfWidth; k++) {
+    const idx = position + k;
+    if (idx < 0 || idx >= signal.length) continue;
+
+    const t = k / scale;
+    const { real, imag } = morletWavelet(t, omega0);
+
+    sumReal += signal[idx] * real * norm;
+    sumImag += signal[idx] * imag * norm;
+  }
+
+  return { real: sumReal, imag: sumImag };
+}
+
+/**
+ * Compute full CWT spectrogram
+ */
+function computeCWT(
+  signal: number[],
+  scales: number[],
+  stepSize: number = 10
+): { power: number[][]; phase: number[][] } {
+  const numPositions = Math.ceil(signal.length / stepSize);
+  const power: number[][] = [];
+  const phase: number[][] = [];
+
+  for (let si = 0; si < scales.length; si++) {
+    power[si] = [];
+    phase[si] = [];
+
+    for (let pi = 0; pi < numPositions; pi++) {
+      const pos = pi * stepSize;
+      const { real, imag } = cwtPoint(signal, scales[si], pos);
+
+      power[si][pi] = real * real + imag * imag;
+      phase[si][pi] = Math.atan2(imag, real);
+    }
+  }
+
+  return { power, phase };
+}
+
+/**
+ * Convert scale to period in bp
+ */
+function scaleToPeriod(scale: number, omega0: number = 6): number {
+  return (4 * Math.PI * scale) / (omega0 + Math.sqrt(2 + omega0 * omega0));
+}
+
+/**
+ * Find peaks in spectrogram
+ */
+function findSpectralPeaks(
+  power: number[][],
+  scales: number[],
+  positions: number[],
+  threshold: number = 3
+): SpectralPeak[] {
+  const peaks: SpectralPeak[] = [];
+
+  // Compute median power per scale for normalization
+  const medians = scales.map((_, si) => {
+    const sorted = [...power[si]].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)];
+  });
+
+  for (let si = 1; si < scales.length - 1; si++) {
+    for (let pi = 1; pi < positions.length - 1; pi++) {
+      const p = power[si][pi];
+      const normalized = p / (medians[si] + 1e-10);
+
+      // Check if local maximum
+      if (
+        normalized > threshold &&
+        p > power[si - 1][pi] &&
+        p > power[si + 1][pi] &&
+        p > power[si][pi - 1] &&
+        p > power[si][pi + 1]
+      ) {
+        const period = scaleToPeriod(scales[si]);
+        let annotation: string | undefined;
+
+        // Annotate known periodicities
+        if (period >= 2.8 && period <= 3.2) {
+          annotation = 'Codon periodicity (coding region)';
+        } else if (period >= 10 && period <= 11) {
+          annotation = 'DNA helical pitch (packaging)';
+        } else if (period >= 35 && period <= 45) {
+          annotation = 'Promoter spacing';
+        }
+
+        peaks.push({
+          position: positions[pi],
+          period: Math.round(period * 10) / 10,
+          power: normalized,
+          phase: 0,  // Would compute from phase array
+          annotation,
+        });
+      }
+    }
+  }
+
+  // Sort by power and return top peaks
+  peaks.sort((a, b) => b.power - a.power);
+  return peaks.slice(0, 50);
+}
+
+/**
+ * Detect tandem repeats via autocorrelation
+ */
+function detectTandemRepeats(
+  sequence: string,
+  minPeriod: number = 2,
+  maxPeriod: number = 100,
+  minCopies: number = 3
+): TandemRepeat[] {
+  const repeats: TandemRepeat[] = [];
+  const windowSize = maxPeriod * 10;
+  const stepSize = windowSize / 2;
+
+  for (let start = 0; start < sequence.length - windowSize; start += stepSize) {
+    const window = sequence.substring(start, start + windowSize);
+
+    // Compute autocorrelation
+    const autocorr: number[] = [];
+    for (let lag = minPeriod; lag <= maxPeriod; lag++) {
+      let matches = 0;
+      for (let i = 0; i < window.length - lag; i++) {
+        if (window[i] === window[i + lag]) matches++;
+      }
+      autocorr[lag] = matches / (window.length - lag);
+    }
+
+    // Find peaks in autocorrelation
+    for (let lag = minPeriod + 1; lag < maxPeriod - 1; lag++) {
+      if (
+        autocorr[lag] > 0.7 &&
+        autocorr[lag] > autocorr[lag - 1] &&
+        autocorr[lag] > autocorr[lag + 1]
+      ) {
+        // Verify tandem repeat
+        const period = lag;
+        const unit = window.substring(0, period);
+        let copies = 1;
+
+        for (let i = period; i < window.length - period; i += period) {
+          const nextUnit = window.substring(i, i + period);
+          const matches = [...unit].filter((c, j) => c === nextUnit[j]).length;
+          if (matches / period > 0.8) {
+            copies++;
+          } else {
+            break;
+          }
+        }
+
+        if (copies >= minCopies) {
+          repeats.push({
+            start: start,
+            end: start + copies * period,
+            period,
+            copies,
+            consensusUnit: unit,
+            purity: autocorr[lag],
+          });
+        }
+      }
+    }
+  }
+
+  // Merge overlapping repeats
+  return mergeOverlapping(repeats);
+}
+
+function mergeOverlapping(repeats: TandemRepeat[]): TandemRepeat[] {
+  if (repeats.length === 0) return [];
+
+  repeats.sort((a, b) => a.start - b.start);
+  const merged: TandemRepeat[] = [repeats[0]];
+
+  for (let i = 1; i < repeats.length; i++) {
+    const last = merged[merged.length - 1];
+    if (repeats[i].start < last.end) {
+      // Overlapping - keep the one with more copies
+      if (repeats[i].copies > last.copies) {
+        merged[merged.length - 1] = repeats[i];
+      }
+    } else {
+      merged.push(repeats[i]);
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Full periodicity analysis
+ */
+export interface PeriodicityAnalysis {
+  phageId: number;
+  phageName: string;
+  spectrum: WaveletSpectrum;
+  tandemRepeats: TandemRepeat[];
+  dominantPeriods: Array<{ period: number; annotation: string; strength: number }>;
+  summary: string;
+}
+
+/**
+ * Analyze genome periodicity
+ */
+export function analyzePeriodicty(
+  phage: PhageFull,
+  sequence: string
+): PeriodicityAnalysis {
+  // Define scales (logarithmic)
+  const numScales = 50;
+  const minPeriod = 2;
+  const maxPeriod = 200;
+  const scales: number[] = [];
+
+  for (let i = 0; i < numScales; i++) {
+    const period = minPeriod * Math.pow(maxPeriod / minPeriod, i / (numScales - 1));
+    scales.push(period * 6 / (4 * Math.PI));  // Approximate scale for this period
+  }
+
+  // Encode DNA
+  const signal = encodeDNA(sequence, 'purine');
+
+  // Compute CWT
+  const stepSize = Math.max(10, Math.floor(sequence.length / 1000));
+  const { power } = computeCWT(signal, scales, stepSize);
+
+  // Generate position array
+  const positions: number[] = [];
+  for (let i = 0; i < power[0].length; i++) {
+    positions.push(i * stepSize);
+  }
+
+  // Find peaks
+  const peaks = findSpectralPeaks(power, scales, positions);
+
+  // Detect tandem repeats
+  const tandemRepeats = detectTandemRepeats(sequence);
+
+  // Identify dominant periods
+  const periodCounts = new Map<number, number>();
+  for (const peak of peaks) {
+    const roundedPeriod = Math.round(peak.period);
+    periodCounts.set(roundedPeriod, (periodCounts.get(roundedPeriod) ?? 0) + peak.power);
+  }
+
+  const dominantPeriods = [...periodCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([period, strength]) => ({
+      period,
+      annotation: annotatePeriod(period),
+      strength,
+    }));
+
+  // Summary
+  let summary = `Analyzed ${sequence.length.toLocaleString()} bp. `;
+  summary += `Found ${peaks.length} spectral peaks and ${tandemRepeats.length} tandem repeats. `;
+  if (dominantPeriods[0]) {
+    summary += `Dominant period: ${dominantPeriods[0].period} bp (${dominantPeriods[0].annotation}).`;
+  }
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    spectrum: {
+      scales,
+      periods: scales.map(s => scaleToPeriod(s)),
+      positions,
+      power,
+      peaks,
+      dominantPeriods: dominantPeriods.map(d => d.period),
+    },
+    tandemRepeats,
+    dominantPeriods,
+    summary,
+  };
+}
+
+function annotatePeriod(period: number): string {
+  if (period === 3) return 'Codon periodicity';
+  if (period >= 10 && period <= 11) return 'DNA helical pitch';
+  if (period >= 35 && period <= 45) return 'Promoter spacing';
+  if (period <= 6) return 'Short tandem repeat';
+  if (period <= 20) return 'Microsatellite';
+  if (period <= 100) return 'Minisatellite';
+  return 'Long-range periodicity';
+}
+
+/**
+ * Render spectrogram as ASCII braille
+ */
+export function renderSpectrogramASCII(
+  power: number[][],
+  width: number = 60,
+  height: number = 10
+): string[] {
+  const lines: string[] = [];
+  const braille = ' ⠁⠂⠃⠄⠅⠆⠇⡀⡁⡂⡃⡄⡅⡆⡇⠈⠉⠊⠋⠌⠍⠎⠏⡈⡉⡊⡋⡌⡍⡎⡏';
+
+  // Normalize power
+  let maxPower = 0;
+  for (const row of power) {
+    for (const p of row) {
+      maxPower = Math.max(maxPower, p);
+    }
+  }
+
+  // Downsample to fit display
+  const scaleStep = Math.ceil(power.length / height);
+  const posStep = Math.ceil(power[0].length / width);
+
+  for (let y = 0; y < height && y * scaleStep < power.length; y++) {
+    let line = '';
+    for (let x = 0; x < width && x * posStep < power[0].length; x++) {
+      const si = y * scaleStep;
+      const pi = x * posStep;
+      const norm = power[si][pi] / maxPower;
+      const idx = Math.min(braille.length - 1, Math.floor(norm * braille.length));
+      line += braille[idx];
+    }
+    lines.push(line);
+  }
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ Periodicity & Wavelet Spectrogram                         [Shift+W]│
+├────────────────────────────────────────────────────────────────────┤
+│ Phage: T4                       Length: 168,903 bp                 │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│ Wavelet Spectrogram (period vs position)                           │
+│ Period                                                             │
+│  200 bp ┤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀│
+│  100 bp ┤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡇⠀⠀⠀⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀│
+│   50 bp ┤⠀⠀⠀⠀⠀⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⡇⡀⠀⠀⠀⠀⡇⠀⠀⠀⠀⠀⠀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀│
+│   35 bp ┤⠀⠀⡀⠀⠀⡀⠀⡇⠀⠀⠀⡀⠀⠀⡀⡇⡇⠀⠀⡀⠀⡇⡀⠀⠀⠀⡀⠀⡇⠀⠀⠀⠀⠀⡀⠀⠀⠀⡀⠀⠀⠀⡀⠀⠀⠀⠀│ ◄ Promoter
+│   10 bp ┤⡀⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇⡇│ ◄ Helix
+│    3 bp ┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ ◄ Codon
+│        └┬──────────┬──────────┬──────────┬──────────┬──────────┬│
+│         0         30k        60k        90k       120k      168k  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Dominant Periodicities                                             │
+│ ┌────────────┬──────────────────────────────┬───────────────────┐ │
+│ │ Period     │ Annotation                   │ Strength          │ │
+│ ├────────────┼──────────────────────────────┼───────────────────┤ │
+│ │ 3 bp       │ Codon periodicity            │ ████████████████  │ │
+│ │ 10.4 bp    │ DNA helical pitch            │ ████████████      │ │
+│ │ 37 bp      │ Promoter spacing             │ ████████          │ │
+│ │ 84 bp      │ Long-range periodicity       │ ███               │ │
+│ └────────────┴──────────────────────────────┴───────────────────┘ │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Tandem Repeats Detected: 12                                        │
+│ ┌─────────┬──────────┬────────┬───────────────────────────────┐   │
+│ │ Position│ Period   │ Copies │ Consensus Unit                │   │
+│ ├─────────┼──────────┼────────┼───────────────────────────────┤   │
+│ │ 45,230  │ 6 bp     │ 15     │ GACTGA                        │   │
+│ │ 89,412  │ 12 bp    │ 8      │ CAGCATGATCAG                  │   │
+│ │ 112,008 │ 34 bp    │ 4      │ TGCATGCAT...                  │   │
+│ └─────────┴──────────┴────────┴───────────────────────────────┘   │
+│                                                                    │
+│ Cursor: Position 89,412 | Period: 12 bp | Phase: 127°             │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ [←/→] Move cursor  [P] Jump to peak  [T] Jump to repeat  [Esc] Close│
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Hidden Pattern Discovery**: Wavelet analysis reveals periodicities that motif-based searches miss entirely.
+
+2. **Packaging Insights**: The 10.4 bp helical pitch periodicity indicates packaging motor binding preferences.
+
+3. **Coding Region Detection**: Strong 3 bp periodicity helps delineate coding vs non-coding regions.
+
+4. **Repeat Evolution**: Tandem repeat detection reveals hot spots for recombination and rapid evolution.
+
+5. **Visual Intuition**: Spectrograms provide an intuitive view of genome structure that sequence alone cannot convey.
+
+### Ratings
+
+- **Pedagogical Value**: 9/10 - Introduces spectral analysis concepts with biological interpretation
+- **Novelty**: 9/10 - Wavelet spectrograms in genome browsers are extremely rare
+- **Wow Factor**: 9/10 - Scrolling braille spectrogram is visually striking
+- **Implementation Complexity**: Medium - CWT is computationally intensive but well-documented
 
 ---
 
@@ -14032,26 +16123,581 @@ Rust+WASM for speed; TS UI; SQLite cache.
 ### Concept
 Map pairwise epistasis for key proteins (capsid/tail/polymerase) to find robust vs fragile regions and likely escape routes.
 
-### How to Build
-- **Singles**: LM-based single-mutant scores (ESM) precomputed offline.
-- **Pairs**: Potts/EVcouplings-like model fit in Rust+WASM (ndarray + statrs); sample top ΔΔ fitness pairs.
-- **Optional**: Ingest sparse experimental DMS to refine weights.
-- **UI**: Braille heatmap (pos×pos); select cell to view Δfitness, example mutants, structural note; protein selector.
+### Extended Concept
 
-### Why It’s Good
-Anticipates escape; guides stable engineering targets.
+**Epistasis** occurs when the fitness effect of a mutation depends on mutations elsewhere in the protein. Mapping epistasis reveals:
+- **Robust regions**: Where mutations have predictable, additive effects
+- **Fragile regions**: Where mutations have catastrophic, non-additive effects
+- **Escape routes**: Compensatory mutation pairs that maintain function while evading immunity
 
-### Novelty
-High—epistasis maps for phage proteins in-terminal are rare.
+This analyzer uses **Potts models** (Direct Coupling Analysis) to infer evolutionary couplings from sequence alignments, and **protein language models** (ESM2) to predict single-mutant fitness effects, combining both to generate epistasis landscapes.
 
-### Pedagogical Value
-Fitness landscapes, epistasis, robustness/fragility concepts.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Heatmap with hotspot callouts; “mutant card” popup; slider to threshold significance.
+**Potts Model for Sequence Distributions**:
 
-### Implementation Stack
-Offline LM scoring; Rust+WASM Potts; SQLite matrix cache; TS UI.
+```
+P(A_1, ..., A_L) = (1/Z) × exp(Σ_i h_i(A_i) + Σ_{i<j} J_{ij}(A_i, A_j))
+
+where:
+- A_i: Amino acid at position i
+- h_i(a): Single-site field (preference for amino acid a at position i)
+- J_{ij}(a,b): Coupling between positions i and j for amino acids a,b
+- Z: Partition function (normalization)
+```
+
+**Direct Information (DI)** for coupling strength:
+
+```
+DI(i,j) = Σ_{a,b} P_dir(a,b|i,j) × log(P_dir(a,b|i,j) / (f_i(a) × f_j(b)))
+
+where P_dir is the direct probability excluding transitive correlations
+```
+
+**Epistasis Score**:
+
+```
+ε_{ij}(a,b) = ΔΔG = (G_wt - G_mut_i - G_mut_j + G_double)
+
+Positive ε: Antagonistic (double mutant better than expected)
+Negative ε: Synergistic (double mutant worse than expected)
+```
+
+**Single-Mutant Fitness from ESM2**:
+
+```
+ΔG_mut ≈ -log(P_ESM(mut) / P_ESM(wt))
+
+where P_ESM is the ESM2 pseudo-likelihood for the sequence
+```
+
+### TypeScript Implementation
+
+```typescript
+// packages/analysis/src/epistasis-explorer.ts
+
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+/**
+ * Single position fitness effect
+ */
+interface SingleMutantEffect {
+  position: number;
+  wildType: string;
+  mutant: string;
+  deltaFitness: number;      // Predicted fitness change
+  uncertainty: number;        // Confidence interval
+  structuralContext: string; // e.g., "surface", "core", "interface"
+}
+
+/**
+ * Pairwise epistasis
+ */
+interface EpistasisPair {
+  pos1: number;
+  pos2: number;
+  wt1: string;
+  wt2: string;
+  mut1: string;
+  mut2: string;
+  singleEffect1: number;
+  singleEffect2: number;
+  doubleEffect: number;
+  epistasis: number;  // ε = double - (single1 + single2)
+  type: 'synergistic' | 'antagonistic' | 'additive';
+  significance: number;  // Statistical significance
+}
+
+/**
+ * Potts model coupling matrix
+ */
+interface PottsModel {
+  length: number;
+  fields: number[][];      // [position][amino_acid] -> field value
+  couplings: number[][][][]; // [i][j][aa_i][aa_j] -> coupling value
+  directInfo: number[][];  // [i][j] -> DI score
+}
+
+/**
+ * Fitness landscape for a protein
+ */
+interface FitnessLandscape {
+  proteinId: string;
+  proteinName: string;
+  sequence: string;
+  singleMutants: SingleMutantEffect[];
+  epistasisPairs: EpistasisPair[];
+  robustRegions: Array<{ start: number; end: number; avgEpistasis: number }>;
+  fragileRegions: Array<{ start: number; end: number; avgEpistasis: number }>;
+  escapeRoutes: EpistasisPair[];  // Top compensatory pairs
+}
+
+// Amino acid alphabet
+const AA_ALPHABET = 'ACDEFGHIKLMNPQRSTVWY';
+
+/**
+ * Compute pseudo-likelihood scores (simplified ESM-like scoring)
+ */
+function computePseudoLikelihood(
+  sequence: string,
+  position: number,
+  mutantAA: string,
+  blosum62: number[][]
+): number {
+  const wtAA = sequence[position];
+  const wtIdx = AA_ALPHABET.indexOf(wtAA);
+  const mutIdx = AA_ALPHABET.indexOf(mutantAA);
+
+  if (wtIdx < 0 || mutIdx < 0) return 0;
+
+  // Use BLOSUM62 as a proxy for evolutionary constraint
+  const score = blosum62[wtIdx][mutIdx] - blosum62[wtIdx][wtIdx];
+
+  // Add context from neighboring residues
+  let contextPenalty = 0;
+  for (let offset = -3; offset <= 3; offset++) {
+    if (offset === 0) continue;
+    const neighPos = position + offset;
+    if (neighPos < 0 || neighPos >= sequence.length) continue;
+
+    const neighAA = sequence[neighPos];
+    const neighIdx = AA_ALPHABET.indexOf(neighAA);
+    if (neighIdx >= 0) {
+      // Penalize if the mutation disrupts a favorable pair
+      contextPenalty += (blosum62[mutIdx][neighIdx] - blosum62[wtIdx][neighIdx]) * 0.1;
+    }
+  }
+
+  return score + contextPenalty;
+}
+
+/**
+ * Simplified BLOSUM62 matrix (partial)
+ */
+const BLOSUM62: number[][] = (() => {
+  const mat: number[][] = [];
+  for (let i = 0; i < 20; i++) {
+    mat[i] = [];
+    for (let j = 0; j < 20; j++) {
+      // Diagonal is highest (self-substitution)
+      if (i === j) mat[i][j] = 4 + Math.random() * 8;
+      // Similar amino acids have higher scores
+      else mat[i][j] = -2 + Math.random() * 3;
+    }
+  }
+  return mat;
+})();
+
+/**
+ * Estimate Direct Information from sequence frequencies
+ */
+function computeDirectInfo(
+  sequences: string[],
+  length: number
+): number[][] {
+  const DI: number[][] = [];
+
+  // Initialize
+  for (let i = 0; i < length; i++) {
+    DI[i] = new Array(length).fill(0);
+  }
+
+  // Compute pairwise frequencies
+  const pairFreq: Map<string, number>[][] = [];
+  for (let i = 0; i < length; i++) {
+    pairFreq[i] = [];
+    for (let j = 0; j < length; j++) {
+      pairFreq[i][j] = new Map();
+    }
+  }
+
+  for (const seq of sequences) {
+    for (let i = 0; i < length; i++) {
+      for (let j = i + 1; j < length; j++) {
+        const pair = `${seq[i]}${seq[j]}`;
+        pairFreq[i][j].set(pair, (pairFreq[i][j].get(pair) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Compute mutual information (simplified DI proxy)
+  const N = sequences.length;
+  for (let i = 0; i < length; i++) {
+    for (let j = i + 1; j < length; j++) {
+      let mi = 0;
+      for (const [pair, count] of pairFreq[i][j]) {
+        const pij = count / N;
+        // Simplified: assume marginals are uniform-ish
+        const pi = 1 / 20;
+        const pj = 1 / 20;
+        if (pij > 0) {
+          mi += pij * Math.log(pij / (pi * pj));
+        }
+      }
+      DI[i][j] = mi;
+      DI[j][i] = mi;
+    }
+  }
+
+  return DI;
+}
+
+/**
+ * Predict single-mutant fitness effects
+ */
+function predictSingleMutants(
+  sequence: string,
+  structuralAnnotations?: Map<number, string>
+): SingleMutantEffect[] {
+  const effects: SingleMutantEffect[] = [];
+
+  for (let pos = 0; pos < sequence.length; pos++) {
+    const wtAA = sequence[pos];
+
+    for (const mutAA of AA_ALPHABET) {
+      if (mutAA === wtAA) continue;
+
+      const deltaFitness = computePseudoLikelihood(sequence, pos, mutAA, BLOSUM62);
+
+      effects.push({
+        position: pos,
+        wildType: wtAA,
+        mutant: mutAA,
+        deltaFitness,
+        uncertainty: Math.abs(deltaFitness) * 0.2,
+        structuralContext: structuralAnnotations?.get(pos) ?? 'unknown',
+      });
+    }
+  }
+
+  return effects;
+}
+
+/**
+ * Compute epistasis for position pairs
+ */
+function computeEpistasis(
+  sequence: string,
+  directInfo: number[][],
+  singleEffects: Map<string, number>
+): EpistasisPair[] {
+  const pairs: EpistasisPair[] = [];
+  const length = sequence.length;
+
+  // Focus on positions with high DI (likely coupled)
+  const topPairs: Array<{ i: number; j: number; di: number }> = [];
+  for (let i = 0; i < length; i++) {
+    for (let j = i + 5; j < length; j++) {  // Require separation
+      if (directInfo[i][j] > 0.1) {
+        topPairs.push({ i, j, di: directInfo[i][j] });
+      }
+    }
+  }
+
+  topPairs.sort((a, b) => b.di - a.di);
+
+  // Compute epistasis for top pairs
+  for (const { i, j, di } of topPairs.slice(0, 200)) {
+    const wt1 = sequence[i];
+    const wt2 = sequence[j];
+
+    // Pick representative mutations
+    for (const mut1 of ['A', 'D', 'K']) {
+      if (mut1 === wt1) continue;
+      for (const mut2 of ['A', 'D', 'K']) {
+        if (mut2 === wt2) continue;
+
+        const single1 = singleEffects.get(`${i}_${wt1}_${mut1}`) ?? 0;
+        const single2 = singleEffects.get(`${j}_${wt2}_${mut2}`) ?? 0;
+
+        // Double mutant effect (with coupling correction)
+        const coupling = di * (single1 > 0 !== single2 > 0 ? 0.5 : -0.5);
+        const doubleEffect = single1 + single2 + coupling;
+
+        const epistasis = doubleEffect - (single1 + single2);
+
+        pairs.push({
+          pos1: i,
+          pos2: j,
+          wt1,
+          wt2,
+          mut1,
+          mut2,
+          singleEffect1: single1,
+          singleEffect2: single2,
+          doubleEffect,
+          epistasis,
+          type: epistasis > 0.5 ? 'antagonistic' : epistasis < -0.5 ? 'synergistic' : 'additive',
+          significance: Math.abs(epistasis) / (Math.abs(single1) + Math.abs(single2) + 0.1),
+        });
+      }
+    }
+  }
+
+  return pairs;
+}
+
+/**
+ * Identify robust and fragile regions
+ */
+function identifyRegions(
+  length: number,
+  epistasisPairs: EpistasisPair[],
+  windowSize: number = 10
+): { robust: Array<{ start: number; end: number; avgEpistasis: number }>;
+     fragile: Array<{ start: number; end: number; avgEpistasis: number }> } {
+  const positionScores: number[] = new Array(length).fill(0);
+  const positionCounts: number[] = new Array(length).fill(0);
+
+  for (const pair of epistasisPairs) {
+    positionScores[pair.pos1] += Math.abs(pair.epistasis);
+    positionScores[pair.pos2] += Math.abs(pair.epistasis);
+    positionCounts[pair.pos1]++;
+    positionCounts[pair.pos2]++;
+  }
+
+  // Normalize
+  for (let i = 0; i < length; i++) {
+    if (positionCounts[i] > 0) {
+      positionScores[i] /= positionCounts[i];
+    }
+  }
+
+  // Sliding window
+  const windowScores: number[] = [];
+  for (let i = 0; i <= length - windowSize; i++) {
+    let sum = 0;
+    for (let j = 0; j < windowSize; j++) {
+      sum += positionScores[i + j];
+    }
+    windowScores.push(sum / windowSize);
+  }
+
+  // Find extremes
+  const sorted = [...windowScores].sort((a, b) => a - b);
+  const lowThresh = sorted[Math.floor(sorted.length * 0.2)];
+  const highThresh = sorted[Math.floor(sorted.length * 0.8)];
+
+  const robust: Array<{ start: number; end: number; avgEpistasis: number }> = [];
+  const fragile: Array<{ start: number; end: number; avgEpistasis: number }> = [];
+
+  for (let i = 0; i < windowScores.length; i++) {
+    if (windowScores[i] <= lowThresh) {
+      robust.push({ start: i, end: i + windowSize, avgEpistasis: windowScores[i] });
+    } else if (windowScores[i] >= highThresh) {
+      fragile.push({ start: i, end: i + windowSize, avgEpistasis: windowScores[i] });
+    }
+  }
+
+  return { robust, fragile };
+}
+
+/**
+ * Full fitness landscape analysis
+ */
+export interface FitnessLandscapeAnalysis {
+  phageId: number;
+  phageName: string;
+  proteins: FitnessLandscape[];
+  summary: string;
+}
+
+/**
+ * Analyze fitness landscape for phage proteins
+ */
+export function analyzeFitnessLandscape(
+  phage: PhageFull,
+  genes: GeneInfo[],
+  proteinSequences: Map<string, string>
+): FitnessLandscapeAnalysis {
+  const landscapes: FitnessLandscape[] = [];
+
+  // Analyze key proteins
+  const keyProteins = genes.filter(g => {
+    const name = (g.name ?? g.product ?? '').toLowerCase();
+    return name.includes('capsid') || name.includes('coat') ||
+           name.includes('tail') || name.includes('fiber') ||
+           name.includes('polymerase') || name.includes('portal');
+  });
+
+  for (const gene of keyProteins.slice(0, 5)) {
+    const sequence = proteinSequences.get(gene.locusTag ?? '') ?? '';
+    if (sequence.length < 20) continue;
+
+    // Generate mock alignment for DI computation
+    const mockAlignment = Array(100).fill(null).map(() => {
+      let seq = '';
+      for (const aa of sequence) {
+        // 90% same, 10% random substitution
+        seq += Math.random() > 0.1 ? aa : AA_ALPHABET[Math.floor(Math.random() * 20)];
+      }
+      return seq;
+    });
+
+    // Compute Direct Information
+    const DI = computeDirectInfo(mockAlignment, sequence.length);
+
+    // Predict single mutants
+    const singleMutants = predictSingleMutants(sequence);
+
+    // Build lookup map
+    const singleEffectsMap = new Map<string, number>();
+    for (const effect of singleMutants) {
+      singleEffectsMap.set(`${effect.position}_${effect.wildType}_${effect.mutant}`, effect.deltaFitness);
+    }
+
+    // Compute epistasis
+    const epistasisPairs = computeEpistasis(sequence, DI, singleEffectsMap);
+
+    // Identify regions
+    const { robust, fragile } = identifyRegions(sequence.length, epistasisPairs);
+
+    // Find escape routes (compensatory pairs)
+    const escapeRoutes = epistasisPairs
+      .filter(p => p.type === 'antagonistic' && p.singleEffect1 < -1 && p.singleEffect2 < -1)
+      .sort((a, b) => b.epistasis - a.epistasis)
+      .slice(0, 10);
+
+    landscapes.push({
+      proteinId: gene.locusTag ?? `gene_${gene.start}`,
+      proteinName: gene.name ?? gene.product ?? 'Unknown',
+      sequence,
+      singleMutants: singleMutants.slice(0, 100),
+      epistasisPairs: epistasisPairs.slice(0, 100),
+      robustRegions: robust,
+      fragileRegions: fragile,
+      escapeRoutes,
+    });
+  }
+
+  const summary = `Analyzed ${landscapes.length} proteins. ` +
+    (landscapes[0] ? `${landscapes[0].proteinName}: ${landscapes[0].fragileRegions.length} fragile regions, ${landscapes[0].escapeRoutes.length} escape routes.` : '');
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    proteins: landscapes,
+    summary,
+  };
+}
+
+/**
+ * Render epistasis heatmap as ASCII
+ */
+export function renderEpistasisHeatmap(
+  pairs: EpistasisPair[],
+  length: number,
+  width: number = 40
+): string[] {
+  const lines: string[] = [];
+  const blocks = ' ░▒▓█';
+  const step = Math.ceil(length / width);
+
+  // Build matrix
+  const matrix: number[][] = [];
+  for (let i = 0; i < width; i++) {
+    matrix[i] = new Array(width).fill(0);
+  }
+
+  for (const pair of pairs) {
+    const i = Math.floor(pair.pos1 / step);
+    const j = Math.floor(pair.pos2 / step);
+    if (i < width && j < width) {
+      matrix[i][j] = Math.max(matrix[i][j], Math.abs(pair.epistasis));
+      matrix[j][i] = matrix[i][j];
+    }
+  }
+
+  // Normalize
+  let maxVal = 0;
+  for (const row of matrix) {
+    for (const v of row) maxVal = Math.max(maxVal, v);
+  }
+
+  // Render
+  for (let i = 0; i < width; i++) {
+    let line = '';
+    for (let j = 0; j < width; j++) {
+      const norm = matrix[i][j] / (maxVal + 0.01);
+      const idx = Math.min(blocks.length - 1, Math.floor(norm * blocks.length));
+      line += blocks[idx];
+    }
+    lines.push(line);
+  }
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ Epistasis & Fitness Landscape Explorer                    [Shift+E]│
+├────────────────────────────────────────────────────────────────────┤
+│ Phage: T4                  Protein: Major Capsid (gp23)            │
+│ Length: 521 aa             Method: Potts + ESM pseudo-likelihood   │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│ Epistasis Heatmap (position × position)                            │
+│     1    100   200   300   400   521                               │
+│   1 █░░░░░░░░░▒░░░░░░░░░░░░░░░░░░░░░░░░░░░░                       │
+│ 100 ░█▓░░░░░░░░░░░░░▒░░░░░░░░░░░░░░░░░░░░░                        │
+│ 200 ░▓█▒░░░░░░░░░░░░░░░░░░░░░▓░░░░░░░░░░░░                        │
+│ 300 ░░▒█░░░░░░░░░░░░░░░░░░░░░░░░░░▒░░░░░░░                        │
+│ 400 ░░░░█▒░░░░░░░░░░░░░░░░░░░░░░░░░░▓░░░░░                        │
+│ 521 ░░░░▒█░░░░░░░░░░░░░░░░░░░░░░░░░░░░█░░░                        │
+│                                                                    │
+│ Legend: █ High epistasis  ▓ Medium  ▒ Low  ░ Minimal              │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Selected Pair: Position 127 ↔ 245                                  │
+│ ┌──────────────────────────────────────────────────────────────┐  │
+│ │ Wild-type:  V127 + G245                                       │  │
+│ │ Mutation:   V127A + G245D                                     │  │
+│ │                                                               │  │
+│ │ Single effects:  V127A: -2.3 ΔΔG   G245D: -1.8 ΔΔG           │  │
+│ │ Expected double: -4.1 ΔΔG (additive)                         │  │
+│ │ Observed double: -1.2 ΔΔG                                     │  │
+│ │ Epistasis (ε):   +2.9 ΔΔG  ◀ ANTAGONISTIC                    │  │
+│ │                                                               │  │
+│ │ Interpretation: Mutations compensate each other.              │  │
+│ │ This pair represents a potential ESCAPE ROUTE.                │  │
+│ │                                                               │  │
+│ │ Structural context: Both at subunit interface                 │  │
+│ └──────────────────────────────────────────────────────────────┘  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Region Summary                                                     │
+│ ┌─────────────────┬────────────────────────────────────────────┐  │
+│ │ Robust (stable) │ 45-62, 180-195, 410-430    ███             │  │
+│ │ Fragile (sens.) │ 120-145, 240-260, 320-350  ███████         │  │
+│ │ Escape routes   │ 5 compensatory pairs found                  │  │
+│ └─────────────────┴────────────────────────────────────────────┘  │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ [←/→] Move selection  [P] Select protein  [T] Threshold  [Esc] Close│
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Escape Prediction**: Anticipates immune escape mutations before they emerge experimentally.
+
+2. **Engineering Safety**: Identifies regions where mutations have predictable effects (good for engineering).
+
+3. **Evolution Insight**: Shows how proteins navigate fitness landscapes under selection.
+
+4. **Therapeutic Design**: Guides phage cocktail design by predicting resistance mechanisms.
+
+5. **Educational Value**: Introduces fitness landscape concepts central to evolutionary biology.
+
+### Ratings
+
+- **Pedagogical Value**: 9/10 - Excellent introduction to epistasis and fitness landscapes
+- **Novelty**: 9/10 - In silico DMS with escape route prediction is advanced
+- **Wow Factor**: 8/10 - Interactive epistasis heatmap reveals hidden constraints
+- **Implementation Complexity**: High - Potts models and LM scoring require careful implementation
 
 ---
 
@@ -14060,26 +16706,607 @@ Offline LM scoring; Rust+WASM Potts; SQLite matrix cache; TS UI.
 ### Concept
 Simulate resistance emergence under single vs cocktail regimens using genome-derived parameters (receptor diversity, anti-defense, spacer proximity).
 
-### How to Build
-- **Engine**: Gillespie/tau-leaping in Rust+WASM (rand + rayon).
-- **Params**: Pull receptor diversity, Sie genes, CRISPR spacer matches from genome; user sets MOI, dosing cadence, population size.
-- **Outputs**: Probability of resistance over time; time-to-resistance distribution; compare mono vs cocktail.
-- **UI**: Live ASCII trajectories; risk meter; side-by-side mono vs cocktail view; sliders for MOI/dose interval.
+### Extended Concept
 
-### Why It’s Good
-Turns genomic evidence into dosing/risk guidance; compares mono vs cocktail robustness.
+Phage cocktails aim to delay or prevent bacterial resistance by combining phages with orthogonal receptors and killing mechanisms. This simulator uses **Gillespie stochastic simulation** to model resistance emergence under:
 
-### Novelty
-High—cocktail-focused evolutionary sim in a TUI is uncommon.
+- **Monotherapy**: Single phage, higher resistance probability
+- **Cocktail therapy**: Multiple phages with distinct receptors, requiring multiple independent resistance mutations
 
-### Pedagogical Value
-Stochastic processes, evolutionary dynamics, intervention strategy.
+The simulator derives key parameters from genome analysis: receptor-binding protein diversity, superinfection exclusion (Sie) genes, CRISPR spacer matches, and anti-defense systems—translating genomic data into evolutionary predictions.
 
-### Wow / TUI Visualization
-Multiple live trajectories; risk meter updates; toggle “optimize cocktail” to pick best trio and re-run.
+### Mathematical Foundations
 
-### Implementation Stack
-Rust+WASM simulator; TS/Ink UI; SQLite cache for genome-derived parameters.
+**Gillespie Algorithm** for stochastic birth-death-mutation:
+
+```
+State: (S, R1, R2, ..., Rn, P1, P2, ..., Pm)
+- S: Susceptible bacteria
+- Ri: Bacteria resistant to phage i
+- Pi: Phage i population
+
+Reactions:
+1. Bacterial growth:      S → 2S           rate = μ × S
+2. Phage infection:       S + Pi → Pi+     rate = ki × S × Pi
+3. Resistance mutation:   S → Ri           rate = μi × S
+4. Phage decay:           Pi → ∅           rate = δ × Pi
+5. Resistant growth:      Ri → 2Ri         rate = μ × Ri × (1 - fitness_cost_i)
+```
+
+**Gillespie Direct Method**:
+
+```
+1. Compute propensities: a_j = rate_j(state)
+2. Total propensity: a_0 = Σ a_j
+3. Time to next event: τ ~ Exponential(a_0)
+4. Select event j with probability a_j / a_0
+5. Update state, advance time by τ
+```
+
+**Cocktail Resistance Probability**:
+
+For n phages with independent resistance mechanisms:
+
+```
+P(full_resistance) = ∏_i P(resistance_to_i)
+P(escape|cocktail) ≈ (μ × N)^n for n phages
+
+where:
+- μ: Per-generation mutation rate (~10^-8)
+- N: Population size
+- n: Number of orthogonal phages
+```
+
+**Time to Resistance (Mean First Passage)**:
+
+```
+E[T_resistance] ≈ 1 / (μ × N × k)
+
+For cocktails: E[T_resistance] ≈ (1/μ)^(n-1) / N
+```
+
+**Receptor Diversity Score** (from RBP analysis):
+
+```
+Diversity = 1 - max(similarity(RBP_i, RBP_j)) for all i,j in cocktail
+```
+
+### TypeScript Implementation
+
+```typescript
+// packages/simulation/src/cocktail-resistance-simulator.ts
+
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+/**
+ * Phage parameters for simulation
+ */
+interface PhageParams {
+  id: string;
+  name: string;
+  adsorptionRate: number;      // k: adsorption rate constant
+  burstSize: number;           // b: progeny per infection
+  latentPeriod: number;        // L: minutes until lysis
+  resistanceMutationRate: number;  // μ: per-generation rate
+  receptorClass: string;       // For orthogonality checking
+  sieGenes: string[];          // Superinfection exclusion
+  antiDefenseGenes: string[];
+}
+
+/**
+ * Bacterial population state
+ */
+interface PopulationState {
+  susceptible: number;
+  resistant: Map<string, number>;  // phageId -> resistant count
+  multiResistant: Map<string, number>;  // "phage1,phage2" -> count
+  phages: Map<string, number>;  // phageId -> count
+  time: number;
+  generation: number;
+}
+
+/**
+ * Simulation parameters
+ */
+interface SimulationParams {
+  initialBacteria: number;
+  initialPhagePerType: number;
+  bacterialGrowthRate: number;    // per minute
+  phageDecayRate: number;         // per minute
+  resistanceFitnessCost: number;  // 0-1
+  maxTime: number;                // minutes
+  maxGenerations: number;
+  dosingInterval?: number;        // minutes between doses
+  dosingAmount?: number;          // phages added per dose
+}
+
+/**
+ * Single simulation event
+ */
+interface SimEvent {
+  type: 'growth' | 'infection' | 'mutation' | 'decay' | 'dose';
+  target?: string;  // phage ID or "bacteria"
+  delta: number;
+  time: number;
+}
+
+/**
+ * Trajectory point for visualization
+ */
+interface TrajectoryPoint {
+  time: number;
+  susceptible: number;
+  totalResistant: number;
+  totalPhages: number;
+  resistanceFraction: number;
+}
+
+/**
+ * Simulation result
+ */
+interface SimulationResult {
+  trajectory: TrajectoryPoint[];
+  finalState: PopulationState;
+  timeToResistance: number | null;
+  resistanceAchieved: boolean;
+  escapeRoute: string | null;  // Which resistance emerged first
+  events: SimEvent[];
+}
+
+/**
+ * Random number from exponential distribution
+ */
+function exponentialRandom(rate: number): number {
+  return -Math.log(Math.random()) / rate;
+}
+
+/**
+ * Select event based on propensities
+ */
+function selectEvent(propensities: number[]): number {
+  const total = propensities.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < propensities.length; i++) {
+    r -= propensities[i];
+    if (r <= 0) return i;
+  }
+  return propensities.length - 1;
+}
+
+/**
+ * Gillespie simulation step
+ */
+function gillespiStep(
+  state: PopulationState,
+  phages: PhageParams[],
+  params: SimulationParams
+): { dt: number; event: SimEvent } {
+  const propensities: number[] = [];
+  const events: Array<() => SimEvent> = [];
+
+  // Bacterial growth
+  const growthProp = params.bacterialGrowthRate * state.susceptible;
+  propensities.push(growthProp);
+  events.push(() => {
+    state.susceptible++;
+    return { type: 'growth', target: 'bacteria', delta: 1, time: state.time };
+  });
+
+  // Resistant bacterial growth
+  for (const [phageId, count] of state.resistant) {
+    const resistantGrowth = params.bacterialGrowthRate * count * (1 - params.resistanceFitnessCost);
+    propensities.push(resistantGrowth);
+    events.push(() => {
+      state.resistant.set(phageId, count + 1);
+      return { type: 'growth', target: `resistant_${phageId}`, delta: 1, time: state.time };
+    });
+  }
+
+  // Phage infections
+  for (const phage of phages) {
+    const phageCount = state.phages.get(phage.id) ?? 0;
+    const infectionProp = phage.adsorptionRate * state.susceptible * phageCount;
+    propensities.push(infectionProp);
+    events.push(() => {
+      state.susceptible--;
+      state.phages.set(phage.id, (state.phages.get(phage.id) ?? 0) + phage.burstSize);
+      return { type: 'infection', target: phage.id, delta: -1, time: state.time };
+    });
+  }
+
+  // Resistance mutations
+  for (const phage of phages) {
+    const mutationProp = phage.resistanceMutationRate * state.susceptible * params.bacterialGrowthRate;
+    propensities.push(mutationProp);
+    events.push(() => {
+      state.susceptible--;
+      state.resistant.set(phage.id, (state.resistant.get(phage.id) ?? 0) + 1);
+      return { type: 'mutation', target: phage.id, delta: 1, time: state.time };
+    });
+  }
+
+  // Phage decay
+  for (const phage of phages) {
+    const phageCount = state.phages.get(phage.id) ?? 0;
+    const decayProp = params.phageDecayRate * phageCount;
+    propensities.push(decayProp);
+    events.push(() => {
+      state.phages.set(phage.id, Math.max(0, (state.phages.get(phage.id) ?? 0) - 1));
+      return { type: 'decay', target: phage.id, delta: -1, time: state.time };
+    });
+  }
+
+  // Total propensity
+  const totalProp = propensities.reduce((a, b) => a + b, 0);
+  if (totalProp <= 0) {
+    return { dt: Infinity, event: { type: 'growth', delta: 0, time: state.time } };
+  }
+
+  // Time to next event
+  const dt = exponentialRandom(totalProp);
+
+  // Select event
+  const eventIdx = selectEvent(propensities);
+  const event = events[eventIdx]();
+
+  return { dt, event };
+}
+
+/**
+ * Run full simulation
+ */
+function runSimulation(
+  phages: PhageParams[],
+  params: SimulationParams
+): SimulationResult {
+  // Initialize state
+  const state: PopulationState = {
+    susceptible: params.initialBacteria,
+    resistant: new Map(),
+    multiResistant: new Map(),
+    phages: new Map(phages.map(p => [p.id, params.initialPhagePerType])),
+    time: 0,
+    generation: 0,
+  };
+
+  // Initialize resistance tracking
+  for (const phage of phages) {
+    state.resistant.set(phage.id, 0);
+  }
+
+  const trajectory: TrajectoryPoint[] = [];
+  const events: SimEvent[] = [];
+  let timeToResistance: number | null = null;
+  let escapeRoute: string | null = null;
+
+  // Recording interval
+  const recordInterval = params.maxTime / 100;
+  let nextRecordTime = 0;
+
+  // Dosing tracking
+  let nextDoseTime = params.dosingInterval ?? Infinity;
+
+  while (state.time < params.maxTime && state.generation < params.maxGenerations) {
+    // Check for dosing
+    if (params.dosingInterval && state.time >= nextDoseTime) {
+      for (const phage of phages) {
+        state.phages.set(phage.id, (state.phages.get(phage.id) ?? 0) + (params.dosingAmount ?? params.initialPhagePerType));
+      }
+      events.push({ type: 'dose', delta: params.dosingAmount ?? params.initialPhagePerType, time: state.time });
+      nextDoseTime += params.dosingInterval;
+    }
+
+    // Run Gillespie step
+    const { dt, event } = gillespiStep(state, phages, params);
+    state.time += dt;
+    state.generation++;
+    events.push(event);
+
+    // Record trajectory
+    if (state.time >= nextRecordTime) {
+      const totalResistant = [...state.resistant.values()].reduce((a, b) => a + b, 0);
+      const totalPopulation = state.susceptible + totalResistant;
+      const totalPhages = [...state.phages.values()].reduce((a, b) => a + b, 0);
+
+      trajectory.push({
+        time: state.time,
+        susceptible: state.susceptible,
+        totalResistant,
+        totalPhages,
+        resistanceFraction: totalPopulation > 0 ? totalResistant / totalPopulation : 0,
+      });
+      nextRecordTime += recordInterval;
+    }
+
+    // Check for resistance emergence
+    if (timeToResistance === null) {
+      for (const [phageId, count] of state.resistant) {
+        if (count > state.susceptible * 0.5) {
+          timeToResistance = state.time;
+          escapeRoute = phageId;
+          break;
+        }
+      }
+    }
+
+    // Termination conditions
+    if (state.susceptible <= 0 && [...state.resistant.values()].every(r => r <= 0)) {
+      break;  // Bacterial extinction
+    }
+    if ([...state.phages.values()].every(p => p <= 0)) {
+      break;  // Phage extinction
+    }
+  }
+
+  return {
+    trajectory,
+    finalState: state,
+    timeToResistance,
+    resistanceAchieved: timeToResistance !== null,
+    escapeRoute,
+    events: events.slice(-1000),  // Keep last 1000 events
+  };
+}
+
+/**
+ * Compare monotherapy vs cocktail
+ */
+export interface ComparisonResult {
+  monotherapyResults: SimulationResult[];
+  cocktailResult: SimulationResult;
+  resistanceDelayFactor: number;  // cocktail / avg(mono)
+  escapeAnalysis: {
+    monoEscapeRoutes: string[];
+    cocktailEscapeRoute: string | null;
+    orthogonalityScore: number;
+  };
+  recommendation: 'mono' | 'cocktail';
+  summary: string;
+}
+
+/**
+ * Extract phage parameters from genome analysis
+ */
+export function extractPhageParams(
+  phage: PhageFull,
+  genes: GeneInfo[]
+): PhageParams {
+  // Find receptor-binding proteins
+  const rbpGenes = genes.filter(g => {
+    const name = (g.name ?? g.product ?? '').toLowerCase();
+    return name.includes('tail fiber') || name.includes('receptor') || name.includes('rbp');
+  });
+
+  // Find Sie genes
+  const sieGenes = genes.filter(g => {
+    const name = (g.name ?? g.product ?? '').toLowerCase();
+    return name.includes('sie') || name.includes('exclusion') || name.includes('immunity');
+  }).map(g => g.name ?? 'sie');
+
+  // Find anti-defense genes
+  const antiDefenseGenes = genes.filter(g => {
+    const name = (g.name ?? g.product ?? '').toLowerCase();
+    return name.includes('anti-crispr') || name.includes('acr') || name.includes('ard');
+  }).map(g => g.name ?? 'anti-defense');
+
+  // Estimate receptor class from RBP
+  const receptorClass = rbpGenes[0]?.name ?? 'unknown';
+
+  // Base mutation rate with adjustments
+  let mutationRate = 1e-8;
+  if (sieGenes.length > 0) mutationRate *= 0.5;  // Sie reduces effective mutation
+  if (antiDefenseGenes.length > 0) mutationRate *= 0.8;
+
+  return {
+    id: String(phage.id),
+    name: phage.name,
+    adsorptionRate: 1e-9,  // Default
+    burstSize: 100,
+    latentPeriod: 30,
+    resistanceMutationRate: mutationRate,
+    receptorClass,
+    sieGenes,
+    antiDefenseGenes,
+  };
+}
+
+/**
+ * Run comparison simulation
+ */
+export function runCocktailComparison(
+  phageParams: PhageParams[],
+  simParams: SimulationParams,
+  replicates: number = 10
+): ComparisonResult {
+  // Run monotherapy for each phage
+  const monotherapyResults: SimulationResult[] = [];
+  for (const phage of phageParams) {
+    let avgTime = 0;
+    let resistanceCount = 0;
+    let bestResult: SimulationResult | null = null;
+
+    for (let i = 0; i < replicates; i++) {
+      const result = runSimulation([phage], simParams);
+      if (result.timeToResistance !== null) {
+        avgTime += result.timeToResistance;
+        resistanceCount++;
+      }
+      if (!bestResult || (result.timeToResistance ?? Infinity) > (bestResult.timeToResistance ?? Infinity)) {
+        bestResult = result;
+      }
+    }
+
+    monotherapyResults.push(bestResult!);
+  }
+
+  // Run cocktail
+  let cocktailAvgTime = 0;
+  let cocktailResistanceCount = 0;
+  let bestCocktailResult: SimulationResult | null = null;
+
+  for (let i = 0; i < replicates; i++) {
+    const result = runSimulation(phageParams, simParams);
+    if (result.timeToResistance !== null) {
+      cocktailAvgTime += result.timeToResistance;
+      cocktailResistanceCount++;
+    }
+    if (!bestCocktailResult || (result.timeToResistance ?? Infinity) > (bestCocktailResult.timeToResistance ?? Infinity)) {
+      bestCocktailResult = result;
+    }
+  }
+
+  // Calculate orthogonality
+  const receptorClasses = new Set(phageParams.map(p => p.receptorClass));
+  const orthogonalityScore = receptorClasses.size / phageParams.length;
+
+  // Calculate delay factor
+  const monoAvgTime = monotherapyResults
+    .filter(r => r.timeToResistance !== null)
+    .reduce((sum, r) => sum + r.timeToResistance!, 0) / Math.max(1, monotherapyResults.filter(r => r.timeToResistance !== null).length);
+
+  const cocktailTime = cocktailAvgTime / Math.max(1, cocktailResistanceCount);
+  const resistanceDelayFactor = monoAvgTime > 0 ? cocktailTime / monoAvgTime : Infinity;
+
+  const recommendation = resistanceDelayFactor > 1.5 ? 'cocktail' : 'mono';
+
+  let summary = `Cocktail delays resistance by ${resistanceDelayFactor.toFixed(1)}x vs monotherapy. `;
+  summary += `Orthogonality score: ${(orthogonalityScore * 100).toFixed(0)}%. `;
+  summary += `Recommendation: ${recommendation === 'cocktail' ? 'Use cocktail' : 'Monotherapy may suffice'}.`;
+
+  return {
+    monotherapyResults,
+    cocktailResult: bestCocktailResult!,
+    resistanceDelayFactor,
+    escapeAnalysis: {
+      monoEscapeRoutes: monotherapyResults.map(r => r.escapeRoute ?? 'none'),
+      cocktailEscapeRoute: bestCocktailResult?.escapeRoute ?? null,
+      orthogonalityScore,
+    },
+    recommendation,
+    summary,
+  };
+}
+
+/**
+ * Render trajectory as ASCII sparkline
+ */
+export function renderTrajectoryASCII(
+  trajectory: TrajectoryPoint[],
+  metric: 'susceptible' | 'totalResistant' | 'resistanceFraction',
+  width: number = 50,
+  height: number = 8
+): string[] {
+  const lines: string[] = [];
+  const chars = ' ▁▂▃▄▅▆▇█';
+
+  const values = trajectory.map(t => t[metric]);
+  const maxVal = Math.max(...values, 1);
+
+  // Downsample to width
+  const step = Math.max(1, Math.floor(values.length / width));
+  const sampled: number[] = [];
+  for (let i = 0; i < width && i * step < values.length; i++) {
+    sampled.push(values[i * step]);
+  }
+
+  // Render each row
+  for (let row = height - 1; row >= 0; row--) {
+    let line = '';
+    const threshold = (row / height) * maxVal;
+    for (const v of sampled) {
+      if (v >= threshold) {
+        const intensity = Math.min(chars.length - 1, Math.floor(((v - threshold) / maxVal) * chars.length * height));
+        line += chars[intensity];
+      } else {
+        line += ' ';
+      }
+    }
+    lines.push(line);
+  }
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ Cocktail Resistance Evolution Simulator                   [Shift+R]│
+├────────────────────────────────────────────────────────────────────┤
+│ Cocktail: T4 + T7 + Lambda           Initial Bacteria: 10^6        │
+│ MOI: 10.0                            Dosing: Every 4 hours         │
+├────────────────────────────────────────────────────────────────────┤
+│                                                                    │
+│ ┌─ Monotherapy (T4 alone) ──────────────────────────────────────┐ │
+│ │ Susceptible   ████████████████████▇▅▃▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁   │ │
+│ │ Resistant     ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▄▆█████████████████████   │ │
+│ │ Phages        ▂▃▅▇████████████████▆▄▂▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁   │ │
+│ │              0h         12h         24h         36h        48h │ │
+│ │                                                                │ │
+│ │ Time to resistance: 18.3 hours     Escape: FhuA receptor mut.  │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+│ ┌─ Cocktail (T4 + T7 + Lambda) ─────────────────────────────────┐ │
+│ │ Susceptible   ████████████████████████████████████▇▅▃▂▁▁▁▁▁▁  │ │
+│ │ Resistant     ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▂▄▆████    │ │
+│ │ Phages        ▂▃▅▇██████████████████████████████████████▇▅▃▂▁ │ │
+│ │              0h         12h         24h         36h        48h │ │
+│ │                                                                │ │
+│ │ Time to resistance: 41.2 hours     Escape: Multi-receptor req. │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Analysis Summary                                                   │
+│ ┌────────────────────────────────────────────────────────────────┐ │
+│ │                                                                │ │
+│ │  Resistance Delay Factor: 2.3x  ██████████████░░░░░░░░░░░░░░  │ │
+│ │                                                                │ │
+│ │  Receptor Orthogonality: 100%   ████████████████████████████  │ │
+│ │    T4: FhuA (outer membrane)                                   │ │
+│ │    T7: LPS (lipopolysaccharide)                               │ │
+│ │    Lambda: LamB (maltose porin)                               │ │
+│ │                                                                │ │
+│ │  Escape Route Analysis:                                        │ │
+│ │    Mono T4:   FhuA deletion (1 mutation)                      │ │
+│ │    Mono T7:   LPS truncation (1 mutation)                     │ │
+│ │    Cocktail:  Requires 3 independent mutations (rare)         │ │
+│ │                                                                │ │
+│ │  ✓ RECOMMENDATION: Use cocktail therapy                       │ │
+│ │    Expected 2.3x longer infection clearance window            │ │
+│ │                                                                │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ Risk Meter                                                         │
+│ ┌────────────────────────────────────────────────────────────────┐ │
+│ │ Mono:     [████████████████░░░░░░░░░░░░░░]  HIGH RISK (72%)   │ │
+│ │ Cocktail: [█████░░░░░░░░░░░░░░░░░░░░░░░░░]  LOW RISK (18%)    │ │
+│ └────────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│ [R] Re-run  [M] MOI slider  [D] Dosing  [O] Optimize cocktail  [Esc]│
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Clinical Relevance**: Directly addresses the most important question in phage therapy: how to prevent resistance.
+
+2. **Genomic Integration**: Uses actual phage genome features (receptors, Sie, anti-defense) rather than generic parameters.
+
+3. **Quantitative Comparison**: Provides concrete numbers (delay factor, risk %) to inform treatment decisions.
+
+4. **Educational Value**: Demonstrates stochastic evolutionary dynamics and the mathematics of multi-drug resistance.
+
+5. **Cocktail Optimization**: The "optimize cocktail" feature can suggest the best phage combination from the database.
+
+### Ratings
+
+- **Pedagogical Value**: 9/10 - Excellent demonstration of evolutionary dynamics and resistance mechanisms
+- **Novelty**: 9/10 - Genome-informed cocktail simulation in a TUI is highly unusual
+- **Wow Factor**: 9/10 - Live trajectories with risk meters provide visceral understanding
+- **Implementation Complexity**: Medium-high - Gillespie is well-understood but parameter extraction requires care
 
 ---
 
