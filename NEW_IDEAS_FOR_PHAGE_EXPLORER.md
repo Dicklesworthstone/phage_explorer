@@ -17509,53 +17509,769 @@ HMMER precompute; TS scoring; SQLite cache; Ink radar/stacked bars; all CPU, no 
 ### Concept
 Score lysogeny propensity and preferred integration hotspots, blending attP/attB motifs, integrase class, local repeats, and host genome context hints (tRNA/tmRNA preferences).
 
-### How to Build
-- **Motifs**: attP/attB/tRNA/tmRNA motif library; scan in TS or Rust+WASM.
-- **Integrase typing**: HMMER precompute for tyrosine/serine/invertase-like integrases; link to known site preferences.
-- **Scoring**: Combine motif strength, symmetry, repeat content, integrase class priors; estimate excision stability.
-- **UI**: Heatmap along genome; site list with confidence and predicted host targets; “simulate integrate here” to see stability.
+### Extended Concept
 
-### Why It’s Good
-Predicts where and how stably a phage will integrate; useful for engineering and safety.
+This expanded feature builds on the basic integration site analysis (Feature 38) to provide a comprehensive **lifecycle propensity score** that predicts not just where a phage integrates, but how likely it is to choose lysogeny vs lysis. The system combines:
 
-### Novelty
-Goes beyond simple att finding by adding class-specific priors and repeat-driven stability scoring in a TUI.
+1. **Integration site quality**: Motif strength, symmetry, and genomic context
+2. **Regulatory circuit completeness**: Presence of CI/Cro-like repressors, antirepressors
+3. **Environmental response elements**: SOS response motifs, nutritional sensors
+4. **Historical context**: Database of known lysogenic phages for comparison
 
-### Pedagogical Value
-Covers site-specific recombination, integrase specificity, and stability determinants.
+### Mathematical Foundations
 
-### Wow / TUI Visualization
-Genome heatmap with peaks; per-site card showing motif logo + predicted host attB; toggle to see excision risk.
+**Lifecycle Decision Score**:
 
-### Implementation Stack
-Rust+WASM motif scanning optional; HMMER precompute; TS scoring; SQLite cache; Ink heatmap/cards.
+```
+L_propensity = w1 × S_att + w2 × S_regulatory + w3 × S_env + w4 × S_comparison
+
+where:
+- S_att: Integration site quality (0-1)
+- S_regulatory: CI/Cro circuit completeness (0-1)
+- S_env: Environmental response element density
+- S_comparison: Similarity to known lysogenic phages
+```
+
+**Regulatory Circuit Scoring**:
+
+```
+S_regulatory = (has_CI × 0.4) + (has_Cro × 0.2) + (has_antirepressor × 0.2) +
+               (operator_motifs × 0.1) + (promoter_architecture × 0.1)
+```
+
+### TUI Visualization (Condensed)
+
+```
+╭────────────────────────────────────────────────────────────────────╮
+│ Lifecycle Propensity Analysis                             [Shift+L]│
+├────────────────────────────────────────────────────────────────────┤
+│ Phage: Lambda               Lifecycle: TEMPERATE (score: 0.92)     │
+│                                                                    │
+│ Integration Quality:  ████████████████████  95%                   │
+│ Regulatory Circuit:   ████████████████░░░░  80%                   │
+│ Environmental Resp:   ██████████████░░░░░░  70%                   │
+│ Comparison Match:     ██████████████████░░  90%                   │
+│                                                                    │
+│ Verdict: Strong lysogenic capacity with stable integration         │
+├────────────────────────────────────────────────────────────────────┤
+│ [D] Detail view  [C] Compare phages  [S] Simulate  [Esc] Close     │
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Connects molecular components to lifecycle decisions
+- **Novelty**: 8/10 - Integrated propensity scoring is unusual
+- **Wow Factor**: 7/10 - Clear decision framework with visual feedback
 
 ---
 
 ## 43) Horizontal Gene Transfer Provenance Tracer
 
 ### Concept
-For each genomic island, infer donor clades using GC/codon atypicality, best-hit taxonomy, and mini phylo placement; generate “passport stamps” per island.
+For each genomic island, infer donor clades using GC/codon atypicality, best-hit taxonomy, and mini phylo placement; generate "passport stamps" per island.
 
-### How to Build
-- **Island detection**: GC/codon Z-scores + dinucleotide bias; sliding window in TS or Rust.
-- **Donor inference**: Fast k-mer taxonomic assignment (Mash/MinHash) vs reference panel; optional short-tree placement via IQ-TREE-lite binding or neighbor-joining (Rust+WASM).
-- **Stamps**: Store donor lineage, confidence, and hallmark genes.
+### Extended Concept
 
-### Why It’s Good
-Explains where novel modules came from and how recent the transfer was; guides risk/host-range hypotheses.
+Horizontal Gene Transfer (HGT) is one of the primary drivers of phage evolution. This feature creates a comprehensive **provenance tracking system** that identifies foreign DNA islands and traces their likely origins. The system works like a forensic analysis tool, generating "passport stamps" that document:
 
-### Novelty
-Inline provenance “stamps” in a TUI with per-island drilldown is rare.
+1. **Island detection**: Sliding window compositional analysis identifies regions that deviate from the genome's baseline GC content, dinucleotide frequencies, and codon usage patterns
 
-### Pedagogical Value
-Teaches HGT signals (GC/codon skews), taxonomic assignment, and phylogenetic placement.
+2. **Donor inference**: Each island is compared against a reference database using MinHash signatures and k-mer similarity to identify the most likely source lineage
 
-### Wow / TUI Visualization
-Genome bar with colored islands; opening a stamp shows donor pie, GC/codon plots, and top donor references.
+3. **Confidence scoring**: Multiple lines of evidence (compositional, phylogenetic, functional) are combined to assess confidence in the provenance assignment
 
-### Implementation Stack
-TS for GC/codon; Rust+WASM for MinHash and small trees; SQLite cache of islands/stamps; Ink UI.
+4. **Transfer timing**: GC amelioration analysis estimates how recently the transfer occurred based on how well the island has adapted to the host genome's composition
+
+### Mathematical Foundations
+
+**Island Detection via Z-Score**:
+
+```
+For each window w of size W (default 1000 bp):
+
+GC_z(w) = (GC_w - μ_genome) / σ_genome
+
+where:
+- GC_w: GC content of window
+- μ_genome: mean GC of entire genome
+- σ_genome: standard deviation of sliding GC
+
+A window is flagged as atypical if |GC_z| > 2.0
+```
+
+**Dinucleotide Relative Abundance**:
+
+```
+ρ(XY) = f(XY) / (f(X) × f(Y))
+
+where:
+- f(XY): frequency of dinucleotide XY
+- f(X), f(Y): individual nucleotide frequencies
+
+Dinucleotide Z-score:
+Z_dinuc = Σ|ρ_island(XY) - ρ_genome(XY)| / 16
+```
+
+**Codon Adaptation Index (CAI) for Amelioration**:
+
+```
+CAI = exp(1/L × Σ ln(w_i))
+
+where:
+- L: number of codons
+- w_i: relative adaptiveness of codon i
+
+Amelioration time estimate:
+t_amelioration ∝ -ln(|CAI_island - CAI_genome|) / μ_mutation
+```
+
+**MinHash Jaccard Similarity**:
+
+```
+J(A, B) ≈ |MinHash(A) ∩ MinHash(B)| / |MinHash(A) ∪ MinHash(B)|
+
+Containment for asymmetric comparison:
+C(A, B) = |MinHash(A) ∩ MinHash(B)| / |MinHash(A)|
+```
+
+**Phylogenetic Placement Score**:
+
+```
+Placement_score = likelihood_ratio × bootstrap_support
+
+where:
+- likelihood_ratio = P(tree|island_in_clade) / P(tree|island_outside)
+- bootstrap_support: fraction of bootstrap replicates supporting placement
+```
+
+### TypeScript Implementation
+
+```typescript
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface GenomicIsland {
+  start: number;
+  end: number;
+  length: number;
+  gcContent: number;
+  gcZScore: number;
+  dinucZScore: number;
+  codonZScore: number;
+  compositeScore: number;
+  genes: GeneInfo[];
+  hallmarkGenes: string[];
+}
+
+interface DonorCandidate {
+  taxon: string;
+  taxonomyPath: string[];
+  jaccardSimilarity: number;
+  containmentScore: number;
+  confidence: 'high' | 'medium' | 'low';
+  evidenceType: 'kmer' | 'phylo' | 'functional';
+}
+
+interface PassportStamp {
+  island: GenomicIsland;
+  topDonor: DonorCandidate;
+  alternativeDonors: DonorCandidate[];
+  ameliorationEstimate: {
+    category: 'recent' | 'intermediate' | 'ancient';
+    gcDeviation: number;
+    caiDelta: number;
+  };
+  functionalAnnotation: string;
+  transferMechanism: 'lysogeny' | 'transduction' | 'conjugation' | 'unknown';
+}
+
+interface HGTAnalysis {
+  phageId: number;
+  phageName: string;
+  genomeLength: number;
+  baselineGC: number;
+  baselineCAI: number;
+  islands: GenomicIsland[];
+  stamps: PassportStamp[];
+  summary: {
+    totalIslands: number;
+    recentTransfers: number;
+    ancientTransfers: number;
+    dominantDonorClades: { clade: string; count: number }[];
+    foreignDNAPercent: number;
+  };
+}
+
+interface MinHashSketch {
+  taxon: string;
+  taxonomyPath: string[];
+  hashes: number[];
+  kmerSize: number;
+  sketchSize: number;
+}
+
+interface ReferenceDatabase {
+  sketches: MinHashSketch[];
+  taxonomyTree: Map<string, string[]>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const WINDOW_SIZE = 1000;
+const STEP_SIZE = 200;
+const Z_THRESHOLD = 2.0;
+const MIN_ISLAND_LENGTH = 500;
+const MINHASH_K = 21;
+const SKETCH_SIZE = 1000;
+
+const DINUCLEOTIDES = [
+  'AA', 'AC', 'AG', 'AT',
+  'CA', 'CC', 'CG', 'CT',
+  'GA', 'GC', 'GG', 'GT',
+  'TA', 'TC', 'TG', 'TT'
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Compositional Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+function computeGCContent(sequence: string): number {
+  let gc = 0;
+  for (const c of sequence.toUpperCase()) {
+    if (c === 'G' || c === 'C') gc++;
+  }
+  return gc / sequence.length;
+}
+
+function computeDinucleotideFrequencies(sequence: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  DINUCLEOTIDES.forEach(dn => counts.set(dn, 0));
+
+  const seq = sequence.toUpperCase();
+  for (let i = 0; i < seq.length - 1; i++) {
+    const dn = seq.substring(i, i + 2);
+    if (counts.has(dn)) {
+      counts.set(dn, (counts.get(dn) ?? 0) + 1);
+    }
+  }
+
+  const total = seq.length - 1;
+  DINUCLEOTIDES.forEach(dn => {
+    counts.set(dn, (counts.get(dn) ?? 0) / total);
+  });
+
+  return counts;
+}
+
+function computeDinucleotideOddsRatio(sequence: string): Map<string, number> {
+  const freqs = computeDinucleotideFrequencies(sequence);
+  const odds = new Map<string, number>();
+
+  // Single nucleotide frequencies
+  const nucFreqs = new Map<string, number>([
+    ['A', 0], ['C', 0], ['G', 0], ['T', 0]
+  ]);
+  const seq = sequence.toUpperCase();
+  for (const c of seq) {
+    if (nucFreqs.has(c)) {
+      nucFreqs.set(c, (nucFreqs.get(c) ?? 0) + 1);
+    }
+  }
+  const total = seq.length;
+  nucFreqs.forEach((v, k) => nucFreqs.set(k, v / total));
+
+  // Compute odds ratio
+  DINUCLEOTIDES.forEach(dn => {
+    const observed = freqs.get(dn) ?? 0;
+    const expected = (nucFreqs.get(dn[0]) ?? 0) * (nucFreqs.get(dn[1]) ?? 0);
+    odds.set(dn, expected > 0 ? observed / expected : 0);
+  });
+
+  return odds;
+}
+
+function dinucleotideZScore(
+  windowOdds: Map<string, number>,
+  genomeOdds: Map<string, number>
+): number {
+  let sumDiff = 0;
+  DINUCLEOTIDES.forEach(dn => {
+    const wOdd = windowOdds.get(dn) ?? 1;
+    const gOdd = genomeOdds.get(dn) ?? 1;
+    sumDiff += Math.abs(wOdd - gOdd);
+  });
+  return sumDiff / 16;  // Normalized
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Island Detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+function detectIslands(
+  sequence: string,
+  genes: GeneInfo[]
+): GenomicIsland[] {
+  const genomeGC = computeGCContent(sequence);
+  const genomeOdds = computeDinucleotideOddsRatio(sequence);
+
+  // Compute sliding window GC for standard deviation
+  const windowGCs: number[] = [];
+  for (let i = 0; i <= sequence.length - WINDOW_SIZE; i += STEP_SIZE) {
+    const windowSeq = sequence.substring(i, i + WINDOW_SIZE);
+    windowGCs.push(computeGCContent(windowSeq));
+  }
+
+  const gcMean = windowGCs.reduce((a, b) => a + b, 0) / windowGCs.length;
+  const gcVariance = windowGCs.reduce((sum, gc) => sum + (gc - gcMean) ** 2, 0) / windowGCs.length;
+  const gcStd = Math.sqrt(gcVariance);
+
+  // Detect atypical windows
+  const atypicalWindows: { start: number; end: number; gcZ: number; dinucZ: number }[] = [];
+
+  for (let i = 0; i <= sequence.length - WINDOW_SIZE; i += STEP_SIZE) {
+    const windowSeq = sequence.substring(i, i + WINDOW_SIZE);
+    const windowGC = computeGCContent(windowSeq);
+    const gcZ = gcStd > 0 ? (windowGC - genomeGC) / gcStd : 0;
+
+    const windowOdds = computeDinucleotideOddsRatio(windowSeq);
+    const dinucZ = dinucleotideZScore(windowOdds, genomeOdds);
+
+    if (Math.abs(gcZ) > Z_THRESHOLD || dinucZ > 0.5) {
+      atypicalWindows.push({
+        start: i,
+        end: i + WINDOW_SIZE,
+        gcZ,
+        dinucZ
+      });
+    }
+  }
+
+  // Merge overlapping windows into islands
+  const islands: GenomicIsland[] = [];
+  let currentStart = -1;
+  let currentEnd = -1;
+  let maxGcZ = 0;
+  let maxDinucZ = 0;
+
+  for (const window of atypicalWindows) {
+    if (currentStart === -1) {
+      currentStart = window.start;
+      currentEnd = window.end;
+      maxGcZ = window.gcZ;
+      maxDinucZ = window.dinucZ;
+    } else if (window.start <= currentEnd + STEP_SIZE) {
+      // Overlapping or adjacent
+      currentEnd = Math.max(currentEnd, window.end);
+      maxGcZ = Math.abs(window.gcZ) > Math.abs(maxGcZ) ? window.gcZ : maxGcZ;
+      maxDinucZ = Math.max(maxDinucZ, window.dinucZ);
+    } else {
+      // Gap - finalize current island
+      if (currentEnd - currentStart >= MIN_ISLAND_LENGTH) {
+        islands.push(createIsland(
+          sequence, currentStart, currentEnd, maxGcZ, maxDinucZ, genes
+        ));
+      }
+      currentStart = window.start;
+      currentEnd = window.end;
+      maxGcZ = window.gcZ;
+      maxDinucZ = window.dinucZ;
+    }
+  }
+
+  // Don't forget last island
+  if (currentStart !== -1 && currentEnd - currentStart >= MIN_ISLAND_LENGTH) {
+    islands.push(createIsland(
+      sequence, currentStart, currentEnd, maxGcZ, maxDinucZ, genes
+    ));
+  }
+
+  return islands;
+}
+
+function createIsland(
+  sequence: string,
+  start: number,
+  end: number,
+  gcZ: number,
+  dinucZ: number,
+  genes: GeneInfo[]
+): GenomicIsland {
+  const islandSeq = sequence.substring(start, end);
+  const islandGenes = genes.filter(g =>
+    g.start >= start && g.end <= end
+  );
+
+  // Identify hallmark genes (integrase, recombinase, transposase)
+  const hallmarkPatterns = [
+    /integrase/i, /recombinase/i, /transposase/i,
+    /phage.*protein/i, /hypothetical.*phage/i
+  ];
+
+  const hallmarkGenes = islandGenes
+    .filter(g => hallmarkPatterns.some(p => p.test(g.product ?? '')))
+    .map(g => g.product ?? g.name ?? 'unknown');
+
+  return {
+    start,
+    end,
+    length: end - start,
+    gcContent: computeGCContent(islandSeq),
+    gcZScore: gcZ,
+    dinucZScore: dinucZ,
+    codonZScore: 0, // Computed separately if needed
+    compositeScore: Math.sqrt(gcZ ** 2 + dinucZ ** 2),
+    genes: islandGenes,
+    hallmarkGenes
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MinHash for Donor Inference
+// ─────────────────────────────────────────────────────────────────────────────
+
+function murmurhash3(str: string, seed: number = 0): number {
+  let h1 = seed;
+  const c1 = 0xcc9e2d51;
+  const c2 = 0x1b873593;
+
+  for (let i = 0; i < str.length; i++) {
+    let k1 = str.charCodeAt(i);
+    k1 = Math.imul(k1, c1);
+    k1 = (k1 << 15) | (k1 >>> 17);
+    k1 = Math.imul(k1, c2);
+    h1 ^= k1;
+    h1 = (h1 << 13) | (h1 >>> 19);
+    h1 = Math.imul(h1, 5) + 0xe6546b64;
+  }
+
+  h1 ^= str.length;
+  h1 ^= h1 >>> 16;
+  h1 = Math.imul(h1, 0x85ebca6b);
+  h1 ^= h1 >>> 13;
+  h1 = Math.imul(h1, 0xc2b2ae35);
+  h1 ^= h1 >>> 16;
+
+  return h1 >>> 0;
+}
+
+function computeMinHash(
+  sequence: string,
+  k: number = MINHASH_K,
+  sketchSize: number = SKETCH_SIZE
+): number[] {
+  const hashes = new Set<number>();
+  const seq = sequence.toUpperCase();
+
+  // Generate k-mer hashes
+  for (let i = 0; i <= seq.length - k; i++) {
+    const kmer = seq.substring(i, i + k);
+    if (!/[^ACGT]/.test(kmer)) {
+      // Use multiple hash functions via different seeds
+      for (let seed = 0; seed < 10; seed++) {
+        hashes.add(murmurhash3(kmer, seed));
+      }
+    }
+  }
+
+  // Take minimum hashes
+  const sortedHashes = Array.from(hashes).sort((a, b) => a - b);
+  return sortedHashes.slice(0, sketchSize);
+}
+
+function jaccardFromMinHash(
+  sketch1: number[],
+  sketch2: number[]
+): { jaccard: number; containment: number } {
+  const set1 = new Set(sketch1);
+  const set2 = new Set(sketch2);
+
+  let intersection = 0;
+  for (const h of set1) {
+    if (set2.has(h)) intersection++;
+  }
+
+  const union = set1.size + set2.size - intersection;
+  const jaccard = union > 0 ? intersection / union : 0;
+  const containment = set1.size > 0 ? intersection / set1.size : 0;
+
+  return { jaccard, containment };
+}
+
+function inferDonors(
+  islandSequence: string,
+  referenceDb: ReferenceDatabase
+): DonorCandidate[] {
+  const islandSketch = computeMinHash(islandSequence);
+  const candidates: DonorCandidate[] = [];
+
+  for (const refSketch of referenceDb.sketches) {
+    const { jaccard, containment } = jaccardFromMinHash(islandSketch, refSketch.hashes);
+
+    if (jaccard > 0.05 || containment > 0.1) {
+      const confidence: 'high' | 'medium' | 'low' =
+        jaccard > 0.3 ? 'high' :
+        jaccard > 0.15 ? 'medium' : 'low';
+
+      candidates.push({
+        taxon: refSketch.taxon,
+        taxonomyPath: refSketch.taxonomyPath,
+        jaccardSimilarity: jaccard,
+        containmentScore: containment,
+        confidence,
+        evidenceType: 'kmer'
+      });
+    }
+  }
+
+  // Sort by Jaccard similarity
+  return candidates.sort((a, b) => b.jaccardSimilarity - a.jaccardSimilarity);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Amelioration Analysis
+// ─────────────────────────────────────────────────────────────────────────────
+
+function estimateAmelioration(
+  island: GenomicIsland,
+  genomeGC: number,
+  genomeCAI: number
+): { category: 'recent' | 'intermediate' | 'ancient'; gcDeviation: number; caiDelta: number } {
+  const gcDeviation = Math.abs(island.gcContent - genomeGC);
+  const caiDelta = island.codonZScore; // Placeholder for actual CAI computation
+
+  // Large deviation = recent transfer (not yet ameliorated)
+  // Small deviation = ancient transfer (well ameliorated)
+  const category: 'recent' | 'intermediate' | 'ancient' =
+    gcDeviation > 0.08 ? 'recent' :
+    gcDeviation > 0.04 ? 'intermediate' : 'ancient';
+
+  return { category, gcDeviation, caiDelta };
+}
+
+function inferTransferMechanism(island: GenomicIsland): 'lysogeny' | 'transduction' | 'conjugation' | 'unknown' {
+  const hallmarks = island.hallmarkGenes.join(' ').toLowerCase();
+
+  if (/integrase/.test(hallmarks)) return 'lysogeny';
+  if (/transposase|insertion/.test(hallmarks)) return 'transduction';
+  if (/conjugation|relaxase|tra\b/.test(hallmarks)) return 'conjugation';
+
+  return 'unknown';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main Analysis Function
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function analyzeHGTProvenance(
+  phage: PhageFull,
+  sequence: string,
+  genes: GeneInfo[],
+  referenceDb: ReferenceDatabase
+): HGTAnalysis {
+  const baselineGC = computeGCContent(sequence);
+  const baselineCAI = 0.5; // Placeholder for actual CAI computation
+
+  // Detect islands
+  const islands = detectIslands(sequence, genes);
+
+  // Generate passport stamps
+  const stamps: PassportStamp[] = islands.map(island => {
+    const islandSeq = sequence.substring(island.start, island.end);
+    const donors = inferDonors(islandSeq, referenceDb);
+    const amelioration = estimateAmelioration(island, baselineGC, baselineCAI);
+    const mechanism = inferTransferMechanism(island);
+
+    // Functional annotation based on hallmark genes
+    const annotation = island.hallmarkGenes.length > 0
+      ? island.hallmarkGenes.slice(0, 3).join(', ')
+      : 'Unknown function';
+
+    return {
+      island,
+      topDonor: donors[0] ?? {
+        taxon: 'Unknown',
+        taxonomyPath: [],
+        jaccardSimilarity: 0,
+        containmentScore: 0,
+        confidence: 'low',
+        evidenceType: 'kmer'
+      },
+      alternativeDonors: donors.slice(1, 5),
+      ameliorationEstimate: amelioration,
+      functionalAnnotation: annotation,
+      transferMechanism: mechanism
+    };
+  });
+
+  // Compute summary statistics
+  const recentTransfers = stamps.filter(s => s.ameliorationEstimate.category === 'recent').length;
+  const ancientTransfers = stamps.filter(s => s.ameliorationEstimate.category === 'ancient').length;
+
+  const donorCounts = new Map<string, number>();
+  stamps.forEach(s => {
+    const clade = s.topDonor.taxonomyPath[0] ?? s.topDonor.taxon;
+    donorCounts.set(clade, (donorCounts.get(clade) ?? 0) + 1);
+  });
+
+  const dominantDonorClades = Array.from(donorCounts.entries())
+    .map(([clade, count]) => ({ clade, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 5);
+
+  const foreignDNALength = islands.reduce((sum, i) => sum + i.length, 0);
+  const foreignDNAPercent = (foreignDNALength / sequence.length) * 100;
+
+  return {
+    phageId: phage.id,
+    phageName: phage.name,
+    genomeLength: sequence.length,
+    baselineGC,
+    baselineCAI,
+    islands,
+    stamps,
+    summary: {
+      totalIslands: islands.length,
+      recentTransfers,
+      ancientTransfers,
+      dominantDonorClades,
+      foreignDNAPercent
+    }
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TUI Rendering Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function renderIslandGenomeBar(
+  analysis: HGTAnalysis,
+  width: number = 60
+): string[] {
+  const lines: string[] = [];
+  const scale = width / analysis.genomeLength;
+
+  // Create genome bar
+  const bar = Array(width).fill('░');
+
+  // Color islands by amelioration status
+  const colors = {
+    recent: '█',    // Solid - recent
+    intermediate: '▓', // Medium - intermediate
+    ancient: '▒'    // Light - ancient
+  };
+
+  for (const stamp of analysis.stamps) {
+    const start = Math.floor(stamp.island.start * scale);
+    const end = Math.min(width - 1, Math.floor(stamp.island.end * scale));
+    const char = colors[stamp.ameliorationEstimate.category];
+
+    for (let i = start; i <= end; i++) {
+      bar[i] = char;
+    }
+  }
+
+  lines.push(`Islands: ${bar.join('')}`);
+  lines.push(`         ${'░'} Native  ${'▒'} Ancient  ${'▓'} Intermediate  ${'█'} Recent`);
+
+  return lines;
+}
+
+export function renderPassportStamp(stamp: PassportStamp): string[] {
+  const lines: string[] = [];
+  const { island, topDonor, ameliorationEstimate, functionalAnnotation, transferMechanism } = stamp;
+
+  lines.push(`╭${'─'.repeat(50)}╮`);
+  lines.push(`│ 🛂 HGT Passport Stamp${' '.repeat(28)}│`);
+  lines.push(`├${'─'.repeat(50)}┤`);
+  lines.push(`│ Location: ${island.start.toLocaleString()} - ${island.end.toLocaleString()} (${island.length.toLocaleString()} bp)`.padEnd(51) + '│');
+  lines.push(`│ GC: ${(island.gcContent * 100).toFixed(1)}% (Z=${island.gcZScore.toFixed(2)})`.padEnd(51) + '│');
+  lines.push(`├${'─'.repeat(50)}┤`);
+  lines.push(`│ Top Donor: ${topDonor.taxon}`.padEnd(51) + '│');
+  lines.push(`│ Similarity: ${(topDonor.jaccardSimilarity * 100).toFixed(1)}% (${topDonor.confidence} confidence)`.padEnd(51) + '│');
+  lines.push(`│ Transfer: ${ameliorationEstimate.category} via ${transferMechanism}`.padEnd(51) + '│');
+  lines.push(`├${'─'.repeat(50)}┤`);
+  lines.push(`│ Function: ${functionalAnnotation.substring(0, 38)}`.padEnd(51) + '│');
+  lines.push(`│ Genes: ${island.genes.length} total, ${island.hallmarkGenes.length} hallmarks`.padEnd(51) + '│');
+  lines.push(`╰${'─'.repeat(50)}╯`);
+
+  return lines;
+}
+```
+
+### TUI Visualization
+
+```
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Horizontal Gene Transfer Provenance Tracer                        [Shift+H] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Phage: Lambda                 Genome: 48,502 bp        Foreign DNA: 12.3%   │
+│                                                                              │
+│ ╭─ Genome Islands ───────────────────────────────────────────────────────╮  │
+│ │ ░░░░░▓▓▓▓░░░░░░░░░░░░░█████░░░░░░░░░░▒▒▒▒░░░░░░░░░░░░░░░░░░░░░░░░░░░ │  │
+│ │     ▲                   ▲               ▲                              │  │
+│ │   ISL1                ISL2            ISL3                             │  │
+│ │ Integrase            AMGs          Hypotheticals                       │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ Legend: ░ Native  ▒ Ancient  ▓ Intermediate  █ Recent                       │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ╭─ Selected: ISL2 (Recent Transfer) ─────────────────────────────────────╮  │
+│ │                                                                        │  │
+│ │ Location: 22,156 - 24,892 (2,736 bp)    GC: 58.2% (Z=+3.4)           │  │
+│ │                                                                        │  │
+│ │ ┌─ Donor Inference ──────────────────────────────────────────────────┐ │  │
+│ │ │ Top Donor: Pseudomonas phage PAK-P3 (78% similarity)               │ │  │
+│ │ │                                                                    │ │  │
+│ │ │ Donor Distribution:                                                │ │  │
+│ │ │ Pseudomonas phages  ████████████████████  78%                     │ │  │
+│ │ │ Enterobacter phages ████████░░░░░░░░░░░░  42%                     │ │  │
+│ │ │ Salmonella phages   ████░░░░░░░░░░░░░░░░  21%                     │ │  │
+│ │ │ Unknown             ██░░░░░░░░░░░░░░░░░░  12%                     │ │  │
+│ │ └────────────────────────────────────────────────────────────────────┘ │  │
+│ │                                                                        │  │
+│ │ ┌─ GC/Codon Profile ─────────────────────────────────────────────────┐ │  │
+│ │ │ GC%: ....___'''"""^^^"""'''___....     Host: 50.3% ─              │ │  │
+│ │ │                ▲ 58.2%                                             │ │  │
+│ │ └────────────────────────────────────────────────────────────────────┘ │  │
+│ │                                                                        │  │
+│ │ Hallmark Genes: phoH (phosphate starvation), mazG (pyrimidine metab) │  │
+│ │ Transfer Mechanism: Transduction (transposase-mediated)               │  │
+│ │ Amelioration: Recent (<1000 generations) - high compositional skew    │  │
+│ │                                                                        │  │
+│ ╰────────────────────────────────────────────────────────────────────────╯  │
+│                                                                              │
+│ Summary: 3 islands detected, 1 recent, 1 intermediate, 1 ancient            │
+│ Dominant donors: Pseudomonas (2), Enterobacter (1)                          │
+│                                                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [←/→] Navigate islands  [D] Donor details  [P] Phylo tree  [Esc] Close      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### Why This Is a Good Idea
+
+1. **Evolutionary forensics**: Tracing the origin of foreign DNA helps understand phage evolution and how new capabilities (like antibiotic resistance genes or metabolic enzymes) spread through viral populations
+
+2. **Host range prediction**: Foreign DNA often comes with host range determinants; knowing the donor lineage helps predict what hosts the phage might infect
+
+3. **Therapeutic safety**: For phage therapy, identifying recently acquired foreign DNA (especially from pathogenic sources) is crucial for safety assessment
+
+4. **Modular genome understanding**: Phages are highly mosaic; visualizing provenance reveals the "Lego-like" nature of phage genome assembly
+
+5. **Research prioritization**: Researchers can quickly identify which genomic regions are novel vs ancestral, focusing effort on truly unique features
+
+### Ratings
+- **Pedagogical Value**: 9/10 - Teaches HGT detection, compositional analysis, and evolutionary timing
+- **Novelty**: 8/10 - Inline provenance stamps with drilldown visualization is uncommon
+- **Wow Factor**: 8/10 - "Passport stamp" metaphor makes complex analysis accessible
+
+---
 
 ---
 
