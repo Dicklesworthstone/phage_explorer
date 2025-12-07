@@ -8,9 +8,13 @@ import type {
   Theme,
 } from '@phage-explorer/core';
 import { CLASSIC_THEME, getNextTheme, getThemeById } from '@phage-explorer/core';
+import type { GenomeComparisonResult } from '@phage-explorer/comparison';
 
 // Overlay states
-export type OverlayType = 'help' | 'search' | 'goto' | 'aaKey' | null;
+export type OverlayType = 'help' | 'search' | 'goto' | 'aaKey' | 'comparison' | null;
+
+// Comparison view tab
+export type ComparisonTab = 'summary' | 'kmer' | 'information' | 'correlation' | 'biological' | 'genes';
 
 // Mouse hover info for amino acids
 export interface HoveredAminoAcid {
@@ -65,6 +69,14 @@ export interface PhageExplorerState {
 
   // Error state
   error: string | null;
+
+  // Comparison mode
+  comparisonPhageAIndex: number | null;
+  comparisonPhageBIndex: number | null;
+  comparisonResult: GenomeComparisonResult | null;
+  comparisonLoading: boolean;
+  comparisonTab: ComparisonTab;
+  comparisonSelectingPhage: 'A' | 'B' | null;
 }
 
 // Store actions interface
@@ -120,6 +132,21 @@ export interface PhageExplorerActions {
 
   // Reset
   reset: () => void;
+
+  // Comparison
+  openComparison: () => void;
+  closeComparison: () => void;
+  setComparisonPhageA: (index: number | null) => void;
+  setComparisonPhageB: (index: number | null) => void;
+  setComparisonResult: (result: GenomeComparisonResult | null) => void;
+  setComparisonLoading: (loading: boolean) => void;
+  setComparisonTab: (tab: ComparisonTab) => void;
+  nextComparisonTab: () => void;
+  prevComparisonTab: () => void;
+  startSelectingPhage: (which: 'A' | 'B') => void;
+  confirmPhageSelection: (index: number) => void;
+  cancelPhageSelection: () => void;
+  swapComparisonPhages: () => void;
 }
 
 // Combined store type
@@ -152,6 +179,12 @@ const initialState: PhageExplorerState = {
   terminalCols: 80,
   terminalRows: 24,
   error: null,
+  comparisonPhageAIndex: null,
+  comparisonPhageBIndex: null,
+  comparisonResult: null,
+  comparisonLoading: false,
+  comparisonTab: 'summary',
+  comparisonSelectingPhage: null,
 };
 
 // Create the store
@@ -335,6 +368,95 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
 
   // Reset
   reset: () => set(initialState),
+
+  // Comparison
+  openComparison: () => {
+    const { currentPhageIndex, phages } = get();
+    // Default: compare current phage with Lambda or first phage
+    const lambdaIndex = phages.findIndex(p =>
+      p.slug === 'lambda' || p.name.toLowerCase().includes('lambda')
+    );
+    const defaultB = lambdaIndex >= 0 && lambdaIndex !== currentPhageIndex
+      ? lambdaIndex
+      : currentPhageIndex === 0 ? 1 : 0;
+
+    set({
+      activeOverlay: 'comparison',
+      comparisonPhageAIndex: currentPhageIndex,
+      comparisonPhageBIndex: Math.min(defaultB, phages.length - 1),
+      comparisonResult: null,
+      comparisonTab: 'summary',
+      comparisonSelectingPhage: null,
+    });
+  },
+
+  closeComparison: () => set({
+    activeOverlay: null,
+    comparisonResult: null,
+    comparisonSelectingPhage: null,
+  }),
+
+  setComparisonPhageA: (index) => set({
+    comparisonPhageAIndex: index,
+    comparisonResult: null, // Clear result when phages change
+  }),
+
+  setComparisonPhageB: (index) => set({
+    comparisonPhageBIndex: index,
+    comparisonResult: null,
+  }),
+
+  setComparisonResult: (result) => set({ comparisonResult: result }),
+
+  setComparisonLoading: (loading) => set({ comparisonLoading: loading }),
+
+  setComparisonTab: (tab) => set({ comparisonTab: tab }),
+
+  nextComparisonTab: () => {
+    const { comparisonTab } = get();
+    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'];
+    const currentIndex = tabs.indexOf(comparisonTab);
+    const nextIndex = (currentIndex + 1) % tabs.length;
+    set({ comparisonTab: tabs[nextIndex] });
+  },
+
+  prevComparisonTab: () => {
+    const { comparisonTab } = get();
+    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'];
+    const currentIndex = tabs.indexOf(comparisonTab);
+    const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    set({ comparisonTab: tabs[prevIndex] });
+  },
+
+  startSelectingPhage: (which) => set({ comparisonSelectingPhage: which }),
+
+  confirmPhageSelection: (index) => {
+    const { comparisonSelectingPhage } = get();
+    if (comparisonSelectingPhage === 'A') {
+      set({
+        comparisonPhageAIndex: index,
+        comparisonSelectingPhage: null,
+        comparisonResult: null,
+      });
+    } else if (comparisonSelectingPhage === 'B') {
+      set({
+        comparisonPhageBIndex: index,
+        comparisonSelectingPhage: null,
+        comparisonResult: null,
+      });
+    }
+  },
+
+  cancelPhageSelection: () => set({ comparisonSelectingPhage: null }),
+
+  swapComparisonPhages: () => {
+    const { comparisonPhageAIndex, comparisonPhageBIndex } = get();
+    set({
+      comparisonPhageAIndex: comparisonPhageBIndex,
+      comparisonPhageBIndex: comparisonPhageAIndex,
+      comparisonResult: null,
+    });
+  },
 }));
 
 // Selector hooks for common derived state

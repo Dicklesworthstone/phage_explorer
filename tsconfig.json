@@ -19,6 +19,7 @@
       "@phage-explorer/state": ["packages/state/src"],
       "@phage-explorer/renderer-3d": ["packages/renderer-3d/src"],
       "@phage-explorer/data-pipeline": ["packages/data-pipeline/src"],
+      "@phage-explorer/comparison": ["packages/comparison/src"],
       "@phage-explorer/tui": ["packages/tui/src"]
     }
   },

@@ -14,8 +14,8 @@ export function Footer(): React.ReactElement {
     { key: 'F', action: 'frame' },
     { key: 'T', action: 'theme' },
     { key: 'D', action: 'diff' },
+    { key: 'W', action: 'compare' },
     { key: 'M', action: '3D' },
-    { key: 'K', action: 'AA key' },
     { key: 'S', action: 'search' },
     { key: '?', action: 'help' },
   ];

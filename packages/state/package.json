@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@phage-explorer/core": "workspace:*",
+    "@phage-explorer/comparison": "workspace:*",
     "@phage-explorer/db-runtime": "workspace:*",
     "zustand": "^5.0.2"
   }

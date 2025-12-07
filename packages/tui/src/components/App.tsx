@@ -12,6 +12,7 @@ import { Footer } from './Footer';
 import { HelpOverlay } from './HelpOverlay';
 import { AAKeyOverlay } from './AAKeyOverlay';
 import { SearchOverlay } from './SearchOverlay';
+import { ComparisonOverlay } from './ComparisonOverlay';
 import { AALegend } from './AALegend';
 
 interface AppProps {
@@ -54,6 +55,7 @@ export function App({ repository }: AppProps): React.ReactElement {
   const model3DFullscreen = usePhageStore(s => s.model3DFullscreen);
   const setActiveOverlay = usePhageStore(s => s.setActiveOverlay);
   const closeOverlay = usePhageStore(s => s.closeOverlay);
+  const openComparison = usePhageStore(s => s.openComparison);
 
   // Sequence state
   const [sequence, setSequence] = useState<string>('');
@@ -151,13 +153,18 @@ export function App({ repository }: AppProps): React.ReactElement {
       return;
     }
 
-    // If overlay is active, don't process other keys
-    if (activeOverlay && activeOverlay !== 'search') {
+    // If overlay is active, don't process other keys (comparison handles its own input)
+    if (activeOverlay && activeOverlay !== 'search' && activeOverlay !== 'comparison') {
       if (input === '?' || input === 'h' || input === 'H') {
         closeOverlay();
       } else if (input === 'k' || input === 'K') {
         closeOverlay();
       }
+      return;
+    }
+
+    // Comparison overlay handles its own input
+    if (activeOverlay === 'comparison') {
       return;
     }
 
@@ -208,6 +215,8 @@ export function App({ repository }: AppProps): React.ReactElement {
       setActiveOverlay('aaKey');
     } else if (input === 's' || input === 'S' || input === '/') {
       setActiveOverlay('search');
+    } else if (input === 'w' || input === 'W') {
+      openComparison();
     }
   });
 
@@ -315,6 +324,16 @@ export function App({ repository }: AppProps): React.ReactElement {
           marginTop={Math.floor((terminalRows - 16) / 2)}
         >
           <SearchOverlay repository={repository} />
+        </Box>
+      )}
+
+      {activeOverlay === 'comparison' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 90) / 2)}
+          marginTop={Math.floor((terminalRows - 35) / 2)}
+        >
+          <ComparisonOverlay repository={repository} />
         </Box>
       )}
     </Box>

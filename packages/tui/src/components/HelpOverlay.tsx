@@ -26,6 +26,7 @@ export function HelpOverlay(): React.ReactElement {
         { key: 'F', desc: 'Cycle reading frame (1, 2, 3)' },
         { key: 'T', desc: 'Cycle color theme' },
         { key: 'D', desc: 'Toggle diff mode' },
+        { key: 'W', desc: 'Compare genomes (stats)' },
         { key: 'K', desc: 'Toggle amino acid key' },
         { key: 'M', desc: 'Toggle 3D model' },
       ],
