@@ -4833,77 +4833,556 @@ Seeing expression strength predicted for every gene — and watching how it corr
 
 ### Concept
 
-Find large-scale rearrangements between related phages:
-- **Deletions**: Genes present in one, absent in another
-- **Inversions**: Same genes, flipped orientation
-- **Duplications**: Gene copy number changes
-- **Translocations**: Same genes, different positions
+Phage genomes are not static — they evolve through **large-scale structural rearrangements** that reshape chromosome architecture while sometimes preserving gene content. Unlike single nucleotide polymorphisms (SNPs) that change individual bases, structural variants (SVs) move, delete, duplicate, or flip entire genomic regions spanning hundreds to thousands of base pairs.
 
-### Implementation
+**Types of structural variation:**
+
+1. **Deletions**: Regions present in one phage are absent in another. May remove non-essential genes (morons, AMGs) or arise from defective packaging.
+
+2. **Insertions**: New sequences appear — often mobile genetic elements like HNH endonucleases, introns, or moron genes acquired from hosts or other phages.
+
+3. **Inversions**: Genomic segments flip orientation. Common at recombination hotspots and in regions bounded by inverted repeats.
+
+4. **Duplications**: Gene copy number increases. Can arise from replication slippage or unequal recombination. Tandem duplications are especially common.
+
+5. **Translocations**: Genes maintain sequence but move to new positions. Often involve modular exchange between phage types.
+
+6. **Complex rearrangements**: Combinations of the above, particularly in highly recombinogenic regions.
+
+**Why structural variation matters in phages:**
+- **Host range evolution**: Tail fiber gene shuffling allows host switching
+- **Genome size variation**: Related phages can differ by 10-30% in size
+- **Defense evasion**: Inversions can shuffle antigenic sites
+- **Modularity evidence**: SVs reveal the "Lego block" nature of phage evolution
+- **Therapy design**: Knowing which regions are stable vs. variable guides cocktail design
+
+### Mathematical Foundations
+
+**Locally Collinear Blocks (LCBs):**
+```
+An LCB is a maximal region of homologous sequence that appears in all
+compared genomes without internal rearrangements.
+
+Given genomes G₁, G₂, ..., Gₙ:
+  LCB = { (s₁,e₁), (s₂,e₂), ..., (sₙ,eₙ) }
+
+Where:
+  sᵢ,eᵢ = start,end coordinates in genome i
+  All regions are collinear (same order, same strand) or
+  consistently inverted (all reversed)
+```
+
+**Breakpoint Distance:**
+```
+The number of rearrangement operations needed to transform one
+gene order into another.
+
+For signed permutations (genes with orientation):
+  d(π₁, π₂) = n + 1 - c(π₁ · π₂⁻¹)
+
+Where:
+  n = number of genes
+  c = number of cycles in the breakpoint graph
+  π₁ · π₂⁻¹ = composition of permutations
+```
+
+**Double Cut and Join (DCJ) Distance:**
+```
+Generalized rearrangement distance allowing:
+  - Inversions
+  - Translocations
+  - Fissions (chromosome breaks)
+  - Fusions (chromosome joins)
+
+DCJ distance = n - (c + i/2)
+
+Where:
+  n = number of adjacencies
+  c = number of cycles in adjacency graph
+  i = number of odd paths
+```
+
+**Alignment Block Chaining:**
+```
+Given pairwise alignments (anchors), find optimal colinear chain:
+
+Score(chain) = Σᵢ score(anchorᵢ) - Σᵢ gap_penalty(anchorᵢ, anchorᵢ₊₁)
+
+Solve with dynamic programming in O(n log n) using:
+  - Segment trees for range-max queries
+  - Sparse dynamic programming
+```
+
+**Copy Number Variation Detection:**
+```
+For k-mer or read depth analysis:
+
+Expected depth at position i: λᵢ
+Observed depth: dᵢ
+
+Copy number: CN = round(dᵢ / median(d))
+
+Statistical test (Poisson):
+  P(d ≥ dᵢ | λ) = 1 - Σₖ₌₀^(dᵢ-1) (λᵏe⁻λ) / k!
+
+Significant if P < threshold (Bonferroni-corrected)
+```
+
+### Implementation Approach
 
 ```typescript
+// Comprehensive structural variation detection
+
+interface AlignmentBlock {
+  id: string;
+  startA: number;        // Start in genome A
+  endA: number;          // End in genome A
+  startB: number;        // Start in genome B
+  endB: number;          // End in genome B
+  strand: '+' | '-';     // Orientation
+  identity: number;      // Sequence identity (0-1)
+  score: number;         // Alignment score
+}
+
 interface StructuralVariant {
-  type: 'deletion' | 'inversion' | 'duplication' | 'translocation';
-  positionA: { start: number; end: number };
-  positionB?: { start: number; end: number };
-  size: number;
-  genes: string[];
+  id: string;
+  type: 'deletion' | 'insertion' | 'inversion' | 'duplication' |
+        'translocation' | 'complex';
+  confidence: 'high' | 'medium' | 'low';
+
+  // Position in genome A
+  positionA: { start: number; end: number } | null;
+  // Position in genome B (if applicable)
+  positionB: { start: number; end: number } | null;
+
+  size: number;                    // Size of affected region
+  affectedGenes: GeneInfo[];       // Genes in the region
+  breakpointSequence?: string;     // Sequence at breakpoints
+  mechanism?: string;              // Inferred mechanism
+
+  // For duplications
+  copyNumber?: number;
+
+  // For inversions/translocations
+  leftBreakpoint?: number;
+  rightBreakpoint?: number;
+}
+
+interface SVAnalysisResult {
+  phageA: { name: string; accession: string; length: number };
+  phageB: { name: string; accession: string; length: number };
+  alignmentBlocks: AlignmentBlock[];
+  variants: StructuralVariant[];
+  summary: {
+    totalVariants: number;
+    byType: Record<StructuralVariant['type'], number>;
+    affectedBasesA: number;
+    affectedBasesB: number;
+    conservedFraction: number;
+  };
+  syntenyPlot: SyntenyData;
+}
+
+// Anchor-based alignment for SV detection
+function findAlignmentAnchors(
+  seqA: string,
+  seqB: string,
+  kmerSize: number = 15
+): AlignmentBlock[] {
+  // Build k-mer index for sequence B
+  const index = new Map<string, number[]>();
+  for (let i = 0; i <= seqB.length - kmerSize; i++) {
+    const kmer = seqB.slice(i, i + kmerSize);
+    if (!index.has(kmer)) index.set(kmer, []);
+    index.get(kmer)!.push(i);
+  }
+
+  // Find exact matches (seeds)
+  const seeds: Array<{ posA: number; posB: number; length: number }> = [];
+  for (let i = 0; i <= seqA.length - kmerSize; i++) {
+    const kmer = seqA.slice(i, i + kmerSize);
+    const matches = index.get(kmer);
+    if (matches) {
+      for (const posB of matches) {
+        // Extend seed in both directions
+        let extendLeft = 0;
+        let extendRight = 0;
+
+        while (i - extendLeft > 0 && posB - extendLeft > 0 &&
+               seqA[i - extendLeft - 1] === seqB[posB - extendLeft - 1]) {
+          extendLeft++;
+        }
+
+        while (i + kmerSize + extendRight < seqA.length &&
+               posB + kmerSize + extendRight < seqB.length &&
+               seqA[i + kmerSize + extendRight] === seqB[posB + kmerSize + extendRight]) {
+          extendRight++;
+        }
+
+        seeds.push({
+          posA: i - extendLeft,
+          posB: posB - extendLeft,
+          length: kmerSize + extendLeft + extendRight
+        });
+      }
+    }
+  }
+
+  // Also search reverse complement for inversions
+  const seqBRC = reverseComplement(seqB);
+  const indexRC = new Map<string, number[]>();
+  for (let i = 0; i <= seqBRC.length - kmerSize; i++) {
+    const kmer = seqBRC.slice(i, i + kmerSize);
+    if (!indexRC.has(kmer)) indexRC.set(kmer, []);
+    indexRC.get(kmer)!.push(i);
+  }
+
+  const rcSeeds: Array<{ posA: number; posB: number; length: number }> = [];
+  for (let i = 0; i <= seqA.length - kmerSize; i++) {
+    const kmer = seqA.slice(i, i + kmerSize);
+    const matches = indexRC.get(kmer);
+    if (matches) {
+      for (const posRC of matches) {
+        // Convert RC position back to forward strand
+        const posB = seqB.length - posRC - kmerSize;
+        rcSeeds.push({ posA: i, posB, length: kmerSize });
+      }
+    }
+  }
+
+  // Merge overlapping seeds and chain into blocks
+  const forwardBlocks = chainSeeds(seeds, '+');
+  const reverseBlocks = chainSeeds(rcSeeds, '-');
+
+  return [...forwardBlocks, ...reverseBlocks].sort((a, b) => a.startA - b.startA);
+}
+
+function chainSeeds(
+  seeds: Array<{ posA: number; posB: number; length: number }>,
+  strand: '+' | '-'
+): AlignmentBlock[] {
+  if (seeds.length === 0) return [];
+
+  // Sort by position in A
+  const sorted = [...seeds].sort((a, b) => a.posA - b.posA);
+
+  // Merge overlapping/adjacent seeds
+  const merged: AlignmentBlock[] = [];
+  let current = sorted[0];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const next = sorted[i];
+    const gapA = next.posA - (current.posA + current.length);
+    const gapB = strand === '+'
+      ? next.posB - (current.posB + current.length)
+      : (current.posB - current.length) - next.posB;
+
+    // Merge if gaps are small and consistent
+    if (gapA < 50 && gapB < 50 && Math.abs(gapA - gapB) < 20) {
+      current = {
+        posA: current.posA,
+        posB: current.posB,
+        length: next.posA + next.length - current.posA
+      };
+    } else {
+      if (current.length >= 100) { // Minimum block size
+        merged.push({
+          id: `block_${merged.length}`,
+          startA: current.posA,
+          endA: current.posA + current.length,
+          startB: current.posB,
+          endB: strand === '+' ? current.posB + current.length : current.posB - current.length,
+          strand,
+          identity: 0.95, // Approximate
+          score: current.length
+        });
+      }
+      current = next;
+    }
+  }
+
+  // Don't forget the last block
+  if (current.length >= 100) {
+    merged.push({
+      id: `block_${merged.length}`,
+      startA: current.posA,
+      endA: current.posA + current.length,
+      startB: current.posB,
+      endB: strand === '+' ? current.posB + current.length : current.posB - current.length,
+      strand,
+      identity: 0.95,
+      score: current.length
+    });
+  }
+
+  return merged;
 }
 
 function detectStructuralVariants(
-  alignmentBlocks: AlignmentBlock[]
+  seqA: string,
+  seqB: string,
+  blocks: AlignmentBlock[],
+  genesA: GeneInfo[],
+  genesB: GeneInfo[]
 ): StructuralVariant[] {
   const variants: StructuralVariant[] = [];
+  let variantId = 0;
 
   // Sort blocks by position in genome A
-  const sorted = [...alignmentBlocks].sort((a, b) => a.startA - b.startA);
+  const sorted = [...blocks].sort((a, b) => a.startA - b.startA);
 
+  // Detect deletions and insertions (gaps between blocks)
   for (let i = 0; i < sorted.length - 1; i++) {
     const curr = sorted[i];
     const next = sorted[i + 1];
 
-    // Gap in A but not B = deletion in A
     const gapA = next.startA - curr.endA;
-    const gapB = next.startB - curr.endB;
+    const gapB = Math.abs(next.startB - curr.endB);
 
-    if (gapA > 500 && gapB < 100) {
+    // Large gap in A, small gap in B = deletion in A
+    if (gapA > 200 && gapB < 100) {
       variants.push({
+        id: `sv_${variantId++}`,
         type: 'deletion',
+        confidence: gapA > 1000 ? 'high' : 'medium',
         positionA: { start: curr.endA, end: next.startA },
+        positionB: null,
         size: gapA,
-        genes: findGenesInRegion(curr.endA, next.startA)
+        affectedGenes: findGenesInRegion(genesA, curr.endA, next.startA),
+        mechanism: 'Deletion or horizontal transfer loss'
       });
     }
 
-    // Orientation flip = inversion
-    if (curr.strand !== next.strand) {
+    // Small gap in A, large gap in B = insertion in A (or deletion in B)
+    if (gapB > 200 && gapA < 100) {
       variants.push({
-        type: 'inversion',
+        id: `sv_${variantId++}`,
+        type: 'insertion',
+        confidence: gapB > 1000 ? 'high' : 'medium',
         positionA: { start: curr.endA, end: next.startA },
-        positionB: { start: curr.endB, end: next.startB },
-        size: next.startA - curr.endA,
-        genes: findGenesInRegion(curr.endA, next.startA)
+        positionB: { start: Math.min(curr.endB, next.startB), end: Math.max(curr.endB, next.startB) },
+        size: gapB,
+        affectedGenes: findGenesInRegion(genesB, Math.min(curr.endB, next.startB), Math.max(curr.endB, next.startB)),
+        mechanism: 'Insertion or horizontal gene transfer'
       });
+    }
+  }
+
+  // Detect inversions (blocks with opposite strand)
+  const forwardBlocks = sorted.filter(b => b.strand === '+');
+  const reverseBlocks = sorted.filter(b => b.strand === '-');
+
+  for (const invBlock of reverseBlocks) {
+    // Find flanking forward blocks
+    const leftFlank = forwardBlocks.filter(b => b.endA <= invBlock.startA)
+      .sort((a, b) => b.endA - a.endA)[0];
+    const rightFlank = forwardBlocks.filter(b => b.startA >= invBlock.endA)
+      .sort((a, b) => a.startA - b.startA)[0];
+
+    if (leftFlank && rightFlank) {
+      variants.push({
+        id: `sv_${variantId++}`,
+        type: 'inversion',
+        confidence: invBlock.score > 500 ? 'high' : 'medium',
+        positionA: { start: invBlock.startA, end: invBlock.endA },
+        positionB: { start: Math.min(invBlock.startB, invBlock.endB),
+                     end: Math.max(invBlock.startB, invBlock.endB) },
+        size: invBlock.endA - invBlock.startA,
+        affectedGenes: findGenesInRegion(genesA, invBlock.startA, invBlock.endA),
+        leftBreakpoint: leftFlank.endA,
+        rightBreakpoint: rightFlank.startA,
+        mechanism: 'Inversion via homologous recombination'
+      });
+    }
+  }
+
+  // Detect duplications (overlapping blocks in B)
+  const sortedByB = [...sorted].sort((a, b) => a.startB - b.startB);
+  for (let i = 0; i < sortedByB.length - 1; i++) {
+    const curr = sortedByB[i];
+    const next = sortedByB[i + 1];
+
+    // Overlapping regions in B = duplication
+    if (curr.endB > next.startB && curr.strand === next.strand) {
+      const overlapSize = curr.endB - next.startB;
+      if (overlapSize > 100) {
+        variants.push({
+          id: `sv_${variantId++}`,
+          type: 'duplication',
+          confidence: overlapSize > 500 ? 'high' : 'medium',
+          positionA: null,
+          positionB: { start: next.startB, end: curr.endB },
+          size: overlapSize,
+          affectedGenes: findGenesInRegion(genesB, next.startB, curr.endB),
+          copyNumber: 2,
+          mechanism: 'Tandem duplication'
+        });
+      }
+    }
+  }
+
+  // Detect translocations (out-of-order blocks)
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const curr = sorted[i];
+    const next = sorted[i + 1];
+
+    // If B coordinates don't follow A order (for forward strand)
+    if (curr.strand === '+' && next.strand === '+') {
+      if (next.startB < curr.endB - 1000) { // Significant disorder
+        variants.push({
+          id: `sv_${variantId++}`,
+          type: 'translocation',
+          confidence: 'medium',
+          positionA: { start: curr.endA, end: next.startA },
+          positionB: { start: curr.endB, end: next.startB },
+          size: Math.abs(next.startB - curr.endB),
+          affectedGenes: [...findGenesInRegion(genesA, curr.endA, next.startA),
+                         ...findGenesInRegion(genesB, Math.min(curr.endB, next.startB),
+                                             Math.max(curr.endB, next.startB))],
+          mechanism: 'Genomic translocation'
+        });
+      }
     }
   }
 
   return variants;
 }
+
+function findGenesInRegion(genes: GeneInfo[], start: number, end: number): GeneInfo[] {
+  return genes.filter(g =>
+    (g.start >= start && g.start < end) ||
+    (g.end > start && g.end <= end) ||
+    (g.start < start && g.end > end)
+  );
+}
+
+function reverseComplement(seq: string): string {
+  const complement: Record<string, string> = {
+    'A': 'T', 'T': 'A', 'G': 'C', 'C': 'G',
+    'a': 't', 't': 'a', 'g': 'c', 'c': 'g',
+    'N': 'N', 'n': 'n'
+  };
+  return seq.split('').reverse().map(c => complement[c] || c).join('');
+}
+
+function generateSVSummary(variants: StructuralVariant[]): string[] {
+  const summary: string[] = [];
+
+  const byType = new Map<string, StructuralVariant[]>();
+  for (const v of variants) {
+    if (!byType.has(v.type)) byType.set(v.type, []);
+    byType.get(v.type)!.push(v);
+  }
+
+  for (const [type, svs] of byType) {
+    const totalSize = svs.reduce((sum, sv) => sum + sv.size, 0);
+    const affectedGenes = new Set(svs.flatMap(sv => sv.affectedGenes.map(g => g.name || g.locus_tag)));
+
+    summary.push(`${type.toUpperCase()}: ${svs.length} events, ${totalSize.toLocaleString()} bp, ${affectedGenes.size} genes`);
+  }
+
+  return summary;
+}
 ```
+
+### Why This Is a Good Idea
+
+1. **Reveals Modular Evolution**: Phages evolve by shuffling functional modules. SVs show exactly which blocks are mobile and which are conserved, illuminating the "Lego block" model of phage evolution.
+
+2. **Identifies Variable Regions**: Host range determinants (tail fibers), auxiliary genes (morons), and immunity regions are often SV hotspots. This guides rational phage cocktail design.
+
+3. **Detects Cryptic Homology**: Inversions can hide sequence similarity from standard BLAST. Detecting SVs reveals relationships invisible to naive comparison.
+
+4. **Evolutionary Distance Proxy**: DCJ distance and breakpoint counts quantify genomic divergence independently of sequence identity — useful when sequences are too diverged for alignment.
+
+5. **Defective Prophage Archaeology**: Integrated prophages accumulate deletions. SV detection reconstructs what the ancestral prophage looked like before decay.
+
+### Innovation Assessment
+
+**Novelty**: 7/10 — Mauve and progressiveMauve pioneered this for bacteria, but phage-specific SV visualization with gene annotation and mechanism inference in a TUI is new.
+
+### Pedagogical Value: 8/10
+
+Teaches:
+- Genome rearrangement theory and DCJ model
+- The difference between sequence and structural divergence
+- Anchor-based whole-genome alignment
+- Recombination mechanisms (NHEJ, HR, replication slippage)
+- The modular nature of phage genomes
+- Copy number variation and its detection
+
+### Cool/Wow Factor: 8/10
+
+Watching related phage genomes "rearrange" in real-time — seeing inversions flip, deletions carve out genes, and translocations shuffle modules — makes evolution visceral and immediate.
 
 ### TUI Visualization
 
 ```
-Structural variants: Lambda vs P22
-
-Lambda: ═══════════╗          ╔════════════════════════════════╗
-                   ║  ──────  ║                                ║
-P22:    ═══════════╩══════════╩════════════════════════════════╝
-                   │          │
-                   12kb       24kb
-                   inversion  (integrase region)
-
-Legend: ═ Syntenic blocks  ║ Inversion breakpoint  ── Deleted
+┌─────────────────────────────────────────────────────────────────────────┐
+│  STRUCTURAL VARIATION DETECTOR                Lambda vs P22             │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Whole-Genome Alignment (Synteny Plot)                                  │
+│  ═══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Lambda    0kb    10kb    20kb    30kb    40kb    48kb                  │
+│            │───────│───────│───────│───────│───────│                    │
+│            ════════╗       ╭───────────────────────╮                    │
+│                    ║       │  Forward homology     │                    │
+│                    ║   ╔═══╧═══════════════════════╧════╗               │
+│                    ║   ║ ← Inversion (att region) →     ║               │
+│                    ║   ╚═══╤═══════════════════════╤════╝               │
+│                    ║       │                       │                    │
+│            ════════╝       ╰───────────────────────╯                    │
+│  P22       │───────│───────│───────│───────│───────│                    │
+│            0kb    10kb    20kb    30kb    40kb    41kb                  │
+│                                                                         │
+│  Color key: ══ Forward alignment  ═╗╔═ Inversion  ▓▓ Deleted  ░░ Inserted │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Detected Structural Variants (7 total)                                 │
+│  ═══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Type          Position       Size      Genes Affected       Confidence │
+│  ─────────────────────────────────────────────────────────────────────  │
+│  INVERSION     12,340-18,560  6,220 bp  int, xis, ea10      ★★★ High   │
+│  DELETION      24,100-28,450  4,350 bp  nin region (5)      ★★★ High   │
+│  INSERTION     —              3,200 bp  P22 ant moron       ★★☆ Med    │
+│  DUPLICATION   31,000-32,500  1,500 bp  sieB immunity       ★★☆ Med    │
+│  TRANSLOCATION 8,200-10,100   1,900 bp  ea22, ea31          ★☆☆ Low    │
+│  DELETION      38,500-39,200    700 bp  hypothetical        ★★☆ Med    │
+│  INSERTION     —              1,100 bp  Lambda Q regulator  ★★★ High   │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Inversion Detail: int-xis region                                       │
+│  ═══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Lambda:  ─────▶[att]▶[int]▶[xis]▶[ea10]▶─────                          │
+│                    └────────────────┘                                   │
+│                       Inverted in P22                                   │
+│  P22:     ─────◀[ea10]◀[xis]◀[int]◀[att]◀─────                          │
+│                                                                         │
+│  Left breakpoint:  5'-GCTTTTTAT|ACTAAGCA-3' (attL core)                 │
+│  Right breakpoint: 5'-TGCTTTTT|TATACTAA-3' (attR core)                  │
+│                                                                         │
+│  Mechanism: Site-specific recombination at att sites                    │
+│  Biological impact: May affect lysogeny efficiency                      │
+│                                                                         │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Summary Statistics                                                     │
+│  ═══════════════════════════════════════════════════════════════════    │
+│                                                                         │
+│  Conserved synteny:     ███████████████████░░░░ 78%                     │
+│  Structural divergence: █████░░░░░░░░░░░░░░░░░░ 22%                     │
+│                                                                         │
+│  Breakpoint distance: 7 operations                                      │
+│  DCJ distance: 5 operations                                             │
+│                                                                         │
+│  Largest conserved block: 18,450 bp (head-tail structural module)       │
+│  Most variable region: 12-28 kb (lysogeny control)                      │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+[←/→] Navigate variants  [Enter] Detail view  [S] Synteny mode  [E] Export
 ```
 
 ---
