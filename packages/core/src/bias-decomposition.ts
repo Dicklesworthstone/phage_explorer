@@ -27,6 +27,23 @@ export interface BiasDecomposition {
   means: number[];
 }
 
+// Codon frequency vector (64 codons) for future extension
+export function computeCodonFrequencies(seq: string): number[] {
+  const upper = seq.toUpperCase();
+  const counts: Record<string, number> = {};
+  let total = 0;
+  for (let i = 0; i + 3 <= upper.length; i += 3) {
+    const codon = upper.slice(i, i + 3);
+    if (!/^[ACGT]{3}$/.test(codon)) continue;
+    counts[codon] = (counts[codon] ?? 0) + 1;
+    total++;
+  }
+  const allCodons: string[] = [];
+  const bases = ['A', 'C', 'G', 'T'];
+  for (const a of bases) for (const b of bases) for (const c of bases) allCodons.push(a + b + c);
+  return allCodons.map(c => (counts[c] ?? 0) / Math.max(1, total));
+}
+
 // Compute 16-element dinucleotide frequency vector (normalized)
 export function computeDinucleotideFrequencies(seq: string): number[] {
   const upper = seq.toUpperCase();
