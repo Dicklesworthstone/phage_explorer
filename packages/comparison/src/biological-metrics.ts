@@ -22,9 +22,9 @@ import type {
   AminoAcidDifference,
   GeneContentComparison,
 } from './types';
-import type { GeneInfo, CodonUsageData } from '@phage-explorer/core';
-import { CODON_TABLE, AMINO_ACIDS, countCodonUsage, countAminoAcidUsage, translateSequence } from '@phage-explorer/core';
-import { jaccardIndex, extractKmerSet, cosineSimilarity, extractKmerFrequencies } from './kmer-analysis';
+import type { GeneInfo } from '@phage-explorer/core';
+import { CODON_TABLE, AMINO_ACIDS, countAminoAcidUsage, translateSequence } from '@phage-explorer/core';
+import { jaccardIndex, extractKmerSet } from './kmer-analysis';
 
 /**
  * Calculate GC content of a sequence.
@@ -132,7 +132,7 @@ export function calculateRSCU(codonCounts: Record<string, number>): Record<strin
   }
 
   // Calculate RSCU for each codon
-  for (const [aa, codons] of Object.entries(aaToCodeons)) {
+  for (const codons of Object.values(aaToCodeons)) {
     // Total count for this amino acid
     const totalAA = codons.reduce((sum, c) => sum + (codonCounts[c] ?? 0), 0);
 

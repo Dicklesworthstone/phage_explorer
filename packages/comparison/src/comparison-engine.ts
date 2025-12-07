@@ -12,11 +12,11 @@ import type {
   ComparisonConfig,
   SimilarityCategory,
 } from './types';
-import type { PhageFull, GeneInfo, CodonUsageData } from '@phage-explorer/core';
+import type { GeneInfo, CodonUsageData } from '@phage-explorer/core';
 
 import { multiResolutionKmerAnalysis } from './kmer-analysis';
 import { analyzeInformationTheory } from './information-theory';
-import { analyzeRankCorrelation, compareFrequencyDistributions } from './rank-correlation';
+import { compareFrequencyDistributions } from './rank-correlation';
 import { analyzeEditDistance, quickSimilarityEstimate } from './edit-distance';
 import {
   analyzeBiologicalMetrics,
