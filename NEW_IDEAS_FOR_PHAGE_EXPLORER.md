@@ -7,6 +7,8 @@ Ten implementation-ready, high-wattage upgrades that combine advanced math, stat
 ## Top 10 (curated from the 100‑idea brainstorm)
 _Fresh detail on implementation stacks, why it’s worth it, novelty, pedagogy, and TUI wow. Legacy brainstorm remains below for reference._
 
+**Shared data feeds:** GenBank/RefSeq for genomes, UniProt/InterPro/HAMAP for domains, PDB/AlphaFold DB for structures, IMG/VR + MGnify for metagenomic hits, CRISPRCasdb for spacers, CARD/ResFinder for resistance loci, and literature motif libraries. Heavy math runs in Rust→WASM; ML inference uses ONNX Runtime inside Bun/TypeScript.
+
 ### 1) Tail Fiber Tropism & Receptor Atlas
 - **Implementation:** Embed tail fiber/tip proteins with ESM2/ProtT5 (Python); cluster via HDBSCAN+UMAP; receptor HMMs with `hmmer`; ONNX Runtime for inference in Bun; cache receptor likelihoods in SQLite; optional AlphaFold2-lite batch for RBD hints; Rust+WASM scoring for fast per-phage matching.
 - **Why good:** Direct molecular evidence for host range; complements codon/tRNA and CRISPR signals; surfaces engineering targets for host-range edits.

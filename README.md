@@ -15,6 +15,21 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/ma
 
 ## Phage 101 for engineers (why this field is wild)
 
+**What phages are (in engineering terms):** self-assembling nanosyringes that package code (DNA/RNA) in a protein shell, land on bacteria, and inject that code to hijack the host. They’re the most abundant biological “edge devices” on Earth (≈10³¹ particles), continuously stress‑testing bacterial firmware.
+
+### Why people study them
+- *Medicine*: design phage cocktails to beat antibiotic‑resistant infections.
+- *Biotech*: workhorse enzymes (T7 RNA polymerase, Phi29 DNA pol) are phage gifts used in PCR, in‑vitro transcription, and genome amplification.
+- *Evolution & ecology*: phages rewrite bacterial genomes, drive the ocean carbon cycle, and shape your gut microbiome.
+- *Engineering playground*: modular genomes swap parts (tail fibers, lysis cassettes) like microservice plugins.
+
+### How phages cracked the genetic code
+- **Hershey–Chase blender experiment (1952)** used phage T2 to prove DNA is the hereditary material.
+- **Crick–Brenner frameshift experiment (1961)** in phage T4 rII genes showed the code is read in *triplets*—delete/insert three bases and the protein still works.
+- **Early codon assignments** relied on phage RNA/DNA templates (e.g., poly‑U/UGG) to map base triplets to amino acids, paving the way for the 64‑codon table we use today.
+
+---
+
 - **What they are:** Bacteriophages (“phages”) are bacteria‑infecting viruses. They self‑assemble into nanomachines with a head (capsid) that stores DNA/RNA and a tail that injects it like a syringe.
 - **Why they matter today**
   - *Medicine*: design phage cocktails to beat antibiotic‑resistant infections.
@@ -26,9 +41,10 @@ curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/ma
 ## A 90‑second genetic code primer
 
 - DNA alphabet: A, C, G, T (RNA swaps T→U). Proteins are chains of 20 amino acids.
-- Translation reads DNA in **codons**—non‑overlapping triplets of bases. Every three letters → one amino acid.
+- Translation reads DNA in **codons**—non‑overlapping triplets of bases (64 possible combos). Every three letters → one amino acid or a stop signal.
 - The mapping is fixed and mostly redundant (“degenerate”): several codons can encode the same amino acid. Three codons encode **stop**, and ATG usually marks **start**.
 - Reading frames matter: shift by one base and every downstream codon changes. Phage Explorer lets you flip frames live to see amino acid strings reflow.
+- Triplets are proven by phage genetics: three-base indels restore the reading frame; doublet/singlet changes scramble everything.
 - Quick lookup:
 
 | Codon | Amino acid | Notes |
