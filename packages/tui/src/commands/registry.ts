@@ -3,6 +3,9 @@ export interface CommandItem {
   label: string;
   description?: string;
   keywords?: string[];
+  category?: string;
+  shortcut?: string;
+  minLevel?: 'novice' | 'intermediate' | 'power';
   action: () => void;
 }
 

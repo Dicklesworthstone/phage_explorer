@@ -54,10 +54,14 @@ function renderCommand(item: RankedCommand, isSelected: boolean, theme: Theme): 
   const colors = theme.colors;
   return (
     <Box key={item.id} flexDirection="column" paddingX={1}>
-      <Box>
+      <Box justifyContent="space-between">
         <Text color={isSelected ? colors.accent : colors.text} bold={isSelected}>
           {isSelected ? '▶ ' : '  '}
           {item.label}
+          {item.shortcut ? `  [${item.shortcut}]` : ''}
+        </Text>
+        <Text color={colors.textDim} dimColor>
+          {item.category ?? ''}
         </Text>
       </Box>
       {item.description && (
@@ -93,44 +97,43 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
   // Seed commands on mount/experience change
   useEffect(() => {
     const baseCommands = [
-      { id: 'nav-next', label: 'Next phage', description: 'Move down the list', keywords: ['arrow', 'down'], action: nextPhage },
-      { id: 'nav-prev', label: 'Previous phage', description: 'Move up the list', keywords: ['arrow', 'up'], action: prevPhage },
-      { id: 'view-toggle', label: 'Toggle DNA / AA view', description: 'Switch sequence mode', keywords: ['mode', 'view'], action: toggleViewMode },
-      { id: 'frame-cycle', label: 'Cycle reading frame', description: 'Frame 1 → 2 → 3', keywords: ['frame'], action: cycleReadingFrame },
-      { id: 'theme-cycle', label: 'Cycle theme', description: 'Rotate color themes', keywords: ['colors'], action: cycleTheme },
-      { id: 'diff-toggle', label: 'Toggle diff', description: 'Diff vs reference', keywords: ['compare'], action: toggleDiff },
-      { id: 'search', label: 'Search phages', description: 'Open search overlay', keywords: ['find'], action: () => openOverlay('search') },
-      { id: 'comparison', label: 'Genome comparison', description: 'Open comparison overlay', keywords: ['compare', 'genome'], action: openComparison },
-      { id: 'model-toggle', label: 'Toggle 3D model', description: 'Show/hide 3D model', keywords: ['3d', 'model'], action: toggle3DModel },
-      { id: 'model-pause', label: 'Pause/resume 3D model', description: 'Pause/resume rotation (O key)', keywords: ['3d', 'pause'], action: toggle3DModelPause },
-      { id: 'model-fullscreen', label: 'Fullscreen 3D model', description: 'Enter/exit fullscreen', keywords: ['3d', 'fullscreen'], action: toggle3DModelFullscreen },
-      { id: 'model-quality', label: 'Cycle 3D quality', description: 'Change shading quality', keywords: ['3d', 'quality'], action: cycle3DModelQuality },
+      { id: 'nav-next', label: 'Next phage', description: 'Move down the list', keywords: ['arrow', 'down'], category: 'Navigation', shortcut: '↓', action: nextPhage },
+      { id: 'nav-prev', label: 'Previous phage', description: 'Move up the list', keywords: ['arrow', 'up'], category: 'Navigation', shortcut: '↑', action: prevPhage },
+      { id: 'view-toggle', label: 'Toggle DNA / AA view', description: 'Switch sequence mode', keywords: ['mode', 'view'], category: 'View', shortcut: 'Space', action: toggleViewMode },
+      { id: 'frame-cycle', label: 'Cycle reading frame', description: 'Frame 1 → 2 → 3', keywords: ['frame'], category: 'View', shortcut: 'F', action: cycleReadingFrame },
+      { id: 'theme-cycle', label: 'Cycle theme', description: 'Rotate color themes', keywords: ['colors'], category: 'View', shortcut: 'T', action: cycleTheme },
+      { id: 'diff-toggle', label: 'Toggle diff', description: 'Diff vs reference', keywords: ['compare'], category: 'Analysis', shortcut: 'D', action: toggleDiff, minLevel: 'intermediate' },
+      { id: 'search', label: 'Search phages', description: 'Open search overlay', keywords: ['find'], category: 'Navigation', shortcut: 'S or /', action: () => openOverlay('search') },
+      { id: 'comparison', label: 'Genome comparison', description: 'Open comparison overlay', keywords: ['compare', 'genome'], category: 'Analysis', shortcut: 'W', action: openComparison, minLevel: 'intermediate' },
+      { id: 'model-toggle', label: 'Toggle 3D model', description: 'Show/hide 3D model', keywords: ['3d', 'model'], category: '3D', shortcut: 'M', action: toggle3DModel },
+      { id: 'model-pause', label: 'Pause/resume 3D model', description: 'Pause/resume rotation (O key)', keywords: ['3d', 'pause'], category: '3D', shortcut: 'O/P', action: toggle3DModelPause },
+      { id: 'model-fullscreen', label: 'Fullscreen 3D model', description: 'Enter/exit fullscreen', keywords: ['3d', 'fullscreen'], category: '3D', shortcut: 'Z', action: toggle3DModelFullscreen },
+      { id: 'model-quality', label: 'Cycle 3D quality', description: 'Change shading quality', keywords: ['3d', 'quality'], category: '3D', shortcut: 'R', action: cycle3DModelQuality },
     ];
 
     const advancedCommands =
       experienceLevel === 'novice'
         ? []
         : [
-            { id: 'analysis-menu', label: 'Analysis menu', description: 'Open analysis menu', keywords: ['menu', 'analysis'], action: () => openOverlay('analysisMenu') },
-            { id: 'complexity', label: 'Sequence complexity', description: 'Open complexity overlay', keywords: ['entropy', 'complexity'], action: () => toggleOverlay('complexity') },
-            { id: 'gc-skew', label: 'GC skew', description: 'Open GC skew overlay', keywords: ['gc'], action: () => toggleOverlay('gcSkew') },
-            { id: 'bendability', label: 'Bendability', description: 'AT-rich bendability proxy overlay', keywords: ['bend', 'at'], action: () => toggleOverlay('bendability') },
-            { id: 'promoter', label: 'Promoter/RBS motifs', description: 'Scan for -10/-35 and Shine-Dalgarno', keywords: ['promoter', 'rbs'], action: () => toggleOverlay('promoter') },
-            { id: 'repeats', label: 'Repeats / palindromes', description: 'Detect short palindromic repeats', keywords: ['repeat', 'palindrome'], action: () => toggleOverlay('repeats') },
-            { id: 'kmer', label: 'K-mer anomaly', description: 'Highlight composition shifts', keywords: ['kmer', 'anomaly'], action: () => toggleOverlay('kmerAnomaly') },
-            { id: 'modules', label: 'Module coherence', description: 'Capsid/tail/lysis module view', keywords: ['module', 'stoichiometry'], action: () => toggleOverlay('modules') },
-            { id: 'pressure', label: 'Packaging pressure gauge', description: 'Estimate capsid filling pressure', keywords: ['pressure', 'packing'], action: () => toggleOverlay('pressure') },
-            { id: 'structure-constraints', label: 'Structure constraints', description: 'Fragility scan for capsid/tail proteins', keywords: ['structure', 'capsid', 'tail'], action: () => toggleOverlay('structureConstraints') },
-            { id: 'phase-portraits', label: 'AA property phase portraits', description: 'PCA of hydropathy/charge/aromaticity trajectories', keywords: ['phase', 'portrait', 'protein', 'property'], action: () => toggleOverlay('phasePortrait') },
-            { id: 'bias-decomposition', label: 'Dinucleotide bias decomposition', description: 'PCA on dinucleotide frequencies across phages', keywords: ['bias', 'dinucleotide', 'pca'], action: () => toggleOverlay('biasDecomposition') },
+            { id: 'analysis-menu', label: 'Analysis menu', description: 'Open analysis menu', keywords: ['menu', 'analysis'], category: 'Menu', shortcut: 'A', action: () => openOverlay('analysisMenu') },
+            { id: 'complexity', label: 'Sequence complexity', description: 'Open complexity overlay', keywords: ['entropy', 'complexity'], category: 'Overlay', shortcut: 'X', action: () => toggleOverlay('complexity') },
+            { id: 'gc-skew', label: 'GC skew', description: 'Open GC skew overlay', keywords: ['gc'], category: 'Overlay', shortcut: 'G', action: () => toggleOverlay('gcSkew') },
+            { id: 'bendability', label: 'Bendability', description: 'AT-rich bendability proxy overlay', keywords: ['bend', 'at'], category: 'Overlay', shortcut: 'B', action: () => toggleOverlay('bendability') },
+            { id: 'promoter', label: 'Promoter/RBS motifs', description: 'Scan for -10/-35 and Shine-Dalgarno', keywords: ['promoter', 'rbs'], category: 'Overlay', shortcut: 'P', action: () => toggleOverlay('promoter') },
+            { id: 'repeats', label: 'Repeats / palindromes', description: 'Detect short palindromic repeats', keywords: ['repeat', 'palindrome'], category: 'Overlay', shortcut: 'R', action: () => toggleOverlay('repeats') },
+            { id: 'kmer', label: 'K-mer anomaly', description: 'Highlight composition shifts', keywords: ['kmer', 'anomaly'], category: 'Overlay', shortcut: 'J', action: () => toggleOverlay('kmerAnomaly') },
+            { id: 'modules', label: 'Module coherence', description: 'Capsid/tail/lysis module view', keywords: ['module', 'stoichiometry'], category: 'Overlay', shortcut: 'L', action: () => toggleOverlay('modules') },
+            { id: 'pressure', label: 'Packaging pressure gauge', description: 'Estimate capsid filling pressure', keywords: ['pressure', 'packing'], category: 'Overlay', shortcut: 'V', action: () => toggleOverlay('pressure') },
+            { id: 'phase-portraits', label: 'AA property phase portraits', description: 'PCA of hydropathy/charge/aromaticity trajectories', keywords: ['phase', 'portrait', 'protein', 'property'], category: 'Overlay', shortcut: 'Shift+P', action: () => toggleOverlay('phasePortrait') },
+            { id: 'bias-decomposition', label: 'Dinucleotide bias decomposition', description: 'PCA on dinucleotide frequencies across phages', keywords: ['bias', 'dinucleotide', 'pca'], category: 'Overlay', shortcut: 'A→Bias', action: () => toggleOverlay('biasDecomposition') },
           ];
 
     const powerCommands =
       experienceLevel === 'power'
         ? [
-            { id: 'command-palette', label: 'Command palette', description: 'Fuzzy commands (Ctrl+P / :)', keywords: ['palette', 'commands'], action: () => openOverlay('commandPalette') },
-            { id: 'fold-quickview', label: 'Fold quickview', description: 'View fold embeddings (Ctrl+F)', keywords: ['fold', 'structure'], action: () => openOverlay('foldQuickview') },
-            { id: 'simulation-hub', label: 'Simulation hub', description: 'Open simulation hub', keywords: ['simulation', 'hub'], action: () => openOverlay('simulationHub') },
+            { id: 'command-palette', label: 'Command palette', description: 'Fuzzy commands (Ctrl+P / :)', keywords: ['palette', 'commands'], category: 'Menu', shortcut: 'Ctrl+P', action: () => openOverlay('commandPalette') },
+            { id: 'fold-quickview', label: 'Fold quickview', description: 'View fold embeddings (Ctrl+F)', keywords: ['fold', 'structure'], category: 'Analysis', shortcut: 'Ctrl+F', action: () => openOverlay('foldQuickview') },
+            { id: 'simulation-hub', label: 'Simulation hub', description: 'Open simulation hub', keywords: ['simulation', 'hub'], category: 'Simulation', shortcut: 'Shift+S', action: () => openOverlay('simulationHub') },
           ]
         : [];
 
@@ -192,7 +195,10 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
       return;
     }
     if (key.return && ranked[safeIndex]) {
-      ranked[safeIndex].action();
+      const chosen = ranked[safeIndex];
+      chosen.action();
+      // update recents
+      recentCommands = [chosen.id, ...recentCommands.filter(id => id !== chosen.id)].slice(0, RECENT_LIMIT);
       onClose();
     }
   });
