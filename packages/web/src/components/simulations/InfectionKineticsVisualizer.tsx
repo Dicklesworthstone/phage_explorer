@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import type { InfectionKineticsState } from '../../workers/types';
 import { useTheme } from '../../hooks/useTheme';
 
@@ -7,6 +7,12 @@ interface InfectionKineticsVisualizerProps {
   width?: number;
   height?: number;
 }
+
+const COLORS = {
+  bacteria: '#22c55e',
+  infected: '#eab308',
+  phage: '#6366f1',
+};
 
 export function InfectionKineticsVisualizer({
   state,
@@ -17,6 +23,15 @@ export function InfectionKineticsVisualizer({
   const colors = theme.colors;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const series = useMemo(() => {
+    const history = (state as any).history as Array<{ time: number; bacteria: number; infected: number; phage: number }> | undefined;
+    const points = history && history.length > 0
+      ? history
+      : [{ time: state.time, bacteria: state.bacteria, infected: state.infected, phage: state.phage }];
+    // Ensure time ascending
+    return [...points].sort((a, b) => a.time - b.time);
+  }, [state]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -26,17 +41,12 @@ export function InfectionKineticsVisualizer({
     const dpr = window.devicePixelRatio || 1;
     canvas.width = width * dpr;
     canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     ctx.fillStyle = colors.background;
     ctx.fillRect(0, 0, width, height);
 
-    const history = (state as any).history as Array<{ time: number; bacteria: number; infected: number; phage: number }> | undefined;
-    const series = history && history.length > 0 ? history : [
-      { time: state.time, bacteria: state.bacteria, infected: state.infected, phage: state.phage },
-    ];
-
-    const padding = { top: 20, right: 20, bottom: 30, left: 50 };
+    const padding = { top: 20, right: 180, bottom: 32, left: 58 };
     const chartW = width - padding.left - padding.right;
     const chartH = height - padding.top - padding.bottom;
     const maxVal = Math.max(
@@ -47,6 +57,35 @@ export function InfectionKineticsVisualizer({
 
     const xScale = (t: number) => padding.left + (t / maxTime) * chartW;
     const yScale = (v: number) => padding.top + chartH - (v / maxVal) * chartH;
+
+    // Gridlines
+    ctx.strokeStyle = colors.borderLight;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, padding.top);
+    ctx.lineTo(padding.left, height - padding.bottom);
+    ctx.lineTo(width - padding.right, height - padding.bottom);
+    ctx.stroke();
+
+    // Y ticks
+    ctx.fillStyle = colors.textDim;
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'right';
+    const yTicks = 3;
+    for (let i = 0; i <= yTicks; i++) {
+      const val = (maxVal / yTicks) * i;
+      const y = yScale(val);
+      ctx.fillText(val >= 1e6 ? `${(val / 1e6).toFixed(1)}M` : val.toFixed(0), padding.left - 6, y + 3);
+      ctx.strokeStyle = colors.borderLight;
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath();
+      ctx.moveTo(padding.left, y);
+      ctx.lineTo(width - padding.right, y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.textAlign = 'center';
+    ctx.fillText('Time (arbitrary units)', padding.left + chartW / 2, height - 8);
 
     const drawSeries = (key: 'bacteria' | 'infected' | 'phage', color: string) => {
       ctx.beginPath();
@@ -61,34 +100,72 @@ export function InfectionKineticsVisualizer({
       ctx.stroke();
     };
 
-    // Axes
+    drawSeries('bacteria', COLORS.bacteria);
+    drawSeries('infected', COLORS.infected);
+    drawSeries('phage', COLORS.phage);
+
+    // Legend + metrics panel
+    const legendX = width - padding.right + 10;
+    const legendY = padding.top;
+    ctx.font = '11px monospace';
+
+    const rows: Array<{ label: string; color: string; value: number }> = [
+      { label: 'Bacteria', color: COLORS.bacteria, value: series.at(-1)?.bacteria ?? 0 },
+      { label: 'Infected', color: COLORS.infected, value: series.at(-1)?.infected ?? 0 },
+      { label: 'Phage', color: COLORS.phage, value: series.at(-1)?.phage ?? 0 },
+    ];
+    rows.forEach((row, idx) => {
+      const y = legendY + idx * 18;
+      ctx.fillStyle = row.color;
+      ctx.fillRect(legendX, y - 8, 10, 10);
+      ctx.fillStyle = colors.text;
+      ctx.fillText(row.label, legendX + 16, y);
+      ctx.fillStyle = colors.textDim;
+      ctx.fillText(formatCount(row.value), legendX + 110, y);
+    });
+
+    // Phase-plane inset (B vs P)
+    const insetW = 110;
+    const insetH = 90;
+    const insetX = width - padding.right + 10;
+    const insetY = legendY + 70;
     ctx.strokeStyle = colors.borderLight;
-    ctx.lineWidth = 1;
+    ctx.strokeRect(insetX, insetY, insetW, insetH);
+    const insetPadding = 6;
+    const maxB = Math.max(...series.map(p => p.bacteria), 1);
+    const maxP = Math.max(...series.map(p => p.phage), 1);
+    const xInset = (v: number) => insetX + insetPadding + (v / maxB) * (insetW - insetPadding * 2);
+    const yInset = (v: number) => insetY + insetH - insetPadding - (v / maxP) * (insetH - insetPadding * 2);
+
     ctx.beginPath();
-    ctx.moveTo(padding.left, padding.top);
-    ctx.lineTo(padding.left, height - padding.bottom);
-    ctx.lineTo(width - padding.right, height - padding.bottom);
+    series.forEach((p, i) => {
+      const x = xInset(p.bacteria);
+      const y = yInset(p.phage);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 1.5;
     ctx.stroke();
 
     ctx.fillStyle = colors.textDim;
-    ctx.font = '10px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText('0', padding.left - 6, height - padding.bottom);
-    ctx.fillText(maxVal.toFixed(0), padding.left - 6, padding.top + 10);
-    ctx.textAlign = 'center';
-    ctx.fillText('Time', width / 2, height - 8);
+    ctx.font = '9px monospace';
+    ctx.fillText('Phase plane (B vs P)', insetX + insetW / 2, insetY - 4);
+  }, [series, width, height, colors]);
 
-    drawSeries('bacteria', '#22c55e');
-    drawSeries('infected', '#eab308');
-    drawSeries('phage', '#6366f1');
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ width: `${width}px`, height: `${height}px`, display: 'block' }}
+    />
+  );
+}
 
-    // Legend
-    ctx.fillStyle = '#22c55e'; ctx.fillText('Bacteria', padding.left + 20, padding.top + 12);
-    ctx.fillStyle = '#eab308'; ctx.fillText('Infected', padding.left + 90, padding.top + 12);
-    ctx.fillStyle = '#6366f1'; ctx.fillText('Phage', padding.left + 160, padding.top + 12);
-  }, [state, width, height, colors]);
-
-  return <canvas ref={canvasRef} style={{ width: `${width}px`, height: `${height}px`, display: 'block' }} />;
+function formatCount(value: number): string {
+  if (value >= 1e9) return `${(value / 1e9).toFixed(1)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(1)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}k`;
+  return value.toFixed(0);
 }
 
 export default InfectionKineticsVisualizer;

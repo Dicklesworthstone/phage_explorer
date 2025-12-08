@@ -69,11 +69,17 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   const paramsRef = useRef<Record<string, number | boolean | string>>({});
   const animationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stateRef = useRef<SimState | null>(null);
+  const speedRef = useRef<number>(1);
 
   // Keep stateRef in sync
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  // Keep speedRef in sync for interval callbacks
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
 
   // Load metadata on mount
   useEffect(() => {
@@ -133,13 +139,16 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     if (!stateRef.current) return;
     try {
       const orchestrator = getOrchestrator();
-      const newState = await orchestrator.stepSimulation(stateRef.current, DEFAULT_DT * speed);
+      const newState = await orchestrator.stepSimulation(
+        stateRef.current,
+        DEFAULT_DT * speedRef.current
+      );
       setState(newState);
     } catch (err) {
       setError(`Simulation step failed: ${(err as Error).message}`);
       setIsRunning(false);
     }
-  }, [speed]);
+  }, []);
 
   // Play simulation
   const play = useCallback(() => {
@@ -150,7 +159,10 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
       if (!stateRef.current) return;
       try {
         const orchestrator = getOrchestrator();
-        const newState = await orchestrator.stepSimulation(stateRef.current, DEFAULT_DT * speed);
+        const newState = await orchestrator.stepSimulation(
+          stateRef.current,
+          DEFAULT_DT * speedRef.current
+        );
         setState(newState);
       } catch (err) {
         setError(`Simulation failed: ${(err as Error).message}`);

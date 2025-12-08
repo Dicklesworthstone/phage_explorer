@@ -174,7 +174,7 @@ function initInfection(params?: Record<string, number | boolean | string>): Infe
     b0: 1e6, p0: 1e7, k: 2e-10, latent: 40, burst: 120, growth: 0.5, decay: 0.02,
     ...params,
   };
-  return {
+  const initial: InfectionKineticsState & { history: Array<{ time: number; bacteria: number; infected: number; phage: number }> } = {
     type: 'infection-kinetics',
     time: 0,
     running: true,
@@ -183,7 +183,14 @@ function initInfection(params?: Record<string, number | boolean | string>): Infe
     bacteria: Number(merged.b0),
     infected: 0,
     phage: Number(merged.p0),
+    history: [{
+      time: 0,
+      bacteria: Number(merged.b0),
+      infected: 0,
+      phage: Number(merged.p0),
+    }],
   };
+  return initial;
 }
 
 // ============================================================
@@ -442,13 +449,27 @@ function stepInfection(state: InfectionKineticsState, dt: number): InfectionKine
   const dI = (k * B * P - I / Math.max(1, latent)) * dt;
   const dP = ((burst / Math.max(1, latent)) * I - k * B * P - decay * P) * dt;
 
-  return {
+  const nextB = clamp(B + dB, 0, 1e12);
+  const nextI = clamp(I + dI, 0, 1e12);
+  const nextP = clamp(P + dP, 0, 1e12);
+
+  const history = (state as any).history as Array<{ time: number; bacteria: number; infected: number; phage: number }> | undefined;
+  const nextHistory = [...(history ?? []), {
+    time: state.time + dt,
+    bacteria: nextB,
+    infected: nextI,
+    phage: nextP,
+  }].slice(-600);
+
+  const nextState: InfectionKineticsState & { history: typeof nextHistory } = {
     ...state,
     time: state.time + dt,
-    bacteria: clamp(B + dB, 0, 1e12),
-    infected: clamp(I + dI, 0, 1e12),
-    phage: clamp(P + dP, 0, 1e12),
+    bacteria: nextB,
+    infected: nextI,
+    phage: nextP,
+    history: nextHistory,
   };
+  return nextState;
 }
 
 // ============================================================
