@@ -15,6 +15,9 @@ interface ComparisonJob {
 interface WorkerMessage {
   ok: boolean;
   result?: GenomeComparisonResult;
+  diffMask?: Uint8Array;
+  diffPositions?: number[];
+  diffStats?: DiffStats;
   error?: string;
 }
 
@@ -32,12 +35,216 @@ self.onmessage = async (event: MessageEvent<ComparisonJob>) => {
       job.codonUsageA ?? null,
       job.codonUsageB ?? null
     );
+
+    const diff = computeDiff(job.sequenceA, job.sequenceB);
+
     message.ok = true;
     message.result = result;
+    message.diffMask = diff.mask;
+    message.diffPositions = diff.positions;
+    message.diffStats = diff.stats;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (self as any).postMessage(message, [diff.mask.buffer]);
+    return;
   } catch (err) {
     message.error = err instanceof Error ? err.message : 'Comparison failed';
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (self as any).postMessage(message);
 };
+
+type DiffOp = 'equal' | 'insert' | 'delete' | 'replace';
+
+interface DiffStats {
+  insertions: number;
+  deletions: number;
+  substitutions: number;
+  matches: number;
+  lengthA: number;
+  lengthB: number;
+  identity: number;
+}
+
+interface DiffComputation {
+  mask: Uint8Array;
+  positions: number[];
+  stats: DiffStats;
+}
+
+/**
+ * Compute a minimal diff mask using Myers' algorithm.
+ * Mask legend: 0 = match, 1 = substitution, 2 = insertion (gap relative to A), 3 = deletion.
+ */
+function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
+  const n = sequenceA.length;
+  const m = sequenceB.length;
+  const max = n + m;
+  const offset = max;
+  const v = new Int32Array(2 * max + 1);
+  const trace: Int32Array[] = [];
+
+  let distance = 0;
+
+  outer: for (let d = 0; d <= max; d++) {
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && v[k - 1 + offset] < v[k + 1 + offset])) {
+        x = v[k + 1 + offset];
+      } else {
+        x = v[k - 1 + offset] + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && sequenceA[x] === sequenceB[y]) {
+        x++;
+        y++;
+      }
+      v[k + offset] = x;
+      if (x >= n && y >= m) {
+        trace.push(v.slice());
+        distance = d;
+        break outer;
+      }
+    }
+    trace.push(v.slice());
+  }
+
+  type Span = { op: DiffOp; length: number };
+  const spans: Span[] = [];
+  let x = n;
+  let y = m;
+
+  for (let d = distance; d > 0; d--) {
+    const k = x - y;
+    const vPrev = trace[d - 1];
+    let prevK: number;
+    if (k === -d || (k !== d && vPrev[k - 1 + offset] < vPrev[k + 1 + offset])) {
+      prevK = k + 1; // insertion
+    } else {
+      prevK = k - 1; // deletion
+    }
+    const prevX = vPrev[prevK + offset];
+    const prevY = prevX - prevK;
+
+    const diagLen = x - prevX;
+    if (diagLen > 0) {
+      spans.push({ op: 'equal', length: diagLen });
+    }
+
+    if (prevK === k + 1) {
+      spans.push({ op: 'insert', length: 1 });
+    } else {
+      spans.push({ op: 'delete', length: 1 });
+    }
+
+    x = prevX;
+    y = prevY;
+  }
+
+  if (x > 0) {
+    spans.push({ op: 'equal', length: x });
+  }
+
+  spans.reverse();
+
+  // Normalize consecutive insert/delete into replace segments where possible
+  const normalized: Span[] = [];
+  for (let i = 0; i < spans.length; i++) {
+    const current = spans[i];
+    const next = spans[i + 1];
+    if (
+      current &&
+      next &&
+      ((current.op === 'delete' && next.op === 'insert') || (current.op === 'insert' && next.op === 'delete'))
+    ) {
+      const subLen = Math.min(current.length, next.length);
+      if (subLen > 0) {
+        normalized.push({ op: 'replace', length: subLen });
+      }
+      const remainingDelete = current.op === 'delete' ? current.length - subLen : next.length - subLen;
+      const remainingInsert = current.op === 'insert' ? current.length - subLen : next.length - subLen;
+      if (remainingDelete > 0) normalized.push({ op: 'delete', length: remainingDelete });
+      if (remainingInsert > 0) normalized.push({ op: 'insert', length: remainingInsert });
+      i++; // skip paired span
+    } else {
+      normalized.push(current);
+    }
+  }
+
+  const mask = new Uint8Array(n);
+  const diffPositions: number[] = [];
+
+  let idxA = 0;
+  let idxB = 0;
+  let substitutions = 0;
+  let deletions = 0;
+  let insertions = 0;
+
+  for (const span of normalized) {
+    switch (span.op) {
+      case 'equal': {
+        idxA += span.length;
+        idxB += span.length;
+        break;
+      }
+      case 'replace': {
+        for (let i = 0; i < span.length; i++) {
+          if (idxA < mask.length) {
+            mask[idxA] = 1; // substitution
+            diffPositions.push(idxA);
+          }
+          idxA++;
+          idxB++;
+          substitutions++;
+        }
+        break;
+      }
+      case 'delete': {
+        for (let i = 0; i < span.length; i++) {
+          if (idxA < mask.length) {
+            mask[idxA] = 3; // deletion from A
+            diffPositions.push(idxA);
+          }
+          idxA++;
+          deletions++;
+        }
+        break;
+      }
+      case 'insert': {
+        for (let i = 0; i < span.length; i++) {
+          const pos = Math.min(idxA, mask.length - 1);
+          if (pos >= 0 && pos < mask.length) {
+            if (mask[pos] === 0) {
+              mask[pos] = 2; // insertion relative to A
+            }
+            diffPositions.push(pos);
+          }
+          idxB++;
+          insertions++;
+        }
+        break;
+      }
+    }
+  }
+
+  const matches = Math.max(0, n - substitutions - deletions);
+  const identity = Math.max(0, Math.min(100, (matches / Math.max(n, m)) * 100));
+
+  // Deduplicate and sort diff positions for fast navigation
+  const uniquePositions = Array.from(new Set(diffPositions)).sort((a, b) => a - b);
+
+  return {
+    mask,
+    positions: uniquePositions,
+    stats: {
+      insertions,
+      deletions,
+      substitutions,
+      matches,
+      lengthA: n,
+      lengthB: m,
+      identity,
+    },
+  };
+}
 

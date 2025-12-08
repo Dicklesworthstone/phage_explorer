@@ -6,6 +6,7 @@ import type { PhageRepository } from '../../db';
 import type { GenomeComparisonResult } from '@phage-explorer/comparison';
 import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
+import DiffHighlighter, { type DiffStats as DiffStatsType } from '../DiffHighlighter';
 
 interface ComparisonOverlayProps {
   repository: PhageRepository | null;
@@ -31,6 +32,11 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
 
   const [error, setError] = useState<string | null>(null);
   const workerRef = useRef<Worker | null>(null);
+  const [sequenceA, setSequenceA] = useState<string>('');
+  const [sequenceB, setSequenceB] = useState<string>('');
+  const [diffMask, setDiffMask] = useState<Uint8Array | null>(null);
+  const [diffPositions, setDiffPositions] = useState<number[]>([]);
+  const [diffStats, setDiffStats] = useState<DiffStatsType | null>(null);
 
   const phageA = phageAIndex !== null ? phages[phageAIndex] : null;
   const phageB = phageBIndex !== null ? phages[phageBIndex] : null;
@@ -58,6 +64,9 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     if (!repository || !phageA || !phageB || phageA.id === phageB.id) return;
     setComparisonLoading(true);
     setError(null);
+    setDiffMask(null);
+    setDiffPositions([]);
+    setDiffStats(null);
     try {
       const [fullA, fullB] = await Promise.all([
         repository.getPhageById(phageA.id),
@@ -72,6 +81,9 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         repository.getSequenceWindow(phageA.id, 0, lengthA),
         repository.getSequenceWindow(phageB.id, 0, lengthB),
       ]);
+
+      setSequenceA(seqA);
+      setSequenceB(seqB);
 
       const job = {
         phageA: { id: phageA.id, name: phageA.name, accession: phageA.accession },
@@ -88,9 +100,25 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       let result: GenomeComparisonResult | null = null;
       if (worker) {
         result = await new Promise<GenomeComparisonResult>((resolve, reject) => {
-          const handleMessage = (event: MessageEvent<{ ok: boolean; result?: GenomeComparisonResult; error?: string }>) => {
+          const handleMessage = (event: MessageEvent<{
+            ok: boolean;
+            result?: GenomeComparisonResult;
+            diffMask?: Uint8Array | ArrayBuffer;
+            diffPositions?: number[];
+            diffStats?: DiffStatsType;
+            error?: string;
+          }>) => {
             worker.removeEventListener('message', handleMessage);
             if (event.data.ok && event.data.result) {
+              if (event.data.diffMask) {
+                const mask =
+                  event.data.diffMask instanceof Uint8Array
+                    ? event.data.diffMask
+                    : new Uint8Array(event.data.diffMask);
+                setDiffMask(mask);
+              }
+              setDiffPositions(event.data.diffPositions ?? []);
+              setDiffStats(event.data.diffStats ?? null);
               resolve(event.data.result);
             } else {
               reject(new Error(event.data.error ?? 'Worker comparison failed'));
@@ -161,6 +189,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       { id: 'correlation', label: 'Correlation' },
       { id: 'biological', label: 'Biological' },
       { id: 'genes', label: 'Genes' },
+      { id: 'diff', label: 'Diff' },
     ],
     []
   );
@@ -210,12 +239,37 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         </div>
       );
     }
+    if (comparisonTab === 'diff') {
+      if (!sequenceA || !sequenceB || !diffMask || diffPositions.length === 0 || !diffStats) {
+        return <div className="text-dim">Run a comparison to view diff highlights.</div>;
+      }
+      return (
+        <DiffHighlighter
+          sequence={sequenceA}
+          diffSequence={sequenceB}
+          diffMask={diffMask}
+          diffPositions={diffPositions}
+          stats={diffStats}
+        />
+      );
+    }
     return (
       <div className="text-dim">
         Tab <strong>{comparisonTab}</strong> not yet implemented. Results available in summary above.
       </div>
     );
-  }, [colors.error, comparisonLoading, comparisonResult, comparisonTab, error]);
+  }, [
+    colors.error,
+    comparisonLoading,
+    comparisonResult,
+    comparisonTab,
+    diffMask,
+    diffPositions,
+    diffStats,
+    error,
+    sequenceA,
+    sequenceB,
+  ]);
 
   return (
     <Overlay
