@@ -14,14 +14,24 @@ export interface SelectionAnalysis {
   globalOmega: number;
 }
 
+// Memoize site counts for all 64 codons
+const SITE_COUNTS_CACHE = new Map<string, { syn: number; nonSyn: number }>();
+
 // Helper to count synonymous and non-synonymous sites for a codon
 function countSites(codon: string): { syn: number; nonSyn: number } {
+  const cached = SITE_COUNTS_CACHE.get(codon);
+  if (cached) return cached;
+
   const bases = ['A', 'C', 'G', 'T'];
   let syn = 0;
   let nonSyn = 0;
   const aa = CODON_TABLE[codon];
 
-  if (!aa || aa === '*') return { syn: 0, nonSyn: 0 }; // Skip stop/unknown
+  if (!aa || aa === '*') {
+    const result = { syn: 0, nonSyn: 0 };
+    SITE_COUNTS_CACHE.set(codon, result);
+    return result;
+  }
 
   for (let pos = 0; pos < 3; pos++) {
     const originalBase = codon[pos];
@@ -34,23 +44,17 @@ function countSites(codon: string): { syn: number; nonSyn: number } {
     }
   }
   // Normalize: each position has 3 mutations. Total = 9.
-  // This is a simplified counting method (Nei-Gojobori approximate)
-  return { syn: syn / 3, nonSyn: nonSyn / 3 };
+  const result = { syn: syn / 3, nonSyn: nonSyn / 3 };
+  SITE_COUNTS_CACHE.set(codon, result);
+  return result;
 }
 
 // Simplified dN/dS estimator
-// Requires aligned sequences, but we'll implement a windowed version comparing against a "consensus" or just hypothetical
-// Since we don't have a multiple sequence alignment handy in the single-genome view,
-// we will implement a "Codon Volatility" metric or similar proxy if single sequence.
-// However, the prompt says "Requires comparison phage".
-// So this function expects TWO aligned sequences.
-
 export function calculateSelectionPressure(
   seqA: string,
   seqB: string,
   windowSize = 150
 ): SelectionAnalysis {
-  // Naive alignment check: must be same length
   const len = Math.min(seqA.length, seqB.length);
   const windows: SelectionWindow[] = [];
   let totalDN = 0;
@@ -90,7 +94,6 @@ export function calculateSelectionPressure(
         const aaB = translateCodon(codonB);
         
         // Simply count diffs (simplified, ignores multiple mutations per codon path)
-        // Hamming distance for codon bases
         let diffs = 0;
         if (codonA[0] !== codonB[0]) diffs++;
         if (codonA[1] !== codonB[1]) diffs++;
@@ -108,7 +111,7 @@ export function calculateSelectionPressure(
     const pN = N_sites > 0 ? Nd / N_sites : 0;
     const pS = S_sites > 0 ? Sd / S_sites : 0;
 
-    // Avoid log(0)
+    // Avoid log(0) or log(negative)
     const dN = pN < 0.75 ? -0.75 * Math.log(1 - 4 * pN / 3) : pN;
     const dS = pS < 0.75 ? -0.75 * Math.log(1 - 4 * pS / 3) : pS;
 
