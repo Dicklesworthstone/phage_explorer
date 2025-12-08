@@ -8,6 +8,7 @@ export default [
       'packages/**/dist/**',
       'packages/wasm-compute/pkg/**',
       'packages/web/**',
+      '**/packages/web/**',
     ]
   },
   ...tseslint.configs.recommended,
