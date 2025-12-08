@@ -9,6 +9,9 @@ import React from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { SearchOverlay } from './SearchOverlay';
+import { SimulationHub } from './SimulationHub';
+import SimulationView from '../SimulationView';
+import { TropismOverlay } from './TropismOverlay';
 
 interface OverlayManagerProps {
   repository: PhageRepository | null;
@@ -16,7 +19,14 @@ interface OverlayManagerProps {
 }
 
 export function OverlayManager({ repository, currentPhage }: OverlayManagerProps): React.ReactElement | null {
-  return <SearchOverlay repository={repository} currentPhage={currentPhage} />;
+  return (
+    <>
+      <SearchOverlay repository={repository} currentPhage={currentPhage} />
+      <TropismOverlay repository={repository} phage={currentPhage} />
+      <SimulationHub />
+      <SimulationView />
+    </>
+  );
 }
 
 export default OverlayManager;

@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppShell } from './components/layout/AppShell';
 import OverlayManager from './components/overlays/OverlayManager';
-import { OverlayProvider } from './components/overlays/OverlayProvider';
 import { useOverlay } from './components/overlays/OverlayProvider';
 import { DataLoadingOverlay } from './components/DataLoadingOverlay';
 import { useDatabase } from './hooks/useDatabase';
@@ -191,7 +190,7 @@ export default function App(): JSX.Element {
   ]), []);
 
   return (
-    <OverlayProvider>
+    <>
       {loadingOverlayNeeded && (
         <DataLoadingOverlay
           progress={progress}
@@ -345,6 +344,6 @@ export default function App(): JSX.Element {
         </section>
       </AppShell>
       <OverlayManager repository={repository} currentPhage={currentPhage} />
-    </OverlayProvider>
+    </>
   );
 }

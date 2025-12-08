@@ -6,10 +6,11 @@
  * Includes SVG preview thumbnails for each simulation type.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { SIMULATION_METADATA } from '@phage-explorer/core';
 
 interface SimulationDef {
   id: string;
@@ -20,6 +21,7 @@ interface SimulationDef {
   category: string;
   duration?: string;
   complexity?: 'simple' | 'moderate' | 'complex';
+  priority: number;
 }
 
 /**
@@ -158,121 +160,28 @@ function getSimulationThumbnail(simId: string, colors: ThumbnailProps): React.Re
   }
 }
 
-const SIMULATIONS: SimulationDef[] = [
-  // Infection Dynamics
-  {
-    id: 'lytic-cycle',
-    label: 'Lytic Cycle',
-    description: 'Visualize the complete lytic infection cycle',
-    icon: '💥',
-    shortcut: '1',
-    category: 'Infection Dynamics',
-    duration: '~30s',
-    complexity: 'simple',
-  },
-  {
-    id: 'lysogenic-switch',
-    label: 'Lysogenic Switch',
-    description: 'Lambda-style lysogeny decision circuit',
-    icon: '⚡',
-    shortcut: '2',
-    category: 'Infection Dynamics',
-    duration: '~45s',
-    complexity: 'moderate',
-  },
-  {
-    id: 'burst-size',
-    label: 'Burst Size Dynamics',
-    description: 'Progeny production over time',
-    icon: '📊',
-    shortcut: '3',
-    category: 'Infection Dynamics',
-    duration: '~20s',
-    complexity: 'simple',
-  },
-
-  // Population Dynamics
-  {
-    id: 'population-dynamics',
-    label: 'Population Dynamics',
-    description: 'Phage-bacteria population model',
-    icon: '📈',
-    shortcut: '4',
-    category: 'Population Dynamics',
-    duration: '~60s',
-    complexity: 'moderate',
-  },
-  {
-    id: 'coinfection',
-    label: 'Coinfection Competition',
-    description: 'Multiple phage strain competition',
-    icon: '⚔️',
-    shortcut: '5',
-    category: 'Population Dynamics',
-    duration: '~90s',
-    complexity: 'complex',
-  },
-
-  // Molecular Processes
-  {
-    id: 'dna-packaging',
-    label: 'DNA Packaging',
-    description: 'Headful packaging motor simulation',
-    icon: '📦',
-    shortcut: '6',
-    category: 'Molecular Processes',
-    duration: '~40s',
-    complexity: 'moderate',
-  },
-  {
-    id: 'transcription',
-    label: 'Transcription Flow',
-    description: 'Gene expression temporal program',
-    icon: '🔄',
-    shortcut: '7',
-    category: 'Molecular Processes',
-    duration: '~50s',
-    complexity: 'moderate',
-  },
-  {
-    id: 'receptor-binding',
-    label: 'Receptor Binding',
-    description: 'Tail fiber-receptor docking simulation',
-    icon: '🎯',
-    shortcut: '8',
-    category: 'Molecular Processes',
-    duration: '~25s',
-    complexity: 'simple',
-  },
-
-  // Evolution
-  {
-    id: 'resistance-evolution',
-    label: 'Resistance Evolution',
-    description: 'Host resistance/phage counter-adaptation',
-    icon: '🧬',
-    shortcut: '9',
-    category: 'Evolution',
-    duration: '~120s',
-    complexity: 'complex',
-  },
-  {
-    id: 'recombination',
-    label: 'Recombination Events',
-    description: 'Genetic exchange between phages',
-    icon: '🔀',
-    shortcut: '0',
-    category: 'Evolution',
-    duration: '~60s',
-    complexity: 'moderate',
-  },
-];
+const SIMULATIONS: SimulationDef[] = SIMULATION_METADATA.map((m, idx) => ({
+  id: m.id,
+  label: m.name,
+  description: m.description,
+  icon: m.icon,
+  shortcut: String((idx + 1) % 10), // 1-9 then 0
+  category: m.requiresPhage ? 'Phage-Aware' : 'General',
+  complexity: m.priority <= 2 ? 'simple' : m.priority <= 4 ? 'moderate' : 'complex',
+  priority: m.priority,
+}));
 
 export function SimulationHub(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const { isOpen, toggle, close, open } = useOverlay();
+  const { isOpen, toggle, close, open, setOverlayData } = useOverlay();
   const [selectedIndex, setSelectedIndex] = useState(0);
+
+  // Sort by priority, fall back to label
+  const orderedSims = useMemo(
+    () => [...SIMULATIONS].sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label)),
+    []
+  );
 
   // Register hotkey
   useEffect(() => {
@@ -296,7 +205,7 @@ export function SimulationHub(): React.ReactElement | null {
         case 'ArrowDown':
         case 'j':
           e.preventDefault();
-          setSelectedIndex(prev => Math.min(prev + 1, SIMULATIONS.length - 1));
+          setSelectedIndex(prev => Math.min(prev + 1, orderedSims.length - 1));
           break;
         case 'ArrowUp':
         case 'k':
@@ -305,19 +214,18 @@ export function SimulationHub(): React.ReactElement | null {
           break;
         case 'Enter':
           e.preventDefault();
-          const sim = SIMULATIONS[selectedIndex];
-          // Launch simulation (would connect to simulation engine)
-          console.log('Launching simulation:', sim.id);
+          const sim = orderedSims[selectedIndex];
+          setOverlayData('simulationView.simId', sim.id);
           close('simulationHub');
           open('simulationView');
           break;
         default:
           // Check for shortcut key (1-9, 0)
           if (/^[0-9]$/.test(e.key)) {
-            const matchingSim = SIMULATIONS.find(s => s.shortcut === e.key);
+            const matchingSim = orderedSims.find(s => s.shortcut === e.key);
             if (matchingSim) {
               e.preventDefault();
-              console.log('Launching simulation:', matchingSim.id);
+              setOverlayData('simulationView.simId', matchingSim.id);
               close('simulationHub');
               open('simulationView');
             }
@@ -334,7 +242,7 @@ export function SimulationHub(): React.ReactElement | null {
   }
 
   // Group by category
-  const grouped = SIMULATIONS.reduce((acc, sim) => {
+  const grouped = orderedSims.reduce((acc, sim) => {
     if (!acc[sim.category]) {
       acc[sim.category] = [];
     }
@@ -402,7 +310,7 @@ export function SimulationHub(): React.ReactElement | null {
                   <div
                     key={sim.id}
                     onClick={() => {
-                      console.log('Launching simulation:', sim.id);
+                      setOverlayData('simulationView.simId', sim.id);
                       close('simulationHub');
                       open('simulationView');
                     }}

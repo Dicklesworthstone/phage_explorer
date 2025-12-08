@@ -5,7 +5,19 @@
  * initializing sql.js, and providing load progress callbacks.
  */
 
-import initSqlJs, { type Database } from 'sql.js';
+import type { Database, SqlJsStatic } from 'sql.js';
+
+// sql.js uses CommonJS exports, so we need dynamic import for Vite compatibility
+let sqlJsPromise: Promise<SqlJsStatic> | null = null;
+async function initSqlJs(config?: { locateFile?: (file: string) => string }): Promise<SqlJsStatic> {
+  if (!sqlJsPromise) {
+    sqlJsPromise = import('sql.js').then((mod) => {
+      const init = mod.default || mod;
+      return init(config);
+    });
+  }
+  return sqlJsPromise;
+}
 import { SqlJsRepository } from './SqlJsRepository';
 import type {
   PhageRepository,
@@ -126,7 +138,7 @@ async function decompressData(
 export class DatabaseLoader {
   private config: Required<DatabaseLoaderConfig>;
   private repository: SqlJsRepository | null = null;
-  private sqlPromise: ReturnType<typeof initSqlJs> | null = null;
+  private sqlPromise: Promise<SqlJsStatic> | null = null;
 
   constructor(config: DatabaseLoaderConfig) {
     this.config = {
@@ -140,7 +152,7 @@ export class DatabaseLoader {
   /**
    * Initialize sql.js (lazy, cached)
    */
-  private async initSqlJs(): Promise<typeof import('sql.js')['default'] extends (config?: infer C) => Promise<infer R> ? R : never> {
+  private async getSqlJs(): Promise<SqlJsStatic> {
     if (!this.sqlPromise) {
       this.sqlPromise = initSqlJs({
         // Load WASM from CDN
@@ -211,7 +223,7 @@ export class DatabaseLoader {
       }
 
       this.progress('initializing', 90, 'Initializing from cache...', true);
-      const SQL = await this.initSqlJs();
+      const SQL = await this.getSqlJs();
       return new SQL.Database(cachedData);
     } catch (error) {
       console.error('Failed to load from cache:', error);
@@ -300,7 +312,7 @@ export class DatabaseLoader {
     }
 
     this.progress('initializing', 80, 'Initializing database...');
-    const SQL = await this.initSqlJs();
+    const SQL = await this.getSqlJs();
 
     // Calculate hash from data
     const hashBuffer = await crypto.subtle.digest('SHA-256', dbData);

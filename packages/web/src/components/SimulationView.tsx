@@ -10,24 +10,47 @@ import {
   PlaqueVisualizer,
   RibosomeVisualizer,
   EvolutionVisualizer,
+  InfectionKineticsVisualizer,
+  PackagingMotorVisualizer,
 } from './simulations';
 
-type VisualizerProps = { state: SimState };
+const SIM_ID_MAP: Record<string, SimulationId> = {
+  'lysogeny-circuit': 'lysogeny-circuit',
+  'lysogenic-switch': 'lysogeny-circuit',
+  'lytic-cycle': 'infection-kinetics',
+  'population-dynamics': 'infection-kinetics',
+  coinfection: 'infection-kinetics',
+  'infection-kinetics': 'infection-kinetics',
+  'dna-packaging': 'packaging-motor',
+  'packaging-motor': 'packaging-motor',
+  transcription: 'ribosome-traffic',
+  'ribosome-traffic': 'ribosome-traffic',
+  'receptor-binding': 'ribosome-traffic',
+  'burst-size': 'plaque-automata',
+  'plaque-automata': 'plaque-automata',
+  'evolution-replay': 'evolution-replay',
+  'resistance-evolution': 'evolution-replay',
+};
+
+function normalizeSimId(simId: string | undefined): SimulationId {
+  if (simId && SIM_ID_MAP[simId]) return SIM_ID_MAP[simId];
+  return 'lysogeny-circuit';
+}
 
 function VisualizerRouter({ simId, state }: { simId: SimulationId; state: SimState }): React.ReactElement | null {
   switch (simId) {
-    case 'lysogeny':
-    case 'lysogenic-switch':
+    case 'lysogeny-circuit':
       return <LysogenyVisualizer state={state as any} width={540} height={260} />;
     case 'plaque-automata':
-    case 'burst-size':
       return <PlaqueVisualizer state={state as any} width={540} height={260} />;
     case 'ribosome-traffic':
-    case 'transcription':
       return <RibosomeVisualizer state={state as any} width={540} height={260} />;
     case 'evolution-replay':
-    case 'resistance-evolution':
       return <EvolutionVisualizer state={state as any} width={540} height={260} />;
+    case 'infection-kinetics':
+      return <InfectionKineticsVisualizer state={state as any} width={540} height={260} />;
+    case 'packaging-motor':
+      return <PackagingMotorVisualizer state={state as any} width={540} height={260} />;
     default:
       return (
         <pre
@@ -56,8 +79,8 @@ export default function SimulationView(): React.ReactElement | null {
   }
 
   const simId = useMemo(() => {
-    const fromOverlay = overlayData['simulationView.simId'] as SimulationId | undefined;
-    return fromOverlay ?? ('lysogenic-switch' as SimulationId);
+    const fromOverlay = overlayData['simulationView.simId'] as string | undefined;
+    return normalizeSimId(fromOverlay);
   }, [overlayData]);
 
   const {
