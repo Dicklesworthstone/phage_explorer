@@ -53,6 +53,16 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
   },
+  {
+    id: 'packaging-pressure',
+    overlayId: 'pressure',
+    label: 'Packaging Pressure',
+    description: 'Capsid fill fraction, force, and pressure gauge',
+    icon: '🧲',
+    shortcut: 'v',
+    category: 'Sequence Analysis',
+    requiresLevel: 'intermediate',
+  },
 
   // Gene Features
   {

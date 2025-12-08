@@ -41,6 +41,9 @@ export { SearchOverlay } from './SearchOverlay';
 export { TropismOverlay } from './TropismOverlay';
 export { AAKeyOverlay } from './AAKeyOverlay';
 export { AALegend } from './AALegend';
+export { ComparisonOverlay } from './ComparisonOverlay';
+export { PackagingPressureOverlay } from './PackagingPressureOverlay';
+export { CGROverlay } from './CGROverlay';
 
 // Layer 2 Advanced Overlays
 export { KmerAnomalyOverlay } from './KmerAnomalyOverlay';

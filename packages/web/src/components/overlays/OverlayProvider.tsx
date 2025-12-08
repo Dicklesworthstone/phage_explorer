@@ -35,6 +35,7 @@ export type OverlayId =
   | 'crispr'
   | 'synteny'
   | 'tropism'
+  | 'cgr'
   | 'welcome'
   | 'collaboration'
   | 'tour';
@@ -195,10 +196,11 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
     setOverlayData,
   };
 
+  // React 19: Simplified context syntax (no .Provider needed)
   return (
-    <OverlayContext.Provider value={value}>
+    <OverlayContext value={value}>
       {children}
-    </OverlayContext.Provider>
+    </OverlayContext>
   );
 }
 

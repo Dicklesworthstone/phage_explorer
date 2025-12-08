@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useOptimistic, useRef, useState } from 'react';
 import { AppShell } from './components/layout/AppShell';
 import OverlayManager from './components/overlays/OverlayManager';
 import { useOverlay } from './components/overlays/OverlayProvider';
@@ -55,6 +55,13 @@ export default function App(): JSX.Element {
   const pendingSequence = usePendingSequence();
   const [sequencePreview, setSequencePreview] = useState<string>('');
   const enableBackgroundEffects = !reducedMotion && !highContrast;
+
+  // React 19: useOptimistic for instant visual feedback on phage selection
+  // Shows selection immediately while data loads in background
+  const [optimisticIndex, setOptimisticIndex] = useOptimistic(
+    currentPhageIndex,
+    (_current: number, next: number) => next
+  );
 
   useEffect(() => {
     const root = document.documentElement;
@@ -122,22 +129,28 @@ export default function App(): JSX.Element {
   const handleSelectPhage = useCallback(
     async (index: number) => {
       if (!repository) return;
+      // React 19: Optimistically update selection for instant UI feedback
+      setOptimisticIndex(index);
       await loadPhage(repository, index);
     },
-    [loadPhage, repository]
+    [loadPhage, repository, setOptimisticIndex]
   );
 
   const handleNextPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
     const nextIndex = (currentPhageIndex + 1) % phages.length;
+    // React 19: Optimistic update for keyboard navigation too
+    setOptimisticIndex(nextIndex);
     void loadPhage(repository, nextIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository]);
+  }, [currentPhageIndex, loadPhage, phages.length, repository, setOptimisticIndex]);
 
   const handlePrevPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
     const prevIndex = (currentPhageIndex - 1 + phages.length) % phages.length;
+    // React 19: Optimistic update for keyboard navigation too
+    setOptimisticIndex(prevIndex);
     void loadPhage(repository, prevIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository]);
+  }, [currentPhageIndex, loadPhage, phages.length, repository, setOptimisticIndex]);
 
   const headerSubtitle = useMemo(() => {
     if (error) return 'db: error';
@@ -176,8 +189,14 @@ export default function App(): JSX.Element {
     { key: '?', label: 'help' },
   ]), []);
 
+  // React 19: Dynamic document title
+  const documentTitle = currentPhage
+    ? `${currentPhage.name} - Phage Explorer`
+    : 'Phage Explorer';
+
   return (
     <>
+      <title>{documentTitle}</title>
       {loadingOverlayNeeded && (
         <DataLoadingOverlay
           progress={progress}
@@ -257,7 +276,8 @@ export default function App(): JSX.Element {
             </div>
             <div className="list">
               {phages.map((phage, idx) => {
-                const isActive = idx === currentPhageIndex;
+                // Use optimistic index for instant visual selection feedback
+                const isActive = idx === optimisticIndex;
                 return (
                   <button
                     key={phage.id}

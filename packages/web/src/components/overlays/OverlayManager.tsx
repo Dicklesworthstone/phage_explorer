@@ -14,6 +14,9 @@ import SimulationView from '../SimulationView';
 import { TropismOverlay } from './TropismOverlay';
 import { AAKeyOverlay } from './AAKeyOverlay';
 import { AALegend } from './AALegend';
+import { ComparisonOverlay } from './ComparisonOverlay';
+import { PackagingPressureOverlay } from './PackagingPressureOverlay';
+import { CGROverlay } from './CGROverlay';
 
 interface OverlayManagerProps {
   repository: PhageRepository | null;
@@ -29,6 +32,9 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <TropismOverlay repository={repository} phage={currentPhage} />
       <SimulationHub />
       <SimulationView />
+      <ComparisonOverlay repository={repository} />
+      <PackagingPressureOverlay />
+      <CGROverlay repository={repository} currentPhage={currentPhage} />
     </>
   );
 }

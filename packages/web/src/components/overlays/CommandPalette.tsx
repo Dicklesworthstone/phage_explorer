@@ -229,6 +229,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     { id: 'analysis:bendability', label: 'DNA Bendability', category: 'Analysis', shortcut: 'b', action: () => { close(); open('bendability'); }, minLevel: 'intermediate', contexts: ['has-phage', 'dna-mode'] },
     { id: 'analysis:promoter', label: 'Promoter/RBS Sites', category: 'Analysis', shortcut: 'p', action: () => { close(); open('promoter'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
     { id: 'analysis:repeat', label: 'Repeat Finder', category: 'Analysis', shortcut: 'r', action: () => { close(); open('repeats'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:cgr', label: 'Chaos Game Representation', category: 'Analysis', shortcut: 'Alt+Shift+C', action: () => { close(); open('cgr'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
 
     // Advanced analysis (power users)
     { id: 'analysis:kmer', label: 'K-mer Anomaly Detection', category: 'Advanced', shortcut: 'V', action: () => { close(); open('kmerAnomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
