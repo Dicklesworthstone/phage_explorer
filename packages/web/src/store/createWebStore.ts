@@ -74,14 +74,23 @@ export function createWebStore() {
     setTheme: (themeId: string) => void;
     setExperienceLevel: (level: ExperienceLevel) => void;
     setHelpDetail: (level: HelpDetailLevel) => void;
+    commandHistory: Array<{ label: string; at: number }>;
+    pushCommand: (label: string) => void;
+    clearHistory: () => void;
   }>()(
     persist(
       (set) => ({
         ...defaultPreferences,
+        commandHistory: [],
 
         setTheme: (themeId) => set({ currentTheme: getThemeById(themeId) }),
         setExperienceLevel: (level) => set({ experienceLevel: level }),
         setHelpDetail: (level) => set({ helpDetail: level }),
+        pushCommand: (label) => set((state) => {
+          const next = [{ label, at: Date.now() }, ...state.commandHistory].slice(0, 20);
+          return { commandHistory: next };
+        }),
+        clearHistory: () => set({ commandHistory: [] }),
       }),
       {
         name: 'phage-explorer-preferences',
@@ -94,6 +103,7 @@ export function createWebStore() {
           model3DQuality: state.model3DQuality,
           helpDetail: state.helpDetail,
           experienceLevel: state.experienceLevel,
+          // commandHistory intentionally not persisted
         }),
         migrate: migrateState,
         onRehydrateStorage: () => (state) => {

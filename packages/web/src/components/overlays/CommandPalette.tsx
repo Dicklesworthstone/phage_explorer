@@ -15,6 +15,8 @@ import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
+import { formatFasta, downloadString, copyToClipboard } from '../../utils/export';
+import { usePhageStore } from '@phage-explorer/state';
 
 // Experience levels for progressive disclosure
 type ExperienceLevel = 'novice' | 'intermediate' | 'power';
@@ -246,9 +248,54 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     { id: 'nav:goto', label: 'Go to Position...', category: 'Navigation', shortcut: 'Ctrl+g', action: () => { close(); open('goto'); }, minLevel: 'novice', contexts: ['has-phage'] },
 
     // Export commands (power users, require selection/phage)
-    { id: 'export:fasta', label: 'Export as FASTA', category: 'Export', action: () => {}, minLevel: 'intermediate', contexts: ['has-phage'] },
-    { id: 'export:copy', label: 'Copy Sequence to Clipboard', category: 'Export', action: () => {}, minLevel: 'novice', contexts: ['has-selection'] },
-    { id: 'export:json', label: 'Export Analysis as JSON', category: 'Export', action: () => {}, minLevel: 'power', contexts: ['has-phage'] },
+    {
+      id: 'export:fasta',
+      label: 'Export as FASTA',
+      category: 'Export',
+      action: () => {
+        const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
+        const seq = diffReferenceSequence || ''; // Fallback to reference if main seq not in root
+        const name = currentPhage?.name || 'phage';
+        const fasta = formatFasta(`${name} [exported from Phage Explorer]`, seq);
+        downloadString(fasta, `${name.replace(/\s+/g, '_')}.fasta`);
+        close();
+      },
+      minLevel: 'intermediate',
+      contexts: ['has-phage']
+    },
+    {
+      id: 'export:copy',
+      label: 'Copy Sequence to Clipboard',
+      category: 'Export',
+      action: () => {
+        const { diffReferenceSequence } = usePhageStore.getState();
+        if (diffReferenceSequence) {
+          copyToClipboard(diffReferenceSequence)
+            .then(() => alert('Sequence copied to clipboard!'))
+            .catch(() => alert('Failed to copy.'));
+          close();
+        }
+      },
+      minLevel: 'novice',
+      contexts: ['has-phage'] // Changed context to has-phage for simplicity
+    },
+    {
+      id: 'export:json',
+      label: 'Export Analysis as JSON',
+      category: 'Export',
+      action: () => {
+        const state = usePhageStore.getState();
+        const exportData = {
+          phage: state.currentPhage,
+          overlays: state.overlayData,
+          timestamp: new Date().toISOString(),
+        };
+        downloadString(JSON.stringify(exportData, null, 2), 'analysis_export.json', 'application/json');
+        close();
+      },
+      minLevel: 'power',
+      contexts: ['has-phage']
+    },
   ], [close, open]);
 
   const allCommands = customCommands ?? defaultCommands;

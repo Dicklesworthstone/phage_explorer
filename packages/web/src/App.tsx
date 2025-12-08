@@ -1,5 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { useTheme, getNucleotideClass, useHotkey, useKeyboardMode, usePendingSequence } from './hooks';
+import { useTheme, getNucleotideClass, useHotkey, useKeyboardMode, usePendingSequence, useReducedMotion } from './hooks';
 import { AppShell } from './components';
 import { HotkeyCategories } from './keyboard/types';
 import { OverlayProvider, OverlayManager, useOverlay } from './components/overlays';
@@ -67,7 +67,55 @@ const PhageExplorerContent: React.FC = () => {
     setLastAction(`Experience set to ${level}`);
   }, [setExperienceLevel]);
 
+  const handleUp = useCallback(() => {
+    setLastAction('Navigate Up');
+  }, []);
+
+  const handleDown = useCallback(() => {
+    setLastAction('Navigate Down');
+  }, []);
+
+  const handleEnter = useCallback(() => {
+    setLastAction('Enter / Select');
+  }, []);
+
+  const handleTab = useCallback(() => {
+    setLastAction('Tab Navigation');
+  }, []);
+
   // Theme hotkey
+  useHotkey({ key: 't' }, 'Cycle theme', handleThemeCycle, {
+    category: HotkeyCategories.THEMES,
+    modes: ['NORMAL'],
+  });
+
+  // Navigation hotkeys (Standard)
+  useHotkey({ key: 'ArrowUp' }, 'Navigate Up', handleUp, {
+    category: HotkeyCategories.NAVIGATION,
+    modes: ['NORMAL'],
+  });
+
+  useHotkey({ key: 'ArrowDown' }, 'Navigate Down', handleDown, {
+    category: HotkeyCategories.NAVIGATION,
+    modes: ['NORMAL'],
+  });
+
+  useHotkey({ key: 'Enter' }, 'Select Item', handleEnter, {
+    category: HotkeyCategories.GENERAL,
+    modes: ['NORMAL'],
+  });
+
+  useHotkey({ key: 'Tab' }, 'Next Focus', handleTab, {
+    category: HotkeyCategories.NAVIGATION,
+    modes: ['NORMAL'],
+  });
+
+  useHotkey({ key: 'Tab', modifiers: { shift: true } }, 'Previous Focus', handleTab, {
+    category: HotkeyCategories.NAVIGATION,
+    modes: ['NORMAL'],
+  });
+
+  // Help hotkey
   useHotkey({ key: 't' }, 'Cycle theme', handleThemeCycle, {
     category: HotkeyCategories.THEMES,
     modes: ['NORMAL'],
