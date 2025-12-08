@@ -62,8 +62,8 @@ export type OverlayId =
   | 'logo'
   | 'tropism'
   | 'cgr'
-  | 'nonB'
-  | 'anomaly';
+  | 'anomaly'
+  | 'non-b-dna';
 
 export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';

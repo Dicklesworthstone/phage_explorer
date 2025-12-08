@@ -20,6 +20,7 @@ export * from './phase-portraits';
 export * from './analysis/cgr';
 export * from './analysis/cgr-compare';
 export * from './analysis/anomaly';
+export * from './analysis/non-b-dna';
 export * from './analysis/dot-plot';
 export * from './bias-decomposition';
 

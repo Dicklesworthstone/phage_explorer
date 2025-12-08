@@ -25,6 +25,10 @@ import { RepeatOverlay } from './RepeatOverlay';
 import { PackagingPressureOverlay } from './PackagingPressureOverlay';
 import { TranscriptionFlowOverlay } from './TranscriptionFlowOverlay';
 import { PhasePortraitOverlay } from './PhasePortraitOverlay';
+import { NonBDNAOverlay } from './NonBDNAOverlay';
+import { CRISPROverlay } from './CRISPROverlay';
+import { SyntenyOverlay } from './SyntenyOverlay';
+import { TropismOverlay } from './TropismOverlay';
 import {
   computeGCskew,
   computeComplexity,
@@ -40,25 +44,10 @@ import type { KmerAnomalyOverlay as KmerOverlayType } from '../overlay-computati
 import { ModuleOverlay } from './ModuleOverlay';
 import { FoldQuickview } from './FoldQuickview';
 import { HGTOverlay } from './HGTOverlay';
-import { TropismOverlay } from './TropismOverlay';
-import { DotPlotOverlay } from './DotPlotOverlay';
-import { NonBDNAOverlay } from './NonBDNAOverlay';
-import { CRISPROverlay } from './CRISPROverlay';
-import { SyntenyOverlay } from './SyntenyOverlay';
-import { LogoOverlay } from './LogoOverlay';
-import { StructureConstraintOverlay } from './StructureConstraintOverlay';
+import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { analyzeHGTProvenance, analyzeTailFiberTropism } from '@phage-explorer/comparison';
 import type { FoldEmbedding, StructuralConstraintReport } from '@phage-explorer/core';
 import { analyzeStructuralConstraints } from '@phage-explorer/core';
-import { analyzeStructuralConstraints } from '@phage-explorer/core';
-import type { StructuralConstraintReport, FoldEmbedding } from '@phage-explorer/core';
-import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
-import type { FoldEmbedding } from '@phage-explorer/core';
-import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
-import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
-import { CRISPROverlay } from './CRISPROverlay';
-import { SyntenyOverlay } from './SyntenyOverlay';
-import { LogoOverlay } from './LogoOverlay';
 
 const ANALYSIS_MENU_ID: OverlayId = 'analysisMenu';
 const SIMULATION_MENU_ID: OverlayId = 'simulationHub';
@@ -78,13 +67,6 @@ const CRISPR_ID: OverlayId = 'crispr';
 const SYNTENY_ID: OverlayId = 'synteny';
 const TROPISM_ID: OverlayId = 'tropism';
 const NONB_ID: OverlayId = 'nonB';
-const DOTPLOT_ID: OverlayId = 'dotPlot';
-const STRUCTURE_ID: OverlayId = 'structureConstraints';
-const CGR_ID: OverlayId = 'cgr';
-const DOTPLOT_ID: OverlayId = 'dotPlot';
-const LOGO_ID: OverlayId = 'logo';
-const STRUCTURE_ID: OverlayId = 'structureConstraints';
-const LOGO_ID: OverlayId = 'logo';
 
 interface AppProps {
   repository: PhageRepository;
@@ -574,6 +556,9 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       cycleTheme();
     } else if (input === 'd' || input === 'D') {
       toggleDiff();
+    } else if (key.shift && (input === 'a' || input === 'A')) {
+      promote('power');
+      openOverlay(ANOMALY_ID);
     } else if (input === 'g' || input === 'G') {
       if (key.shift) {
         promote('intermediate');
@@ -995,6 +980,36 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         </Box>
       )}
 
+      {activeOverlay === 'cgr' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 80) / 2)}
+          marginTop={Math.floor((terminalRows - 36) / 2)}
+        >
+          <CGROverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'anomaly' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 80) / 2)}
+          marginTop={Math.floor((terminalRows - 30) / 2)}
+        >
+          <AnomalyOverlay sequence={sequence} />
+        </Box>
+      )}
+
+      {activeOverlay === 'non-b-dna' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 80) / 2)}
+          marginTop={Math.floor((terminalRows - 30) / 2)}
+        >
+          <NonBDNAView sequence={sequence} />
+        </Box>
+      )}
+
       {activeOverlay === CRISPR_ID && (
         <Box
           position="absolute"
@@ -1021,7 +1036,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginLeft={Math.floor((terminalCols - 84) / 2)}
           marginTop={Math.floor((terminalRows - 24) / 2)}
         >
-          <LogoOverlay />
+          <LogoOverlay sequence={sequence} />
         </Box>
       )}
 
