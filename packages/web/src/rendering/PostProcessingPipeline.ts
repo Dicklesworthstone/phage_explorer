@@ -133,6 +133,10 @@ export class PostProcessingPipeline {
     return shader;
   }
 
+  updateIntensity(intensity: number): void {
+    this.options.intensity = intensity;
+  }
+
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;

@@ -18,6 +18,8 @@ export interface UseSequenceGridOptions {
   diffEnabled?: boolean;
   scanlines?: boolean;
   glow?: boolean;
+  postProcess?: PostProcessPipeline;
+  reducedMotion?: boolean;
   onVisibleRangeChange?: (range: VisibleRange) => void;
 }
 
@@ -50,6 +52,8 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     diffEnabled = false,
     scanlines = true,
     glow = false,
+    postProcess,
+    reducedMotion = false,
     onVisibleRangeChange,
   } = options;
 
@@ -69,6 +73,8 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
       theme,
       scanlines,
       glow,
+      postProcess,
+      reducedMotion,
     });
 
     rendererRef.current = renderer;
@@ -97,7 +103,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
       renderer.dispose();
       rendererRef.current = null;
     };
-  }, [scanlines, glow]); // Only recreate on these changes
+  }, [scanlines, glow, postProcess, reducedMotion]); // Recreate when visual pipeline changes
 
   // Update theme
   useEffect(() => {
@@ -120,6 +126,16 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
       onVisibleRangeChange(visibleRange);
     }
   }, [visibleRange, onVisibleRangeChange]);
+
+  // Update reduced motion flag without reconstructing renderer
+  useEffect(() => {
+    rendererRef.current?.setReducedMotion(reducedMotion);
+  }, [reducedMotion]);
+
+  // Update post-process pipeline without reconstructing renderer
+  useEffect(() => {
+    rendererRef.current?.setPostProcess(postProcess);
+  }, [postProcess]);
 
   // Scroll methods
   const scrollToPosition = useCallback((position: number) => {

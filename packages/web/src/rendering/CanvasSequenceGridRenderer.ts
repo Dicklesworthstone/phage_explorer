@@ -9,6 +9,7 @@
 import type { Theme, ViewMode, ReadingFrame } from '@phage-explorer/core';
 import { GlyphAtlas } from './GlyphAtlas';
 import { VirtualScroller, type VisibleRange } from './VirtualScroller';
+import { PostProcessPipeline, type PostProcessOptions } from './PostProcessPipeline';
 
 export interface SequenceGridOptions {
   /** Canvas element to render to */
@@ -23,6 +24,10 @@ export interface SequenceGridOptions {
   scanlines?: boolean;
   /** Enable glow effect */
   glow?: boolean;
+  /** Optional post-processing pipeline */
+  postProcess?: PostProcessPipeline;
+  /** Reduced motion flag */
+  reducedMotion?: boolean;
 }
 
 export interface GridRenderState {
@@ -58,6 +63,8 @@ export class CanvasSequenceGridRenderer {
   private glow: boolean;
   private animationFrameId: number | null = null;
   private isRendering = false;
+  private postProcess?: PostProcessPipeline;
+  private reducedMotion: boolean;
 
   constructor(options: SequenceGridOptions) {
     this.canvas = options.canvas;
@@ -66,6 +73,8 @@ export class CanvasSequenceGridRenderer {
     this.cellHeight = options.cellHeight ?? DEFAULT_CELL_HEIGHT;
     this.scanlines = options.scanlines ?? true;
     this.glow = options.glow ?? false;
+    this.postProcess = options.postProcess;
+    this.reducedMotion = options.reducedMotion ?? false;
 
     // Get device pixel ratio for high-DPI
     this.dpr = window.devicePixelRatio || 1;
@@ -110,7 +119,10 @@ export class CanvasSequenceGridRenderer {
     this.canvas.width = width * this.dpr;
     this.canvas.height = height * this.dpr;
 
-    // Scale context for DPI
+    // Reset any existing transform then scale for DPI
+    if (typeof this.ctx.setTransform === 'function') {
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    }
     this.ctx.scale(this.dpr, this.dpr);
 
     // Create/resize back buffer
@@ -136,6 +148,9 @@ export class CanvasSequenceGridRenderer {
       const ctx = this.backBuffer.getContext('2d', { alpha: false });
       if (ctx) {
         this.backCtx = ctx;
+        if (typeof ctx.setTransform === 'function') {
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
         ctx.scale(this.dpr, this.dpr);
       }
     }
@@ -189,6 +204,24 @@ export class CanvasSequenceGridRenderer {
   }
 
   /**
+   * Update reduced-motion preference
+   */
+  setReducedMotion(reduced: boolean): void {
+    this.reducedMotion = reduced;
+    this.needsFullRedraw = true;
+    this.scheduleRender();
+  }
+
+  /**
+   * Update post-processing pipeline
+   */
+  setPostProcess(pipeline?: PostProcessPipeline): void {
+    this.postProcess = pipeline;
+    this.needsFullRedraw = true;
+    this.scheduleRender();
+  }
+
+  /**
    * Schedule a render on next animation frame
    */
   scheduleRender(): void {
@@ -226,8 +259,13 @@ export class CanvasSequenceGridRenderer {
     this.renderVisibleRange(ctx, range, layout, sequence, viewMode, diffSequence, diffEnabled);
 
     // Apply scanline effect
-    if (this.scanlines) {
+    if (this.scanlines && !this.reducedMotion) {
       this.renderScanlines(ctx);
+    }
+
+    // Post-processing hook (no-op if not provided)
+    if (this.postProcess && !this.reducedMotion) {
+      this.postProcess.process(this.canvas);
     }
 
     // Copy back buffer to main canvas

@@ -6,3 +6,4 @@ export { GlyphAtlas, type GlyphAtlasOptions, type GlyphInfo, type GlyphMetrics }
 export { VirtualScroller, type VirtualScrollerOptions, type VisibleRange, type ScrollState } from './VirtualScroller';
 export { CanvasSequenceGridRenderer, type SequenceGridOptions, type GridRenderState } from './CanvasSequenceGridRenderer';
 export { GeneMapRenderer, type GeneMapOptions, type GeneMapState } from './GeneMapRenderer';
+export { PostProcessPipeline, type PostProcessOptions } from './PostProcessPipeline';
