@@ -6,6 +6,7 @@ import {
   computeDinucleotideFrequencies,
   decomposeBias,
   DINUCLEOTIDES,
+  CODONS,
   computeCodonFrequencies,
 } from '@phage-explorer/core';
 
@@ -228,7 +229,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
             <Text color={colors.textDim}>Top loadings (PC1)</Text>
             <Text color={colors.text}>
               {decomposition.components[0].loadings
-                .map((v, i) => ({ k: DINUCLEOTIDES[i], v: v }))
+                .map((v, i) => ({ k: mode === 'codon' ? CODONS[i] : DINUCLEOTIDES[i], v: v }))
                 .sort((a, b) => Math.abs(b.v) - Math.abs(a.v))
                 .slice(0, 6)
                 .map(({ k, v }) => `${k}:${v.toFixed(2)}`)

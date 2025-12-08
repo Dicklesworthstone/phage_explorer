@@ -27,6 +27,12 @@ export interface BiasDecomposition {
   means: number[];
 }
 
+const BASES = ['A', 'C', 'G', 'T'];
+const CODONS: string[] = [];
+for (const a of BASES) for (const b of BASES) for (const c of BASES) CODONS.push(a + b + c);
+
+export { CODONS };
+
 // Codon frequency vector (64 codons) for future extension
 export function computeCodonFrequencies(seq: string): number[] {
   const upper = seq.toUpperCase();
@@ -38,10 +44,7 @@ export function computeCodonFrequencies(seq: string): number[] {
     counts[codon] = (counts[codon] ?? 0) + 1;
     total++;
   }
-  const allCodons: string[] = [];
-  const bases = ['A', 'C', 'G', 'T'];
-  for (const a of bases) for (const b of bases) for (const c of bases) allCodons.push(a + b + c);
-  return allCodons.map(c => (counts[c] ?? 0) / Math.max(1, total));
+  return CODONS.map(c => (counts[c] ?? 0) / Math.max(1, total));
 }
 
 // Compute 16-element dinucleotide frequency vector (normalized)
@@ -145,12 +148,14 @@ export function decomposeBias(
   const { vec: pc2, val: val2 } = powerIteration(covDeflated);
 
   const coords = project2(centered, pc1, pc2);
-  const totalVar = Math.max(1e-9, Math.abs(val1) + Math.abs(val2));
+  // Total variance = trace of covariance matrix (sum of eigenvalues)
+  const totalVar = cov.reduce((sum, row, i) => sum + row[i], 0);
+  const safeTotalVar = Math.max(1e-9, totalVar);
 
   return {
     components: [
-      { id: 1, loadings: pc1, explained: Math.abs(val1) / totalVar },
-      { id: 2, loadings: pc2, explained: Math.abs(val2) / totalVar },
+      { id: 1, loadings: pc1, explained: Math.abs(val1) / safeTotalVar },
+      { id: 2, loadings: pc2, explained: Math.abs(val2) / safeTotalVar },
     ],
     projections: rows.map((r, i) => ({ name: r.name, coords: coords[i] })),
     means,
