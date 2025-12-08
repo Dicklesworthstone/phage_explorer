@@ -1,5 +1,5 @@
 import type { GeneInfo, AminoAcid } from './types';
-import { translateSequence } from './codons';
+import { translateSequence, reverseComplement } from './codons';
 
 // Lightweight structural fragility heuristics for capsid/tail proteins.
 // Intent: provide fast, no-dependency scoring to highlight fragile regions and
@@ -41,16 +41,6 @@ const VOLUME: Record<AminoAcid, number> = {
 function normalize(value: number, min: number, max: number): number {
   if (max === min) return 0.5;
   return Math.min(1, Math.max(0, (value - min) / (max - min)));
-}
-
-function reverseComplement(seq: string): string {
-  const map: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C', a: 't', t: 'a', c: 'g', g: 'c' };
-  let out = '';
-  for (let i = seq.length - 1; i >= 0; i--) {
-    const ch = seq[i];
-    out += map[ch] ?? map[ch.toUpperCase()] ?? 'N';
-  }
-  return out;
 }
 
 function classifyRole(gene: GeneInfo): ProteinConstraint['role'] {

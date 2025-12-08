@@ -1,4 +1,6 @@
 
+import { reverseComplement } from './codons';
+
 export interface TranscriptionWindowStat {
   start: number;
   end: number;
@@ -44,10 +46,10 @@ export interface RegulatoryConstellation {
   edges: RegulatoryEdge[];
 }
 
-function scoreExact(seq: string, motif: string): number {
+function scoreExactAt(seq: string, motif: string, offset: number): number {
   let score = 0;
   for (let i = 0; i < motif.length; i++) {
-    if (seq[i] === motif[i]) score += 1;
+    if (seq[offset + i] === motif[i]) score += 1;
   }
   return score / motif.length;
 }
@@ -56,14 +58,11 @@ export function detectPromoters(seq: string): PromoterHit[] {
   const upper = seq.toUpperCase();
   const hits: PromoterHit[] = [];
   for (let i = 0; i <= upper.length - 6; i++) {
-    const window6 = upper.slice(i, i + 6);
-    const window7 = upper.slice(i, i + 7);
-
-    const score70_35 = scoreExact(window6, SIGMA70_MINUS35);
-    const score70_10 = scoreExact(window6, SIGMA70_MINUS10);
-    const score32_35 = scoreExact(window6, SIGMA32_MINUS35);
-    const score32_10 = scoreExact(window6, SIGMA32_MINUS10);
-    const score54 = scoreExact(window7, SIGMA54_CORE);
+    const score70_35 = scoreExactAt(upper, SIGMA70_MINUS35, i);
+    const score70_10 = scoreExactAt(upper, SIGMA70_MINUS10, i);
+    const score32_35 = scoreExactAt(upper, SIGMA32_MINUS35, i);
+    const score32_10 = scoreExactAt(upper, SIGMA32_MINUS10, i);
+    const score54 = scoreExactAt(upper, SIGMA54_CORE, i);
 
     if (score70_35 > 0.75 || score70_10 > 0.75) {
       hits.push({ pos: i, strength: Math.max(score70_35, score70_10), motif: 'σ70' });
@@ -92,18 +91,11 @@ export function detectTerminators(seq: string): TerminatorHit[] {
   const upper = seq.toUpperCase();
   const hits: TerminatorHit[] = [];
 
-  const revComp = (s: string) =>
-    s
-      .split('')
-      .reverse()
-      .map(c => (c === 'A' ? 'T' : c === 'T' ? 'A' : c === 'C' ? 'G' : c === 'G' ? 'C' : c))
-      .join('');
-
-  for (let i = 0; i <= upper.length - 12; i++) {
+  for (let i = 0; i <= upper.length - 14; i++) {
     const stem = upper.slice(i, i + 6);
     const loop = upper.slice(i + 6, i + 10);
     const tail = upper.slice(i + 10, i + 14);
-    const isStem = stem === revComp(stem);
+    const isStem = stem === reverseComplement(stem);
     const polyU = /^T{2,4}$/.test(tail);
     if (isStem && polyU) {
       const gcContent = stem.split('').filter(c => c === 'G' || c === 'C').length / stem.length;
