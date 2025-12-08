@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import { analyzeNonBStructures } from '@phage-explorer/core';
+import { analyzeNonBDNA, type NonBStructure } from '@phage-explorer/core';
 
 interface NonBDNAOverlayProps {
   sequence: string;
@@ -12,24 +12,23 @@ export function NonBDNAOverlay({ sequence }: NonBDNAOverlayProps): React.ReactEl
   const closeOverlay = usePhageStore(s => s.closeOverlay);
   const colors = theme.colors;
 
-  const analysis = useMemo(() => {
+  const analysis = useMemo<NonBStructure[] | null>(() => {
     if (!sequence) return null;
-    return analyzeNonBStructures(sequence);
+    return analyzeNonBDNA(sequence);
   }, [sequence]);
 
-  useInput((input, key) => {
-    if (key.escape || input === 'b' || input === 'B') { // 'B' might conflict with Bendability? 
-      // Let's use 'N' or check conflict. 'B' is Bendability.
-      // Maybe 'Z'? But Z is fullscreen.
-      // Let's assume explicit close via Esc or overlay toggle logic handles it.
-      // I'll use Esc.
-      closeOverlay('nonB'); 
+  useInput((_, key) => {
+    // Esc closes; avoid letter shortcuts to prevent collisions with other overlays
+    if (key.escape) {
+      closeOverlay('non-b-dna');
     }
   });
 
   if (!analysis) return <Text>Analyzing DNA structure...</Text>;
 
-  const { structures, g4Count, zDnaCount } = analysis;
+  const structures = analysis;
+  const g4Count = structures.filter(s => s.type === 'G4').length;
+  const zDnaCount = structures.filter(s => s.type === 'Z-DNA').length;
   const topStructures = structures.slice(0, 6);
 
   return (
@@ -56,7 +55,7 @@ export function NonBDNAOverlay({ sequence }: NonBDNAOverlayProps): React.ReactEl
         {topStructures.length === 0 ? (
           <Text color={colors.textDim}>No significant non-B structures found.</Text>
         ) : (
-          topStructures.map((s, i) => (
+          topStructures.map((s: NonBStructure, i: number) => (
             <Box key={i} justifyContent="space-between">
               <Text color={s.type === 'G4' ? colors.warning : colors.info}>
                 {s.type} ({s.strand})

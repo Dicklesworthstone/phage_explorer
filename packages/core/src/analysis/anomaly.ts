@@ -73,7 +73,7 @@ function calculateCompressionRatio(sequence: string): number {
   try {
     const compressed = deflate(sequence);
     return sequence.length / compressed.length;
-  } catch (e) {
+  } catch {
     return 1;
   }
 }
@@ -88,13 +88,18 @@ export function scanForAnomalies(
   k = 4
 ): AnomalyScanResult {
   const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
+  if (seq.length < windowSize || windowSize <= 0 || stepSize <= 0) {
+    return {
+      windows: [],
+      globalKmerFreq: new Map(),
+      thresholds: { kl: 0, compression: 0 },
+    };
+  }
   
   // 1. Compute global background model
   const globalFreq = getKmerFrequencies(seq, k);
 
   const windows: AnomalyResult[] = [];
-  let sumKL = 0;
-  let sumComp = 0;
 
   // 2. Sliding window scan
   for (let i = 0; i <= seq.length - windowSize; i += stepSize) {
@@ -107,9 +112,6 @@ export function scanForAnomalies(
     // Compression Ratio
     const comp = calculateCompressionRatio(windowSeq);
 
-    sumKL += kl;
-    sumComp += comp;
-
     windows.push({
       position: i,
       klDivergence: kl,
@@ -118,24 +120,14 @@ export function scanForAnomalies(
     });
   }
 
-  // 3. Determine thresholds (e.g., Mean + 2*SD)
-  const n = windows.length;
-  const meanKL = sumKL / n;
-  const meanComp = sumComp / n;
+  // 3. Determine thresholds (95th percentile)
+  const klValues = windows.map(w => w.klDivergence).sort((a, b) => a - b);
+  const compValues = windows.map(w => w.compressionRatio).sort((a, b) => a - b);
   
-  let varKL = 0;
-  let varComp = 0;
+  const p95Index = Math.floor(windows.length * 0.95);
   
-  for (const w of windows) {
-    varKL += Math.pow(w.klDivergence - meanKL, 2);
-    varComp += Math.pow(w.compressionRatio - meanComp, 2);
-  }
-  
-  const sdKL = Math.sqrt(varKL / n);
-  const sdComp = Math.sqrt(varComp / n);
-
-  const thresholdKL = meanKL + 2 * sdKL;
-  const thresholdComp = meanComp + 2 * sdComp; // Very compressible = high ratio
+  const thresholdKL = klValues[p95Index] || 0;
+  const thresholdComp = compValues[p95Index] || 0;
 
   // 4. Classify anomalies
   for (const w of windows) {

@@ -45,20 +45,30 @@ export interface DotPlotConfig {
 }
 
 export function computeDotPlot(sequence: string, config: DotPlotConfig = {}): DotPlotResult {
+  if (sequence.length === 0) {
+    return { grid: [], bins: 0, window: 0 };
+  }
+
   const bins = config.bins ?? 120;
-  const window = config.window ?? Math.max(20, Math.floor(sequence.length / bins));
-  const len = sequence.length;
-  const starts = Array.from({ length: bins }, (_, i) => Math.min(len - window, Math.floor((i / bins) * len)));
+  const seq = sequence.toUpperCase();
+  const len = seq.length;
+  // Choose window conservatively: at least 1bp, at most full length.
+  const window = Math.max(1, Math.min(len, config.window ?? Math.max(20, Math.floor(len / bins) || len)));
+  const starts = Array.from({ length: bins }, (_, i) => {
+    const pos = Math.floor((i / bins) * len);
+    const clamped = Math.max(0, Math.min(len - window, pos));
+    return clamped;
+  });
 
   const grid: DotCell[][] = Array.from({ length: bins }, () =>
     Array.from({ length: bins }, () => ({ direct: 0, inverted: 0 }))
   );
 
   for (let i = 0; i < bins; i++) {
-    const a = sequence.slice(starts[i], starts[i] + window);
+    const a = seq.slice(starts[i], starts[i] + window);
     const aRc = revComp(a);
     for (let j = 0; j < bins; j++) {
-      const b = sequence.slice(starts[j], starts[j] + window);
+      const b = seq.slice(starts[j], starts[j] + window);
       const dir = identity(a, b);
       const inv = identity(aRc, b);
       grid[i][j] = { direct: dir, inverted: inv };

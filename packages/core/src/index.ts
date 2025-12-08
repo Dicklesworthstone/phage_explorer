@@ -20,7 +20,9 @@ export * from './phase-portraits';
 export * from './analysis/cgr';
 export * from './analysis/cgr-compare';
 export * from './analysis/anomaly';
-export * from './analysis/non-b-dna';
+export * from './analysis/hilbert';
+export * from './data/restriction-enzymes';
+export * from './analysis/restriction-digest';
 export * from './analysis/dot-plot';
 export * from './bias-decomposition';
 
@@ -47,3 +49,6 @@ export * from './selection-pressure';
 
 // Sequence Logo analysis
 export * from './analysis/sequence-logo';
+
+// Virion stability estimation
+export * from './analysis/virion-stability';

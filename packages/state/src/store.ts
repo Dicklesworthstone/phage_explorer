@@ -27,9 +27,10 @@ type OverlayData = Partial<Record<
   | 'hgt'
   | 'tropism'
   | 'structureConstraints'
+  | 'anomaly'
   | 'dotPlot'
   | 'cgr'
-  | 'nonB',
+  | 'non-b-dna',
   unknown>>;
 
 // Overlay states
@@ -57,13 +58,16 @@ export type OverlayId =
   | 'phasePortrait'
   | 'biasDecomposition'
   | 'crispr'
+  | 'dotPlot'
+  | 'logo'
   | 'structureConstraints'
   | 'synteny'
-  | 'logo'
   | 'tropism'
   | 'cgr'
   | 'anomaly'
-  | 'non-b-dna';
+  | 'non-b-dna'
+  | 'hilbert'
+  | 'gel';
 
 export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';

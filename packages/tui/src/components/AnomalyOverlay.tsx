@@ -82,7 +82,7 @@ export function AnomalyOverlay({ sequence }: { sequence: string }): React.ReactE
       </Box>
       
       <Box marginTop={1} borderStyle="single" borderColor={colors.border}>
-        <Text color={colors.textDim} fontSize={10}>
+        <Text color={colors.textDim}>
           KL Threshold: {thresholds.kl.toFixed(2)} | Comp Ratio Threshold: {thresholds.compression.toFixed(2)}
         </Text>
       </Box>

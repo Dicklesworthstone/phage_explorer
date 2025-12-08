@@ -1,176 +1,231 @@
+/**
+ * Non-B DNA Structure Detection
+ *
+ * Detects G-quadruplexes (G4) using G4Hunter and Z-DNA using dinucleotide propensity.
+ */
+
 export interface NonBStructure {
-  type: 'G4' | 'Z-DNA' | 'Cruciform' | 'Triplex';
+  type: 'G4' | 'Z-DNA';
   start: number;
   end: number;
   strand: '+' | '-' | 'both';
-  score: number; // 0-10 scale usually, or specific score
+  score: number;
   sequence: string;
-  details?: string; // e.g. "G3L1-7" for G4
 }
 
-export interface NonBStructureReport {
-  structures: NonBStructure[];
-  g4Count: number;
-  zDnaCount: number;
-  density: number; // structures per kb
+/**
+ * G4Hunter Algorithm
+ * Score = sum(G_contribution - C_contribution) / window_size
+ * G-runs contribute +1 to +4 based on length
+ * C-runs contribute -1 to -4
+ */
+function getG4Score(base: string, runLength: number): number {
+  const score = Math.min(4, runLength); // Cap at 4
+  return base === 'G' ? score : -score;
 }
 
-// Z-DNA dinucleotide propensity (approximate from literature)
-const Z_PROPENSITY: Record<string, number> = {
-  'CG': 1.0, 'GC': 0.8,
-  'CA': 0.5, 'TG': 0.5, 'AC': 0.5, 'GT': 0.5,
-  'AT': -0.1, 'TA': -0.1,
-  'AA': -0.5, 'TT': -0.5, 'GG': -0.5, 'CC': -0.5,
-  'GA': -0.2, 'TC': -0.2, 'AG': -0.2, 'CT': -0.2,
-};
-
-function calculateG4Hunter(seq: string, window: number = 25, threshold: number = 1.2): NonBStructure[] {
+export function detectG4(sequence: string, windowSize = 25, threshold = 1.5): NonBStructure[] {
+  const seq = sequence.toUpperCase();
   const structures: NonBStructure[] = [];
-  const upper = seq.toUpperCase();
   
-  // Simple G4Hunter implementation
-  // Score is average of scores in window
-  // G scores: G=1, GG=2, GGG=3, GGGG+=4
-  // C scores: C=-1, CC=-2, CCC=-3, CCCC+=-4 (for antisense)
+  // Precompute scores for each position based on run context
+  const scores = new Float32Array(seq.length);
   
-  const scores = new Float32Array(upper.length);
+  let currentRun = 0;
+  let currentBase = '';
   
-  for (let i = 0; i < upper.length; i++) {
-    let score = 0;
-    if (upper[i] === 'G') {
-      let run = 1;
-      while (i + run < upper.length && upper[i + run] === 'G' && run < 4) run++;
-      score = run; // Assign score to first G, or distribute?
-      // G4Hunter usually sums scores. Let's assign to each base for sliding window.
-    } else if (upper[i] === 'C') {
-      let run = 1;
-      while (i + run < upper.length && upper[i + run] === 'C' && run < 4) run++;
-      score = -run;
+  // First pass: identify runs
+  for (let i = 0; i < seq.length; i++) {
+    const base = seq[i];
+    if (base === 'G' || base === 'C') {
+      if (base === currentBase) {
+        currentRun++;
+      } else {
+        // Fill previous run
+        if (currentBase) {
+          const score = getG4Score(currentBase, currentRun);
+          for (let j = 1; j <= currentRun; j++) {
+            scores[i - j] = score;
+          }
+        }
+        currentBase = base;
+        currentRun = 1;
+      }
+    } else {
+      if (currentBase) {
+        const score = getG4Score(currentBase, currentRun);
+        for (let j = 1; j <= currentRun; j++) {
+          scores[i - j] = score;
+        }
+      }
+      currentBase = '';
+      currentRun = 0;
+      scores[i] = 0;
     }
-    scores[i] = score;
   }
   
-  // Refined scoring: calculate runs properly
-  // Iterate again, assigning run values to all positions in run
-  let i = 0;
-  while (i < upper.length) {
-    if (upper[i] === 'G') {
-      let run = 0;
-      let j = i;
-      while (j < upper.length && upper[j] === 'G') { run++; j++; }
-      const val = Math.min(4, run); // Cap at 4
-      for (let k = i; k < j; k++) scores[k] = val;
-      i = j;
-    } else if (upper[i] === 'C') {
-      let run = 0;
-      let j = i;
-      while (j < upper.length && upper[j] === 'C') { run++; j++; }
-      const val = -Math.min(4, run);
-      for (let k = i; k < j; k++) scores[k] = val;
-      i = j;
-    } else {
-      scores[i] = 0;
-      i++;
+  // Fill last run
+  if (currentBase) {
+    const score = getG4Score(currentBase, currentRun);
+    for (let j = 1; j <= currentRun; j++) {
+      scores[seq.length - j] = score;
     }
   }
 
-  // Sliding window average
-  for (let i = 0; i <= upper.length - window; i++) {
-    let sum = 0;
-    for (let j = 0; j < window; j++) sum += scores[i + j];
-    const avg = sum / window;
+  // Sliding window
+  let windowSum = 0;
+  // Initialize first window
+  for (let i = 0; i < Math.min(windowSize, seq.length); i++) {
+    windowSum += scores[i];
+  }
+
+  let inRegion = false;
+  let regionStart = 0;
+  let maxScore = 0;
+
+  for (let i = 0; i <= seq.length - windowSize; i++) {
+    const avgScore = windowSum / windowSize;
+    const absScore = Math.abs(avgScore);
     
-    if (Math.abs(avg) >= threshold) {
-      // Found a candidate
-      // Determine strand and extend to find peak/boundaries
-      // Simplified: just record window
+    if (absScore >= threshold) {
+      if (!inRegion) {
+        inRegion = true;
+        regionStart = i;
+        maxScore = absScore;
+      } else {
+        maxScore = Math.max(maxScore, absScore);
+      }
+    } else if (inRegion) {
+      inRegion = false;
+      const regionEnd = i + windowSize - 1;
+      // Determine strand based on sign of sum
+      // Positive sum -> G-rich -> + strand G4
+      // Negative sum -> C-rich -> - strand G4 (G-rich on complement)
+      const regionSum = scores.slice(regionStart, i + windowSize).reduce((a, b) => a + b, 0);
+      
       structures.push({
         type: 'G4',
-        start: i,
-        end: i + window,
-        strand: avg > 0 ? '+' : '-',
-        score: Math.abs(avg),
-        sequence: upper.slice(i, i + window),
+        start: regionStart,
+        end: regionEnd,
+        strand: regionSum > 0 ? '+' : '-',
+        score: maxScore,
+        sequence: seq.slice(regionStart, regionEnd + 1),
       });
-      // Skip ahead to avoid overlaps? Or merge later.
-      i += 5; 
+    }
+
+    // Slide window
+    if (i < seq.length - windowSize) {
+      windowSum -= scores[i];
+      windowSum += scores[i + windowSize];
     }
   }
-  
-  return mergeStructures(structures);
+
+  if (inRegion) {
+    const regionEnd = seq.length - 1;
+    let regionSum = 0;
+    for (let i = regionStart; i <= regionEnd; i++) {
+      regionSum += scores[i];
+    }
+    structures.push({
+      type: 'G4',
+      start: regionStart,
+      end: regionEnd,
+      strand: regionSum > 0 ? '+' : '-',
+      score: maxScore,
+      sequence: seq.slice(regionStart, regionEnd + 1),
+    });
+  }
+
+  return structures;
 }
 
-function calculateZDNA(seq: string, window: number = 12, threshold: number = 0.4): NonBStructure[] {
+/**
+ * Z-DNA Detection
+ * Based on dinucleotide Z-scores
+ * CG = 1.0, CA/TG = 0.5, GC = 0.4, others low/negative
+ */
+const Z_SCORES: Record<string, number> = {
+  'CG': 1.0,
+  'CA': 0.5, 'TG': 0.5, 'AC': 0.5, 'GT': 0.5, // TG/AC are CA/GT on complement?
+  // Actually Z-DNA favors alternating purine-pyrimidine
+  // (GC)n is good but (CG)n is best.
+  // Let's use simplified propensity.
+  'GC': 0.4,
+  'AT': -0.1, 'TA': -0.1,
+  'AA': -0.5, 'TT': -0.5, 'GG': -0.5, 'CC': -0.5, // Homo-dinucleotides bad for Z
+};
+
+export function detectZDNA(sequence: string, windowSize = 12, threshold = 0.5): NonBStructure[] {
+  const seq = sequence.toUpperCase();
   const structures: NonBStructure[] = [];
-  const upper = seq.toUpperCase();
-  
-  for (let i = 0; i <= upper.length - window; i += 2) {
-    let scoreSum = 0;
-    for (let j = 0; j < window; j += 2) {
-      const dinuc = upper.slice(i + j, i + j + 2);
-      scoreSum += Z_PROPENSITY[dinuc] ?? 0;
-    }
-    const avg = scoreSum / (window / 2); // Average per dinucleotide
+  const zPropensity = new Float32Array(seq.length);
+
+  for (let i = 0; i < seq.length - 1; i++) {
+    const dinuc = seq.slice(i, i + 2);
+    zPropensity[i] = Z_SCORES[dinuc] ?? 0;
+  }
+
+  // Sliding window
+  let windowSum = 0;
+  for (let i = 0; i < Math.min(windowSize, seq.length); i++) {
+    windowSum += zPropensity[i];
+  }
+
+  let inRegion = false;
+  let regionStart = 0;
+  let maxScore = 0;
+
+  for (let i = 0; i <= seq.length - windowSize; i++) {
+    const avgScore = windowSum / windowSize;
     
-    if (avg >= threshold) {
+    if (avgScore >= threshold) {
+      if (!inRegion) {
+        inRegion = true;
+        regionStart = i;
+        maxScore = avgScore;
+      } else {
+        maxScore = Math.max(maxScore, avgScore);
+      }
+    } else if (inRegion) {
+      inRegion = false;
+      const regionEnd = i + windowSize;
       structures.push({
         type: 'Z-DNA',
-        start: i,
-        end: i + window,
+        start: regionStart,
+        end: regionEnd,
         strand: 'both', // Z-DNA involves both strands
-        score: avg,
-        sequence: upper.slice(i, i + window),
+        score: maxScore,
+        sequence: seq.slice(regionStart, regionEnd),
       });
-      i += 2;
+    }
+
+    // Slide window
+    if (i < seq.length - windowSize) {
+      windowSum -= zPropensity[i];
+      windowSum += zPropensity[i + windowSize];
     }
   }
-  
-  return mergeStructures(structures);
-}
 
-function mergeStructures(raw: NonBStructure[]): NonBStructure[] {
-  if (raw.length === 0) return [];
-  const sorted = raw.sort((a, b) => a.start - b.start);
-  const merged: NonBStructure[] = [];
-  
-  let current = sorted[0];
-  
-  for (let i = 1; i < sorted.length; i++) {
-    const next = sorted[i];
-    // Overlap or adjacent (within 5bp)
-    if (next.start <= current.end + 5 && next.type === current.type && next.strand === current.strand) {
-      // Merge
-      const newEnd = Math.max(current.end, next.end);
-      const len1 = current.end - current.start;
-      const len2 = next.end - next.start;
-      // Weighted score average
-      const newScore = (current.score * len1 + next.score * len2) / (len1 + len2);
-      
-      current = {
-        ...current,
-        end: newEnd,
-        score: newScore,
-        sequence: current.sequence + next.sequence.slice(current.end - next.start), // Rough concat
-      };
-    } else {
-      merged.push(current);
-      current = next;
-    }
+  if (inRegion) {
+    const regionEnd = seq.length - 1;
+    structures.push({
+      type: 'Z-DNA',
+      start: regionStart,
+      end: regionEnd,
+      strand: 'both',
+      score: maxScore,
+      sequence: seq.slice(regionStart, regionEnd + 1),
+    });
   }
-  merged.push(current);
-  return merged;
+
+  return structures;
 }
 
-export function analyzeNonBStructures(sequence: string): NonBStructureReport {
-  const g4 = calculateG4Hunter(sequence);
-  const zDna = calculateZDNA(sequence);
-  
-  const all = [...g4, ...zDna].sort((a, b) => a.start - b.start);
-  
-  return {
-    structures: all,
-    g4Count: g4.length,
-    zDnaCount: zDna.length,
-    density: all.length / (sequence.length / 1000),
-  };
+/**
+ * Run full non-B DNA analysis
+ */
+export function analyzeNonBDNA(sequence: string): NonBStructure[] {
+  const g4 = detectG4(sequence);
+  const zDna = detectZDNA(sequence);
+  return [...g4, ...zDna].sort((a, b) => a.start - b.start);
 }

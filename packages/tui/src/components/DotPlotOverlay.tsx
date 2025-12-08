@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import { computeDotPlot } from '@phage-explorer/core';
@@ -51,21 +51,86 @@ function toBraille(grid: { direct: boolean; inverted: boolean }[][], directColor
 export function DotPlotOverlay({ sequence, threshold = 0.8, bins = 120 }: DotPlotOverlayProps): React.ReactElement {
   const colors = usePhageStore(s => s.currentTheme.colors);
   const closeOverlay = usePhageStore(s => s.closeOverlay);
+  const [currentThreshold, setCurrentThreshold] = useState(threshold);
+  const [currentBins, setCurrentBins] = useState(bins);
+  const [manualWindow, setManualWindow] = useState<number | null>(null);
+  const [showDirect, setShowDirect] = useState(true);
+  const [showInverted, setShowInverted] = useState(true);
+
+  const result = useMemo(
+    () => computeDotPlot(sequence, { bins: currentBins, window: manualWindow ?? undefined }),
+    [sequence, currentBins, manualWindow]
+  );
+  const effectiveWindow = manualWindow ?? result.window;
+
   useInput((input, key) => {
     if (key.escape) {
       closeOverlay('dotPlot');
     }
+
+    // Threshold controls
+    if (input === '+' || input === '=') {
+      setCurrentThreshold(t => Math.min(0.99, +(t + 0.05).toFixed(2)));
+    } else if (input === '-' || input === '_') {
+      setCurrentThreshold(t => Math.max(0.5, +(t - 0.05).toFixed(2)));
+    }
+
+    // Resolution controls
+    if (input === '[') {
+      setCurrentBins(b => Math.max(40, b - 10));
+    } else if (input === ']') {
+      setCurrentBins(b => Math.min(200, b + 10));
+    }
+
+    // Window size controls (25% steps)
+    if (input === 'w') {
+      setManualWindow(w => {
+        const current = w ?? result.window;
+        return Math.max(5, Math.round(current / 1.25));
+      });
+    } else if (input === 'W') {
+      setManualWindow(w => {
+        const current = w ?? result.window;
+        return Math.min(sequence.length, Math.round(current * 1.25));
+      });
+    }
+
+    if (input === 'd' || input === 'D') {
+      setShowDirect(v => !v);
+    } else if (input === 'i' || input === 'I') {
+      setShowInverted(v => !v);
+    }
   });
 
+  if (!result.grid.length) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} padding={1}>
+        <Text color={colors.textDim}>No sequence loaded for dot plot.</Text>
+        <Text color={colors.textDim}>Esc to close.</Text>
+      </Box>
+    );
+  }
+
   const grid = useMemo(() => {
-    const raw = computeDotPlot(sequence, { bins });
-    return raw.grid.map(row =>
+    return result.grid.map(row =>
       row.map(cell => ({
-        direct: cell.direct >= threshold,
-        inverted: cell.inverted >= threshold,
+        direct: showDirect && cell.direct >= currentThreshold,
+        inverted: showInverted && cell.inverted >= currentThreshold,
       }))
     );
-  }, [sequence, bins, threshold]);
+  }, [result.grid, currentThreshold, showDirect, showInverted]);
+
+  const { directCount, invertedCount } = useMemo(() => {
+    let d = 0;
+    let inv = 0;
+    for (const row of grid) {
+      for (const cell of row) {
+        if (cell.direct) d++;
+        if (cell.inverted) inv++;
+      }
+    }
+    return { directCount: d, invertedCount: inv };
+  }, [grid]);
 
   const braille = useMemo(
     () => toBraille(grid, colors.accent, colors.info),
@@ -88,7 +153,12 @@ export function DotPlotOverlay({ sequence, threshold = 0.8, bins = 120 }: DotPlo
       </Box>
       <Box marginBottom={1}>
         <Text color={colors.textDim}>
-          Window: {Math.max(20, Math.floor(sequence.length / bins))} bp · Threshold: {Math.round(threshold * 100)}% · ● direct ({colors.accent}) ○ inverted ({colors.info})
+          Window: {effectiveWindow} bp · Threshold: {Math.round(currentThreshold * 100)}% · Bins: {currentBins} · [+/-] threshold · [[/]] bins · [w/W] window ±25% · [D] direct {showDirect ? 'on' : 'off'} · [I] inverted {showInverted ? 'on' : 'off'} · ● direct ({colors.accent}) ○ inverted ({colors.info})
+        </Text>
+      </Box>
+      <Box marginBottom={1}>
+        <Text color={colors.textDim}>
+          Dots: {directCount.toLocaleString()} direct · {invertedCount.toLocaleString()} inverted
         </Text>
       </Box>
       <Box flexDirection="column">

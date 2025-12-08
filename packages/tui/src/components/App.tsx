@@ -26,9 +26,15 @@ import { PackagingPressureOverlay } from './PackagingPressureOverlay';
 import { TranscriptionFlowOverlay } from './TranscriptionFlowOverlay';
 import { PhasePortraitOverlay } from './PhasePortraitOverlay';
 import { NonBDNAOverlay } from './NonBDNAOverlay';
+import { AnomalyOverlay } from './AnomalyOverlay';
+import { DotPlotOverlay } from './DotPlotOverlay';
+import { CGROverlay } from './CGROverlay';
+import { HilbertOverlay } from './HilbertOverlay';
+import { GelOverlay } from './GelOverlay';
 import { CRISPROverlay } from './CRISPROverlay';
 import { SyntenyOverlay } from './SyntenyOverlay';
 import { TropismOverlay } from './TropismOverlay';
+import { StructureConstraintOverlay } from './StructureConstraintOverlay';
 import {
   computeGCskew,
   computeComplexity,
@@ -66,7 +72,10 @@ const HGT_ID: OverlayId = 'hgt';
 const CRISPR_ID: OverlayId = 'crispr';
 const SYNTENY_ID: OverlayId = 'synteny';
 const TROPISM_ID: OverlayId = 'tropism';
-const NONB_ID: OverlayId = 'nonB';
+const STRUCTURE_ID: OverlayId = 'structureConstraints';
+const ANOMALY_ID: OverlayId = 'anomaly';
+const DOTPLOT_ID: OverlayId = 'dotPlot';
+const NONB_ID: OverlayId = 'non-b-dna';
 
 interface AppProps {
   repository: PhageRepository;
@@ -103,13 +112,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const theme = usePhageStore(s => s.currentTheme);
   const overlayStack = useOverlayStack();
   const activeOverlay = overlayStack.at(-1) ?? null;
+  const [structureReport, setStructureReport] = useState<StructuralConstraintReport | null>(null);
   const terminalCols = usePhageStore(s => s.terminalCols);
   const terminalRows = usePhageStore(s => s.terminalRows);
   const setTerminalSize = usePhageStore(s => s.setTerminalSize);
   const error = usePhageStore(s => s.error);
   const setError = usePhageStore(s => s.setError);
   const overlayData = usePhageStore(s => s.overlayData);
-  const [structureReport, setStructureReport] = useState<StructuralConstraintReport | null>(null);
   const currentError = usePhageStore(s => s.error);
   const diffEnabled = usePhageStore(s => s.diffEnabled);
   const diffReferencePhageId = usePhageStore(s => s.diffReferencePhageId);
@@ -294,9 +303,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
                
                const result = job.fn();
                partialData[job.id] = result;
-               if (job.id === STRUCTURE_ID) {
-                 setStructureReport(result as StructuralConstraintReport);
-               }
                setOverlayData({ ...partialData });
              }
              
@@ -385,7 +391,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Handle keyboard input
   useInput((input, key) => {
-    // Check for F-key escape sequences
+    // Check for F-key escape sequences or Ink key flags
     const fKey = F_KEYS[input];
 
     // Clear quit confirm if user presses anything other than Esc
@@ -422,7 +428,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     }
 
     // F1: Help (always available)
-    if (fKey === 'F1') {
+    if (fKey === 'F1' || key.f1) {
       toggleOverlay('help');
       return;
     }
@@ -665,13 +671,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       promote('intermediate');
       toggleOverlay(SYNTENY_ID);
-    } else if (key.shift && (input === 'l' || input === 'L')) {
-      if (!isIntermediate) {
-        setError('Sequence logos unlock after ~5 minutes or once promoted.');
-        return;
-      }
-      promote('intermediate');
-      toggleOverlay(LOGO_ID);
     }
 
     // Overlays (we already returned early if overlay is active, so just open)
@@ -960,13 +959,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         </Box>
       )}
 
-      {activeOverlay === DOTPLOT_ID && (
+      {activeOverlay === STRUCTURE_ID && (
         <Box
           position="absolute"
-          marginLeft={Math.floor((terminalCols - 92) / 2)}
-          marginTop={Math.floor((terminalRows - 28) / 2)}
+          marginLeft={Math.floor((terminalCols - 94) / 2)}
+          marginTop={Math.floor((terminalRows - 24) / 2)}
         >
-          <DotPlotOverlay sequence={sequence} />
+          <StructureConstraintOverlay proteinReport={structureReport} />
         </Box>
       )}
 
@@ -977,36 +976,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.floor((terminalRows - 20) / 2)}
         >
           <NonBDNAOverlay sequence={sequence} />
-        </Box>
-      )}
-
-      {activeOverlay === 'cgr' && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 80) / 2)}
-          marginTop={Math.floor((terminalRows - 36) / 2)}
-        >
-          <CGROverlay sequence={sequence} />
-        </Box>
-      )}
-
-      {activeOverlay === 'anomaly' && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 80) / 2)}
-          marginTop={Math.floor((terminalRows - 30) / 2)}
-        >
-          <AnomalyOverlay sequence={sequence} />
-        </Box>
-      )}
-
-      {activeOverlay === 'non-b-dna' && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 80) / 2)}
-          marginTop={Math.floor((terminalRows - 30) / 2)}
-        >
-          <NonBDNAView sequence={sequence} />
         </Box>
       )}
 
@@ -1027,16 +996,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.floor((terminalRows - 24) / 2)}
         >
           <SyntenyOverlay repository={repository} />
-        </Box>
-      )}
-
-      {activeOverlay === LOGO_ID && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 84) / 2)}
-          marginTop={Math.floor((terminalRows - 24) / 2)}
-        >
-          <LogoOverlay sequence={sequence} />
         </Box>
       )}
 
@@ -1077,19 +1036,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.floor((terminalRows - 16) / 2)}
         >
           <KmerAnomalyOverlay />
-        </Box>
-      )}
-
-      {activeOverlay === STRUCTURE_ID && (
-        <Box
-          position="absolute"
-          marginLeft={Math.floor((terminalCols - 90) / 2)}
-          marginTop={Math.floor((terminalRows - 22) / 2)}
-        >
-          <StructureConstraintOverlay
-            proteinReport={structureReport}
-            windows={overlayData.structureConstraints as any}
-          />
         </Box>
       )}
 
