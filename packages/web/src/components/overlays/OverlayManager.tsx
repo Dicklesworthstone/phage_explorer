@@ -15,6 +15,7 @@ import {
   ModuleOverlay,
   WelcomeModal,
   CollaborationOverlay,
+  FeatureTour,
 } from './index';
 import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
@@ -41,6 +42,7 @@ export function OverlayManager(): React.ReactElement {
       <WelcomeModal />
       <HelpOverlay />
       <CollaborationOverlay />
+      <FeatureTour />
       <CommandPalette onClose={() => {}} /> 
       
       {/* Analysis Overlays */}

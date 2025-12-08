@@ -35,7 +35,8 @@ export type OverlayId =
   | 'synteny'
   | 'tropism'
   | 'welcome'
-  | 'collaboration';
+  | 'collaboration'
+  | 'tour';
 
 export interface OverlayConfig {
   id: OverlayId;

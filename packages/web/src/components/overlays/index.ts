@@ -25,6 +25,7 @@ export { AnalysisMenu } from './AnalysisMenu';
 export { SimulationHub } from './SimulationHub';
 export { WelcomeModal } from './WelcomeModal';
 export { CollaborationOverlay } from './CollaborationOverlay';
+export { FeatureTour } from './FeatureTour';
 
 // Layer 1 Analysis Overlays
 export { GCSkewOverlay } from './GCSkewOverlay';
