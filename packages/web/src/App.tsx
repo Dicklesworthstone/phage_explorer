@@ -17,6 +17,7 @@ const PhageExplorerContent: React.FC = () => {
     setExperienceLevel: s.setExperienceLevel,
   }));
   const { openFile, isSupported: fsSupported } = useFileSystem();
+  const pushCommand = useWebPreferences((s) => s.pushCommand);
 
   const experienceLevels = useMemo<ExperienceLevel[]>(() => ['novice', 'intermediate', 'power'], []);
   const prefersReducedMotion = useReducedMotion();
@@ -208,6 +209,7 @@ const PhageExplorerContent: React.FC = () => {
                   <button
                     className="btn"
                     onClick={handleOpenFile}
+                    type="button"
                     aria-label="Open a local FASTA or GenBank file (Ctrl+O)"
                   >
                     <span className="key-hint">^O</span> Open
@@ -218,6 +220,7 @@ const PhageExplorerContent: React.FC = () => {
                 <button
                   className="btn"
                   onClick={handleThemeCycle}
+                  type="button"
                   aria-label="Cycle color theme (T)"
                 >
                   <span className="key-hint">t</span> Theme
@@ -227,6 +230,7 @@ const PhageExplorerContent: React.FC = () => {
                 <button
                   className="btn"
                   onClick={handleCollaborate}
+                  type="button"
                   aria-label="Open collaboration panel (C)"
                 >
                   <span className="key-hint">c</span> Collaborate
