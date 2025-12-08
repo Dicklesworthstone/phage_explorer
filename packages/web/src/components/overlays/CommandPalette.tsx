@@ -15,8 +15,8 @@ import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
+import { usePhageStore, type ExperienceLevel as StoreExperienceLevel } from '@phage-explorer/state';
 import { formatFasta, downloadString, copyToClipboard, buildSequenceClipboardPayload } from '../../utils/export';
-import { usePhageStore } from '@phage-explorer/state';
 
 // Experience levels for progressive disclosure
 type ExperienceLevel = 'novice' | 'intermediate' | 'power';
@@ -181,10 +181,10 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Get user's experience level from preferences
-  const experienceLevel = useWebPreferences((s: { experienceLevel: string }) => s.experienceLevel) as ExperienceLevel;
-  const setExperienceLevel = useWebPreferences((s: { setExperienceLevel: (level: ExperienceLevel) => void }) => s.setExperienceLevel);
-  const viewMode = useWebPreferences((s: { viewMode: string }) => s.viewMode);
+  // Get user's experience level from main store
+  const experienceLevel = usePhageStore((s) => s.experienceLevel) as ExperienceLevel;
+  const setExperienceLevel = usePhageStore((s) => s.setExperienceLevel);
+  const viewMode = usePhageStore((s) => s.viewMode);
 
   // Merge prop context with inferred context
   const appContext: AppContext = useMemo(() => ({

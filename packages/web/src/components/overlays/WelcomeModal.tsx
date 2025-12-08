@@ -10,19 +10,21 @@ import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
-import type { ExperienceLevel } from '@phage-explorer/state';
+import { usePhageStore, type ExperienceLevel } from '@phage-explorer/state';
 import { KeyboardPrimer } from './KeyboardPrimer';
 
 export function WelcomeModal(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
   const { close, isOpen, open } = useOverlay();
-  
-  // Store actions
+
+  // Web-specific preferences (persisted)
   const hasSeenWelcome = useWebPreferences(s => s.hasSeenWelcome);
   const setHasSeenWelcome = useWebPreferences(s => s.setHasSeenWelcome);
-  const setExperienceLevel = useWebPreferences(s => s.setExperienceLevel);
-  const experienceLevel = useWebPreferences(s => s.experienceLevel) as ExperienceLevel;
+
+  // Main store preferences
+  const setExperienceLevel = usePhageStore(s => s.setExperienceLevel);
+  const experienceLevel = usePhageStore(s => s.experienceLevel) as ExperienceLevel;
 
   const [step, setStep] = useState<'intro' | 'level' | 'primer'>('intro');
 
