@@ -1,3 +1,6 @@
+# Legacy ignore list (restored to satisfy tooling)
+node_modules
+dist
+packages/**/dist
 packages/web/**
-dist/**
-node_modules/**
+packages/wasm-compute/pkg/**

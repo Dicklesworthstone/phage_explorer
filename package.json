@@ -24,7 +24,7 @@
     "dev:web": "bun run --cwd packages/web dev",
     "build:web": "bun run --cwd packages/web build",
     "preview:web": "bun run --cwd packages/web preview",
-    "lint": "bunx eslint packages --max-warnings=0",
+    "lint": "bunx eslint packages --max-warnings=0 --no-warn-ignored",
     "typecheck": "tsc --noEmit",
     "check": "bun run lint && bun run typecheck",
     "test": "bun test",
@@ -34,7 +34,8 @@
     "@types/bun": "^1.1.14",
     "@types/react": "^18.3.12",
     "eslint": "^9.15.0",
-    "typescript-eslint": "^8.14.0",
-    "typescript": "^5.7.2"
+    "playwright": "^1.57.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.14.0"
   }
 }

@@ -9,6 +9,9 @@ export default [
       'packages/wasm-compute/pkg/**',
       'packages/web/**',
       '**/packages/web/**',
+      'packages/tui/**',
+      '**/packages/tui/**',
+      '.cache/**',
     ]
   },
   ...tseslint.configs.recommended,
