@@ -17,6 +17,7 @@ import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
 import { formatFasta, downloadString, copyToClipboard, buildSequenceClipboardPayload } from '../../utils/export';
 import { usePhageStore } from '@phage-explorer/state';
+import { getMockSequence } from '../../visualization/mockSequenceSource';
 
 // Experience levels for progressive disclosure
 type ExperienceLevel = 'novice' | 'intermediate' | 'power';
@@ -254,7 +255,11 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       category: 'Export',
       action: () => {
         const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
-        const seq = diffReferenceSequence || ''; // Fallback to reference if main seq not in root
+        const seq = diffReferenceSequence || getMockSequence();
+        if (!seq) {
+          alert('No sequence available to export yet.');
+          return;
+        }
         const name = currentPhage?.name || 'phage';
         const fasta = formatFasta(`${name} [exported from Phage Explorer]`, seq);
         downloadString(fasta, `${name.replace(/\s+/g, '_')}.fasta`);
@@ -269,7 +274,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       category: 'Export',
       action: () => {
         const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
-        const seq = diffReferenceSequence;
+        const seq = diffReferenceSequence || getMockSequence();
         if (!seq) {
           alert('No sequence loaded to copy.');
           return;

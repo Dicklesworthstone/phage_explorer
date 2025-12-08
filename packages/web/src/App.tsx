@@ -1,6 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import { useTheme, getNucleotideClass, useHotkey, useKeyboardMode, usePendingSequence, useReducedMotion } from './hooks';
-import { AppShell } from './components';
+import { AppShell, Tooltip } from './components';
 import { HotkeyCategories } from './keyboard/types';
 import { OverlayProvider, OverlayManager, useOverlay, RecentCommands } from './components/overlays';
 import { useWebPreferences } from './store/createWebStore';
@@ -67,6 +67,12 @@ const PhageExplorerContent: React.FC = () => {
     toggle('transcriptionFlow');
     pushCommand('Transcription flow toggled');
     setLastAction('Transcription flow toggled');
+  }, [toggle, pushCommand]);
+
+  const handleCollaborate = useCallback(() => {
+    toggle('collaboration');
+    pushCommand('Collaboration toggled');
+    setLastAction('Collaboration toggled');
   }, [toggle, pushCommand]);
 
   const handleExperienceChange = useCallback((level: ExperienceLevel) => {
@@ -153,6 +159,12 @@ const PhageExplorerContent: React.FC = () => {
     modes: ['NORMAL'],
   });
 
+  // Collaboration hotkey
+  useHotkey({ key: 'c' }, 'Collaboration', handleCollaborate, {
+    category: HotkeyCategories.GENERAL,
+    modes: ['NORMAL'],
+  });
+
   // Escape to normal mode
   useHotkey({ key: 'Escape' }, 'Return to normal mode', handleEscape, {
     category: HotkeyCategories.GENERAL,
@@ -178,32 +190,39 @@ const PhageExplorerContent: React.FC = () => {
         pendingSequence,
         children: (
           <>
-            <div className="flex gap-2" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-              <button className="btn" onClick={handleThemeCycle}>
-                <span className="key-hint">t</span> Theme
-              </button>
-              <div className="flex gap-1" style={{ alignItems: 'center' }}>
-                <span className="text-dim" style={{ fontSize: '0.85rem' }}>Experience</span>
-                {experienceLevels.map((level) => {
-                  const active = level === experienceLevel;
-                  return (
-                    <button
-                      key={level}
-                      className="badge"
-                      onClick={() => handleExperienceChange(level)}
-                      style={{
-                        border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                        background: active ? 'var(--color-accent)' : 'var(--color-badge)',
-                        color: active ? '#000' : 'var(--color-badge-text)',
-                        textTransform: 'capitalize',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {level}
-                    </button>
-                  );
-                })}
-              </div>
+                      <div className="flex gap-2" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+                                                <Tooltip content="Cycle color theme (T)">
+                                                  <button className="btn" onClick={handleThemeCycle}>
+                                                    <span className="key-hint">t</span> Theme
+                                                  </button>
+                                                </Tooltip>
+                                                <Tooltip content="Real-time Collaboration (C)">
+                                                  <button className="btn" onClick={handleCollaborate}>
+                                                    <span className="key-hint">c</span> Collaborate
+                                                  </button>
+                                                </Tooltip>
+                                                <div className="flex gap-1" style={{ alignItems: 'center' }}>
+                                        <span className="text-dim" style={{ fontSize: '0.85rem' }}>Experience</span>
+                              {experienceLevels.map((level) => {
+                                const active = level === experienceLevel;
+                                return (
+                                  <Tooltip key={level} content={`Set experience to ${level}`} position="bottom">
+                                    <button
+                                      className="badge"
+                                      onClick={() => handleExperienceChange(level)}
+                                      style={{
+                                        border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                                        background: active ? 'var(--color-accent)' : 'var(--color-badge)',
+                                        color: active ? '#000' : 'var(--color-badge-text)',
+                                        textTransform: 'capitalize',
+                                        cursor: 'pointer',
+                                      }}
+                                    >
+                                      {level}
+                                    </button>
+                                  </Tooltip>
+                                );
+                              })}              </div>
             </div>
             <RecentCommands />
           </>

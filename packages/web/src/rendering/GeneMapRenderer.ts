@@ -192,7 +192,7 @@ export class GeneMapRenderer {
   }
 
   /**
-   * Render gene labels
+   * Render gene labels with collision avoidance
    */
   private renderLabels(genes: GeneInfo[], scale: number): void {
     this.ctx.font = '10px monospace';
@@ -200,19 +200,23 @@ export class GeneMapRenderer {
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'top';
 
-    const height = this.height;
-    const rowPadding = 6;
-    // Two label rows anchored from bottom to avoid overflow on short canvases
-    const rows = [
-      Math.max(rowPadding, height - 14),
-      Math.max(rowPadding, height - 26),
-    ];
-    const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
+    // Use multiple rows for labels to avoid collisions
+    // Tracks: list of end X positions for each track
+    const tracks: number[] = [];
+    const trackHeight = 12;
+    const labelYStart = 36; // Below gene tracks
+    const maxTracks = Math.floor((this.height - labelYStart) / trackHeight);
+    
+    // Sort genes by position
     const sortedGenes = [...genes].sort((a, b) => a.startPos - b.startPos);
 
     for (const gene of sortedGenes) {
+      // Skip tiny genes or unlabelled ones
       if (!gene.name && !gene.locusTag) continue;
-      if ((gene.endPos - gene.startPos) < 80) continue;
+      
+      // Only label genes wider than a few pixels unless highlighted
+      const pxWidth = (gene.endPos - gene.startPos) * scale;
+      if (pxWidth < 5) continue;
 
       const label = (gene.name || gene.locusTag || '').trim();
       if (!label) continue;
@@ -221,36 +225,43 @@ export class GeneMapRenderer {
       const x = centerPos * scale;
       const textWidth = this.ctx.measureText(label).width;
       const pad = 4;
-      const w = textWidth + pad;
-      const h = 12;
+      const labelHalfWidth = textWidth / 2 + pad;
+      const labelStart = x - labelHalfWidth;
+      const labelEnd = x + labelHalfWidth;
 
-      // Try each row until no overlap
-      let placedBox: { x: number; y: number; w: number; h: number } | null = null;
-      for (const y of rows) {
-        const box = { x: x - w / 2, y, w, h };
-        const overlaps = placed.some(p =>
-          !(box.x + box.w < p.x || p.x + p.w < box.x || box.y + box.h < p.y || p.y + p.h < box.y)
-        );
-        if (!overlaps) {
-          placedBox = box;
+      // Find a track that fits
+      let trackIndex = -1;
+      for (let i = 0; i < maxTracks; i++) {
+        // Check if track is free at this position
+        const trackEnd = tracks[i] || -Infinity;
+        if (labelStart > trackEnd) {
+          trackIndex = i;
           break;
         }
       }
+      
+      // If no existing track fits, use a new one if available
+      if (trackIndex === -1 && tracks.length < maxTracks) {
+        trackIndex = tracks.length;
+      }
 
-      if (!placedBox) continue;
+      if (trackIndex !== -1) {
+        // Update track
+        tracks[trackIndex] = labelEnd;
+        
+        const y = labelYStart + (trackIndex * trackHeight);
+        
+        // Tick mark connecting label to gene
+        this.ctx.strokeStyle = this.theme.colors.border;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x, y - 2);
+        this.ctx.lineTo(x, y);
+        this.ctx.stroke();
 
-      // Tick mark
-      this.ctx.strokeStyle = this.theme.colors.border;
-      this.ctx.beginPath();
-      this.ctx.moveTo(x, placedBox.y - 3);
-      this.ctx.lineTo(x, placedBox.y);
-      this.ctx.stroke();
-
-      // Label
-      this.ctx.fillStyle = this.theme.colors.textMuted;
-      this.ctx.fillText(label, x, placedBox.y);
-
-      placed.push(placedBox);
+        // Label text
+        this.ctx.fillStyle = this.theme.colors.textMuted;
+        this.ctx.fillText(label, x, y);
+      }
     }
   }
 
