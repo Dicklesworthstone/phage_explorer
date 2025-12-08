@@ -9,6 +9,7 @@ export interface ScatterCanvasProps {
   pointColor?: string;
   pointSize?: number;
   padding?: number;
+  backgroundColor?: string;
   onHover?: (point: ScatterPoint | null) => void;
   ariaLabel?: string;
 }
@@ -21,6 +22,7 @@ export function ScatterCanvas({
   pointColor = '#38bdf8',
   pointSize = 3,
   padding = 24,
+  backgroundColor = '#0f172a',
   onHover,
   ariaLabel = 'scatter plot',
 }: ScatterCanvasProps): React.ReactElement {
@@ -29,10 +31,14 @@ export function ScatterCanvas({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.width = width;
-    canvas.height = height;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const xs = points.map(p => p.x);
     const ys = points.map(p => p.y);
@@ -43,8 +49,7 @@ export function ScatterCanvas({
     const dx = maxX - minX || 1;
     const dy = maxY - minY || 1;
 
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#0f172a';
+    ctx.fillStyle = backgroundColor;
     ctx.fillRect(0, 0, width, height);
 
     const innerW = width - padding * 2;
@@ -61,7 +66,7 @@ export function ScatterCanvas({
       ctx.arc(cx, cy, size, 0, Math.PI * 2);
       ctx.fill();
     }
-  }, [colorScale, height, padding, pointColor, pointSize, points, width]);
+  }, [backgroundColor, colorScale, height, padding, pointColor, pointSize, points, width]);
 
   useEffect(() => {
     if (!onHover) return;

@@ -4,4 +4,5 @@ export * from './ScatterCanvas';
 export * from './ArcDiagram';
 export * from './GenomeTrack';
 export * from './GelCanvas';
+export * from '../../primitives/colorScales';
 

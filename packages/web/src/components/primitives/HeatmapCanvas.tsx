@@ -7,6 +7,7 @@ export interface HeatmapCanvasProps {
   matrix: HeatmapMatrix;
   colorScale: ColorScale;
   padding?: number;
+  backgroundColor?: string;
   onHover?: (hover: HeatmapHover | null) => void;
   ariaLabel?: string;
 }
@@ -17,6 +18,7 @@ export function HeatmapCanvas({
   matrix,
   colorScale,
   padding = 8,
+  backgroundColor = '#0b1220',
   onHover,
   ariaLabel = 'heatmap',
 }: HeatmapCanvasProps): React.ReactElement {
@@ -25,10 +27,14 @@ export function HeatmapCanvas({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.width = width;
-    canvas.height = height;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const innerWidth = width - padding * 2;
     const innerHeight = height - padding * 2;
@@ -39,7 +45,8 @@ export function HeatmapCanvas({
     const max = matrix.max ?? Math.max(...values);
     const denom = max - min || 1;
 
-    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = backgroundColor;
+    ctx.fillRect(0, 0, width, height);
 
     for (let r = 0; r < matrix.rows; r++) {
       for (let c = 0; c < matrix.cols; c++) {
@@ -50,7 +57,7 @@ export function HeatmapCanvas({
         ctx.fillRect(padding + c * cellW, padding + r * cellH, cellW, cellH);
       }
     }
-  }, [colorScale, height, matrix.cols, matrix.max, matrix.min, matrix.rows, matrix.values, padding, width]);
+  }, [backgroundColor, colorScale, height, matrix.cols, matrix.max, matrix.min, matrix.rows, matrix.values, padding, width]);
 
   useEffect(() => {
     if (!onHover) return;
