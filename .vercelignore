@@ -1,5 +1,38 @@
+# Beads tracking (not needed for web deploy)
 .beads/
+
+# Socket files
 *.sock
-data/
+
+# Root data directory (if exists) - NOT packages/core/src/data/
+/data/
+
+# Git directory
 .git/
+
+# Dependencies (installed fresh on Vercel)
 node_modules/
+
+# Large build artifacts
+dist/
+packages/wasm-compute/target/
+packages/tui/
+
+# Database files
+*.db
+phage.db
+
+# Documentation (not needed for deploy)
+*.md
+!README.md
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__/
+
+# IDE/local
+.env.local
+.env*.local
+.vscode/
+.idea/
