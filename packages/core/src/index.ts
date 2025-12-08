@@ -28,5 +28,8 @@ export * from './fold-embeddings';
 // CRISPR Pressure analysis
 export * from './crispr';
 
+// Structure-informed constraint scanner
+export * from './structure-constraints';
+
 // Transcription flow analysis
 export * from './transcription';
