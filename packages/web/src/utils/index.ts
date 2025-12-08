@@ -14,3 +14,4 @@ export {
   sequenceToHTML,
   copySequence,
 } from './export';
+export { detectWebGPU } from './webgpu';

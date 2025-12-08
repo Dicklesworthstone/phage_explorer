@@ -30,12 +30,14 @@ type PersistedKeys =
   | 'experienceLevel'
   | 'hasSeenWelcome'
   | 'scanlines'
-  | 'glow';
+  | 'glow'
+  | 'tuiMode';
 
-type PersistedState = Pick<PhageExplorerState, Exclude<PersistedKeys, 'hasSeenWelcome' | 'scanlines' | 'glow'>> & {
+type PersistedState = Pick<PhageExplorerState, Exclude<PersistedKeys, 'hasSeenWelcome' | 'scanlines' | 'glow' | 'tuiMode'>> & {
   hasSeenWelcome: boolean;
   scanlines: boolean;
   glow: boolean;
+  tuiMode: boolean;
 };
 
 /**
@@ -51,6 +53,7 @@ const defaultPreferences: PersistedState = {
   hasSeenWelcome: false,
   scanlines: true,
   glow: true,
+  tuiMode: false,
 };
 
 /**
@@ -71,6 +74,7 @@ function migrateState(
       hasSeenWelcome: state.hasSeenWelcome ?? false,
       scanlines: state.scanlines ?? true,
       glow: state.glow ?? true,
+      tuiMode: state.tuiMode ?? false,
     };
   }
 
@@ -95,6 +99,7 @@ export function createWebStore() {
     setHasSeenWelcome: (seen: boolean) => void;
     setScanlines: (enabled: boolean) => void;
     setGlow: (enabled: boolean) => void;
+    setTuiMode: (enabled: boolean) => void;
     commandHistory: Array<{ label: string; at: number }>;
     pushCommand: (label: string) => void;
     clearHistory: () => void;
@@ -110,6 +115,7 @@ export function createWebStore() {
         setHasSeenWelcome: (seen) => set({ hasSeenWelcome: seen }),
         setScanlines: (enabled) => set({ scanlines: enabled }),
         setGlow: (enabled) => set({ glow: enabled }),
+        setTuiMode: (enabled) => set({ tuiMode: enabled }),
         pushCommand: (label) => set((state) => {
           const next = [{ label, at: Date.now() }, ...state.commandHistory].slice(0, 20);
           return { commandHistory: next };
@@ -130,6 +136,7 @@ export function createWebStore() {
           hasSeenWelcome: state.hasSeenWelcome,
           scanlines: state.scanlines,
           glow: state.glow,
+          tuiMode: state.tuiMode,
           // commandHistory intentionally not persisted
         }),
         migrate: migrateState,

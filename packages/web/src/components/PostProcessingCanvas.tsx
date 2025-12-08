@@ -31,6 +31,7 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
 
   // Get user preferences
   const scanlines = useWebPreferences(s => s.scanlines);
+  const scanlineIntensity = useWebPreferences(s => s.scanlineIntensity);
   const glow = useWebPreferences(s => s.glow);
   const reducedMotion = useReducedMotion();
 
@@ -47,6 +48,7 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
         enableScanlines: scanlines && !reducedMotion,
         enableBloom: glow,
         enableAberration: !reducedMotion,
+        intensity: scanlineIntensity,
       });
     } catch (err) {
       console.error('Failed to initialize post-processing pipeline:', err);
@@ -69,9 +71,10 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
         enableScanlines: scanlines && !reducedMotion,
         enableBloom: glow,
         enableAberration: !reducedMotion,
+        intensity: scanlineIntensity,
       });
     }
-  }, [scanlines, glow, reducedMotion]);
+  }, [scanlines, glow, reducedMotion, scanlineIntensity]);
 
   // Resize handling
   useEffect(() => {

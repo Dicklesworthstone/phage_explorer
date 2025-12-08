@@ -8,6 +8,7 @@
 import React, { useRef, useEffect } from 'react';
 import { useTheme } from '../hooks/useTheme';
 import { useReducedMotion } from '../hooks/useReducedMotion';
+import { useWebPreferences } from '../store/createWebStore';
 
 const CHAR_SETS = {
   dna: 'ATGC',
@@ -35,6 +36,7 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { theme } = useTheme();
   const reducedMotion = useReducedMotion();
+  const tuiMode = useWebPreferences(s => s.tuiMode);
   
   // In a real app, these could be in store or passed as props
   // For now, we default to 'dna' and moderate settings
@@ -42,7 +44,7 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
   const speed = 1.0;   // 0.5 - 3.0
 
   useEffect(() => {
-    if (reducedMotion) return;
+    if (reducedMotion || tuiMode) return;
 
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -137,9 +139,9 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
       cancelAnimationFrame(animationId);
       window.removeEventListener('resize', handleResize);
     };
-  }, [width, height, theme, density, speed, charSet, opacity, reducedMotion]);
+  }, [width, height, theme, density, speed, charSet, opacity, reducedMotion, tuiMode]);
 
-  if (reducedMotion) return null;
+  if (reducedMotion || tuiMode) return null;
 
   return (
     <canvas

@@ -7,6 +7,7 @@
 
 import * as Comlink from 'comlink';
 import { simulateTranscriptionFlow } from '@phage-explorer/core';
+import { gpuCompute } from './gpu/GPUCompute';
 import type {
   AnalysisRequest,
   AnalysisResult,
@@ -354,13 +355,26 @@ function calculateCodonUsage(sequence: string): CodonUsageResult {
 /**
  * Calculate k-mer spectrum
  */
-function calculateKmerSpectrum(sequence: string, k = 6): KmerSpectrumResult {
+async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpectrumResult> {
   const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
-  const counts = new Map<string, number>();
+  let counts: Map<string, number> | null = null;
 
-  for (let i = 0; i <= seq.length - k; i++) {
-    const kmer = seq.slice(i, i + k);
-    counts.set(kmer, (counts.get(kmer) || 0) + 1);
+  // Try GPU if k is small enough (shader limit) and supported
+  if (k <= 12 && gpuCompute.isSupported) {
+    try {
+      counts = await gpuCompute.countKmers(seq, k);
+    } catch (e) {
+      console.warn('GPU k-mer count failed, falling back to CPU', e);
+    }
+  }
+
+  if (!counts) {
+    // CPU Fallback
+    counts = new Map<string, number>();
+    for (let i = 0; i <= seq.length - k; i++) {
+      const kmer = seq.slice(i, i + k);
+      counts.set(kmer, (counts.get(kmer) || 0) + 1);
+    }
   }
 
   const totalKmers = seq.length - k + 1;
@@ -403,7 +417,7 @@ const workerAPI: AnalysisWorkerAPI = {
       case 'codon-usage':
         return calculateCodonUsage(sequence);
       case 'kmer-spectrum':
-        return calculateKmerSpectrum(sequence, options.kmerSize || 6);
+        return await calculateKmerSpectrum(sequence, options.kmerSize || 6);
       case 'transcription-flow':
         const flow = simulateTranscriptionFlow(sequence);
         return { type: 'transcription-flow', ...flow };

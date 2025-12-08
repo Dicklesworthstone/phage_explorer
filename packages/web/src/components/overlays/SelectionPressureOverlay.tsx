@@ -17,7 +17,7 @@ interface Props {
 export function SelectionPressureOverlay({ targetSequence, referenceSequence }: Props): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const { isOpen, toggle } = useOverlay();
+  const { isOpen } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const analysis = useMemo(() => {
@@ -31,21 +31,28 @@ export function SelectionPressureOverlay({ targetSequence, referenceSequence }: 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    const draw = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
 
-    // Clear
-    ctx.fillStyle = colors.background;
-    ctx.fillRect(0, 0, width, height);
+      // Resize and reset transform
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      if (typeof ctx.setTransform === 'function') {
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
+      ctx.scale(dpr, dpr);
 
-    const { windows } = analysis;
-    const barWidth = width / windows.length;
+      // Clear
+      ctx.fillStyle = colors.background;
+      ctx.fillRect(0, 0, width, height);
 
-    windows.forEach((w, i) => {
+      const { windows } = analysis;
+      if (!windows.length) return;
+      const barWidth = Math.max(1, width / windows.length);
+
+      windows.forEach((w, i) => {
         let color = colors.textDim; // Neutral
         if (w.classification === 'purifying') color = colors.primary; // Blue
         if (w.classification === 'positive') color = colors.error; // Red
@@ -55,9 +62,18 @@ export function SelectionPressureOverlay({ targetSequence, referenceSequence }: 
         const y = height - h;
 
         ctx.fillStyle = color;
-        ctx.fillRect(x, y, Math.max(1, barWidth), h);
-    });
+        ctx.fillRect(x, y, barWidth, h);
+      });
+    };
 
+    draw();
+
+    const resizeObserver = new ResizeObserver(draw);
+    resizeObserver.observe(canvas);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
   }, [isOpen, analysis, colors]);
 
   if (!isOpen('selectionPressure')) return null;
