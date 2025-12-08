@@ -145,7 +145,7 @@ export function ComparisonOverlay({ repository }: ComparisonOverlayProps): React
           GENOME COMPARISON
         </Text>
         <Text color={colors.textDim}>
-          Tab {(['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'] as ComparisonTab[]).indexOf(tab) + 1}/6
+          Tab {(['summary', 'kmer', 'information', 'correlation', 'biological', 'genes', 'structural'] as ComparisonTab[]).indexOf(tab) + 1}/7
         </Text>
       </Box>
 
@@ -166,7 +166,7 @@ export function ComparisonOverlay({ repository }: ComparisonOverlayProps): React
 
       {/* Tab Bar */}
       <Box marginBottom={1} gap={1}>
-        {(['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'] as ComparisonTab[]).map((t) => (
+        {(['summary', 'kmer', 'information', 'correlation', 'biological', 'genes', 'structural'] as ComparisonTab[]).map((t) => (
           <Text
             key={t}
             color={t === tab ? colors.accent : colors.textDim}
@@ -210,6 +210,7 @@ export function ComparisonOverlay({ repository }: ComparisonOverlayProps): React
           {tab === 'correlation' && <CorrelationTab result={result} colors={colors} />}
           {tab === 'biological' && <BiologicalTab result={result} colors={colors} />}
           {tab === 'genes' && <GenesTab result={result} colors={colors} />}
+          {tab === 'structural' && <StructuralTab result={result} colors={colors} />}
         </Box>
       )}
 
@@ -449,6 +450,72 @@ function GenesTab({ result, colors }: TabProps): React.ReactElement {
           </>
         )}
       </Box>
+    </Box>
+  );
+}
+
+function StructuralTab({ result, colors }: TabProps): React.ReactElement {
+  const report = result.structuralVariants;
+
+  if (!report) {
+    return (
+      <Box flexDirection="column">
+        <Text color={colors.textDim}>Structural variant analysis not computed.</Text>
+      </Box>
+    );
+  }
+
+  if (report.calls.length === 0) {
+    return (
+      <Box flexDirection="column">
+        <Text color={colors.primary} bold>Structural Variants</Text>
+        <Text color={colors.textDim}>No variants detected between these genomes.</Text>
+      </Box>
+    );
+  }
+
+  const ordered = [...report.calls].sort((a, b) => b.confidence - a.confidence).slice(0, 8);
+
+  const typeColor = (type: string) => {
+    switch (type) {
+      case 'inversion': return '#a855f7';
+      case 'translocation': return '#f97316';
+      case 'duplication': return '#22c55e';
+      case 'deletion': return '#ef4444';
+      case 'insertion': return '#3b82f6';
+      default: return colors.text;
+    }
+  };
+
+  return (
+    <Box flexDirection="column">
+      <Box marginBottom={1}>
+        <Text color={colors.primary} bold>Structural Variants</Text>
+      </Box>
+
+      <Box marginBottom={1}>
+        <Text color={colors.textDim}>
+          Anchors: {report.anchorsUsed} | Counts — Del: {report.counts.deletion}  Ins: {report.counts.insertion}  Inv: {report.counts.inversion}  Dup: {report.counts.duplication}  Trans: {report.counts.translocation}
+        </Text>
+      </Box>
+
+      {ordered.map((sv, idx) => (
+        <Box key={sv.id} flexDirection="column" marginBottom={1}>
+          <Text>
+            <Text color={typeColor(sv.type)} bold>[{idx + 1}] {sv.type.toUpperCase()}</Text>{' '}
+            <Text color={colors.text}>A:{sv.startA.toLocaleString()}-{sv.endA.toLocaleString()} ({sv.sizeA.toLocaleString()} bp) | B:{sv.startB.toLocaleString()}-{sv.endB.toLocaleString()} ({sv.sizeB.toLocaleString()} bp)</Text>{' '}
+            <Text color={colors.textDim}>conf {(sv.confidence * 100).toFixed(0)}%</Text>
+          </Text>
+          {sv.evidence.length > 0 && (
+            <Text color={colors.textDim}>Evidence: {sv.evidence.slice(0, 3).join('; ')}</Text>
+          )}
+          {(sv.affectedGenesA.length > 0 || sv.affectedGenesB.length > 0) && (
+            <Text color={colors.textDim}>
+              Genes A: {sv.affectedGenesA.join(', ') || '—'} | Genes B: {sv.affectedGenesB.join(', ') || '—'}
+            </Text>
+          )}
+        </Box>
+      ))}
     </Box>
   );
 }

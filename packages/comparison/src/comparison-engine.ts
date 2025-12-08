@@ -25,6 +25,7 @@ import {
   compareGeneContent,
 } from './biological-metrics';
 import { countCodonUsage } from '@phage-explorer/core';
+import { analyzeStructuralVariants } from './structural-variants';
 
 /**
  * Perform comprehensive genome comparison.
@@ -45,6 +46,7 @@ export async function compareGenomes(
     editDistanceWindowCount: 20,
     includeGeneComparison: true,
     includeCodonUsage: true,
+    includeStructuralVariants: true,
   }
 ): Promise<GenomeComparisonResult> {
   const startTime = Date.now();
@@ -90,6 +92,11 @@ export async function compareGenomes(
     sequenceB.length
   );
 
+  const structuralVariants =
+    config.includeStructuralVariants !== false
+      ? analyzeStructuralVariants(sequenceA, sequenceB, genesA, genesB)
+      : null;
+
   // Compute summary
   const summary = computeSummary(
     kmerAnalysis,
@@ -117,6 +124,7 @@ export async function compareGenomes(
     codonUsage,
     aminoAcidUsage,
     geneContent,
+    structuralVariants,
   };
 }
 

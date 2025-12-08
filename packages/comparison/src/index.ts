@@ -77,6 +77,7 @@ export {
 
 export * from './biological-metrics';
 export * from './synteny';
+export { analyzeStructuralVariants } from './structural-variants';
 
 // Main comparison engine
 export {

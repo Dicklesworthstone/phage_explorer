@@ -224,6 +224,7 @@ export interface GenomeComparisonResult {
   codonUsage: CodonUsageComparison;
   aminoAcidUsage: AminoAcidComparison;
   geneContent: GeneContentComparison;
+  structuralVariants?: StructuralVariantReport | null;
 }
 
 // HGT provenance analysis
@@ -261,6 +262,37 @@ export interface HGTAnalysis {
   stamps: PassportStamp[];
 }
 
+// Structural variant detection
+export type StructuralVariantType =
+  | 'deletion'
+  | 'insertion'
+  | 'inversion'
+  | 'duplication'
+  | 'translocation';
+
+export interface StructuralVariantCall {
+  id: string;
+  type: StructuralVariantType;
+  startA: number;
+  endA: number;
+  startB: number;
+  endB: number;
+  sizeA: number;
+  sizeB: number;
+  confidence: number; // 0..1
+  anchorA: { startIdx: number; endIdx: number };
+  anchorB: { startIdx: number; endIdx: number };
+  evidence: string[];
+  affectedGenesA: string[];
+  affectedGenesB: string[];
+}
+
+export interface StructuralVariantReport {
+  calls: StructuralVariantCall[];
+  counts: Record<StructuralVariantType, number>;
+  anchorsUsed: number;
+}
+
 // Configuration for comparison
 export interface ComparisonConfig {
   kmerSizes: number[];                // K values for k-mer analysis (default: [3, 5, 7, 11])
@@ -269,6 +301,7 @@ export interface ComparisonConfig {
   editDistanceWindowCount: number;    // Number of windows (default: 20)
   includeGeneComparison: boolean;     // Include gene-level comparison
   includeCodonUsage: boolean;         // Include codon usage analysis
+  includeStructuralVariants?: boolean; // Include structural variant calls (default: true)
 }
 
 export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
@@ -278,4 +311,5 @@ export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {
   editDistanceWindowCount: 20,
   includeGeneComparison: true,
   includeCodonUsage: true,
+  includeStructuralVariants: true,
 };

@@ -76,7 +76,7 @@ export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';
 
 // Comparison view tab
-export type ComparisonTab = 'summary' | 'kmer' | 'information' | 'correlation' | 'biological' | 'genes';
+export type ComparisonTab = 'summary' | 'kmer' | 'information' | 'correlation' | 'biological' | 'genes' | 'structural';
 
 // Mouse hover info for amino acids
 export interface HoveredAminoAcid {
@@ -514,7 +514,7 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
 
   nextComparisonTab: () => {
     const { comparisonTab } = get();
-    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'];
+    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes', 'structural'];
     const currentIndex = tabs.indexOf(comparisonTab);
     const nextIndex = (currentIndex + 1) % tabs.length;
     set({ comparisonTab: tabs[nextIndex] });
@@ -522,7 +522,7 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
 
   prevComparisonTab: () => {
     const { comparisonTab } = get();
-    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes'];
+    const tabs: ComparisonTab[] = ['summary', 'kmer', 'information', 'correlation', 'biological', 'genes', 'structural'];
     const currentIndex = tabs.indexOf(comparisonTab);
     const prevIndex = (currentIndex - 1 + tabs.length) % tabs.length;
     set({ comparisonTab: tabs[prevIndex] });
