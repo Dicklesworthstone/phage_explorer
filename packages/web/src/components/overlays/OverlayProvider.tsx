@@ -37,6 +37,7 @@ export type OverlayId =
   | 'synteny'
   | 'tropism'
   | 'cgr'
+  | 'stability'
   | 'welcome'
   | 'collaboration'
   | 'tour';
