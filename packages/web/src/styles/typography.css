@@ -149,6 +149,10 @@ small,
   color: var(--color-text-dim, #8888aa);
 }
 
+.text-error {
+  color: var(--color-error, #ef4444);
+}
+
 .text-muted {
   color: var(--color-text-muted, #555577);
 }

@@ -48,7 +48,7 @@ function resolveDownloadUrl(idOrUrl: string, format: StructureFormat): string {
   return `https://files.rcsb.org/download/${bareId}.${ext}`;
 }
 
-function parsePDB(text: string): AtomRecord[] {
+export function parsePDB(text: string): AtomRecord[] {
   const atoms: AtomRecord[] = [];
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
@@ -64,7 +64,7 @@ function parsePDB(text: string): AtomRecord[] {
   return atoms;
 }
 
-function parseMMCIF(text: string): AtomRecord[] {
+export function parseMMCIF(text: string): AtomRecord[] {
   const atoms: AtomRecord[] = [];
   const lines = text.split(/\r?\n/);
   const headers: string[] = [];
@@ -131,7 +131,9 @@ function buildMesh(atoms: AtomRecord[]): Group {
   });
 
   mesh.instanceMatrix.needsUpdate = true;
-  mesh.instanceColor?.needsUpdate = true;
+  if (mesh.instanceColor) {
+    mesh.instanceColor.needsUpdate = true;
+  }
   group.add(mesh);
   return group;
 }

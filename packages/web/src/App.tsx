@@ -20,6 +20,7 @@ import {
   initializeStorePersistence,
   usePhageStore,
 } from './store';
+import { Model3DView } from './components/Model3DView';
 
 export default function App(): JSX.Element {
   const { theme, nextTheme } = useTheme();
@@ -298,6 +299,9 @@ export default function App(): JSX.Element {
                   : 'Select a phage to view details once the database is ready.'}
               </div>
             )}
+            <div style={{ marginTop: 'var(--space-4)' }}>
+              <Model3DView phage={currentPhage} />
+            </div>
           </div>
         </section>
       </AppShell>
