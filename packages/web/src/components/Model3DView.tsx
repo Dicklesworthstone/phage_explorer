@@ -16,9 +16,9 @@ import {
   buildBallAndStick,
   buildSurfaceImpostor,
   buildTubeFromTraces,
-  loadStructure,
   type LoadedStructure,
 } from '../visualization/structure-loader';
+import { useStructureQuery } from '../hooks/useStructureQuery';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 type RenderMode = 'ball' | 'cartoon' | 'ribbon' | 'surface';
@@ -70,7 +70,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
   const structureRef = useRef<Group | null>(null);
   const animationRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const structureDataRef = useRef<LoadedStructure | null>(null);
 
   const show3DModel = usePhageStore(s => s.show3DModel);
@@ -85,6 +84,18 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
   const [atomCount, setAtomCount] = useState<number | null>(null);
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
+
+  const {
+    data: structureData,
+    isLoading: structureLoading,
+    isFetching: structureFetching,
+    isError: structureError,
+    error: structureErr,
+    refetch: refetchStructure,
+  } = useStructureQuery({
+    idOrUrl: pdbId ?? undefined,
+    enabled: show3DModel && Boolean(pdbId),
+  });
 
   const rebuildStructure = (mode: RenderMode) => {
     const data = structureDataRef.current;
@@ -211,14 +222,13 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     };
   }, [paused, speed]);
 
-  // Load structure on phage change
+  // Load structure via TanStack Query
   useEffect(() => {
     if (!show3DModel) return;
     if (!pdbId) {
       setLoadState('error');
       setError('No structure available for this phage');
       setAtomCount(null);
-      // Remove from scene before disposing to avoid rendering disposed geometry
       if (structureRef.current && sceneRef.current) {
         sceneRef.current.remove(structureRef.current);
       }
@@ -227,43 +237,40 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       return;
     }
 
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoadState('loading');
-    setProgress(15);
-    setError(null);
+    if (structureError) {
+      setLoadState('error');
+      setError(structureErr instanceof Error ? structureErr.message : 'Failed to load structure');
+      return;
+    }
 
-    loadStructure(pdbId, controller.signal)
-      .then((data) => {
-        const scene = sceneRef.current;
-        const camera = cameraRef.current;
-        const controls = controlsRef.current;
-        if (!scene || !camera || !controls) return;
+    if (structureLoading || structureFetching) {
+      setLoadState('loading');
+      setProgress(20);
+      setError(null);
+      return;
+    }
 
-        structureDataRef.current = data;
-        rebuildStructure(renderMode);
+    if (structureData) {
+      const scene = sceneRef.current;
+      const camera = cameraRef.current;
+      const controls = controlsRef.current;
+      if (!scene || !camera || !controls) return;
 
-        // Frame camera
-        const dist = data.radius * 3;
-        camera.position.copy(data.center.clone().add(new Vector3(dist, dist * 0.8, dist)));
-        camera.near = Math.max(0.1, data.radius * 0.01);
-        camera.far = Math.max(5000, data.radius * 4);
-        camera.updateProjectionMatrix();
-        controls.target.copy(data.center);
-        controls.update();
-        setAtomCount(data.atomCount);
-        setProgress(100);
-        setLoadState('ready');
-      })
-      .catch(err => {
-        if (controller.signal.aborted) return;
-        setError(err instanceof Error ? err.message : 'Failed to load structure');
-        setLoadState('error');
-      });
+      structureDataRef.current = structureData;
+      rebuildStructure(renderMode);
 
-    return () => controller.abort();
-  }, [pdbId, show3DModel]);
+      const dist = structureData.radius * 3;
+      camera.position.copy(structureData.center.clone().add(new Vector3(dist, dist * 0.8, dist)));
+      camera.near = Math.max(0.1, structureData.radius * 0.01);
+      camera.far = Math.max(5000, structureData.radius * 4);
+      camera.updateProjectionMatrix();
+      controls.target.copy(structureData.center);
+      controls.update();
+      setAtomCount(structureData.atomCount);
+      setProgress(100);
+      setLoadState('ready');
+    }
+  }, [pdbId, renderMode, show3DModel, structureData, structureError, structureErr, structureFetching, structureLoading, rebuildStructure]);
 
   useEffect(() => {
     if (loadState === 'ready') {

@@ -4,11 +4,9 @@
  * React hook for loading and accessing the phage database.
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { DatabaseLoader, createDatabaseLoader } from '../db';
+import { useMemo } from 'react';
 import type { PhageRepository, DatabaseLoadProgress } from '../db';
-
-const DEFAULT_DATABASE_URL = '/phage.db';
+import { useDatabaseQuery } from './useDatabaseQuery';
 
 export interface UseDatabaseOptions {
   /** URL to load the database from */
@@ -22,6 +20,8 @@ export interface UseDatabaseResult {
   repository: PhageRepository | null;
   /** Whether the database is currently loading */
   isLoading: boolean;
+  /** Whether a background refetch is in progress */
+  isFetching: boolean;
   /** Load progress information */
   progress: DatabaseLoadProgress | null;
   /** Error message if loading failed */
@@ -52,79 +52,26 @@ export interface UseDatabaseResult {
  * const phages = await repository?.listPhages();
  */
 export function useDatabase(options: UseDatabaseOptions = {}): UseDatabaseResult {
-  const { databaseUrl = DEFAULT_DATABASE_URL, autoLoad = true } = options;
+  const { databaseUrl = '/phage.db', autoLoad = true } = options;
+  const query = useDatabaseQuery({ databaseUrl });
 
-  const [repository, setRepository] = useState<PhageRepository | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [progress, setProgress] = useState<DatabaseLoadProgress | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [isCached, setIsCached] = useState(false);
-
-  const loaderRef = useRef<DatabaseLoader | null>(null);
-
-  // Create loader
-  useEffect(() => {
-    loaderRef.current = createDatabaseLoader(databaseUrl, (p) => {
-      setProgress(p);
-      if (p.cached !== undefined) {
-        setIsCached(p.cached);
-      }
-    });
-
-    return () => {
-      loaderRef.current?.close();
-      loaderRef.current = null;
-    };
-  }, [databaseUrl]);
-
-  // Load function
-  const load = useCallback(async () => {
-    if (!loaderRef.current || isLoading) return;
-
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const repo = await loaderRef.current.load();
-      setRepository(repo);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load database';
-      setError(message);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [isLoading]);
-
-  // Reload function (clear cache)
-  const reload = useCallback(async () => {
-    if (!loaderRef.current) return;
-
-    // Close existing
-    await loaderRef.current.close();
-    setRepository(null);
-
-    // Clear cache
-    await loaderRef.current.clearCache();
-
-    // Reload
-    await load();
-  }, [load]);
-
-  // Auto-load on mount
-  useEffect(() => {
-    if (autoLoad && !repository && !isLoading && !error) {
-      void load();
-    }
-  }, [autoLoad, repository, isLoading, error, load]);
+  const load = useMemo(
+    () => async () => {
+      if (autoLoad) return;
+      await query.reload();
+    },
+    [autoLoad, query]
+  );
 
   return {
-    repository,
-    isLoading,
-    progress,
-    error,
-    isCached,
+    repository: query.repository,
+    isLoading: query.isLoading,
+    isFetching: query.isFetching,
+    progress: query.progress,
+    error: query.error,
+    isCached: query.isCached,
     load,
-    reload,
+    reload: query.reload,
   };
 }
 

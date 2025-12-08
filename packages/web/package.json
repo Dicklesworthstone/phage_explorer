@@ -10,12 +10,13 @@
     "lint": "bunx eslint src --max-warnings=0"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.90.12",
     "comlink": "^4.4.2",
     "immer": "^11.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "three": "^0.170.0",
     "sql.js": "^1.13.0",
+    "three": "^0.170.0",
     "web-vitals": "^5.1.0",
     "workbox-expiration": "^7.4.0",
     "workbox-precaching": "^7.4.0",
