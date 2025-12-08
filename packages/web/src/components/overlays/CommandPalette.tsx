@@ -6,12 +6,28 @@
  * - Category grouping
  * - Keyboard navigation
  * - Recent commands
+ * - Context-sensitive filtering
+ * - Experience-level filtering
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
-import { useOverlay, type OverlayId } from './OverlayProvider';
+import { useOverlay } from './OverlayProvider';
+import { useWebPreferences } from '../../store/createWebStore';
+
+// Experience levels for progressive disclosure
+type ExperienceLevel = 'novice' | 'intermediate' | 'power';
+
+// Context tags for filtering
+type CommandContext =
+  | 'always'           // Always show
+  | 'has-phage'        // When a phage is loaded
+  | 'dna-mode'         // When in DNA view
+  | 'amino-mode'       // When in amino acid view
+  | 'has-selection'    // When sequence is selected
+  | 'has-diff-ref'     // When diff reference is set
+  | 'simulation-active'; // When simulation is running
 
 interface Command {
   id: string;
@@ -20,6 +36,9 @@ interface Command {
   category: string;
   shortcut?: string;
   action: () => void;
+  // New fields for filtering
+  minLevel?: ExperienceLevel;        // Minimum experience level to show
+  contexts?: CommandContext[];       // Show only in these contexts (empty = always)
 }
 
 // Fuzzy search scoring
@@ -81,54 +100,174 @@ function highlightMatch(text: string, indices: number[], highlightColor: string)
   return result;
 }
 
-interface CommandPaletteProps {
-  commands?: Command[];
+// Experience level hierarchy for comparison
+const LEVEL_ORDER: Record<ExperienceLevel, number> = {
+  novice: 0,
+  intermediate: 1,
+  power: 2,
+};
+
+function meetsLevelRequirement(userLevel: ExperienceLevel, requiredLevel?: ExperienceLevel): boolean {
+  if (!requiredLevel) return true;
+  return LEVEL_ORDER[userLevel] >= LEVEL_ORDER[requiredLevel];
 }
 
-export function CommandPalette({ commands: customCommands }: CommandPaletteProps): React.ReactElement | null {
+// Recent commands storage
+const RECENT_COMMANDS_KEY = 'phage-explorer-recent-commands';
+const MAX_RECENT_COMMANDS = 5;
+
+function getRecentCommands(): string[] {
+  try {
+    const stored = localStorage.getItem(RECENT_COMMANDS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function addRecentCommand(commandId: string): void {
+  try {
+    const recent = getRecentCommands().filter(id => id !== commandId);
+    recent.unshift(commandId);
+    localStorage.setItem(RECENT_COMMANDS_KEY, JSON.stringify(recent.slice(0, MAX_RECENT_COMMANDS)));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+// Current context detection (simplified - would hook into actual app state)
+interface AppContext {
+  hasPhage: boolean;
+  viewMode: 'dna' | 'amino';
+  hasSelection: boolean;
+  hasDiffRef: boolean;
+  simulationActive: boolean;
+}
+
+function matchesContext(cmd: Command, ctx: AppContext): boolean {
+  const contexts = cmd.contexts;
+  if (!contexts || contexts.length === 0 || contexts.includes('always')) {
+    return true;
+  }
+
+  for (const c of contexts) {
+    switch (c) {
+      case 'has-phage': if (ctx.hasPhage) return true; break;
+      case 'dna-mode': if (ctx.viewMode === 'dna') return true; break;
+      case 'amino-mode': if (ctx.viewMode === 'amino') return true; break;
+      case 'has-selection': if (ctx.hasSelection) return true; break;
+      case 'has-diff-ref': if (ctx.hasDiffRef) return true; break;
+      case 'simulation-active': if (ctx.simulationActive) return true; break;
+    }
+  }
+  return false;
+}
+
+interface CommandPaletteProps {
+  commands?: Command[];
+  /** Current app context for filtering */
+  context?: Partial<AppContext>;
+}
+
+export function CommandPalette({ commands: customCommands, context: propContext }: CommandPaletteProps): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle, open, close } = useOverlay();
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Default commands
+  // Get user's experience level from preferences
+  const experienceLevel = useWebPreferences((s: { experienceLevel: string }) => s.experienceLevel) as ExperienceLevel;
+  const setExperienceLevel = useWebPreferences((s: { setExperienceLevel: (level: ExperienceLevel) => void }) => s.setExperienceLevel);
+  const viewMode = useWebPreferences((s: { viewMode: string }) => s.viewMode);
+
+  // Merge prop context with inferred context
+  const appContext: AppContext = useMemo(() => ({
+    hasPhage: true, // Would come from actual app state
+    viewMode: (viewMode === 'dna' || viewMode === 'amino') ? viewMode : 'dna',
+    hasSelection: false,
+    hasDiffRef: false,
+    simulationActive: false,
+    ...propContext,
+  }), [viewMode, propContext]);
+
+  // Load recent commands on mount
+  useEffect(() => {
+    setRecentCommandIds(getRecentCommands());
+  }, []);
+
+  // Default commands with experience levels and contexts
   const defaultCommands: Command[] = useMemo(() => [
-    // Theme commands
-    { id: 'theme:classic', label: 'Theme: Classic', category: 'Theme', shortcut: 't', action: () => {} },
-    { id: 'theme:cyber', label: 'Theme: Cyberpunk', category: 'Theme', action: () => {} },
-    { id: 'theme:matrix', label: 'Theme: Matrix', category: 'Theme', action: () => {} },
-    { id: 'theme:ocean', label: 'Theme: Ocean', category: 'Theme', action: () => {} },
+    // Theme commands (available to all)
+    { id: 'theme:classic', label: 'Theme: Classic', category: 'Theme', shortcut: 't', action: () => {}, minLevel: 'novice' },
+    { id: 'theme:cyber', label: 'Theme: Cyberpunk', category: 'Theme', action: () => {}, minLevel: 'novice' },
+    { id: 'theme:matrix', label: 'Theme: Matrix', category: 'Theme', action: () => {}, minLevel: 'novice' },
+    { id: 'theme:ocean', label: 'Theme: Ocean', category: 'Theme', action: () => {}, minLevel: 'novice' },
 
     // Overlay commands
-    { id: 'overlay:help', label: 'Show Help', category: 'Overlay', shortcut: '?', action: () => { close(); open('help'); } },
-    { id: 'overlay:search', label: 'Search Phages', category: 'Overlay', shortcut: 's', action: () => { close(); open('search'); } },
-    { id: 'overlay:analysis', label: 'Analysis Menu', category: 'Overlay', shortcut: 'a', action: () => { close(); open('analysisMenu'); } },
-    { id: 'overlay:simulation', label: 'Simulation Hub', category: 'Overlay', shortcut: 'S', action: () => { close(); open('simulationHub'); } },
-    { id: 'overlay:comparison', label: 'Genome Comparison', category: 'Overlay', shortcut: 'c', action: () => { close(); open('comparison'); } },
+    { id: 'overlay:help', label: 'Show Help', category: 'Navigation', shortcut: '?', action: () => { close(); open('help'); }, minLevel: 'novice' },
+    { id: 'overlay:search', label: 'Search Phages', category: 'Navigation', shortcut: 's', action: () => { close(); open('search'); }, minLevel: 'novice' },
+    { id: 'overlay:analysis', label: 'Analysis Menu', category: 'Analysis', shortcut: 'a', action: () => { close(); open('analysisMenu'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'overlay:simulation', label: 'Simulation Hub', category: 'Simulation', shortcut: 'S', action: () => { close(); open('simulationHub'); }, minLevel: 'intermediate' },
+    { id: 'overlay:comparison', label: 'Genome Comparison', category: 'Analysis', shortcut: 'c', action: () => { close(); open('comparison'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
 
-    // Analysis commands
-    { id: 'analysis:gc', label: 'GC Skew Analysis', category: 'Analysis', shortcut: 'g', action: () => { close(); open('gcSkew'); } },
-    { id: 'analysis:complexity', label: 'Sequence Complexity', category: 'Analysis', shortcut: 'x', action: () => { close(); open('complexity'); } },
-    { id: 'analysis:bendability', label: 'DNA Bendability', category: 'Analysis', shortcut: 'b', action: () => { close(); open('bendability'); } },
-    { id: 'analysis:promoter', label: 'Promoter/RBS Sites', category: 'Analysis', shortcut: 'p', action: () => { close(); open('promoter'); } },
-    { id: 'analysis:repeat', label: 'Repeat Finder', category: 'Analysis', shortcut: 'r', action: () => { close(); open('repeats'); } },
+    // Analysis commands (require phage loaded)
+    { id: 'analysis:gc', label: 'GC Skew Analysis', category: 'Analysis', shortcut: 'g', action: () => { close(); open('gcSkew'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:complexity', label: 'Sequence Complexity', category: 'Analysis', shortcut: 'x', action: () => { close(); open('complexity'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:bendability', label: 'DNA Bendability', category: 'Analysis', shortcut: 'b', action: () => { close(); open('bendability'); }, minLevel: 'intermediate', contexts: ['has-phage', 'dna-mode'] },
+    { id: 'analysis:promoter', label: 'Promoter/RBS Sites', category: 'Analysis', shortcut: 'p', action: () => { close(); open('promoter'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:repeat', label: 'Repeat Finder', category: 'Analysis', shortcut: 'r', action: () => { close(); open('repeats'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
 
-    // View commands
-    { id: 'view:dna', label: 'View: DNA Mode', category: 'View', shortcut: 'Space', action: () => {} },
-    { id: 'view:aa', label: 'View: Amino Acid Mode', category: 'View', shortcut: 'Space', action: () => {} },
-    { id: 'view:diff', label: 'Toggle Diff Mode', category: 'View', shortcut: 'd', action: () => {} },
-    { id: 'view:3d', label: 'Toggle 3D Model', category: 'View', shortcut: 'm', action: () => {} },
+    // Advanced analysis (power users)
+    { id: 'analysis:kmer', label: 'K-mer Anomaly Detection', category: 'Advanced', shortcut: 'V', action: () => { close(); open('kmerAnomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:hgt', label: 'HGT Provenance', category: 'Advanced', shortcut: 'Y', action: () => { close(); open('hgt'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:tropism', label: 'Tropism & Receptors', category: 'Advanced', shortcut: '0', action: () => { close(); open('tropism'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:bias', label: 'Codon Bias Decomposition', category: 'Advanced', shortcut: 'J', action: () => { close(); open('biasDecomposition'); }, minLevel: 'power', contexts: ['has-phage'] },
+
+    // View commands (context-dependent)
+    { id: 'view:dna', label: 'Switch to DNA Mode', category: 'View', shortcut: 'Space', action: () => {}, minLevel: 'novice', contexts: ['amino-mode'] },
+    { id: 'view:aa', label: 'Switch to Amino Acid Mode', category: 'View', shortcut: 'Space', action: () => {}, minLevel: 'novice', contexts: ['dna-mode'] },
+    { id: 'view:diff', label: 'Toggle Diff Mode', category: 'View', shortcut: 'd', action: () => {}, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'view:3d', label: 'Toggle 3D Model', category: 'View', shortcut: 'm', action: () => {}, minLevel: 'intermediate', contexts: ['has-phage'] },
 
     // Navigation commands
-    { id: 'nav:start', label: 'Go to Start', category: 'Navigation', shortcut: 'gg', action: () => {} },
-    { id: 'nav:end', label: 'Go to End', category: 'Navigation', shortcut: 'G', action: () => {} },
-    { id: 'nav:goto', label: 'Go to Position...', category: 'Navigation', shortcut: 'Ctrl+g', action: () => { close(); open('goto'); } },
+    { id: 'nav:start', label: 'Go to Start', category: 'Navigation', shortcut: 'gg', action: () => {}, minLevel: 'novice', contexts: ['has-phage'] },
+    { id: 'nav:end', label: 'Go to End', category: 'Navigation', shortcut: 'G', action: () => {}, minLevel: 'novice', contexts: ['has-phage'] },
+    { id: 'nav:goto', label: 'Go to Position...', category: 'Navigation', shortcut: 'Ctrl+g', action: () => { close(); open('goto'); }, minLevel: 'novice', contexts: ['has-phage'] },
+
+    // Export commands (power users, require selection/phage)
+    { id: 'export:fasta', label: 'Export as FASTA', category: 'Export', action: () => {}, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'export:copy', label: 'Copy Sequence to Clipboard', category: 'Export', action: () => {}, minLevel: 'novice', contexts: ['has-selection'] },
+    { id: 'export:json', label: 'Export Analysis as JSON', category: 'Export', action: () => {}, minLevel: 'power', contexts: ['has-phage'] },
   ], [close, open]);
 
-  const commands = customCommands ?? defaultCommands;
+  const allCommands = customCommands ?? defaultCommands;
+
+  // Filter commands by experience level and context
+  const commands = useMemo(() => {
+    return allCommands.filter(cmd => {
+      // Check experience level
+      if (!meetsLevelRequirement(experienceLevel, cmd.minLevel)) {
+        return false;
+      }
+      // Check context
+      if (!matchesContext(cmd, appContext)) {
+        return false;
+      }
+      return true;
+    });
+  }, [allCommands, experienceLevel, appContext]);
+
+  // Get recent commands that are still available
+  const recentCommands = useMemo(() => {
+    return recentCommandIds
+      .map(id => commands.find(cmd => cmd.id === id))
+      .filter((cmd): cmd is Command => cmd !== undefined)
+      .slice(0, 3);
+  }, [recentCommandIds, commands]);
 
   // Filter and sort commands based on query
   const filteredCommands = useMemo(() => {
@@ -186,12 +325,27 @@ export function CommandPalette({ commands: customCommands }: CommandPaletteProps
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [toggle]);
 
+  // Total navigable items (recent commands + filtered commands)
+  const showRecent = !query.trim() && recentCommands.length > 0;
+  const totalItems = (showRecent ? recentCommands.length : 0) + filteredCommands.length;
+
+  // Get command at a given flat index (accounting for recent commands)
+  const getCommandAtIndex = useCallback((index: number): Command | undefined => {
+    if (showRecent) {
+      if (index < recentCommands.length) {
+        return recentCommands[index];
+      }
+      return filteredCommands[index - recentCommands.length];
+    }
+    return filteredCommands[index];
+  }, [showRecent, recentCommands, filteredCommands]);
+
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault();
-        setSelectedIndex(prev => Math.min(prev + 1, filteredCommands.length - 1));
+        setSelectedIndex(prev => Math.min(prev + 1, totalItems - 1));
         break;
       case 'ArrowUp':
         e.preventDefault();
@@ -199,20 +353,24 @@ export function CommandPalette({ commands: customCommands }: CommandPaletteProps
         break;
       case 'Enter':
         e.preventDefault();
-        if (filteredCommands[selectedIndex]) {
-          filteredCommands[selectedIndex].action();
+        const cmd = getCommandAtIndex(selectedIndex);
+        if (cmd) {
+          addRecentCommand(cmd.id);
+          setRecentCommandIds(getRecentCommands());
+          cmd.action();
           close('commandPalette');
         }
         break;
       case 'Tab':
         e.preventDefault();
         // Tab completion: fill in the selected command's label
-        if (filteredCommands[selectedIndex]) {
-          setQuery(filteredCommands[selectedIndex].label);
+        const tabCmd = getCommandAtIndex(selectedIndex);
+        if (tabCmd) {
+          setQuery(tabCmd.label);
         }
         break;
     }
-  }, [filteredCommands, selectedIndex, close]);
+  }, [totalItems, selectedIndex, getCommandAtIndex, close]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -249,6 +407,35 @@ export function CommandPalette({ commands: customCommands }: CommandPaletteProps
       position="top"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        {/* Experience level filter */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span style={{ color: colors.textMuted, fontSize: '0.9rem' }}>Experience</span>
+          {(['novice', 'intermediate', 'power'] as ExperienceLevel[]).map((level) => {
+            const active = level === experienceLevel;
+            return (
+              <button
+                key={level}
+                onClick={() => setExperienceLevel(level)}
+                style={{
+                  padding: '0.35rem 0.65rem',
+                  borderRadius: '4px',
+                  border: `1px solid ${active ? colors.accent : colors.border}`,
+                  backgroundColor: active ? colors.accent : colors.background,
+                  color: active ? '#000' : colors.text,
+                  cursor: 'pointer',
+                  textTransform: 'capitalize',
+                  fontWeight: active ? 700 : 500,
+                }}
+              >
+                {level}
+              </button>
+            );
+          })}
+          <span style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
+            Novice shows core actions; Power reveals everything.
+          </span>
+        </div>
+
         {/* Search input */}
         <input
           ref={inputRef}
@@ -280,6 +467,68 @@ export function CommandPalette({ commands: customCommands }: CommandPaletteProps
             overflowY: 'auto',
           }}
         >
+          {/* Recent commands section (only show when no query) */}
+          {showRecent && (
+            <div>
+              <div style={{
+                padding: '0.5rem',
+                color: colors.accent,
+                fontSize: '0.75rem',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+                borderBottom: `1px solid ${colors.borderLight}`,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.5rem',
+              }}>
+                <span>⏱</span>
+                <span>Recent</span>
+              </div>
+              {recentCommands.map((cmd) => {
+                const currentIndex = flatIndex++;
+                const isSelected = currentIndex === selectedIndex;
+
+                return (
+                  <div
+                    key={`recent-${cmd.id}`}
+                    onClick={() => {
+                      addRecentCommand(cmd.id);
+                      setRecentCommandIds(getRecentCommands());
+                      cmd.action();
+                      close('commandPalette');
+                    }}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '0.5rem 0.75rem',
+                      cursor: 'pointer',
+                      backgroundColor: isSelected ? colors.backgroundAlt : 'transparent',
+                      borderLeft: isSelected ? `2px solid ${colors.accent}` : '2px solid transparent',
+                    }}
+                  >
+                    <span style={{ color: isSelected ? colors.text : colors.textDim }}>
+                      {cmd.label}
+                    </span>
+                    {cmd.shortcut && (
+                      <span style={{
+                        color: colors.accent,
+                        fontSize: '0.8rem',
+                        padding: '0.1rem 0.4rem',
+                        backgroundColor: colors.background,
+                        border: `1px solid ${colors.borderLight}`,
+                        borderRadius: '3px',
+                        fontFamily: 'monospace',
+                      }}>
+                        {cmd.shortcut}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {Object.entries(groupedCommands).map(([category, cmds]) => (
             <div key={category}>
               <div style={{
@@ -300,6 +549,8 @@ export function CommandPalette({ commands: customCommands }: CommandPaletteProps
                   <div
                     key={cmd.id}
                     onClick={() => {
+                      addRecentCommand(cmd.id);
+                      setRecentCommandIds(getRecentCommands());
                       cmd.action();
                       close('commandPalette');
                     }}

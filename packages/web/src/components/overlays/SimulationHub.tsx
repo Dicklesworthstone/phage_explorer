@@ -3,6 +3,7 @@
  *
  * A modal for launching and configuring simulations.
  * Matches the TUI SimulationMenuOverlay pattern.
+ * Includes SVG preview thumbnails for each simulation type.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -19,6 +20,142 @@ interface SimulationDef {
   category: string;
   duration?: string;
   complexity?: 'simple' | 'moderate' | 'complex';
+}
+
+/**
+ * SVG Preview Thumbnails for simulations
+ * Each returns a small SVG depicting the simulation type
+ */
+interface ThumbnailProps {
+  accentColor: string;
+  mutedColor: string;
+}
+
+function LyticCycleThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <circle cx="16" cy="16" r="10" fill="none" stroke={mutedColor} strokeWidth="1.5" />
+      <circle cx="16" cy="16" r="6" fill={accentColor} opacity="0.3" />
+      <path d="M26 16 L38 10 M26 16 L38 16 M26 16 L38 22" stroke={accentColor} strokeWidth="1.5" />
+      <circle cx="40" cy="10" r="3" fill={accentColor} opacity="0.7" />
+      <circle cx="42" cy="16" r="3" fill={accentColor} opacity="0.7" />
+      <circle cx="40" cy="22" r="3" fill={accentColor} opacity="0.7" />
+    </svg>
+  );
+}
+
+function LysogenicSwitchThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <path d="M4 16 Q12 8 20 16 Q28 24 36 16 L44 16" fill="none" stroke={accentColor} strokeWidth="2" />
+      <circle cx="20" cy="16" r="4" fill={mutedColor} />
+      <path d="M18 14 L22 18 M18 18 L22 14" stroke={accentColor} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function BurstSizeThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <path d="M4 28 L12 24 L20 20 L28 12 L36 6 L44 4" fill="none" stroke={accentColor} strokeWidth="2" />
+      <rect x="4" y="28" width="6" height="2" fill={mutedColor} opacity="0.5" />
+      <rect x="12" y="24" width="6" height="6" fill={mutedColor} opacity="0.5" />
+      <rect x="20" y="18" width="6" height="12" fill={mutedColor} opacity="0.5" />
+      <rect x="28" y="10" width="6" height="20" fill={mutedColor} opacity="0.6" />
+      <rect x="36" y="4" width="6" height="26" fill={accentColor} opacity="0.4" />
+    </svg>
+  );
+}
+
+function PopulationDynamicsThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <path d="M4 20 Q12 24 20 18 Q28 12 36 16 Q42 18 44 14" fill="none" stroke={accentColor} strokeWidth="2" />
+      <path d="M4 12 Q12 8 20 14 Q28 20 36 16 Q42 14 44 18" fill="none" stroke={mutedColor} strokeWidth="1.5" strokeDasharray="3,2" />
+    </svg>
+  );
+}
+
+function CoinfectionThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <circle cx="16" cy="16" r="8" fill="none" stroke={accentColor} strokeWidth="1.5" />
+      <circle cx="32" cy="16" r="8" fill="none" stroke={mutedColor} strokeWidth="1.5" />
+      <path d="M20 12 L28 20 M28 12 L20 20" stroke={accentColor} strokeWidth="2" opacity="0.7" />
+    </svg>
+  );
+}
+
+function DNAPackagingThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <rect x="8" y="8" width="16" height="16" rx="2" fill="none" stroke={mutedColor} strokeWidth="1.5" />
+      <path d="M28 16 L36 12 L36 20 Z" fill={accentColor} />
+      <path d="M12 12 L20 12 M12 16 L20 16 M12 20 L18 20" stroke={accentColor} strokeWidth="1.5" />
+      <circle cx="40" cy="16" r="4" fill={accentColor} opacity="0.5" />
+    </svg>
+  );
+}
+
+function TranscriptionThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <rect x="4" y="14" width="40" height="4" rx="1" fill={mutedColor} opacity="0.3" />
+      <rect x="8" y="14" width="8" height="4" fill={accentColor} opacity="0.8" />
+      <rect x="20" y="14" width="6" height="4" fill={accentColor} opacity="0.6" />
+      <rect x="30" y="14" width="10" height="4" fill={accentColor} opacity="0.4" />
+      <path d="M12 10 L12 14 M24 10 L24 14 M36 10 L36 14" stroke={accentColor} strokeWidth="1" />
+    </svg>
+  );
+}
+
+function ReceptorBindingThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <circle cx="14" cy="16" r="8" fill="none" stroke={accentColor} strokeWidth="1.5" />
+      <path d="M14 12 L14 8 M10 14 L6 12 M18 14 L22 12" stroke={accentColor} strokeWidth="1" />
+      <rect x="30" y="10" width="12" height="12" rx="2" fill="none" stroke={mutedColor} strokeWidth="1.5" />
+      <path d="M22 16 L30 16" stroke={accentColor} strokeWidth="1.5" strokeDasharray="2,2" />
+    </svg>
+  );
+}
+
+function ResistanceEvolutionThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <path d="M4 26 L14 20 L24 24 L34 14 L44 10" fill="none" stroke={accentColor} strokeWidth="2" />
+      <circle cx="14" cy="20" r="2" fill={accentColor} />
+      <circle cx="24" cy="24" r="2" fill={accentColor} />
+      <circle cx="34" cy="14" r="2" fill={accentColor} />
+      <path d="M4 8 L14 12 L24 8 L34 18 L44 22" fill="none" stroke={mutedColor} strokeWidth="1.5" strokeDasharray="3,2" />
+    </svg>
+  );
+}
+
+function RecombinationThumbnail({ accentColor, mutedColor }: ThumbnailProps): React.ReactElement {
+  return (
+    <svg width="48" height="32" viewBox="0 0 48 32">
+      <path d="M4 10 L20 10 L28 22 L44 22" fill="none" stroke={accentColor} strokeWidth="2" />
+      <path d="M4 22 L20 22 L28 10 L44 10" fill="none" stroke={mutedColor} strokeWidth="1.5" />
+      <circle cx="24" cy="16" r="3" fill={accentColor} opacity="0.5" />
+    </svg>
+  );
+}
+
+function getSimulationThumbnail(simId: string, colors: ThumbnailProps): React.ReactElement | null {
+  switch (simId) {
+    case 'lytic-cycle': return <LyticCycleThumbnail {...colors} />;
+    case 'lysogenic-switch': return <LysogenicSwitchThumbnail {...colors} />;
+    case 'burst-size': return <BurstSizeThumbnail {...colors} />;
+    case 'population-dynamics': return <PopulationDynamicsThumbnail {...colors} />;
+    case 'coinfection': return <CoinfectionThumbnail {...colors} />;
+    case 'dna-packaging': return <DNAPackagingThumbnail {...colors} />;
+    case 'transcription': return <TranscriptionThumbnail {...colors} />;
+    case 'receptor-binding': return <ReceptorBindingThumbnail {...colors} />;
+    case 'resistance-evolution': return <ResistanceEvolutionThumbnail {...colors} />;
+    case 'recombination': return <RecombinationThumbnail {...colors} />;
+    default: return null;
+  }
 }
 
 const SIMULATIONS: SimulationDef[] = [
@@ -255,6 +392,12 @@ export function SimulationHub(): React.ReactElement | null {
                 const currentIndex = flatIndex++;
                 const isSelected = currentIndex === selectedIndex;
 
+                const thumbnailColors: ThumbnailProps = {
+                  accentColor: colors.accent,
+                  mutedColor: colors.textMuted,
+                };
+                const thumbnail = getSimulationThumbnail(sim.id, thumbnailColors);
+
                 return (
                   <div
                     key={sim.id}
@@ -274,7 +417,20 @@ export function SimulationHub(): React.ReactElement | null {
                       borderBottom: `1px solid ${colors.borderLight}`,
                     }}
                   >
-                    <span style={{ fontSize: '1.5rem' }}>{sim.icon}</span>
+                    {/* Preview thumbnail or fallback to emoji */}
+                    <div style={{
+                      width: '48px',
+                      height: '32px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      backgroundColor: colors.background,
+                      borderRadius: '4px',
+                      border: `1px solid ${colors.borderLight}`,
+                      flexShrink: 0,
+                    }}>
+                      {thumbnail || <span style={{ fontSize: '1.25rem' }}>{sim.icon}</span>}
+                    </div>
                     <div style={{ flex: 1 }}>
                       <div style={{
                         display: 'flex',
