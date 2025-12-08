@@ -17,7 +17,8 @@ export * from './simulation';
 export * from './phase-portraits';
 
 // Bias decomposition
-export * from './bias-decomposition';
+export * from './analysis/cgr';
+export * from './analysis/cgr-compare';
 
 // Functional module coherence
 export * from './module-coherence';
@@ -28,8 +29,14 @@ export * from './fold-embeddings';
 // CRISPR Pressure analysis
 export * from './crispr';
 
+// Non-B DNA Structure analysis
+export * from './analysis/non-b-dna';
+
 // Structure-informed constraint scanner
 export * from './structure-constraints';
 
 // Transcription flow analysis
 export * from './transcription';
+
+// Selection pressure analysis
+export * from './selection-pressure';
