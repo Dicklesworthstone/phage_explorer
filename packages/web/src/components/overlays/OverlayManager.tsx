@@ -19,6 +19,7 @@ import { PackagingPressureOverlay } from './PackagingPressureOverlay';
 import { CGROverlay } from './CGROverlay';
 import { HilbertOverlay } from './HilbertOverlay';
 import { VirionStabilityOverlay } from './VirionStabilityOverlay';
+import { CommandPalette } from './CommandPalette';
 
 interface OverlayManagerProps {
   repository: PhageRepository | null;
@@ -39,6 +40,7 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <VirionStabilityOverlay />
       <CGROverlay repository={repository} currentPhage={currentPhage} />
       <HilbertOverlay repository={repository} currentPhage={currentPhage} />
+      <CommandPalette />
     </>
   );
 }
