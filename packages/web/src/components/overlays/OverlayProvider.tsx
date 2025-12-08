@@ -33,7 +33,9 @@ export type OverlayId =
   | 'biasDecomposition'
   | 'crispr'
   | 'synteny'
-  | 'tropism';
+  | 'tropism'
+  | 'welcome'
+  | 'collaboration';
 
 export interface OverlayConfig {
   id: OverlayId;

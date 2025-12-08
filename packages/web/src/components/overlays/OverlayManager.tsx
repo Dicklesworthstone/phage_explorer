@@ -14,6 +14,7 @@ import {
   TranscriptionFlowOverlay,
   ModuleOverlay,
   WelcomeModal,
+  CollaborationOverlay,
 } from './index';
 import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
@@ -39,6 +40,7 @@ export function OverlayManager(): React.ReactElement {
     <>
       <WelcomeModal />
       <HelpOverlay />
+      <CollaborationOverlay />
       <CommandPalette onClose={() => {}} /> 
       
       {/* Analysis Overlays */}

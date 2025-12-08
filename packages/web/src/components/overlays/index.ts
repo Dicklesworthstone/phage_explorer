@@ -15,11 +15,16 @@ export {
 // Base component
 export { Overlay, type OverlaySize, type OverlayPosition } from './Overlay';
 
+// Manager
+export { OverlayManager } from './OverlayManager';
+
 // Core overlays
 export { HelpOverlay } from './HelpOverlay';
 export { CommandPalette } from './CommandPalette';
 export { AnalysisMenu } from './AnalysisMenu';
 export { SimulationHub } from './SimulationHub';
+export { WelcomeModal } from './WelcomeModal';
+export { CollaborationOverlay } from './CollaborationOverlay';
 
 // Layer 1 Analysis Overlays
 export { GCSkewOverlay } from './GCSkewOverlay';
