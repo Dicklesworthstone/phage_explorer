@@ -197,8 +197,6 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
     if (key.return && ranked[safeIndex]) {
       const chosen = ranked[safeIndex];
       chosen.action();
-      // update recents
-      recentCommands = [chosen.id, ...recentCommands.filter(id => id !== chosen.id)].slice(0, RECENT_LIMIT);
       onClose();
     }
   });
@@ -252,7 +250,7 @@ export function CommandPalette({ onClose }: CommandPaletteProps): React.ReactEle
       {/* Footer */}
       <Box marginTop={1} justifyContent="space-between">
         <Text color={colors.textDim} dimColor>
-          ↑/↓ navigate · Enter to run
+          ↑/↓ navigate · PgUp/PgDn page · Enter run · ESC close
         </Text>
         <Text color={colors.textDim} dimColor>
           Total: {ranked.length}
