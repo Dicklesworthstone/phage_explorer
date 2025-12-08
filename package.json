@@ -13,6 +13,7 @@
   "scripts": {
     "dev": "bun run packages/tui/src/index.tsx",
     "build:db": "bun run packages/data-pipeline/src/build-db.ts",
+    "build:tropism": "bun run packages/data-pipeline/src/tropism-build.ts",
     "build": "bun run scripts/build.ts",
     "build:mac-arm64": "bun run scripts/build.ts --target=mac-arm64",
     "build:mac-x64": "bun run scripts/build.ts --target=mac-x64",
