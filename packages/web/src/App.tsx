@@ -148,12 +148,6 @@ const PhageExplorerContent: React.FC = () => {
   });
 
   // Help hotkey
-  useHotkey({ key: 't' }, 'Cycle theme', handleThemeCycle, {
-    category: HotkeyCategories.THEMES,
-    modes: ['NORMAL'],
-  });
-
-  // Help hotkey
   useHotkey({ key: '?' }, 'Show help', handleHelp, {
     category: HotkeyCategories.GENERAL,
     modes: ['NORMAL'],
@@ -208,45 +202,61 @@ const PhageExplorerContent: React.FC = () => {
         pendingSequence,
         children: (
           <>
-                                <div className="flex gap-2" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
-                                  {fsSupported && (
-                                    <Tooltip content="Open local file (Ctrl+O)">
-                                      <button className="btn" onClick={handleOpenFile}>
-                                        <span className="key-hint">^O</span> Open
-                                      </button>
-                                    </Tooltip>
-                                  )}
-                                  <Tooltip content="Cycle color theme (T)">                                                  <button className="btn" onClick={handleThemeCycle}>
-                                                    <span className="key-hint">t</span> Theme
-                                                  </button>
-                                                </Tooltip>
-                                                <Tooltip content="Real-time Collaboration (C)">
-                                                  <button className="btn" onClick={handleCollaborate}>
-                                                    <span className="key-hint">c</span> Collaborate
-                                                  </button>
-                                                </Tooltip>
-                                                <div className="flex gap-1" style={{ alignItems: 'center' }}>
-                                        <span className="text-dim" style={{ fontSize: '0.85rem' }}>Experience</span>
-                              {experienceLevels.map((level) => {
-                                const active = level === experienceLevel;
-                                return (
-                                  <Tooltip key={level} content={`Set experience to ${level}`} position="bottom">
-                                    <button
-                                      className="badge"
-                                      onClick={() => handleExperienceChange(level)}
-                                      style={{
-                                        border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
-                                        background: active ? 'var(--color-accent)' : 'var(--color-badge)',
-                                        color: active ? '#000' : 'var(--color-badge-text)',
-                                        textTransform: 'capitalize',
-                                        cursor: 'pointer',
-                                      }}
-                                    >
-                                      {level}
-                                    </button>
-                                  </Tooltip>
-                                );
-                              })}              </div>
+            <div className="flex gap-2" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+              {fsSupported && (
+                <Tooltip content="Open local file (Ctrl+O)">
+                  <button
+                    className="btn"
+                    onClick={handleOpenFile}
+                    aria-label="Open a local FASTA or GenBank file (Ctrl+O)"
+                  >
+                    <span className="key-hint">^O</span> Open
+                  </button>
+                </Tooltip>
+              )}
+              <Tooltip content="Cycle color theme (T)">
+                <button
+                  className="btn"
+                  onClick={handleThemeCycle}
+                  aria-label="Cycle color theme (T)"
+                >
+                  <span className="key-hint">t</span> Theme
+                </button>
+              </Tooltip>
+              <Tooltip content="Real-time Collaboration (C)">
+                <button
+                  className="btn"
+                  onClick={handleCollaborate}
+                  aria-label="Open collaboration panel (C)"
+                >
+                  <span className="key-hint">c</span> Collaborate
+                </button>
+              </Tooltip>
+              <div className="flex gap-1" style={{ alignItems: 'center' }}>
+                <span className="text-dim" style={{ fontSize: '0.85rem' }}>Experience</span>
+                {experienceLevels.map((level) => {
+                  const active = level === experienceLevel;
+                  return (
+                    <Tooltip key={level} content={`Set experience to ${level}`} position="bottom">
+                      <button
+                        className="badge"
+                        onClick={() => handleExperienceChange(level)}
+                        aria-pressed={active}
+                        aria-label={`Set experience level to ${level}`}
+                        style={{
+                          border: `1px solid ${active ? 'var(--color-accent)' : 'var(--color-border)'}`,
+                          background: active ? 'var(--color-accent)' : 'var(--color-badge)',
+                          color: active ? '#000' : 'var(--color-badge-text)',
+                          textTransform: 'capitalize',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {level}
+                      </button>
+                    </Tooltip>
+                  );
+                })}
+              </div>
             </div>
             <RecentCommands />
           </>
@@ -263,7 +273,12 @@ const PhageExplorerContent: React.FC = () => {
             Press <span className="key-hint">?</span> for help.
           </p>
           {lastAction && (
-            <p className="text-dim" style={{ marginTop: '0.5rem' }}>
+            <p
+              className="text-dim"
+              style={{ marginTop: '0.5rem' }}
+              role="status"
+              aria-live="polite"
+            >
               Last action: {lastAction}
             </p>
           )}

@@ -8,6 +8,7 @@
 import React, { useRef, useEffect } from 'react';
 import { useTheme } from '../hooks/useTheme';
 import { useWebPreferences } from '../store/createWebStore';
+import { useReducedMotion } from '../hooks/useReducedMotion';
 
 export interface MatrixRainProps {
   width?: number;
@@ -31,14 +32,13 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { theme } = useTheme();
+  const reducedMotion = useReducedMotion();
   
   // In a real app, these could be in store or passed as props
   // For now, we default to 'dna' and moderate settings
   const density = 1.0; // 0.5 - 2.0
   const speed = 1.0;   // 0.5 - 3.0
   const charSet = 'dna';
-
-  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   useEffect(() => {
     if (reducedMotion) return;
@@ -145,6 +145,8 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
       ref={canvasRef}
       className={`matrix-rain pointer-events-none fixed inset-0 z-0 ${className}`}
       style={{ opacity }}
+      aria-hidden="true"
+      role="presentation"
     />
   );
 };

@@ -6,7 +6,7 @@ export const RecentCommands: React.FC = () => {
 
   if (!history.length) {
     return (
-      <div className="recent-commands">
+      <div className="recent-commands" role="status" aria-live="polite" aria-label="Recent commands">
         <div className="recent-commands__title">Recent commands</div>
         <div className="recent-commands__empty">No commands yet</div>
       </div>
@@ -14,7 +14,7 @@ export const RecentCommands: React.FC = () => {
   }
 
   return (
-    <div className="recent-commands">
+    <div className="recent-commands" role="log" aria-live="polite" aria-label="Recent commands history">
       <div className="recent-commands__title">Recent commands</div>
       <ul className="recent-commands__list">
         {history.slice(0, 5).map((h, i) => (
