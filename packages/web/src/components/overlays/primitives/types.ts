@@ -72,3 +72,37 @@ export interface ArcInteraction {
   clientY: number;
 }
 
+export interface GenomeTrackSegment {
+  start: number;
+  end: number;
+  color?: string;
+  label?: string;
+  height?: number;
+}
+
+export interface GenomeTrackInteraction {
+  position: number;
+  segment: GenomeTrackSegment | null;
+  clientX: number;
+  clientY: number;
+}
+
+export interface GelBand {
+  size: number; // in base pairs
+  intensity: number; // 0-1
+}
+
+export interface GelLane {
+  name: string;
+  bands: GelBand[];
+  color?: string;
+}
+
+export interface GelInteraction {
+  laneIndex: number;
+  bandIndex: number;
+  band: GelBand;
+  clientX: number;
+  clientY: number;
+}
+
