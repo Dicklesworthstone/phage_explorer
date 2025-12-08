@@ -17,6 +17,8 @@ import { AALegend } from './AALegend';
 import { ComparisonOverlay } from './ComparisonOverlay';
 import { PackagingPressureOverlay } from './PackagingPressureOverlay';
 import { CGROverlay } from './CGROverlay';
+import { HilbertOverlay } from './HilbertOverlay';
+import { VirionStabilityOverlay } from './VirionStabilityOverlay';
 
 interface OverlayManagerProps {
   repository: PhageRepository | null;
@@ -34,7 +36,9 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <SimulationView />
       <ComparisonOverlay repository={repository} />
       <PackagingPressureOverlay />
+      <VirionStabilityOverlay />
       <CGROverlay repository={repository} currentPhage={currentPhage} />
+      <HilbertOverlay repository={repository} currentPhage={currentPhage} />
     </>
   );
 }
