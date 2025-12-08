@@ -2,10 +2,12 @@ import React, { useCallback, useState } from 'react';
 import { useTheme, getNucleotideClass, useHotkey, useKeyboardMode, usePendingSequence } from './hooks';
 import { AppShell } from './components';
 import { HotkeyCategories } from './keyboard/types';
+import { OverlayProvider, OverlayManager, useOverlay } from './components/overlays';
 
-const App: React.FC = () => {
+const PhageExplorerContent: React.FC = () => {
   const { theme, nextTheme, availableThemes } = useTheme();
   const { mode, setMode } = useKeyboardMode();
+  const { toggle } = useOverlay();
   const pendingSequence = usePendingSequence();
   const [lastAction, setLastAction] = useState<string>('');
 
@@ -16,18 +18,21 @@ const App: React.FC = () => {
   }, [nextTheme]);
 
   const handleHelp = useCallback(() => {
-    setLastAction('Help overlay (not yet implemented)');
-  }, []);
+    toggle('help');
+    setLastAction('Help overlay toggled');
+  }, [toggle]);
 
   const handleSearch = useCallback(() => {
-    setMode('SEARCH');
-    setLastAction('Search mode activated');
-  }, [setMode]);
+    // setMode('SEARCH'); // Search is now an overlay in web too?
+    // For now, keep mode switching if search overlay isn't fully replacing it
+    toggle('search'); // Assuming search is an overlay
+    setLastAction('Search overlay toggled');
+  }, [toggle]);
 
   const handleCommand = useCallback(() => {
-    setMode('COMMAND');
-    setLastAction('Command mode activated');
-  }, [setMode]);
+    toggle('commandPalette');
+    setLastAction('Command palette toggled');
+  }, [toggle]);
 
   const handleEscape = useCallback(() => {
     setMode('NORMAL');
@@ -43,6 +48,11 @@ const App: React.FC = () => {
     setLastAction('Go to bottom (G)');
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }, []);
+
+  const handleTranscriptionFlow = useCallback(() => {
+    toggle('transcriptionFlow');
+    setLastAction('Transcription flow toggled');
+  }, [toggle]);
 
   // Theme hotkey
   useHotkey({ key: 't' }, 'Cycle theme', handleThemeCycle, {
@@ -65,6 +75,12 @@ const App: React.FC = () => {
   // Command hotkey
   useHotkey({ key: ':' }, 'Command palette', handleCommand, {
     category: HotkeyCategories.GENERAL,
+    modes: ['NORMAL'],
+  });
+
+  // Transcription Flow hotkey
+  useHotkey({ key: 'y' }, 'Transcription Flow', handleTranscriptionFlow, {
+    category: HotkeyCategories.ANALYSIS,
     modes: ['NORMAL'],
   });
 
@@ -98,6 +114,8 @@ const App: React.FC = () => {
         ),
       }}
     >
+      <OverlayManager />
+      
       <div className="cards-grid">
         <section className="card animate-fade-in">
           <h2>Keyboard Manager Active</h2>
@@ -113,11 +131,9 @@ const App: React.FC = () => {
         </section>
 
         <section className="card animate-fade-in" style={{ animationDelay: '50ms' }}>
-          <h2>Key Sequences</h2>
+          <h2>Analysis Tools</h2>
           <p>
-            Try <span className="key-hint">g</span><span className="key-hint">g</span> to go to top,
-            or <span className="key-hint">G</span> for bottom.
-            Sequences timeout after 1 second.
+            Try <span className="key-hint">y</span> for Transcription Flow analysis.
           </p>
         </section>
 
@@ -175,6 +191,14 @@ const App: React.FC = () => {
         </section>
       </div>
     </AppShell>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <OverlayProvider>
+      <PhageExplorerContent />
+    </OverlayProvider>
   );
 };
 
