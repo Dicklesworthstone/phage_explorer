@@ -359,12 +359,16 @@ async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpect
   const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
   let counts: Map<string, number> | null = null;
 
-  // Try GPU if k is small enough (shader limit) and supported
-  if (k <= 12 && gpuCompute.isSupported) {
+  // Try GPU if k is small enough (shader limit) - must await ready() for initialization
+  if (k <= 12) {
     try {
-      counts = await gpuCompute.countKmers(seq, k);
+      const gpuSupported = await gpuCompute.ready();
+      if (gpuSupported) {
+        counts = await gpuCompute.countKmers(seq, k);
+      }
     } catch (e) {
       console.warn('GPU k-mer count failed, falling back to CPU', e);
+      counts = null;
     }
   }
 
@@ -377,7 +381,7 @@ async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpect
     }
   }
 
-  const totalKmers = seq.length - k + 1;
+  const totalKmers = Math.max(1, seq.length - k + 1);
   const spectrum = Array.from(counts.entries())
     .map(([kmer, count]) => ({
       kmer,

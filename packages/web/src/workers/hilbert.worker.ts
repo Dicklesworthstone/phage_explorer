@@ -43,6 +43,14 @@ function calculateOrder(length: number): number {
 }
 
 function renderHilbert(sequence: string, colors: Record<string, RGB>): HilbertWorkerResult {
+  // Input validation
+  if (!sequence || typeof sequence !== 'string') {
+    throw new Error('Invalid sequence: must be a non-empty string');
+  }
+  if (!colors || typeof colors !== 'object') {
+    throw new Error('Invalid colors: must be a color map object');
+  }
+
   const order = calculateOrder(sequence.length);
   const size = 1 << order;
   const totalPixels = size * size;
@@ -75,7 +83,7 @@ function renderHilbert(sequence: string, colors: Record<string, RGB>): HilbertWo
     order,
     size,
     buffer,
-    coverage: maxIdx / totalPixels,
+    coverage: totalPixels > 0 ? maxIdx / totalPixels : 0,
   };
 }
 
@@ -85,8 +93,32 @@ export interface HilbertWorkerAPI {
 
 const api: HilbertWorkerAPI = {
   render(sequence, colors) {
-    const result = renderHilbert(sequence, colors);
-    return Comlink.transfer(result, [result.buffer.buffer]);
+    try {
+      const result = renderHilbert(sequence, colors);
+
+      // Validate buffer before transfer to prevent race condition with detached buffer
+      if (!result.buffer || !result.buffer.buffer || result.buffer.buffer.byteLength === 0) {
+        throw new Error('Invalid buffer generated');
+      }
+
+      // Only transfer if buffer is valid and not already detached
+      const arrayBuffer = result.buffer.buffer;
+      if (arrayBuffer.byteLength > 0) {
+        return Comlink.transfer(result, [arrayBuffer]);
+      }
+
+      // Fallback: return without transfer if buffer is problematic
+      return result;
+    } catch (error) {
+      console.error('Hilbert render error:', error);
+      // Return empty result on error rather than crashing
+      return {
+        order: 4,
+        size: 16,
+        buffer: new Uint8ClampedArray(16 * 16 * 4),
+        coverage: 0,
+      };
+    }
   },
 };
 

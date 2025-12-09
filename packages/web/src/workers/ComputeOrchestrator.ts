@@ -36,6 +36,34 @@ interface WorkerInstance {
   type: WorkerType;
   busy: boolean;
   lastUsed: number;
+  healthy: boolean;
+}
+
+/**
+ * Simple mutex for synchronizing worker pool access
+ */
+class Mutex {
+  private locked = false;
+  private queue: Array<() => void> = [];
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true;
+      return;
+    }
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      next();
+    } else {
+      this.locked = false;
+    }
+  }
 }
 
 /**
@@ -47,6 +75,7 @@ export class ComputeOrchestrator {
   private workers = new Map<string, WorkerInstance>();
   private config: Required<WorkerPoolConfig>;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private poolMutex = new Mutex();
 
   private constructor(config: WorkerPoolConfig = {}) {
     this.config = {
@@ -77,18 +106,23 @@ export class ComputeOrchestrator {
     let worker: Worker;
     let api: AnalysisWorkerAPI | SimulationWorkerAPI;
 
-    if (type === 'analysis') {
-      worker = new Worker(
-        new URL('./analysis.worker.ts', import.meta.url),
-        { type: 'module' }
-      );
-      api = Comlink.wrap<AnalysisWorkerAPI>(worker);
-    } else {
-      worker = new Worker(
-        new URL('./simulation.worker.ts', import.meta.url),
-        { type: 'module' }
-      );
-      api = Comlink.wrap<SimulationWorkerAPI>(worker);
+    try {
+      if (type === 'analysis') {
+        worker = new Worker(
+          new URL('./analysis.worker.ts', import.meta.url),
+          { type: 'module' }
+        );
+        api = Comlink.wrap<AnalysisWorkerAPI>(worker);
+      } else {
+        worker = new Worker(
+          new URL('./simulation.worker.ts', import.meta.url),
+          { type: 'module' }
+        );
+        api = Comlink.wrap<SimulationWorkerAPI>(worker);
+      }
+    } catch (error) {
+      console.error(`Failed to create ${type} worker:`, error);
+      throw new Error(`Failed to create ${type} worker: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
 
     const instance: WorkerInstance = {
@@ -98,6 +132,13 @@ export class ComputeOrchestrator {
       type,
       busy: false,
       lastUsed: Date.now(),
+      healthy: true,
+    };
+
+    // Listen for worker errors to mark as unhealthy
+    worker.onerror = (event) => {
+      console.error(`Worker ${workerId} error:`, event.message);
+      instance.healthy = false;
     };
 
     this.workers.set(workerId, instance);
@@ -105,39 +146,71 @@ export class ComputeOrchestrator {
   }
 
   /**
-   * Get an available worker of the specified type
+   * Get an available worker of the specified type (thread-safe)
    */
-  private getAvailableWorker(type: WorkerType): WorkerInstance {
-    // Find an idle worker of the right type
-    for (const instance of this.workers.values()) {
-      if (instance.type === type && !instance.busy) {
+  private async getAvailableWorker(type: WorkerType): Promise<WorkerInstance> {
+    await this.poolMutex.acquire();
+    try {
+      // Clean up any unhealthy workers first
+      for (const [id, instance] of this.workers.entries()) {
+        if (!instance.healthy && !instance.busy) {
+          instance.worker.terminate();
+          this.workers.delete(id);
+        }
+      }
+
+      // Find an idle, healthy worker of the right type
+      for (const instance of this.workers.values()) {
+        if (instance.type === type && !instance.busy && instance.healthy) {
+          instance.busy = true;
+          instance.lastUsed = Date.now();
+          return instance;
+        }
+      }
+
+      // No idle workers, check if we can create a new one
+      const typeCount = Array.from(this.workers.values()).filter(w => w.type === type).length;
+      if (typeCount < Math.ceil(this.config.maxWorkers / 2)) {
+        const instance = this.createWorker(type);
         instance.busy = true;
-        instance.lastUsed = Date.now();
         return instance;
       }
-    }
 
-    // No idle workers, check if we can create a new one
-    const typeCount = Array.from(this.workers.values()).filter(w => w.type === type).length;
-    if (typeCount < Math.ceil(this.config.maxWorkers / 2)) {
+      // At capacity - create one anyway (overflow for burst handling)
+      // but log a warning for monitoring
+      if (typeCount >= Math.ceil(this.config.maxWorkers / 2)) {
+        console.warn(`Worker pool at capacity for ${type}, creating overflow worker`);
+      }
       const instance = this.createWorker(type);
       instance.busy = true;
       return instance;
+    } finally {
+      this.poolMutex.release();
     }
-
-    // Wait for any worker of this type to become available
-    // For now, just create one anyway (can add queuing later)
-    const instance = this.createWorker(type);
-    instance.busy = true;
-    return instance;
   }
 
   /**
-   * Release a worker back to the pool
+   * Release a worker back to the pool with health validation
    */
-  private releaseWorker(instance: WorkerInstance): void {
-    instance.busy = false;
+  private releaseWorker(instance: WorkerInstance, error?: Error): void {
     instance.lastUsed = Date.now();
+
+    // If an error occurred during execution, mark as unhealthy
+    if (error) {
+      instance.healthy = false;
+      console.warn(`Worker ${instance.id} marked unhealthy after error:`, error.message);
+    }
+
+    // Only release healthy workers back to pool
+    if (instance.healthy) {
+      instance.busy = false;
+    } else {
+      // Schedule unhealthy worker for cleanup
+      instance.busy = false;
+      // Terminate immediately if not in use
+      instance.worker.terminate();
+      this.workers.delete(instance.id);
+    }
   }
 
   /**
@@ -193,12 +266,16 @@ export class ComputeOrchestrator {
    * Run an analysis task
    */
   async runAnalysis(request: AnalysisRequest): Promise<AnalysisResult> {
-    const instance = this.getAvailableWorker('analysis');
+    const instance = await this.getAvailableWorker('analysis');
+    let error: Error | undefined;
     try {
       const api = instance.api as AnalysisWorkerAPI;
       return await api.runAnalysis(request);
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 
@@ -209,12 +286,16 @@ export class ComputeOrchestrator {
     request: AnalysisRequest,
     onProgress: (progress: ProgressInfo) => void
   ): Promise<AnalysisResult> {
-    const instance = this.getAvailableWorker('analysis');
+    const instance = await this.getAvailableWorker('analysis');
+    let error: Error | undefined;
     try {
       const api = instance.api as AnalysisWorkerAPI;
       return await api.runAnalysisWithProgress(request, Comlink.proxy(onProgress));
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 
@@ -226,12 +307,16 @@ export class ComputeOrchestrator {
    * Initialize a simulation
    */
   async initSimulation(params: SimInitParams): Promise<SimState> {
-    const instance = this.getAvailableWorker('simulation');
+    const instance = await this.getAvailableWorker('simulation');
+    let error: Error | undefined;
     try {
       const api = instance.api as SimulationWorkerAPI;
       return await api.init(params);
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 
@@ -239,12 +324,16 @@ export class ComputeOrchestrator {
    * Step a simulation forward
    */
   async stepSimulation(state: SimState, dt: number): Promise<SimState> {
-    const instance = this.getAvailableWorker('simulation');
+    const instance = await this.getAvailableWorker('simulation');
+    let error: Error | undefined;
     try {
       const api = instance.api as SimulationWorkerAPI;
       return await api.step({ state, dt });
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 
@@ -252,12 +341,16 @@ export class ComputeOrchestrator {
    * Step a simulation multiple times in batch
    */
   async stepSimulationBatch(state: SimState, dt: number, steps: number): Promise<SimState[]> {
-    const instance = this.getAvailableWorker('simulation');
+    const instance = await this.getAvailableWorker('simulation');
+    let error: Error | undefined;
     try {
       const api = instance.api as SimulationWorkerAPI;
       return await api.stepBatch(state, dt, steps);
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 
@@ -269,12 +362,16 @@ export class ComputeOrchestrator {
     description: string;
     parameters: SimParameter[];
   }> {
-    const instance = this.getAvailableWorker('simulation');
+    const instance = await this.getAvailableWorker('simulation');
+    let error: Error | undefined;
     try {
       const api = instance.api as SimulationWorkerAPI;
       return await api.getMetadata(simId);
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      throw error;
     } finally {
-      this.releaseWorker(instance);
+      this.releaseWorker(instance, error);
     }
   }
 

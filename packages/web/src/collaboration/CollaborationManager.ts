@@ -16,40 +16,58 @@ const generateColor = () => '#' + Math.floor(Math.random()*16777215).toString(16
 
 interface CollaborationStore extends SessionState {
   currentUser: UserPresence;
-  
+
   // Actions
   createSession: (name: string) => Promise<SessionId>;
   joinSession: (sessionId: SessionId, name: string) => Promise<void>;
   leaveSession: () => void;
   updatePresence: (presence: Partial<UserPresence>) => void;
   broadcastState: (state: any) => void;
+  dispose: () => void;
 }
 
-// Broadcast channel for multi-tab coordination
-const channel = new BroadcastChannel('phage_explorer_collab');
+// Broadcast channel for multi-tab coordination - lazily initialized
+let channel: BroadcastChannel | null = null;
+
+function getChannel(): BroadcastChannel {
+  if (!channel) {
+    channel = new BroadcastChannel('phage_explorer_collab');
+  }
+  return channel;
+}
+
+function closeChannel(): void {
+  if (channel) {
+    channel.close();
+    channel = null;
+  }
+}
 
 export const useCollaborationStore = create<CollaborationStore>((set, get) => {
-  // Listen for messages from other tabs
-  channel.onmessage = (event) => {
-    const msg = event.data as SyncMessage;
-    const state = get();
-    
-    if (msg.type === 'presence' && state.connected && state.id === msg.payload.sessionId) {
-      const peer = msg.payload.user as UserPresence;
-      if (peer.id !== state.currentUser.id) {
-        set(s => ({
-          peers: { ...s.peers, [peer.id]: peer }
-        }));
-      }
-    } else if (msg.type === 'join' && state.id === msg.payload.sessionId) {
+  // Setup message listener when store initializes
+  const setupChannelListener = () => {
+    const ch = getChannel();
+    ch.onmessage = (event) => {
+      const msg = event.data as SyncMessage;
+      const state = get();
+
+      if (msg.type === 'presence' && state.connected && state.id === msg.payload.sessionId) {
+        const peer = msg.payload.user as UserPresence;
+        if (peer.id !== state.currentUser.id) {
+          set(s => ({
+            peers: { ...s.peers, [peer.id]: peer }
+          }));
+        }
+      } else if (msg.type === 'join' && state.id === msg.payload.sessionId) {
         // Respond with my presence
-        channel.postMessage({
-            type: 'presence',
-            sender: state.currentUser.id,
-            timestamp: Date.now(),
-            payload: { sessionId: state.id, user: state.currentUser }
+        ch.postMessage({
+          type: 'presence',
+          sender: state.currentUser.id,
+          timestamp: Date.now(),
+          payload: { sessionId: state.id, user: state.currentUser }
         });
-    }
+      }
+    };
   };
 
   return {
@@ -65,10 +83,11 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
     },
 
     createSession: async (name: string) => {
+      setupChannelListener();
       const sessionId = generateId();
       const userId = get().currentUser.id;
       const user = { ...get().currentUser, name };
-      
+
       set({
         id: sessionId,
         hostId: userId,
@@ -76,39 +95,41 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
         currentUser: user,
         peers: { [userId]: user }
       });
-      
+
       console.log(`[Collaboration] Session created: ${sessionId}`);
       return sessionId;
     },
 
     joinSession: async (sessionId: SessionId, name: string) => {
+      setupChannelListener();
+      const ch = getChannel();
       const userId = get().currentUser.id;
       const user = { ...get().currentUser, name };
 
       set({
         id: sessionId,
-        hostId: 'host-placeholder', 
+        hostId: 'host-placeholder',
         connected: true,
         currentUser: user,
         peers: { [userId]: user }
       });
-      
+
       // Announce join
-      channel.postMessage({
+      ch.postMessage({
         type: 'join',
         sender: userId,
         timestamp: Date.now(),
         payload: { sessionId, user }
       });
-      
+
       // Broadcast presence
-      channel.postMessage({
+      ch.postMessage({
         type: 'presence',
         sender: userId,
         timestamp: Date.now(),
         payload: { sessionId, user }
       });
-      
+
       console.log(`[Collaboration] Joined session: ${sessionId}`);
     },
 
@@ -119,6 +140,8 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
         connected: false,
         peers: {},
       });
+      // Close channel when leaving to avoid leaks
+      closeChannel();
     },
 
     updatePresence: (presence) => {
@@ -127,7 +150,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
 
       const updatedUser = { ...currentUser, ...presence, lastActive: Date.now() };
       set({ currentUser: updatedUser });
-      
+
       set(state => ({
         peers: {
           ...state.peers,
@@ -135,7 +158,8 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
         }
       }));
 
-      channel.postMessage({
+      const ch = getChannel();
+      ch.postMessage({
         type: 'presence',
         sender: currentUser.id,
         timestamp: Date.now(),
@@ -143,8 +167,18 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
       });
     },
 
-    broadcastState: (payload) => {
+    broadcastState: (_payload) => {
       // Placeholder for state sync
+    },
+
+    dispose: () => {
+      set({
+        id: '',
+        hostId: '',
+        connected: false,
+        peers: {},
+      });
+      closeChannel();
     }
   };
 });
