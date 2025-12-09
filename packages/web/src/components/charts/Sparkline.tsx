@@ -38,7 +38,7 @@ export const Sparkline: React.FC<SparklineProps> = ({
     canvas.height = height * dpr;
     canvas.style.width = `${width}px`;
     canvas.style.height = `${height}px`;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const min = Math.min(...values);
     const max = Math.max(...values);

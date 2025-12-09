@@ -235,7 +235,7 @@ export function SimulationHub(): React.ReactElement | null {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, selectedIndex, close, open]);
+  }, [isOpen, selectedIndex, close, open, orderedSims, setOverlayData]);
 
   if (!isOpen('simulationHub')) {
     return null;

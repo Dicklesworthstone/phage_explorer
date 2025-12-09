@@ -41,7 +41,7 @@ export function PlaqueVisualizer({
     const dpr = window.devicePixelRatio || 1;
     canvas.width = size * dpr;
     canvas.height = size * dpr;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const gridSize = state.gridSize;
     const cellSize = size / gridSize;

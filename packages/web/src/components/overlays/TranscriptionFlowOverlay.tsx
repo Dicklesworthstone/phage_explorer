@@ -88,7 +88,7 @@ export function TranscriptionFlowOverlay({ sequence = '', genomeLength = 0 }: Tr
 
     canvas.width = width * dpr;
     canvas.height = height * dpr;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Clear
     ctx.fillStyle = colors.background;

@@ -39,10 +39,7 @@ export function SelectionPressureOverlay({ targetSequence, referenceSequence }: 
       // Resize and reset transform
       canvas.width = width * dpr;
       canvas.height = height * dpr;
-      if (typeof ctx.setTransform === 'function') {
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-      }
-      ctx.scale(dpr, dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
       // Clear
       ctx.fillStyle = colors.background;
