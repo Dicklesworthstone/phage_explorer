@@ -5,22 +5,14 @@
  * - Subtle, purposeful animations
  * - Performance-optimized (prefer transform/opacity)
  * - Respect reduced-motion preferences
+ *
+ * Note: Timing variables (--duration-*, --ease-*) are defined in variables.css
+ * This file only defines animation keyframes and utility classes.
  */
 
 :root {
-  /* Timing functions */
-  --ease-in: cubic-bezier(0.4, 0, 1, 1);
-  --ease-out: cubic-bezier(0, 0, 0.2, 1);
-  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  /* Legacy bounce easing for shake/bounce animations */
   --ease-bounce: cubic-bezier(0.68, -0.55, 0.265, 1.55);
-  --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
-
-  /* Durations */
-  --duration-instant: 50ms;
-  --duration-fast: 100ms;
-  --duration-normal: 200ms;
-  --duration-slow: 300ms;
-  --duration-slower: 500ms;
 }
 
 /* Base transition utilities */

@@ -1,8 +1,8 @@
 /**
  * CSS Custom Properties (Variables) for Phage Explorer Web
  *
- * These are the base variables that get overridden by themes.
- * Default values are from the Cyberpunk theme.
+ * Premium design system with Stripe-level polish.
+ * Refined cyberpunk aesthetic - sophisticated, not harsh.
  */
 
 :root {
@@ -10,80 +10,95 @@
   color-scheme: dark;
 
   /* === CORE COLORS === */
-  --color-primary: #00ffff;
-  --color-secondary: #ff00ff;
-  --color-accent: #ffff00;
-  --color-background: #0d0d1a;
-  --color-background-alt: #1a1a2e;
+  /* Refined palette - less saturated neon, more sophisticated */
+  --color-primary: #22d3ee;        /* Softer cyan - easier on eyes */
+  --color-primary-hover: #67e8f9;  /* Lighter hover state */
+  --color-secondary: #c084fc;      /* Softer purple/magenta */
+  --color-accent: #fbbf24;         /* Warm amber instead of harsh yellow */
+  --color-background: #0a0a0f;     /* Deep dark with slight blue */
+  --color-background-alt: #12121a; /* Elevated surface */
+
+  /* === BACKGROUND ELEVATION SYSTEM === */
+  /* Creates visual depth through subtle background changes */
+  --color-background-elevated: #16161f;  /* Cards, panels */
+  --color-background-hover: #1c1c27;     /* Hover states */
+  --color-background-active: #1e1e2a;    /* Active/selected states */
+  --color-background-glass: rgba(10, 10, 15, 0.85); /* Glass morphism */
+  --color-background-gradient-start: rgba(34, 211, 238, 0.08); /* Subtle glow */
 
   /* === TEXT HIERARCHY === */
-  --color-text: #e0e0ff;
-  --color-text-dim: #8888aa;
-  --color-text-muted: #555577;
+  --color-text: #f0f0f8;           /* Brighter primary text */
+  --color-text-dim: #9ca3af;       /* Secondary text - proper gray */
+  --color-text-muted: #6b7280;     /* Tertiary text */
 
   /* === BORDERS === */
-  --color-border: #ff00ff;
-  --color-border-focus: #00ffff;
-  --color-border-light: #4a4a6a;
+  /* Subtle borders that don't fight for attention */
+  --color-border: #2d2d3a;         /* Default border - subtle */
+  --color-border-subtle: #232330;  /* Even more subtle */
+  --color-border-light: #3d3d4a;   /* Slightly visible */
+  --color-border-focus: #22d3ee;   /* Focus ring color */
 
   /* === STATUS COLORS === */
-  --color-success: #00ff88;
-  --color-warning: #ffff00;
-  --color-error: #ff0055;
-  --color-info: #00e5ff;
+  /* Refined status colors - less saturated for better UX */
+  --color-success: #10b981;        /* Emerald green */
+  --color-warning: #f59e0b;        /* Amber */
+  --color-error: #ef4444;          /* Red */
+  --color-info: #22d3ee;           /* Cyan */
 
   /* === VISUALIZATION === */
-  --color-diff-highlight: #ff00ff;
-  --color-gene-forward: #00ffff;
-  --color-gene-reverse: #ff00ff;
-  --color-gene-highlight: #ffff00;
+  --color-diff-highlight: #c084fc;
+  --color-gene-forward: #22d3ee;
+  --color-gene-reverse: #c084fc;
+  --color-gene-highlight: #fbbf24;
 
   /* === GRADIENTS === */
-  --color-gradient-low: #1a0a2e;
-  --color-gradient-mid: #ff00ff;
-  --color-gradient-high: #00ffff;
+  --color-gradient-low: #0f0f1a;
+  --color-gradient-mid: #7c3aed;
+  --color-gradient-high: #22d3ee;
 
   /* === K-MER === */
-  --color-kmer-normal: #6666aa;
-  --color-kmer-anomaly: #ff0055;
+  --color-kmer-normal: #6b7280;
+  --color-kmer-anomaly: #ef4444;
 
   /* === EFFECTS === */
   --color-shadow: #000000;
   --color-highlight: #ffffff;
-  --color-glow: #ff00ff;
+  --color-glow: rgba(34, 211, 238, 0.5);  /* Softer glow */
 
   /* === BADGES === */
-  --color-badge: #2a2a4a;
-  --color-badge-text: #00ffff;
-  --color-separator: #ff00ff;
+  --color-badge-bg: rgba(34, 211, 238, 0.1);
+  --color-badge-text: #22d3ee;
+  --color-badge-border: rgba(34, 211, 238, 0.2);
+  --color-separator: #2d2d3a;
 
   /* === ICONS === */
-  --color-icon-primary: #00ffff;
-  --color-icon-secondary: #ff00ff;
+  --color-icon-primary: #22d3ee;
+  --color-icon-secondary: #c084fc;
 
   /* === PANELS === */
-  --color-panel-header: #1a1a3a;
-  --color-panel-border: #ff00ff;
-  --color-panel-shadow: #050510;
+  --color-panel-header: #16161f;
+  --color-panel-border: #2d2d3a;
+  --color-panel-shadow: #050508;
 
-  /* === SPARKLINE GRADIENT (as individual stops) === */
-  --sparkline-0: #1a0a2e;
-  --sparkline-1: #7b1fa2;
-  --sparkline-2: #ff00ff;
-  --sparkline-3: #00ffff;
-  --sparkline-4: #00ff88;
+  /* === SPARKLINE GRADIENT (refined) === */
+  --sparkline-0: #0f0f1a;
+  --sparkline-1: #7c3aed;
+  --sparkline-2: #a855f7;
+  --sparkline-3: #22d3ee;
+  --sparkline-4: #10b981;
 
   /* === NUCLEOTIDE COLORS === */
+  /* Slightly softer nucleotide colors with better contrast */
   --nucleotide-a-fg: #000000;
-  --nucleotide-a-bg: #00ffff;
+  --nucleotide-a-bg: #22d3ee;     /* Cyan A */
   --nucleotide-c-fg: #000000;
-  --nucleotide-c-bg: #ff00ff;
+  --nucleotide-c-bg: #c084fc;     /* Purple C */
   --nucleotide-g-fg: #000000;
-  --nucleotide-g-bg: #ffff00;
+  --nucleotide-g-bg: #fbbf24;     /* Amber G */
   --nucleotide-t-fg: #000000;
-  --nucleotide-t-bg: #ff0080;
-  --nucleotide-n-fg: #ffffff;
-  --nucleotide-n-bg: #2a2a3a;
+  --nucleotide-t-bg: #f472b6;     /* Pink T */
+  --nucleotide-n-fg: #9ca3af;
+  --nucleotide-n-bg: #2d2d3a;     /* Gray N */
 
   /* === SPACING SCALE === */
   --space-0: 0;
@@ -101,20 +116,40 @@
   --space-24: 6rem;     /* 96px */
 
   /* === BORDER RADIUS === */
+  /* More generous radii for modern, friendly feel */
   --radius-none: 0;
-  --radius-sm: 2px;
-  --radius-md: 4px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
   --radius-full: 9999px;
 
   /* === SHADOWS === */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
-  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.5);
-  --shadow-glow: 0 0 8px var(--color-glow), 0 0 16px var(--color-glow);
-  --shadow-glow-lg: 0 0 16px var(--color-glow), 0 0 32px var(--color-glow);
+  /* Refined shadow system with subtle depth */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.15);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -2px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.35), 0 4px 6px -4px rgba(0, 0, 0, 0.2);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+  --shadow-glow: 0 0 12px var(--color-glow), 0 0 24px var(--color-glow);
+  --shadow-glow-lg: 0 0 20px var(--color-glow), 0 0 40px var(--color-glow);
+  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.25);
+
+  /* === ANIMATION TIMING === */
+  /* Smooth, premium animations */
+  --duration-instant: 50ms;
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-slower: 600ms;
+
+  /* Easing curves */
+  --ease-linear: linear;
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);  /* Bouncy feel */
+  --ease-smooth: cubic-bezier(0.45, 0, 0.55, 1);    /* Apple-like smooth */
 
   /* === Z-INDEX SCALE === */
   --z-base: 0;

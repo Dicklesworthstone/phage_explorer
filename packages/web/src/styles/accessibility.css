@@ -1,65 +1,161 @@
-/* Accessibility Enhancements */
+/**
+ * Accessibility Enhancements
+ *
+ * Comprehensive accessibility features including:
+ * - High-visibility focus states
+ * - Skip navigation
+ * - High contrast mode
+ * - Reduced motion support
+ * - Screen reader utilities
+ */
 
-/* Focus indicators - High visibility */
+/* =============================================================================
+   FOCUS INDICATORS - High visibility, consistent behavior
+   ============================================================================= */
+
+/* Default focus - subtle glow ring */
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-primary);
   outline-offset: 2px;
 }
 
-/* Button focus states */
+/* Interactive elements - enhanced focus with glow */
 button:focus-visible,
 [role="button"]:focus-visible,
-a:focus-visible {
-  box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-accent);
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--color-background),
+    0 0 0 4px var(--color-primary),
+    0 0 12px var(--color-glow);
+}
+
+/* Remove default focus for elements with custom focus handling */
+[tabindex]:focus-visible {
   outline: none;
 }
 
-/* Skip Navigation Link */
+/* =============================================================================
+   SKIP NAVIGATION - Accessible navigation bypass
+   ============================================================================= */
+
 .skip-nav {
-  position: absolute;
+  position: fixed;
   top: -100px;
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-primary);
-  color: #000;
-  padding: 0.5rem 1rem;
-  z-index: 10000;
-  font-weight: bold;
-  border-radius: 0 0 4px 4px;
-  transition: top 0.2s;
+  color: var(--color-background);
+  padding: var(--space-3) var(--space-5);
+  z-index: var(--z-max);
+  font-weight: var(--font-bold);
+  font-size: var(--text-sm);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  transition: top var(--duration-fast) var(--ease-out);
+  text-decoration: none;
 }
 
 .skip-nav:focus {
   top: 0;
-  outline: 2px solid var(--color-accent);
+  outline: none;
+  box-shadow:
+    0 4px 12px rgba(0, 0, 0, 0.3),
+    0 0 0 4px var(--color-background),
+    0 0 0 6px var(--color-primary);
 }
+
+/* =============================================================================
+   HIGH CONTRAST MODE - Maximum readability
+   ============================================================================= */
 
 .high-contrast,
 :root.high-contrast {
   color-scheme: dark;
+
+  /* Core colors - maximum contrast */
   --color-primary: #ffffff;
-  --color-secondary: #ffd400;
+  --color-primary-hover: #e0e0e0;
+  --color-secondary: #ffd700;
   --color-accent: #00ffff;
+
+  /* Backgrounds - pure black base */
   --color-background: #000000;
-  --color-background-alt: #0f0f0f;
+  --color-background-alt: #0a0a0a;
+  --color-background-elevated: #111111;
+  --color-background-hover: #1a1a1a;
+  --color-background-active: #222222;
+  --color-background-glass: rgba(0, 0, 0, 0.95);
+  --color-background-gradient-start: rgba(255, 255, 255, 0.05);
+
+  /* Text - high contrast whites */
   --color-text: #ffffff;
   --color-text-dim: #e0e0e0;
-  --color-text-muted: #c0c0c0;
-  --color-border: #ffffff;
-  --color-border-focus: #00ffff;
-  --color-border-light: #555555;
-  --color-badge: #1a1a1a;
+  --color-text-muted: #b0b0b0;
+
+  /* Borders - visible on all backgrounds */
+  --color-border: #666666;
+  --color-border-subtle: #444444;
+  --color-border-light: #888888;
+  --color-border-focus: #ffffff;
+
+  /* Status colors - high visibility */
+  --color-success: #00ff00;
+  --color-warning: #ffff00;
+  --color-error: #ff4444;
+  --color-info: #00ffff;
+
+  /* Badges */
+  --color-badge-bg: #222222;
   --color-badge-text: #ffffff;
-  --color-panel-header: #0f0f0f;
-  --color-panel-border: #ffffff;
-  --color-separator: #ffffff;
-  --color-success: #00ff88;
-  --color-warning: #ffd400;
-  --color-error: #ff4d4d;
-  --color-info: #00e5ff;
+  --color-badge-border: #666666;
+
+  /* Panels */
+  --color-panel-header: #111111;
+  --color-panel-border: #666666;
+  --color-separator: #666666;
+
+  /* Effects - more visible glow */
+  --color-glow: rgba(255, 255, 255, 0.6);
+
+  /* Nucleotides - high contrast versions */
+  --nucleotide-a-fg: #000000;
+  --nucleotide-a-bg: #00ffff;
+  --nucleotide-c-fg: #000000;
+  --nucleotide-c-bg: #ff00ff;
+  --nucleotide-g-fg: #000000;
+  --nucleotide-g-bg: #ffff00;
+  --nucleotide-t-fg: #000000;
+  --nucleotide-t-bg: #ff6666;
+  --nucleotide-n-fg: #ffffff;
+  --nucleotide-n-bg: #444444;
 }
 
-/* Screen reader only utility */
+/* High contrast mode - disable CRT effects */
+.high-contrast .crt-overlay {
+  display: none;
+}
+
+/* High contrast mode - thicker borders */
+.high-contrast .panel,
+.high-contrast .card,
+.high-contrast .list-item,
+.high-contrast .btn {
+  border-width: 2px;
+}
+
+/* High contrast mode - larger focus rings */
+.high-contrast :focus-visible {
+  outline-width: 3px;
+}
+
+/* =============================================================================
+   SCREEN READER UTILITIES
+   ============================================================================= */
+
+/* Visually hidden but accessible to screen readers */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -72,7 +168,23 @@ a:focus-visible {
   border: 0;
 }
 
-/* Reduced motion */
+/* Allow element to be focusable when reached via keyboard */
+.sr-only-focusable:focus,
+.sr-only-focusable:active {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: inherit;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* =============================================================================
+   REDUCED MOTION - Respect user preferences
+   ============================================================================= */
+
 @media (prefers-reduced-motion: reduce) {
   *,
   ::before,
@@ -81,5 +193,71 @@ a:focus-visible {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Remove all decorative animations */
+  .crt-overlay,
+  .matrix-rain,
+  .glow,
+  .phosphor-glow {
+    display: none !important;
+  }
+
+  /* Keep functional transitions very short */
+  .btn,
+  .list-item,
+  .card {
+    transition-duration: 0.1ms !important;
+  }
+}
+
+/* =============================================================================
+   FORCED COLORS MODE (Windows High Contrast)
+   ============================================================================= */
+
+@media (forced-colors: active) {
+  /* Ensure buttons and interactive elements are visible */
+  .btn,
+  .list-item,
+  .badge {
+    forced-color-adjust: none;
+    border: 2px solid currentColor;
+  }
+
+  /* Ensure focus is visible */
+  :focus-visible {
+    outline: 3px solid Highlight;
+    outline-offset: 2px;
+  }
+
+  /* Preserve link underlines */
+  a {
+    text-decoration: underline;
+  }
+}
+
+/* =============================================================================
+   PRINT ACCESSIBILITY
+   ============================================================================= */
+
+@media print {
+  /* Ensure sufficient contrast for printing */
+  * {
+    color: #000 !important;
+    background: #fff !important;
+  }
+
+  /* Show URLs for links */
+  a[href]::after {
+    content: " (" attr(href) ")";
+    font-size: 0.8em;
+    color: #666;
+  }
+
+  /* Hide interactive elements */
+  .btn,
+  .crt-overlay,
+  nav {
+    display: none !important;
   }
 }
