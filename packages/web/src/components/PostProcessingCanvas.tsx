@@ -35,9 +35,18 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
   const glow = useWebPreferences(s => s.glow);
   const reducedMotion = useReducedMotion();
 
+  // Initialize pipeline - depends on dimensions to ensure correct initial size
+  // Note: We use width/height deps because the pipeline must be created with correct dims.
+  // Options are handled separately by updateOptions below for efficiency.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Dispose existing pipeline before creating new one (handles dimension changes)
+    if (pipelineRef.current) {
+      pipelineRef.current.dispose();
+      pipelineRef.current = null;
+    }
 
     // Initialize pipeline
     try {
@@ -52,7 +61,6 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
       });
     } catch (err) {
       console.error('Failed to initialize post-processing pipeline:', err);
-      // Fallback? For now just log error
     }
 
     return () => {
@@ -62,26 +70,7 @@ export const PostProcessingCanvas: React.FC<PostProcessingCanvasProps> = ({
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, []);
-
-  // Update options
-  useEffect(() => {
-    if (pipelineRef.current) {
-      pipelineRef.current.updateOptions({
-        enableScanlines: scanlines && !reducedMotion,
-        enableBloom: glow,
-        enableAberration: !reducedMotion,
-        intensity: scanlineIntensity,
-      });
-    }
-  }, [scanlines, glow, reducedMotion, scanlineIntensity]);
-
-  // Resize handling
-  useEffect(() => {
-    if (pipelineRef.current) {
-      pipelineRef.current.resize(width, height);
-    }
-  }, [width, height]);
+  }, [width, height, scanlines, glow, reducedMotion, scanlineIntensity]);
 
   // Animation loop
   useEffect(() => {
