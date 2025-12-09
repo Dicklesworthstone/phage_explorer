@@ -21,7 +21,7 @@ import {
 import { useStructureQuery } from '../hooks/useStructureQuery';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
-type RenderMode = 'ball' | 'cartoon' | 'ribbon' | 'surface';
+type RenderMode = 'ball' | 'ribbon' | 'surface';
 
 interface Model3DViewProps {
   phage: PhageFull | null;
@@ -165,17 +165,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
           sphereSegments: qualityPreset.sphereSegments,
           bondRadialSegments: qualityPreset.bondRadialSegments,
         });
-        break;
-      case 'cartoon':
-        group = buildTubeFromTraces(
-          data.backboneTraces,
-          0.5,
-          qualityPreset.tubeRadialSegments,
-          '#38bdf8',
-          1,
-          chainColors,
-          qualityPreset.tubeMinSegments
-        );
         break;
       case 'ribbon':
         group = buildTubeFromTraces(
@@ -530,7 +519,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       </div>
 
       <div className="toolbar" style={{ display: 'flex', gap: '8px', padding: '8px 0' }}>
-        {(['ball', 'cartoon', 'ribbon', 'surface'] as RenderMode[]).map(mode => (
+        {(['ball', 'ribbon', 'surface'] as RenderMode[]).map(mode => (
           <button
             key={mode}
             type="button"
@@ -538,7 +527,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
             onClick={() => setRenderMode(mode)}
           >
             {mode === 'ball' && 'Ball-Stick'}
-            {mode === 'cartoon' && 'Cartoon'}
             {mode === 'ribbon' && 'Ribbon'}
             {mode === 'surface' && 'Surface'}
           </button>

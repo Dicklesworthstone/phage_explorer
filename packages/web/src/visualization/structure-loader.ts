@@ -42,20 +42,25 @@ export interface Bond {
   b: number;
 }
 
-// HIGH CONTRAST element colors for dark backgrounds
+// CPK-based colors optimized for dark backgrounds
+// Based on Corey-Pauling-Koltun standard with brightness adjustments
 const ELEMENT_COLORS: Record<string, Color> = {
-  H: new Color('#e0e0e0'),    // Light gray (visible on dark bg)
-  C: new Color('#60a5fa'),    // Bright sky blue (NOT dark gray!)
-  N: new Color('#34d399'),    // Bright emerald green
-  O: new Color('#f87171'),    // Bright coral red
-  S: new Color('#fbbf24'),    // Bright amber
-  P: new Color('#c084fc'),    // Purple
-  MG: new Color('#4ade80'),   // Bright green
-  FE: new Color('#fb923c'),   // Orange
-  CA: new Color('#a3e635'),   // Lime
-  ZN: new Color('#7dd3fc'),   // Light blue
-  CL: new Color('#86efac'),   // Light green
-  NA: new Color('#fdba74'),   // Light orange
+  H: new Color('#f8fafc'),    // Almost white (hydrogen - brightest, smallest)
+  C: new Color('#64748b'),    // Slate gray (carbon backbone - neutral)
+  N: new Color('#3b82f6'),    // True blue (nitrogen - CPK standard)
+  O: new Color('#ef4444'),    // True red (oxygen - CPK standard)
+  S: new Color('#fde047'),    // Bright yellow (sulfur - CPK standard)
+  P: new Color('#fb923c'),    // Orange (phosphorus - CPK standard)
+  MG: new Color('#22c55e'),   // Green (magnesium)
+  FE: new Color('#ea580c'),   // Rust orange (iron in heme)
+  CA: new Color('#16a34a'),   // Dark green (calcium)
+  ZN: new Color('#7c3aed'),   // Purple (zinc - distinctive)
+  CL: new Color('#4ade80'),   // Lime green (chlorine)
+  NA: new Color('#a855f7'),   // Violet (sodium - distinctive from others)
+  K: new Color('#8b5cf6'),    // Violet (potassium)
+  MN: new Color('#9333ea'),   // Purple (manganese)
+  CU: new Color('#f97316'),   // Orange-brown (copper)
+  SE: new Color('#eab308'),   // Gold (selenium)
 };
 
 const ELEMENT_RADII: Record<string, number> = {
@@ -258,8 +263,8 @@ export function buildBallAndStick(
   const atomGeo = new SphereGeometry(sphereRadius, sphereSegments, sphereSegments);
   const atomMat = new MeshPhongMaterial({
     vertexColors: true,
-    shininess: 80,
-    specular: new Color('#555555'),
+    shininess: 120,              // Higher for more reflective, glossy spheres
+    specular: new Color('#888888'),  // Brighter specular for better 3D depth
   });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
