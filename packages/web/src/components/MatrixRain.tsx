@@ -146,8 +146,14 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
   return (
     <canvas
       ref={canvasRef}
-      className={`matrix-rain pointer-events-none fixed inset-0 z-0 ${className}`}
-      style={{ opacity }}
+      className={`matrix-rain ${className}`}
+      style={{
+        opacity,
+        position: 'fixed',
+        inset: 0,
+        zIndex: 0,
+        pointerEvents: 'none',
+      }}
       aria-hidden="true"
       role="presentation"
     />
