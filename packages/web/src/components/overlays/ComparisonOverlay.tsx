@@ -8,6 +8,11 @@ import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import DiffHighlighter, { type DiffStats as DiffStatsType } from '../DiffHighlighter';
 
+const formatPercent = (value: number | null | undefined, digits = 2): string => {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—';
+  return `${value.toFixed(digits)}%`;
+};
+
 interface ComparisonOverlayProps {
   repository: PhageRepository | null;
 }
@@ -206,6 +211,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     }
     const formatPct = (value: number, digits = 2) => `${value.toFixed(digits)}%`;
     const summary = comparisonResult.summary;
+    const computedAt = new Date(comparisonResult.computedAt);
     if (comparisonTab === 'summary') {
       return (
         <div className="panel">
@@ -240,6 +246,10 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               </li>
             ))}
           </ul>
+          <p className="text-dim">
+            Runtime: {comparisonResult.computeTimeMs.toLocaleString()} ms · Computed:{' '}
+            {computedAt.toLocaleString()}
+          </p>
         </div>
       );
     }
@@ -410,6 +420,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     }
     if (comparisonTab === 'genes') {
       const genes = comparisonResult.geneContent;
+      const structural = comparisonResult.structuralVariants;
       return (
         <div className="panel">
           <div className="panel-header">
@@ -454,12 +465,40 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               <div>{genes.uniqueBGenes.slice(0, 6).join(', ') || '—'}</div>
             </div>
           </div>
+          {structural && (
+            <div className="panel" style={{ marginTop: '0.75rem' }}>
+              <div className="panel-header">
+                <h4>Structural variants</h4>
+                <span className="text-dim">{structural.calls.length} calls</span>
+              </div>
+              <div className="metrics-grid">
+                {Object.entries(structural.counts).map(([type, count]) => (
+                  <div key={type} className="metric-card">
+                    <div className="metric-label">{type}</div>
+                    <div className="metric-value">{count}</div>
+                  </div>
+                ))}
+                <div className="metric-card">
+                  <div className="metric-label">Anchors used</div>
+                  <div className="metric-value">{structural.anchorsUsed}</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
     if (comparisonTab === 'diff') {
-      if (!sequenceA || !sequenceB || !diffMask || diffPositions.length === 0 || !diffStats) {
+      const editDistance = comparisonResult.editDistance;
+      if (!sequenceA || !sequenceB || !diffMask || !diffStats) {
         return <div className="text-dim">Run a comparison to view diff highlights.</div>;
+      }
+      if (diffPositions.length === 0) {
+        return (
+          <div className="text-dim">
+            Sequences appear identical ({formatPercent(editDistance.levenshteinSimilarity * 100)} identity).
+          </div>
+        );
       }
       return (
         <DiffHighlighter

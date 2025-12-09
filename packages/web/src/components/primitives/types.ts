@@ -1,5 +1,7 @@
 export type ColorScale = (value: number) => string;
 
+export type HeatmapShape = 'full' | 'upper' | 'lower';
+
 export interface HeatmapMatrix {
   rows: number;
   cols: number;
@@ -12,6 +14,8 @@ export interface HeatmapHover {
   row: number;
   col: number;
   value: number;
+  canvasX: number;
+  canvasY: number;
 }
 
 export interface ScatterPoint {
@@ -21,12 +25,20 @@ export interface ScatterPoint {
   color?: string;
   size?: number;
   id?: string | number;
+  label?: string;
+}
+
+export interface ScatterHover {
+  point: ScatterPoint;
+  canvasX: number;
+  canvasY: number;
 }
 
 export interface ArcNode {
   id: string;
   label?: string;
   position?: number; // 0..1 along baseline; if omitted, spaced evenly
+  color?: string;
 }
 
 export interface ArcLink {
@@ -34,6 +46,7 @@ export interface ArcLink {
   target: string;
   weight?: number;
   color?: string;
+  label?: string;
 }
 
 export interface GenomeTrackDatum {
@@ -50,6 +63,14 @@ export interface GenomeTrack {
   label?: string;
   data: GenomeTrackDatum[];
   color?: string;
+}
+
+export interface GenomeTrackHover {
+  track: GenomeTrack;
+  datum: GenomeTrackDatum | null;
+  genomePosition: number;
+  canvasX: number;
+  canvasY: number;
 }
 
 export interface GelBand {

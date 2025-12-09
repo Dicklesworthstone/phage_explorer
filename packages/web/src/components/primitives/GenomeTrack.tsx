@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import type { GenomeTrack as Track, GenomeTrackDatum } from './types';
+import type { GenomeTrack as Track, GenomeTrackDatum, GenomeTrackHover } from './types';
 
 export interface GenomeTrackProps {
   width: number;
@@ -8,6 +8,10 @@ export interface GenomeTrackProps {
   tracks: Track[];
   padding?: number;
   backgroundColor?: string;
+  cursor?: number | null;
+  showScale?: boolean;
+  onHover?: (hover: GenomeTrackHover | null) => void;
+  onClick?: (hover: GenomeTrackHover | null) => void;
   ariaLabel?: string;
 }
 
@@ -48,6 +52,10 @@ export function GenomeTrack({
   tracks,
   padding = 16,
   backgroundColor = '#0b1220',
+  cursor = null,
+  showScale = true,
+  onHover,
+  onClick,
   ariaLabel = 'genome track',
 }: GenomeTrackProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -88,7 +96,97 @@ export function GenomeTrack({
         ctx.fillText(track.label, padding, y - laneHeight / 2 + 10);
       }
     });
-  }, [backgroundColor, height, padding, scale, tracks, width]);
+
+    if (typeof cursor === 'number' && !Number.isNaN(cursor)) {
+      const x = scale(Math.max(0, Math.min(genomeLength, cursor)));
+      ctx.strokeStyle = '#22c55e';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(x, padding);
+      ctx.lineTo(x, height - padding);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    if (showScale) {
+      const ticks = 4;
+      ctx.strokeStyle = '#475569';
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px Inter, sans-serif';
+      for (let i = 0; i <= ticks; i++) {
+        const frac = i / ticks;
+        const x = padding + frac * (width - padding * 2);
+        ctx.beginPath();
+        ctx.moveTo(x, height - padding + 2);
+        ctx.lineTo(x, height - padding + 8);
+        ctx.stroke();
+        const label = Math.round(frac * genomeLength).toLocaleString();
+        ctx.fillText(label, x - ctx.measureText(label).width / 2, height - padding + 20);
+      }
+    }
+  }, [backgroundColor, cursor, genomeLength, height, padding, scale, showScale, tracks, width]);
+
+  useEffect(() => {
+    if (!onHover && !onClick) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const laneHeight = Math.max(12, (height - padding * 2) / Math.max(1, tracks.length));
+    const innerW = width - padding * 2;
+
+    const pick = (evt: MouseEvent): GenomeTrackHover | null => {
+      const rect = canvas.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+      if (x < padding || x > width - padding || y < padding || y > height - padding) {
+        return null;
+      }
+      const trackIdx = Math.floor((y - padding) / laneHeight);
+      const track = tracks[trackIdx];
+      if (!track) return null;
+      const frac = (x - padding) / innerW;
+      const genomePosition = Math.max(0, Math.min(genomeLength, frac * genomeLength));
+      const datum = track.data.find(d => genomePosition >= d.start && genomePosition <= d.end) ?? null;
+      return {
+        track,
+        datum,
+        genomePosition,
+        canvasX: x,
+        canvasY: y,
+      };
+    };
+
+    const handleMove = (evt: MouseEvent) => {
+      if (!onHover) return;
+      onHover(pick(evt));
+    };
+    const handleLeave = () => {
+      if (onHover) onHover(null);
+    };
+    const handleClick = (evt: MouseEvent) => {
+      if (!onClick) return;
+      onClick(pick(evt));
+    };
+
+    if (onHover) {
+      canvas.addEventListener('mousemove', handleMove);
+      canvas.addEventListener('mouseleave', handleLeave);
+    }
+    if (onClick) {
+      canvas.addEventListener('click', handleClick);
+    }
+
+    return () => {
+      if (onHover) {
+        canvas.removeEventListener('mousemove', handleMove);
+        canvas.removeEventListener('mouseleave', handleLeave);
+      }
+      if (onClick) {
+        canvas.removeEventListener('click', handleClick);
+      }
+    };
+  }, [genomeLength, height, onClick, onHover, padding, tracks, width]);
 
   return (
     <canvas

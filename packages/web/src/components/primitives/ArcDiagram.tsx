@@ -8,6 +8,8 @@ export interface ArcDiagramProps {
   links: ArcLink[];
   padding?: number;
   stroke?: string;
+  showLabels?: boolean;
+  onHover?: (link: ArcLink | null) => void;
   ariaLabel?: string;
 }
 
@@ -18,16 +20,22 @@ export function ArcDiagram({
   links,
   padding = 24,
   stroke = '#94a3b8',
+  showLabels = false,
+  onHover,
   ariaLabel = 'arc diagram',
 }: ArcDiagramProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const positioned = useMemo(() => {
     const n = nodes.length || 1;
-    return nodes.map((node, idx) => {
+    const mapped = nodes.map((node, idx) => {
       const pos = node.position ?? idx / Math.max(1, n - 1);
       return { ...node, position: Math.min(1, Math.max(0, pos)) };
     });
+    return {
+      nodes: mapped,
+      lookup: new Map(mapped.map(node => [node.id, node])),
+    };
   }, [nodes]);
 
   useEffect(() => {
@@ -52,8 +60,8 @@ export function ArcDiagram({
 
     // Draw links
     for (const link of links) {
-      const source = positioned.find(n => n.id === link.source);
-      const target = positioned.find(n => n.id === link.target);
+      const source = positioned.lookup.get(link.source);
+      const target = positioned.lookup.get(link.target);
       if (!source || !target) continue;
       const x1 = padding + source.position * availableW;
       const x2 = padding + target.position * availableW;
@@ -69,14 +77,64 @@ export function ArcDiagram({
     }
 
     // Draw nodes
-    for (const node of positioned) {
+    for (const node of positioned.nodes) {
       const x = padding + node.position * availableW;
-      ctx.fillStyle = '#0ea5e9';
+      ctx.fillStyle = node.color ?? '#0ea5e9';
       ctx.beginPath();
       ctx.arc(x, baselineY, 4, 0, Math.PI * 2);
       ctx.fill();
+      if (showLabels && node.label) {
+        ctx.fillStyle = '#cbd5e1';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.fillText(node.label, x - ctx.measureText(node.label).width / 2, baselineY - 10);
+      }
     }
-  }, [height, links, padding, positioned, stroke, width]);
+  }, [height, links, padding, positioned, showLabels, stroke, width]);
+
+  useEffect(() => {
+    if (!onHover) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const baselineY = height - padding;
+    const availableW = width - padding * 2;
+
+    const handleMove = (evt: MouseEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = evt.clientX - rect.left;
+      const y = evt.clientY - rect.top;
+      // Simple hit test: find closest link by vertical distance to arc
+      let closest: ArcLink | null = null;
+      let best = Infinity;
+      for (const link of links) {
+        const source = positioned.lookup.get(link.source);
+        const target = positioned.lookup.get(link.target);
+        if (!source || !target) continue;
+        const x1 = padding + source.position * availableW;
+        const x2 = padding + target.position * availableW;
+        const mid = (x1 + x2) / 2;
+        const arcHeight = Math.max(12, Math.abs(x2 - x1) / 3);
+        const span = x2 - x1;
+        const denom = span === 0 ? 1 : span;
+        const t = (x - x1) / denom;
+        const parabola = t * (1 - t); // 0..0.25
+        const yOnArc = baselineY - arcHeight * parabola * 4;
+        const dy = Math.abs(y - yOnArc);
+        if (dy < best && dy < 12) {
+          best = dy;
+          closest = link;
+        }
+      }
+      onHover(closest);
+    };
+
+    const handleLeave = () => onHover(null);
+    canvas.addEventListener('mousemove', handleMove);
+    canvas.addEventListener('mouseleave', handleLeave);
+    return () => {
+      canvas.removeEventListener('mousemove', handleMove);
+      canvas.removeEventListener('mouseleave', handleLeave);
+    };
+  }, [height, links, onHover, padding, positioned.lookup, width]);
 
   return (
     <canvas
