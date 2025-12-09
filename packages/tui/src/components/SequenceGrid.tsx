@@ -7,6 +7,7 @@ import {
   getAminoAcidColor,
   type GridRow,
   type Theme,
+  type ViewMode,
 } from '@phage-explorer/core';
 import type { KmerAnomalyOverlay } from '../overlay-computations';
 
@@ -28,16 +29,17 @@ interface ColorSegment {
 function groupCellsByColor(
   row: GridRow,
   theme: Theme,
-  viewMode: 'dna' | 'aa',
+  viewMode: ViewMode,
   diffEnabled: boolean
 ): ColorSegment[] {
   const segments: ColorSegment[] = [];
   let currentSegment: ColorSegment | null = null;
 
   for (const cell of row.cells) {
-    const colorPair = viewMode === 'dna'
-      ? getNucleotideColor(theme, cell.char)
-      : getAminoAcidColor(theme, cell.char);
+    // In dual mode, use nucleotide coloring for the primary display
+    const colorPair = viewMode === 'aa'
+      ? getAminoAcidColor(theme, cell.char)
+      : getNucleotideColor(theme, cell.char);
 
     // Modify colors for diff highlighting
     const fg = colorPair.fg;
