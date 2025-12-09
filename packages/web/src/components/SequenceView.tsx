@@ -136,7 +136,7 @@ export function SequenceView({
 
   // Register hotkeys
   useHotkeys([
-    { combo: { key: 'v' }, description: 'Toggle DNA/AA view', action: toggleViewMode, modes: ['NORMAL'] },
+    { combo: { key: 'v' }, description: 'Toggle DNA/Amino Acid view', action: toggleViewMode, modes: ['NORMAL'] },
     { combo: { key: 'f' }, description: 'Cycle reading frame', action: cycleReadingFrame, modes: ['NORMAL'] },
     { combo: { key: 'Home' }, description: 'Go to start', action: scrollToStart, modes: ['NORMAL'] },
     { combo: { key: 'End' }, description: 'Go to end', action: scrollToEnd, modes: ['NORMAL'] },
@@ -145,7 +145,7 @@ export function SequenceView({
     { combo: { key: '-' }, description: 'Zoom out', action: handleZoomOut, modes: ['NORMAL'] },
   ]);
 
-  const viewModeLabel = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'AA' : 'Dual';
+  const viewModeLabel = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'Amino Acids' : 'Dual';
   const frameLabel = readingFrame === 0 ? '+1' : readingFrame > 0 ? `+${readingFrame + 1}` : `${readingFrame}`;
   const zoomLabel = zoomPreset?.label ?? `${Math.round(zoomScale * 100)}%`;
   const descriptionId = 'sequence-view-description';
@@ -267,7 +267,7 @@ export function SequenceView({
               color: viewMode === 'aa' || viewMode === 'dual' ? '#000' : colors.text,
               cursor: 'pointer',
             }}
-            title="Toggle DNA/AA/Dual view (v)"
+            title="Toggle DNA/Amino Acids/Dual view (v)"
           >
             {viewModeLabel}
           </button>

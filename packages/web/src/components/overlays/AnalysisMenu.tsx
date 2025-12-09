@@ -218,7 +218,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
   {
     id: 'aa-legend',
     overlayId: 'aaLegend',
-    label: 'AA Legend (compact)',
+    label: 'Amino Acid Legend (compact)',
     description: 'Compact amino acid color legend',
     icon: '🔖',
     shortcut: 'l',

@@ -386,7 +386,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               <div className="text-dim">CAI A/B: {codon.caiA.toFixed(3)} / {codon.caiB.toFixed(3)}</div>
             </div>
             <div className="metric-card">
-              <div className="metric-label">AA similarity</div>
+              <div className="metric-label">Amino Acid similarity</div>
               <div className="metric-value">{formatPct(aa.cosineSimilarity * 100)}</div>
               <div className="text-dim">Hydrophobic: {formatPct(aa.hydrophobicSimilarity * 100)}</div>
             </div>
@@ -399,7 +399,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
             <div className="table">
               <div className="table-row table-head">
                 <div>Codon</div>
-                <div>AA</div>
+                <div>A.A.</div>
                 <div>RSCU Δ</div>
                 <div>Freq A/B</div>
               </div>

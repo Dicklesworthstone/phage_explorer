@@ -43,7 +43,7 @@ function TooltipContent({ point, colors }: { point: PortraitPoint; colors: { tex
   return (
     <>
       <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
-        AA {point.start} - {point.end}
+        Residues {point.start} - {point.end}
       </div>
       <div style={{ color: PROPERTY_COLORS[point.dominant] }}>
         {point.dominant.toUpperCase()}
@@ -84,7 +84,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   // Hotkey to toggle overlay (Alt+Shift+P)
   useHotkey(
     { key: 'p', modifiers: { alt: true, shift: true } },
-    'Phase Portrait (AA Properties)',
+    'Phase Portrait (Amino Acid Properties)',
     () => toggle('phasePortrait'),
     { modes: ['NORMAL'], category: 'Analysis' }
   );
@@ -175,7 +175,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   const handleClick = useCallback((hover: ScatterHover | null) => {
     if (hover?.point?.data) {
       const point = hover.point.data as PortraitPoint;
-      console.log(`Navigate to AA position ${point.start}`);
+      console.log(`Navigate to amino acid position ${point.start}`);
     }
   }, []);
 
@@ -189,7 +189,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   return (
     <Overlay
       id="phasePortrait"
-      title="PHASE PORTRAIT (AA Properties)"
+      title="PHASE PORTRAIT (Amino Acid Properties)"
       icon="*"
       hotkey="Alt+Shift+P"
       size="lg"
@@ -204,7 +204,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
           fontSize: '0.85rem',
         }}>
           <strong style={{ color: colors.accent }}>Phase Portrait</strong>: PCA projection of amino acid
-          properties across the proteome. Points represent sliding windows of {windowSize} AAs.
+          properties across the proteome. Points represent sliding windows of {windowSize} amino acids.
           Clusters reveal functional domains; outliers may indicate HGT or specialized functions.
         </div>
 
@@ -240,10 +240,10 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
                     borderRadius: '3px',
                   }}
                 >
-                  <option value={15}>15 AA</option>
-                  <option value={30}>30 AA</option>
-                  <option value={50}>50 AA</option>
-                  <option value={100}>100 AA</option>
+                  <option value={15}>15 residues</option>
+                  <option value={30}>30 residues</option>
+                  <option value={50}>50 residues</option>
+                  <option value={100}>100 residues</option>
                 </select>
               </label>
 
