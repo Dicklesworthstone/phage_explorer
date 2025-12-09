@@ -26,6 +26,7 @@ export interface ScatterPoint {
   size?: number;
   id?: string | number;
   label?: string;
+  data?: unknown;
 }
 
 export interface ScatterHover {
