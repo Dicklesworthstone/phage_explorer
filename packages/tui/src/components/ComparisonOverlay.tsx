@@ -175,9 +175,7 @@ export function ComparisonOverlay({ repository }: ComparisonOverlayProps): React
     }): Promise<GenomeComparisonResult> => {
       return new Promise((resolve, reject) => {
         try {
-          const worker = new Worker(new URL('../workers/comparison-worker.ts', import.meta.url), {
-            type: 'module',
-          });
+          const worker = new Worker(new URL('../workers/comparison-worker.ts', import.meta.url));
           const cleanup = () => {
             worker.terminate().catch(() => {});
           };

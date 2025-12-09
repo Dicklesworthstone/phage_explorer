@@ -30,7 +30,8 @@ type OverlayData = Partial<Record<
   | 'anomaly'
   | 'dotPlot'
   | 'cgr'
-  | 'non-b-dna',
+  | 'non-b-dna'
+  | 'synteny',
   unknown>>;
 
 // Overlay states

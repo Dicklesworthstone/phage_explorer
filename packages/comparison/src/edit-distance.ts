@@ -17,7 +17,7 @@ import type { EditDistanceMetrics } from './types';
 // WASM module not available - use JS-only implementation
 // When WASM is built, this can be re-enabled:
 // import { levenshtein_distance as wasmLevenshtein } from '@phage/wasm-compute';
-const wasmReady = false;
+const _wasmReady = false; // eslint-disable-line @typescript-eslint/no-unused-vars
 
 /**
  * Compute Levenshtein distance using dynamic programming.
