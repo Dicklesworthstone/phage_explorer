@@ -357,20 +357,26 @@ export default function App(): JSX.Element {
                 <div className="text-muted">
                   Accession: {currentPhage.accession} · Baltimore: {currentPhage.baltimoreGroup ?? 'n/a'}
                 </div>
-                <div className="sequence-preview">
-                  <div className="metric-label" style={{ marginBottom: '0.5rem' }}>Sequence</div>
-                  <SequenceView
-                    sequence={fullSequence}
-                    className="sequence-block"
-                    height={360}
-                  />
-                  {!fullSequence && (
-                    <pre className="sequence-block" style={{ marginTop: '0.5rem' }}>
-                      {sequencePreview
-                        ? sequencePreview
-                        : 'Sequence preview will appear after phage load completes.'}
-                    </pre>
-                  )}
+                {/* Side-by-side viewers on wide screens, stacked on smaller */}
+                <div className="detail-viewers">
+                  <div className="viewer-panel">
+                    <div className="metric-label" style={{ marginBottom: '0.5rem' }}>Sequence</div>
+                    <SequenceView
+                      sequence={fullSequence}
+                      className="sequence-block"
+                      height={360}
+                    />
+                    {!fullSequence && (
+                      <pre className="sequence-block" style={{ marginTop: '0.5rem' }}>
+                        {sequencePreview
+                          ? sequencePreview
+                          : 'Sequence preview will appear after phage load completes.'}
+                      </pre>
+                    )}
+                  </div>
+                  <div className="viewer-panel">
+                    <Model3DView phage={currentPhage} />
+                  </div>
                 </div>
               </div>
             ) : (
@@ -380,9 +386,6 @@ export default function App(): JSX.Element {
                   : 'Select a phage to view details once the database is ready.'}
               </div>
             )}
-            <div style={{ marginTop: 'var(--space-4)' }}>
-              <Model3DView phage={currentPhage} />
-            </div>
           </div>
         </section>
       </AppShell>

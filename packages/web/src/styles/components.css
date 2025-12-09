@@ -605,6 +605,56 @@
 }
 
 /* =============================================================================
+   DETAIL VIEWERS LAYOUT
+   Side-by-side sequence and 3D viewer on wide screens
+   ============================================================================= */
+
+.detail-viewers {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.viewer-panel {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Wide screens: side-by-side layout */
+@media (min-width: 1600px) {
+  .detail-viewers {
+    flex-direction: row;
+    gap: var(--space-6);
+  }
+
+  .viewer-panel {
+    flex: 1 1 50%;
+  }
+
+  .viewer-panel .sequence-block {
+    height: 400px;
+    max-height: 400px;
+  }
+
+  .viewer-panel .three-container {
+    height: 400px;
+  }
+}
+
+/* Ultra-wide: larger viewers */
+@media (min-width: 2200px) {
+  .viewer-panel .sequence-block {
+    height: 500px;
+    max-height: 500px;
+  }
+
+  .viewer-panel .three-container {
+    height: 500px;
+  }
+}
+
+/* =============================================================================
    PANEL ENHANCEMENTS
    Upgraded panel styling for better visual hierarchy
    ============================================================================= */
