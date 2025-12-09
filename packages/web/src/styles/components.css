@@ -25,16 +25,32 @@
 
 .two-column {
   display: grid !important; /* Override .panel flex display */
-  grid-template-columns: minmax(280px, 380px) 1fr;
-  gap: var(--space-6);
+  grid-template-columns: minmax(280px, 360px) 1fr;
+  gap: var(--space-5);
   min-height: 0; /* Allow shrinking in flex containers */
   flex: 1; /* Fill available space when in flex container */
 }
 
-/* Large desktop: wider sidebar, three-column potential */
-@media (min-width: 1536px) {
+/* Large desktop (1440px+): wider sidebar */
+@media (min-width: 1440px) {
   .two-column {
-    grid-template-columns: minmax(320px, 420px) 1fr;
+    grid-template-columns: minmax(320px, 400px) 1fr;
+    gap: var(--space-6);
+  }
+}
+
+/* Ultra-wide (1920px+): even wider sidebar for more metadata */
+@media (min-width: 1920px) {
+  .two-column {
+    grid-template-columns: minmax(380px, 450px) 1fr;
+    gap: var(--space-8);
+  }
+}
+
+/* 4K screens (2560px+): maximum sidebar width */
+@media (min-width: 2560px) {
+  .two-column {
+    grid-template-columns: 500px 1fr;
     gap: var(--space-8);
   }
 }
@@ -42,8 +58,8 @@
 /* Tablet landscape: two-column with adjusted proportions */
 @media (min-width: 769px) and (max-width: 1024px) {
   .two-column {
-    grid-template-columns: minmax(260px, 320px) 1fr;
-    gap: var(--space-5);
+    grid-template-columns: minmax(240px, 300px) 1fr;
+    gap: var(--space-4);
   }
 }
 
@@ -130,8 +146,10 @@
 
 .list-item {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   background: transparent;
   border: 1px solid transparent;
@@ -147,6 +165,53 @@
   color: inherit;
   font: inherit;
   position: relative;
+}
+
+.list-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.list-item-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.meta-gc {
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+}
+
+.badge-tiny {
+  padding: 1px 5px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.badge-info {
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--color-info);
+  border-color: rgba(56, 189, 248, 0.3);
+}
+
+.badge-warning {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--color-warning);
+  border-color: rgba(251, 191, 36, 0.3);
+}
+
+/* Hide metadata on very small screens */
+@media (max-width: 400px) {
+  .list-item-meta {
+    display: none;
+  }
 }
 
 /* Subtle highlight bar on left for visual affordance */
@@ -476,6 +541,67 @@
 @keyframes progress-shine {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(100%); }
+}
+
+/* =============================================================================
+   COMPACT DATABASE STATUS BAR
+   Minimal inline status when database is loaded
+   ============================================================================= */
+
+.db-status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-background-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  color: var(--color-text-dim);
+  margin-bottom: var(--space-2);
+}
+
+.db-status-icon {
+  color: var(--color-success);
+  font-weight: var(--font-bold);
+  font-size: var(--text-base);
+}
+
+.db-status-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.badge-small {
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+}
+
+/* Hide text on smaller screens, keep icon */
+@media (max-width: 768px) {
+  .db-status-bar {
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .db-status-text {
+    display: none;
+  }
+}
+
+/* Compact panel variant for loading state */
+.panel-compact {
+  padding: var(--space-3);
+}
+
+.panel-compact .panel-header {
+  margin-bottom: var(--space-2);
+}
+
+.panel-compact .panel-header h2 {
+  font-size: var(--text-base);
 }
 
 /* =============================================================================

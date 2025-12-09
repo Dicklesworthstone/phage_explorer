@@ -254,27 +254,36 @@ export default function App(): JSX.Element {
           hints: footerHints,
         }}
       >
-        <section className="panel" aria-label="Repository status">
-          <div className="panel-header">
-            <h2>Database</h2>
-            {isCached && <span className="badge">Cached</span>}
+        {/* Compact database status - expands when loading/error */}
+        {repository && !error ? (
+          <div className="db-status-bar" aria-label="Database status">
+            <span className="db-status-icon">✓</span>
+            <span className="db-status-text">
+              SQLite loaded via sql.js. Data flows into the shared Zustand store.
+            </span>
+            {isCached && <span className="badge badge-small">Cached</span>}
           </div>
-          <p className="text-dim">
-            {repository
-              ? 'SQLite loaded via sql.js. Data flows into the shared Zustand store.'
-              : 'Waiting for database to finish loading...'}
-          </p>
-          {progress && (
-            <div className="status-line">
-              <span>{progress.stage}</span>
-              <div className="progress-bar">
-                <div className="progress" style={{ width: `${progress.percent}%` }} />
-              </div>
-              <span>{progress.percent}%</span>
+        ) : (
+          <section className="panel panel-compact" aria-label="Repository status">
+            <div className="panel-header">
+              <h2>Database</h2>
+              {isCached && <span className="badge">Cached</span>}
             </div>
-          )}
-          {error && <div className="text-error">Error: {error}</div>}
-        </section>
+            {!repository && !error && (
+              <p className="text-dim">Loading database...</p>
+            )}
+            {progress && (
+              <div className="status-line">
+                <span>{progress.stage}</span>
+                <div className="progress-bar">
+                  <div className="progress" style={{ width: `${progress.percent}%` }} />
+                </div>
+                <span>{progress.percent}%</span>
+              </div>
+            )}
+            {error && <div className="text-error">Error: {error}</div>}
+          </section>
+        )}
 
         <section className="panel two-column" aria-label="Phage browser">
           <div className="column">
@@ -293,9 +302,21 @@ export default function App(): JSX.Element {
                     onClick={() => handleSelectPhage(idx)}
                     type="button"
                   >
-                    <div className="list-title">{phage.name}</div>
-                    <div className="list-subtitle text-dim">
-                      {phage.host ?? 'Unknown host'} · {(phage.genomeLength ?? 0).toLocaleString()} bp
+                    <div className="list-item-main">
+                      <div className="list-title">{phage.name}</div>
+                      <div className="list-subtitle text-dim">
+                        {phage.host ?? 'Unknown host'} · {(phage.genomeLength ?? 0).toLocaleString()} bp
+                      </div>
+                    </div>
+                    <div className="list-item-meta">
+                      {phage.lifecycle && (
+                        <span className={`badge badge-tiny ${phage.lifecycle === 'lytic' ? 'badge-warning' : 'badge-info'}`}>
+                          {phage.lifecycle}
+                        </span>
+                      )}
+                      {phage.gcContent != null && (
+                        <span className="meta-gc text-dim">{phage.gcContent.toFixed(1)}%</span>
+                      )}
                     </div>
                   </button>
                 );

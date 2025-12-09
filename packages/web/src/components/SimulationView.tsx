@@ -87,6 +87,7 @@ export default function SimulationView(): React.ReactElement | null {
     state,
     isRunning,
     speed,
+    avgStepMs,
     parameters,
     metadata,
     controls,
@@ -130,6 +131,11 @@ export default function SimulationView(): React.ReactElement | null {
               {isLoading && <span className="badge">Loading</span>}
               {error && <span className="badge badge-error">Error</span>}
               {isRunning && <span className="badge badge-success">Running</span>}
+              {!!avgStepMs && (
+                <span className="badge">
+                  {avgStepMs.toFixed(1)} ms/step
+                </span>
+              )}
             </div>
           </div>
           {metadata?.description && (

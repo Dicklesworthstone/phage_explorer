@@ -24,6 +24,8 @@ export interface SimulationControls {
   toggle: () => void;
   /** Step forward by one frame */
   step: () => Promise<void>;
+  /** Reset simulation with current params */
+  reset: () => Promise<void>;
   /** Increase simulation speed */
   speedUp: () => void;
   /** Decrease simulation speed */
@@ -41,6 +43,8 @@ export interface UseSimulationResult {
   isRunning: boolean;
   /** Current speed multiplier */
   speed: number;
+  /** Rolling average step time (ms) */
+  avgStepMs: number;
   /** Available parameters */
   parameters: SimParameter[];
   /** Simulation metadata */
@@ -65,11 +69,13 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   const [metadata, setMetadata] = useState<{ name: string; description: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [avgStepMs, setAvgStepMs] = useState(0);
 
   const paramsRef = useRef<Record<string, number | boolean | string>>({});
   const animationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stateRef = useRef<SimState | null>(null);
   const speedRef = useRef<number>(1);
+  const mountedRef = useRef(true);
 
   // Keep stateRef in sync
   useEffect(() => {
@@ -101,6 +107,7 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
 
     // Cleanup on unmount
     return () => {
+      mountedRef.current = false;
       if (animationRef.current) {
         clearInterval(animationRef.current);
       }
@@ -139,11 +146,15 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     if (!stateRef.current) return;
     try {
       const orchestrator = getOrchestrator();
+      const start = performance.now();
       const newState = await orchestrator.stepSimulation(
         stateRef.current,
         DEFAULT_DT * speedRef.current
       );
+      if (!mountedRef.current) return;
       setState(newState);
+      const elapsed = performance.now() - start;
+      setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
     } catch (err) {
       setError(`Simulation step failed: ${(err as Error).message}`);
       setIsRunning(false);
@@ -159,11 +170,15 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
       if (!stateRef.current) return;
       try {
         const orchestrator = getOrchestrator();
+        const start = performance.now();
         const newState = await orchestrator.stepSimulation(
           stateRef.current,
           DEFAULT_DT * speedRef.current
         );
+        if (!mountedRef.current) return;
         setState(newState);
+        const elapsed = performance.now() - start;
+        setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
       } catch (err) {
         setError(`Simulation failed: ${(err as Error).message}`);
         if (animationRef.current) {
@@ -219,12 +234,17 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     }
   }, []);
 
+  const reset = useCallback(async () => {
+    await init();
+  }, [init]);
+
   const controls: SimulationControls = {
     init,
     play,
     pause,
     toggle,
     step,
+    reset,
     speedUp,
     speedDown,
     setSpeed,
@@ -235,6 +255,7 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     state,
     isRunning,
     speed,
+    avgStepMs,
     parameters,
     metadata,
     controls,
