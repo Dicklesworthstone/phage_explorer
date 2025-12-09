@@ -332,7 +332,16 @@ export class DatabaseLoader {
 
     // Validate downloaded data is a valid SQLite database
     if (!this.isValidSqliteData(combined)) {
-      throw new Error('Downloaded data is not a valid SQLite database. The file may be corrupted or the server returned an error page.');
+      // Debug: log what we actually received
+      const headerBytes = Array.from(combined.slice(0, 32));
+      const headerHex = headerBytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const headerStr = new TextDecoder().decode(combined.slice(0, 64));
+      console.error('Invalid SQLite data received:', {
+        length: combined.length,
+        headerHex,
+        headerStr: headerStr.replace(/[^\x20-\x7E]/g, '.'),
+      });
+      throw new Error(`Downloaded data is not a valid SQLite database (received ${combined.length} bytes, header: "${headerStr.slice(0, 32).replace(/[^\x20-\x7E]/g, '.')}"). The file may be corrupted or the server returned an error page.`);
     }
 
     this.progress('initializing', 80, 'Initializing database...');
