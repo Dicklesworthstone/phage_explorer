@@ -324,7 +324,7 @@ export class VirtualScroller {
   /**
    * Handle touch end
    */
-  handleTouchEnd(event: TouchEvent): void {
+  handleTouchEnd(_event: TouchEvent): void {
     // Start momentum if velocity is significant
     const speed = Math.abs(this.state.velocityX) + Math.abs(this.state.velocityY);
     if (this.options.momentum && speed > 2) {

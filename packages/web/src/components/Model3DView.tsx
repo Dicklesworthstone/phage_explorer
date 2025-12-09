@@ -270,7 +270,8 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       if (!scene || !camera || !controls) return;
 
       structureDataRef.current = structureData;
-      rebuildStructure(renderMode);
+      // Note: Don't call rebuildStructure here - the renderMode useEffect handles it
+      // when loadState becomes 'ready' (avoids double-building on initial load)
 
       // ZOOM TO EXTENTS: Calculate optimal camera distance
       // Using FOV of 50°, formula: dist = radius / tan(fov/2)
