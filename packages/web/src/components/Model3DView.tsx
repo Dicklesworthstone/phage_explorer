@@ -162,11 +162,24 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     sceneRef.current = scene;
     cameraRef.current = camera;
 
-    const ambient = new AmbientLight(0xffffff, 0.5);
-    const directional = new DirectionalLight(0xffffff, 0.8);
-    directional.position.set(1, 1, 1);
+    // Enhanced lighting setup for better 3D perception
+    const ambient = new AmbientLight(0xffffff, 0.6);
     scene.add(ambient);
-    scene.add(directional);
+
+    // Key light (main light from top-right)
+    const keyLight = new DirectionalLight(0xffffff, 1.0);
+    keyLight.position.set(1, 1.5, 1);
+    scene.add(keyLight);
+
+    // Fill light (softer, from left)
+    const fillLight = new DirectionalLight(0xb0c4de, 0.5); // Light steel blue tint
+    fillLight.position.set(-1, 0.5, 0.5);
+    scene.add(fillLight);
+
+    // Rim light (from behind for depth)
+    const rimLight = new DirectionalLight(0x88ccff, 0.4); // Cyan tint
+    rimLight.position.set(0, 0, -1);
+    scene.add(rimLight);
 
     container.appendChild(renderer.domElement);
 
@@ -259,10 +272,19 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       structureDataRef.current = structureData;
       rebuildStructure(renderMode);
 
-      const dist = structureData.radius * 3;
-      camera.position.copy(structureData.center.clone().add(new Vector3(dist, dist * 0.8, dist)));
+      // ZOOM TO EXTENTS: Calculate optimal camera distance
+      // Using FOV of 50°, formula: dist = radius / tan(fov/2)
+      // With padding factor of 1.2 to leave some margin
+      const fovRad = (camera.fov * Math.PI) / 180;
+      const optimalDist = (structureData.radius / Math.tan(fovRad / 2)) * 1.2;
+      const dist = Math.max(optimalDist, structureData.radius * 1.5); // At least 1.5x radius
+
+      // Position camera at slight angle for better 3D perception
+      camera.position.copy(
+        structureData.center.clone().add(new Vector3(dist * 0.7, dist * 0.5, dist * 0.7))
+      );
       camera.near = Math.max(0.1, structureData.radius * 0.01);
-      camera.far = Math.max(5000, structureData.radius * 4);
+      camera.far = Math.max(5000, structureData.radius * 10);
       camera.updateProjectionMatrix();
       controls.target.copy(structureData.center);
       controls.update();

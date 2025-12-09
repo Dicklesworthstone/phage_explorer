@@ -42,15 +42,20 @@ export interface Bond {
   b: number;
 }
 
+// HIGH CONTRAST element colors for dark backgrounds
 const ELEMENT_COLORS: Record<string, Color> = {
-  H: new Color('#ffffff'),
-  C: new Color('#4b5563'),
-  N: new Color('#2563eb'),
-  O: new Color('#dc2626'),
-  S: new Color('#f59e0b'),
-  P: new Color('#c084fc'),
-  MG: new Color('#22c55e'),
-  FE: new Color('#ef4444'),
+  H: new Color('#e0e0e0'),    // Light gray (visible on dark bg)
+  C: new Color('#60a5fa'),    // Bright sky blue (NOT dark gray!)
+  N: new Color('#34d399'),    // Bright emerald green
+  O: new Color('#f87171'),    // Bright coral red
+  S: new Color('#fbbf24'),    // Bright amber
+  P: new Color('#c084fc'),    // Purple
+  MG: new Color('#4ade80'),   // Bright green
+  FE: new Color('#fb923c'),   // Orange
+  CA: new Color('#a3e635'),   // Lime
+  ZN: new Color('#7dd3fc'),   // Light blue
+  CL: new Color('#86efac'),   // Light green
+  NA: new Color('#fdba74'),   // Light orange
 };
 
 const ELEMENT_RADII: Record<string, number> = {
@@ -231,8 +236,14 @@ export async function loadStructure(
 
 export function buildBallAndStick(atoms: AtomRecord[], bonds: Bond[], sphereRadius = 0.5, bondRadius = 0.15): Group {
   const group = new Group();
-  const atomGeo = new SphereGeometry(sphereRadius, 18, 18);
-  const atomMat = new MeshPhongMaterial({ vertexColors: true, shininess: 40 });
+
+  // ATOMS - use instanced mesh with per-instance colors
+  const atomGeo = new SphereGeometry(sphereRadius, 24, 24);
+  const atomMat = new MeshPhongMaterial({
+    vertexColors: true,
+    shininess: 80,
+    specular: new Color('#555555'),
+  });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
   const color = new Color();
@@ -246,8 +257,15 @@ export function buildBallAndStick(atoms: AtomRecord[], bonds: Bond[], sphereRadi
   if (atomMesh.instanceColor) atomMesh.instanceColor.needsUpdate = true;
   group.add(atomMesh);
 
-  const bondGeo = new CylinderGeometry(bondRadius, bondRadius, 1, 12, 1, true);
-  const bondMat = new MeshPhongMaterial({ color: '#9ca3af', shininess: 30 });
+  // BONDS - bright silver/white for visibility
+  const bondGeo = new CylinderGeometry(bondRadius, bondRadius, 1, 16, 1, true);
+  const bondMat = new MeshPhongMaterial({
+    color: '#d4d4d8',  // Bright zinc/silver
+    shininess: 60,
+    specular: new Color('#888888'),
+    emissive: new Color('#1a1a2e'),  // Slight self-illumination
+    emissiveIntensity: 0.1,
+  });
   const bondMesh = new InstancedMesh(bondGeo, bondMat, bonds.length);
   const bondMatrix = new Matrix4();
   const scaleMatrix = new Matrix4();
@@ -276,15 +294,32 @@ export function buildBallAndStick(atoms: AtomRecord[], bonds: Bond[], sphereRadi
   return group;
 }
 
+// Vibrant chain colors for better visibility
+const CHAIN_COLORS = [
+  '#60a5fa', // Blue
+  '#f472b6', // Pink
+  '#4ade80', // Green
+  '#fb923c', // Orange
+  '#a78bfa', // Purple
+  '#22d3ee', // Cyan
+  '#fbbf24', // Yellow
+  '#f87171', // Red
+];
+
 export function buildTubeFromTraces(traces: Vector3[][], radius: number, radialSegments: number, defaultColor: string, opacity = 1, colors?: string[]): Group {
   const group = new Group();
   traces.forEach((trace, idx) => {
     if (trace.length < 2) return;
     const curve = new CatmullRomCurve3(trace);
-    const tube = new TubeGeometry(curve, Math.max(20, trace.length * 2), radius, radialSegments, false);
+    const tubeSegments = Math.max(30, trace.length * 3); // Smoother tubes
+    const tube = new TubeGeometry(curve, tubeSegments, radius, radialSegments, false);
+    const chainColor = colors?.[idx % (colors.length || 1)] ?? CHAIN_COLORS[idx % CHAIN_COLORS.length] ?? defaultColor;
     const mat = new MeshPhongMaterial({
-      color: colors?.[idx % (colors.length || 1)] ?? defaultColor,
-      shininess: 60,
+      color: chainColor,
+      shininess: 100,
+      specular: new Color('#444444'),
+      emissive: new Color(chainColor),
+      emissiveIntensity: 0.1, // Slight glow
       transparent: opacity < 1,
       opacity,
     });
@@ -296,22 +331,45 @@ export function buildTubeFromTraces(traces: Vector3[][], radius: number, radialS
 
 export function buildSurfaceImpostor(atoms: AtomRecord[], scale = 1.6): Group {
   const group = new Group();
-  const geo = new SphereGeometry(0.7 * scale, 10, 10);
-  const mat = new MeshPhongMaterial({
-    color: '#60a5fa',
+
+  // Create a more visible, colorful surface
+  const geo = new SphereGeometry(0.7 * scale, 12, 12);
+
+  // Outer surface - semi-transparent blue
+  const outerMat = new MeshPhongMaterial({
+    color: '#38bdf8', // Bright sky blue
     transparent: true,
-    opacity: 0.35,
-    shininess: 10,
+    opacity: 0.5,
+    shininess: 60,
+    specular: new Color('#88ccff'),
+    side: 2, // DoubleSide
     depthWrite: false,
   });
-  const mesh = new InstancedMesh(geo, mat, atoms.length);
+  const outerMesh = new InstancedMesh(geo, outerMat, atoms.length);
   const matrix = new Matrix4();
   atoms.forEach((atom, idx) => {
     matrix.makeTranslation(atom.x, atom.y, atom.z);
-    mesh.setMatrixAt(idx, matrix);
+    outerMesh.setMatrixAt(idx, matrix);
   });
-  mesh.instanceMatrix.needsUpdate = true;
-  group.add(mesh);
+  outerMesh.instanceMatrix.needsUpdate = true;
+  group.add(outerMesh);
+
+  // Inner core - brighter for depth perception
+  const innerGeo = new SphereGeometry(0.3 * scale, 8, 8);
+  const innerMat = new MeshPhongMaterial({
+    color: '#f0f9ff', // Very light blue/white
+    shininess: 100,
+    emissive: new Color('#60a5fa'),
+    emissiveIntensity: 0.2,
+  });
+  const innerMesh = new InstancedMesh(innerGeo, innerMat, atoms.length);
+  atoms.forEach((atom, idx) => {
+    matrix.makeTranslation(atom.x, atom.y, atom.z);
+    innerMesh.setMatrixAt(idx, matrix);
+  });
+  innerMesh.instanceMatrix.needsUpdate = true;
+  group.add(innerMesh);
+
   return group;
 }
 
