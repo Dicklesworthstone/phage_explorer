@@ -20,6 +20,7 @@ import { CGROverlay } from './CGROverlay';
 import { HilbertOverlay } from './HilbertOverlay';
 import { VirionStabilityOverlay } from './VirionStabilityOverlay';
 import { PhasePortraitOverlay } from './PhasePortraitOverlay';
+import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { CommandPalette } from './CommandPalette';
 
 interface OverlayManagerProps {
@@ -42,6 +43,7 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <CGROverlay repository={repository} currentPhage={currentPhage} />
       <HilbertOverlay repository={repository} currentPhage={currentPhage} />
       <PhasePortraitOverlay repository={repository} currentPhage={currentPhage} />
+      <BiasDecompositionOverlay repository={repository} currentPhage={currentPhage} />
       <CommandPalette />
     </>
   );
