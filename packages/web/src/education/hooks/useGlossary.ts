@@ -1,14 +1,13 @@
 import { useMemo } from 'react';
 import { glossaryCategories, glossaryIndex, GLOSSARY_TERMS } from '../glossary/terms';
-import type { GlossaryCategory, GlossaryTerm } from '../glossary/terms';
-import type { TopicId } from '../types';
+import type { GlossaryCategory, GlossaryId, GlossaryTerm } from '../glossary/terms';
 
 export interface UseGlossaryResult {
   terms: GlossaryTerm[];
   categories: GlossaryCategory[];
-  getTerm: (id: TopicId) => GlossaryTerm | undefined;
+  getTerm: (id: GlossaryId) => GlossaryTerm | undefined;
   searchTerms: (query: string) => GlossaryTerm[];
-  relatedTerms: (id: TopicId) => GlossaryTerm[];
+  relatedTerms: (id: GlossaryId) => GlossaryTerm[];
   filterByCategory: (category: GlossaryCategory | 'all') => GlossaryTerm[];
 }
 
@@ -17,7 +16,7 @@ export function useGlossary(): UseGlossaryResult {
 
   const categories = useMemo(() => glossaryCategories, []);
 
-  const getTerm = (id: TopicId): GlossaryTerm | undefined => glossaryIndex.get(id);
+  const getTerm = (id: GlossaryId): GlossaryTerm | undefined => glossaryIndex.get(id);
 
   const searchTerms = (query: string): GlossaryTerm[] => {
     const normalized = query.trim().toLowerCase();
@@ -31,7 +30,7 @@ export function useGlossary(): UseGlossaryResult {
     });
   };
 
-  const relatedTerms = (id: TopicId): GlossaryTerm[] => {
+  const relatedTerms = (id: GlossaryId): GlossaryTerm[] => {
     const entry = glossaryIndex.get(id);
     if (!entry?.related?.length) return [];
     return entry.related

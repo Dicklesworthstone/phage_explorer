@@ -15,3 +15,4 @@ export * from './types';
 export * from './glossary/terms';
 export * from './glossary/GlossaryPanel';
 export * from './components/TermTooltip';
+export * from './components/CodonWheelVisualizer';

@@ -698,6 +698,44 @@
   box-shadow: 0 10px 30px rgba(34, 211, 238, 0.25);
 }
 
+.glossary-drawer {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  top: 1rem;
+  width: min(480px, 42vw);
+  background: var(--color-background);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  padding: 0.75rem;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: var(--z-overlay);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.glossary-drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.glossary-drawer__eyebrow {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.glossary-drawer__title {
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
 @keyframes toast-pop {
   0% {
     opacity: 0;
@@ -835,6 +873,16 @@
 .codon-wheel__codon-sub {
   fill: var(--color-text-muted);
   font-size: 0.9rem;
+}
+
+@media (max-width: 640px) {
+  .glossary-drawer {
+    left: 0.75rem;
+    right: 0.75rem;
+    width: auto;
+    top: auto;
+    height: 55vh;
+  }
 }
 
 .codon-wheel__panel {

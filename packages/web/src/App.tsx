@@ -17,12 +17,14 @@ import {
   usePhageStore,
 } from './store';
 import { useWebPreferences } from './store';
-import { useBeginnerMode, useBeginnerModeInit } from './education';
+import { useBeginnerMode, useBeginnerModeInit, GlossaryPanel } from './education';
 import './styles.css';
 import { Model3DView } from './components/Model3DView';
 import { SequenceView } from './components/SequenceView';
 import { BeginnerModeIndicator } from './components/BeginnerModeIndicator';
 import { ReadingFrameVisualizer } from './components/ReadingFrameVisualizer';
+import { GlossaryPanel } from './education/glossary/GlossaryPanel';
+import { LearnMenu } from './components/LearnMenu';
 
 /** Number of bases to show in the sequence preview */
 const SEQUENCE_PREVIEW_LENGTH = 500;
@@ -43,9 +45,18 @@ export default function App(): JSX.Element {
   } = useDatabase({ autoLoad: true });
   const highContrast = useWebPreferences((s) => s.highContrast);
   const setHighContrast = useWebPreferences((s) => s.setHighContrast);
-  const { toggle: toggleBeginnerMode, isEnabled: beginnerModeEnabled } = useBeginnerMode();
+  const {
+    toggle: toggleBeginnerMode,
+    enable: enableBeginnerMode,
+    isEnabled: beginnerModeEnabled,
+    isGlossaryOpen,
+    openGlossary,
+    closeGlossary,
+    startTour,
+  } = useBeginnerMode();
   const [beginnerToast, setBeginnerToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const [learnMenuOpen, setLearnMenuOpen] = useState(false);
 
   // Use individual selectors to avoid getSnapshot caching issues
   const phages = usePhageStore((s) => s.phages);
@@ -296,6 +307,7 @@ export default function App(): JSX.Element {
               >
                 Beginner: {beginnerModeEnabled ? 'On' : 'Off'}
               </button>
+              <LearnMenu />
             </>
           ),
         }}
@@ -441,6 +453,25 @@ export default function App(): JSX.Element {
       {beginnerToast && (
         <div className="toast toast-info" role="status" aria-live="polite">
           {beginnerToast}
+        </div>
+      )}
+      {beginnerModeEnabled && isGlossaryOpen && (
+        <div className="glossary-drawer" role="complementary" aria-label="Glossary">
+          <div className="glossary-drawer__header">
+            <div>
+              <div className="glossary-drawer__eyebrow">Beginner Mode</div>
+              <div className="glossary-drawer__title">Glossary</div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={closeGlossary}
+              aria-label="Close glossary"
+            >
+              Close
+            </button>
+          </div>
+          <GlossaryPanel />
         </div>
       )}
     </>
