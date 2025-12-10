@@ -85,6 +85,7 @@ function isLandscape(viewportWidth: number, viewportHeight: number): boolean {
 
 // Responsive BASE cell sizes - these get multiplied by zoom scale
 // Mobile-first with orientation awareness for maximum utility
+// UPDATED: Increased cell sizes on mobile for better readability (xivy Pillar 1)
 function getResponsiveCellSize(
   viewportWidth: number,
   viewportHeight?: number
@@ -93,42 +94,61 @@ function getResponsiveCellSize(
   const landscape = isLandscape(viewportWidth, height);
 
   // Mobile devices (< 768px width in portrait, < 1024px in landscape)
+  // Key insight: Cell sizes must be large enough for letters to be readable
+  // Minimum readable size is ~10px height for most fonts
   if (viewportWidth < 375) {
-    // Tiny phones - use micro-text optimized cells
+    // Tiny phones - prioritize readability over density
     return landscape
-      ? { width: 5, height: 6 }   // Landscape: dense, many columns
-      : { width: 6, height: 8 };  // Portrait: slightly larger for touch
+      ? { width: 8, height: 10 }   // Landscape: readable but compact
+      : { width: 10, height: 12 }; // Portrait: touch-friendly
   }
   if (viewportWidth < 480) {
     // Small phones (iPhone SE, etc.)
     return landscape
-      ? { width: 5, height: 6 }
-      : { width: 7, height: 9 };
+      ? { width: 9, height: 11 }
+      : { width: 11, height: 13 };
   }
   if (viewportWidth < 640) {
     // Standard phones
     return landscape
-      ? { width: 6, height: 7 }
-      : { width: 7, height: 9 };
+      ? { width: 10, height: 12 }
+      : { width: 12, height: 14 };
   }
   if (viewportWidth < 768) {
     // Large phones / small tablets portrait
     return landscape
-      ? { width: 6, height: 8 }
-      : { width: 8, height: 10 };
+      ? { width: 10, height: 12 }
+      : { width: 12, height: 14 };
   }
   if (viewportWidth < 1024) {
     // Tablets
     return landscape
-      ? { width: 8, height: 10 }
-      : { width: 10, height: 12 };
+      ? { width: 12, height: 14 }
+      : { width: 14, height: 16 };
   }
   if (viewportWidth < 1440) {
     // Small laptops / tablets landscape
-    return { width: 12, height: 14 };
+    return { width: 14, height: 16 };
   }
   // Large screens - full readability
   return { width: 16, height: 20 };
+}
+
+// Detect if device is mobile (touch-primary)
+function isMobileDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  // Check touch capability and screen width
+  const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  const isSmallScreen = window.innerWidth < 1024;
+  return hasTouch && isSmallScreen;
+}
+
+// Get recommended initial zoom scale based on viewport
+// Mobile devices benefit from starting zoomed in slightly for readability
+function getDefaultZoomScale(viewportWidth: number): number {
+  if (viewportWidth < 480) return 1.2;  // Small phones: zoom in for readability
+  if (viewportWidth < 768) return 1.1;  // Larger phones: slight zoom
+  return 1.0;                            // Tablets/desktop: standard zoom
 }
 
 const DEFAULT_CELL_WIDTH = 16;
@@ -186,8 +206,10 @@ export class CanvasSequenceGridRenderer {
     // Get device pixel ratio for high-DPI
     this.dpr = window.devicePixelRatio || 1;
 
-    // Initialize zoom scale
-    this.zoomScale = options.zoomScale ?? 1.0;
+    // Initialize zoom scale - use mobile-aware default if not specified
+    // This ensures mobile users start with readable cell sizes
+    const defaultZoom = getDefaultZoomScale(this.canvas.clientWidth);
+    this.zoomScale = options.zoomScale ?? defaultZoom;
     this.currentZoomPreset = getZoomPresetForScale(this.zoomScale);
 
     // Use responsive BASE cell sizes (before zoom) with orientation awareness
@@ -274,7 +296,6 @@ export class CanvasSequenceGridRenderer {
       itemHeight: this.rowHeight,
     });
     this.updateCodonSnap();
-    this.updateCodonSnap();
 
     // Mark as needing full redraw
     this.needsFullRedraw = true;
@@ -283,10 +304,16 @@ export class CanvasSequenceGridRenderer {
 
   /**
    * Update effective cell sizes based on zoom scale
+   * Enforces minimum readable sizes on mobile devices
    */
   private updateCellSizes(): void {
-    const newCellWidth = Math.max(1, Math.round(this.baseCellWidth * this.zoomScale));
-    const newCellHeight = Math.max(1, Math.round(this.baseCellHeight * this.zoomScale));
+    // Minimum cell sizes for readability on mobile (text needs ~8px minimum)
+    const mobile = isMobileDevice();
+    const minWidth = mobile ? 6 : 1;
+    const minHeight = mobile ? 8 : 1;
+
+    const newCellWidth = Math.max(minWidth, Math.round(this.baseCellWidth * this.zoomScale));
+    const newCellHeight = Math.max(minHeight, Math.round(this.baseCellHeight * this.zoomScale));
 
     if (newCellWidth !== this.cellWidth || newCellHeight !== this.cellHeight) {
       this.cellWidth = newCellWidth;
@@ -348,7 +375,6 @@ export class CanvasSequenceGridRenderer {
       itemHeight: this.rowHeight,
     });
     this.updateCodonSnap();
-    this.updateCodonSnap();
 
     this.needsFullRedraw = true;
     this.scheduleRender();
@@ -404,14 +430,6 @@ export class CanvasSequenceGridRenderer {
   }
 
   /**
-   * Toggle codon snapping for scroll momentum
-   */
-  setSnapToCodon(enabled: boolean): void {
-    this.snapToCodon = enabled;
-    this.updateCodonSnap();
-  }
-
-  /**
    * Set zoom scale (0.1 to 4.0)
    * - 0.1-0.3: Ultra-dense genome view (1-3px cells)
    * - 0.3-0.6: Region view (3-7px cells)
@@ -436,7 +454,6 @@ export class CanvasSequenceGridRenderer {
       itemWidth: this.cellWidth,
       itemHeight: this.rowHeight,
     });
-    this.updateCodonSnap();
     this.updateCodonSnap();
 
     // Notify listeners
@@ -797,7 +814,9 @@ export class CanvasSequenceGridRenderer {
     }
     const { cols } = this.scroller.getLayout();
     const g = this.gcd(cols, 3);
-    const rowsPerSnap = Math.max(1, 3 / g); // smallest row multiple that keeps startIndex % 3 === 0
+    // Use integer division to ensure rowsPerSnap is always an integer
+    // (g is always 1 or 3 since it's gcd with 3, so 3/g is already integer, but be explicit)
+    const rowsPerSnap = Math.max(1, Math.floor(3 / g));
     this.scroller.setSnapToMultiple(rowsPerSnap);
   }
 

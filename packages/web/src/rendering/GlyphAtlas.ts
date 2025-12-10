@@ -134,47 +134,6 @@ const DEFAULT_OPTIONS: GlyphAtlasOptions = {
   devicePixelRatio: 1,
 };
 
-const MICRO_TEXT_MAX_CELL = 8;
-
-type MicroGlyph = {
-  width: number;
-  height: number;
-  rows: number[];
-};
-
-const MICRO_FONT_4x6: Record<Nucleotide, MicroGlyph> = {
-  A: { width: 4, height: 6, rows: [0b0110, 0b1001, 0b1111, 0b1001, 0b1001, 0b0000] },
-  C: { width: 4, height: 6, rows: [0b0110, 0b1001, 0b1000, 0b1001, 0b0110, 0b0000] },
-  G: { width: 4, height: 6, rows: [0b0111, 0b1000, 0b1011, 0b1001, 0b0111, 0b0000] },
-  T: { width: 4, height: 6, rows: [0b1111, 0b0100, 0b0100, 0b0100, 0b0100, 0b0000] },
-  N: { width: 4, height: 6, rows: [0b1001, 0b1101, 0b1011, 0b1001, 0b1001, 0b0000] },
-};
-
-const MICRO_FONT_5x7: Record<AminoAcid, MicroGlyph> = {
-  A: { width: 5, height: 7, rows: [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b00000] },
-  C: { width: 5, height: 7, rows: [0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110, 0b00000] },
-  D: { width: 5, height: 7, rows: [0b11100, 0b10010, 0b10001, 0b10001, 0b10010, 0b11100, 0b00000] },
-  E: { width: 5, height: 7, rows: [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0b00000] },
-  F: { width: 5, height: 7, rows: [0b11111, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0b00000] },
-  G: { width: 5, height: 7, rows: [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b01110, 0b00000] },
-  H: { width: 5, height: 7, rows: [0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0b00000] },
-  I: { width: 5, height: 7, rows: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0b00000] },
-  K: { width: 5, height: 7, rows: [0b10001, 0b10010, 0b11100, 0b10100, 0b10010, 0b10001, 0b00000] },
-  L: { width: 5, height: 7, rows: [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0b00000] },
-  M: { width: 5, height: 7, rows: [0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b00000] },
-  N: { width: 5, height: 7, rows: [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b00000] },
-  P: { width: 5, height: 7, rows: [0b11110, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, 0b00000] },
-  Q: { width: 5, height: 7, rows: [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b01110, 0b00001] },
-  R: { width: 5, height: 7, rows: [0b11110, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0b00000] },
-  S: { width: 5, height: 7, rows: [0b01111, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0b00000] },
-  T: { width: 5, height: 7, rows: [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000] },
-  V: { width: 5, height: 7, rows: [0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00000] },
-  W: { width: 5, height: 7, rows: [0b10001, 0b10001, 0b10001, 0b10101, 0b11011, 0b10001, 0b00000] },
-  Y: { width: 5, height: 7, rows: [0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000] },
-  X: { width: 5, height: 7, rows: [0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001, 0b00000] },
-  '*': { width: 5, height: 7, rows: [0b00100, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00100] },
-};
-
 // Calculate optimal font size for given cell dimensions
 // For tiny cells, we skip normal text and rely on micro-glyphs
 function calculateOptimalFontSize(cellWidth: number, cellHeight: number): number {
@@ -341,18 +300,22 @@ export class GlyphAtlas {
     height: number,
     type: 'nucleotide' | 'amino'
   ): void {
-    const glyph =
+    // Get the glyph bitmap rows (array of row bitmasks)
+    const glyphRows =
       (type === 'nucleotide'
         ? MICRO_FONT_4x6[char as Nucleotide]
         : MICRO_FONT_5x7[char as AminoAcid]) ??
       (type === 'nucleotide' ? MICRO_FONT_4x6.N : MICRO_FONT_5x7.X);
 
-    if (!glyph) return;
+    if (!glyphRows) return;
 
-    const scaleX = Math.max(1, Math.floor(width / glyph.width));
-    const scaleY = Math.max(1, Math.floor(height / glyph.height));
-    const offsetX = x + Math.floor((width - glyph.width * scaleX) / 2);
-    const offsetY = y + Math.floor((height - glyph.height * scaleY) / 2);
+    // Get the size constants for this glyph type
+    const glyphSize = type === 'nucleotide' ? MICRO_NUCLEOTIDE_SIZE : MICRO_AMINO_SIZE;
+
+    const scaleX = Math.max(1, Math.floor(width / glyphSize.width));
+    const scaleY = Math.max(1, Math.floor(height / glyphSize.height));
+    const offsetX = x + Math.floor((width - glyphSize.width * scaleX) / 2);
+    const offsetY = y + Math.floor((height - glyphSize.height * scaleY) / 2);
 
     const ctx = this.ctx;
     const smoothingFlag = (ctx as CanvasRenderingContext2D).imageSmoothingEnabled;
@@ -362,10 +325,10 @@ export class GlyphAtlas {
 
     ctx.fillStyle = colors.fg;
 
-    for (let rowIdx = 0; rowIdx < glyph.height; rowIdx++) {
-      const rowBits = glyph.rows[rowIdx] ?? 0;
-      for (let bit = 0; bit < glyph.width; bit++) {
-        if (rowBits & (1 << (glyph.width - 1 - bit))) {
+    for (let rowIdx = 0; rowIdx < glyphSize.height; rowIdx++) {
+      const rowBits = glyphRows[rowIdx] ?? 0;
+      for (let bit = 0; bit < glyphSize.width; bit++) {
+        if (rowBits & (1 << (glyphSize.width - 1 - bit))) {
           const px = offsetX + bit * scaleX;
           const py = offsetY + rowIdx * scaleY;
           ctx.fillRect(px, py, scaleX, scaleY);

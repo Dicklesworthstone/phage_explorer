@@ -27,7 +27,7 @@ export interface UseSequenceGridOptions {
   glow?: boolean;
   postProcess?: PostProcessPipeline;
   reducedMotion?: boolean;
-  /** Initial zoom scale (0.1 to 4.0, default 1.0) */
+  /** Initial zoom scale (0.1 to 4.0). If not specified, uses mobile-aware default */
   initialZoomScale?: number;
   /** Enable pinch-to-zoom on touch devices */
   enablePinchZoom?: boolean;
@@ -38,6 +38,28 @@ export interface UseSequenceGridOptions {
   onZoomChange?: (scale: number, preset: ZoomPreset) => void;
 }
 
+/**
+ * Detect if current device is mobile (touch-primary, small screen)
+ */
+function detectMobileDevice(): boolean {
+  if (typeof window === 'undefined') return false;
+  const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  const isSmallScreen = window.innerWidth < 1024;
+  return hasTouch && isSmallScreen;
+}
+
+/**
+ * Get recommended initial zoom scale based on viewport width
+ * Mobile devices start zoomed in for better readability
+ */
+function getMobileAwareZoom(): number {
+  if (typeof window === 'undefined') return 1.0;
+  const width = window.innerWidth;
+  if (width < 480) return 1.2;   // Small phones
+  if (width < 768) return 1.1;   // Larger phones
+  return 1.0;                     // Tablets/desktop
+}
+
 export interface UseSequenceGridResult {
   /** Ref to attach to canvas element */
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
@@ -45,6 +67,8 @@ export interface UseSequenceGridResult {
   visibleRange: VisibleRange | null;
   /** Current screen orientation */
   orientation: 'portrait' | 'landscape';
+  /** Whether device is detected as mobile (touch + small screen) */
+  isMobile: boolean;
   /** Current scroll position (index in sequence) */
   scrollPosition: number;
   /** Scroll to a specific position */
@@ -74,6 +98,9 @@ export interface UseSequenceGridResult {
 }
 
 export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGridResult {
+  // Use mobile-aware zoom if not explicitly specified
+  const defaultZoom = getMobileAwareZoom();
+
   const {
     theme,
     sequence,
@@ -87,7 +114,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     glow = false,
     postProcess,
     reducedMotion = false,
-    initialZoomScale = 1.0,
+    initialZoomScale = defaultZoom, // Mobile-aware default
     enablePinchZoom = true,
     snapToCodon = true,
     onVisibleRangeChange,
@@ -104,6 +131,8 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     if (typeof window === 'undefined') return 'landscape';
     return window.innerWidth >= window.innerHeight ? 'landscape' : 'portrait';
   });
+  // Track mobile device state for responsive features
+  const [isMobile, setIsMobile] = useState(() => detectMobileDevice());
 
   // Handle zoom change callback from renderer
   const handleZoomChange = useCallback((scale: number, preset: ZoomPreset) => {
@@ -149,9 +178,11 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     // Track orientation changes explicitly (some mobile browsers delay resize events)
     const handleOrientationChange = () => {
       setOrientation(window.innerWidth >= window.innerHeight ? 'landscape' : 'portrait');
+      setIsMobile(detectMobileDevice()); // Re-detect on orientation change
       renderer.resize();
     };
     window.addEventListener('orientationchange', handleOrientationChange);
+    window.addEventListener('resize', handleOrientationChange); // Also track resize
 
     // Handle wheel events
     const handleWheel = (e: WheelEvent) => {
@@ -184,6 +215,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     return () => {
       resizeObserver.disconnect();
       window.removeEventListener('orientationchange', handleOrientationChange);
+      window.removeEventListener('resize', handleOrientationChange);
       canvas.removeEventListener('wheel', handleWheel);
       canvas.removeEventListener('touchstart', handleTouchStart);
       canvas.removeEventListener('touchmove', handleTouchMove);
@@ -332,6 +364,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     canvasRef,
     visibleRange,
     orientation,
+    isMobile,
     scrollPosition,
     scrollToPosition,
     scrollToStart,
