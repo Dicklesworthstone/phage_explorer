@@ -48,6 +48,7 @@ export class GeneMapRenderer {
 
   private state: GeneMapState | null = null;
   private animationFrameId: number | null = null;
+  private disposed = false;
 
   constructor(options: GeneMapOptions) {
     this.canvas = options.canvas;
@@ -100,11 +101,13 @@ export class GeneMapRenderer {
    * Schedule render on next animation frame
    */
   private scheduleRender(): void {
-    if (this.animationFrameId !== null) return;
+    if (this.animationFrameId !== null || this.disposed) return;
 
     this.animationFrameId = requestAnimationFrame(() => {
       this.animationFrameId = null;
-      this.render();
+      if (!this.disposed) {
+        this.render();
+      }
     });
   }
 
@@ -411,8 +414,10 @@ export class GeneMapRenderer {
    * Cleanup
    */
   dispose(): void {
+    this.disposed = true;
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
     }
   }
 }

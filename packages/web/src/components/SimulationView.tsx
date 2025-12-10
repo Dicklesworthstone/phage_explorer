@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Overlay } from './overlays/Overlay';
 import { useOverlay } from './overlays/OverlayProvider';
 import { useTheme } from '../hooks/useTheme';
@@ -37,20 +37,25 @@ function normalizeSimId(simId: string | undefined): SimulationId {
   return 'lysogeny-circuit';
 }
 
-function VisualizerRouter({ simId, state }: { simId: SimulationId; state: SimState }): React.ReactElement | null {
+function VisualizerRouter({
+  simId,
+  state,
+  width,
+  height,
+}: { simId: SimulationId; state: SimState; width: number; height: number }): React.ReactElement | null {
   switch (simId) {
     case 'lysogeny-circuit':
-      return <LysogenyVisualizer state={state as any} width={540} height={260} />;
+      return <LysogenyVisualizer state={state as any} width={width} height={height} />;
     case 'plaque-automata':
-      return <PlaqueVisualizer state={state as any} width={540} height={260} />;
+      return <PlaqueVisualizer state={state as any} size={Math.min(width, height * 1.1)} />;
     case 'ribosome-traffic':
-      return <RibosomeVisualizer state={state as any} width={540} height={260} />;
+      return <RibosomeVisualizer state={state as any} width={width} height={height} />;
     case 'evolution-replay':
-      return <EvolutionVisualizer state={state as any} width={540} height={260} />;
+      return <EvolutionVisualizer state={state as any} width={width} height={height} />;
     case 'infection-kinetics':
-      return <InfectionKineticsVisualizer state={state as any} width={540} height={260} />;
+      return <InfectionKineticsVisualizer state={state as any} width={width} height={height} />;
     case 'packaging-motor':
-      return <PackagingMotorVisualizer state={state as any} width={540} height={260} />;
+      return <PackagingMotorVisualizer state={state as any} width={width} height={height} />;
     default:
       return (
         <pre
@@ -73,6 +78,9 @@ export default function SimulationView(): React.ReactElement | null {
   const { isOpen, close, overlayData } = useOverlay();
   const { theme } = useTheme();
   const colors = theme.colors;
+  const vizContainerRef = useRef<HTMLDivElement | null>(null);
+  const autoStartedRef = useRef(false);
+  const [vizSize, setVizSize] = useState({ width: 540, height: 300 });
 
   // ALL hooks must be called unconditionally before any early return
   const simId = useMemo(() => {
@@ -94,11 +102,41 @@ export default function SimulationView(): React.ReactElement | null {
 
   const isOpenSimView = isOpen('simulationView');
 
+  // Resize observer to keep visualizer responsive
+  useLayoutEffect(() => {
+    const el = vizContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+
+    const updateSize = () => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.max(360, Math.min(780, rect.width));
+      const height = Math.min(420, Math.max(220, Math.round(width * 0.52)));
+      setVizSize({ width, height });
+    };
+
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // Auto-init when opened and no state yet
   useEffect(() => {
     if (!isOpenSimView || isLoading || state) return;
     void controls.init();
   }, [controls, isLoading, state, isOpenSimView]);
+
+  // Auto-play once initialized (parity with TUI sims)
+  useEffect(() => {
+    if (!isOpenSimView) {
+      autoStartedRef.current = false;
+      return;
+    }
+    if (state && !isRunning && !isLoading && !autoStartedRef.current) {
+      controls.play();
+      autoStartedRef.current = true;
+    }
+  }, [controls, isLoading, isOpenSimView, isRunning, state]);
 
   // Early return AFTER all hooks have been called
   if (!isOpenSimView) {
@@ -125,6 +163,7 @@ export default function SimulationView(): React.ReactElement | null {
             background: colors.background,
             minHeight: 320,
           }}
+          ref={vizContainerRef}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
             <div style={{ color: colors.text, fontWeight: 600 }}>
@@ -147,7 +186,7 @@ export default function SimulationView(): React.ReactElement | null {
             </div>
           )}
           {state ? (
-            <VisualizerRouter simId={simId} state={state} />
+            <VisualizerRouter simId={simId} state={state} width={vizSize.width} height={vizSize.height} />
           ) : (
             <div style={{ color: colors.textDim, padding: '1rem 0.5rem' }}>
               {isLoading ? 'Initializing simulation…' : 'No simulation state yet.'}
@@ -170,6 +209,7 @@ export default function SimulationView(): React.ReactElement | null {
             values={paramValues}
             onChange={(id, value) => controls.setParam(id, value)}
             disabled={isLoading}
+            compact={vizSize.width < 520}
           />
 
           <div

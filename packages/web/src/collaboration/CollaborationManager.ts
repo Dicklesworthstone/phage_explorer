@@ -28,10 +28,13 @@ interface CollaborationStore extends SessionState {
 
 // Broadcast channel for multi-tab coordination - lazily initialized
 let channel: BroadcastChannel | null = null;
+let listenerSetup = false;
 
 function getChannel(): BroadcastChannel {
   if (!channel) {
     channel = new BroadcastChannel('phage_explorer_collab');
+    // Note: listenerSetup is reset in closeChannel(), not here
+    // This ensures the flag reflects actual listener state
   }
   return channel;
 }
@@ -40,12 +43,15 @@ function closeChannel(): void {
   if (channel) {
     channel.close();
     channel = null;
+    listenerSetup = false;
   }
 }
 
 export const useCollaborationStore = create<CollaborationStore>((set, get) => {
-  // Setup message listener when store initializes
+  // Setup message listener when store initializes (idempotent)
   const setupChannelListener = () => {
+    if (listenerSetup) return; // Prevent duplicate listener setup
+
     const ch = getChannel();
     ch.onmessage = (event) => {
       const msg = event.data as SyncMessage;

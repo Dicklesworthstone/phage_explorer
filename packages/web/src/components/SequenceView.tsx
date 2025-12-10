@@ -7,12 +7,92 @@
 
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import { translateSequence, reverseComplement } from '@phage-explorer/core';
+import { translateSequence, reverseComplement, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
 import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
 import { useWebPreferences } from '../store/createWebStore';
 import { AminoAcidHUD } from './AminoAcidHUD';
 import type { ZoomLevel } from '../rendering';
+
+type ViewModeOption = {
+  id: ViewMode;
+  label: string;
+  icon: string;
+  description: string;
+};
+
+const VIEW_MODE_OPTIONS: ViewModeOption[] = [
+  { id: 'dna', label: 'DNA', icon: '🧬', description: 'Nucleotide view' },
+  { id: 'dual', label: 'Dual', icon: '🔀', description: 'Stacked DNA + AA' },
+  { id: 'aa', label: 'Amino Acids', icon: '🔬', description: 'Protein view' },
+];
+
+interface ViewModeToggleProps {
+  value: ViewMode;
+  onChange: (mode: ViewMode) => void;
+  colors: ReturnType<typeof useTheme>['theme']['colors'];
+}
+
+function ViewModeToggle({ value, onChange, colors }: ViewModeToggleProps): React.ReactElement {
+  const styleVars: React.CSSProperties = {
+    '--view-toggle-bg': colors.backgroundAlt,
+    '--view-toggle-border': colors.borderLight,
+    '--view-toggle-active': colors.accent,
+    '--view-toggle-text': colors.text,
+    '--view-toggle-muted': colors.textMuted,
+    '--view-toggle-active-text': '#000',
+  };
+
+  const handleKey = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        const next = VIEW_MODE_OPTIONS[(index + 1) % VIEW_MODE_OPTIONS.length];
+        onChange(next.id);
+        return;
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const prev = VIEW_MODE_OPTIONS[(index - 1 + VIEW_MODE_OPTIONS.length) % VIEW_MODE_OPTIONS.length];
+        onChange(prev.id);
+        return;
+      }
+      if (event.key === ' ' || event.key === 'Enter') {
+        event.preventDefault();
+        onChange(VIEW_MODE_OPTIONS[index].id);
+      }
+    },
+    [onChange]
+  );
+
+  return (
+    <div className="view-mode-toggle" role="radiogroup" aria-label="Sequence view mode" style={styleVars}>
+      {VIEW_MODE_OPTIONS.map((option, idx) => {
+        const active = value === option.id;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            className={`view-mode-segment ${active ? 'active' : ''}`}
+            role="radio"
+            aria-checked={active}
+            aria-label={`${option.label} view`}
+            title={`${option.label} view`}
+            tabIndex={active ? 0 : -1}
+            onClick={() => onChange(option.id)}
+            onKeyDown={(event) => handleKey(event, idx)}
+          >
+            <span className="view-mode-icon" aria-hidden="true">
+              {option.icon}
+            </span>
+            <span className="view-mode-label">{option.label}</span>
+            <span className="view-mode-subtle">{option.description}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 interface SequenceViewProps {
   /** The sequence to display */
@@ -58,6 +138,7 @@ export function SequenceView({
   const viewMode = usePhageStore((s) => s.viewMode);
   const readingFrame = usePhageStore((s) => s.readingFrame);
   const setViewMode = usePhageStore((s) => s.setViewMode);
+  const storeToggleViewMode = usePhageStore((s) => s.toggleViewMode);
   const setReadingFrame = usePhageStore((s) => s.setReadingFrame);
   const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
   const storeDiffEnabled = usePhageStore((s) => s.diffEnabled);
@@ -108,10 +189,10 @@ export function SequenceView({
     }
   }, [jumpToDiff, onControlsReady]);
 
-  // Toggle view mode (DNA/AA)
-  const toggleViewMode = useCallback(() => {
-    setViewMode(viewMode === 'dna' ? 'aa' : 'dna');
-  }, [viewMode, setViewMode]);
+  // Cycle view mode (DNA/AA/Dual)
+  const cycleViewMode = useCallback(() => {
+    storeToggleViewMode();
+  }, [storeToggleViewMode]);
 
   // Cycle reading frame
   const cycleReadingFrame = useCallback(() => {
@@ -274,7 +355,7 @@ export function SequenceView({
 
   // Register hotkeys
   useHotkeys([
-    { combo: { key: 'v' }, description: 'Toggle DNA/Amino Acid view', action: toggleViewMode, modes: ['NORMAL'] },
+    { combo: { key: 'v' }, description: 'Cycle DNA / Amino Acid / Dual view', action: cycleViewMode, modes: ['NORMAL'] },
     { combo: { key: 'f' }, description: 'Cycle reading frame', action: cycleReadingFrame, modes: ['NORMAL'] },
     { combo: { key: 'Home' }, description: 'Go to start', action: scrollToStart, modes: ['NORMAL'] },
     { combo: { key: 'End' }, description: 'Go to end', action: scrollToEnd, modes: ['NORMAL'] },
@@ -393,22 +474,8 @@ export function SequenceView({
               {orientation === 'landscape' ? 'landscape' : 'portrait'}
             </span>
           </div>
-          {/* View mode badge */}
-          <button
-            onClick={toggleViewMode}
-            style={{
-              fontSize: '0.75rem',
-              padding: '0.15rem 0.4rem',
-              borderRadius: '3px',
-              border: `1px solid ${colors.borderLight}`,
-              background: viewMode === 'aa' || viewMode === 'dual' ? colors.accent : colors.backgroundAlt,
-              color: viewMode === 'aa' || viewMode === 'dual' ? '#000' : colors.text,
-              cursor: 'pointer',
-            }}
-            title="Toggle DNA/Amino Acids/Dual view (v)"
-          >
-            {viewModeLabel}
-          </button>
+          {/* View mode control */}
+          <ViewModeToggle value={viewMode} onChange={setViewMode} colors={colors} />
           {/* Snap toggle */}
           <button
             onClick={() => setSnapToCodon((prev) => !prev)}

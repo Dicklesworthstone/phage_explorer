@@ -16,6 +16,8 @@ import {
   buildBallAndStick,
   buildSurfaceImpostor,
   buildTubeFromTraces,
+  buildFunctionalGroupHighlights,
+  type FunctionalGroupStyle,
   type LoadedStructure,
 } from '../visualization/structure-loader';
 import { useStructureQuery } from '../hooks/useStructureQuery';
@@ -100,6 +102,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
   const sceneRef = useRef<Scene | null>(null);
   const cameraRef = useRef<PerspectiveCamera | null>(null);
   const structureRef = useRef<Group | null>(null);
+  const highlightRef = useRef<Group | null>(null);
   const animationRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const structureDataRef = useRef<LoadedStructure | null>(null);
@@ -126,6 +129,8 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     count: 0,
     lastSample: performance.now(),
   });
+  const [showFunctionalGroups, setShowFunctionalGroups] = useState(false);
+  const [functionalGroupStyle, setFunctionalGroupStyle] = useState<FunctionalGroupStyle>('halo');
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
   const qualityPreset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
@@ -152,6 +157,11 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       scene.remove(structureRef.current);
       disposeGroup(structureRef.current);
       structureRef.current = null;
+    }
+    if (highlightRef.current) {
+      scene.remove(highlightRef.current);
+      disposeGroup(highlightRef.current);
+      highlightRef.current = null;
     }
 
     let group: Group | null = null;
@@ -202,6 +212,15 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
 
       structureRef.current = group;
       scene.add(group);
+
+      if (showFunctionalGroups && data.functionalGroups?.length) {
+        const fg = buildFunctionalGroupHighlights(data.atoms, data.functionalGroups, {
+          style: functionalGroupStyle,
+        });
+        fg.position.set(-cx, -cy, -cz);
+        highlightRef.current = fg;
+        scene.add(fg);
+      }
     }
   };
 
@@ -394,7 +413,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     if (loadState === 'ready') {
       rebuildStructure(renderMode);
     }
-  }, [renderMode, loadState, quality]);
+  }, [renderMode, loadState, quality, showFunctionalGroups, functionalGroupStyle]);
 
   // Fullscreen management: sync store state with DOM fullscreen API
   useEffect(() => {
@@ -537,6 +556,29 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
           onClick={cycleQuality}
         >
           Quality: {quality}
+        </button>
+        <button
+          type="button"
+          className={`btn ${showFunctionalGroups ? 'active' : ''}`}
+          disabled={!structureDataRef.current?.functionalGroups?.length}
+          onClick={() => setShowFunctionalGroups(v => !v)}
+        >
+          {showFunctionalGroups ? 'Hide Groups' : 'Show Groups'}
+        </button>
+        <button
+          type="button"
+          className="btn"
+          disabled={
+            !showFunctionalGroups || !structureDataRef.current?.functionalGroups?.length
+          }
+          onClick={() => {
+            const order: FunctionalGroupStyle[] = ['halo', 'bounds', 'lines'];
+            const currentIdx = order.indexOf(functionalGroupStyle);
+            const next = order[(currentIdx + 1) % order.length];
+            setFunctionalGroupStyle(next);
+          }}
+        >
+          Group Style: {functionalGroupStyle}
         </button>
         <button
           type="button"
