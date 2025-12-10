@@ -7,8 +7,6 @@ export default [
       'node_modules/**',
       'packages/**/dist/**',
       'packages/wasm-compute/pkg/**',
-      'packages/web/**',
-      '**/packages/web/**',
       'packages/tui/**',
       '**/packages/tui/**',
       '.cache/**',
