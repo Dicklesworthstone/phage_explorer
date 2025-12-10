@@ -188,6 +188,11 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   const currentPhage = usePhageStore((s) => s.currentPhage);
   const diffReferenceSequence = usePhageStore((s) => s.diffReferenceSequence);
   const activeSimulationId = usePhageStore((s) => s.activeSimulationId);
+  const beginnerModeEnabled = usePhageStore((s) => s.beginnerModeEnabled);
+  const toggleBeginnerMode = usePhageStore((s) => s.toggleBeginnerMode);
+  const setBeginnerModeEnabled = usePhageStore((s) => s.setBeginnerModeEnabled);
+  const openGlossary = usePhageStore((s) => s.openGlossary);
+  const startTour = usePhageStore((s) => s.startTour);
 
   // Merge prop context with inferred context
   const appContext: AppContext = useMemo(() => ({
@@ -242,6 +247,49 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     { id: 'analysis:bias', label: 'Codon Bias Decomposition', category: 'Advanced', shortcut: 'J', action: () => { close(); open('biasDecomposition'); }, minLevel: 'power', contexts: ['has-phage'] },
     { id: 'reference:aa-key', label: 'Amino Acid Key', category: 'Reference', shortcut: 'k', action: () => { close(); open('aaKey'); }, minLevel: 'novice' },
     { id: 'reference:aa-legend', label: 'Amino Acid Legend (compact)', category: 'Reference', shortcut: 'l', action: () => { close(); open('aaLegend'); }, minLevel: 'novice' },
+
+    // Education commands
+    {
+      id: 'edu:toggle-beginner',
+      label: beginnerModeEnabled ? 'Disable Beginner Mode' : 'Enable Beginner Mode',
+      category: 'Education',
+      shortcut: 'Ctrl+B',
+      action: () => {
+        toggleBeginnerMode();
+      },
+      minLevel: 'novice',
+    },
+    {
+      id: 'edu:enable-beginner',
+      label: 'Enable Beginner Mode',
+      category: 'Education',
+      action: () => {
+        if (!beginnerModeEnabled) {
+          setBeginnerModeEnabled(true);
+        }
+      },
+      minLevel: 'novice',
+    },
+    {
+      id: 'edu:open-glossary',
+      label: 'Open Glossary',
+      category: 'Education',
+      action: () => {
+        setBeginnerModeEnabled(true);
+        openGlossary();
+      },
+      minLevel: 'novice',
+    },
+    {
+      id: 'edu:start-welcome-tour',
+      label: 'Start Welcome Tour',
+      category: 'Education',
+      action: () => {
+        setBeginnerModeEnabled(true);
+        startTour('welcome');
+      },
+      minLevel: 'novice',
+    },
 
     // View commands (context-dependent)
     { id: 'view:dna', label: 'Switch to DNA Mode', category: 'View', shortcut: 'Space', action: () => {}, minLevel: 'novice', contexts: ['amino-mode'] },

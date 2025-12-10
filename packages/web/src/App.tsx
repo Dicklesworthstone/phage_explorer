@@ -17,9 +17,12 @@ import {
   usePhageStore,
 } from './store';
 import { useWebPreferences } from './store';
+import { useBeginnerMode, useBeginnerModeInit } from './education';
 import './styles.css';
 import { Model3DView } from './components/Model3DView';
 import { SequenceView } from './components/SequenceView';
+import { BeginnerModeIndicator } from './components/BeginnerModeIndicator';
+import { ReadingFrameVisualizer } from './components/ReadingFrameVisualizer';
 
 /** Number of bases to show in the sequence preview */
 const SEQUENCE_PREVIEW_LENGTH = 500;
@@ -27,6 +30,8 @@ const SEQUENCE_PREVIEW_LENGTH = 500;
 export default function App(): JSX.Element {
   const { theme, nextTheme } = useTheme();
   const reducedMotion = useReducedMotion();
+  // Hydrate beginner mode preferences from storage once on mount
+  useBeginnerModeInit();
   const {
     repository,
     isLoading,
@@ -38,6 +43,9 @@ export default function App(): JSX.Element {
   } = useDatabase({ autoLoad: true });
   const highContrast = useWebPreferences((s) => s.highContrast);
   const setHighContrast = useWebPreferences((s) => s.setHighContrast);
+  const { toggle: toggleBeginnerMode, isEnabled: beginnerModeEnabled } = useBeginnerMode();
+  const [beginnerToast, setBeginnerToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   // Use individual selectors to avoid getSnapshot caching issues
   const phages = usePhageStore((s) => s.phages);
@@ -165,6 +173,31 @@ export default function App(): JSX.Element {
     return 'db: idle';
   }, [error, isCached, isLoading, repository]);
 
+  const showBeginnerToast = useCallback(
+    (nextEnabled: boolean) => {
+      setBeginnerToast(nextEnabled ? 'Beginner Mode enabled' : 'Beginner Mode disabled');
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = window.setTimeout(() => setBeginnerToast(null), 2000);
+    },
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleToggleBeginnerMode = useCallback(() => {
+    const nextState = !beginnerModeEnabled;
+    showBeginnerToast(nextState);
+    toggleBeginnerMode();
+  }, [beginnerModeEnabled, showBeginnerToast, toggleBeginnerMode]);
+
   const loadingOverlayNeeded = isLoading || (!repository && progress);
   const showErrorOverlay = !!error && !repository;
 
@@ -176,6 +209,13 @@ export default function App(): JSX.Element {
     { combo: { key: '?' }, description: 'Help overlay', action: () => openOverlayCtx('help'), modes: ['NORMAL'] },
     { combo: { key: '/' }, description: 'Search', action: () => openOverlayCtx('search'), modes: ['NORMAL'] },
     { combo: { key: ':' }, description: 'Command palette', action: () => openOverlayCtx('commandPalette'), modes: ['NORMAL'] },
+    {
+      combo: { key: 'b', modifiers: { ctrl: true } },
+      description: 'Toggle beginner mode',
+      action: handleToggleBeginnerMode,
+      modes: ['NORMAL'],
+      category: 'Education',
+    },
     {
       combo: { key: 'Escape' },
       description: 'Close overlays',
@@ -195,6 +235,7 @@ export default function App(): JSX.Element {
     { key: '?', label: 'help' },
     { key: 'v/f', label: 'view/frame' },
     { key: 'Home/End', label: 'jump' },
+    { key: 'Ctrl+B', label: 'beginner' },
   ]), []);
 
   // React 19: Dynamic document title
@@ -246,12 +287,22 @@ export default function App(): JSX.Element {
               >
                 Contrast: {highContrast ? 'High' : 'Standard'}
               </button>
+              <button
+                className="btn"
+                onClick={handleToggleBeginnerMode}
+                type="button"
+                aria-pressed={beginnerModeEnabled}
+                aria-label={beginnerModeEnabled ? 'Disable Beginner Mode' : 'Enable Beginner Mode'}
+              >
+                Beginner: {beginnerModeEnabled ? 'On' : 'Off'}
+              </button>
             </>
           ),
         }}
         footer={{
           version: '0.0.0',
           hints: footerHints,
+          children: <BeginnerModeIndicator />,
         }}
       >
         {/* Database loading/error status - only shown when needed */}
@@ -370,6 +421,11 @@ export default function App(): JSX.Element {
                     <Model3DView phage={currentPhage} />
                   </div>
                 </div>
+                {beginnerModeEnabled && fullSequence && (
+                  <div style={{ marginTop: '1rem' }}>
+                    <ReadingFrameVisualizer sequence={fullSequence} />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-dim">
@@ -382,6 +438,11 @@ export default function App(): JSX.Element {
         </section>
       </AppShell>
       <OverlayManager repository={repository} currentPhage={currentPhage} />
+      {beginnerToast && (
+        <div className="toast toast-info" role="status" aria-live="polite">
+          {beginnerToast}
+        </div>
+      )}
     </>
   );
 }
