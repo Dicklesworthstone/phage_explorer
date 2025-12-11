@@ -374,8 +374,8 @@ export function SequenceView({
       : typeof height === 'string'
         ? height
         : orientation === 'portrait'
-          ? 360
-          : 300;
+          ? '60vh'
+          : '70vh';
 
   return (
     <div
@@ -411,14 +411,13 @@ export function SequenceView({
           <div style={{ display: 'flex', gap: '0.15rem', alignItems: 'center' }}>
             <button
               onClick={() => zoomOut()}
+              className="btn compact"
               style={{
-                fontSize: '0.8rem',
-                padding: '0.1rem 0.3rem',
-                borderRadius: '3px 0 0 3px',
-                border: `1px solid ${colors.borderLight}`,
-                background: colors.backgroundAlt,
-                color: colors.text,
-                cursor: 'pointer',
+                fontSize: '1rem',
+                padding: '0.4rem 0.8rem',
+                minWidth: '36px',
+                minHeight: '36px',
+                borderRadius: '6px 0 0 6px',
                 lineHeight: 1,
               }}
               title="Zoom out (-)"
@@ -427,28 +426,31 @@ export function SequenceView({
             </button>
             <span
               style={{
-                fontSize: '0.7rem',
-                padding: '0.1rem 0.25rem',
+                fontSize: '0.8rem',
+                padding: '0.4rem 0.5rem',
                 background: colors.backgroundAlt,
                 color: colors.textMuted,
                 borderTop: `1px solid ${colors.borderLight}`,
                 borderBottom: `1px solid ${colors.borderLight}`,
                 minWidth: '3.5rem',
                 textAlign: 'center',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                height: '36px',
               }}
             >
               {zoomLabel}
             </span>
             <button
               onClick={() => zoomIn()}
+              className="btn compact"
               style={{
-                fontSize: '0.8rem',
-                padding: '0.1rem 0.3rem',
-                borderRadius: '0 3px 3px 0',
-                border: `1px solid ${colors.borderLight}`,
-                background: colors.backgroundAlt,
-                color: colors.text,
-                cursor: 'pointer',
+                fontSize: '1rem',
+                padding: '0.4rem 0.8rem',
+                minWidth: '36px',
+                minHeight: '36px',
+                borderRadius: '0 6px 6px 0',
                 lineHeight: 1,
               }}
               title="Zoom in (+)"
@@ -457,57 +459,39 @@ export function SequenceView({
             </button>
             <button
               onClick={() => setSnapToCodon((prev) => !prev)}
+              className="btn compact"
               style={{
-                fontSize: '0.7rem',
-                padding: '0.1rem 0.3rem',
-                borderRadius: '3px',
-                border: `1px solid ${colors.borderLight}`,
+                fontSize: '0.8rem',
+                padding: '0.4rem 0.6rem',
+                minHeight: '36px',
+                marginLeft: '0.5rem',
                 background: snapToCodon ? colors.backgroundAlt : 'transparent',
-                color: colors.text,
-                cursor: 'pointer',
               }}
               title="Toggle codon snapping"
             >
               snap 3bp
             </button>
-            <span style={{ fontSize: '0.7rem', color: colors.textMuted }}>
+            <span style={{ fontSize: '0.75rem', color: colors.textMuted, marginLeft: '0.5rem', display: 'none' }}>
               {orientation === 'landscape' ? 'landscape' : 'portrait'}
             </span>
           </div>
           {/* View mode control */}
           <ViewModeToggle value={viewMode} onChange={setViewMode} colors={colors} />
-          {/* Snap toggle */}
-          <button
-            onClick={() => setSnapToCodon((prev) => !prev)}
-            style={{
-              fontSize: '0.72rem',
-              padding: '0.15rem 0.4rem',
-              borderRadius: '3px',
-              border: `1px solid ${colors.borderLight}`,
-              background: snapToCodon ? colors.backgroundAlt : colors.background,
-              color: colors.text,
-              cursor: 'pointer',
-            }}
-            title="Toggle codon snapping"
-          >
-            Snap {snapToCodon ? 'On' : 'Off'}
-          </button>
+          {/* Snap toggle (redundant, removing) */}
+          
           {/* Reading frame badge */}
           {viewMode !== 'dna' && (
             <button
               onClick={cycleReadingFrame}
+              className="btn compact"
               style={{
-                fontSize: '0.75rem',
-                padding: '0.15rem 0.4rem',
-                borderRadius: '3px',
-                border: `1px solid ${colors.borderLight}`,
-                background: colors.backgroundAlt,
-                color: colors.text,
-                cursor: 'pointer',
+                fontSize: '0.8rem',
+                padding: '0.4rem 0.6rem',
+                minHeight: '36px',
               }}
               title="Cycle reading frame (f)"
             >
-              {frameLabel}
+              Frame {frameLabel}
             </button>
           )}
           {/* Position indicator */}

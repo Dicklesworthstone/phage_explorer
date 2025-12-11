@@ -414,9 +414,10 @@ export function buildBallAndStick(
   // ATOMS - use instanced mesh with per-instance colors
   const atomGeo = new SphereGeometry(sphereRadius, sphereSegments, sphereSegments);
   const atomMat = new MeshPhongMaterial({
-    vertexColors: true,
-    shininess: 120,              // Higher for more reflective, glossy spheres
-    specular: new Color('#888888'),  // Brighter specular for better 3D depth
+    shininess: 100,              // High shininess
+    specular: new Color('#aaaaaa'),  // Bright specular
+    emissive: new Color('#222222'),  // Base illumination to prevent blackness
+    emissiveIntensity: 0.2,
   });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
@@ -434,11 +435,11 @@ export function buildBallAndStick(
   // BONDS - bright silver/white for visibility
   const bondGeo = new CylinderGeometry(bondRadius, bondRadius, 1, bondRadialSegments, 1, true);
   const bondMat = new MeshPhongMaterial({
-    color: '#d4d4d8',  // Bright zinc/silver
-    shininess: 60,
-    specular: new Color('#888888'),
-    emissive: new Color('#1a1a2e'),  // Slight self-illumination
-    emissiveIntensity: 0.1,
+    color: '#e4e4e7',  // Very bright zinc/silver
+    shininess: 80,
+    specular: new Color('#aaaaaa'),
+    emissive: new Color('#333333'),  // Stronger self-illumination
+    emissiveIntensity: 0.2,
   });
   const bondMesh = new InstancedMesh(bondGeo, bondMat, bonds.length);
   const bondMatrix = new Matrix4();

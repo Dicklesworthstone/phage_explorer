@@ -15,8 +15,8 @@ import type { PhageRepository } from './db';
 import {
   initializeStorePersistence,
   usePhageStore,
+  useWebPreferences,
 } from './store';
-import { useWebPreferences } from './store';
 import { useBeginnerMode, useBeginnerModeInit, GlossaryPanel } from './education';
 import './styles.css';
 import { Model3DView } from './components/Model3DView';
@@ -32,6 +32,8 @@ const SEQUENCE_PREVIEW_LENGTH = 500;
 export default function App(): JSX.Element {
   const { theme, nextTheme } = useTheme();
   const reducedMotion = useReducedMotion();
+  const highContrast = useWebPreferences((s) => s.highContrast);
+  const setHighContrast = useWebPreferences((s) => s.setHighContrast);
   // Hydrate beginner mode preferences from storage once on mount
   useBeginnerModeInit();
   const {
@@ -43,20 +45,14 @@ export default function App(): JSX.Element {
     load,
     reload,
   } = useDatabase({ autoLoad: true });
-  const highContrast = useWebPreferences((s) => s.highContrast);
-  const setHighContrast = useWebPreferences((s) => s.setHighContrast);
   const {
     toggle: toggleBeginnerMode,
-    enable: enableBeginnerMode,
     isEnabled: beginnerModeEnabled,
     isGlossaryOpen,
-    openGlossary,
     closeGlossary,
-    startTour,
   } = useBeginnerMode();
   const [beginnerToast, setBeginnerToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-  const [learnMenuOpen, setLearnMenuOpen] = useState(false);
 
   // Use individual selectors to avoid getSnapshot caching issues
   const phages = usePhageStore((s) => s.phages);
@@ -75,7 +71,7 @@ export default function App(): JSX.Element {
   const pendingSequence = usePendingSequence();
   const [sequencePreview, setSequencePreview] = useState<string>('');
   const [fullSequence, setFullSequence] = useState<string>('');
-  const enableBackgroundEffects = !reducedMotion && !highContrast;
+  const enableBackgroundEffects = !reducedMotion;
 
   // React 19: useOptimistic for instant visual feedback on phage selection
   // Shows selection immediately while data loads in background
@@ -341,7 +337,7 @@ export default function App(): JSX.Element {
         )}
 
         <section className="panel two-column" aria-label="Phage browser">
-          <div className="column">
+          <div className="column column--list">
             <div className="panel-header">
               <h3>Phages</h3>
               <span className="badge">{phages.length}</span>
@@ -382,7 +378,7 @@ export default function App(): JSX.Element {
             </div>
           </div>
 
-          <div className="column">
+          <div className="column column--detail">
             <div className="panel-header">
               <h3>Details</h3>
               {isLoadingPhage && <span className="badge">Loading</span>}
@@ -419,7 +415,6 @@ export default function App(): JSX.Element {
                     <SequenceView
                       sequence={fullSequence}
                       className="sequence-block"
-                      height={360}
                     />
                     {!fullSequence && (
                       <pre className="sequence-block" style={{ marginTop: '0.5rem' }}>

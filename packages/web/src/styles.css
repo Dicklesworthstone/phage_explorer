@@ -471,6 +471,20 @@
   font-size: var(--text-2xs, 0.7rem);
 }
 
+@media (max-width: 640px) {
+  .view-mode-subtle {
+    display: none;
+  }
+  .view-mode-segment {
+    padding: 6px 10px;
+    min-height: 36px;
+    gap: 4px;
+  }
+  .view-mode-label {
+    font-size: 0.8rem;
+  }
+}
+
 /* =============================================================================
    BEGINNER MODE INDICATOR
    ============================================================================= */
@@ -935,4 +949,167 @@
   .codon-wheel__panel {
     order: 2;
   }
+}
+
+/* =============================================================================
+   CONTEXT HELP PANEL
+   ============================================================================= */
+
+.context-help {
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  box-shadow: var(--shadow-md);
+  display: grid;
+  gap: var(--space-3);
+}
+
+.context-help--collapsed {
+  padding: var(--space-3);
+}
+
+.context-help__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.context-help__eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.context-help__title {
+  margin: 0.15rem 0 0.2rem;
+  font-size: 1.1rem;
+  font-weight: var(--font-bold);
+  color: var(--color-text-strong);
+}
+
+.context-help__desc {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.context-help__section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.context-help__section-title {
+  margin: 0;
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
+}
+
+.context-help__list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.context-help__item {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  box-shadow: var(--shadow-sm);
+}
+
+.context-help__term {
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
+  margin-bottom: 0.25rem;
+}
+
+.context-help__summary {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.context-help__chips {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.context-help--collapsed .context-help__section,
+.context-help--collapsed .context-help__desc {
+  display: none;
+}
+
+/* =============================================================================
+   INFECTION KINETICS VISUALIZER
+   ============================================================================= */
+
+.infection-viz {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.infection-viz__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-2);
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.infection-viz__metrics .metric {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.infection-viz__metrics .label {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+.infection-viz__metrics .value {
+  margin: 0;
+  color: var(--color-text);
+  font-weight: var(--font-semibold);
+}
+
+/* =============================================================================
+   DETAIL VIEWERS LAYOUT
+   ============================================================================= */
+
+.detail-viewers {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-5);
+  margin-top: var(--space-4);
+}
+
+@media (min-width: 1024px) {
+  .detail-viewers {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.viewer-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0; /* Prevent grid blowout */
+}
+
+/* Ensure 3D view has a minimum height on mobile */
+.three-container {
+  min-height: 300px;
 }
