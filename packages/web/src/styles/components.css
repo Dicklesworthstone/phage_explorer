@@ -638,6 +638,9 @@
   gap: var(--space-4);
   margin-top: var(--space-4);
   align-items: stretch;
+  width: min(1200px, 100%);
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .viewer-panel {
@@ -649,7 +652,7 @@
 
 @media (min-width: 1024px) {
   .detail-viewers {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1.05fr 1fr;
     gap: var(--space-5);
   }
 }
@@ -657,14 +660,14 @@
 @media (min-width: 1440px) {
   .viewer-panel .sequence-block,
   .viewer-panel .three-container {
-    height: 440px;
+    height: 520px;
   }
 }
 
 @media (min-width: 2000px) {
   .viewer-panel .sequence-block,
   .viewer-panel .three-container {
-    height: 520px;
+    height: 620px;
   }
 }
 

@@ -63,17 +63,17 @@ export interface ZoomPreset {
 // Zoom presets - from ultra-dense genome overview to single-base detail
 const ZOOM_PRESETS: Record<ZoomLevel, ZoomPreset> = {
   genome: { cellWidth: 1, cellHeight: 1, showText: false, showAA: false, label: 'Genome' },
-  micro: { cellWidth: 6, cellHeight: 7, showText: true, showAA: true, label: 'Micro' },
-  region: { cellWidth: 3, cellHeight: 3, showText: false, showAA: false, label: 'Region' },
-  codon: { cellWidth: 8, cellHeight: 10, showText: true, showAA: true, label: 'Codon' },
-  base: { cellWidth: 16, cellHeight: 20, showText: true, showAA: true, label: 'Base' },
+  micro: { cellWidth: 10, cellHeight: 12, showText: true, showAA: true, label: 'Micro' }, // Enlarged for readability
+  region: { cellWidth: 4, cellHeight: 4, showText: false, showAA: false, label: 'Region' },
+  codon: { cellWidth: 12, cellHeight: 14, showText: true, showAA: true, label: 'Codon' },
+  base: { cellWidth: 18, cellHeight: 24, showText: true, showAA: true, label: 'Base' },
 };
 
 // Get zoom preset based on scale factor (0.25 to 4.0)
 function getZoomPresetForScale(scale: number): ZoomPreset {
   if (scale <= 0.25) return ZOOM_PRESETS.genome;
-  if (scale <= 0.55) return ZOOM_PRESETS.micro;
-  if (scale <= 0.9) return ZOOM_PRESETS.region;
+  if (scale <= 0.55) return ZOOM_PRESETS.region; // Swapped region/micro order for logical progression
+  if (scale <= 0.9) return ZOOM_PRESETS.micro;
   if (scale <= 1.5) return ZOOM_PRESETS.codon;
   return ZOOM_PRESETS.base;
 }
@@ -146,8 +146,8 @@ function isMobileDevice(): boolean {
 // Get recommended initial zoom scale based on viewport
 // Mobile devices benefit from starting zoomed in slightly for readability
 function getDefaultZoomScale(viewportWidth: number): number {
-  if (viewportWidth < 480) return 1.2;  // Small phones: zoom in for readability
-  if (viewportWidth < 768) return 1.1;  // Larger phones: slight zoom
+  if (viewportWidth < 480) return 1.4;  // Small phones: zoom in for readability
+  if (viewportWidth < 768) return 1.2;  // Larger phones: slight zoom
   return 1.0;                            // Tablets/desktop: standard zoom
 }
 
