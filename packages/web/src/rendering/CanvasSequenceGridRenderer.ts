@@ -99,20 +99,20 @@ function getResponsiveCellSize(
   if (viewportWidth < 375) {
     // Tiny phones - prioritize readability over density
     return landscape
-      ? { width: 8, height: 10 }   // Landscape: readable but compact
-      : { width: 10, height: 12 }; // Portrait: touch-friendly
+      ? { width: 10, height: 12 }   // Landscape: readable but compact
+      : { width: 12, height: 14 }; // Portrait: touch-friendly
   }
   if (viewportWidth < 480) {
     // Small phones (iPhone SE, etc.)
     return landscape
-      ? { width: 9, height: 11 }
-      : { width: 11, height: 13 };
+      ? { width: 12, height: 14 }
+      : { width: 14, height: 16 };
   }
   if (viewportWidth < 640) {
     // Standard phones
     return landscape
-      ? { width: 10, height: 12 }
-      : { width: 12, height: 14 };
+      ? { width: 14, height: 16 }
+      : { width: 16, height: 18 };
   }
   if (viewportWidth < 768) {
     // Large phones / small tablets portrait
@@ -644,7 +644,8 @@ export class CanvasSequenceGridRenderer {
 
     // Pre-calculate diff text settings (avoid setting font on every cell)
     const diffFontSize = Math.max(0, Math.floor(cellHeight * 0.7));
-    const shouldDrawDiffText = diffFontSize >= 6;
+    // Always show text if cell is wide enough (10px), even if small
+    const shouldDrawDiffText = cellWidth >= 10 && diffFontSize >= 6;
 
     // Collect diff cells for batch rendering
     const diffCells: Array<{ x: number; y: number; char: string; fillStyle: string }> = [];

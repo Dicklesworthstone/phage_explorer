@@ -10,6 +10,7 @@
 @import './styles/accessibility.css';
 @import './styles/holographic.css';
 @import './styles/mobile-overrides.css';
+@import './styles/mobile-landscape.css';
 
 /* =============================================================================
    APP SHELL - Full viewport layout with refined spacing

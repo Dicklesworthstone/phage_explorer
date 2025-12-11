@@ -1,0 +1,128 @@
+
+/* ... existing imports ... */
+
+/* Landscape Mode Layout: Side-by-Side */
+@media (orientation: landscape) and (max-height: 600px) {
+  /* Hide standard header/footer to save vertical space if needed, or compact them */
+  .app-header {
+    padding: 4px 12px;
+    min-height: 40px;
+  }
+  
+  .app-footer {
+    display: none; /* Hide footer in landscape mobile to maximize view */
+  }
+
+  .panel.two-column {
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* Split screen 50/50 */
+    gap: 12px;
+    height: calc(100vh - 50px); /* Fill remaining height */
+    overflow: hidden;
+  }
+
+  .column {
+    overflow-y: auto;
+    height: 100%;
+  }
+
+  /* Make Sequence View fill its column */
+  .detail-viewers {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .viewer-panel:first-child {
+    flex: 2; /* Give sequence more space */
+    min-height: 0;
+  }
+
+  .viewer-panel:last-child {
+    flex: 1;
+    min-height: 150px;
+  }
+
+  /* Adjust 3D view */
+  .three-container {
+    min-height: 150px;
+    height: 100%;
+  }
+}
+
+/* Portrait Mode: Maximize Vertical Space */
+@media (orientation: portrait) and (max-width: 640px) {
+  .app-shell {
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .app-body {
+    flex: 1;
+    padding: 8px; /* Reduce padding */
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .panel.two-column {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+  }
+
+  /* Phage list collapses or becomes a drawer (simplification for now: keep it but compact) */
+  .column:first-child {
+    max-height: 150px; /* Limit list height */
+    overflow-y: auto;
+    flex: 0 0 auto;
+    margin-bottom: 8px;
+  }
+
+  .column:last-child {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .detail-card {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .detail-viewers {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .viewer-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* Sequence View fills available space */
+  .sequence-view {
+    flex: 1;
+    min-height: 0; /* Allow shrinking */
+    height: auto !important; /* Override inline styles */
+  }
+  
+  .sequence-view > div:nth-child(2) { /* The canvas container */
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* Move 3D view to bottom or make it togglable/smaller */
+  .viewer-panel:last-child {
+    flex: 0 0 200px; /* Fixed height for 3D at bottom */
+    margin-top: 8px;
+  }
+}
