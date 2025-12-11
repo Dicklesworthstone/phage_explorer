@@ -153,6 +153,7 @@ export function SequenceView({
     canvasRef,
     visibleRange,
     orientation,
+    isMobile,
     scrollToStart,
     scrollToEnd,
     jumpToDiff,
@@ -373,9 +374,13 @@ export function SequenceView({
       ? height
       : typeof height === 'string'
         ? height
-        : orientation === 'portrait'
-          ? '60vh'
-          : '70vh';
+        : isMobile
+          ? orientation === 'portrait'
+            ? '72vh' // taller in portrait to show more bases
+            : 'calc(100vh - 140px)' // landscape: nearly full height
+          : orientation === 'portrait'
+            ? '60vh'
+            : '70vh';
 
   return (
     <div

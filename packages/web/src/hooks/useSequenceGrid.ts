@@ -36,6 +36,8 @@ export interface UseSequenceGridOptions {
   onVisibleRangeChange?: (range: VisibleRange) => void;
   /** Callback when zoom changes */
   onZoomChange?: (scale: number, preset: ZoomPreset) => void;
+  /** Density mode: compact favors more cells/letters per viewport */
+  densityMode?: 'compact' | 'standard';
 }
 
 /**
@@ -55,8 +57,11 @@ function detectMobileDevice(): boolean {
 function getMobileAwareZoom(): number {
   if (typeof window === 'undefined') return 1.0;
   const width = window.innerWidth;
-  if (width < 480) return 1.2;   // Small phones
-  if (width < 768) return 1.1;   // Larger phones
+  const landscape = window.innerWidth > window.innerHeight;
+  // In landscape we want more columns visible, so start slightly zoomed out
+  if (landscape && width < 800) return 0.9;
+  if (width < 480) return 1.1;   // Small phones portrait
+  if (width < 768) return 1.05;  // Larger phones portrait
   return 1.0;                     // Tablets/desktop
 }
 
@@ -119,6 +124,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     snapToCodon = true,
     onVisibleRangeChange,
     onZoomChange,
+    densityMode = detectMobileDevice() ? 'compact' : 'standard',
   } = options;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -160,6 +166,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
       enablePinchZoom,
       onZoomChange: handleZoomChange,
       snapToCodon,
+      densityMode,
     });
 
     rendererRef.current = renderer;

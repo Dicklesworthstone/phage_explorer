@@ -1,302 +1,211 @@
-import React, { useRef, useEffect, useCallback, useState } from 'react';
+import React, { useEffect, useRef, useMemo } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import type { GeneInfo } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
-import { GeneMapRenderer } from '../rendering/GeneMapRenderer';
 
 interface GeneMapCanvasProps {
-  /** Width of the canvas (CSS value) */
-  width?: string | number;
-  /** Height of the canvas in pixels */
   height?: number;
-  /** Custom class name */
   className?: string;
-  /** Viewport size in base pairs */
-  viewportSize?: number;
-  /** Callback when position is clicked */
-  onPositionClick?: (position: number) => void;
-  /** Callback when a gene is clicked */
-  onGeneClick?: (gene: GeneInfo) => void;
+  onGeneClick?: (startPos: number) => void;
 }
 
-export const GeneMapCanvas: React.FC<GeneMapCanvasProps> = ({
-  width = '100%',
+export function GeneMapCanvas({
   height = 60,
   className = '',
-  viewportSize = 1000,
-  onPositionClick,
   onGeneClick,
-}) => {
+}: GeneMapCanvasProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rendererRef = useRef<GeneMapRenderer | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [hoveredGene, setHoveredGene] = useState<GeneInfo | null>(null);
-  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
-  const descriptionId = 'gene-map-description';
-
   const { theme } = useTheme();
   const colors = theme.colors;
 
-  // State from store
   const currentPhage = usePhageStore((s) => s.currentPhage);
   const scrollPosition = usePhageStore((s) => s.scrollPosition);
-  const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
+  const viewMode = usePhageStore((s) => s.viewMode);
 
-  // Get genome length
-  const genomeLength = currentPhage?.genomeLength ?? 0;
-  const genes = currentPhage?.genes ?? [];
+  const genes = useMemo(() => currentPhage?.genes ?? [], [currentPhage]);
+  const genomeLength = useMemo(() => currentPhage?.genomeLength ?? 1, [currentPhage]);
 
-  // Initialize renderer
-  useEffect(() => {
-    if (!canvasRef.current) return;
-
-    rendererRef.current = new GeneMapRenderer({
-      canvas: canvasRef.current,
-      theme,
-      height,
-      showDensity: true,
-      showLabels: true,
-    });
-
-    return () => {
-      rendererRef.current?.dispose();
-      rendererRef.current = null;
-    };
-  }, [height, theme]);
-
-  // Update theme
-  useEffect(() => {
-    if (rendererRef.current) {
-      rendererRef.current.setTheme(theme);
-    }
-  }, [theme]);
-
-  // Update data
-  useEffect(() => {
-    if (!rendererRef.current || !currentPhage) return;
-
-    rendererRef.current.setState({
-      genomeLength: genomeLength,
-      genes: genes,
-      viewportStart: scrollPosition,
-      viewportEnd: scrollPosition + viewportSize,
-    });
-  }, [currentPhage, scrollPosition, viewportSize, genomeLength, genes]);
-
-  // Handle resize
-  useEffect(() => {
+  // Handle click to navigate
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onGeneClick || !genomeLength) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const handleResize = () => {
-      rendererRef.current?.resize();
-    };
-
-    const resizeObserver = new ResizeObserver(handleResize);
-    resizeObserver.observe(canvas);
-
-    return () => resizeObserver.disconnect();
-  }, []);
-
-  // Convert canvas X position to genome position
-  const xToPosition = useCallback(
-    (x: number): number => {
-      const canvas = canvasRef.current;
-      if (!canvas || genomeLength === 0) return 0;
-      const rect = canvas.getBoundingClientRect();
-      const relX = x - rect.left;
-      const pos = Math.floor((relX / rect.width) * genomeLength);
-      return Math.max(0, Math.min(genomeLength - 1, pos));
-    },
-    [genomeLength]
-  );
-
-  // Find gene at position
-  const findGeneAtPosition = useCallback(
-    (position: number): GeneInfo | null => {
-      for (const gene of genes) {
-        if (position >= gene.startPos && position <= gene.endPos) {
-          return gene;
-        }
-      }
-      return null;
-    },
-    [genes]
-  );
-
-  // Handle click to navigate
-  const handleClick = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const position = xToPosition(e.clientX);
-      const gene = findGeneAtPosition(position);
-
-      if (gene && onGeneClick) {
-        onGeneClick(gene);
-      } else if (onPositionClick) {
-        onPositionClick(position);
-      }
-
-      // Navigate to clicked position (center it)
-      const newPosition = Math.max(0, position - Math.floor(viewportSize / 2));
-      setScrollPosition(newPosition);
-    },
-    [xToPosition, findGeneAtPosition, onGeneClick, onPositionClick, viewportSize, setScrollPosition]
-  );
-
-  // Handle mouse move for tooltip
-  const handleMouseMove = useCallback(
-    (e: React.MouseEvent<HTMLCanvasElement>) => {
-      const position = xToPosition(e.clientX);
-      const gene = findGeneAtPosition(position);
-
-      if (gene) {
-        setHoveredGene(gene);
-        setTooltipPos({ x: e.clientX, y: e.clientY });
-      } else {
-        setHoveredGene(null);
-        setTooltipPos(null);
-      }
-    },
-    [xToPosition, findGeneAtPosition]
-  );
-
-  const handleMouseLeave = useCallback(() => {
-    setHoveredGene(null);
-    setTooltipPos(null);
-  }, []);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      const step = Math.max(100, Math.floor(viewportSize / 4));
-      if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        setScrollPosition(Math.max(0, scrollPosition - step));
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        setScrollPosition(Math.min(Math.max(0, genomeLength - viewportSize), scrollPosition + step));
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        setScrollPosition(0);
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        setScrollPosition(Math.max(0, genomeLength - viewportSize));
-      }
-    },
-    [genomeLength, scrollPosition, setScrollPosition, viewportSize]
-  );
-
-  // Format position for display
-  const formatPosition = (pos: number): string => {
-    if (pos >= 1_000_000) return `${(pos / 1_000_000).toFixed(2)}M`;
-    if (pos >= 1_000) return `${(pos / 1_000).toFixed(1)}k`;
-    return pos.toString();
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const width = rect.width;
+    
+    // Map click X to genome position
+    const clickRatio = x / width;
+    const targetPos = Math.floor(clickRatio * genomeLength);
+    
+    onGeneClick(targetPos);
   };
 
-  return (
-    <div
-      ref={containerRef}
-      className={`gene-map-container ${className}`}
-      style={{
-        position: 'relative',
-        width,
-        border: `1px solid ${colors.border}`,
-        borderRadius: '4px',
-        backgroundColor: colors.background,
-        overflow: 'hidden',
-      }}
-      tabIndex={0}
-      role="region"
-      aria-label="Gene map overview"
-      aria-describedby={descriptionId}
-      onKeyDown={handleKeyDown}
-    >
-      {/* Scale bar header */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          padding: '0.2rem 0.5rem',
-          fontSize: '0.7rem',
-          color: colors.textMuted,
-          borderBottom: `1px solid ${colors.borderLight}`,
-        }}
-      >
-        <span>0</span>
-        <span style={{ color: colors.primary, fontWeight: 'bold' }}>Gene Map</span>
-        <span>{formatPosition(genomeLength)}</span>
-      </div>
+  const [hoveredGene, setHoveredGene] = React.useState<{ name: string; product?: string; x: number; y: number } | null>(null);
 
-      {/* Canvas */}
+  // Handle mouse move for tooltips
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!currentPhage || !genomeLength) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const width = rect.width;
+    
+    // Map X to genome position
+    const hoverPos = Math.floor((x / width) * genomeLength);
+    
+    // Find gene at this position
+    const gene = genes.find(g => hoverPos >= g.startPos && hoverPos < g.endPos);
+    
+    if (gene) {
+      setHoveredGene({
+        name: gene.name || gene.locusTag || 'Unknown',
+        product: gene.product,
+        x: e.clientX,
+        y: e.clientY - 10 // Shift up slightly
+      });
+    } else {
+      setHoveredGene(null);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setHoveredGene(null);
+  };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !currentPhage) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Handle high DPI
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * dpr;
+    canvas.height = height * dpr;
+    ctx.scale(dpr, dpr);
+
+    const width = rect.width;
+    
+    // Clear
+    ctx.fillStyle = colors.background;
+    ctx.fillRect(0, 0, width, height);
+
+    // Track vertical layout
+    const trackHeight = 12;
+    const forwardY = 10;
+    const reverseY = 30;
+    const rulerY = 25;
+
+    // Draw background tracks
+    ctx.fillStyle = colors.backgroundAlt;
+    ctx.fillRect(0, forwardY, width, trackHeight);
+    ctx.fillRect(0, reverseY, width, trackHeight);
+
+    // Draw genes
+    genes.forEach(gene => {
+      const startX = (gene.startPos / genomeLength) * width;
+      const endX = (gene.endPos / genomeLength) * width;
+      const geneWidth = Math.max(1, endX - startX); // Ensure at least 1px visible
+
+      const isForward = gene.strand !== '-';
+      const y = isForward ? forwardY : reverseY;
+      
+      // Color based on strand
+      ctx.fillStyle = isForward 
+        ? (colors.geneForward ?? '#22c55e') 
+        : (colors.geneReverse ?? '#ef4444');
+        
+      ctx.fillRect(startX, y, geneWidth, trackHeight);
+
+      // Draw gene name if width permits (basic LOD)
+      if (geneWidth > 40 && gene.name) {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(gene.name, startX + geneWidth / 2, y + trackHeight / 2);
+      }
+    });
+
+    // Draw ruler line
+    ctx.strokeStyle = colors.borderLight;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, rulerY);
+    ctx.lineTo(width, rulerY);
+    ctx.stroke();
+
+    // Draw viewport/scroll indicator
+    // Assuming SequenceView shows ~100-200 bases depending on screen
+    // We'll just draw a single cursor line for now since the viewport is tiny relative to genome
+    const effectivePos = viewMode === 'aa' ? scrollPosition * 3 : scrollPosition;
+    const cursorX = (effectivePos / genomeLength) * width;
+
+    // Cursor line
+    ctx.strokeStyle = colors.accent;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cursorX, 0);
+    ctx.lineTo(cursorX, height);
+    ctx.stroke();
+
+    // Cursor head
+    ctx.fillStyle = colors.accent;
+    ctx.beginPath();
+    ctx.moveTo(cursorX - 4, 0);
+    ctx.lineTo(cursorX + 4, 0);
+    ctx.lineTo(cursorX, 6);
+    ctx.fill();
+
+  }, [currentPhage, genes, genomeLength, scrollPosition, viewMode, colors, height]);
+
+  return (
+    <div className="gene-map-container" style={{ 
+      position: 'relative', 
+      height, 
+      border: `1px solid ${colors.border}`,
+      borderRadius: '6px',
+      overflow: 'hidden',
+      marginBottom: '8px'
+    }}>
       <canvas
         ref={canvasRef}
+        style={{ width: '100%', height: '100%', display: 'block', cursor: 'pointer' }}
         onClick={handleClick}
         onMouseMove={handleMouseMove}
         onMouseLeave={handleMouseLeave}
-        role="img"
-        aria-label="Gene map canvas"
-        style={{
-          width: '100%',
-          height,
-          display: 'block',
-          cursor: 'crosshair',
-        }}
-        title="Click to navigate"
+        title="Click to jump to position"
       />
-
-      {/* Viewport indicator */}
-      {genomeLength > 0 && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: `${(scrollPosition / genomeLength) * 100}%`,
-            width: `${Math.min(100, (viewportSize / genomeLength) * 100)}%`,
-            height: '3px',
-            backgroundColor: colors.accent,
-            opacity: 0.7,
-            transition: 'left 0.1s ease',
-          }}
-          aria-label="Current viewport"
-        />
-      )}
-
-      {/* Gene tooltip */}
-      {hoveredGene && tooltipPos && (
-        <div
-          style={{
-            position: 'fixed',
-            left: tooltipPos.x + 10,
-            top: tooltipPos.y - 60,
-            backgroundColor: colors.backgroundAlt,
-            border: `1px solid ${colors.border}`,
-            borderRadius: '4px',
-            padding: '0.5rem',
-            fontSize: '0.8rem',
-            zIndex: 1000,
-            pointerEvents: 'none',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-          }}
-        >
-          <div style={{ fontWeight: 'bold', color: colors.accent }}>{hoveredGene.name || 'Unknown'}</div>
-          <div style={{ color: colors.textDim }}>
-            {formatPosition(hoveredGene.startPos)} - {formatPosition(hoveredGene.endPos)}
-          </div>
-          <div style={{ color: colors.textMuted }}>
-            {hoveredGene.strand === '+' || hoveredGene.strand === '1' ? '+ strand' : '- strand'}
-          </div>
+      {hoveredGene && (
+        <div style={{
+          position: 'fixed',
+          left: hoveredGene.x,
+          top: hoveredGene.y,
+          transform: 'translate(-50%, -100%)',
+          backgroundColor: colors.backgroundElevated,
+          border: `1px solid ${colors.border}`,
+          borderRadius: '4px',
+          padding: '4px 8px',
+          pointerEvents: 'none',
+          zIndex: 1000,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+          fontSize: '12px',
+          maxWidth: '200px',
+        }}>
+          <div style={{ fontWeight: 'bold', color: colors.text }}>{hoveredGene.name}</div>
           {hoveredGene.product && (
-            <div style={{ color: colors.text, marginTop: '0.25rem', maxWidth: '200px' }}>
+            <div style={{ color: colors.textDim, fontSize: '10px', marginTop: '2px' }}>
               {hoveredGene.product}
             </div>
           )}
         </div>
       )}
-      <div id={descriptionId} className="sr-only" aria-live="polite">
-        Gene map showing genes across the genome. Current viewport starts at {scrollPosition} base pairs and spans
-        {` ${Math.min(viewportSize, genomeLength)} base pairs.`} Use Left and Right arrows to move, Home to jump to start, and End to jump to the end.
-      </div>
     </div>
   );
-};
-
-export default GeneMapCanvas;
+}

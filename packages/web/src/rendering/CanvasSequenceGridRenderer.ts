@@ -20,6 +20,8 @@ export interface SequenceGridOptions {
   cellWidth?: number;
   /** Cell height in CSS pixels */
   cellHeight?: number;
+  /** Density mode: compact favors smaller cells/letters */
+  densityMode?: 'compact' | 'standard';
   /** Enable scanline effect */
   scanlines?: boolean;
   /** Enable glow effect */
@@ -99,25 +101,25 @@ function getResponsiveCellSize(
   if (viewportWidth < 375) {
     // Tiny phones - prioritize readability over density
     return landscape
-      ? { width: 10, height: 12 }   // Landscape: readable (micro-text enabled)
+      ? { width: 9, height: 11 }   // Landscape: more columns, still readable
       : { width: 12, height: 14 }; // Portrait: touch-friendly
   }
   if (viewportWidth < 480) {
     // Small phones (iPhone SE, etc.)
     return landscape
-      ? { width: 10, height: 12 } // Landscape: maximizing density but keeping text
+      ? { width: 9, height: 11 } // Landscape: maximize density with micro glyphs
       : { width: 14, height: 16 };
   }
   if (viewportWidth < 640) {
     // Standard phones
     return landscape
-      ? { width: 11, height: 13 }
+      ? { width: 10, height: 12 }
       : { width: 16, height: 18 };
   }
   if (viewportWidth < 768) {
     // Large phones / small tablets portrait
     return landscape
-      ? { width: 12, height: 14 }
+      ? { width: 11, height: 13 }
       : { width: 12, height: 14 };
   }
   if (viewportWidth < 1024) {

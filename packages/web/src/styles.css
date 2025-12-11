@@ -12,6 +12,7 @@
 @import './styles/mobile-overrides.css';
 @import './styles/mobile-landscape.css';
 @import './styles/control-deck.css';
+@import './styles/fab.css';
 
 /* =============================================================================
    APP SHELL - Full viewport layout with refined spacing
@@ -112,6 +113,10 @@
     gap: var(--space-1);
   }
 
+  .app-header .badge {
+    display: none;
+  }
+
   .app-title {
     font-size: var(--text-sm);
     white-space: nowrap;
@@ -170,6 +175,9 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
 }
 
 /* Mobile content adjustments */
@@ -177,6 +185,7 @@
   .app-body {
     padding: var(--space-4);
     gap: var(--space-4);
+    max-width: 100%;
   }
 }
 
@@ -1056,6 +1065,205 @@
 
   .codon-wheel__panel {
     order: 2;
+  }
+}
+
+/* =============================================================================
+   TRANSLATION VISUALIZER - Ribosome walkthrough
+   ============================================================================= */
+
+.translation-viz {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+  background: var(--color-surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.translation-viz__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.translation-viz__controls {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.translation-viz__layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+.translation-viz__timeline {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--space-2);
+}
+
+.translation-viz__codon {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-alt);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  transition: transform var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+
+.translation-viz__codon--active {
+  border-color: var(--color-accent);
+  transform: translateY(-4px);
+  box-shadow: var(--shadow-md);
+}
+
+.translation-viz__codon--done {
+  opacity: 0.72;
+}
+
+.translation-viz__codon-text {
+  font-family: var(--font-mono);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+}
+
+.translation-viz__codon-aa {
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-weight: var(--font-semibold);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 60px;
+}
+
+.translation-viz__panel {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) 1fr;
+  gap: var(--space-4);
+  align-items: stretch;
+}
+
+.translation-viz__ribosome {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.translation-viz__track {
+  position: relative;
+  height: 76px;
+  border-radius: var(--radius-md);
+  background: var(--color-background-alt);
+  overflow: hidden;
+  border: 1px dashed var(--color-border-subtle);
+}
+
+.translation-viz__track-line {
+  position: absolute;
+  top: 50%;
+  left: 8%;
+  right: 8%;
+  height: 2px;
+  background: var(--color-border-light);
+  transform: translateY(-50%);
+}
+
+.translation-viz__ribosome-body {
+  position: absolute;
+  top: 14px;
+  transform: translateX(-50%);
+  padding: 10px 14px;
+  border-radius: 999px;
+  font-weight: var(--font-bold);
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--color-border);
+  transition: left var(--duration-normal) var(--ease-out);
+  backdrop-filter: blur(6px);
+}
+
+.translation-viz__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.translation-viz__card {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-background);
+}
+
+.translation-viz__card .label {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.translation-viz__card .value {
+  font-weight: var(--font-semibold);
+  color: var(--color-text);
+  margin-top: 4px;
+}
+
+.translation-viz__card .hint {
+  color: var(--color-text-dim);
+  font-size: var(--text-xs);
+  margin-top: 4px;
+}
+
+.translation-viz__chain {
+  border: 1px dashed var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+  background: var(--color-background-alt);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.translation-viz__chain-label {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.translation-viz__chain-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  min-height: 38px;
+}
+
+.translation-viz__chain-aa {
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-sm);
+}
+
+@media (max-width: 960px) {
+  .translation-viz__panel {
+    grid-template-columns: 1fr;
+  }
+
+  .translation-viz__header {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }
 
