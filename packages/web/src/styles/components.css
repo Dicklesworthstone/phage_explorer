@@ -63,8 +63,8 @@
   }
 }
 
-/* Tablet portrait and below: stack columns */
-@media (max-width: 768px) {
+/* Tablet and below: stack columns earlier for usability */
+@media (max-width: 1100px) {
   .two-column {
     grid-template-columns: 1fr;
     gap: var(--space-4);

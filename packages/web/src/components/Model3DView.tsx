@@ -421,8 +421,9 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       if (!scene || !camera || !controls) return;
 
       structureDataRef.current = structureData;
-      // Note: Don't call rebuildStructure here - the renderMode useEffect handles it
-      // when loadState becomes 'ready' (avoids double-building on initial load)
+      // Build immediately in addition to the loadState effect to avoid a race
+      // where the renderMode effect fires before loadState flips to "ready".
+      rebuildStructure(renderMode);
 
       // ZOOM TO EXTENTS: Calculate optimal camera distance
       // Formula: dist = radius / tan(fov/2), with 1.15 padding for ~10% margin

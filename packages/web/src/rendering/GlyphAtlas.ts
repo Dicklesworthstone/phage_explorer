@@ -400,8 +400,18 @@ export class GlyphAtlas {
     destWidth?: number,
     destHeight?: number
   ): void {
+    // Use uniform scaling to avoid distorting letterforms when cells are rectangular.
     const dw = destWidth ?? this.options.cellWidth;
     const dh = destHeight ?? this.options.cellHeight;
+    const scale = Math.min(dw / glyph.width, dh / glyph.height);
+    const targetW = glyph.width * scale;
+    const targetH = glyph.height * scale;
+    const offsetX = destX + (dw - targetW) / 2;
+    const offsetY = destY + (dh - targetH) / 2;
+
+    // Paint background to cover the full cell area, then render the glyph centered.
+    destCtx.fillStyle = glyph.colors.bg;
+    destCtx.fillRect(destX, destY, dw, dh);
 
     destCtx.drawImage(
       this.canvas as CanvasImageSource,
@@ -409,10 +419,10 @@ export class GlyphAtlas {
       glyph.y,
       glyph.width,
       glyph.height,
-      destX,
-      destY,
-      dw,
-      dh
+      offsetX,
+      offsetY,
+      targetW,
+      targetH
     );
   }
 

@@ -496,7 +496,7 @@ export function SequenceView({
               }}
               title="Toggle codon snapping"
             >
-              snap 3bp
+              Snap 3bp
             </button>
             <span style={{ fontSize: '0.75rem', color: colors.textMuted, marginLeft: '0.5rem', display: 'none' }}>
               {orientation === 'landscape' ? 'landscape' : 'portrait'}

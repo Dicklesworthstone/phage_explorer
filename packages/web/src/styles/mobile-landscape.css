@@ -50,8 +50,8 @@
   }
 }
 
-/* Portrait Mode: Maximize Vertical Space */
-@media (orientation: portrait) and (max-width: 640px) {
+/* Portrait Mode: Maximize Vertical Space (broader threshold to catch small tablets) */
+@media (orientation: portrait) and (max-width: 1100px) {
   .app-shell {
     height: 100vh;
     overflow: hidden;

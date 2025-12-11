@@ -1,57 +1,116 @@
 
-/* ... (keep existing imports) ... */
-
-/* Mobile Touch Targets & Typography Overrides */
-@media (max-width: 640px) {
+/* Mobile + small tablet overrides focused on touchability and stacking */
+@media (max-width: 900px) {
   :root {
     --text-xs: 12px;
     --text-sm: 14px;
     --text-base: 16px;
   }
 
-  /* Force minimum touch target size */
-  button, 
-  .btn,
-  [role="button"] {
-    min-height: 44px;
-    min-width: 44px;
-    padding: 8px 16px; 
-    font-size: 14px; /* readable size */
+  /* Layout: force single-column master/detail with compact header/footer */
+  .app-shell {
+    grid-template-rows: auto 1fr auto;
   }
 
-  /* Fix header button grouping on mobile */
+  .app-body {
+    padding: 12px;
+    overflow-x: hidden;
+  }
+
+  .panel.two-column {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .column--list {
+    order: 1;
+  }
+
+  .column--detail {
+    order: 2;
+  }
+
+  /* Constrain list height so detail stays visible */
+  .column--list .list {
+    max-height: 42vh;
+    min-height: 180px;
+  }
+
+  /* Header: wrap quick actions and keep readable spacing */
   .app-header {
-    padding: 8px 12px;
+    padding: 10px 14px;
     gap: 8px;
-    height: auto; /* Allow growth */
     flex-wrap: wrap;
   }
 
   .header-right {
-    display: flex;
     flex-wrap: wrap;
     gap: 8px;
     width: 100%;
     justify-content: flex-start;
   }
 
-  /* Badges shouldn't be microscopic */
+  /* Touch targets */
+  button,
+  .btn,
+  [role="button"] {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 9px 14px;
+    font-size: 14px;
+  }
+
+  /* Badges stay legible but not oversized */
   .badge {
     font-size: 11px;
     padding: 4px 8px;
-    height: auto;
-    min-height: 20px; /* Badges are info, not touch targets, so smaller is ok, but not 9px text */
+    min-height: 20px;
   }
 
-  /* Sequence View Toolbar adjustments */
+  /* Sequence + controls stack vertically with breathing room */
+  .detail-viewers {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .sequence-view {
+    min-height: 280px;
+  }
+
   .sequence-view .toolbar button {
     padding: 8px 12px;
     margin: 2px;
   }
+
+  /* 3D view stays visible but not full-height */
+  .three-container {
+    width: 100%;
+    min-height: 240px;
+    height: min(360px, 60vh);
+  }
+
+  /* Footer keyboard hints are noise on mobile */
+  .app-footer .footer-hints {
+    display: none;
+  }
+
+  /* Prevent horizontal scrollbars from nested panels */
+  .panel {
+    overflow-x: hidden;
+  }
 }
 
-/* Fix 3D View Container width on mobile */
-.three-container {
-  width: 100%;
-  min-height: 300px; /* Keep reasonable height */
+/* Ultra-small devices */
+@media (max-width: 540px) {
+  .app-header {
+    padding: 8px 10px;
+  }
+
+  .panel.two-column {
+    gap: 8px;
+  }
+
+  .column--list .list {
+    max-height: 38vh;
+  }
 }

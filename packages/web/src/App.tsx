@@ -1,4 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useOptimistic, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { AppShell } from './components/layout/AppShell';
 import OverlayManager from './components/overlays/OverlayManager';
 import { useOverlay } from './components/overlays/OverlayProvider';
@@ -79,32 +86,54 @@ export default function App(): JSX.Element {
   const [sequencePreview, setSequencePreview] = useState<string>('');
   const [fullSequence, setFullSequence] = useState<string>('');
   const enableBackgroundEffects = !reducedMotion;
-  const [isNarrow, setIsNarrow] = useState(false);
-  const [isLandscape, setIsLandscape] = useState(false);
-  const [isMobile, setIsMobile] = useState(false);
-
-  useEffect(() => {
-    const checkLayout = () => {
-      const width = window.innerWidth;
-      const height = window.innerHeight;
-      setIsNarrow(width < 900);
-      setIsMobile(width < 640);
-      setIsLandscape(width > height);
+  const getLayoutSnapshot = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return { isNarrow: false, isMobile: false, isLandscape: false };
+    }
+    const width = window.innerWidth;
+    const height = window.innerHeight || 1;
+    return {
+      isNarrow: width < 1100,
+      isMobile: width < 900,
+      isLandscape: width > height,
     };
-    checkLayout();
-    window.addEventListener('resize', checkLayout);
-    return () => window.removeEventListener('resize', checkLayout);
   }, []);
 
-  const sequenceHeight = isNarrow ? (isLandscape ? '85vh' : '65vh') : 480;
-  const show3DInLayout = !isNarrow || !isLandscape;
-  const showList = !isMobile || (isMobile && !currentPhage);
-  const showDetail = !isMobile || (isMobile && currentPhage);
+  const [{ isNarrow, isMobile, isLandscape }, setLayout] = useState(() => getLayoutSnapshot());
 
-  const [optimisticIndex, setOptimisticIndex] = useOptimistic(
-    currentPhageIndex,
-    (_current: number, next: number) => next
-  );
+  useLayoutEffect(() => {
+    const mobileMql = window.matchMedia('(max-width: 900px)');
+    const narrowMql = window.matchMedia('(max-width: 1100px)');
+    const landscapeMql = window.matchMedia('(orientation: landscape)');
+
+    const updateLayout = () => {
+      setLayout({
+        isNarrow: narrowMql.matches,
+        isMobile: mobileMql.matches,
+        isLandscape: landscapeMql.matches,
+      });
+    };
+
+    updateLayout();
+
+    mobileMql.addEventListener('change', updateLayout);
+    narrowMql.addEventListener('change', updateLayout);
+    landscapeMql.addEventListener('change', updateLayout);
+    window.addEventListener('resize', updateLayout);
+
+    return () => {
+      mobileMql.removeEventListener('change', updateLayout);
+      narrowMql.removeEventListener('change', updateLayout);
+      landscapeMql.removeEventListener('change', updateLayout);
+      window.removeEventListener('resize', updateLayout);
+    };
+  }, [getLayoutSnapshot]);
+
+  const sequenceHeight = isNarrow ? (isLandscape ? '85vh' : '65vh') : 480;
+  const show3DInLayout = !isMobile && (!isNarrow || !isLandscape);
+  const hasSelection = currentPhage !== null || isLoadingPhage;
+  const showList = !isMobile || (isMobile && !hasSelection);
+  const showDetail = !isMobile || (isMobile && hasSelection);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -137,11 +166,11 @@ export default function App(): JSX.Element {
     async (repo: PhageRepository, index: number) => {
       setLoadingPhage(true);
       try {
+        setCurrentPhageIndex(index);
         setSequencePreview('');
         setFullSequence('');
         const phage = await repo.getPhageByIndex(index);
         if (!phage) return;
-        setCurrentPhageIndex(index);
         setCurrentPhage(phage);
         const genomeLength = phage.genomeLength ?? 0;
         if (genomeLength > 0) {
@@ -182,25 +211,22 @@ export default function App(): JSX.Element {
   const handleSelectPhage = useCallback(
     async (index: number) => {
       if (!repository) return;
-      setOptimisticIndex(index);
       await loadPhage(repository, index);
     },
-    [loadPhage, repository, setOptimisticIndex]
+    [loadPhage, repository]
   );
 
   const handleNextPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
     const nextIndex = (currentPhageIndex + 1) % phages.length;
-    setOptimisticIndex(nextIndex);
     void loadPhage(repository, nextIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository, setOptimisticIndex]);
+  }, [currentPhageIndex, loadPhage, phages.length, repository]);
 
   const handlePrevPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
     const prevIndex = (currentPhageIndex - 1 + phages.length) % phages.length;
-    setOptimisticIndex(prevIndex);
     void loadPhage(repository, prevIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository, setOptimisticIndex]);
+  }, [currentPhageIndex, loadPhage, phages.length, repository]);
 
   const headerSubtitle = useMemo(() => {
     if (error) return 'db: error';
@@ -371,7 +397,7 @@ export default function App(): JSX.Element {
               </div>
               <div className="list">
                 {phages.map((phage, idx) => {
-                  const isActive = idx === optimisticIndex;
+                  const isActive = idx === currentPhageIndex;
                   return (
                     <button
                       key={phage.id}
