@@ -2,15 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import type { PhageFull } from '@phage-explorer/core';
 import {
+  ACESFilmicToneMapping,
   AmbientLight,
   Color,
   DirectionalLight,
+  Fog,
+  HemisphereLight,
   PerspectiveCamera,
   Scene,
+  SRGBColorSpace,
   WebGLRenderer,
-  Group,
   Vector3,
 } from 'three';
+import type { Group } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildBallAndStick,
@@ -110,12 +114,13 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
   const show3DModel = usePhageStore(s => s.show3DModel);
   const paused = usePhageStore(s => s.model3DPaused);
   const speed = usePhageStore(s => s.model3DSpeed);
-  const quality = usePhageStore(s => s.model3DQuality);
   const fullscreen = usePhageStore(s => s.model3DFullscreen);
   const toggleFullscreen = usePhageStore(s => s.toggle3DModelFullscreen);
-  const cycleQuality = usePhageStore(s => s.cycle3DModelQuality);
   const togglePause = usePhageStore(s => s.toggle3DModelPause);
-  const setSpeed = usePhageStore(s => s.set3DModelSpeed);
+
+  // Auto-quality: start at 'high' and adapt based on performance
+  const [autoQuality, setAutoQuality] = useState<'low' | 'medium' | 'high' | 'ultra'>('high');
+  const quality = autoQuality;
 
   const [renderMode, setRenderMode] = useState<RenderMode>('ball');
 
@@ -130,7 +135,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     lastSample: performance.now(),
   });
   const [showFunctionalGroups, setShowFunctionalGroups] = useState(false);
-  const [functionalGroupStyle, setFunctionalGroupStyle] = useState<FunctionalGroupStyle>('halo');
+  const [functionalGroupStyle] = useState<FunctionalGroupStyle>('halo');
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
   const qualityPreset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
@@ -141,7 +146,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     isFetching: structureFetching,
     isError: structureError,
     error: structureErr,
-    refetch: refetchStructure,
   } = useStructureQuery({
     idOrUrl: pdbId ?? undefined,
     enabled: show3DModel && Boolean(pdbId),
@@ -237,6 +241,9 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       cameraRef.current.updateProjectionMatrix();
       const dpr = window.devicePixelRatio ?? 1;
       rendererRef.current.shadowMap.enabled = qualityPreset.shadows;
+      rendererRef.current.outputColorSpace = SRGBColorSpace;
+      rendererRef.current.toneMapping = ACESFilmicToneMapping;
+      rendererRef.current.toneMappingExposure = 1.12;
       rendererRef.current.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
       rendererRef.current.setSize(width, height);
       rendererRef.current.render(sceneRef.current, cameraRef.current);
@@ -244,39 +251,56 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     }
 
     const scene = new Scene();
-    scene.background = new Color('#0b1021');
+    scene.background = new Color('#0f1b33');
+    scene.fog = new Fog(0x0f1b33, 120, 2400);
     const camera = new PerspectiveCamera(50, 1, 0.1, 5000);
     const renderer = new WebGLRenderer({ antialias: quality !== 'low', alpha: true });
-    renderer.setClearColor('#0b1021', 0);
+    renderer.outputColorSpace = SRGBColorSpace;
+    renderer.toneMapping = ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.12;
+    renderer.setClearColor('#0f1b33', 1);
     rendererRef.current = renderer;
     sceneRef.current = scene;
     cameraRef.current = camera;
 
     // Enhanced lighting setup for better 3D perception
-    const ambient = new AmbientLight(0xffffff, 0.6);
+    const ambient = new AmbientLight(0xffffff, 0.82);
     scene.add(ambient);
 
+    // Hemisphere light for natural sky/ground lighting
+    const hemiLight = new HemisphereLight(0xc3ddff, 0x0d1326, 0.78);
+    scene.add(hemiLight);
+
     // Key light (main light from top-right)
-    const keyLight = new DirectionalLight(0xffffff, 1.0);
-    keyLight.position.set(1, 1.5, 1);
+    const keyLight = new DirectionalLight(0xffffff, 1.25);
+    keyLight.position.set(4.5, 6.4, 5.4);
     scene.add(keyLight);
 
     // Fill light (softer, from left)
-    const fillLight = new DirectionalLight(0xb0c4de, 0.5); // Light steel blue tint
-    fillLight.position.set(-1, 0.5, 0.5);
+    const fillLight = new DirectionalLight(0xb0c4de, 0.9); // Light steel blue tint
+    fillLight.position.set(-3.2, 2.4, 3.2);
     scene.add(fillLight);
 
     // Rim light (from behind for depth)
-    const rimLight = new DirectionalLight(0x88ccff, 0.4); // Cyan tint
-    rimLight.position.set(0, 0, -1);
+    const rimLight = new DirectionalLight(0x88ccff, 0.65); // Cyan tint
+    rimLight.position.set(0.2, 0.1, -4.2);
     scene.add(rimLight);
-
-    container.appendChild(renderer.domElement);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controlsRef.current = controls;
+
+    // Headlamp (camera-attached light) to ensure visibility from all angles
+    const headlamp = new DirectionalLight(0xffffff, 0.95);
+    scene.add(headlamp);
+    const syncHeadlamp = () => {
+      headlamp.position.copy(camera.position);
+    };
+    controls.addEventListener('change', syncHeadlamp);
+    syncHeadlamp();
+
+    container.appendChild(renderer.domElement);
 
     const resize = () => {
       const width = container.clientWidth || 320;
@@ -285,6 +309,9 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       camera.updateProjectionMatrix();
       const dpr = window.devicePixelRatio ?? 1;
       renderer.shadowMap.enabled = qualityPreset.shadows;
+      renderer.outputColorSpace = SRGBColorSpace;
+      renderer.toneMapping = ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.12;
       renderer.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
       renderer.setSize(width, height);
       renderer.render(scene, camera);
@@ -297,6 +324,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
 
     return () => {
       observer.disconnect();
+      controls.removeEventListener('change', syncHeadlamp);
       controls.dispose();
       renderer.dispose();
       disposeGroup(structureRef.current);
@@ -323,18 +351,32 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       controlsRef.current?.update();
       rendererRef.current.render(sceneRef.current, cameraRef.current);
 
-      // FPS sampling
+      // FPS sampling with auto-quality adaptation
       const now = performance.now();
       const last = lastFrameTimeRef.current;
       lastFrameTimeRef.current = now;
       if (last != null) {
         frameCounterRef.current.count += 1;
         const elapsed = now - frameCounterRef.current.lastSample;
-        if (elapsed >= 500) {
+        if (elapsed >= 1000) { // Sample every 1 second for stability
           const currentFps = (frameCounterRef.current.count * 1000) / elapsed;
-          setFps(Math.round(currentFps));
+          const roundedFps = Math.round(currentFps);
+          setFps(roundedFps);
           frameCounterRef.current.count = 0;
           frameCounterRef.current.lastSample = now;
+
+          // Auto-quality: downgrade if FPS is poor, upgrade if excellent
+          setAutoQuality(prev => {
+            if (roundedFps < 20 && prev !== 'low') {
+              // Performance struggling - drop quality
+              return prev === 'ultra' ? 'high' : prev === 'high' ? 'medium' : 'low';
+            }
+            if (roundedFps > 55 && prev !== 'ultra') {
+              // Performance is great - try upgrading after stabilization
+              return prev === 'low' ? 'medium' : prev === 'medium' ? 'high' : 'ultra';
+            }
+            return prev;
+          });
         }
       }
     };
@@ -513,11 +555,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     link.click();
   };
 
-  const handleSpeedChange = (delta: number) => {
-    const next = Math.max(0, Math.min(4, speed + delta));
-    setSpeed(next);
-  };
-
   const stateLabel = loadState === 'ready'
     ? 'Loaded'
     : loadState === 'loading'
@@ -537,88 +574,73 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
         </div>
       </div>
 
-      <div className="toolbar" style={{ display: 'flex', gap: '8px', padding: '8px 0' }}>
-        {(['ball', 'ribbon', 'surface'] as RenderMode[]).map(mode => (
-          <button
-            key={mode}
-            type="button"
-            className={`btn ${renderMode === mode ? 'active' : ''}`}
-            onClick={() => setRenderMode(mode)}
-          >
-            {mode === 'ball' && 'Ball-Stick'}
-            {mode === 'ribbon' && 'Ribbon'}
-            {mode === 'surface' && 'Surface'}
-          </button>
-        ))}
-        <button
-          type="button"
-          className="btn"
-          onClick={cycleQuality}
-        >
-          Quality: {quality}
-        </button>
-        <button
-          type="button"
-          className={`btn ${showFunctionalGroups ? 'active' : ''}`}
-          disabled={!structureDataRef.current?.functionalGroups?.length}
-          onClick={() => setShowFunctionalGroups(v => !v)}
-        >
-          {showFunctionalGroups ? 'Hide Groups' : 'Show Groups'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={
-            !showFunctionalGroups || !structureDataRef.current?.functionalGroups?.length
-          }
-          onClick={() => {
-            const order: FunctionalGroupStyle[] = ['halo', 'bounds', 'lines'];
-            const currentIdx = order.indexOf(functionalGroupStyle);
-            const next = order[(currentIdx + 1) % order.length];
-            setFunctionalGroupStyle(next);
-          }}
-        >
-          Group Style: {functionalGroupStyle}
-        </button>
-        <button
-          type="button"
-          className={`btn ${fullscreen ? 'active' : ''}`}
-          onClick={toggleFullscreen}
-        >
-          {fullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => togglePause()}
-        >
-          {paused ? 'Resume' : 'Pause'}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={handleScreenshot}
-        >
-          Save PNG
-        </button>
-        <div className="badge-row" style={{ gap: '4px' }}>
-          <button
-            type="button"
-            className="btn subtle"
-            onClick={() => handleSpeedChange(-0.5)}
-            title="Decrease auto-rotation speed"
-          >
-            −speed
-          </button>
-          <button
-            type="button"
-            className="btn subtle"
-            onClick={() => handleSpeedChange(0.5)}
-            title="Increase auto-rotation speed"
-          >
-            +speed
-          </button>
+      <div className="toolbar" style={{ display: 'flex', gap: '8px', padding: '12px 0', flexWrap: 'wrap', alignItems: 'center' }}>
+        {/* Render mode selector - segmented control style */}
+        <div className="segmented-control" style={{ display: 'flex', gap: '1px', background: 'var(--border)', borderRadius: '6px', overflow: 'hidden' }}>
+          {(['ball', 'ribbon', 'surface'] as RenderMode[]).map(mode => (
+            <button
+              key={mode}
+              type="button"
+              className={`btn compact ${renderMode === mode ? 'active' : ''}`}
+              onClick={() => setRenderMode(mode)}
+              style={{ borderRadius: 0, margin: 0, minHeight: '36px', minWidth: '40px' }}
+              title={`View mode: ${mode}`}
+            >
+              {mode === 'ball' ? '⚛' : mode === 'ribbon' ? '〰' : '◉'}
+            </button>
+          ))}
         </div>
+
+        <span className="separator" style={{ width: '1px', height: '24px', background: 'var(--border)', margin: '0 8px' }} />
+
+        {/* Essential controls */}
+        <button
+          type="button"
+          className={`btn compact ${!paused ? 'active' : ''}`}
+          onClick={() => togglePause()}
+          style={{ minHeight: '36px', minWidth: '40px' }}
+          title={paused ? 'Resume rotation' : 'Pause rotation'}
+        >
+          {paused ? '▶' : '⏸'}
+        </button>
+        <button
+          type="button"
+          className="btn compact"
+          onClick={toggleFullscreen}
+          style={{ minHeight: '36px', minWidth: '40px' }}
+          title="Fullscreen"
+        >
+          {fullscreen ? '⤓' : '⤢'}
+        </button>
+        <button
+          type="button"
+          className="btn compact"
+          onClick={handleScreenshot}
+          style={{ minHeight: '36px', minWidth: '40px' }}
+          title="Save screenshot"
+        >
+          📷
+        </button>
+
+        {/* Functional groups - only show if available */}
+        {structureDataRef.current?.functionalGroups?.length ? (
+          <>
+            <span className="separator" style={{ width: '1px', height: '20px', background: 'var(--border)', margin: '0 4px' }} />
+            <button
+              type="button"
+              className={`btn compact ${showFunctionalGroups ? 'active' : ''}`}
+              onClick={() => setShowFunctionalGroups(v => !v)}
+              title="Toggle functional group highlights"
+            >
+              🔬
+            </button>
+          </>
+        ) : null}
+
+        {/* Auto quality indicator (read-only) */}
+        <span className="badge subtle" style={{ marginLeft: 'auto', fontSize: '11px' }}>
+          {quality}
+        </span>
       </div>
 
       <div
@@ -661,4 +683,3 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     </div>
   );
 }
-

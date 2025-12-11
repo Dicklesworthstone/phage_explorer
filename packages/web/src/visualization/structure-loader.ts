@@ -55,40 +55,83 @@ export interface FunctionalGroup {
   color: Color;
 }
 
+// Updated structure-loader.ts using Web Worker
+import {
+  Box3,
+  BufferGeometry,
+  CatmullRomCurve3,
+  Color,
+  CylinderGeometry,
+  Float32BufferAttribute,
+  Group,
+  InstancedMesh,
+  LineBasicMaterial,
+  LineSegments,
+  Matrix4,
+  Mesh,
+  MeshPhongMaterial,
+  Quaternion,
+  SphereGeometry,
+  TubeGeometry,
+  Vector3,
+} from 'three';
+import StructureWorker from './structure.worker?worker';
+
+export type StructureFormat = 'pdb' | 'mmcif';
+
+export interface LoadedStructure {
+  atoms: AtomRecord[];
+  bonds: Bond[];
+  backboneTraces: Vector3[][];
+  chains: string[];
+  center: Vector3;
+  radius: number;
+  atomCount: number;
+  functionalGroups: FunctionalGroup[];
+}
+
+export interface AtomRecord {
+  x: number;
+  y: number;
+  z: number;
+  element: string;
+  atomName: string;
+  chainId: string;
+  resSeq: number;
+  resName: string;
+}
+
+export interface Bond {
+  a: number;
+  b: number;
+}
+
+export type FunctionalGroupType = 'aromatic' | 'disulfide' | 'phosphate';
+
+export interface FunctionalGroup {
+  type: FunctionalGroupType;
+  atomIndices: number[];
+  color: Color;
+}
+
 // CPK-based colors optimized for dark backgrounds
-// Based on Corey-Pauling-Koltun standard with brightness adjustments
 const ELEMENT_COLORS: Record<string, Color> = {
-  H: new Color('#f8fafc'),    // Almost white (hydrogen - brightest, smallest)
-  C: new Color('#64748b'),    // Slate gray (carbon backbone - neutral)
-  N: new Color('#3b82f6'),    // True blue (nitrogen - CPK standard)
-  O: new Color('#ef4444'),    // True red (oxygen - CPK standard)
-  S: new Color('#fde047'),    // Bright yellow (sulfur - CPK standard)
-  P: new Color('#fb923c'),    // Orange (phosphorus - CPK standard)
-  MG: new Color('#22c55e'),   // Green (magnesium)
-  FE: new Color('#ea580c'),   // Rust orange (iron in heme)
-  CA: new Color('#16a34a'),   // Dark green (calcium)
-  ZN: new Color('#7c3aed'),   // Purple (zinc - distinctive)
-  CL: new Color('#4ade80'),   // Lime green (chlorine)
-  NA: new Color('#a855f7'),   // Violet (sodium - distinctive from others)
-  K: new Color('#8b5cf6'),    // Violet (potassium)
-  MN: new Color('#9333ea'),   // Purple (manganese)
-  CU: new Color('#f97316'),   // Orange-brown (copper)
-  SE: new Color('#eab308'),   // Gold (selenium)
-};
-
-const ELEMENT_RADII: Record<string, number> = {
-  H: 0.31,
-  C: 0.76,
-  N: 0.71,
-  O: 0.66,
-  S: 1.05,
-  P: 1.07,
-};
-
-const FUNCTIONAL_GROUP_COLORS: Record<FunctionalGroupType, Color> = {
-  aromatic: new Color('#c084fc'),
-  disulfide: new Color('#facc15'),
-  phosphate: new Color('#fb923c'),
+  H: new Color('#f8fafc'),
+  C: new Color('#94a3b8'),
+  N: new Color('#3b82f6'),
+  O: new Color('#ef4444'),
+  S: new Color('#fde047'),
+  P: new Color('#fb923c'),
+  MG: new Color('#22c55e'),
+  FE: new Color('#ea580c'),
+  CA: new Color('#16a34a'),
+  ZN: new Color('#7c3aed'),
+  CL: new Color('#4ade80'),
+  NA: new Color('#a855f7'),
+  K: new Color('#8b5cf6'),
+  MN: new Color('#9333ea'),
+  CU: new Color('#f97316'),
+  SE: new Color('#eab308'),
 };
 
 function detectFormat(idOrUrl: string): StructureFormat {
@@ -103,121 +146,9 @@ function resolveDownloadUrl(idOrUrl: string, format: StructureFormat): string {
   return `https://files.rcsb.org/download/${bareId}.${ext}`;
 }
 
-export function parsePDB(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith('ATOM') && !line.startsWith('HETATM')) continue;
-    const atomName = line.slice(12, 16).trim();
-    const x = parseFloat(line.slice(30, 38));
-    const y = parseFloat(line.slice(38, 46));
-    const z = parseFloat(line.slice(46, 54));
-    const element = (line.slice(76, 78).trim() || line.slice(12, 14).trim()).toUpperCase();
-    const chainId = line.slice(21, 22).trim() || 'A';
-    const resSeq = parseInt(line.slice(22, 26).trim() || '0', 10);
-    const resName = line.slice(17, 20).trim() || 'UNK';
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-  return atoms;
-}
-
-export function parseMMCIF(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  const headers: string[] = [];
-  let inAtomLoop = false;
-  let dataStart = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === 'loop_') {
-      inAtomLoop = true;
-      continue;
-    }
-    if (inAtomLoop && line.startsWith('_atom_site.')) {
-      headers.push(line);
-      continue;
-    }
-    if (inAtomLoop && headers.length > 0 && !line.startsWith('_atom_site.')) {
-      dataStart = i;
-      break;
-    }
-  }
-
-  if (headers.length === 0 || dataStart === 0) return atoms;
-
-  const colIndex = (name: string) => headers.findIndex(h => h.includes(name));
-  const xIdx = colIndex('Cartn_x');
-  const yIdx = colIndex('Cartn_y');
-  const zIdx = colIndex('Cartn_z');
-  const elIdx = colIndex('type_symbol');
-  const atomNameIdx = colIndex('label_atom_id');
-  const chainIdx = colIndex('auth_asym_id');
-  const resSeqIdx = colIndex('auth_seq_id');
-  const resNameIdx = colIndex('auth_comp_id');
-
-  for (let i = dataStart; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.startsWith('#') || line.startsWith('loop_') || line === '') break;
-    const parts = line.split(/\s+/);
-    const pick = (idx: number, fallback = '') => (idx >= 0 ? parts[idx] ?? fallback : fallback);
-    const x = parseFloat(pick(xIdx, 'NaN'));
-    const y = parseFloat(pick(yIdx, 'NaN'));
-    const z = parseFloat(pick(zIdx, 'NaN'));
-    const element = pick(elIdx, 'C').toUpperCase();
-    const atomName = pick(atomNameIdx, '').toUpperCase() || element;
-    const chainId = pick(chainIdx, 'A') || 'A';
-    const resSeq = parseInt(pick(resSeqIdx, '0'), 10);
-    const resName = pick(resNameIdx, 'UNK').toUpperCase();
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-
-  return atoms;
-}
-
 function colorForElement(element: string): Color {
   const key = element.toUpperCase();
   return ELEMENT_COLORS[key] ?? new Color('#22d3ee');
-}
-
-function detectBonds(atoms: AtomRecord[]): Bond[] {
-  const bonds: Bond[] = [];
-  for (let i = 0; i < atoms.length; i++) {
-    for (let j = i + 1; j < atoms.length; j++) {
-      const a = atoms[i];
-      const b = atoms[j];
-      const dx = a.x - b.x;
-      const dy = a.y - b.y;
-      const dz = a.z - b.z;
-      const dist2 = dx * dx + dy * dy + dz * dz;
-      const r1 = ELEMENT_RADII[a.element] ?? 0.8;
-      const r2 = ELEMENT_RADII[b.element] ?? 0.8;
-      const threshold = (r1 + r2) * 1.25;
-      if (dist2 <= threshold * threshold) {
-        bonds.push({ a: i, b: j });
-      }
-    }
-  }
-  return bonds;
-}
-
-function buildBackboneTraces(atoms: AtomRecord[]): Vector3[][] {
-  const chainMap = new Map<string, AtomRecord[]>();
-  for (const atom of atoms) {
-    if (atom.atomName !== 'CA' && atom.atomName !== 'C' && atom.atomName !== 'N') continue;
-    if (!chainMap.has(atom.chainId)) chainMap.set(atom.chainId, []);
-    chainMap.get(atom.chainId)!.push(atom);
-  }
-  const traces: Vector3[][] = [];
-  for (const [, chainAtoms] of chainMap) {
-    const sorted = chainAtoms.sort((a, b) => a.resSeq - b.resSeq);
-    traces.push(sorted.map(a => new Vector3(a.x, a.y, a.z)));
-  }
-  return traces;
 }
 
 export async function loadStructure(
@@ -231,165 +162,63 @@ export async function loadStructure(
     throw new Error(`Failed to fetch structure (${res.status})`);
   }
   const text = await res.text();
-  const atoms = format === 'mmcif' ? parseMMCIF(text) : parsePDB(text);
-  if (atoms.length === 0) {
-    throw new Error('No atoms parsed from structure file');
-  }
 
-  const bonds = detectBonds(atoms);
-  const backboneTraces = buildBackboneTraces(atoms);
-  const chains = Array.from(new Set(atoms.map(a => a.chainId)));
-  const functionalGroups = detectFunctionalGroups(atoms, bonds);
-
-  const box = new Box3();
-  for (const atom of atoms) {
-    box.expandByPoint(new Vector3(atom.x, atom.y, atom.z));
-  }
-  const center = box.getCenter(new Vector3());
-  const radius = box.getSize(new Vector3()).length() / 2 || 1;
-
-  return {
-    atoms,
-    bonds,
-    backboneTraces,
-    chains,
-    center,
-    radius,
-    atomCount: atoms.length,
-    functionalGroups,
-  };
-}
-
-function buildAdjacency(atoms: AtomRecord[], bonds: Bond[]): number[][] {
-  const adj: number[][] = Array.from({ length: atoms.length }, () => []);
-  for (const { a, b } of bonds) {
-    adj[a].push(b);
-    adj[b].push(a);
-  }
-  return adj;
-}
-
-function detectAromaticRings(atoms: AtomRecord[], bonds: Bond[]): FunctionalGroup[] {
-  const adj = buildAdjacency(atoms, bonds);
-  const rings: FunctionalGroup[] = [];
-  const isCarbon = (idx: number) => atoms[idx].element.toUpperCase() === 'C';
-
-  const maxPlanarOffset = 0.25; // Å deviation from plane
-
-  for (let start = 0; start < atoms.length; start++) {
-    if (!isCarbon(start)) continue;
-    const stack: number[] = [start];
-    const visited = new Set<number>([start]);
-
-    const dfs = (current: number, depth: number) => {
-      if (depth === 5) {
-        for (const next of adj[current]) {
-          if (next === start) {
-            const ring = [...stack];
-            // Require start to be the smallest index to avoid duplicates
-            if (ring.some(idx => idx < start)) continue;
-            if (!ring.every(isCarbon)) continue;
-            if (isPlanarRing(ring, atoms, maxPlanarOffset)) {
-              rings.push({
-                type: 'aromatic',
-                atomIndices: ring,
-                color: FUNCTIONAL_GROUP_COLORS.aromatic,
-              });
-            }
-          }
-        }
+  // Offload to worker
+  return new Promise((resolve, reject) => {
+    const worker = new StructureWorker();
+    
+    worker.onmessage = (e) => {
+      const { type, data, error } = e.data;
+      if (type === 'error') {
+        worker.terminate();
+        reject(new Error(error));
         return;
       }
+      
+      if (type === 'success') {
+        // Hydrate plain objects back to Three.js types
+        const atoms = data.atoms;
+        const bonds = data.bonds;
+        const chains = data.chains;
+        
+        const center = new Vector3(data.center.x, data.center.y, data.center.z);
+        const radius = data.radius;
+        
+        const backboneTraces = data.backboneTraces.map((trace: any[]) => 
+          trace.map((pt: any) => new Vector3(pt.x, pt.y, pt.z))
+        );
+        
+        const functionalGroups = data.functionalGroups.map((fg: any) => ({
+          type: fg.type,
+          atomIndices: fg.atomIndices,
+          color: new Color(fg.colorHex),
+        }));
 
-      for (const next of adj[current]) {
-        if (next === start) continue; // close only at depth 5
-        if (next <= start) continue; // enforce ordering to limit duplicates
-        if (visited.has(next)) continue;
-        visited.add(next);
-        stack.push(next);
-        dfs(next, depth + 1);
-        stack.pop();
-        visited.delete(next);
+        worker.terminate();
+        resolve({
+          atoms,
+          bonds,
+          backboneTraces,
+          chains,
+          center,
+          radius,
+          atomCount: atoms.length,
+          functionalGroups,
+        });
       }
     };
 
-    dfs(start, 1);
-  }
+    worker.onerror = (e) => {
+      worker.terminate();
+      reject(new Error(e.message));
+    };
 
-  return rings;
-}
-
-function isPlanarRing(indices: number[], atoms: AtomRecord[], tolerance: number): boolean {
-  if (indices.length < 3) return false;
-  const [i0, i1, i2] = indices;
-  const a = new Vector3(atoms[i0].x, atoms[i0].y, atoms[i0].z);
-  const b = new Vector3(atoms[i1].x, atoms[i1].y, atoms[i1].z);
-  const c = new Vector3(atoms[i2].x, atoms[i2].y, atoms[i2].z);
-  const normal = b.clone().sub(a).cross(c.clone().sub(a)).normalize();
-  if (normal.lengthSq() === 0) return false;
-
-  const distanceToPlane = (p: Vector3) => Math.abs(normal.dot(p.clone().sub(a)));
-  for (const idx of indices) {
-    const p = new Vector3(atoms[idx].x, atoms[idx].y, atoms[idx].z);
-    if (distanceToPlane(p) > tolerance) return false;
-  }
-  return true;
-}
-
-function detectDisulfides(atoms: AtomRecord[], bonds: Bond[]): FunctionalGroup[] {
-  const adj = buildAdjacency(atoms, bonds);
-  const groups: FunctionalGroup[] = [];
-  const sulfurIdx = atoms
-    .map((atom, idx) => ({ atom, idx }))
-    .filter(({ atom }) => atom.element.toUpperCase() === 'S')
-    .map(({ idx }) => idx);
-
-  for (let i = 0; i < sulfurIdx.length; i++) {
-    for (let j = i + 1; j < sulfurIdx.length; j++) {
-      const a = sulfurIdx[i];
-      const b = sulfurIdx[j];
-      const bonded = adj[a].includes(b);
-      const dx = atoms[a].x - atoms[b].x;
-      const dy = atoms[a].y - atoms[b].y;
-      const dz = atoms[a].z - atoms[b].z;
-      const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      if (bonded || dist <= 2.2) {
-        groups.push({
-          type: 'disulfide',
-          atomIndices: [a, b],
-          color: FUNCTIONAL_GROUP_COLORS.disulfide,
-        });
-      }
-    }
-  }
-
-  return groups;
-}
-
-function detectPhosphates(atoms: AtomRecord[], bonds: Bond[]): FunctionalGroup[] {
-  const adj = buildAdjacency(atoms, bonds);
-  const groups: FunctionalGroup[] = [];
-  atoms.forEach((atom, idx) => {
-    if (atom.element.toUpperCase() !== 'P') return;
-    const oxyNeighbors = adj[idx].filter(n => atoms[n].element.toUpperCase() === 'O');
-    if (oxyNeighbors.length >= 3) {
-      groups.push({
-        type: 'phosphate',
-        atomIndices: [idx, ...oxyNeighbors],
-        color: FUNCTIONAL_GROUP_COLORS.phosphate,
-      });
-    }
+    worker.postMessage({ text, format });
   });
-  return groups;
 }
 
-function detectFunctionalGroups(atoms: AtomRecord[], bonds: Bond[]): FunctionalGroup[] {
-  return [
-    ...detectAromaticRings(atoms, bonds),
-    ...detectDisulfides(atoms, bonds),
-    ...detectPhosphates(atoms, bonds),
-  ];
-}
+// ... (Rest of buildBallAndStick, buildTubeFromTraces, etc. remains unchanged)
+
 
 interface BallStickOptions {
   sphereRadius?: number;
@@ -414,10 +243,11 @@ export function buildBallAndStick(
   // ATOMS - use instanced mesh with per-instance colors
   const atomGeo = new SphereGeometry(sphereRadius, sphereSegments, sphereSegments);
   const atomMat = new MeshPhongMaterial({
-    shininess: 100,              // High shininess
-    specular: new Color('#aaaaaa'),  // Bright specular
-    emissive: new Color('#222222'),  // Base illumination to prevent blackness
-    emissiveIntensity: 0.2,
+    shininess: 140,              // High shininess for crisp highlights
+    specular: new Color('#cbd5e1'),  // Bright specular
+    emissive: new Color('#0b1224'),  // Base illumination to prevent blackness
+    emissiveIntensity: 0.14,
+    vertexColors: true,
   });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
@@ -435,11 +265,11 @@ export function buildBallAndStick(
   // BONDS - bright silver/white for visibility
   const bondGeo = new CylinderGeometry(bondRadius, bondRadius, 1, bondRadialSegments, 1, true);
   const bondMat = new MeshPhongMaterial({
-    color: '#e4e4e7',  // Very bright zinc/silver
-    shininess: 80,
-    specular: new Color('#aaaaaa'),
-    emissive: new Color('#333333'),  // Stronger self-illumination
-    emissiveIntensity: 0.2,
+    color: '#f3f4f6',  // Very bright zinc/silver
+    shininess: 90,
+    specular: new Color('#cbd5e1'),
+    emissive: new Color('#1f2937'),  // Gentle self-illumination
+    emissiveIntensity: 0.16,
   });
   const bondMesh = new InstancedMesh(bondGeo, bondMat, bonds.length);
   const bondMatrix = new Matrix4();
@@ -662,4 +492,3 @@ export function buildFunctionalGroupHighlights(
 
   return group;
 }
-
