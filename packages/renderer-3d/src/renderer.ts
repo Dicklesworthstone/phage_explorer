@@ -35,12 +35,6 @@ export interface RenderedFrame {
   height: number;
 }
 
-// Z-buffer cell
-interface ZBufferCell {
-  z: number;
-  brightness: number;
-}
-
 // Select gradient based on quality and mode
 function selectGradient(config: RenderConfig): string {
   const { useBlocks = false, quality = 'medium' } = config;
@@ -67,14 +61,10 @@ export function renderModel(
   const { width, height } = config;
   const chars = selectGradient(config);
 
-  // Initialize z-buffer
-  const zBuffer: (ZBufferCell | null)[][] = [];
-  for (let y = 0; y < height; y++) {
-    zBuffer[y] = [];
-    for (let x = 0; x < width; x++) {
-      zBuffer[y][x] = null;
-    }
-  }
+  // Initialize flat buffers for performance
+  // Use Infinity for Z-buffer depth (far away)
+  const zBuffer = new Float32Array(width * height).fill(Infinity);
+  const bBuffer = new Float32Array(width * height);
 
   // Create rotation matrix
   const rotMatrix = rotation(rotationAngles.rx, rotationAngles.ry, rotationAngles.rz);
@@ -96,7 +86,7 @@ export function renderModel(
     drawLine(
       Math.round(p1.x), Math.round(p1.y), p1.z,
       Math.round(p2.x), Math.round(p2.y), p2.z,
-      zBuffer, width, height
+      zBuffer, bBuffer, width, height
     );
   }
 
@@ -107,27 +97,30 @@ export function renderModel(
     const y = Math.round(p.y);
 
     if (x >= 0 && x < width && y >= 0 && y < height) {
-      const cell = zBuffer[y][x];
-      if (!cell || p.z < cell.z) {
+      const idx = y * width + x;
+      if (p.z < zBuffer[idx]) {
         // Vertices are brighter than edges - use full brightness range
-        // z typically ranges from ~1.5 to ~4.5, normalize to 0-1 brightness
         const depthFactor = Math.max(0, Math.min(1, (4.5 - p.z) / 3));
         const brightness = 0.5 + depthFactor * 0.5; // Range: 0.5 to 1.0
-        zBuffer[y][x] = { z: p.z, brightness };
+        zBuffer[idx] = p.z;
+        bBuffer[idx] = brightness;
       }
     }
   }
 
-  // Convert z-buffer to ASCII characters
+  // Convert buffer to ASCII characters
   const lines: string[] = [];
   for (let y = 0; y < height; y++) {
     let line = '';
+    const rowOffset = y * width;
     for (let x = 0; x < width; x++) {
-      const cell = zBuffer[y][x];
-      if (cell) {
+      const idx = rowOffset + x;
+      const z = zBuffer[idx];
+      if (z !== Infinity) {
+        const brightness = bBuffer[idx];
         const charIndex = Math.max(0, Math.min(
           chars.length - 1,
-          Math.floor(cell.brightness * (chars.length - 1))
+          Math.floor(brightness * (chars.length - 1))
         ));
         line += chars[charIndex];
       } else {
@@ -144,7 +137,8 @@ export function renderModel(
 function drawLine(
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,
-  zBuffer: (ZBufferCell | null)[][],
+  zBuffer: Float32Array,
+  bBuffer: Float32Array,
   width: number, height: number
 ): void {
   const dx = Math.abs(x1 - x0);
@@ -159,13 +153,13 @@ function drawLine(
 
   while (true) {
     if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
-      const cell = zBuffer[y0][x0];
-      if (!cell || z < cell.z) {
+      const idx = y0 * width + x0;
+      if (z < zBuffer[idx]) {
         // Edges are slightly dimmer than vertices
-        // z typically ranges from ~1.5 to ~4.5, normalize to brightness
         const depthFactor = Math.max(0, Math.min(1, (4.5 - z) / 3));
-        const brightness = 0.2 + depthFactor * 0.5; // Range: 0.2 to 0.7 (dimmer than vertices)
-        zBuffer[y0][x0] = { z, brightness };
+        const brightness = 0.2 + depthFactor * 0.5; // Range: 0.2 to 0.7
+        zBuffer[idx] = z;
+        bBuffer[idx] = brightness;
       }
     }
 

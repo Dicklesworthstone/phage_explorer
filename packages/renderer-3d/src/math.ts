@@ -41,7 +41,7 @@ export function cross(a: Vector3, b: Vector3): Vector3 {
 }
 
 export function length(v: Vector3): number {
-  return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+  return Math.hypot(v.x, v.y, v.z);
 }
 
 export function normalize(v: Vector3): Vector3 {
