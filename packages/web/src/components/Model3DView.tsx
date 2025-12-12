@@ -290,7 +290,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       rendererRef.current.outputColorSpace = SRGBColorSpace;
       rendererRef.current.toneMapping = ACESFilmicToneMapping;
       rendererRef.current.toneMappingExposure = 1.12;
-      rendererRef.current.setPixelRatio(Math.min(dpr, qualityPreset.pixelRatio, 2));
+      rendererRef.current.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
       rendererRef.current.setSize(width, height);
       requestRender();
       return;
@@ -370,7 +370,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       renderer.outputColorSpace = SRGBColorSpace;
       renderer.toneMapping = ACESFilmicToneMapping;
       renderer.toneMappingExposure = 1.12;
-      renderer.setPixelRatio(Math.min(dpr, qualityPreset.pixelRatio, 2));
+      renderer.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
       renderer.setSize(width, height);
       requestRender();
     };
@@ -823,7 +823,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
         className="three-container"
         ref={containerRef}
         role="presentation"
-        style={fullscreen ? { width: '100%', height: 'calc(100vh - 120px)' } : undefined}
+        style={fullscreen ? { width: '100%', height: 'calc(100dvh - 120px)' } : undefined}
       >
         {loadState === 'loading' && (
           <div className="three-overlay">
