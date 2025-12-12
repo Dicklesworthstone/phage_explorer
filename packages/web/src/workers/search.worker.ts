@@ -340,7 +340,12 @@ const workerAPI: SearchWorkerAPI = {
       };
     }
   },
+
+  // Ping method for SearchOverlay to verify worker is ready
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async ping(): Promise<boolean> {
+    return true;
+  },
 };
 
 Comlink.expose(workerAPI);
-

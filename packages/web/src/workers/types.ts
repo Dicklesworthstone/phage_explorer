@@ -265,6 +265,8 @@ export interface SimulationWorkerAPI {
  */
 export interface SearchWorkerAPI {
   runSearch(request: SearchRequest): Promise<SearchResponse>;
+  /** Verify worker is initialized and responsive */
+  ping(): Promise<boolean>;
 }
 
 /**

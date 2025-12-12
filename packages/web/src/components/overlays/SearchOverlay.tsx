@@ -3,6 +3,7 @@ import * as Comlink from 'comlink';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useTheme } from '../../hooks/useTheme';
+import { SearchResultsSkeleton } from '../ui/Skeleton';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import type {
@@ -51,6 +52,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   const [status, setStatus] = useState<'idle' | 'loading' | 'searching'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<string>('');
+  const [workerReady, setWorkerReady] = useState(false);
 
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
@@ -58,14 +60,31 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
 
   // Initialize worker once
   useEffect(() => {
+    let cancelled = false;
     const worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url), { type: 'module' });
     workerInstanceRef.current = worker;
-    workerRef.current = Comlink.wrap<SearchWorkerAPI>(worker);
+    const wrappedWorker = Comlink.wrap<SearchWorkerAPI>(worker);
+    workerRef.current = wrappedWorker;
+
+    // Verify worker is ready by calling ping
+    void (async () => {
+      try {
+        await wrappedWorker.ping();
+        if (!cancelled) {
+          setWorkerReady(true);
+        }
+      } catch (e) {
+        // Worker failed to initialize - keep workerReady false
+        console.error('Search worker failed to initialize:', e);
+      }
+    })();
 
     return () => {
+      cancelled = true;
       workerInstanceRef.current?.terminate();
       workerInstanceRef.current = null;
       workerRef.current = null;
+      setWorkerReady(false);
     };
   }, []);
 
@@ -242,11 +261,21 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
     return null;
   }
 
-  const isReady = sequence.length > 0 && status !== 'loading';
+  const isReady = workerReady && sequence.length > 0 && status !== 'loading';
+  const isInitializing = !workerReady || status === 'loading';
 
   return (
     <Overlay id="search" title="SEARCH" icon="🔍" hotkey="/" size="xl" onClose={() => close('search')}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {/* Show skeleton while worker or sequence is loading */}
+        {isInitializing && (
+          <div aria-busy="true" aria-label="Initializing search">
+            <SearchResultsSkeleton rows={4} />
+          </div>
+        )}
+
+        {/* Mode selector - only show when ready */}
+        {!isInitializing && (
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {MODES.map((m) => (
             <button
@@ -266,7 +295,10 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
             </button>
           ))}
         </div>
+        )}
 
+        {/* Query input - only show when ready */}
+        {!isInitializing && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <label style={{ color: colors.textDim, fontSize: '0.9rem' }}>Query</label>
           <input
@@ -294,14 +326,12 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
           />
           {renderOptions()}
         </div>
+        )}
 
-        {!isReady && (
+        {/* Error message - show errors even after initialization */}
+        {error && !isInitializing && (
           <div style={{ color: colors.textMuted }}>
-            {status === 'loading'
-              ? 'Loading sequence...'
-              : error
-                ? `Error: ${error}`
-                : 'Waiting for database...'}
+            Error: {error}
           </div>
         )}
 
