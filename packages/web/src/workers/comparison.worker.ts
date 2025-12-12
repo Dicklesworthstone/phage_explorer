@@ -61,7 +61,9 @@ self.onmessage = async (event: MessageEvent<ComparisonJob>) => {
     (self as any).postMessage(message, transferList);
     return;
   } catch (err) {
-    console.error('Comparison worker error:', err);
+    if (import.meta.env.DEV) {
+      console.error('Comparison worker error:', err);
+    }
     message.error = err instanceof Error ? err.message : 'Comparison failed';
   }
   (self as any).postMessage(message);
@@ -92,6 +94,132 @@ interface DiffComputation {
 function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
   const n = sequenceA.length;
   const m = sequenceB.length;
+
+  if (n === 0) {
+    return {
+      mask: new Uint8Array(0),
+      positions: [],
+      stats: {
+        insertions: m,
+        deletions: 0,
+        substitutions: 0,
+        matches: 0,
+        lengthA: 0,
+        lengthB: m,
+        identity: 0,
+      },
+    };
+  }
+
+  // Fast path for equal-length sequences: O(n) exact mismatches, no risk of OOM.
+  if (n === m) {
+    const mask = new Uint8Array(n);
+    const positions: number[] = [];
+    let substitutions = 0;
+    let matches = 0;
+
+    for (let i = 0; i < n; i++) {
+      if (sequenceA[i] === sequenceB[i]) {
+        matches++;
+      } else {
+        mask[i] = 1;
+        positions.push(i);
+        substitutions++;
+      }
+    }
+
+    const identity = Math.max(0, Math.min(100, (matches / n) * 100));
+    return {
+      mask,
+      positions,
+      stats: {
+        insertions: 0,
+        deletions: 0,
+        substitutions,
+        matches,
+        lengthA: n,
+        lengthB: m,
+        identity,
+      },
+    };
+  }
+
+  // Safety fallback for large inputs: avoid Myers trace OOM by using a cheap alignment heuristic.
+  const maxLen = Math.max(n, m);
+  const sumLen = n + m;
+  if (maxLen > 4000 || sumLen > 8000) {
+    let prefix = 0;
+    const minLen = Math.min(n, m);
+    while (prefix < minLen && sequenceA[prefix] === sequenceB[prefix]) prefix++;
+
+    let suffix = 0;
+    while (
+      suffix < n - prefix &&
+      suffix < m - prefix &&
+      sequenceA[n - 1 - suffix] === sequenceB[m - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const mask = new Uint8Array(n);
+    const diffPositions: number[] = [];
+    let substitutions = 0;
+    let deletions = 0;
+    let insertions = 0;
+    let matches = prefix + suffix;
+
+    const aMidStart = prefix;
+    const aMidEnd = n - suffix;
+    const bMidStart = prefix;
+    const bMidEnd = m - suffix;
+    const overlap = Math.min(aMidEnd - aMidStart, bMidEnd - bMidStart);
+
+    for (let i = 0; i < overlap; i++) {
+      const idxA = aMidStart + i;
+      if (sequenceA[idxA] === sequenceB[bMidStart + i]) {
+        matches++;
+      } else {
+        mask[idxA] = 1;
+        diffPositions.push(idxA);
+        substitutions++;
+      }
+    }
+
+    for (let idxA = aMidStart + overlap; idxA < aMidEnd; idxA++) {
+      mask[idxA] = 3;
+      diffPositions.push(idxA);
+      deletions++;
+    }
+
+    const extraB = (bMidEnd - bMidStart) - overlap;
+    if (extraB > 0) {
+      insertions += extraB;
+      const pos = Math.min(aMidStart + overlap, n - 1);
+      if (pos >= 0) {
+        if (mask[pos] === 0) {
+          mask[pos] = 2;
+        }
+        diffPositions.push(pos);
+      }
+    }
+
+    const identity = Math.max(0, Math.min(100, (matches / Math.max(n, m)) * 100));
+    const uniquePositions = Array.from(new Set(diffPositions)).sort((a, b) => a - b);
+    return {
+      mask,
+      positions: uniquePositions,
+      stats: {
+        insertions,
+        deletions,
+        substitutions,
+        matches,
+        lengthA: n,
+        lengthB: m,
+        identity,
+      },
+    };
+  }
+
   const max = n + m;
   const offset = max;
   const v = new Int32Array(2 * max + 1);
@@ -100,12 +228,14 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
   let distance = 0;
   let success = false;
   
-  // Guard against OOM for large, divergent sequences
-  const MAX_ITERATIONS = 5000;
+  // Extra guard: even for small sequences, avoid pathological runtimes.
+  const MAX_ITERATIONS = 2500;
 
   outer: for (let d = 0; d <= max; d++) {
     if (d > MAX_ITERATIONS) {
-      console.warn(`Diff computation exceeded max iterations (${MAX_ITERATIONS}). Result truncated.`);
+      if (import.meta.env.DEV) {
+        console.warn(`Diff computation exceeded max iterations (${MAX_ITERATIONS}). Result truncated.`);
+      }
       break;
     }
     for (let k = -d; k <= d; k += 2) {
@@ -282,4 +412,3 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
     },
   };
 }
-

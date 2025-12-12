@@ -132,6 +132,7 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const structureDataRef = useRef<LoadedStructure | null>(null);
   const tickRef = useRef<(now: number) => void>(() => {});
+  const isInViewportRef = useRef(true);
   const lastTickTimeRef = useRef<number | null>(null);
   const wasRotatingRef = useRef(false);
   const lastCameraPoseRef = useRef<{ pos: Vector3; quat: Quaternion; initialized: boolean }>({
@@ -184,6 +185,55 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       animationRef.current = requestAnimationFrame((now) => tickRef.current(now));
     };
   }, []);
+
+  // Stop rendering when the viewer is offscreen (battery/GPU saver, especially on mobile).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!('IntersectionObserver' in window)) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        isInViewportRef.current = entry.isIntersecting;
+
+        if (entry.isIntersecting) {
+          requestRender();
+          return;
+        }
+
+        if (animationRef.current != null) {
+          cancelAnimationFrame(animationRef.current);
+          animationRef.current = null;
+        }
+        lastTickTimeRef.current = null;
+      },
+      { threshold: 0.05 }
+    );
+
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [requestRender]);
+
+  // Avoid background GPU/CPU work when the tab is hidden.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden) {
+        if (animationRef.current != null) {
+          cancelAnimationFrame(animationRef.current);
+          animationRef.current = null;
+        }
+        lastTickTimeRef.current = null;
+        return;
+      }
+      if (show3DModel) {
+        requestRender();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, [requestRender, show3DModel]);
 
   const {
     data: structureData,
@@ -343,7 +393,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     
     // Wake up on user interaction
     controls.addEventListener('start', requestRender);
-    controls.addEventListener('change', requestRender);
 
     // Headlamp (camera-attached light) to ensure visibility from all angles
     const headlamp = new DirectionalLight(0xffffff, 1.05);
@@ -383,16 +432,22 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     return () => {
       observer.disconnect();
       controls.removeEventListener('start', requestRender);
-      controls.removeEventListener('change', requestRender);
       controls.removeEventListener('change', syncHeadlamp);
       controls.dispose();
+      if (renderer.domElement.parentElement === container) {
+        container.removeChild(renderer.domElement);
+      }
       renderer.dispose();
       disposeGroup(structureRef.current);
+      disposeGroup(highlightRef.current);
       structureDataRef.current = null;
       rendererRef.current = null;
       sceneRef.current = null;
+      cameraRef.current = null;
       controlsRef.current = null;
       structureRef.current = null;
+      highlightRef.current = null;
+      resizeObserverRef.current = null;
     };
   }, [coarsePointer, quality, qualityPreset.pixelRatio, qualityPreset.shadows, requestRender]);
 
@@ -406,6 +461,13 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       if (!renderer || !scene || !camera) return;
 
       if (!show3DModel) {
+        lastTickTimeRef.current = null;
+        wasRotatingRef.current = false;
+        lastCameraPoseRef.current.initialized = false;
+        return;
+      }
+
+      if (!isInViewportRef.current || document.hidden) {
         lastTickTimeRef.current = null;
         wasRotatingRef.current = false;
         lastCameraPoseRef.current.initialized = false;
@@ -522,17 +584,35 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       setLoadState('error');
       setError('No structure available for this phage');
       setAtomCount(null);
+      structureDataRef.current = null;
       if (structureRef.current && sceneRef.current) {
         sceneRef.current.remove(structureRef.current);
       }
       disposeGroup(structureRef.current);
       structureRef.current = null;
+      if (highlightRef.current && sceneRef.current) {
+        sceneRef.current.remove(highlightRef.current);
+      }
+      disposeGroup(highlightRef.current);
+      highlightRef.current = null;
       return;
     }
 
     if (structureError) {
       setLoadState('error');
       setError(structureErr instanceof Error ? structureErr.message : 'Failed to load structure');
+      setAtomCount(null);
+      structureDataRef.current = null;
+      if (structureRef.current && sceneRef.current) {
+        sceneRef.current.remove(structureRef.current);
+      }
+      disposeGroup(structureRef.current);
+      structureRef.current = null;
+      if (highlightRef.current && sceneRef.current) {
+        sceneRef.current.remove(highlightRef.current);
+      }
+      disposeGroup(highlightRef.current);
+      highlightRef.current = null;
       return;
     }
 

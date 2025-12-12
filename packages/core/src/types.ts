@@ -41,6 +41,7 @@ export interface GridCell {
 export interface GridRow {
   rowIndex: number;
   cells: GridCell[];
+  type?: 'dna' | 'aa';
 }
 
 // Phage summary for list display

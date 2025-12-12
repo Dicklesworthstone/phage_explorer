@@ -19,7 +19,9 @@ function safeJsonParse<T>(json: string | null | undefined, fallback: T): T {
   try {
     return JSON.parse(json) as T;
   } catch {
-    console.warn('Failed to parse JSON from database:', json.substring(0, 100));
+    if (import.meta.env.DEV) {
+      console.warn('Failed to parse JSON from database:', json.substring(0, 100));
+    }
     return fallback;
   }
 }
@@ -361,7 +363,7 @@ export class SqlJsRepository implements PhageRepository {
     }
 
     // Escape wildcard characters
-    const escaped = query.replace(/[%_]/g, '\\$&');
+    const escaped = query.replace(/[\\%_]/g, '\\$&');
     const searchTerm = `%${escaped.toLowerCase()}%`;
     return this.execStatement<PhageSummary>(
       this.statements.searchPhages,
@@ -385,7 +387,9 @@ export class SqlJsRepository implements PhageRepository {
   async setPreference(): Promise<void> {
     // Note: sql.js databases are typically read-only in browser
     // Preferences should be stored in localStorage instead
-    console.warn('setPreference not supported in browser mode - use localStorage');
+    if (import.meta.env.DEV) {
+      console.warn('setPreference not supported in browser mode - use localStorage');
+    }
   }
 
   async getBiasVector(phageId: number): Promise<number[] | null> {

@@ -7,7 +7,7 @@
 
 import React, { useCallback, useEffect, useState, useRef } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import { translateSequence, reverseComplement, type ViewMode } from '@phage-explorer/core';
+import { translateCodon, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
 import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
 import { useWebPreferences } from '../store/createWebStore';
@@ -136,6 +136,8 @@ export function SequenceView({
   const [hudPosition, setHudPosition] = useState<{ x: number; y: number } | null>(null);
   const [hudVisible, setHudVisible] = useState(false);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const hudHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Store state
   const viewMode = usePhageStore((s) => s.viewMode);
@@ -240,26 +242,62 @@ export function SequenceView({
     (aaIndex: number): string | null => {
       if (!sequence || viewMode !== 'aa') return null;
 
-      // Handle negative reading frames (reverse complement)
-      let seqToTranslate = sequence;
-      let frame: 0 | 1 | 2;
+      const frameOffset = (readingFrame < 0 ? Math.abs(readingFrame) - 1 : readingFrame) as 0 | 1 | 2;
+      const codonStart = frameOffset + aaIndex * 3;
+      if (aaIndex < 0) return null;
 
-      if (readingFrame < 0) {
-        // For negative frames: reverse complement and adjust frame
-        seqToTranslate = reverseComplement(sequence);
-        frame = (Math.abs(readingFrame) - 1) as 0 | 1 | 2;
-      } else {
-        frame = readingFrame as 0 | 1 | 2;
+      if (readingFrame >= 0) {
+        if (codonStart + 3 > sequence.length) return null;
+        return translateCodon(sequence.slice(codonStart, codonStart + 3));
       }
 
-      // Translate sequence and get the amino acid at this position
-      const aaSequence = translateSequence(seqToTranslate, frame);
+      // Negative frames: translate codon on the reverse complement without allocating a full RC string.
+      // reverseComplement[i] = complement(sequence[len - 1 - i])
+      const complementBase = (base: string): string => {
+        switch (base.toUpperCase()) {
+          case 'A':
+            return 'T';
+          case 'T':
+            return 'A';
+          case 'G':
+            return 'C';
+          case 'C':
+            return 'G';
+          case 'N':
+            return 'N';
+          case 'R':
+            return 'Y';
+          case 'Y':
+            return 'R';
+          case 'S':
+            return 'S';
+          case 'W':
+            return 'W';
+          case 'K':
+            return 'M';
+          case 'M':
+            return 'K';
+          case 'B':
+            return 'V';
+          case 'V':
+            return 'B';
+          case 'D':
+            return 'H';
+          case 'H':
+            return 'D';
+          default:
+            return 'N';
+        }
+      };
 
-      // In AA mode, the index from getIndexAtPoint is already the AA index
-      if (aaIndex >= 0 && aaIndex < aaSequence.length) {
-        return aaSequence[aaIndex];
-      }
-      return null;
+      const len = sequence.length;
+      const o0 = len - 1 - codonStart;
+      const o1 = len - 2 - codonStart;
+      const o2 = len - 3 - codonStart;
+      if (o2 < 0 || o0 >= len) return null;
+
+      const codon = `${complementBase(sequence[o0])}${complementBase(sequence[o1])}${complementBase(sequence[o2])}`;
+      return translateCodon(codon);
     },
     [sequence, viewMode, readingFrame]
   );
@@ -271,6 +309,7 @@ export function SequenceView({
       const touch = event.touches[0];
       const canvas = canvasRef.current;
       if (!canvas || !touch) return;
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY };
 
       const rect = canvas.getBoundingClientRect();
       const x = touch.clientX - rect.left;
@@ -298,6 +337,7 @@ export function SequenceView({
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    touchStartRef.current = null;
     setHudVisible(false);
   }, []);
 
@@ -307,6 +347,7 @@ export function SequenceView({
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    touchStartRef.current = null;
     setHudVisible(false);
   }, []);
 
@@ -321,8 +362,16 @@ export function SequenceView({
         }
       } else if (longPressTimerRef.current) {
         // Cancel long press if moved before HUD shown
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
+        const touch = event.touches[0];
+        const start = touchStartRef.current;
+        if (!touch || !start) return;
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        if (dx * dx + dy * dy > 12 * 12) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+          touchStartRef.current = null;
+        }
       }
     },
     [hudVisible]
@@ -349,7 +398,10 @@ export function SequenceView({
           setHudPosition({ x: event.clientX, y: event.clientY });
           setHudVisible(true);
           // Auto-hide after 3 seconds on desktop
-          setTimeout(() => setHudVisible(false), 3000);
+          if (hudHideTimerRef.current) {
+            clearTimeout(hudHideTimerRef.current);
+          }
+          hudHideTimerRef.current = setTimeout(() => setHudVisible(false), 3000);
         }
       }
     },
@@ -361,6 +413,9 @@ export function SequenceView({
     return () => {
       if (longPressTimerRef.current) {
         clearTimeout(longPressTimerRef.current);
+      }
+      if (hudHideTimerRef.current) {
+        clearTimeout(hudHideTimerRef.current);
       }
     };
   }, []);

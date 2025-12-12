@@ -89,7 +89,6 @@ export function GeneMapCanvas({
     }
     
     // Also show tooltip
-    const y = touch.clientY - rect.top;
     const hoverPos = Math.floor((x / width) * genomeLength);
     const gene = genes.find(g => hoverPos >= g.startPos && hoverPos < g.endPos);
     

@@ -1,5 +1,5 @@
 import type { VirtualWindow, GridCell, GridRow, ViewMode, ReadingFrame } from './types';
-import { translateSequence } from './codons';
+import { translateSequence, translateCodon } from './codons';
 
 // Sequence virtualizer for efficient rendering of large genomes
 export class SequenceVirtualizer {
@@ -44,8 +44,76 @@ export function buildGrid(
 ): GridRow[] {
   const { viewportCols, viewportRows, mode, frame } = config;
   const rows: GridRow[] = [];
+  const forwardFrame: 0 | 1 | 2 = frame >= 0
+    ? (frame as 0 | 1 | 2)
+    : ((Math.abs(frame) - 1) as 0 | 1 | 2);
 
-  if (mode === 'dna') {
+  if (mode === 'dual') {
+    // Dual mode - Interleaved DNA and AA rows
+    // Row 0: DNA, Row 1: AA, Row 2: DNA...
+    // We consume viewportCols bases per PAIR of rows.
+    // So logical rows = viewportRows / 2.
+    
+    for (let row = 0; row < viewportRows; row++) {
+      const isAaRow = row % 2 !== 0;
+      const logicalRow = Math.floor(row / 2);
+      const rowStart = logicalRow * viewportCols;
+      const cells: GridCell[] = [];
+
+      for (let col = 0; col < viewportCols; col++) {
+        const seqIndex = rowStart + col;
+        if (seqIndex >= sequence.length) break;
+
+        const absolutePos = startIndex + seqIndex;
+
+        if (!isAaRow) {
+          // DNA Row
+          cells.push({
+            char: sequence[seqIndex],
+            position: absolutePos,
+          });
+        } else {
+          // AA Row - Align to center of codon (frame + 1, frame + 4...)
+          // Codon starts at p where (p - frame) % 3 == 0
+          // Middle is p + 1. So (p + 1 - frame) % 3 == 1 => (p - frame) % 3 == 0.
+          // Wait. 0,1,2. Middle is 1.
+          // If frame=0. Codon 0,1,2. Middle is 1. (1-0)%3 = 1.
+          // If frame=1. Codon 1,2,3. Middle is 2. (2-1)%3 = 1.
+          // So we check if (absolutePos - forwardFrame) % 3 === 1.
+          
+          const offset = (absolutePos - forwardFrame);
+          // Handle negative modulo correctly
+          const mod = ((offset % 3) + 3) % 3;
+          
+          if (mod === 1) {
+            // This is the middle base. Translate the codon surrounding it.
+            // Codon is at seqIndex-1, seqIndex, seqIndex+1
+            if (seqIndex > 0 && seqIndex + 1 < sequence.length) {
+              const codon = sequence.substring(seqIndex - 1, seqIndex + 2);
+              const aa = translateCodon(codon);
+              cells.push({
+                char: aa,
+                position: absolutePos, // Associate with middle base
+              });
+            } else {
+              cells.push({ char: ' ', position: absolutePos });
+            }
+          } else {
+            cells.push({ char: ' ', position: absolutePos });
+          }
+        }
+      }
+
+      if (cells.length > 0) {
+        rows.push({ 
+          rowIndex: row, 
+          cells, 
+          type: isAaRow ? 'aa' : 'dna' 
+        });
+      }
+    }
+
+  } else if (mode === 'dna') {
     // DNA mode - one character per nucleotide
     for (let row = 0; row < viewportRows; row++) {
       const rowStart = row * viewportCols;
@@ -63,14 +131,11 @@ export function buildGrid(
       }
 
       if (cells.length > 0) {
-        rows.push({ rowIndex: row, cells });
+        rows.push({ rowIndex: row, cells, type: 'dna' });
       }
     }
   } else {
     // AA mode - translate and display amino acids
-    const forwardFrame: 0 | 1 | 2 = frame >= 0
-      ? (frame as 0 | 1 | 2)
-      : ((Math.abs(frame) - 1) as 0 | 1 | 2);
     const aaSequence = translateSequence(sequence, forwardFrame);
 
     for (let row = 0; row < viewportRows; row++) {
@@ -90,7 +155,7 @@ export function buildGrid(
       }
 
       if (cells.length > 0) {
-        rows.push({ rowIndex: row, cells });
+        rows.push({ rowIndex: row, cells, type: 'aa' });
       }
     }
   }

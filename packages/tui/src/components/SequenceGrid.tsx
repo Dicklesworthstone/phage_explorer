@@ -35,9 +35,13 @@ function groupCellsByColor(
   const segments: ColorSegment[] = [];
   let currentSegment: ColorSegment | null = null;
 
+  // Determine row type for coloring
+  // In dual mode, rows have explicit types. In simple modes, infer from viewMode.
+  const isAminoRow = row.type === 'aa' || (!row.type && viewMode === 'aa');
+
   for (const cell of row.cells) {
     // In dual mode, use nucleotide coloring for the primary display
-    const colorPair = viewMode === 'aa'
+    const colorPair = isAminoRow
       ? getAminoAcidColor(theme, cell.char)
       : getNucleotideColor(theme, cell.char);
 

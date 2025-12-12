@@ -342,16 +342,21 @@ export function buildBallAndStick(
   const scaleMatrix = new Matrix4();
   const up = new Vector3(0, 1, 0);
   const quat = new Quaternion();
-  bonds.forEach((bond, i) => {
+  const start = new Vector3();
+  const end = new Vector3();
+  const mid = new Vector3();
+  const dir = new Vector3();
+  for (let i = 0; i < bonds.length; i++) {
+    const bond = bonds[i];
     const a = atoms[bond.a];
     const b = atoms[bond.b];
-    const start = new Vector3(a.x, a.y, a.z);
-    const end = new Vector3(b.x, b.y, b.z);
-    const mid = start.clone().add(end).multiplyScalar(0.5);
-    const dir = end.clone().sub(start);
+    start.set(a.x, a.y, a.z);
+    end.set(b.x, b.y, b.z);
+    mid.addVectors(start, end).multiplyScalar(0.5);
+    dir.subVectors(end, start);
     const length = dir.length();
-    if (length === 0) return;
-    dir.normalize();
+    if (length === 0) continue;
+    dir.multiplyScalar(1 / length);
     quat.setFromUnitVectors(up, dir);
     bondMatrix.identity();
     bondMatrix.makeRotationFromQuaternion(quat);
@@ -359,7 +364,7 @@ export function buildBallAndStick(
     bondMatrix.multiply(scaleMatrix);
     bondMatrix.setPosition(mid);
     bondMesh.setMatrixAt(i, bondMatrix);
-  });
+  }
   bondMesh.instanceMatrix.needsUpdate = true;
   group.add(bondMesh);
   return group;

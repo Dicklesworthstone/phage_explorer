@@ -63,6 +63,7 @@ interface PersistedMainState {
   currentTheme: Theme;
   viewMode: ViewMode;
   readingFrame: ReadingFrame;
+  show3DModel: boolean;
   model3DQuality: 'low' | 'medium' | 'high' | 'ultra';
   helpDetail: HelpDetailLevel;
   experienceLevel: ExperienceLevel;
@@ -197,6 +198,9 @@ export function hydrateMainStoreFromStorage(): void {
     if (typeof parsed.readingFrame === 'number') {
       store.setReadingFrame(parsed.readingFrame);
     }
+    if (typeof parsed.show3DModel === 'boolean') {
+      usePhageStore.setState({ show3DModel: parsed.show3DModel });
+    }
     if (parsed.helpDetail) {
       store.setHelpDetail(parsed.helpDetail);
     }
@@ -228,6 +232,7 @@ export function subscribeMainStoreToStorage(): () => void {
       currentTheme: state.currentTheme,
       viewMode: state.viewMode,
       readingFrame: state.readingFrame,
+      show3DModel: state.show3DModel,
       model3DQuality: state.model3DQuality,
       helpDetail: state.helpDetail,
       experienceLevel: state.experienceLevel,
