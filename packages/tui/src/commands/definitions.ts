@@ -318,6 +318,17 @@ export function initializeCommands(): void {
     action: () => usePhageStore.getState().toggleOverlay('biasDecomposition'),
   });
 
+  registerCommand({
+    id: 'mosaic-radar',
+    label: 'Mosaic / recombination radar',
+    description: 'Sliding‑window donor shifts and breakpoints',
+    keywords: ['recombination', 'mosaic', 'donor', 'breakpoint'],
+    category: 'Overlay',
+    shortcut: 'A→MR',
+    minLevel: 'power',
+    action: () => usePhageStore.getState().openOverlay('mosaicRadar'),
+  });
+
   // Power Commands
   registerCommand({
     id: 'command-palette',

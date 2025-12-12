@@ -401,7 +401,7 @@ export function StructureConstraintOverlay({
     const maxEnergy = Math.max(...analysis.energyLandscape.map(e => e.energy));
     const range = maxEnergy - minEnergy || 1;
 
-    return analysis.energyLandscape.map((point, idx) => {
+    return analysis.energyLandscape.map((point) => {
       const normalized = (point.energy - minEnergy) / range;
       // More negative (stable) = darker blue
       const intensity = 1 - normalized;

@@ -1,9 +1,8 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { calculateSelectionPressure } from '@phage-explorer/core';
-import { usePhageStore } from '@phage-explorer/state'; // We need access to repository/data
 
 // Mock repository access or use store if data available
 // For Web, we might need to fetch data.

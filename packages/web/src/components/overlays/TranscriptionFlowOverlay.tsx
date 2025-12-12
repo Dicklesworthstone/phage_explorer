@@ -23,7 +23,6 @@ export function TranscriptionFlowOverlay({ sequence = '', genomeLength = 0 }: Tr
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [data, setData] = useState<{ values: number[]; peaks: Array<{ start: number; end: number; flux: number }> }>({ values: [], peaks: [] });
-  const [isLoading, setIsLoading] = useState(false);
 
   // Calculate transcription flow data via worker
   useEffect(() => {
@@ -32,7 +31,6 @@ export function TranscriptionFlowOverlay({ sequence = '', genomeLength = 0 }: Tr
     let cancelled = false;
     
     const runAnalysis = async () => {
-      setIsLoading(true);
       try {
         const result = await getOrchestrator().runAnalysis({ 
           type: 'transcription-flow', 
@@ -44,8 +42,6 @@ export function TranscriptionFlowOverlay({ sequence = '', genomeLength = 0 }: Tr
         }
       } catch (err) {
         console.error('Transcription flow analysis failed:', err);
-      } finally {
-        if (!cancelled) setIsLoading(false);
       }
     };
 

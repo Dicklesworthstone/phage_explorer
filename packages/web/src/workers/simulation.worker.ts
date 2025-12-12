@@ -86,10 +86,11 @@ function initRibosome(params?: Record<string, number | boolean | string>): Ribos
   const length = Number(merged.length);
   const stallRate = Number(merged.stallRate);
   const slowCount = Math.max(1, Math.floor(length * stallRate));
-  const codonRates = Array.from({ length }, () => 6 + rng.next() * 4);
+  // Rates are probabilities per tick (0..1). Most sites are fast, a few are slow bottlenecks.
+  const codonRates = Array.from({ length }, () => 0.2 + rng.next() * 0.8);
   for (let i = 0; i < slowCount; i++) {
     const idx = Math.floor(rng.next() * length);
-    codonRates[idx] = 1 + rng.next() * 2;
+    codonRates[idx] = 0.02 + rng.next() * 0.08;
   }
   return {
     type: 'ribosome-traffic',
@@ -228,52 +229,62 @@ function stepLysogeny(state: LysogenyCircuitState, dt: number): LysogenyCircuitS
 }
 
 function stepRibosome(state: RibosomeTrafficState, dt: number): RibosomeTrafficState {
-  const length = Number(state.params.length ?? 120);
+  const codonRates = state.codonRates ?? [];
+  const length = codonRates.length || Number(state.params.length ?? 120);
   const initRate = Number(state.params.initRate ?? 0.6);
   const footprint = Number(state.params.footprint ?? 9);
+  const terminationRate = 0.8;
 
-  const ribosomes = [...state.ribosomes];
+  const ribosomes = state.ribosomes;
+  const newPositions: number[] = [];
   let stallEvents = state.stallEvents;
+  let proteins = state.proteinsProduced;
 
+  // Process from 3' to 5' to enforce exclusion with footprint.
   for (let i = ribosomes.length - 1; i >= 0; i--) {
     const pos = ribosomes[i];
-    if (pos >= length) continue;
 
-    const rate = state.codonRates[Math.min(pos, state.codonRates.length - 1)] ?? 5;
-    const stepSize = Math.max(1, Math.floor(rate * dt));
-    const target = Math.min(length, pos + stepSize);
-
-    let blocked = false;
-    if (i < ribosomes.length - 1) {
-      const aheadPos = ribosomes[i + 1];
-      if (aheadPos < length && aheadPos - pos < footprint) {
-        blocked = true;
+    // Termination at end.
+    if (pos >= length - 1) {
+      if (rng.next() < Math.min(1, terminationRate * dt)) {
+        proteins += 1;
+        continue;
       }
+      newPositions.unshift(pos);
+      continue;
     }
+
+    const rate = codonRates[pos] ?? 0.1;
+    const aheadPos = newPositions.length > 0 ? newPositions[0] : null;
+    const blocked = aheadPos !== null && aheadPos - pos <= footprint;
 
     if (blocked) {
       stallEvents += 1;
+      newPositions.unshift(pos);
       continue;
     }
-    ribosomes[i] = target;
+
+    if (rng.next() < Math.min(1, rate * dt)) {
+      newPositions.unshift(pos + 1);
+    } else {
+      newPositions.unshift(pos);
+    }
   }
 
-  const firstPos = ribosomes.length > 0 ? ribosomes[0] : length + footprint;
-  if (firstPos > footprint && rng.next() < initRate * dt) {
-    ribosomes.unshift(0);
+  // Initiation at 5' end if start segment free.
+  const startBlocked = newPositions.length > 0 && newPositions[0] < footprint;
+  if (!startBlocked && rng.next() < Math.min(1, initRate * dt)) {
+    newPositions.unshift(0);
   }
 
-  const completed = ribosomes.filter(pos => pos >= length).length;
-  const active = ribosomes.filter(pos => pos < length);
-
-  const densityHistory = [...state.densityHistory, active.length].slice(-200);
-  const productionHistory = [...state.productionHistory, state.proteinsProduced + completed].slice(-200);
+  const densityHistory = [...(state.densityHistory ?? []), newPositions.length].slice(-200);
+  const productionHistory = [...(state.productionHistory ?? []), proteins].slice(-200);
 
   return {
     ...state,
     time: state.time + dt,
-    ribosomes: active,
-    proteinsProduced: state.proteinsProduced + completed,
+    ribosomes: newPositions,
+    proteinsProduced: proteins,
     stallEvents,
     densityHistory,
     productionHistory,

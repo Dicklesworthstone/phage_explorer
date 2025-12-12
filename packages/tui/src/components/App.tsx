@@ -33,9 +33,10 @@ import { CGROverlay } from './CGROverlay';
 import { HilbertOverlay } from './HilbertOverlay';
 import { GelOverlay } from './GelOverlay';
 import { CRISPROverlay } from './CRISPROverlay';
-import { SyntenyOverlay } from './SyntenyOverlay';
-import { TropismOverlay } from './TropismOverlay';
-import { StructureConstraintOverlay } from './StructureConstraintOverlay';
+	import { SyntenyOverlay } from './SyntenyOverlay';
+	import { TropismOverlay } from './TropismOverlay';
+	import { StructureConstraintOverlay } from './StructureConstraintOverlay';
+	import { MosaicRadarView } from './MosaicRadarView';
 import {
   computeGCskew,
   computeComplexity,
@@ -76,6 +77,7 @@ const CRISPR_ID: OverlayId = 'crispr';
 const SYNTENY_ID: OverlayId = 'synteny';
 const TROPISM_ID: OverlayId = 'tropism';
 const STRUCTURE_ID: OverlayId = 'structureConstraints';
+const MOSAIC_ID: OverlayId = 'mosaicRadar';
 const ANOMALY_ID: OverlayId = 'anomaly';
 const DOTPLOT_ID: OverlayId = 'dotPlot';
 const NONB_ID: OverlayId = 'non-b-dna';
@@ -1014,6 +1016,20 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.floor((terminalRows - 24) / 2)}
         >
           <SyntenyOverlay repository={repository} />
+        </Box>
+      )}
+
+      {activeOverlay === MOSAIC_ID && (
+        <Box
+          position="absolute"
+          marginLeft={Math.floor((terminalCols - 96) / 2)}
+          marginTop={Math.floor((terminalRows - 20) / 2)}
+        >
+          <MosaicRadarView
+            sequence={sequence}
+            references={referenceSketchesRef.current}
+            currentPhageId={currentPhage?.id}
+          />
         </Box>
       )}
 

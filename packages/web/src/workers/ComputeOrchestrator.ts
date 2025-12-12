@@ -19,7 +19,6 @@ import type {
   AnalysisRequest,
   AnalysisResult,
   SimInitParams,
-  SimStepRequest,
   SimState,
   SimulationId,
   SimParameter,

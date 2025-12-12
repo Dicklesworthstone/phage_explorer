@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import type { GeneInfo, PhageFull } from '@phage-explorer/core';
 import {
   analyzeTailFiberTropism,
   type TropismAnalysis,
@@ -129,14 +129,32 @@ function PredictionRow({ hit, colors }: { hit: TailFiberHit; colors: ReturnType<
   );
 }
 
-function toPredictionInputs(preds: TropismPrediction[]): TropismPredictionInput[] {
-  return preds.map(p => ({
-    geneId: p.geneId,
-    locusTag: p.locusTag,
-    receptor: p.receptor,
-    confidence: p.confidence,
-    evidence: p.evidence,
-  }));
+function toPredictionInputs(phage: PhageFull, preds: TropismPrediction[]): TropismPredictionInput[] {
+  const genes = phage.genes ?? [];
+  const byId = new Map<number, GeneInfo>();
+  const byLocus = new Map<string, GeneInfo>();
+  for (const g of genes) {
+    if (typeof g.id === 'number') byId.set(g.id, g);
+    if (g.locusTag) byLocus.set(g.locusTag, g);
+  }
+
+  return preds.map(p => {
+    const gene =
+      (typeof p.geneId === 'number' ? byId.get(p.geneId) : undefined) ??
+      (p.locusTag ? byLocus.get(p.locusTag) : undefined);
+
+    return {
+      geneId: p.geneId,
+      locusTag: p.locusTag,
+      receptor: p.receptor,
+      confidence: p.confidence,
+      evidence: p.evidence,
+      startPos: gene?.startPos,
+      endPos: gene?.endPos,
+      strand: gene?.strand ?? null,
+      product: gene?.product ?? null,
+    };
+  });
 }
 
 export function TropismOverlay({ repository, phage }: TropismOverlayProps): React.ReactElement | null {
@@ -175,7 +193,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
       try {
         const precomputed = phage.tropismPredictions ?? [];
         if (precomputed.length > 0) {
-          const analysis = analyzeTailFiberTropism(phage, '', toPredictionInputs(precomputed));
+          const analysis = analyzeTailFiberTropism(phage, '', toPredictionInputs(phage, precomputed));
           if (!cancelled) {
             setData(analysis);
             setStatus('ready');
@@ -295,7 +313,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
         {status === 'ready' && hits.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {hits.map(hit => (
-              <PredictionRow key={hit.gene.id} hit={hit} colors={colors} />
+              <PredictionRow key={hit.gene.locusTag ?? String(hit.gene.id)} hit={hit} colors={colors} />
             ))}
           </div>
         )}
@@ -305,4 +323,3 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
 }
 
 export default TropismOverlay;
-

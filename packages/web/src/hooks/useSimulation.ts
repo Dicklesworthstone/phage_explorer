@@ -75,6 +75,8 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   const animationRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const stateRef = useRef<SimState | null>(null);
   const speedRef = useRef<number>(1);
+  const stepInFlightRef = useRef(false);
+  const generationRef = useRef(0);
   const mountedRef = useRef(true);
 
   // Keep stateRef in sync
@@ -90,6 +92,15 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   // Load metadata on mount
   useEffect(() => {
     mountedRef.current = true;
+    generationRef.current += 1;
+    stepInFlightRef.current = false;
+    setState(null);
+    setIsRunning(false);
+    setAvgStepMs(0);
+    setMetadata(null);
+    setParameters([]);
+    setError(null);
+    setIsLoading(false);
     const orchestrator = getOrchestrator();
     orchestrator.getSimulationMetadata(simId)
       .then(meta => {
@@ -112,8 +123,11 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     // Cleanup on unmount
     return () => {
       mountedRef.current = false;
+      generationRef.current += 1;
+      stepInFlightRef.current = false;
       if (animationRef.current) {
         clearInterval(animationRef.current);
+        animationRef.current = null;
       }
     };
   }, [simId]);
@@ -122,6 +136,9 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   const init = useCallback(async (params?: Record<string, number | boolean | string>) => {
     setIsLoading(true);
     setError(null);
+    const gen = generationRef.current + 1;
+    generationRef.current = gen;
+    stepInFlightRef.current = false;
     try {
       const orchestrator = getOrchestrator();
       const mergedParams = { ...paramsRef.current, ...params };
@@ -133,7 +150,7 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
         seed: Date.now(),
       });
       // Check if component is still mounted before updating state
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || generationRef.current !== gen) return;
       setState(newState);
       setIsRunning(false);
       if (animationRef.current) {
@@ -153,6 +170,9 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
   // Step simulation
   const step = useCallback(async () => {
     if (!stateRef.current) return;
+    if (stepInFlightRef.current) return;
+    stepInFlightRef.current = true;
+    const gen = generationRef.current;
     try {
       const orchestrator = getOrchestrator();
       const start = performance.now();
@@ -160,14 +180,18 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
         stateRef.current,
         DEFAULT_DT * speedRef.current
       );
-      if (!mountedRef.current) return;
-      setState(newState);
-      const elapsed = performance.now() - start;
-      setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
+      if (mountedRef.current && generationRef.current === gen) {
+        setState(newState);
+        const elapsed = performance.now() - start;
+        setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
+      }
     } catch (err) {
-      if (!mountedRef.current) return;
-      setError(`Simulation step failed: ${(err as Error).message}`);
-      setIsRunning(false);
+      if (mountedRef.current && generationRef.current === gen) {
+        setError(`Simulation step failed: ${(err as Error).message}`);
+        setIsRunning(false);
+      }
+    } finally {
+      stepInFlightRef.current = false;
     }
   }, []);
 
@@ -176,30 +200,33 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
     if (!stateRef.current || animationRef.current) return;
     setIsRunning(true);
 
-    animationRef.current = setInterval(async () => {
-      if (!stateRef.current) return;
-      try {
-        const orchestrator = getOrchestrator();
-        const start = performance.now();
-        const newState = await orchestrator.stepSimulation(
-          stateRef.current,
-          DEFAULT_DT * speedRef.current
-        );
-        if (!mountedRef.current) return;
+    animationRef.current = setInterval(() => {
+      if (!stateRef.current || stepInFlightRef.current) return;
+      stepInFlightRef.current = true;
+      const gen = generationRef.current;
+      const orchestrator = getOrchestrator();
+      const start = performance.now();
+      orchestrator.stepSimulation(
+        stateRef.current,
+        DEFAULT_DT * speedRef.current
+      ).then((newState) => {
+        if (!mountedRef.current || generationRef.current !== gen) return;
         setState(newState);
         const elapsed = performance.now() - start;
         setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
-      } catch (err) {
+      }).catch((err) => {
         if (animationRef.current) {
           clearInterval(animationRef.current);
           animationRef.current = null;
         }
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || generationRef.current !== gen) return;
         setError(`Simulation failed: ${(err as Error).message}`);
         setIsRunning(false);
-      }
+      }).finally(() => {
+        stepInFlightRef.current = false;
+      });
     }, FRAME_INTERVAL);
-  }, [speed]);
+  }, []);
 
   // Pause simulation
   const pause = useCallback(() => {

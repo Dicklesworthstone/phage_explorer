@@ -12,7 +12,6 @@ import { useTheme } from '../hooks/useTheme';
 import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
 import { useWebPreferences } from '../store/createWebStore';
 import { AminoAcidHUD } from './AminoAcidHUD';
-import type { ZoomLevel } from '../rendering';
 
 type ViewModeOption = {
   id: ViewMode;
@@ -130,7 +129,6 @@ export function SequenceView({
   const defaultDensity: 'compact' | 'standard' =
     typeof window !== 'undefined' && window.innerWidth < 1024 ? 'compact' : 'standard';
   const [densityMode, setDensityMode] = useState<'compact' | 'standard'>(defaultDensity);
-  const [userDensityOverride, setUserDensityOverride] = useState(false);
   const [jumpInput, setJumpInput] = useState<string>('');
 
   // Amino acid HUD state
@@ -157,7 +155,6 @@ export function SequenceView({
   const {
     canvasRef,
     visibleRange,
-    scrollPosition,
     orientation,
     isMobile,
     scrollToStart,
@@ -169,7 +166,6 @@ export function SequenceView({
     zoomPreset,
     zoomIn,
     zoomOut,
-    setZoomLevel,
   } = useSequenceGrid({
     theme,
     sequence,
@@ -193,12 +189,11 @@ export function SequenceView({
 
   // Auto-compact for landscape mobile unless user overrode
   useEffect(() => {
-    if (userDensityOverride) return;
     const next = isMobile && orientation === 'landscape' ? 'compact' : defaultDensity;
     if (next !== densityMode) {
       setDensityMode(next);
     }
-  }, [isMobile, orientation, defaultDensity, densityMode, userDensityOverride]);
+  }, [isMobile, orientation, defaultDensity, densityMode]);
 
   useEffect(() => {
     if (onControlsReady) {

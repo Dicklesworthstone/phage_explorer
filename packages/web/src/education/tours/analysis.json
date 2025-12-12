@@ -1,0 +1,86 @@
+{
+  "id": "overlays",
+  "title": "Analysis Deep‑Dive",
+  "description": "Learn how to open and interpret Phage Explorer’s analysis overlays.",
+  "estimatedMinutes": 3,
+  "steps": [
+    {
+      "id": "open-palette",
+      "title": "Open the command palette",
+      "content": "Analyses are opened from the command palette. Press : (colon) any time to bring it up, then type an analysis name.",
+      "target": ".footer-hints",
+      "position": "top"
+    },
+    {
+      "id": "search-analyses",
+      "title": "Search for analyses",
+      "content": "Try typing “GC skew”, “complexity”, or “promoter”. The palette groups commands by category and respects your experience level.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "gc-skew",
+      "title": "GC skew overlay",
+      "content": "GC skew highlights replication/packaging asymmetries. Peaks and troughs often mark origin‑like regions or structural modules.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "complexity",
+      "title": "Sequence complexity",
+      "content": "Complexity (Shannon entropy) drops in low‑diversity regions such as repeats or highly constrained genes.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "promoters",
+      "title": "Promoter / RBS motifs",
+      "content": "Promoter marks indicate likely transcription start regions. Clusters can suggest operons or early/late transcription blocks.",
+      "target": ".gene-map-container",
+      "position": "bottom"
+    },
+    {
+      "id": "repeats",
+      "title": "Repeats / palindromes",
+      "content": "Repeat overlays flag palindromic or duplicated motifs. These can be recombination sites or regulatory hairpins.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "dotplot",
+      "title": "Dot plot & self‑similarity",
+      "content": "Dot plots show internal repeats and block duplications. Diagonal stripes off the main diagonal indicate duplicated segments.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "cgr-hilbert",
+      "title": "CGR & Hilbert maps",
+      "content": "CGR (Chaos Game Representation) and Hilbert curves visualize k‑mer signatures. Similar phages cluster in pattern space.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "hgt",
+      "title": "HGT tracer",
+      "content": "Horizontal gene transfer hotspots are flagged by atypical k‑mer and codon signatures. Use this to spot modular swaps.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "tropism",
+      "title": "Tropism & receptors",
+      "content": "Tropism overlays summarize predicted receptor targets and tail‑fiber signals. High‑confidence hits show likely host range.",
+      "target": ".app-body",
+      "position": "center"
+    },
+    {
+      "id": "next-steps",
+      "title": "Learn the theory",
+      "content": "If any concept feels unfamiliar, open Beginner Mode’s Learn menu for foundational modules and glossary links.",
+      "target": "button[aria-haspopup=\"true\"]",
+      "position": "bottom"
+    }
+  ]
+}
+

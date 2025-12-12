@@ -31,7 +31,8 @@ type OverlayData = Partial<Record<
   | 'dotPlot'
   | 'cgr'
   | 'non-b-dna'
-  | 'synteny',
+  | 'synteny'
+  | 'mosaicRadar',
   unknown>>;
 
 // Overlay states
@@ -65,6 +66,7 @@ export type OverlayId =
   | 'structureConstraints'
   | 'synteny'
   | 'tropism'
+  | 'mosaicRadar'
   | 'cgr'
   | 'anomaly'
   | 'non-b-dna'
@@ -377,7 +379,14 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
 
   cycleReadingFrame: () => {
     const { readingFrame } = get();
-    set({ readingFrame: ((readingFrame + 1) % 3) as ReadingFrame });
+    if (readingFrame >= 0) {
+      set({ readingFrame: ((readingFrame + 1) % 3) as ReadingFrame });
+      return;
+    }
+    const reverseFrames: ReadingFrame[] = [-1, -2, -3];
+    const idx = reverseFrames.indexOf(readingFrame);
+    const next = reverseFrames[(idx + 1) % reverseFrames.length];
+    set({ readingFrame: next });
   },
 
   setScrollPosition: (position) => {

@@ -449,7 +449,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
       setProgress(100);
       setLoadState('ready');
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- rebuildStructure is stable via refs
   }, [pdbId, renderMode, show3DModel, structureData, structureError, structureErr, structureFetching, structureLoading]);
 
   useEffect(() => {

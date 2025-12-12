@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
-import { eq, like, or, asc, and, gte, lte } from 'drizzle-orm';
+import { eq, like, or, asc, desc, and, gte, lte } from 'drizzle-orm';
 import {
   phages,
   sequences,
@@ -303,7 +303,7 @@ export class BunSqliteRepository implements PhageRepository {
       })
       .from(tropismPredictions)
       .where(eq(tropismPredictions.phageId, phageId))
-      .orderBy(asc(tropismPredictions.confidence));
+      .orderBy(desc(tropismPredictions.confidence));
 
     const parsed = rows.map(r => ({
       ...r,

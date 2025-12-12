@@ -120,7 +120,6 @@ export function EvolutionVisualizer({
   }, [state, width, height, colors]);
 
   // Recent mutations
-  const recentMuts = state.mutations.slice(-10);
   const beneficialCount = state.mutations.filter(m => (m.s ?? 0) > 0).length;
   const deleteriousCount = state.mutations.filter(m => (m.s ?? 0) < 0).length;
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
@@ -7,7 +7,7 @@ import { useCollaborationStore } from '../../collaboration/CollaborationManager'
 export function CollaborationOverlay(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const { isOpen, close } = useOverlay();
+  const { isOpen } = useOverlay();
   
   const connected = useCollaborationStore(s => s.connected);
   const sessionId = useCollaborationStore(s => s.id);

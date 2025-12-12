@@ -38,7 +38,10 @@
   "include": [
     "./src/**/*.ts",
     "./src/**/*.tsx",
-    "./vite.config.ts"
+    "./vite.config.ts",
+    "./e2e/**/*.ts",
+    "./playwright.config.ts",
+    "./audit-ui.ts"
   ],
   "exclude": ["./node_modules", "./dist"]
 }

@@ -1,5 +1,5 @@
-import type { Simulation, RibosomeTrafficState, PhageFull } from '../types'; // Adjust path if needed
-import { getCodonRate } from '../data/codon-tables';
+import type { Simulation, RibosomeTrafficState } from '../simulation';
+import type { PhageFull } from '../types';
 
 const DEFAULT_INITIATION_RATE = 0.5;
 const DEFAULT_TERMINATION_RATE = 0.8;
@@ -52,7 +52,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     { id: 'speed-down', label: 'Slower', icon: '⏪', shortcut: '-', action: 'speed-down' },
   ],
 
-  init: (phage: PhageFull | null, params = {}): RibosomeTrafficState => {
+  init: (phage: PhageFull | null = null, params = {}): RibosomeTrafficState => {
     // Determine mRNA to simulate
     // For now, take the first gene's sequence or a chunk of the genome if no genes
     // Or simpler: just use a dummy sequence if no phage, or the first 300 codons of the genome
@@ -64,7 +64,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     if (phage && phage.genes && phage.genes.length > 0) {
       // Pick the longest gene for interesting dynamics
       // Or just the first one
-      const gene = phage.genes.sort((a, b) => (b.endPos - b.startPos) - (a.endPos - a.startPos))[0];
+      const gene = [...phage.genes].sort((a, b) => (b.endPos - b.startPos) - (a.endPos - a.startPos))[0];
       mRnaId = gene.product ?? gene.locusTag ?? `Gene ${gene.id}`;
       // We don't have the sequence here directly in PhageFull!
       // This is a limitation of the interface. `init` assumes it has everything.
@@ -114,63 +114,9 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     const footprint = Number(params.footprint);
     const length = codonRates.length;
 
-    let nextRibosomes = [...ribosomes];
-    let produced = 0;
     let stalls = 0;
 
-    // Process from 3' (end) to 5' (start) to handle exclusion correctly
-    // Ribosomes are stored as indices, sorted ascending (so last in array is 3' most)
-    // Actually, if they are sorted ascending, the last one is furthest along (closest to end).
-    
-    // 1. Termination (last ribosome)
-    if (nextRibosomes.length > 0) {
-      const lastIdx = nextRibosomes.length - 1;
-      const pos = nextRibosomes[lastIdx];
-      if (pos >= length - 1) {
-        // At stop codon
-        if (Math.random() < beta) {
-          nextRibosomes.pop(); // Release
-          produced = 1;
-        }
-      }
-    }
-
-    // 2. Elongation
-    // Iterate backwards
-    for (let i = nextRibosomes.length - 1; i >= 0; i--) {
-      const pos = nextRibosomes[i];
-      
-      // Skip if this is the one we just potentially removed (it's already handled if pop happened)
-      // But we are iterating over the *copy* or *original*?
-      // We popped from `nextRibosomes`, but we are iterating indices of `nextRibosomes`.
-      // If we popped, length changed.
-      // Wait, we should iterate over the snapshot `ribosomes` but modify `nextRibosomes`.
-      // But position updates depend on the *updated* position of the ribosome ahead?
-      // In TASEP, updates can be synchronous or asynchronous (random sequential).
-      // Here we do synchronous-like or random?
-      // Let's do: update if space available. Space depends on WHERE the ahead ribosome IS.
-      // Standard TASEP: usually random sequential update.
-      // For simplicity/performance in JS tick:
-      // Iterate 3' to 5'. If `i` moves, it frees space for `i-1`.
-      // So we use the *new* position of `i+1` (ahead) to check blockage for `i`.
-      
-      // Actually, let's look at `nextRibosomes`.
-      // Since we iterate backwards (highest index first), we update the leader first.
-      // Then the follower checks the leader's *new* position. This is parallel-update friendly?
-      // No, strictly, if leader moves, follower CAN move into the old spot in the same tick?
-      // That's "parallel" or "synchronous" update.
-      // Random sequential is more physically accurate for stochastic systems.
-      // But let's stick to "try move leader, then try move follower".
-      
-      // We already handled the absolute last one (termination).
-      // Now handle elongation for all.
-      // Note: if we popped the last one, `nextRibosomes` is shorter.
-      // The logic needs to be robust.
-      
-    }
-    
-    // Let's rewrite the loop to be safer
-    // We'll rebuild the array.
+    // Rebuild positions from 3' to 5' to handle exclusion.
     const newPositions: number[] = [];
     let proteins = state.proteinsProduced;
     
@@ -205,7 +151,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
         if (newPositions.length > 0) {
             // The ribosome immediately ahead
             const nextPos = newPositions[0]; 
-            if (nextPos - pos < footprint) {
+            if (nextPos - pos <= footprint) {
                 blocked = true;
             }
         }
@@ -244,7 +190,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
 
     return {
       ...state,
-      time: state.time + 1,
+      time: state.time + dt,
       ribosomes: newPositions,
       proteinsProduced: proteins,
       stallEvents: state.stallEvents + stalls,

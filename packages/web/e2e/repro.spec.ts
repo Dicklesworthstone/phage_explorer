@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test } from '@playwright/test';
 
 test('capture mobile view', async ({ page }) => {
   // Set viewport to mobile
@@ -7,7 +7,7 @@ test('capture mobile view', async ({ page }) => {
   try {
     // Try live site first as requested, but expect it might fail in CI
     await page.goto('https://phage-explorer.org', { timeout: 10000 });
-  } catch (e) {
+  } catch {
     console.log('Live site unreachable, falling back to local if server was running (it is not)');
     // Since I cannot easily start a server here, I rely on the user's claim about the live site.
     // However, for the sake of the tool, I will try to visit it.

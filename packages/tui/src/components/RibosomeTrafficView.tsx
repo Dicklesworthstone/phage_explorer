@@ -44,7 +44,7 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
     let longest = 1;
     let current = 1;
     for (let i = 1; i < sorted.length; i++) {
-      if (sorted[i] - sorted[i - 1] < footprint) {
+      if (sorted[i] - sorted[i - 1] <= footprint) {
         current += 1;
         longest = Math.max(longest, current);
       } else {
@@ -181,4 +181,3 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
     </Box>
   );
 }
-

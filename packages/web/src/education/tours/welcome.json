@@ -1,0 +1,79 @@
+{
+  "id": "welcome",
+  "title": "Welcome to Phage Explorer",
+  "description": "A quick tour of the web UI: pick a phage, read its genome, and open analyses.",
+  "estimatedMinutes": 2,
+  "steps": [
+    {
+      "id": "header",
+      "title": "Header and status",
+      "content": "This top bar shows where you are, your keyboard mode, and quick actions like Theme, Contrast, and Beginner Mode.",
+      "target": ".app-header",
+      "position": "bottom"
+    },
+    {
+      "id": "phage-list",
+      "title": "Phage list",
+      "content": "Browse included phages here. Each entry shows host, genome length, lifecycle, and GC%. Click any phage to load it.",
+      "target": ".column--list .list",
+      "position": "right"
+    },
+    {
+      "id": "select-phage",
+      "title": "Selecting a phage",
+      "content": "The highlighted row is your current selection. Use j/k to move fast, or click another phage.",
+      "target": ".list-item.active, .list-item",
+      "position": "right"
+    },
+    {
+      "id": "details-pane",
+      "title": "Details pane",
+      "content": "Key metadata lives here: genome length, GC content, gene count, lifecycle, and accession.",
+      "target": ".column--detail .detail-card",
+      "position": "left"
+    },
+    {
+      "id": "gene-map",
+      "title": "Gene map",
+      "content": "This map shows gene locations and strands. Click anywhere to jump the sequence viewer to that region.",
+      "target": ".gene-map-container",
+      "position": "bottom"
+    },
+    {
+      "id": "sequence-canvas",
+      "title": "Sequence grid",
+      "content": "Scroll to move through the genome. Letters are color‑coded by nucleotide or amino‑acid chemistry.",
+      "target": "canvas[aria-label=\"Genome sequence canvas\"]",
+      "position": "top"
+    },
+    {
+      "id": "view-modes",
+      "title": "DNA vs amino acids",
+      "content": "Toggle between DNA, Amino Acids, or Dual view. In AA mode, press f to cycle reading frames.",
+      "target": ".view-mode-toggle",
+      "position": "bottom"
+    },
+    {
+      "id": "navigation",
+      "title": "Navigation shortcuts",
+      "content": "Footer hints show the core hotkeys. Try / for search, ? for help, and Home/End to jump genome ends.",
+      "target": ".footer-hints",
+      "position": "top"
+    },
+    {
+      "id": "analysis",
+      "title": "Open analyses",
+      "content": "Press : to open the command palette, then search for analyses like GC skew, complexity, promoters, dot plots, and more.",
+      "target": ".key-hint",
+      "position": "top"
+    },
+    {
+      "id": "learn-next",
+      "title": "Go deeper",
+      "content": "With Beginner Mode on, the Learn menu opens foundational modules and the glossary whenever you need context.",
+      "target": "button[aria-haspopup=\"true\"]",
+      "position": "bottom"
+    }
+  ]
+}
+

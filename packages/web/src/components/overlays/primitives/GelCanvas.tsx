@@ -81,7 +81,6 @@ export const GelCanvas: React.FC<GelCanvasProps> = ({
         const bandHeight = 6 + intensity * 6;
         const bandWidth = laneWidth * 0.7;
         const x1 = cx - bandWidth / 2;
-        const x2 = cx + bandWidth / 2;
         const color = lane.color ?? '#a5c9ff';
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.2 + intensity * 0.8;

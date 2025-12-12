@@ -15,7 +15,6 @@ async function getSqlJs(config?: { locateFile?: (file: string) => string }): Pro
       // Dynamic import for CommonJS compatibility
       const SqlJs = await import('sql.js');
       // Access the init function - handle various module formats
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mod = SqlJs as any;
       const initFn = mod.default ?? mod;
       if (typeof initFn === 'function') {
@@ -145,36 +144,6 @@ async function deleteFromIndexedDB(key: string): Promise<void> {
       resolve();
     };
   });
-}
-
-/**
- * Decompress Brotli-compressed data using DecompressionStream API
- * Falls back to gzip if Brotli not supported
- */
-async function decompressData(
-  compressedData: ArrayBuffer,
-  format: 'br' | 'gzip' = 'br'
-): Promise<ArrayBuffer> {
-  // Check if DecompressionStream is available
-  if (typeof DecompressionStream === 'undefined') {
-    // Fallback: assume data is uncompressed
-    console.warn('DecompressionStream not available, assuming uncompressed data');
-    return compressedData;
-  }
-
-  try {
-    const ds = new DecompressionStream(format === 'br' ? 'brotli' : 'gzip');
-    const stream = new Response(compressedData).body;
-    if (!stream) throw new Error('No response body');
-
-    const decompressedStream = stream.pipeThrough(ds);
-    const response = new Response(decompressedStream);
-    return response.arrayBuffer();
-  } catch (error) {
-    // Brotli not supported in DecompressionStream, try as-is
-    console.warn('Decompression failed, assuming uncompressed data:', error);
-    return compressedData;
-  }
 }
 
 /**

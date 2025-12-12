@@ -5,7 +5,7 @@ import type {
   SequenceWindow,
 } from './types';
 import { VirtualScroller } from './virtualScroller';
-import { GlyphAtlas } from './glyphAtlas';
+import type { GlyphAtlas } from './glyphAtlas';
 
 export class SequenceGridRenderer {
   private readonly canvas: HTMLCanvasElement;

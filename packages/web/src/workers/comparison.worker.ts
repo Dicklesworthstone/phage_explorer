@@ -58,14 +58,12 @@ self.onmessage = async (event: MessageEvent<ComparisonJob>) => {
       transferList.push(diff.mask.buffer);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (self as any).postMessage(message, transferList);
     return;
   } catch (err) {
     console.error('Comparison worker error:', err);
     message.error = err instanceof Error ? err.message : 'Comparison failed';
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (self as any).postMessage(message);
 };
 
@@ -190,7 +188,6 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
   const diffPositions: number[] = [];
 
   let idxA = 0;
-  let idxB = 0;
   let substitutions = 0;
   let deletions = 0;
   let insertions = 0;
@@ -199,7 +196,6 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
     switch (span.op) {
       case 'equal': {
         idxA += span.length;
-        idxB += span.length;
         break;
       }
       case 'replace': {
@@ -209,7 +205,6 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
             diffPositions.push(idxA);
           }
           idxA++;
-          idxB++;
           substitutions++;
         }
         break;
@@ -234,7 +229,6 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
             }
             diffPositions.push(pos);
           }
-          idxB++;
           insertions++;
         }
         break;

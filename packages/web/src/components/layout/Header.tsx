@@ -8,7 +8,6 @@ import React from 'react';
 
 export interface HeaderProps {
   title?: string;
-  subtitle?: string;
   mode?: string;
   pendingSequence?: string | null;
   children?: React.ReactNode;
@@ -16,7 +15,6 @@ export interface HeaderProps {
 
 export const Header: React.FC<HeaderProps> = ({
   title = 'Phage Explorer',
-  subtitle,
   mode,
   pendingSequence,
   children,

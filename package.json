@@ -27,7 +27,7 @@
     "lint": "bunx eslint packages --max-warnings=0 --no-warn-ignored",
     "typecheck": "tsc --noEmit",
     "check": "bun run lint && bun run typecheck",
-    "test": "bun test",
+    "test": "bun test test.ts",
     "test:integration": "PHAGE_INTEGRATION=1 bun test --filter integration"
   },
   "devDependencies": {

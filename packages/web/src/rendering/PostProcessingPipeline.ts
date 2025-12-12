@@ -145,7 +145,6 @@ export class PostProcessingPipeline {
     this.canvas.height = height;
     this.gl.viewport(0, 0, width, height);
     // Maintain pixel ratio for crispness
-    const dpr = window.devicePixelRatio || 1;
     this.canvas.style.width = `${width}px`;
     this.canvas.style.height = `${height}px`;
     this.gl.viewport(0, 0, width, height);

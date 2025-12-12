@@ -14,8 +14,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
-import { useWebPreferences } from '../../store/createWebStore';
-import { usePhageStore, type ExperienceLevel as StoreExperienceLevel } from '@phage-explorer/state';
+import { usePhageStore } from '@phage-explorer/state';
 import { formatFasta, downloadString, copyToClipboard, buildSequenceClipboardPayload } from '../../utils/export';
 
 // Experience levels for progressive disclosure

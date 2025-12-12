@@ -8,12 +8,10 @@
  */
 
 import { create } from 'zustand';
-import { persist, createJSONStorage, subscribeWithSelector } from 'zustand/middleware';
+import { persist, createJSONStorage } from 'zustand/middleware';
 import type { Theme, ViewMode, ReadingFrame } from '@phage-explorer/core';
-import { HOLOGRAPHIC_THEME, getThemeById } from '@phage-explorer/core';
 import {
   usePhageStore,
-  type PhageExplorerStore,
   type HelpDetailLevel,
   type ExperienceLevel,
 } from '@phage-explorer/state';
@@ -61,17 +59,6 @@ export interface WebPreferencesActions {
 
 export type WebPreferencesStore = WebPreferencesState & WebPreferencesActions;
 
-/**
- * Keys from main store to persist
- */
-type MainStorePersistedKeys =
-  | 'currentTheme'
-  | 'viewMode'
-  | 'readingFrame'
-  | 'model3DQuality'
-  | 'helpDetail'
-  | 'experienceLevel';
-
 interface PersistedMainState {
   currentTheme: Theme;
   viewMode: ViewMode;
@@ -94,18 +81,6 @@ const defaultWebPreferences: WebPreferencesState = {
   controlDrawerOpen: false,
   commandHistory: [],
   _hasHydrated: false,
-};
-
-/**
- * Default main store preferences (for initial hydration)
- */
-const defaultMainStorePrefs: PersistedMainState = {
-  currentTheme: HOLOGRAPHIC_THEME,
-  viewMode: 'dna',
-  readingFrame: 0,
-  model3DQuality: 'medium',
-  helpDetail: 'essential',
-  experienceLevel: 'novice',
 };
 
 /**
@@ -230,9 +205,10 @@ export function hydrateMainStoreFromStorage(): void {
     }
     // model3DQuality doesn't have a setter in main store, handled internally
 
-    console.log('[Store] Main store hydrated from localStorage');
   } catch (error) {
-    console.warn('[Store] Failed to hydrate main store:', error);
+    if (import.meta.env.DEV) {
+      console.warn('[Store] Failed to hydrate main store:', error);
+    }
   }
 }
 
@@ -268,7 +244,9 @@ export function subscribeMainStoreToStorage(): () => void {
       try {
         localStorage.setItem(STORAGE_KEY, prefsJson);
       } catch (error) {
-        console.warn('[Store] Failed to persist main store:', error);
+        if (import.meta.env.DEV) {
+          console.warn('[Store] Failed to persist main store:', error);
+        }
       }
     }, 500); // Debounce 500ms
   });

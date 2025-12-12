@@ -192,16 +192,13 @@ self.onmessage = (event: MessageEvent<SyntenyJob>) => {
       transferList.push(heatmap.values.buffer);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (self as any).postMessage(message, transferList);
     return;
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error('Synteny worker error:', err);
     message.error = err instanceof Error ? err.message : 'Synteny computation failed';
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (self as any).postMessage(message);
 };
 

@@ -5,7 +5,6 @@
 import {
   type AtomRecord,
   type Bond,
-  type FunctionalGroup,
   type FunctionalGroupType,
 } from './structure-loader';
 

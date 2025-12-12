@@ -18,6 +18,7 @@ export * from './components/TermTooltip';
 export * from './components/CodonWheelVisualizer';
 export * from './components/ContextHelpPanel';
 export * from './components/TranslationVisualizer';
+export * from './components/TourEngine';
 
 // Module exports
 export * from './modules';

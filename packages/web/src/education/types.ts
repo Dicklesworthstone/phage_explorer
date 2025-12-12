@@ -8,6 +8,7 @@
 export type TourId =
   | 'welcome'
   | 'sequence-basics'
+  | 'gene-explorer'
   | 'navigation'
   | 'overlays'
   | 'comparison'

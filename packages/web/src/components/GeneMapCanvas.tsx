@@ -10,7 +10,6 @@ interface GeneMapCanvasProps {
 
 export function GeneMapCanvas({
   height = 60,
-  className = '',
   onGeneClick,
 }: GeneMapCanvasProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -51,7 +50,6 @@ export function GeneMapCanvas({
 
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
     const width = rect.width;
     
     // Map X to genome position

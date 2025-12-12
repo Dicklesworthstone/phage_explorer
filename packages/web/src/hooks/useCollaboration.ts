@@ -1,6 +1,4 @@
-import { useState, useEffect } from 'react';
 import { useCollaborationStore } from '../collaboration/CollaborationManager';
-import type { UserPresence, SessionId } from '../collaboration/types';
 
 export function useCollaboration() {
   const store = useCollaborationStore();

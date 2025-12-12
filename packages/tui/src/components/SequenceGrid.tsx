@@ -100,9 +100,10 @@ export function SequenceGrid({
     }
 
     // Get the slice of sequence we need
-    // For AA mode, add extra bases to account for reading frame offset and partial codons
+    const frameOffset = readingFrame >= 0 ? readingFrame : Math.abs(readingFrame) - 1;
+    // For AA mode, add extra bases to account for frame offset and partial codons
     const sliceLength = viewMode === 'aa'
-      ? charsPerScreen * 3 + readingFrame + 3
+      ? charsPerScreen * 3 + frameOffset + 3
       : charsPerScreen;
 
     const seqSlice = sequence.substring(startIndex, startIndex + sliceLength);
@@ -170,7 +171,9 @@ export function SequenceGrid({
             {viewMode === 'dna' ? 'DNA Sequence' : 'Amino Acids'}
           </Text>
           {viewMode === 'aa' && (
-            <Text color={colors.accent}>(Frame {readingFrame + 1})</Text>
+            <Text color={colors.accent}>
+              {readingFrame >= 0 ? `(Frame ${readingFrame + 1})` : `(Rev Frame ${Math.abs(readingFrame)})`}
+            </Text>
           )}
         </Box>
         <Box gap={1}>

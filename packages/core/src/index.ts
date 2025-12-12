@@ -41,6 +41,9 @@ export * from './analysis/non-b-dna';
 // Structure-informed constraint scanner
 export * from './structure-constraints';
 
+// Recombination / mosaicism radar
+export * from './analysis/recombination-radar';
+
 // Transcription flow analysis
 export * from './transcription';
 

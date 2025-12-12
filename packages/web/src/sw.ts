@@ -5,7 +5,7 @@
  */
 
 import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
-import { registerRoute, NavigationRoute, Route } from 'workbox-routing';
+import { registerRoute, NavigationRoute } from 'workbox-routing';
 import { CacheFirst, StaleWhileRevalidate, NetworkFirst } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 
@@ -139,6 +139,6 @@ self.addEventListener('message', (event) => {
 });
 
 // Log service worker activation
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', () => {
   console.log('[SW] Activated');
 });

@@ -16,7 +16,7 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
-import { computeDinucleotideFrequencies, DINUCLEOTIDES } from '@phage-explorer/core';
+import { computeDinucleotideFrequencies } from '@phage-explorer/core';
 
 // HGT probability thresholds
 const HGT_LOW = 30;

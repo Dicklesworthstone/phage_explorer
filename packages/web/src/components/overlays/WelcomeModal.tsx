@@ -16,7 +16,7 @@ import { KeyboardPrimer } from './KeyboardPrimer';
 export function WelcomeModal(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const { close, isOpen, open } = useOverlay();
+  const { close, isOpen } = useOverlay();
 
   // Web-specific preferences (persisted)
   const hasSeenWelcome = useWebPreferences(s => s.hasSeenWelcome);
@@ -24,6 +24,8 @@ export function WelcomeModal(): React.ReactElement | null {
 
   // Main store preferences
   const setExperienceLevel = usePhageStore(s => s.setExperienceLevel);
+  const setBeginnerModeEnabled = usePhageStore(s => s.setBeginnerModeEnabled);
+  const startTour = usePhageStore(s => s.startTour);
   const experienceLevel = usePhageStore(s => s.experienceLevel) as ExperienceLevel;
 
   const [step, setStep] = useState<'intro' | 'level' | 'primer'>('intro');
@@ -57,7 +59,8 @@ export function WelcomeModal(): React.ReactElement | null {
   const handleTour = () => {
     setHasSeenWelcome(true);
     close('welcome');
-    setTimeout(() => open('tour'), 100);
+    setBeginnerModeEnabled(true);
+    setTimeout(() => startTour('welcome'), 100);
   };
 
   const LevelCard = ({ level, title, desc, icon }: { level: ExperienceLevel, title: string, desc: string, icon: string }) => (

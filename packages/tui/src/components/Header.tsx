@@ -224,16 +224,19 @@ export function Header(): React.ReactElement {
             <Text color={infoColor}>{ICONS.frame}</Text>
             <Text color={colors.textDim}>Frame</Text>
             <Text color={colors.separator ?? colors.textMuted}>[</Text>
-            {[0, 1, 2].map(f => (
-              <Text
-                key={f}
-                color={readingFrame === f ? colors.accent : muted}
-                bold={readingFrame === f}
-                backgroundColor={readingFrame === f ? colors.backgroundAlt : undefined}
-              >
-                {readingFrame === f ? `«${f + 1}»` : ` ${f + 1} `}
-              </Text>
-            ))}
+            {[0, 1, 2, -1, -2, -3].map(f => {
+              const label = f >= 0 ? `${f + 1}` : `r${Math.abs(f)}`;
+              return (
+                <Text
+                  key={f}
+                  color={readingFrame === f ? colors.accent : muted}
+                  bold={readingFrame === f}
+                  backgroundColor={readingFrame === f ? colors.backgroundAlt : undefined}
+                >
+                  {readingFrame === f ? `«${label}»` : ` ${label} `}
+                </Text>
+              );
+            })}
             <Text color={colors.separator ?? colors.textMuted}>]</Text>
           </Box>
         )}

@@ -1,5 +1,4 @@
 import {
-  Box3,
   BufferGeometry,
   CatmullRomCurve3,
   Color,
@@ -19,17 +18,6 @@ import {
 } from 'three';
 
 export type StructureFormat = 'pdb' | 'mmcif';
-
-export interface LoadedStructure {
-  atoms: AtomRecord[];
-  bonds: Bond[];
-  backboneTraces: Vector3[][];
-  chains: string[];
-  center: Vector3;
-  radius: number;
-  atomCount: number;
-  functionalGroups: FunctionalGroup[];
-}
 
 export interface AtomRecord {
   x: number;
@@ -55,30 +43,6 @@ export interface FunctionalGroup {
   color: Color;
 }
 
-// Updated structure-loader.ts using Web Worker
-import {
-  Box3,
-  BufferGeometry,
-  CatmullRomCurve3,
-  Color,
-  CylinderGeometry,
-  Float32BufferAttribute,
-  Group,
-  InstancedMesh,
-  LineBasicMaterial,
-  LineSegments,
-  Matrix4,
-  Mesh,
-  MeshPhongMaterial,
-  Quaternion,
-  SphereGeometry,
-  TubeGeometry,
-  Vector3,
-} from 'three';
-import StructureWorker from './structure.worker?worker';
-
-export type StructureFormat = 'pdb' | 'mmcif';
-
 export interface LoadedStructure {
   atoms: AtomRecord[];
   bonds: Bond[];
@@ -90,28 +54,90 @@ export interface LoadedStructure {
   functionalGroups: FunctionalGroup[];
 }
 
-export interface AtomRecord {
-  x: number;
-  y: number;
-  z: number;
-  element: string;
-  atomName: string;
-  chainId: string;
-  resSeq: number;
-  resName: string;
+type StructureWorkerCtor = new () => Worker;
+let cachedStructureWorkerCtor: StructureWorkerCtor | null = null;
+
+async function getStructureWorkerCtor(): Promise<StructureWorkerCtor> {
+  if (cachedStructureWorkerCtor) return cachedStructureWorkerCtor;
+  const mod = await import('./structure.worker?worker');
+  cachedStructureWorkerCtor = mod.default as StructureWorkerCtor;
+  return cachedStructureWorkerCtor;
 }
 
-export interface Bond {
-  a: number;
-  b: number;
+export function parsePDB(text: string): AtomRecord[] {
+  const atoms: AtomRecord[] = [];
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    if (!line.startsWith('ATOM') && !line.startsWith('HETATM')) continue;
+    const atomName = line.slice(12, 16).trim();
+    const x = parseFloat(line.slice(30, 38));
+    const y = parseFloat(line.slice(38, 46));
+    const z = parseFloat(line.slice(46, 54));
+    const element = (line.slice(76, 78).trim() || line.slice(12, 14).trim()).toUpperCase();
+    const chainId = line.slice(21, 22).trim() || 'A';
+    const resSeq = parseInt(line.slice(22, 26).trim() || '0', 10);
+    const resName = line.slice(17, 20).trim() || 'UNK';
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
+    }
+  }
+  return atoms;
 }
 
-export type FunctionalGroupType = 'aromatic' | 'disulfide' | 'phosphate';
+export function parseMMCIF(text: string): AtomRecord[] {
+  const atoms: AtomRecord[] = [];
+  const lines = text.split(/\r?\n/);
+  const headers: string[] = [];
+  let inAtomLoop = false;
+  let dataStart = 0;
 
-export interface FunctionalGroup {
-  type: FunctionalGroupType;
-  atomIndices: number[];
-  color: Color;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === 'loop_') {
+      inAtomLoop = true;
+      continue;
+    }
+    if (inAtomLoop && line.startsWith('_atom_site.')) {
+      headers.push(line);
+      continue;
+    }
+    if (inAtomLoop && headers.length > 0 && !line.startsWith('_atom_site.')) {
+      dataStart = i;
+      break;
+    }
+  }
+
+  if (headers.length === 0 || dataStart === 0) return atoms;
+
+  const colIndex = (name: string) => headers.findIndex(h => h.includes(name));
+  const xIdx = colIndex('Cartn_x');
+  const yIdx = colIndex('Cartn_y');
+  const zIdx = colIndex('Cartn_z');
+  const elIdx = colIndex('type_symbol');
+  const atomNameIdx = colIndex('label_atom_id');
+  const chainIdx = colIndex('auth_asym_id');
+  const resSeqIdx = colIndex('auth_seq_id');
+  const resNameIdx = colIndex('auth_comp_id');
+
+  for (let i = dataStart; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('#') || line.startsWith('loop_') || line === '') break;
+    const parts = line.split(/\s+/);
+    const pick = (idx: number, fallback = '') => (idx >= 0 ? parts[idx] ?? fallback : fallback);
+    const x = parseFloat(pick(xIdx, 'NaN'));
+    const y = parseFloat(pick(yIdx, 'NaN'));
+    const z = parseFloat(pick(zIdx, 'NaN'));
+    const element = pick(elIdx, 'C').toUpperCase();
+    const atomName = pick(atomNameIdx, '').toUpperCase() || element;
+    const chainId = pick(chainIdx, 'A') || 'A';
+    const resSeq = parseInt(pick(resSeqIdx, '0'), 10);
+    const resName = pick(resNameIdx, 'UNK').toUpperCase();
+    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
+    }
+  }
+
+  return atoms;
 }
 
 // CPK-based colors optimized for dark backgrounds
@@ -163,19 +189,55 @@ export async function loadStructure(
   }
   const text = await res.text();
 
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+
+  const WorkerCtor = await getStructureWorkerCtor();
+
   // Offload to worker
   return new Promise((resolve, reject) => {
-    const worker = new StructureWorker();
+    const worker = new WorkerCtor();
+    let settled = false;
+
+    function cleanup() {
+      if (signal) {
+        signal.removeEventListener('abort', onAbort);
+      }
+      worker.onmessage = null;
+      worker.onerror = null;
+    }
+
+    function onAbort() {
+      if (settled) return;
+      settled = true;
+      worker.terminate();
+      cleanup();
+      reject(new DOMException('Aborted', 'AbortError'));
+    }
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
     
     worker.onmessage = (e) => {
       const { type, data, error } = e.data;
       if (type === 'error') {
+        if (settled) return;
+        settled = true;
         worker.terminate();
+        cleanup();
         reject(new Error(error));
         return;
       }
       
       if (type === 'success') {
+        if (settled) return;
+        settled = true;
         // Hydrate plain objects back to Three.js types
         const atoms = data.atoms;
         const bonds = data.bonds;
@@ -195,6 +257,7 @@ export async function loadStructure(
         }));
 
         worker.terminate();
+        cleanup();
         resolve({
           atoms,
           bonds,
@@ -209,7 +272,10 @@ export async function loadStructure(
     };
 
     worker.onerror = (e) => {
+      if (settled) return;
+      settled = true;
       worker.terminate();
+      cleanup();
       reject(new Error(e.message));
     };
 

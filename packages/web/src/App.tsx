@@ -24,7 +24,7 @@ import {
   usePhageStore,
   useWebPreferences,
 } from './store';
-import { useBeginnerMode, useBeginnerModeInit } from './education';
+import { useBeginnerMode, useBeginnerModeInit, TourEngine } from './education';
 import './styles.css';
 import { GeneMapCanvas } from './components/GeneMapCanvas';
 import { Model3DView } from './components/Model3DView';
@@ -36,7 +36,8 @@ import { LearnMenu } from './components/LearnMenu';
 
 // Mobile controls
 import { ControlDeck } from './components/mobile/ControlDeck';
-import { FloatingActionButton } from './components/controls/FloatingActionButton';
+import { useBeginnerMode } from './education/hooks/useBeginnerMode';
+import { OverlayManager } from './components/overlays/OverlayManager';
 
 /** Number of bases to show in the sequence preview */
 const SEQUENCE_PREVIEW_LENGTH = 500;
@@ -46,9 +47,6 @@ export default function App(): JSX.Element {
   const reducedMotion = useReducedMotion();
   const highContrast = useWebPreferences((s) => s.highContrast);
   const setHighContrast = useWebPreferences((s) => s.setHighContrast);
-  const controlDrawerOpen = useWebPreferences((s) => s.controlDrawerOpen);
-  const setControlDrawerOpen = useWebPreferences((s) => s.setControlDrawerOpen);
-  const toggleControlDrawer = useWebPreferences((s) => s.toggleControlDrawer);
   
   useBeginnerModeInit();
   const {
@@ -143,15 +141,6 @@ export default function App(): JSX.Element {
       root.classList.remove('high-contrast');
     }
   }, [highContrast]);
-
-  const handleFabToggle = useCallback(() => {
-    toggleControlDrawer();
-  }, [toggleControlDrawer]);
-
-  const handleFabLongPress = useCallback(() => {
-    setControlDrawerOpen(true);
-    openOverlayCtx('commandPalette');
-  }, [openOverlayCtx, setControlDrawerOpen]);
 
   useEffect(() => {
     const cleanup = initializeStorePersistence();
@@ -303,9 +292,14 @@ export default function App(): JSX.Element {
     ? `${currentPhage.name} - Phage Explorer`
     : 'Phage Explorer';
 
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.title = documentTitle;
+    }
+  }, [documentTitle]);
+
   return (
     <>
-      <title>{documentTitle}</title>
       {loadingOverlayNeeded && (
         <DataLoadingOverlay
           progress={progress}
@@ -544,6 +538,7 @@ export default function App(): JSX.Element {
           </div>
         </>
       )}
+      <TourEngine />
       <OverlayManager repository={repository} currentPhage={currentPhage} />
       {beginnerToast && (
         <div className="toast toast-info" role="status" aria-live="polite">

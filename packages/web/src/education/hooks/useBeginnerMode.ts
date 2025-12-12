@@ -7,7 +7,6 @@
  * Part of: phage_explorer-owsv task
  */
 
-import * as React from 'react';
 import { useCallback, useMemo, useEffect, useState } from 'react';
 import {
   usePhageStore,
@@ -40,6 +39,8 @@ export interface BeginnerModeContext {
   activeTourId: string | null;
   /** Start a guided tour */
   startTour: (tourId: string) => void;
+  /** Cancel the active tour without completing it */
+  cancelTour: () => void;
   /** Check if a specific tour has been completed */
   hasCompletedTour: (tourId: string) => boolean;
   /** Check if a specific module has been completed */
@@ -106,6 +107,7 @@ export function useBeginnerMode(): BeginnerModeContext {
   const openGlossaryAction = usePhageStore((s) => s.openGlossary);
   const closeGlossaryAction = usePhageStore((s) => s.closeGlossary);
   const startTourAction = usePhageStore((s) => s.startTour);
+  const cancelTourAction = usePhageStore((s) => s.cancelTour);
   const completeTourAction = usePhageStore((s) => s.completeTour);
   const completeModuleAction = usePhageStore((s) => s.completeModule);
   const resetBeginnerProgress = usePhageStore((s) => s.resetBeginnerProgress);
@@ -142,6 +144,10 @@ export function useBeginnerMode(): BeginnerModeContext {
     startTourAction(tourId);
   }, [startTourAction]);
 
+  const cancelTour = useCallback(() => {
+    cancelTourAction();
+  }, [cancelTourAction]);
+
   const hasCompletedTour = useCallback((tourId: string) => {
     return completedTours.includes(tourId);
   }, [completedTours]);
@@ -175,6 +181,7 @@ export function useBeginnerMode(): BeginnerModeContext {
     showContextFor,
     activeTourId,
     startTour,
+    cancelTour,
     hasCompletedTour,
     hasCompletedModule,
     completeTour,
@@ -193,6 +200,7 @@ export function useBeginnerMode(): BeginnerModeContext {
     showContextFor,
     activeTourId,
     startTour,
+    cancelTour,
     hasCompletedTour,
     hasCompletedModule,
     completeTour,

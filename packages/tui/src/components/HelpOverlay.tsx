@@ -95,7 +95,7 @@ export function HelpOverlay(): React.ReactElement {
           category: 'view' as KeyCategory,
           rows: [
             { key: 'N / C', desc: 'Toggle DNA / AA view' },
-            { key: 'F', desc: `Reading frame (${readingFrame + 1})`, note: 'AA only' },
+            { key: 'F', desc: `Reading frame (${readingFrame >= 0 ? readingFrame + 1 : `rev ${Math.abs(readingFrame)}`})`, note: 'AA only' },
             { key: 'T', desc: `Theme: ${theme.name}` },
             { key: 'D', desc: `Diff mode ${diffEnabled ? '●' : '○'}` },
           ],

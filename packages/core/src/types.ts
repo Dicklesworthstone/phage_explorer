@@ -28,7 +28,7 @@ export interface AminoAcidInfo {
 export type ViewMode = 'dna' | 'aa' | 'dual';
 
 // Reading frame
-export type ReadingFrame = 0 | 1 | 2;
+export type ReadingFrame = 0 | 1 | 2 | -1 | -2 | -3;
 
 // Grid cell for rendering
 export interface GridCell {

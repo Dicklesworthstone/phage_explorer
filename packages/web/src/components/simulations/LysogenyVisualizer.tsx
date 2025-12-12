@@ -4,7 +4,7 @@
  * Displays CI/Cro concentrations and phase diagram.
  */
 
-import React, { useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import type { LysogenyCircuitState } from '../../workers/types';
 
@@ -22,6 +22,28 @@ export function LysogenyVisualizer({
   const { theme } = useTheme();
   const colors = theme.colors;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const ciColor = colors.success;
+  const croColor = colors.error;
+
+  const ciCroSpark = useMemo(() => {
+    const history = state.history ?? [];
+    if (history.length < 2) return '';
+    const values = history.map(h => h.ci - h.cro);
+    const bars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    const width = 24;
+    const trimmed = values.slice(-width);
+    const min = Math.min(...trimmed);
+    const max = Math.max(...trimmed);
+    if (min === max) return bars[0].repeat(trimmed.length);
+    return trimmed
+      .map(v => {
+        const t = (v - min) / (max - min);
+        const idx = Math.min(bars.length - 1, Math.max(0, Math.round(t * (bars.length - 1))));
+        return bars[idx];
+      })
+      .join('');
+  }, [state.history]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -75,7 +97,7 @@ export function LysogenyVisualizer({
 
     // Draw CI line
     ctx.beginPath();
-    ctx.strokeStyle = '#4CAF50'; // Green for CI (lysogeny)
+    ctx.strokeStyle = ciColor;
     ctx.lineWidth = 2;
     history.forEach((point, i) => {
       const x = padding.left + (i / (history.length - 1 || 1)) * chartWidth;
@@ -87,7 +109,7 @@ export function LysogenyVisualizer({
 
     // Draw Cro line
     ctx.beginPath();
-    ctx.strokeStyle = '#F44336'; // Red for Cro (lytic)
+    ctx.strokeStyle = croColor;
     ctx.lineWidth = 2;
     history.forEach((point, i) => {
       const x = padding.left + (i / (history.length - 1 || 1)) * chartWidth;
@@ -99,17 +121,17 @@ export function LysogenyVisualizer({
 
     // Legend
     ctx.font = '11px monospace';
-    ctx.fillStyle = '#4CAF50';
+    ctx.fillStyle = ciColor;
     ctx.textAlign = 'left';
     ctx.fillText('CI', padding.left + 10, padding.top + 5);
-    ctx.fillStyle = '#F44336';
+    ctx.fillStyle = croColor;
     ctx.fillText('Cro', padding.left + 40, padding.top + 5);
-  }, [state, width, height, colors]);
+  }, [state, width, height, colors, ciColor, croColor]);
 
   // Phase indicator
   const phaseColors = {
-    lysogenic: '#4CAF50',
-    lytic: '#F44336',
+    lysogenic: ciColor,
+    lytic: croColor,
     undecided: colors.warning,
   };
 
@@ -149,16 +171,34 @@ export function LysogenyVisualizer({
           </span>
         </div>
         <div style={{ display: 'flex', gap: '1rem', fontFamily: 'monospace', fontSize: '0.85rem' }}>
-          <span style={{ color: '#4CAF50' }}>CI: {state.ci.toFixed(2)}</span>
-          <span style={{ color: '#F44336' }}>Cro: {state.cro.toFixed(2)}</span>
+          <span style={{ color: ciColor }}>CI: {state.ci.toFixed(2)}</span>
+          <span style={{ color: croColor }}>Cro: {state.cro.toFixed(2)}</span>
         </div>
       </div>
 
       {/* Chart */}
       <canvas
         ref={canvasRef}
-        style={{ width: `${width}px`, height: `${height}px`, borderRadius: '4px' }}
+        style={{
+          width: `${width}px`,
+          height: `${height}px`,
+          borderRadius: '4px',
+          border: `1px solid ${colors.borderLight}`,
+        }}
       />
+
+      {ciCroSpark && (
+        <div
+          style={{
+            fontFamily: 'monospace',
+            fontSize: '0.75rem',
+            color: colors.textMuted,
+            textAlign: 'center',
+          }}
+        >
+          CI−Cro trend: <span style={{ color: colors.accent }}>{ciCroSpark}</span>
+        </div>
+      )}
     </div>
   );
 }

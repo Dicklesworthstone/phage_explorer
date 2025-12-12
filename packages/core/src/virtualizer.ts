@@ -68,7 +68,10 @@ export function buildGrid(
     }
   } else {
     // AA mode - translate and display amino acids
-    const aaSequence = translateSequence(sequence, frame);
+    const forwardFrame: 0 | 1 | 2 = frame >= 0
+      ? (frame as 0 | 1 | 2)
+      : ((Math.abs(frame) - 1) as 0 | 1 | 2);
+    const aaSequence = translateSequence(sequence, forwardFrame);
 
     for (let row = 0; row < viewportRows; row++) {
       const rowStart = row * viewportCols;
@@ -79,7 +82,7 @@ export function buildGrid(
         if (aaIndex >= aaSequence.length) break;
 
         // Calculate the DNA position for this AA
-        const dnaPos = startIndex + frame + aaIndex * 3;
+        const dnaPos = startIndex + forwardFrame + aaIndex * 3;
         cells.push({
           char: aaSequence[aaIndex],
           position: dnaPos,
@@ -102,7 +105,10 @@ export function applyDiff(
   mode: ViewMode,
   frame: ReadingFrame
 ): GridRow[] {
-  const refToCompare = mode === 'aa' ? translateSequence(referenceSequence, frame) : referenceSequence;
+  const forwardFrame: 0 | 1 | 2 = frame >= 0
+    ? (frame as 0 | 1 | 2)
+    : ((Math.abs(frame) - 1) as 0 | 1 | 2);
+  const refToCompare = mode === 'aa' ? translateSequence(referenceSequence, forwardFrame) : referenceSequence;
 
   return grid.map(row => ({
     ...row,
@@ -110,7 +116,7 @@ export function applyDiff(
       // Calculate the index in the reference to compare
       let refIndex: number;
       if (mode === 'aa') {
-        refIndex = Math.floor((cell.position - frame) / 3);
+        refIndex = Math.floor((cell.position - forwardFrame) / 3);
       } else {
         refIndex = cell.position;
       }

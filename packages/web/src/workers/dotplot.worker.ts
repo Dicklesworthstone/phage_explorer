@@ -56,15 +56,12 @@ self.onmessage = (event: MessageEvent<DotPlotJob>) => {
 
     // Transfer ArrayBuffers for efficiency
     const transferList: Transferable[] = [directValues.buffer, invertedValues.buffer];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (self as any).postMessage(response, transferList);
     return;
   } catch (err) {
-    // eslint-disable-next-line no-console
     console.error('DotPlot worker error:', err);
     response.error = err instanceof Error ? err.message : 'Dot plot computation failed';
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (self as any).postMessage(response);
 };

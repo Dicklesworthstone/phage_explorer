@@ -7,9 +7,9 @@
  */
 
 import type { Theme, ViewMode, ReadingFrame } from '@phage-explorer/core';
-import { GlyphAtlas } from './GlyphAtlas';
+import type { GlyphAtlas } from './GlyphAtlas';
 import { VirtualScroller, type VisibleRange } from './VirtualScroller';
-import { PostProcessPipeline, type PostProcessOptions } from './PostProcessPipeline';
+import type { PostProcessPipeline } from './PostProcessPipeline';
 
 export interface SequenceGridOptions {
   /** Canvas element to render to */
@@ -144,9 +144,6 @@ function getDefaultZoomScale(viewportWidth: number): number {
   if (viewportWidth < 768) return 1.2;  // Larger phones: slight zoom
   return 1.0;                            // Tablets/desktop: standard zoom
 }
-
-const DEFAULT_CELL_WIDTH = 16;
-const DEFAULT_CELL_HEIGHT = 20;
 
 export class CanvasSequenceGridRenderer {
   private canvas: HTMLCanvasElement;
@@ -756,7 +753,12 @@ export class CanvasSequenceGridRenderer {
     const { cellWidth, cellHeight } = this;
     const rowHeight = cellHeight * 2;
     const { offsetY, startRow, endRow } = range;
-    const readingFrame = this.currentState?.readingFrame ?? 0;
+    const rawFrame = this.currentState?.readingFrame ?? 0;
+    const isReverse = rawFrame < 0;
+    const forwardFrame: 0 | 1 | 2 = isReverse
+      ? ((Math.abs(rawFrame) - 1) as 0 | 1 | 2)
+      : (rawFrame as 0 | 1 | 2);
+    const seqLength = sequence.length;
 
     for (let row = startRow; row < endRow; row++) {
       const rowY = (row - startRow) * rowHeight + offsetY;
@@ -802,9 +804,18 @@ export class CanvasSequenceGridRenderer {
 
       // Second pass: amino acids (bottom row, aligned per codon)
       for (let i = rowStart; i < rowEnd; i += 3) {
-        const codonOffset = i - readingFrame;
-        if (codonOffset < 0 || codonOffset % 3 !== 0) continue;
-        const aaIndex = Math.floor(codonOffset / 3);
+        let aaIndex: number;
+        if (!isReverse) {
+          const codonOffset = i - forwardFrame;
+          if (codonOffset < 0 || codonOffset % 3 !== 0) continue;
+          aaIndex = Math.floor(codonOffset / 3);
+        } else {
+          // Reverse frames map codons from the 3' end back toward 5'
+          const rcStart = seqLength - 3 - i;
+          const codonOffset = rcStart - forwardFrame;
+          if (codonOffset < 0 || codonOffset % 3 !== 0) continue;
+          aaIndex = Math.floor(codonOffset / 3);
+        }
         const aaChar = aminoSequence[aaIndex] ?? 'X';
 
         const col = i - rowStart;

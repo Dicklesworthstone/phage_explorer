@@ -1,5 +1,3 @@
-import { GeneInfo } from '@phage-explorer/core';
-
 // In-browser download helper
 export function downloadString(content: string, filename: string, mimeType = 'text/plain'): void {
   const blob = new Blob([content], { type: mimeType });

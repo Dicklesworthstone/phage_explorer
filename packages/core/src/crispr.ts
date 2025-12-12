@@ -1,5 +1,5 @@
 import type { GeneInfo } from './types';
-import { translateSequence } from './codons';
+import { translateSequence, reverseComplement } from './codons';
 
 export interface SpacerHit {
   position: number;
@@ -57,7 +57,8 @@ function predictAcrCandidates(genes: GeneInfo[], fullSequence: string): AcrCandi
 
   for (const gene of genes) {
     const geneSeq = fullSequence.slice(gene.startPos - 1, gene.endPos);
-    const protein = translateSequence(geneSeq); // Assumes we have this helper or similar
+    const seqForTranslation = gene.strand === '-' ? reverseComplement(geneSeq) : geneSeq;
+    const protein = translateSequence(seqForTranslation);
     const length = protein.length;
 
     // Acr proteins are typically small (50-200 aa)
@@ -144,7 +145,7 @@ export function analyzeCRISPRPressure(sequence: string, genes: GeneInfo[]): CRIS
     const numRandomHits = Math.floor(sequence.length / 2000);
     for (let i = 0; i < numRandomHits; i++) {
         spacerHits.push({
-            position: Math.floor(Math.random() * sequence.length),
+            position: Math.floor(Math.random() * sequence.length) + 1,
             sequence: 'RANDOM',
             host: 'S. enterica',
             crisprType: 'I',

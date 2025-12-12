@@ -6,7 +6,7 @@
  */
 
 import { create } from 'zustand';
-import type { PeerId, SessionId, UserPresence, SyncMessage, SessionState } from './types';
+import type { SessionId, UserPresence, SyncMessage, SessionState } from './types';
 
 // Generate a random ID
 const generateId = () => Math.random().toString(36).substr(2, 9);
@@ -173,7 +173,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => {
       });
     },
 
-    broadcastState: (_payload) => {
+    broadcastState: () => {
       // Placeholder for state sync
     },
 

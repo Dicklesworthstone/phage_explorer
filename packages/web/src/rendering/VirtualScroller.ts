@@ -347,7 +347,7 @@ export class VirtualScroller {
   /**
    * Handle touch end
    */
-  handleTouchEnd(_event: TouchEvent): void {
+  handleTouchEnd(): void {
     // Start momentum if velocity is significant
     const speed = Math.abs(this.state.velocityX) + Math.abs(this.state.velocityY);
     if (this.options.momentum && speed > 2) {
@@ -543,7 +543,6 @@ export class VirtualScroller {
    * Prefetch ahead of scroll direction
    */
   prefetchAhead(direction: 'up' | 'down' | 'left' | 'right', distance: number): VisibleRange {
-    const { itemHeight, itemWidth, overscan } = this.options;
     const currentRange = this.getVisibleRange();
 
     let prefetchStartRow = currentRange.startRow;

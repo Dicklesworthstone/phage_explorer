@@ -111,7 +111,6 @@ export function ArcDiagram({
         if (!source || !target) continue;
         const x1 = padding + source.position * availableW;
         const x2 = padding + target.position * availableW;
-        const mid = (x1 + x2) / 2;
         const arcHeight = Math.max(12, Math.abs(x2 - x1) / 3);
         const span = x2 - x1;
         const denom = span === 0 ? 1 : span;

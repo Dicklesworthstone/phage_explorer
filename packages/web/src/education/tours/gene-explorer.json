@@ -1,0 +1,58 @@
+{
+  "id": "gene-explorer",
+  "title": "Gene Explorer Tour",
+  "description": "Focus on gene‑level features: ORFs, start/stop codons, and protein‑coding regions.",
+  "estimatedMinutes": 2,
+  "steps": [
+    {
+      "id": "gene-map",
+      "title": "Genes on the map",
+      "content": "The gene map shows predicted genes on forward (top) and reverse (bottom) strands.",
+      "target": ".gene-map-container",
+      "position": "bottom"
+    },
+    {
+      "id": "jump-to-gene",
+      "title": "Jump to a gene",
+      "content": "Click a gene region in the map to jump the sequence viewer to that position.",
+      "target": ".gene-map-container",
+      "position": "bottom"
+    },
+    {
+      "id": "sequence-region",
+      "title": "Reading an ORF",
+      "content": "An ORF (open reading frame) is a stretch of DNA that can be translated into a protein. Look for long regions without stop codons in a frame.",
+      "target": "canvas[aria-label=\"Genome sequence canvas\"]",
+      "position": "top"
+    },
+    {
+      "id": "start-stop",
+      "title": "Start and stop codons",
+      "content": "Start codons (usually ATG) mark translation start; stop codons (TAA/TAG/TGA) terminate translation. In AA view, stops appear as *.",
+      "target": ".view-mode-toggle",
+      "position": "bottom"
+    },
+    {
+      "id": "reading-frames",
+      "title": "Reading frames matter",
+      "content": "Switch to Amino Acids and press f to cycle frames. A real gene will show a coherent protein in one frame and nonsense in others.",
+      "target": ".view-mode-toggle",
+      "position": "bottom"
+    },
+    {
+      "id": "protein-properties",
+      "title": "Protein properties",
+      "content": "Amino acids are colored by chemistry (hydrophobic, polar, acidic, basic). Patterns can hint at membrane proteins or enzymes.",
+      "target": "canvas[aria-label=\"Genome sequence canvas\"]",
+      "position": "top"
+    },
+    {
+      "id": "codon-usage",
+      "title": "Codon usage",
+      "content": "Use the command palette (:) to open Codon Usage or Bias overlays. Skewed usage can indicate host adaptation or horizontal transfer.",
+      "target": ".footer-hints",
+      "position": "top"
+    }
+  ]
+}
+

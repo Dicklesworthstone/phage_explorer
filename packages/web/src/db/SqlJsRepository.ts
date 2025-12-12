@@ -376,7 +376,7 @@ export class SqlJsRepository implements PhageRepository {
     return results[0]?.value ?? null;
   }
 
-  async setPreference(key: string, value: string): Promise<void> {
+  async setPreference(): Promise<void> {
     // Note: sql.js databases are typically read-only in browser
     // Preferences should be stored in localStorage instead
     console.warn('setPreference not supported in browser mode - use localStorage');

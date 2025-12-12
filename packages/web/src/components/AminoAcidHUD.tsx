@@ -12,7 +12,6 @@ import {
   getClassificationLabel,
   getClassificationColor,
   getRnaCodons,
-  type AminoAcidDetailedInfo,
 } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
 
@@ -23,8 +22,6 @@ export interface AminoAcidHUDProps {
   position: { x: number; y: number } | null;
   /** Whether the HUD is visible */
   visible: boolean;
-  /** Callback when HUD should close */
-  onClose?: () => void;
 }
 
 /**
@@ -42,7 +39,6 @@ export function AminoAcidHUD({
   aminoAcid,
   position,
   visible,
-  onClose,
 }: AminoAcidHUDProps): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
@@ -58,7 +54,6 @@ export function AminoAcidHUD({
     const hud = hudRef.current;
     const rect = hud.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
 
     // Adjust horizontal position
     let left = position.x - rect.width / 2;

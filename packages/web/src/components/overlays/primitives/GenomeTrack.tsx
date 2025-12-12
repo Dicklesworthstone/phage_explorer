@@ -88,7 +88,6 @@ export const GenomeTrack: React.FC<GenomeTrackProps> = ({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const baseY = height / 2;
     const handleMove = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
