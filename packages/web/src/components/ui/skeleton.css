@@ -1,0 +1,337 @@
+/**
+ * Skeleton Component Styles
+ *
+ * Premium skeleton loading animations with shimmer and pulse effects.
+ * Respects prefers-reduced-motion for accessibility.
+ *
+ * @see phage_explorer-milk - Create unified Skeleton component system
+ */
+
+/* ============================================================================
+ * CSS CUSTOM PROPERTIES FOR SKELETON
+ * ============================================================================ */
+
+:root {
+  /* Skeleton colors - derived from design system */
+  --skeleton-base: var(--color-background-alt, #12121a);
+  --skeleton-highlight: var(--color-background-hover, #1c1c27);
+  --skeleton-shimmer-start: var(--color-background-alt, #12121a);
+  --skeleton-shimmer-mid: var(--color-background-active, #1e1e2a);
+  --skeleton-shimmer-end: var(--color-background-alt, #12121a);
+
+  /* Animation timing */
+  --skeleton-pulse-duration: 1.5s;
+  --skeleton-shimmer-duration: 2s;
+}
+
+/* ============================================================================
+ * BASE SKELETON STYLES
+ * ============================================================================ */
+
+.skeleton {
+  display: block;
+  background-color: var(--skeleton-base);
+}
+
+/* Variant: Text */
+.skeleton--text {
+  border-radius: var(--radius-sm, 4px);
+  transform-origin: 0 50%;
+}
+
+/* Variant: Rectangle */
+.skeleton--rect {
+  border-radius: var(--radius-md, 6px);
+}
+
+/* Variant: Circular */
+.skeleton--circular {
+  border-radius: var(--radius-full, 9999px);
+}
+
+/* ============================================================================
+ * ANIMATION: PULSE
+ * ============================================================================ */
+
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.skeleton--pulse {
+  animation: skeleton-pulse var(--skeleton-pulse-duration) ease-in-out infinite;
+}
+
+/* ============================================================================
+ * ANIMATION: SHIMMER (Premium feel)
+ * ============================================================================ */
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton--shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-shimmer-start) 0%,
+    var(--skeleton-shimmer-start) 40%,
+    var(--skeleton-shimmer-mid) 50%,
+    var(--skeleton-shimmer-start) 60%,
+    var(--skeleton-shimmer-start) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer var(--skeleton-shimmer-duration) ease-in-out infinite;
+}
+
+/* No animation */
+.skeleton--none {
+  animation: none;
+  background: var(--skeleton-base);
+}
+
+/* ============================================================================
+ * ACCESSIBILITY: Reduced Motion
+ * ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton--pulse,
+  .skeleton--shimmer {
+    animation: none;
+    opacity: 0.5;
+    background: var(--skeleton-base);
+  }
+}
+
+/* ============================================================================
+ * COMPOSITE: SEQUENCE VIEW SKELETON
+ * ============================================================================ */
+
+.skeleton-sequence-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3, 12px);
+  padding: var(--space-4, 16px);
+  background: var(--color-background, #0a0a0f);
+  border-radius: var(--radius-lg, 10px);
+}
+
+.skeleton-sequence-view__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: var(--space-2, 8px);
+  border-bottom: 1px solid var(--color-border-subtle, #232330);
+}
+
+.skeleton-sequence-view__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+.skeleton-sequence-view__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+}
+
+.skeleton-sequence-view__gene-map {
+  margin-top: var(--space-2, 8px);
+  padding-top: var(--space-3, 12px);
+  border-top: 1px solid var(--color-border-subtle, #232330);
+}
+
+/* ============================================================================
+ * COMPOSITE: MODEL 3D SKELETON
+ * ============================================================================ */
+
+.skeleton-model3d {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  background: var(--color-background, #0a0a0f);
+  border-radius: var(--radius-lg, 10px);
+  overflow: hidden;
+}
+
+.skeleton-model3d__viewport {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 200px;
+}
+
+.skeleton-model3d__viewport > .skeleton {
+  position: absolute;
+  inset: 0;
+}
+
+.skeleton-model3d__center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
+
+.skeleton-model3d__controls {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  background: var(--color-background-elevated, #16161f);
+  border-top: 1px solid var(--color-border-subtle, #232330);
+}
+
+/* ============================================================================
+ * COMPOSITE: PHAGE LIST SKELETON
+ * ============================================================================ */
+
+.skeleton-phage-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.skeleton-phage-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px) var(--space-4, 16px);
+  background: var(--color-background-elevated, #16161f);
+  border-radius: var(--radius-md, 6px);
+}
+
+.skeleton-phage-list__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+/* ============================================================================
+ * COMPOSITE: GENE MAP SKELETON
+ * ============================================================================ */
+
+.skeleton-gene-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+  padding: var(--space-2, 8px) 0;
+}
+
+.skeleton-gene-map__track {
+  display: flex;
+  gap: var(--space-1, 4px);
+  height: 12px;
+}
+
+.skeleton-gene-map__track > .skeleton {
+  flex-shrink: 0;
+}
+
+/* ============================================================================
+ * COMPOSITE: ANALYSIS PANEL SKELETON
+ * ============================================================================ */
+
+.skeleton-analysis-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4, 16px);
+  padding: var(--space-4, 16px);
+  background: var(--color-background-elevated, #16161f);
+  border-radius: var(--radius-lg, 10px);
+  border: 1px solid var(--color-border-subtle, #232330);
+}
+
+.skeleton-analysis-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.skeleton-analysis-panel__stats {
+  display: flex;
+  gap: var(--space-6, 24px);
+}
+
+.skeleton-analysis-panel__stat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.skeleton-analysis-panel__chart {
+  margin: var(--space-2, 8px) 0;
+}
+
+.skeleton-analysis-panel__details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2, 8px);
+}
+
+/* ============================================================================
+ * COMPOSITE: SEARCH RESULTS SKELETON
+ * ============================================================================ */
+
+.skeleton-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.skeleton-search-results__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: var(--space-3, 12px);
+  background: var(--color-background-elevated, #16161f);
+  border-radius: var(--radius-md, 6px);
+}
+
+.skeleton-search-results__icon {
+  flex-shrink: 0;
+}
+
+.skeleton-search-results__content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1, 4px);
+}
+
+.skeleton-search-results__badge {
+  flex-shrink: 0;
+}
+
+/* ============================================================================
+ * ANIMATION ENHANCEMENTS: Staggered children
+ * ============================================================================ */
+
+/* Stagger animation for list items */
+.skeleton-phage-list__item:nth-child(1) { animation-delay: 0ms; }
+.skeleton-phage-list__item:nth-child(2) { animation-delay: 50ms; }
+.skeleton-phage-list__item:nth-child(3) { animation-delay: 100ms; }
+.skeleton-phage-list__item:nth-child(4) { animation-delay: 150ms; }
+.skeleton-phage-list__item:nth-child(5) { animation-delay: 200ms; }
+
+.skeleton-search-results__item:nth-child(1) { animation-delay: 0ms; }
+.skeleton-search-results__item:nth-child(2) { animation-delay: 50ms; }
+.skeleton-search-results__item:nth-child(3) { animation-delay: 100ms; }
+.skeleton-search-results__item:nth-child(4) { animation-delay: 150ms; }
+
+/* Apply stagger to shimmer animation within items */
+.skeleton-phage-list__item .skeleton--shimmer,
+.skeleton-search-results__item .skeleton--shimmer {
+  animation-delay: inherit;
+}
