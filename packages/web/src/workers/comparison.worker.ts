@@ -263,14 +263,17 @@ function computeDiff(sequenceA: string, sequenceB: string): DiffComputation {
 
   if (!success) {
     // Return empty/partial result if failed
+    // Fill with 1 (substitution) to indicate difference/unknown rather than match
+    const mask = new Uint8Array(n).fill(1);
+    
     return {
-      mask: new Uint8Array(n),
-      positions: [],
+      mask,
+      positions: [], // No specific navigation points
       stats: {
         insertions: 0,
         deletions: 0,
-        substitutions: 0,
-        matches: n,
+        substitutions: n,
+        matches: 0,
         lengthA: n,
         lengthB: m,
         identity: 0, 
