@@ -66,6 +66,7 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <DotPlotOverlay repository={repository} currentPhage={currentPhage} />
       <SyntenyOverlay repository={repository} currentPhage={currentPhage} />
       <SettingsOverlay />
+      <FeatureTour />
       <CommandPalette />
     </>
   );
