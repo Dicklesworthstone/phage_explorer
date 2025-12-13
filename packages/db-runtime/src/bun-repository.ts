@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
-import { eq, like, or, asc, desc, and, gte, lte, sql } from 'drizzle-orm';
+import { eq, or, asc, desc, and, gte, lte, sql } from 'drizzle-orm';
 import {
   phages,
   sequences,

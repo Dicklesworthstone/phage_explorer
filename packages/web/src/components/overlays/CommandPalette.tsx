@@ -113,6 +113,19 @@ function meetsLevelRequirement(userLevel: ExperienceLevel, requiredLevel?: Exper
   return LEVEL_ORDER[userLevel] >= LEVEL_ORDER[requiredLevel];
 }
 
+// Category icons for visual scanning
+const CATEGORY_ICONS: Record<string, string> = {
+  Theme: '🎨',
+  Navigation: '🧭',
+  Analysis: '📊',
+  Advanced: '🔬',
+  View: '👁',
+  Export: '📤',
+  Simulation: '⚙️',
+  Reference: '📖',
+  Education: '🎓',
+};
+
 // Recent commands storage
 const RECENT_COMMANDS_KEY = 'phage-explorer-recent-commands';
 const MAX_RECENT_COMMANDS = 5;
@@ -547,14 +560,25 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         {/* Experience level filter */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span style={{ color: colors.textMuted, fontSize: '0.9rem' }}>Experience</span>
+        <div
+          role="group"
+          aria-label="Experience level filter"
+          style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}
+        >
+          <span id="exp-level-label" style={{ color: colors.textMuted, fontSize: '0.9rem' }}>Experience</span>
           {(['novice', 'intermediate', 'power'] as ExperienceLevel[]).map((level) => {
             const active = level === experienceLevel;
+            const descriptions: Record<ExperienceLevel, string> = {
+              novice: 'Show only essential commands',
+              intermediate: 'Show standard and analysis commands',
+              power: 'Show all commands including advanced features',
+            };
             return (
               <button
                 key={level}
                 onClick={() => setExperienceLevel(level)}
+                aria-pressed={active}
+                aria-label={`${level} experience level: ${descriptions[level]}`}
                 style={{
                   padding: '0.35rem 0.65rem',
                   borderRadius: '4px',
@@ -570,7 +594,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
               </button>
             );
           })}
-          <span style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
+          <span style={{ color: colors.textMuted, fontSize: '0.85rem' }} aria-hidden="true">
             Novice shows core actions; Power reveals everything.
           </span>
         </div>
@@ -586,18 +610,38 @@ export function CommandPalette({ commands: customCommands, context: propContext 
           className="input"
           autoComplete="off"
           spellCheck={false}
+          aria-label="Search commands"
+          aria-describedby="command-palette-hints"
+          aria-controls="command-palette-list"
+          aria-activedescendant={totalItems > 0 ? `cmd-item-${selectedIndex}` : undefined}
+          role="combobox"
+          aria-expanded="true"
+          aria-haspopup="listbox"
         />
+
+        {/* Screen reader result announcement */}
+        <div
+          aria-live="polite"
+          aria-atomic="true"
+          className="sr-only"
+          style={{ position: 'absolute', left: '-9999px', height: '1px', overflow: 'hidden' }}
+        >
+          {query.trim() ? `${filteredCommands.length} commands found` : `${totalItems} commands available`}
+        </div>
 
         {/* Command list */}
         <div
           ref={listRef}
+          id="command-palette-list"
+          role="listbox"
+          aria-label="Available commands"
           className="scrollable-y"
           style={{ maxHeight: '400px' }}
         >
           {/* Recent commands section (only show when no query) */}
           {showRecent && (
-            <div>
-              <div className="text-muted text-xs uppercase tracking-wider p-2 border-b border-border-light flex items-center gap-2">
+            <div role="group" aria-label="Recent commands">
+              <div className="text-muted text-xs uppercase tracking-wider p-2 border-b border-border-light flex items-center gap-2" aria-hidden="true">
                 <span>⏱</span>
                 <span>Recent</span>
               </div>
@@ -608,15 +652,19 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                 return (
                   <div
                     key={`recent-${cmd.id}`}
+                    id={`cmd-item-${currentIndex}`}
                     data-cmd-index={currentIndex}
                     onClick={() => executeCommand(cmd)}
                     className={`list-item ${isSelected ? 'active' : ''}`}
+                    role="option"
+                    aria-selected={isSelected}
+                    tabIndex={-1}
                   >
                     <span className={isSelected ? 'text-text' : 'text-dim'}>
                       {cmd.label}
                     </span>
                     {cmd.shortcut && (
-                      <span className="key-hint">
+                      <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
                         {cmd.shortcut}
                       </span>
                     )}
@@ -627,9 +675,11 @@ export function CommandPalette({ commands: customCommands, context: propContext 
           )}
 
           {Object.entries(groupedCommands).map(([category, cmds]) => (
-            <div key={category}>
-              <div className="text-muted text-xs uppercase tracking-wider p-2 border-b border-border-light">
-                {category}
+            <div key={category} role="group" aria-label={`${category} commands`}>
+              <div className="text-muted text-xs uppercase tracking-wider p-2 border-b border-border-light flex items-center gap-2" aria-hidden="true">
+                <span>{CATEGORY_ICONS[category] || '📁'}</span>
+                <span>{category}</span>
+                <span style={{ fontSize: '0.7rem', opacity: 0.6 }}>({cmds.length})</span>
               </div>
               {cmds.map((cmd) => {
                 const currentIndex = flatIndex++;
@@ -638,9 +688,13 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                 return (
                   <div
                     key={cmd.id}
+                    id={`cmd-item-${currentIndex}`}
                     data-cmd-index={currentIndex}
                     onClick={() => executeCommand(cmd)}
                     className={`list-item ${isSelected ? 'active' : ''}`}
+                    role="option"
+                    aria-selected={isSelected}
+                    tabIndex={-1}
                   >
                     <div>
                       <span className={isSelected ? 'text-text' : 'text-dim'}>
@@ -655,7 +709,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                       )}
                     </div>
                     {cmd.shortcut && (
-                      <span className="key-hint">
+                      <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
                         {cmd.shortcut}
                       </span>
                     )}
@@ -677,14 +731,17 @@ export function CommandPalette({ commands: customCommands, context: propContext 
         </div>
 
         {/* Footer hints */}
-        <div style={{
-          display: 'flex',
-          gap: '1rem',
-          padding: '0.5rem',
-          borderTop: `1px solid ${colors.borderLight}`,
-          color: colors.textMuted,
-          fontSize: '0.75rem',
-        }}>
+        <div
+          id="command-palette-hints"
+          style={{
+            display: 'flex',
+            gap: '1rem',
+            padding: '0.5rem',
+            borderTop: `1px solid ${colors.borderLight}`,
+            color: colors.textMuted,
+            fontSize: '0.75rem',
+          }}
+        >
           <span>↑↓ Navigate</span>
           <span>Enter Select</span>
           <span>Tab Complete</span>
