@@ -69,7 +69,7 @@ function reverseComplement(seq: string): string {
 
 function translateGeneSequence(genome: string, gene: GeneInfo): string {
   if (!genome) return '';
-  const start = Math.max(0, gene.startPos - 1); // stored as 1-based
+  const start = Math.max(0, gene.startPos); // stored as 0-based
   const end = Math.min(genome.length, gene.endPos);
   const raw = genome.slice(start, end);
   const dna = gene.strand === '-' ? reverseComplement(raw) : raw;
