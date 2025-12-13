@@ -617,6 +617,7 @@ export default function App(): JSX.Element {
     { combo: { key: '?' }, description: 'Help overlay', action: () => openOverlayCtx('help'), modes: ['NORMAL'] },
     { combo: { key: '/' }, description: 'Search', action: () => openOverlayCtx('search'), modes: ['NORMAL'] },
     { combo: { key: ':' }, description: 'Command palette', action: () => openOverlayCtx('commandPalette'), modes: ['NORMAL'] },
+    { combo: { key: ',', modifiers: { ctrl: true } }, description: 'Open settings', action: () => openOverlayCtx('settings'), modes: ['NORMAL'] },
     {
       combo: { key: 'b', modifiers: { ctrl: true } },
       description: 'Toggle beginner mode',
@@ -648,6 +649,7 @@ export default function App(): JSX.Element {
     { key: 'v/f', label: 'view/frame', description: 'Toggle DNA/AA view and reading frame' },
     { key: 'Home/End', label: 'jump', description: 'Jump to start/end of sequence' },
     { key: 'Esc', label: 'close', description: 'Close overlays or glossary' },
+    { key: 'Ctrl+,', label: 'settings', description: 'Open settings' },
     { key: 'Ctrl+B', label: 'beginner', description: 'Toggle beginner mode' },
   ]), []);
 

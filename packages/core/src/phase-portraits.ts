@@ -114,7 +114,10 @@ function covariance(matrix: number[][]): number[][] {
 // Power iteration to get leading eigenvector/value
 function powerIteration(mat: number[][], iters = 40): { vector: number[]; value: number } {
   const n = mat.length;
-  let v = Array(n).fill(1 / Math.sqrt(n));
+  // Initialize with random vector to avoid orthogonality with dominant eigenvector
+  let v = Array.from({ length: n }, () => Math.random() - 0.5);
+  const normInit = Math.hypot(...v) || 1;
+  v = v.map(x => x / normInit);
 
   const mv = () => mat.map(row => row.reduce((acc, val, idx) => acc + val * v[idx], 0));
 
@@ -130,13 +133,13 @@ function powerIteration(mat: number[][], iters = 40): { vector: number[]; value:
 }
 
 // Project centered data onto eigenvectors (top 2)
-function project(matrix: number[][], eig1: number[], eig2: number[]): { coords: { x: number; y: number }[]; ev: [number, number] } {
+function project(matrix: number[][], eig1: number[], eig2: number[]): { coords: { x: number; y: number }[] } {
   const coords = matrix.map(row => ({
     x: row.reduce((acc, val, idx) => acc + val * eig1[idx], 0),
     y: row.reduce((acc, val, idx) => acc + val * eig2[idx], 0),
   }));
 
-  // Normalize to 0..1 for plotting
+  // Normalize to 0..1 for plotting, preserving aspect ratio
   const xs = coords.map(c => c.x);
   const ys = coords.map(c => c.y);
   const minX = Math.min(...xs);
@@ -145,14 +148,14 @@ function project(matrix: number[][], eig1: number[], eig2: number[]): { coords: 
   const maxY = Math.max(...ys);
   const spanX = maxX - minX || 1;
   const spanY = maxY - minY || 1;
+  const maxSpan = Math.max(spanX, spanY);
 
   const normalized = coords.map(c => ({
-    x: (c.x - minX) / spanX,
-    y: (c.y - minY) / spanY,
+    x: (c.x - minX) / maxSpan + (maxSpan - spanX) / (2 * maxSpan), // Center horizontally if narrower
+    y: (c.y - minY) / maxSpan + (maxSpan - spanY) / (2 * maxSpan), // Center vertically if shorter
   }));
 
-  // Rough explained variance using Rayleigh quotients
-  return { coords: normalized, ev: [0, 0] }; // ev is calculated outside now
+  return { coords: normalized };
 }
 
 export function computePhasePortrait(aaSequence: string, window = 30, step = 5): PhasePortraitResult {
@@ -186,6 +189,11 @@ export function computePhasePortrait(aaSequence: string, window = 30, step = 5):
   ]);
 
   const cov = covariance(centered);
+  
+  // Calculate total variance (trace)
+  const totalVariance = cov.reduce((sum, row, i) => sum + row[i], 0);
+  const safeTotalVar = Math.max(1e-9, totalVariance);
+
   const { vector: eig1, value: val1 } = powerIteration(cov);
 
   // Deflate matrix for second eigenvector
@@ -195,8 +203,7 @@ export function computePhasePortrait(aaSequence: string, window = 30, step = 5):
   const { vector: eig2, value: val2 } = powerIteration(covDeflated);
 
   const { coords } = project(centered, eig1, eig2);
-  const evSum = Math.abs(val1) + Math.abs(val2) || 1;
-  const explained: [number, number] = [Math.abs(val1) / evSum, Math.abs(val2) / evSum];
+  const explained: [number, number] = [Math.abs(val1) / safeTotalVar, Math.abs(val2) / safeTotalVar];
 
   const points: PortraitPoint[] = vectors.map((v, idx) => ({
     ...v,

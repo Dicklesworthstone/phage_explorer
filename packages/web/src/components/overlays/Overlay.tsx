@@ -12,6 +12,23 @@
 import React, { useRef, useEffect, useCallback, useState, type ReactNode, type CSSProperties } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
+import {
+  IconAlertTriangle,
+  IconAperture,
+  IconBookmark,
+  IconCube,
+  IconDna,
+  IconFlask,
+  IconKeyboard,
+  IconLayers,
+  IconMagnet,
+  IconRepeat,
+  IconSearch,
+  IconShield,
+  IconTarget,
+  IconTrendingUp,
+  IconUsers,
+} from '../ui';
 
 export type OverlaySize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 export type OverlayPosition = 'center' | 'top' | 'bottom' | 'left' | 'right';
@@ -46,6 +63,34 @@ const SIZE_MAX_HEIGHTS: Record<OverlaySize, string> = {
   full: '95vh',
 };
 
+const OVERLAY_ICON_SIZE = 18;
+
+const OVERLAY_HEADER_ICONS: Partial<Record<OverlayId, React.ReactNode>> = {
+  help: <IconKeyboard size={OVERLAY_ICON_SIZE} />,
+  search: <IconSearch size={OVERLAY_ICON_SIZE} />,
+  aaKey: <IconDna size={OVERLAY_ICON_SIZE} />,
+  aaLegend: <IconBookmark size={OVERLAY_ICON_SIZE} />,
+  analysisMenu: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  simulationHub: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  complexity: <IconCube size={OVERLAY_ICON_SIZE} />,
+  gcSkew: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
+  bendability: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  promoter: <IconTarget size={OVERLAY_ICON_SIZE} />,
+  repeats: <IconRepeat size={OVERLAY_ICON_SIZE} />,
+  transcriptionFlow: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  pressure: <IconMagnet size={OVERLAY_ICON_SIZE} />,
+  modules: <IconLayers size={OVERLAY_ICON_SIZE} />,
+  kmerAnomaly: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  anomaly: <IconAlertTriangle size={OVERLAY_ICON_SIZE} />,
+  hilbert: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  crispr: <IconDna size={OVERLAY_ICON_SIZE} />,
+  tropism: <IconTarget size={OVERLAY_ICON_SIZE} />,
+  cgr: <IconDna size={OVERLAY_ICON_SIZE} />,
+  stability: <IconShield size={OVERLAY_ICON_SIZE} />,
+  welcome: <IconDna size={OVERLAY_ICON_SIZE} />,
+  collaboration: <IconUsers size={OVERLAY_ICON_SIZE} />,
+};
+
 export function Overlay({
   id,
   title,
@@ -75,6 +120,7 @@ export function Overlay({
   const effectivePosition: OverlayPosition = isPhone && position === 'center' ? 'bottom' : position;
   const isBottomSheet = isPhone && effectivePosition === 'bottom';
   const overlayBorderRadius = isBottomSheet ? '16px 16px 0 0' : '8px';
+  const resolvedIcon = typeof icon === 'string' ? OVERLAY_HEADER_ICONS[id] ?? icon : icon;
 
   // Handle close - use useCallback to avoid stale closures
   const handleClose = useCallback(() => {
@@ -258,8 +304,11 @@ export function Overlay({
         {/* Header */}
         <div style={headerStyle}>
           <div style={titleStyle}>
-            <span style={{ color: colors.primary, fontSize: '1.1rem', display: 'inline-flex', alignItems: 'center' }}>
-              {icon}
+            <span
+              aria-hidden="true"
+              style={{ color: colors.primary, fontSize: '1.1rem', display: 'inline-flex', alignItems: 'center' }}
+            >
+              {resolvedIcon}
             </span>
             <span
               id={`overlay-title-${id}`}

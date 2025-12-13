@@ -7,7 +7,15 @@
 
 import type { Database, Statement } from 'sql.js';
 import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData } from '@phage-explorer/core';
-import type { PhageRepository, CacheEntry } from './types';
+import type {
+  PhageRepository,
+  CacheEntry,
+  ProteinDomain,
+  AmgAnnotation,
+  DefenseSystem,
+  HostTrnaPool,
+  CodonAdaptation,
+} from './types';
 import { CHUNK_SIZE, CACHE_TTL } from './types';
 
 /**

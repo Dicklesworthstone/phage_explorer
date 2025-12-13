@@ -27,8 +27,8 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
 
   // Fetch target sequence when overlay is open
   useEffect(() => {
-    if (!isOpen('pressure') || !repository || !currentPhage) {
-      if (!isOpen('pressure')) setTargetSequence('');
+    if (!isOpen('selectionPressure') || !repository || !currentPhage) {
+      if (!isOpen('selectionPressure')) setTargetSequence('');
       return;
     }
 
@@ -54,7 +54,7 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
   }, [diffEnabled, targetSequence, diffReferenceSequence]);
 
   useEffect(() => {
-    if (!isOpen('pressure') || !canvasRef.current || !analysis) return;
+    if (!isOpen('selectionPressure') || !canvasRef.current || !analysis) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -101,14 +101,13 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
     };
   }, [isOpen, analysis, colors]);
 
-  if (!isOpen('pressure')) return null;
+  if (!isOpen('selectionPressure')) return null;
 
   return (
     <Overlay
-      id="pressure"
+      id="selectionPressure"
       title="SELECTION PRESSURE (dN/dS)"
-      icon="⚡"
-      hotkey="v" 
+      icon="ω"
       size="lg"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>

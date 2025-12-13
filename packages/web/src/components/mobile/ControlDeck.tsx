@@ -1,6 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { useOverlay } from '../overlays/OverlayProvider';
+import {
+  IconArrowLeft,
+  IconArrowRight,
+  IconChevronDown,
+  IconChevronUp,
+  IconCube,
+  IconDiff,
+  IconLayers,
+  IconRepeat,
+  IconSearch,
+  IconTarget,
+} from '../ui';
 
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => {
@@ -25,6 +37,7 @@ export function ControlDeck(): JSX.Element {
   const isLandscape = useMediaQuery('(orientation: landscape)');
   const isPhoneWidth = useMediaQuery('(max-width: 640px)');
   const isLandscapePhone = isLandscape && isPhoneWidth;
+  const deckIconSize = isLandscapePhone ? 18 : 20;
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
@@ -86,6 +99,7 @@ export function ControlDeck(): JSX.Element {
     setReadingFrame(frames[(idx + 1) % frames.length]);
   };
 
+  const viewModeShortLabel = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'AA' : 'Dual';
   const viewModeLabel = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'Amino Acids' : 'Dual';
   const frameLabel = readingFrame === 0 ? '+1' : readingFrame > 0 ? `+${readingFrame + 1}` : `${readingFrame}`;
 
@@ -102,8 +116,10 @@ export function ControlDeck(): JSX.Element {
                 onClick={toggleViewMode}
                 aria-label={`Cycle view mode, current ${viewModeLabel}`}
               >
-                <span className="icon">Aa</span>
-                <span className="label">Mode</span>
+                <span className="icon">
+                  <IconLayers size={deckIconSize} />
+                </span>
+                <span className="label">Mode {viewModeShortLabel}</span>
               </button>
               <button
                 type="button"
@@ -111,8 +127,10 @@ export function ControlDeck(): JSX.Element {
                 onClick={cycleFrame}
                 aria-label={`Cycle reading frame, current frame ${frameLabel}`}
               >
-                <span className="icon">F{frameLabel}</span>
-                <span className="label">Frame</span>
+                <span className="icon">
+                  <IconRepeat size={deckIconSize} />
+                </span>
+                <span className="label">Frame {frameLabel}</span>
               </button>
               <button
                 type="button"
@@ -121,7 +139,9 @@ export function ControlDeck(): JSX.Element {
                 aria-pressed={diffEnabled}
                 aria-label={`Toggle diff mode, currently ${diffEnabled ? 'on' : 'off'}`}
               >
-                <span className="icon">±</span>
+                <span className="icon">
+                  <IconDiff size={deckIconSize} />
+                </span>
                 <span className="label">Diff</span>
               </button>
               <button
@@ -131,7 +151,9 @@ export function ControlDeck(): JSX.Element {
                 aria-pressed={show3DModel}
                 aria-label={`Toggle 3D model, currently ${show3DModel ? 'on' : 'off'}`}
               >
-                <span className="icon">🧊</span>
+                <span className="icon">
+                  <IconCube size={deckIconSize} />
+                </span>
                 <span className="label">3D</span>
               </button>
             </div>
@@ -145,7 +167,9 @@ export function ControlDeck(): JSX.Element {
                 onClick={() => open('search')}
                 aria-label="Open search"
               >
-                <span className="icon">🔍</span>
+                <span className="icon">
+                  <IconSearch size={deckIconSize} />
+                </span>
                 <span className="label">Search</span>
               </button>
               <button
@@ -154,7 +178,9 @@ export function ControlDeck(): JSX.Element {
                 onClick={() => open('goto')}
                 aria-label="Open go-to position"
               >
-                <span className="icon">Go</span>
+                <span className="icon">
+                  <IconTarget size={deckIconSize} />
+                </span>
                 <span className="label">Goto</span>
               </button>
               {/* Gene Navigation */}
@@ -164,7 +190,9 @@ export function ControlDeck(): JSX.Element {
                 onClick={() => handleGeneNav('prev')}
                 aria-label="Go to previous gene"
               >
-                <span className="icon">←</span>
+                <span className="icon">
+                  <IconArrowLeft size={deckIconSize} />
+                </span>
                 <span className="label">Prev Gene</span>
               </button>
               <button
@@ -173,7 +201,9 @@ export function ControlDeck(): JSX.Element {
                 onClick={() => handleGeneNav('next')}
                 aria-label="Go to next gene"
               >
-                <span className="icon">→</span>
+                <span className="icon">
+                  <IconArrowRight size={deckIconSize} />
+                </span>
                 <span className="label">Next Gene</span>
               </button>
             </div>
@@ -221,7 +251,9 @@ export function ControlDeck(): JSX.Element {
             aria-expanded={expanded}
             onClick={() => setExpanded((prev) => !prev)}
           >
-            {expanded ? '▼' : '▲'}
+            <span className="tab-btn-toggle-icon" aria-hidden="true">
+              {expanded ? <IconChevronDown size={18} /> : <IconChevronUp size={18} />}
+            </span>
           </button>
         )}
       </div>

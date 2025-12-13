@@ -108,7 +108,11 @@ function covariance(centered: number[][]): number[][] {
 // Power iteration for top eigenvector/value
 function powerIteration(mat: number[][], iters = 64): { vec: number[]; val: number } {
   const n = mat.length;
-  let v = Array(n).fill(1 / Math.sqrt(Math.max(1, n)));
+  // Initialize with random vector
+  let v = Array.from({ length: n }, () => Math.random() - 0.5);
+  const normInit = Math.hypot(...v) || 1;
+  v = v.map(x => x / normInit);
+
   const mv = (vector: number[]) => mat.map(row => row.reduce((sum, val, idx) => sum + val * vector[idx], 0));
 
   for (let i = 0; i < iters; i++) {
