@@ -150,7 +150,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
         let blocked = false;
         if (newPositionsReversed.length > 0) {
             const nextPos = newPositionsReversed[newPositionsReversed.length - 1]; 
-            if (nextPos - pos < footprint) {
+            if (nextPos - pos <= footprint) {
                 blocked = true;
             }
         }

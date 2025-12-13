@@ -203,25 +203,6 @@
   font-family: var(--font-mono);
 }
 
-.badge-tiny {
-  padding: 1px 5px;
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.badge-info {
-  background: rgba(56, 189, 248, 0.15);
-  color: var(--color-info);
-  border-color: rgba(56, 189, 248, 0.3);
-}
-
-.badge-warning {
-  background: rgba(251, 191, 36, 0.15);
-  color: var(--color-warning);
-  border-color: rgba(251, 191, 36, 0.3);
-}
-
 /* Hide metadata on very small screens */
 @media (max-width: 400px) {
   .list-item-meta {
@@ -598,11 +579,6 @@
   text-overflow: ellipsis;
 }
 
-.badge-small {
-  padding: 2px 6px;
-  font-size: var(--text-xs);
-}
-
 /* Hide text on smaller screens, keep icon */
 @media (max-width: 768px) {
   .db-status-bar {
@@ -764,6 +740,47 @@
   border-radius: var(--radius-full);
   border: 1px solid var(--color-badge-border);
   line-height: 1;
+}
+
+.badge-info {
+  background: rgba(34, 211, 238, 0.15);
+  color: var(--color-info);
+  border-color: rgba(34, 211, 238, 0.3);
+}
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--color-warning);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.badge-success {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--color-success);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.badge-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--color-error);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.badge.subtle {
+  background: var(--color-background);
+  color: var(--color-text-dim);
+  border-color: var(--color-border);
+}
+
+.badge-small {
+  padding: 2px 6px;
+  font-size: var(--text-xs);
+}
+
+.badge-tiny {
+  padding: 1px 5px;
+  font-size: 9px;
+  letter-spacing: 0.5px;
 }
 
 /* =============================================================================
