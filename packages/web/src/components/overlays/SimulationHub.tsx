@@ -146,16 +146,12 @@ function RecombinationThumbnail({ accentColor, mutedColor }: ThumbnailProps): Re
 
 function getSimulationThumbnail(simId: string, colors: ThumbnailProps): React.ReactElement | null {
   switch (simId) {
-    case 'lytic-cycle': return <LyticCycleThumbnail {...colors} />;
-    case 'lysogenic-switch': return <LysogenicSwitchThumbnail {...colors} />;
-    case 'burst-size': return <BurstSizeThumbnail {...colors} />;
-    case 'population-dynamics': return <PopulationDynamicsThumbnail {...colors} />;
-    case 'coinfection': return <CoinfectionThumbnail {...colors} />;
-    case 'dna-packaging': return <DNAPackagingThumbnail {...colors} />;
-    case 'transcription': return <TranscriptionThumbnail {...colors} />;
-    case 'receptor-binding': return <ReceptorBindingThumbnail {...colors} />;
-    case 'resistance-evolution': return <ResistanceEvolutionThumbnail {...colors} />;
-    case 'recombination': return <RecombinationThumbnail {...colors} />;
+    case 'lysogeny-circuit': return <LysogenicSwitchThumbnail {...colors} />;
+    case 'ribosome-traffic': return <TranscriptionThumbnail {...colors} />;
+    case 'plaque-automata': return <CoinfectionThumbnail {...colors} />;
+    case 'evolution-replay': return <ResistanceEvolutionThumbnail {...colors} />;
+    case 'packaging-motor': return <DNAPackagingThumbnail {...colors} />;
+    case 'infection-kinetics': return <PopulationDynamicsThumbnail {...colors} />;
     default: return null;
   }
 }
