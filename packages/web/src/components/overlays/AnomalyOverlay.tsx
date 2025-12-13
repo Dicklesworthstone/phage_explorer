@@ -20,6 +20,7 @@ import {
   HeatmapCanvas,
   ScatterCanvas,
 } from './primitives';
+import { ComplexAnalysisSkeleton } from '../ui/Skeleton';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { ScatterHover } from './primitives/types';
 import type {
@@ -297,9 +298,13 @@ export function AnomalyOverlay({
         </div>
 
         {(loading || !analysis) && (
-          <div style={{ padding: '1rem', color: colors.textMuted }}>
-            {loading ? 'Running anomaly analysis…' : error ?? 'No data available yet.'}
-          </div>
+          loading ? (
+            <ComplexAnalysisSkeleton showTrack showHeatmap showScatter showTable />
+          ) : (
+            <div style={{ padding: '1rem', color: colors.textMuted }}>
+              {error ?? 'No data available yet.'}
+            </div>
+          )
         )}
 
         {analysis && (

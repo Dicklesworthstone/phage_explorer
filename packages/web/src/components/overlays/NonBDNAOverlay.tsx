@@ -12,6 +12,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
 

@@ -52,7 +52,8 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     { id: 'speed-down', label: 'Slower', icon: '⏪', shortcut: '-', action: 'speed-down' },
   ],
 
-  init: (phage: PhageFull | null = null, params = {}): RibosomeTrafficState => {
+  init: (phage: PhageFull | null = null, params = {}, rng?: () => number): RibosomeTrafficState => {
+    const random = rng ?? Math.random;
     // Determine mRNA to simulate
     // For now, take the first gene's sequence or a chunk of the genome if no genes
     // Or simpler: just use a dummy sequence if no phage, or the first 300 codons of the genome
@@ -78,13 +79,11 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
       // OR we update the state later with real rates once loaded.
       
       // Generating synthetic rates for now to ensure it works
-      codonRates = Array.from({ length: 300 }, () => 0.1 + Math.random() * 0.9);
+      codonRates = Array.from({ length: 300 }, () => 0.1 + random() * 0.9);
     } else {
       // Synthetic mRNA
-      codonRates = Array.from({ length: 200 }, () => 0.1 + Math.random() * 0.9);
-      // Create a "bottleneck" in the middle
-      for(let i=100; i<110; i++) codonRates[i] = 0.05;
-    }
+      codonRates = Array.from({ length: 200 }, () => 0.1 + random() * 0.9);
+
 
     return {
       type: 'ribosome-traffic',
@@ -107,7 +106,8 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     };
   },
 
-  step: (state: RibosomeTrafficState, dt: number): RibosomeTrafficState => {
+  step: (state: RibosomeTrafficState, dt: number, rng?: () => number): RibosomeTrafficState => {
+    const random = rng ?? Math.random;
     const { ribosomes, codonRates, params } = state;
     const alpha = Number(params.initiationRate);
     const beta = Number(params.terminationRate);
@@ -131,7 +131,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
         // Check if this ribosome is at the end (termination)
         if (pos >= length - 1) {
             // Try terminate
-            if (Math.random() < beta) {
+            if (random() < beta) {
                 // Success: remove (don't add)
                 proteins++;
                 continue;
@@ -160,7 +160,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
             newPositionsReversed.push(pos);
         } else {
             // Try move
-            if (Math.random() < rate) {
+            if (random() < rate) {
                 newPositionsReversed.push(pos + 1);
             } else {
                 newPositionsReversed.push(pos);
@@ -178,7 +178,7 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
     }
     
     if (!startBlocked) {
-        if (Math.random() < alpha) {
+        if (random() < alpha) {
             newPositionsReversed.push(0);
         }
     }

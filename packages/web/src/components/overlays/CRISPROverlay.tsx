@@ -7,6 +7,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackInteraction, GenomeTrackSegment } from './primitives/types';
+import { ComplexAnalysisSkeleton } from '../ui/Skeleton';
 
 interface CRISPROverlayProps {
   repository: PhageRepository | null;
@@ -221,7 +222,7 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
         )}
 
         {loading ? (
-          <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>Running CRISPR analysis…</div>
+          <ComplexAnalysisSkeleton showTrack showHeatmap={false} showScatter={false} showTable />
         ) : !analysis ? (
           <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>
             {sequence ? 'Analysis pending…' : 'Load a phage to run CRISPR analysis.'}

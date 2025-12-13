@@ -313,6 +313,154 @@ export function SearchResultsSkeleton({
   );
 }
 
+/**
+ * Skeleton for genome track visualizations
+ */
+export interface GenomeTrackSkeletonProps {
+  height?: number;
+  className?: string;
+}
+
+export function GenomeTrackSkeleton({
+  height = 56,
+  className = '',
+}: GenomeTrackSkeletonProps): React.ReactElement {
+  return (
+    <div
+      className={`skeleton-genome-track ${className}`}
+      aria-busy="true"
+      aria-label="Loading genome track"
+      style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}
+    >
+      <Skeleton variant="text" width={180} height={14} />
+      <Skeleton variant="rect" width="100%" height={height} />
+    </div>
+  );
+}
+
+/**
+ * Skeleton for complex analysis overlays (multi-panel with tracks, charts, tables)
+ */
+export interface ComplexAnalysisSkeletonProps {
+  className?: string;
+  showTrack?: boolean;
+  showHeatmap?: boolean;
+  showScatter?: boolean;
+  showTable?: boolean;
+}
+
+export function ComplexAnalysisSkeleton({
+  className = '',
+  showTrack = true,
+  showHeatmap = true,
+  showScatter = true,
+  showTable = true,
+}: ComplexAnalysisSkeletonProps): React.ReactElement {
+  return (
+    <div
+      className={`skeleton-complex-analysis ${className}`}
+      aria-busy="true"
+      aria-label="Loading analysis"
+      style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
+    >
+      {/* Description box skeleton */}
+      <Skeleton variant="rect" width="100%" height={60} />
+
+      {/* Stats row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'center', padding: '0.75rem' }}>
+            <Skeleton variant="text" width={60} height={12} />
+            <Skeleton variant="text" width={80} height={24} />
+          </div>
+        ))}
+      </div>
+
+      {/* Genome track skeleton */}
+      {showTrack && <GenomeTrackSkeleton />}
+
+      {/* Chart area - heatmap + scatter grid */}
+      {(showHeatmap || showScatter) && (
+        <div style={{ display: 'grid', gridTemplateColumns: showHeatmap && showScatter ? '2fr 1fr' : '1fr', gap: '1rem' }}>
+          {showHeatmap && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <Skeleton variant="text" width={200} height={14} />
+              <Skeleton variant="rect" width="100%" height={200} animation="pulse" />
+            </div>
+          )}
+          {showScatter && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              <Skeleton variant="text" width={150} height={14} />
+              <Skeleton variant="rect" width="100%" height={200} animation="pulse" />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Table area */}
+      {showTable && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <Skeleton variant="text" width={120} height={16} />
+            {[0, 1, 2, 3].map((i) => (
+              <Skeleton key={i} variant="rect" width="100%" height={36} />
+            ))}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <Skeleton variant="text" width={100} height={16} />
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} variant="text" width={`${80 - i * 10}%`} height={14} />
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Skeleton for chart-based overlays (GC Skew, Complexity, Bendability)
+ */
+export interface ChartOverlaySkeletonProps {
+  className?: string;
+}
+
+export function ChartOverlaySkeleton({
+  className = '',
+}: ChartOverlaySkeletonProps): React.ReactElement {
+  return (
+    <div
+      className={`skeleton-chart-overlay ${className}`}
+      aria-busy="true"
+      aria-label="Loading chart"
+      style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}
+    >
+      {/* Description */}
+      <Skeleton variant="rect" width="100%" height={50} />
+
+      {/* Stats row */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', alignItems: 'center', padding: '0.5rem' }}>
+            <Skeleton variant="text" width={50} height={12} />
+            <Skeleton variant="text" width={70} height={20} />
+          </div>
+        ))}
+      </div>
+
+      {/* Chart canvas */}
+      <Skeleton variant="rect" width="100%" height={200} animation="pulse" />
+
+      {/* Legend */}
+      <div style={{ display: 'flex', justifyContent: 'center', gap: '2rem' }}>
+        <Skeleton variant="text" width={100} height={14} />
+        <Skeleton variant="text" width={80} height={14} />
+        <Skeleton variant="text" width={90} height={14} />
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================================
  * SKELETON CONTAINER (with delay support)
  * ============================================================================ */

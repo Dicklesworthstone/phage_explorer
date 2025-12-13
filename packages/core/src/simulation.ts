@@ -192,15 +192,17 @@ export interface Simulation<S extends SimState = SimState> {
    * Initialize simulation state
    * @param phage Current phage data (optional, some sims are generic)
    * @param params Initial parameter overrides
+   * @param rng Random number generator (returns 0-1)
    */
-  init: (phage?: PhageFull | null, params?: Partial<S['params']>) => S;
+  init: (phage?: PhageFull | null, params?: Partial<S['params']>, rng?: () => number) => S;
 
   /**
    * Advance simulation by one time step
    * @param state Current state
    * @param dt Time delta (typically 1 for discrete, or frame time for continuous)
+   * @param rng Random number generator (returns 0-1)
    */
-  step: (state: S, dt: number) => S;
+  step: (state: S, dt: number, rng?: () => number) => S;
 
   /**
    * Check if simulation has reached terminal state

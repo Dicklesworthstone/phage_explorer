@@ -18,6 +18,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import type { HeatmapHover, ColorScale } from '../primitives/types';
 
