@@ -1,6 +1,19 @@
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo, useId } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { useTheme } from '../hooks/useTheme';
+
+// Screen reader only styles
+const srOnly: React.CSSProperties = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0, 0, 0, 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
 
 interface GeneMapCanvasProps {
   height?: number;
@@ -16,6 +29,8 @@ export function GeneMapCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { theme } = useTheme();
   const colors = theme.colors;
+  const tooltipId = useId();
+  const descriptionId = useId();
 
   const currentPhage = usePhageStore((s) => s.currentPhage);
   const scrollPosition = usePhageStore((s) => s.scrollPosition);
@@ -23,6 +38,19 @@ export function GeneMapCanvas({
 
   const genes = useMemo(() => currentPhage?.genes ?? [], [currentPhage]);
   const genomeLength = useMemo(() => currentPhage?.genomeLength ?? 1, [currentPhage]);
+
+  // Generate screen reader description of gene content
+  const geneDescription = useMemo(() => {
+    if (!currentPhage || genes.length === 0) {
+      return 'No phage genome loaded.';
+    }
+    const forwardGenes = genes.filter(g => g.strand !== '-');
+    const reverseGenes = genes.filter(g => g.strand === '-');
+    return `Gene map showing ${genes.length} genes for ${currentPhage.name}: ` +
+      `${forwardGenes.length} on the forward strand, ${reverseGenes.length} on the reverse strand. ` +
+      `Genome length: ${genomeLength.toLocaleString()} base pairs. ` +
+      `Click or tap to navigate to a gene position.`;
+  }, [currentPhage, genes, genomeLength]);
 
   const [hoveredGene, setHoveredGene] = React.useState<{
     name: string;
@@ -352,14 +380,35 @@ export function GeneMapCanvas({
   return (
     <div
       className={`gene-map-container${className ? ` ${className}` : ''}`}
+      role="figure"
+      aria-label={`Gene map visualization${currentPhage ? ` for ${currentPhage.name}` : ''}`}
+      aria-describedby={descriptionId}
       style={{
-      position: 'relative', 
-      height, 
-      border: `1px solid ${colors.border}`,
-      borderRadius: '6px',
-      overflow: 'hidden',
-      marginBottom: '8px'
-    }}>
+        position: 'relative',
+        height,
+        border: `1px solid ${colors.border}`,
+        borderRadius: '6px',
+        overflow: 'hidden',
+        marginBottom: '8px'
+      }}
+    >
+      {/* Screen reader description of the gene map */}
+      <div id={descriptionId} style={srOnly}>
+        {geneDescription}
+      </div>
+
+      {/* Screen reader live region for gene tooltip announcements */}
+      <div
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        style={srOnly}
+      >
+        {hoveredGene
+          ? `Gene: ${hoveredGene.name}${hoveredGene.product ? `. Product: ${hoveredGene.product}` : ''}`
+          : ''}
+      </div>
+
       <canvas
         ref={canvasRef}
         style={{ width: '100%', height: '100%', display: 'block', cursor: 'pointer', touchAction: 'pan-y' }}
@@ -370,27 +419,33 @@ export function GeneMapCanvas({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
+        aria-hidden="true"
         title="Click to jump to position"
       />
       {hoveredGene && (
-        <div style={{
-          position: 'fixed',
-          left:
-            typeof window === 'undefined'
-              ? hoveredGene.x
-              : Math.min(Math.max(hoveredGene.x, 12), window.innerWidth - 12),
-          top: hoveredGene.y,
-          transform: 'translate(-50%, -100%)',
-          backgroundColor: colors.backgroundElevated,
-          border: `1px solid ${colors.border}`,
-          borderRadius: '4px',
-          padding: '4px 8px',
-          pointerEvents: 'none',
-          zIndex: 1000,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-          fontSize: '12px',
-          maxWidth: 'min(240px, calc(100vw - 24px))',
-        }}>
+        <div
+          id={tooltipId}
+          role="tooltip"
+          aria-hidden="false"
+          style={{
+            position: 'fixed',
+            left:
+              typeof window === 'undefined'
+                ? hoveredGene.x
+                : Math.min(Math.max(hoveredGene.x, 12), window.innerWidth - 12),
+            top: hoveredGene.y,
+            transform: 'translate(-50%, -100%)',
+            backgroundColor: colors.backgroundElevated,
+            border: `1px solid ${colors.border}`,
+            borderRadius: '4px',
+            padding: '4px 8px',
+            pointerEvents: 'none',
+            zIndex: 1000,
+            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+            fontSize: '12px',
+            maxWidth: 'min(240px, calc(100vw - 24px))',
+          }}
+        >
           <div style={{ fontWeight: 'bold', color: colors.text }}>{hoveredGene.name}</div>
           {hoveredGene.product && (
             <div style={{ color: colors.textDim, fontSize: '10px', marginTop: '2px' }}>
