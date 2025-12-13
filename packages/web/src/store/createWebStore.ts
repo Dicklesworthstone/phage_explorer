@@ -62,7 +62,8 @@ export interface WebPreferencesActions {
 export type WebPreferencesStore = WebPreferencesState & WebPreferencesActions;
 
 interface PersistedMainState {
-  currentTheme: Theme;
+  themeId?: string; // Preferred
+  currentTheme?: Theme; // Legacy
   viewMode: ViewMode;
   readingFrame: ReadingFrame;
   show3DModel: boolean;
@@ -206,7 +207,9 @@ export function hydrateMainStoreFromStorage(): void {
     const store = usePhageStore.getState();
 
     // Apply persisted preferences to main store
-    if (parsed.currentTheme) {
+    if (parsed.themeId) {
+      store.setTheme(parsed.themeId);
+    } else if (parsed.currentTheme?.id) {
       store.setTheme(parsed.currentTheme.id);
     }
     if (parsed.viewMode) {
@@ -246,7 +249,7 @@ export function subscribeMainStoreToStorage(): () => void {
 
   const unsubscribe = usePhageStore.subscribe((state) => {
     const prefs = {
-      currentTheme: state.currentTheme,
+      themeId: state.currentTheme.id,
       viewMode: state.viewMode,
       readingFrame: state.readingFrame,
       show3DModel: state.show3DModel,
