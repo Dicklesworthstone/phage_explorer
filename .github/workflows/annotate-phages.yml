@@ -1,0 +1,144 @@
+name: Annotate Phages
+
+on:
+  # Run on push to main when phage data changes
+  push:
+    branches: [main]
+    paths:
+      - 'packages/data-pipeline/src/phage-catalog.ts'
+      - 'scripts/annotation/**'
+
+  # Run weekly on Sundays at midnight UTC
+  schedule:
+    - cron: '0 0 * * 0'
+
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      skip_domains:
+        description: 'Skip InterProScan domain annotation'
+        required: false
+        default: 'false'
+        type: boolean
+      limit:
+        description: 'Limit genes to annotate (0 = all)'
+        required: false
+        default: '0'
+        type: string
+
+jobs:
+  annotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # InterProScan can be slow
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need write access to commit updated database
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: scripts/annotation/requirements.txt
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r scripts/annotation/requirements.txt
+
+      - name: Install Node dependencies
+        run: bun install
+
+      - name: Build data pipeline
+        run: bun run build --filter=@phage-explorer/data-pipeline
+
+      - name: Fetch phage sequences from NCBI
+        working-directory: packages/data-pipeline
+        run: |
+          bun run src/build-db.ts
+        env:
+          NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
+
+      - name: Cache annotation results
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.interpro_cache
+          key: interpro-cache-${{ hashFiles('packages/data-pipeline/src/phage-catalog.ts') }}
+          restore-keys: |
+            interpro-cache-
+
+      - name: Run annotation pipeline
+        run: |
+          ARGS="--db packages/data-pipeline/phage.db"
+
+          if [ "${{ inputs.skip_domains }}" = "true" ]; then
+            ARGS="$ARGS --skip-domains"
+          fi
+
+          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+
+          python scripts/annotation/run_pipeline.py $ARGS
+
+      - name: Build optimized web database
+        run: |
+          bun run scripts/build-web-db.ts \
+            --source packages/data-pipeline/phage.db \
+            --output packages/web/public
+
+      - name: Verify database
+        run: |
+          echo "Database size:"
+          ls -lh packages/web/public/phage.db
+
+          echo ""
+          echo "Table counts:"
+          sqlite3 packages/web/public/phage.db "
+            SELECT 'phages', COUNT(*) FROM phages
+            UNION ALL SELECT 'genes', COUNT(*) FROM genes
+            UNION ALL SELECT 'protein_domains', COUNT(*) FROM protein_domains
+            UNION ALL SELECT 'amg_annotations', COUNT(*) FROM amg_annotations
+            UNION ALL SELECT 'host_trna_pools', COUNT(*) FROM host_trna_pools;
+          "
+
+      - name: Commit updated database
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if there are changes
+          if git diff --quiet packages/web/public/phage.db packages/web/public/phage.db.manifest.json; then
+            echo "No changes to database"
+            exit 0
+          fi
+
+          git add packages/web/public/phage.db packages/web/public/phage.db.manifest.json
+          git commit -m "chore: update phage annotations [automated]
+
+          Updated via GitHub Actions annotation pipeline.
+
+          Changes:
+          - Protein domain annotations (InterProScan)
+          - AMG detection (KEGG mapping)
+          - Host tRNA data loaded
+          "
+          git push
+
+      - name: Upload annotation logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: annotation-logs
+          path: |
+            packages/data-pipeline/phage.db
+          retention-days: 7

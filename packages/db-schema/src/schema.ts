@@ -91,6 +91,103 @@ export const preferences = sqliteTable('preferences', {
   value: text('value').notNull(),
 });
 
+// ============================================================================
+// PRECOMPUTED ANNOTATION TABLES (populated via GitHub Actions)
+// ============================================================================
+
+// Protein domain annotations from InterPro/Pfam
+export const proteinDomains = sqliteTable('protein_domains', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  phageId: integer('phage_id').notNull().references(() => phages.id),
+  geneId: integer('gene_id').references(() => genes.id),
+  locusTag: text('locus_tag'),
+  domainId: text('domain_id').notNull(), // e.g., "PF00145", "IPR001650"
+  domainName: text('domain_name'), // e.g., "DNA_pol_B"
+  domainType: text('domain_type'), // "Pfam", "SMART", "CDD", etc.
+  start: integer('start'),
+  end: integer('end'),
+  score: real('score'),
+  eValue: real('e_value'),
+  description: text('description'),
+}, (table) => [
+  index('idx_domains_phage').on(table.phageId),
+  index('idx_domains_gene').on(table.geneId),
+  index('idx_domains_domain').on(table.domainId),
+]);
+
+// Auxiliary Metabolic Gene (AMG) annotations
+export const amgAnnotations = sqliteTable('amg_annotations', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  phageId: integer('phage_id').notNull().references(() => phages.id),
+  geneId: integer('gene_id').references(() => genes.id),
+  locusTag: text('locus_tag'),
+  amgType: text('amg_type').notNull(), // e.g., "photosynthesis", "nucleotide", "carbon"
+  keggOrtholog: text('kegg_ortholog'), // e.g., "K02703" (psbA)
+  keggReaction: text('kegg_reaction'), // e.g., "R00024"
+  keggPathway: text('kegg_pathway'), // e.g., "ko00195"
+  pathwayName: text('pathway_name'), // e.g., "Photosynthesis"
+  confidence: real('confidence'),
+  evidence: text('evidence'), // JSON array
+}, (table) => [
+  index('idx_amg_phage').on(table.phageId),
+  index('idx_amg_type').on(table.amgType),
+]);
+
+// Phage defense/counter-defense systems
+export const defenseSystems = sqliteTable('defense_systems', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  phageId: integer('phage_id').notNull().references(() => phages.id),
+  geneId: integer('gene_id').references(() => genes.id),
+  locusTag: text('locus_tag'),
+  systemType: text('system_type').notNull(), // "anti-CRISPR", "anti-RM", "anti-Abi"
+  systemFamily: text('system_family'), // e.g., "AcrIIA4", "Ocr"
+  targetSystem: text('target_system'), // e.g., "Type II-A CRISPR", "Type I RM"
+  mechanism: text('mechanism'), // Brief description
+  confidence: real('confidence'),
+  source: text('source'), // "AcrDB", "DefenseFinder", "heuristic"
+}, (table) => [
+  index('idx_defense_phage').on(table.phageId),
+  index('idx_defense_type').on(table.systemType),
+]);
+
+// Host tRNA pools for codon adaptation analysis
+export const hostTrnaPools = sqliteTable('host_trna_pools', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  hostName: text('host_name').notNull(), // e.g., "Escherichia coli K-12"
+  hostTaxId: integer('host_tax_id'),
+  anticodon: text('anticodon').notNull(), // e.g., "CAU"
+  aminoAcid: text('amino_acid').notNull(), // e.g., "Met"
+  codon: text('codon'), // The codon this anticodon recognizes
+  copyNumber: integer('copy_number'),
+  relativeAbundance: real('relative_abundance'),
+}, (table) => [
+  index('idx_trna_host').on(table.hostName),
+  index('idx_trna_anticodon').on(table.anticodon),
+]);
+
+// Precomputed codon adaptation scores per phage-host pair
+export const codonAdaptation = sqliteTable('codon_adaptation', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  phageId: integer('phage_id').notNull().references(() => phages.id),
+  hostName: text('host_name').notNull(),
+  geneId: integer('gene_id').references(() => genes.id), // NULL for whole-genome
+  locusTag: text('locus_tag'),
+  cai: real('cai'), // Codon Adaptation Index
+  tai: real('tai'), // tRNA Adaptation Index
+  cpb: real('cpb'), // Codon Pair Bias
+  encPrime: real('enc_prime'), // Nc' (expected Nc given GC)
+}, (table) => [
+  index('idx_adaptation_phage').on(table.phageId),
+  index('idx_adaptation_host').on(table.hostName),
+]);
+
+// Annotation metadata (tracks when annotations were last updated)
+export const annotationMeta = sqliteTable('annotation_meta', {
+  key: text('key').primaryKey(),
+  value: text('value').notNull(),
+  updatedAt: integer('updated_at'),
+});
+
 // Type exports for use in other packages
 export type Phage = typeof phages.$inferSelect;
 export type NewPhage = typeof phages.$inferInsert;
@@ -112,3 +209,22 @@ export type NewPreference = typeof preferences.$inferInsert;
 
 export type TropismPrediction = typeof tropismPredictions.$inferSelect;
 export type NewTropismPrediction = typeof tropismPredictions.$inferInsert;
+
+// New annotation table types
+export type ProteinDomain = typeof proteinDomains.$inferSelect;
+export type NewProteinDomain = typeof proteinDomains.$inferInsert;
+
+export type AmgAnnotation = typeof amgAnnotations.$inferSelect;
+export type NewAmgAnnotation = typeof amgAnnotations.$inferInsert;
+
+export type DefenseSystem = typeof defenseSystems.$inferSelect;
+export type NewDefenseSystem = typeof defenseSystems.$inferInsert;
+
+export type HostTrnaPool = typeof hostTrnaPools.$inferSelect;
+export type NewHostTrnaPool = typeof hostTrnaPools.$inferInsert;
+
+export type CodonAdaptation = typeof codonAdaptation.$inferSelect;
+export type NewCodonAdaptation = typeof codonAdaptation.$inferInsert;
+
+export type AnnotationMeta = typeof annotationMeta.$inferSelect;
+export type NewAnnotationMeta = typeof annotationMeta.$inferInsert;

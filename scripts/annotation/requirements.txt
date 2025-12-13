@@ -1,0 +1,8 @@
+# Phage annotation pipeline dependencies
+biopython>=1.82
+requests>=2.31
+aiohttp>=3.9
+sqlite-utils>=3.35
+tqdm>=4.66
+pandas>=2.1
+numpy>=1.26
