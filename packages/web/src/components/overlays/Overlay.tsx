@@ -9,7 +9,7 @@
  * - Animation support
  */
 
-import React, { useRef, useEffect, useCallback, type ReactNode, type CSSProperties } from 'react';
+import React, { useRef, useEffect, useCallback, useState, type ReactNode, type CSSProperties } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
 
@@ -65,6 +65,7 @@ export function Overlay({
   const colors = theme.colors;
   const overlayRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
+  const [isBackdropHovered, setIsBackdropHovered] = useState(false);
 
   const overlayIsOpen = isOpen(id);
   const isPhone = typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 640px)')?.matches ?? false);
@@ -86,6 +87,16 @@ export function Overlay({
       handleClose();
     }
   }, [handleClose]);
+
+  const handleBackdropMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!showBackdrop) return;
+    const hoveringBackdrop = e.target === e.currentTarget;
+    setIsBackdropHovered((prev) => (prev === hoveringBackdrop ? prev : hoveringBackdrop));
+  }, [showBackdrop]);
+
+  const handleBackdropMouseLeave = useCallback(() => {
+    setIsBackdropHovered(false);
+  }, []);
 
   // Focus trap - must be called unconditionally before any early return
   useEffect(() => {
@@ -155,12 +166,18 @@ export function Overlay({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: showBackdrop ? 'rgba(0, 0, 0, 0.7)' : 'transparent',
+    backgroundColor: showBackdrop
+      ? isBackdropHovered
+        ? 'rgba(0, 0, 0, 0.78)'
+        : 'rgba(0, 0, 0, 0.7)'
+      : 'transparent',
     display: 'flex',
     justifyContent: effectivePosition === 'left' ? 'flex-start' : effectivePosition === 'right' ? 'flex-end' : 'center',
     alignItems: effectivePosition === 'top' ? 'flex-start' : effectivePosition === 'bottom' ? 'flex-end' : 'center',
     padding: isBottomSheet ? 0 : isPhone ? '1rem' : effectivePosition === 'center' ? '2rem' : 0,
     zIndex,
+    cursor: showBackdrop && isBackdropHovered ? 'pointer' : 'default',
+    transition: showBackdrop ? 'background-color var(--duration-fast) var(--ease-out)' : undefined,
   };
 
   const overlayStyle: CSSProperties = {
@@ -205,7 +222,12 @@ export function Overlay({
   };
 
   return (
-    <div style={backdropStyle} onClick={handleBackdropClick}>
+    <div
+      style={backdropStyle}
+      onClick={handleBackdropClick}
+      onMouseMove={handleBackdropMouseMove}
+      onMouseLeave={handleBackdropMouseLeave}
+    >
       <div
         ref={overlayRef}
         style={overlayStyle}
