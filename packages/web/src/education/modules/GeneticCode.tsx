@@ -537,7 +537,7 @@ export function GeneticCodeModule(): JSX.Element {
       >
         <div>
           <p className="text-dim" style={{ letterSpacing: 0.4 }}>
-            Foundations · Module 4
+            Foundations · Module 5
           </p>
           <h2 style={{ margin: 0 }}>The Genetic Code</h2>
           <p style={{ margin: '6px 0 0', color: 'var(--color-text-muted)' }}>

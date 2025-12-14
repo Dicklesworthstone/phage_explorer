@@ -3,6 +3,7 @@ import { WhatIsPhageModule } from './WhatIsPhage';
 import { DNABasicsModule } from './DNABasics';
 import { PhageLifecycleModule } from './PhageLifecycle';
 import { GeneticCodeModule } from './GeneticCode';
+import { CentralDogmaModule } from './CentralDogma';
 
 export type ModuleComponent = () => JSX.Element;
 
@@ -37,6 +38,13 @@ export const FOUNDATION_MODULES: ModuleMeta[] = [
     component: PhageLifecycleModule,
   },
   {
+    id: 'central-dogma',
+    title: 'The Central Dogma',
+    description: 'DNA → RNA → Protein flow, transcription, translation, why sequence predicts function.',
+    estimatedMinutes: 12,
+    component: CentralDogmaModule,
+  },
+  {
     id: 'genetic-code',
     title: 'The Genetic Code',
     description: 'Codons, amino acids, degeneracy, start/stop signals, reading frames, codon bias.',
@@ -48,4 +56,5 @@ export const FOUNDATION_MODULES: ModuleMeta[] = [
 export { WhatIsPhageModule } from './WhatIsPhage';
 export { DNABasicsModule } from './DNABasics';
 export { PhageLifecycleModule } from './PhageLifecycle';
+export { CentralDogmaModule } from './CentralDogma';
 export { GeneticCodeModule } from './GeneticCode';
