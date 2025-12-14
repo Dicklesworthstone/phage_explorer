@@ -13,36 +13,27 @@ import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
 import { useWebPreferences } from '../store/createWebStore';
 import { AminoAcidHUD } from './AminoAcidHUD';
 import { SequenceViewSkeleton } from './ui/Skeleton';
+import { IconDna, IconFlask, IconLayers } from './ui';
 
 type ViewModeOption = {
   id: ViewMode;
   label: string;
-  icon: string;
+  icon: React.ReactNode;
   description: string;
 };
 
 const VIEW_MODE_OPTIONS: ViewModeOption[] = [
-  { id: 'dna', label: 'DNA', icon: '🧬', description: 'Nucleotide view' },
-  { id: 'dual', label: 'Dual', icon: '🔀', description: 'Stacked DNA + AA' },
-  { id: 'aa', label: 'Amino Acids', icon: '🔬', description: 'Protein view' },
+  { id: 'dna', label: 'DNA', icon: <IconDna size={18} />, description: 'Nucleotide view' },
+  { id: 'dual', label: 'Dual', icon: <IconLayers size={18} />, description: 'Stacked DNA + AA' },
+  { id: 'aa', label: 'Amino Acids', icon: <IconFlask size={18} />, description: 'Protein view' },
 ];
 
 interface ViewModeToggleProps {
   value: ViewMode;
   onChange: (mode: ViewMode) => void;
-  colors: ReturnType<typeof useTheme>['theme']['colors'];
 }
 
-function ViewModeToggle({ value, onChange, colors }: ViewModeToggleProps): React.ReactElement {
-  const styleVars: React.CSSProperties = {
-    '--view-toggle-bg': colors.backgroundAlt,
-    '--view-toggle-border': colors.borderLight,
-    '--view-toggle-active': colors.accent,
-    '--view-toggle-text': colors.text,
-    '--view-toggle-muted': colors.textMuted,
-    '--view-toggle-active-text': '#000',
-  } as React.CSSProperties; // Use type assertion for custom properties
-
+function ViewModeToggle({ value, onChange }: ViewModeToggleProps): React.ReactElement {
   const handleKey = useCallback(
     (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
       if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
@@ -66,7 +57,7 @@ function ViewModeToggle({ value, onChange, colors }: ViewModeToggleProps): React
   );
 
   return (
-    <div className="view-mode-toggle" role="radiogroup" aria-label="Sequence view mode" style={styleVars}>
+    <div className="view-mode-toggle" role="radiogroup" aria-label="Sequence view mode">
       {VIEW_MODE_OPTIONS.map((option, idx) => {
         const active = value === option.id;
         return (
@@ -570,7 +561,7 @@ export function SequenceView({
           </div>
 
           {/* View mode control */}
-          <ViewModeToggle value={viewMode} onChange={setViewMode} colors={colors} />
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
           {/* Reading frame badge */}
           {viewMode !== 'dna' && (
             <button

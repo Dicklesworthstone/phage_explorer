@@ -867,6 +867,13 @@
   background: transparent;
 }
 
+.chip[aria-selected="true"],
+.chip[aria-pressed="true"] {
+  background: var(--color-background-hover);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
 @keyframes toast-pop {
   0% {
     opacity: 0;

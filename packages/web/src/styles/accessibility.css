@@ -73,64 +73,64 @@ textarea:focus-visible {
 
 .high-contrast,
 :root.high-contrast {
-  color-scheme: dark;
+  color-scheme: dark !important;
 
   /* Core colors - maximum contrast */
-  --color-primary: #ffffff;
-  --color-primary-hover: #e0e0e0;
-  --color-secondary: #ffd700;
-  --color-accent: #00ffff;
+  --color-primary: #ffffff !important;
+  --color-primary-hover: #e0e0e0 !important;
+  --color-secondary: #ffd700 !important;
+  --color-accent: #00ffff !important;
 
   /* Backgrounds - pure black base */
-  --color-background: #000000;
-  --color-background-alt: #0a0a0a;
-  --color-background-elevated: #111111;
-  --color-background-hover: #1a1a1a;
-  --color-background-active: #222222;
-  --color-background-glass: rgba(0, 0, 0, 0.95);
-  --color-background-gradient-start: rgba(255, 255, 255, 0.05);
+  --color-background: #000000 !important;
+  --color-background-alt: #0a0a0a !important;
+  --color-background-elevated: #111111 !important;
+  --color-background-hover: #1a1a1a !important;
+  --color-background-active: #222222 !important;
+  --color-background-glass: rgba(0, 0, 0, 0.95) !important;
+  --color-background-gradient-start: rgba(255, 255, 255, 0.05) !important;
 
   /* Text - high contrast whites */
-  --color-text: #ffffff;
-  --color-text-dim: #e0e0e0;
-  --color-text-muted: #b0b0b0;
+  --color-text: #ffffff !important;
+  --color-text-dim: #e0e0e0 !important;
+  --color-text-muted: #b0b0b0 !important;
 
   /* Borders - visible on all backgrounds */
-  --color-border: #666666;
-  --color-border-subtle: #444444;
-  --color-border-light: #888888;
-  --color-border-focus: #ffffff;
+  --color-border: #666666 !important;
+  --color-border-subtle: #444444 !important;
+  --color-border-light: #888888 !important;
+  --color-border-focus: #ffffff !important;
 
   /* Status colors - high visibility */
-  --color-success: #00ff00;
-  --color-warning: #ffff00;
-  --color-error: #ff4444;
-  --color-info: #00ffff;
+  --color-success: #00ff00 !important;
+  --color-warning: #ffff00 !important;
+  --color-error: #ff4444 !important;
+  --color-info: #00ffff !important;
 
   /* Badges */
-  --color-badge-bg: #222222;
-  --color-badge-text: #ffffff;
-  --color-badge-border: #666666;
+  --color-badge-bg: #222222 !important;
+  --color-badge-text: #ffffff !important;
+  --color-badge-border: #666666 !important;
 
   /* Panels */
-  --color-panel-header: #111111;
-  --color-panel-border: #666666;
-  --color-separator: #666666;
+  --color-panel-header: #111111 !important;
+  --color-panel-border: #666666 !important;
+  --color-separator: #666666 !important;
 
   /* Effects - more visible glow */
-  --color-glow: rgba(255, 255, 255, 0.6);
+  --color-glow: rgba(255, 255, 255, 0.6) !important;
 
   /* Nucleotides - high contrast versions */
-  --nucleotide-a-fg: #000000;
-  --nucleotide-a-bg: #00ffff;
-  --nucleotide-c-fg: #000000;
-  --nucleotide-c-bg: #ff00ff;
-  --nucleotide-g-fg: #000000;
-  --nucleotide-g-bg: #ffff00;
-  --nucleotide-t-fg: #000000;
-  --nucleotide-t-bg: #ff6666;
-  --nucleotide-n-fg: #ffffff;
-  --nucleotide-n-bg: #444444;
+  --nucleotide-a-fg: #000000 !important;
+  --nucleotide-a-bg: #00ffff !important;
+  --nucleotide-c-fg: #000000 !important;
+  --nucleotide-c-bg: #ff00ff !important;
+  --nucleotide-g-fg: #000000 !important;
+  --nucleotide-g-bg: #ffff00 !important;
+  --nucleotide-t-fg: #000000 !important;
+  --nucleotide-t-bg: #ff6666 !important;
+  --nucleotide-n-fg: #ffffff !important;
+  --nucleotide-n-bg: #444444 !important;
 }
 
 /* High contrast mode - disable CRT effects */

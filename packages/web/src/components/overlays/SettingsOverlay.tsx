@@ -15,7 +15,6 @@ export function SettingsOverlay(): React.ReactElement | null {
   const setHighContrast = useWebPreferences((s) => s.setHighContrast);
   const backgroundEffects = useWebPreferences((s) => s.backgroundEffects);
   const setBackgroundEffects = useWebPreferences((s) => s.setBackgroundEffects);
-  const colors = theme.colors;
 
   const {
     isEnabled: beginnerModeEnabled,
@@ -39,114 +38,91 @@ export function SettingsOverlay(): React.ReactElement | null {
       size="md"
       onClose={() => close('settings')}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div className="settings-overlay">
         <section
           aria-label="Appearance settings"
-          style={{
-            border: `1px solid ${colors.borderLight}`,
-            borderRadius: '6px',
-            padding: '1rem',
-            backgroundColor: colors.backgroundAlt,
-          }}
+          className="panel panel-compact settings-section"
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <IconContrast size={16} />
-              <h3 style={{ margin: 0, color: colors.text }}>Appearance</h3>
-            </div>
+          <div className="settings-section-header">
+            <IconContrast size={16} />
+            <h3 className="settings-section-title">Appearance</h3>
+          </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: colors.text }}>Theme</div>
-                <div style={{ color: colors.textMuted, fontSize: '0.85rem', lineHeight: 1.4 }}>
-                  Choose the overall color palette.
-                </div>
-              </div>
-              <select
-                value={theme.id}
-                onChange={(e) => setTheme(e.target.value)}
-                aria-label="Select theme"
-                style={{
-                  padding: '0.45rem 0.6rem',
-                  borderRadius: 8,
-                  border: `1px solid ${colors.borderLight}`,
-                  background: colors.background,
-                  color: colors.text,
-                  minWidth: 160,
-                }}
-              >
-                {availableThemes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">Theme</div>
+              <div className="settings-row-desc">Choose the overall color palette.</div>
             </div>
+            <select
+              value={theme.id}
+              onChange={(e) => setTheme(e.target.value)}
+              aria-label="Select theme"
+              className="input settings-select"
+            >
+              {availableThemes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: colors.text }}>High contrast</div>
-                <div style={{ color: colors.textMuted, fontSize: '0.85rem', lineHeight: 1.4 }}>
-                  Increases text and border contrast for readability.
-                </div>
-              </div>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setHighContrast(!highContrast)}
-                aria-pressed={highContrast}
-                aria-label={highContrast ? 'Disable high contrast mode' : 'Enable high contrast mode'}
-              >
-                {highContrast ? 'On' : 'Off'}
-              </button>
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">High contrast</div>
+              <div className="settings-row-desc">Increases text and border contrast for readability.</div>
             </div>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setHighContrast(!highContrast)}
+              aria-pressed={highContrast}
+              aria-label={highContrast ? 'Disable high contrast mode' : 'Enable high contrast mode'}
+            >
+              {highContrast ? 'On' : 'Off'}
+            </button>
+          </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', alignItems: 'center' }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 700, color: colors.text }}>Background effects</div>
-                <div style={{ color: colors.textMuted, fontSize: '0.85rem', lineHeight: 1.4 }}>
-                  Matrix rain and CRT overlay.
-                  {reducedMotion ? ' Disabled by your Reduced Motion preference.' : ''}
-                </div>
+          <div className="settings-row">
+            <div className="settings-row-text">
+              <div className="settings-row-label">Background effects</div>
+              <div className="settings-row-desc">
+                Matrix rain and CRT overlay.
+                {reducedMotion ? ' Disabled by your Reduced Motion preference.' : ''}
               </div>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => setBackgroundEffects(!backgroundEffects)}
-                aria-pressed={backgroundEffects}
-                aria-label={backgroundEffects ? 'Disable background effects' : 'Enable background effects'}
-                disabled={reducedMotion}
-              >
-                {backgroundEffects ? 'On' : 'Off'}
-              </button>
             </div>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setBackgroundEffects(!backgroundEffects)}
+              aria-pressed={backgroundEffects}
+              aria-label={backgroundEffects ? 'Disable background effects' : 'Enable background effects'}
+              disabled={reducedMotion}
+            >
+              {backgroundEffects ? 'On' : 'Off'}
+            </button>
           </div>
         </section>
 
         <section
           aria-label="Beginner mode setting"
-          style={{
-            border: `1px solid ${colors.borderLight}`,
-            borderRadius: '6px',
-            padding: '1rem',
-            backgroundColor: colors.backgroundAlt,
-          }}
+          className="panel panel-compact settings-section"
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem' }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <div className="settings-row settings-row--top">
+            <div className="settings-row-text">
+              <div className="settings-section-header">
                 <IconLearn size={16} />
-                <h3 style={{ margin: 0, color: colors.text }}>Beginner Mode</h3>
+                <h3 className="settings-section-title">Beginner Mode</h3>
               </div>
-              <p style={{ margin: '0.35rem 0', color: colors.textDim, lineHeight: 1.5 }}>
-                Shows glossary, context-aware help, guided tours, and learning overlays.
-                Persists to localStorage so newcomers keep their learning setup between visits.
+              <p className="settings-paragraph">
+                Shows glossary, context-aware help, guided tours, and learning overlays. Persists to localStorage so
+                newcomers keep their learning setup between visits.
               </p>
-              <p style={{ margin: 0, color: colors.textMuted, fontSize: '0.85rem' }}>
+              <p className="settings-meta">
                 Current state: <strong>{beginnerModeEnabled ? 'Enabled' : 'Disabled'}</strong>
               </p>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center' }}>
+            <div className="settings-row-actions">
               <button
                 type="button"
                 className="btn"
@@ -160,7 +136,7 @@ export function SettingsOverlay(): React.ReactElement | null {
           </div>
         </section>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <div className="settings-footer">
           <button
             type="button"
             className="btn btn-ghost"
