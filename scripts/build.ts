@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { $ } from "bun";
 import { parseArgs } from "util";
+import { fileURLToPath } from "url";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -35,7 +36,8 @@ try {
 }
 
 // Create stub for react-devtools-core
-const stubPath = new URL("./react-devtools-stub.js", import.meta.url).pathname;
+// Use fileURLToPath to properly handle Windows paths (pathname gives POSIX-style /D:/... on Windows)
+const stubPath = fileURLToPath(new URL("./react-devtools-stub.js", import.meta.url));
 
 const result = await Bun.build({
   entrypoints: ["./packages/tui/src/index.tsx"],
