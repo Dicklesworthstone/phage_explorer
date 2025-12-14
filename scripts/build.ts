@@ -28,7 +28,7 @@ console.log(`Building${target ? ` for ${target}` : ""}...`);
 console.log("Building wasm-compute (canonical wasm module)...");
 try {
   await $`cd packages/wasm-compute && wasm-pack build --target nodejs --out-dir pkg`;
-  await $`bun run scripts/inline-wasm-compute.ts`;
+  await $`bun run ./scripts/inline-wasm-compute.ts`;
 } catch (e) {
   console.error("Failed to build wasm-compute:", e);
   process.exit(1);
