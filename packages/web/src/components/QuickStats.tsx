@@ -52,7 +52,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
         <span className="quick-stat__value">{formatNumber(stats.length)} bp</span>
       </div>
 
-      {stats.gcContent !== null && (
+      {stats.gcContent != null && (
         <div className="quick-stat">
           <span className="quick-stat__label">GC Content</span>
           <span className="quick-stat__value">{(stats.gcContent * 100).toFixed(1)}%</span>
