@@ -1,6 +1,6 @@
 {
   "name": "phage-explorer",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Terminal UI for browsing, visualizing, and analyzing bacteriophage genetic data with color-coded sequences and 3D ASCII models.",
   "license": "MIT",
   "bin": {
