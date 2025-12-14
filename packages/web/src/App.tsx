@@ -45,10 +45,16 @@ import { ControlDeck } from './components/mobile/ControlDeck';
 import { DataFreshnessIndicator } from './components/ui/DataFreshnessIndicator';
 import { IconSettings } from './components/ui/icons';
 
+// Desktop UI components for surfacing hidden functionality
+import { ActionToolbar } from './components/ActionToolbar';
+import { AnalysisSidebar } from './components/AnalysisSidebar';
+import { QuickStats } from './components/QuickStats';
+
 /** Number of bases to show in the sequence preview */
 const SEQUENCE_PREVIEW_LENGTH = 500;
 const BREAKPOINT_PHONE_PX = 640;
 const BREAKPOINT_NARROW_PX = 1100;
+const BREAKPOINT_WIDE_PX = 1400; // Show analysis sidebar on wide screens
 
 const LazyModel3DView = lazy(async () => {
   const mod = await import('./components/Model3DView');
@@ -124,6 +130,7 @@ export default function App(): JSX.Element {
   const [fullSequence, setFullSequence] = useState<string>('');
   const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
   const [mobileListOpen, setMobileListOpen] = useState(false);
+  const [analysisSidebarCollapsed, setAnalysisSidebarCollapsed] = useState(false);
   const swipeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const glossaryShellRef = useRef<HTMLDivElement | null>(null);
   const glossaryOpenerRef = useRef<HTMLElement | null>(null);
@@ -156,7 +163,7 @@ export default function App(): JSX.Element {
   }, [currentPhage?.id]);
   const getLayoutSnapshot = useCallback(() => {
     if (typeof window === 'undefined') {
-      return { isNarrow: false, isMobile: false, isLandscape: false };
+      return { isNarrow: false, isMobile: false, isLandscape: false, isWide: false };
     }
     const width = window.innerWidth;
     const height = window.innerHeight || 1;
@@ -164,14 +171,16 @@ export default function App(): JSX.Element {
       isNarrow: width <= BREAKPOINT_NARROW_PX,
       isMobile: width <= BREAKPOINT_PHONE_PX,
       isLandscape: width > height,
+      isWide: width >= BREAKPOINT_WIDE_PX,
     };
   }, []);
 
-  const [{ isNarrow, isMobile, isLandscape }, setLayout] = useState(() => getLayoutSnapshot());
+  const [{ isNarrow, isMobile, isLandscape, isWide }, setLayout] = useState(() => getLayoutSnapshot());
 
   useLayoutEffect(() => {
     const mobileMql = window.matchMedia(`(max-width: ${BREAKPOINT_PHONE_PX}px)`);
     const narrowMql = window.matchMedia(`(max-width: ${BREAKPOINT_NARROW_PX}px)`);
+    const wideMql = window.matchMedia(`(min-width: ${BREAKPOINT_WIDE_PX}px)`);
     const landscapeMql = window.matchMedia('(orientation: landscape)');
 
     const updateLayout = () => {
@@ -179,6 +188,7 @@ export default function App(): JSX.Element {
         isNarrow: narrowMql.matches,
         isMobile: mobileMql.matches,
         isLandscape: landscapeMql.matches,
+        isWide: wideMql.matches,
       });
     };
 
@@ -186,18 +196,32 @@ export default function App(): JSX.Element {
 
     mobileMql.addEventListener('change', updateLayout);
     narrowMql.addEventListener('change', updateLayout);
+    wideMql.addEventListener('change', updateLayout);
     landscapeMql.addEventListener('change', updateLayout);
     window.addEventListener('resize', updateLayout);
 
     return () => {
       mobileMql.removeEventListener('change', updateLayout);
       narrowMql.removeEventListener('change', updateLayout);
+      wideMql.removeEventListener('change', updateLayout);
       landscapeMql.removeEventListener('change', updateLayout);
       window.removeEventListener('resize', updateLayout);
     };
   }, []);
 
-  const sequenceHeight = isNarrow ? (isLandscape ? '85dvh' : '65dvh') : 480;
+  // Dynamic sequence height based on screen size
+  // Mobile/narrow: use viewport height; desktop: use clamp for responsive scaling
+  const sequenceHeight = isNarrow
+    ? (isLandscape ? '85dvh' : '65dvh')
+    : 'clamp(500px, 70vh, 1000px)';
+
+  // Dynamic gene map height - scales with screen width for better visibility on large monitors
+  const geneMapHeight = isNarrow ? 60 : (
+    typeof window !== 'undefined' && window.innerWidth >= 2560 ? 100 :
+    typeof window !== 'undefined' && window.innerWidth >= 1920 ? 85 :
+    typeof window !== 'undefined' && window.innerWidth >= 1440 ? 75 :
+    65
+  );
   const show3DInLayout = (!isMobile && (!isNarrow || !isLandscape)) || (isMobile && show3DModel);
   const hasSelection = currentPhage !== null || isLoadingPhage;
   const showList = !isMobile || !hasSelection || mobileListOpen;
@@ -751,9 +775,26 @@ export default function App(): JSX.Element {
           </section>
         )}
 
-        <section className="panel two-column" aria-label="Phage browser">
-          {showList && (
-            <div className={`column column--list ${isMobile && hasSelection ? 'mobile-drawer' : ''}`}>
+        {/* Desktop Action Toolbar - surfaces hidden functionality */}
+        {!isMobile && (
+          <ActionToolbar
+            onOpenSearch={() => openOverlayCtx('search')}
+            onOpenAnalysis={() => openOverlayCtx('analysisMenu')}
+            onOpenComparison={() => openOverlayCtx('comparison')}
+            onOpenSettings={() => openOverlayCtx('settings')}
+            onOpenHelp={() => openOverlayCtx('help')}
+            onOpenCommandPalette={() => openOverlayCtx('commandPalette')}
+          />
+        )}
+
+        {/* Quick stats bar when phage is selected - shows on all devices */}
+        {currentPhage && <QuickStats className={isMobile ? 'quick-stats--mobile' : ''} />}
+
+        {/* Main content area with optional analysis sidebar */}
+        <div className={`dashboard-layout ${isWide ? 'dashboard-layout--with-sidebar' : ''}`}>
+          <section className="panel two-column" aria-label="Phage browser">
+            {showList && (
+              <div className={`column column--list ${isMobile && hasSelection ? 'mobile-drawer' : ''}`}>
               <div className="panel-header">
                 <h3>Phages</h3>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -854,9 +895,9 @@ export default function App(): JSX.Element {
                     <div className="viewer-panel">
                       <div className="metric-label" style={{ marginBottom: '0.5rem' }}>Sequence</div>
                       {currentPhage && (
-                        <GeneMapCanvas 
-                          height={60} 
-                          onGeneClick={(pos) => usePhageStore.getState().setScrollPosition(pos)} 
+                        <GeneMapCanvas
+                          height={geneMapHeight}
+                          onGeneClick={(pos) => usePhageStore.getState().setScrollPosition(pos)}
                           onGeneSelect={(gene) => setSelectedGene(gene)}
                         />
                       )}
@@ -955,24 +996,24 @@ export default function App(): JSX.Element {
                             <LazyModel3DView phage={currentPhage} />
                           </Suspense>
                         ) : (
-                          <div className="panel" aria-label="3D structure viewer">
-                            <div className="panel-header">
-                              <h3>3D Structure</h3>
-                              <span className="badge subtle">Off</span>
+                          <div className="viewer-placeholder" aria-label="3D structure viewer disabled">
+                            <svg className="viewer-placeholder__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                              <polyline points="3.27,6.96 12,12.01 20.73,6.96" />
+                              <line x1="12" y1="22.08" x2="12" y2="12" />
+                            </svg>
+                            <div className="viewer-placeholder__title">3D Structure Viewer</div>
+                            <div className="viewer-placeholder__description">
+                              Explore protein structures in interactive 3D. Disabled by default to conserve battery.
                             </div>
-                            <div className="panel-body text-dim">
-                              <p style={{ marginTop: 0 }}>
-                                3D is currently disabled to save battery/GPU. Enable it to load the structure viewer.
-                              </p>
-                              <button
-                                type="button"
-                                className="btn"
-                                onClick={toggle3DModel}
-                                aria-label="Enable 3D structure viewer"
-                              >
-                                Enable 3D
-                              </button>
-                            </div>
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={toggle3DModel}
+                              aria-label="Enable 3D structure viewer"
+                            >
+                              Enable 3D Viewer
+                            </button>
                           </div>
                         )}
                       </div>
@@ -985,15 +1026,43 @@ export default function App(): JSX.Element {
                   )}
                 </div>
               ) : (
-                <div className="text-dim">
-                  {isLoadingPhage
-                    ? 'Loading phage details...'
-                    : 'Select a phage to view details once the database is ready.'}
+                <div className="empty-state">
+                  <div className="empty-state__icon empty-state__icon--animated">
+                    🧬
+                  </div>
+                  <div className="empty-state__title">
+                    {isLoadingPhage ? 'Loading...' : 'No Phage Selected'}
+                  </div>
+                  <div className="empty-state__description">
+                    {isLoadingPhage
+                      ? 'Fetching phage data from the database...'
+                      : 'Select a phage from the list to explore its genome, genes, and 3D structure.'}
+                  </div>
+                  {!isLoadingPhage && isMobile && (
+                    <div className="empty-state__action">
+                      <button
+                        className="btn"
+                        onClick={() => setMobileListOpen(true)}
+                        type="button"
+                      >
+                        Browse Phages
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           )}
-        </section>
+          </section>
+
+          {/* Analysis Sidebar - visible on wide screens */}
+          {isWide && (
+            <AnalysisSidebar
+              collapsed={analysisSidebarCollapsed}
+              onToggleCollapse={() => setAnalysisSidebarCollapsed(!analysisSidebarCollapsed)}
+            />
+          )}
+        </div>
       </AppShell>
       {isGlossaryOpen && (
         <>
