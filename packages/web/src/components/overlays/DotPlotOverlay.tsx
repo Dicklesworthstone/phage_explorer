@@ -89,9 +89,9 @@ export function DotPlotOverlay({
   const viewSelectId = 'dotplot-view';
   const resolutionSelectId = 'dotplot-resolution';
 
-  // Hotkey to toggle overlay (Alt+D)
+  // Hotkey to toggle overlay (Alt+O for dOt plot - Alt+D used by ProteinDomainOverlay)
   useHotkey(
-    { key: 'd', modifiers: { alt: true } },
+    { key: 'o', modifiers: { alt: true } },
     'Dot Plot Analysis',
     () => toggle('dotPlot'),
     { modes: ['NORMAL'], category: 'Analysis' }
@@ -248,7 +248,7 @@ export function DotPlotOverlay({
   if (!isOpen('dotPlot')) return null;
 
   return (
-    <Overlay id="dotPlot" title="DOT PLOT ANALYSIS" icon="D" hotkey="Alt+D" size="lg">
+    <Overlay id="dotPlot" title="DOT PLOT ANALYSIS" icon="O" hotkey="Alt+O" size="lg">
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         {/* Description */}
         <div

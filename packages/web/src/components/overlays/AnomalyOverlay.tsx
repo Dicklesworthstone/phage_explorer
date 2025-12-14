@@ -72,8 +72,9 @@ export function AnomalyOverlay({
     []
   );
 
+  // Hotkey Alt+Y for anomalY (Alt+A used by AMGPathwayOverlay)
   useHotkey(
-    { key: 'a', modifiers: { alt: true } },
+    { key: 'y', modifiers: { alt: true } },
     'Anomaly overlay',
     () => toggle('anomaly'),
     { modes: ['NORMAL'], category: 'Analysis' }
@@ -247,7 +248,7 @@ export function AnomalyOverlay({
       id="anomaly"
       title="ANOMALY DETECTION"
       icon="⚠️"
-      hotkey="Alt+A"
+      hotkey="Alt+Y"
       size="xl"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
