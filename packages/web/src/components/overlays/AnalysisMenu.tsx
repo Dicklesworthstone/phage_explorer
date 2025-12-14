@@ -9,13 +9,30 @@ import React, { useState, useEffect } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay, type OverlayId } from './OverlayProvider';
+import {
+  IconAlertTriangle,
+  IconAperture,
+  IconBookmark,
+  IconCube,
+  IconDiff,
+  IconDna,
+  IconLayers,
+  IconMagnet,
+  IconRepeat,
+  IconSearch,
+  IconShield,
+  IconTarget,
+  IconTrendingUp,
+} from '../ui';
+
+const ITEM_ICON_SIZE = 18;
 
 interface AnalysisItem {
   id: string;
   overlayId: OverlayId;
   label: string;
   description: string;
-  icon: string;
+  icon: React.ReactNode;
   shortcut: string;
   category: string;
   requiresLevel?: 'novice' | 'intermediate' | 'power';
@@ -28,7 +45,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'gcSkew',
     label: 'GC Skew',
     description: 'Cumulative GC skew plot for origin/terminus detection',
-    icon: '📈',
+    icon: <IconTrendingUp size={ITEM_ICON_SIZE} />,
     shortcut: 'g',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -38,7 +55,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'complexity',
     label: 'Sequence Complexity',
     description: 'Shannon entropy and linguistic complexity',
-    icon: '🎲',
+    icon: <IconCube size={ITEM_ICON_SIZE} />,
     shortcut: 'x',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -48,7 +65,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'bendability',
     label: 'DNA Bendability',
     description: 'Curvature and flexibility prediction',
-    icon: '🌀',
+    icon: <IconAperture size={ITEM_ICON_SIZE} />,
     shortcut: 'b',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -58,7 +75,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'pressure',
     label: 'Packaging Pressure',
     description: 'Capsid fill fraction, force, and pressure gauge',
-    icon: '🧲',
+    icon: <IconMagnet size={ITEM_ICON_SIZE} />,
     shortcut: 'v',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -68,7 +85,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'stability',
     label: 'Virion Stability',
     description: 'Capsid robustness vs temperature / salt',
-    icon: '🛡️',
+    icon: <IconShield size={ITEM_ICON_SIZE} />,
     shortcut: 'Alt+V',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -78,7 +95,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'hilbert',
     label: 'Hilbert Curve',
     description: 'Space-filling curve view of genome composition',
-    icon: '🌀',
+    icon: <IconAperture size={ITEM_ICON_SIZE} />,
     shortcut: 'H',
     category: 'Sequence Analysis',
     requiresLevel: 'intermediate',
@@ -90,7 +107,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'promoter',
     label: 'Promoter/RBS Sites',
     description: 'Predicted promoters and ribosome binding sites',
-    icon: '🎯',
+    icon: <IconTarget size={ITEM_ICON_SIZE} />,
     shortcut: 'p',
     category: 'Gene Features',
     requiresLevel: 'intermediate',
@@ -100,7 +117,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'repeats',
     label: 'Repeats & Palindromes',
     description: 'Direct, inverted, and palindromic sequences',
-    icon: '🔄',
+    icon: <IconRepeat size={ITEM_ICON_SIZE} />,
     shortcut: 'r',
     category: 'Gene Features',
     requiresLevel: 'intermediate',
@@ -112,7 +129,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'biasDecomposition',
     label: 'Codon Bias Decomposition',
     description: 'Principal component analysis of codon usage',
-    icon: '📊',
+    icon: <IconTrendingUp size={ITEM_ICON_SIZE} />,
     shortcut: 'J',
     category: 'Codon Analysis',
     requiresLevel: 'power',
@@ -122,7 +139,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'phasePortrait',
     label: 'Phase Portrait',
     description: 'Codon usage phase space visualization',
-    icon: '🌐',
+    icon: <IconAperture size={ITEM_ICON_SIZE} />,
     shortcut: 'L',
     category: 'Codon Analysis',
     requiresLevel: 'power',
@@ -134,7 +151,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'kmerAnomaly',
     label: 'K-mer Anomaly',
     description: 'Unusual k-mer composition detection',
-    icon: '🔍',
+    icon: <IconSearch size={ITEM_ICON_SIZE} />,
     shortcut: 'V',
     category: 'Evolutionary',
     requiresLevel: 'power',
@@ -144,7 +161,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'anomaly',
     label: 'Anomaly Detection',
     description: 'Composite anomalies (KL, compression, skews, bias)',
-    icon: '⚠️',
+    icon: <IconAlertTriangle size={ITEM_ICON_SIZE} />,
     shortcut: 'A',
     category: 'Evolutionary',
     requiresLevel: 'power',
@@ -154,7 +171,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'hgt',
     label: 'HGT Analysis',
     description: 'Horizontal gene transfer detection',
-    icon: '↔️',
+    icon: <IconDiff size={ITEM_ICON_SIZE} />,
     shortcut: 'Y',
     category: 'Evolutionary',
     requiresLevel: 'power',
@@ -166,7 +183,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'tropism',
     label: 'Tropism & Receptors',
     description: 'Host receptor binding predictions',
-    icon: '🎯',
+    icon: <IconTarget size={ITEM_ICON_SIZE} />,
     shortcut: '0',
     category: 'Host Interaction',
     requiresLevel: 'power',
@@ -176,7 +193,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'crispr',
     label: 'CRISPR Spacers',
     description: 'CRISPR spacer matches in phage genome',
-    icon: '✂️',
+    icon: <IconDna size={ITEM_ICON_SIZE} />,
     shortcut: 'C',
     category: 'Host Interaction',
     requiresLevel: 'power',
@@ -188,7 +205,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'synteny',
     label: 'Synteny Analysis',
     description: 'Gene order conservation between phage genomes',
-    icon: '🧩',
+    icon: <IconLayers size={ITEM_ICON_SIZE} />,
     shortcut: 'Alt+S',
     category: 'Comparative',
     requiresLevel: 'power',
@@ -198,7 +215,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'dotPlot',
     label: 'Dot Plot',
     description: 'Self-similarity matrix for repeats and palindromes',
-    icon: '⬛',
+    icon: <IconDiff size={ITEM_ICON_SIZE} />,
     shortcut: 'Alt+D',
     category: 'Comparative',
     requiresLevel: 'intermediate',
@@ -210,7 +227,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'aaKey',
     label: 'Amino Acid Key',
     description: 'Color legend for amino acids by property',
-    icon: '🧬',
+    icon: <IconDna size={ITEM_ICON_SIZE} />,
     shortcut: 'k',
     category: 'Reference',
     requiresLevel: 'novice',
@@ -220,7 +237,7 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
     overlayId: 'aaLegend',
     label: 'Amino Acid Legend (compact)',
     description: 'Compact amino acid color legend',
-    icon: '🔖',
+    icon: <IconBookmark size={ITEM_ICON_SIZE} />,
     shortcut: 'l',
     category: 'Reference',
     requiresLevel: 'novice',
@@ -302,7 +319,6 @@ export function AnalysisMenu(): React.ReactElement | null {
     <Overlay
       id="analysisMenu"
       title="ANALYSIS MENU"
-      icon="🔬"
       hotkey="a"
       size="lg"
     >
@@ -355,7 +371,9 @@ export function AnalysisMenu(): React.ReactElement | null {
                       borderBottom: `1px solid ${colors.borderLight}`,
                     }}
                   >
-                    <span style={{ fontSize: '1.25rem' }}>{item.icon}</span>
+                    <span className="analysis-menu-item-icon" aria-hidden="true">
+                      {item.icon}
+                    </span>
                     <div style={{ flex: 1 }}>
                       <div style={{
                         display: 'flex',

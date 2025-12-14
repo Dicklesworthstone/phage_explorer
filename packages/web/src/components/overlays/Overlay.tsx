@@ -10,20 +10,23 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState, type ReactNode, type CSSProperties } from 'react';
-import { useTheme } from '../../hooks/useTheme';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
 import {
   IconAlertTriangle,
   IconAperture,
+  IconArrowRight,
   IconBookmark,
   IconCube,
   IconDna,
+  IconDiff,
   IconFlask,
   IconKeyboard,
+  IconLearn,
   IconLayers,
   IconMagnet,
   IconRepeat,
   IconSearch,
+  IconSettings,
   IconShield,
   IconTarget,
   IconTrendingUp,
@@ -68,10 +71,14 @@ const OVERLAY_ICON_SIZE = 18;
 const OVERLAY_HEADER_ICONS: Partial<Record<OverlayId, React.ReactNode>> = {
   help: <IconKeyboard size={OVERLAY_ICON_SIZE} />,
   search: <IconSearch size={OVERLAY_ICON_SIZE} />,
+  goto: <IconArrowRight size={OVERLAY_ICON_SIZE} />,
+  settings: <IconSettings size={OVERLAY_ICON_SIZE} />,
   aaKey: <IconDna size={OVERLAY_ICON_SIZE} />,
   aaLegend: <IconBookmark size={OVERLAY_ICON_SIZE} />,
+  comparison: <IconDiff size={OVERLAY_ICON_SIZE} />,
   analysisMenu: <IconFlask size={OVERLAY_ICON_SIZE} />,
   simulationHub: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  simulationView: <IconFlask size={OVERLAY_ICON_SIZE} />,
   complexity: <IconCube size={OVERLAY_ICON_SIZE} />,
   gcSkew: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
   bendability: <IconAperture size={OVERLAY_ICON_SIZE} />,
@@ -79,16 +86,34 @@ const OVERLAY_HEADER_ICONS: Partial<Record<OverlayId, React.ReactNode>> = {
   repeats: <IconRepeat size={OVERLAY_ICON_SIZE} />,
   transcriptionFlow: <IconFlask size={OVERLAY_ICON_SIZE} />,
   pressure: <IconMagnet size={OVERLAY_ICON_SIZE} />,
+  selectionPressure: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
   modules: <IconLayers size={OVERLAY_ICON_SIZE} />,
+  hgt: <IconLayers size={OVERLAY_ICON_SIZE} />,
   kmerAnomaly: <IconFlask size={OVERLAY_ICON_SIZE} />,
   anomaly: <IconAlertTriangle size={OVERLAY_ICON_SIZE} />,
+  structureConstraint: <IconCube size={OVERLAY_ICON_SIZE} />,
+  gel: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  nonBDNA: <IconDna size={OVERLAY_ICON_SIZE} />,
+  foldQuickview: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  commandPalette: <IconKeyboard size={OVERLAY_ICON_SIZE} />,
   hilbert: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  phasePortrait: <IconAperture size={OVERLAY_ICON_SIZE} />,
+  biasDecomposition: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
   crispr: <IconDna size={OVERLAY_ICON_SIZE} />,
+  synteny: <IconDiff size={OVERLAY_ICON_SIZE} />,
+  dotPlot: <IconDiff size={OVERLAY_ICON_SIZE} />,
   tropism: <IconTarget size={OVERLAY_ICON_SIZE} />,
   cgr: <IconDna size={OVERLAY_ICON_SIZE} />,
   stability: <IconShield size={OVERLAY_ICON_SIZE} />,
   welcome: <IconDna size={OVERLAY_ICON_SIZE} />,
   collaboration: <IconUsers size={OVERLAY_ICON_SIZE} />,
+  tour: <IconLearn size={OVERLAY_ICON_SIZE} />,
+  genomicSignaturePCA: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
+  codonBias: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
+  proteinDomains: <IconLayers size={OVERLAY_ICON_SIZE} />,
+  amgPathway: <IconFlask size={OVERLAY_ICON_SIZE} />,
+  codonAdaptation: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
+  defenseArmsRace: <IconShield size={OVERLAY_ICON_SIZE} />,
 };
 
 export function Overlay({
@@ -106,8 +131,6 @@ export function Overlay({
 }: OverlayProps): React.ReactElement | null {
   const { isOpen, close, stack } = useOverlay();
   const zIndex = useOverlayZIndex(id);
-  const { theme } = useTheme();
-  const colors = theme.colors;
   const overlayRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const [isBackdropHovered, setIsBackdropHovered] = useState(false);
@@ -248,10 +271,10 @@ export function Overlay({
     width: isBottomSheet ? '100%' : SIZE_WIDTHS[size],
     maxWidth: isBottomSheet ? '100%' : '95vw',
     maxHeight: isBottomSheet ? '85dvh' : SIZE_MAX_HEIGHTS[size],
-    backgroundColor: colors.background,
-    border: `2px solid ${colors.borderFocus}`,
+    backgroundColor: 'var(--color-background)',
+    border: '2px solid var(--color-border-focus)',
     borderRadius: overlayBorderRadius,
-    boxShadow: `0 0 20px ${colors.shadow}, 0 0 60px ${colors.shadow}`,
+    boxShadow: '0 0 20px var(--color-shadow), 0 0 60px var(--color-shadow)',
     display: 'flex',
     flexDirection: 'column',
     overflow: 'hidden',
@@ -263,7 +286,7 @@ export function Overlay({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: '0.75rem 1rem',
-    borderBottom: `1px solid ${colors.borderLight}`,
+    borderBottom: '1px solid var(--color-border-light)',
   };
 
   const titleStyle: CSSProperties = {
@@ -281,7 +304,7 @@ export function Overlay({
 
   const footerStyle: CSSProperties = {
     padding: '0.75rem 1rem',
-    borderTop: `1px solid ${colors.borderLight}`,
+    borderTop: '1px solid var(--color-border-light)',
     paddingBottom: isBottomSheet ? 'calc(0.75rem + env(safe-area-inset-bottom))' : '0.75rem',
   };
 
@@ -306,23 +329,23 @@ export function Overlay({
           <div style={titleStyle}>
             <span
               aria-hidden="true"
-              style={{ color: colors.primary, fontSize: '1.1rem', display: 'inline-flex', alignItems: 'center' }}
+              style={{ color: 'var(--color-primary)', fontSize: '1.1rem', display: 'inline-flex', alignItems: 'center' }}
             >
               {resolvedIcon}
             </span>
             <span
               id={`overlay-title-${id}`}
-              style={{ color: colors.primary, fontWeight: 'bold', fontSize: '1rem' }}
+              style={{ color: 'var(--color-primary)', fontWeight: 'bold', fontSize: '1rem' }}
             >
               {title}
             </span>
             {hotkey && (
               <span
                 style={{
-                  color: colors.accent,
+                  color: 'var(--color-accent)',
                   fontSize: '0.85rem',
                   padding: '0.1rem 0.4rem',
-                  backgroundColor: colors.backgroundAlt,
+                  backgroundColor: 'var(--color-background-alt)',
                   borderRadius: '4px',
                 }}
               >
@@ -331,7 +354,7 @@ export function Overlay({
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            <span style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
+            <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
               ESC{hotkey ? ` or ${hotkey}` : ''} to close
             </span>
             <button
@@ -339,7 +362,7 @@ export function Overlay({
               style={{
                 background: 'none',
                 border: 'none',
-                color: colors.textDim,
+                color: 'var(--color-text-dim)',
                 cursor: 'pointer',
                 fontSize: '1.2rem',
                 padding: '0.25rem',
