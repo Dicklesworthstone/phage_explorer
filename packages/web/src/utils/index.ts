@@ -9,3 +9,4 @@ export {
   buildSequenceClipboardPayload,
 } from './export';
 export { detectWebGPU } from './webgpu';
+export { detectWASM, isWASMSupported, type WASMSupport } from './wasm';

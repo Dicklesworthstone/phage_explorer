@@ -6,6 +6,7 @@
  */
 
 import type { Database, SqlJsStatic } from 'sql.js';
+import { isWASMSupported, detectWASM } from '../utils/wasm';
 
 // Cached sql.js instance - use dynamic import because sql.js is CommonJS
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
@@ -410,6 +411,14 @@ export class DatabaseLoader {
   async load(): Promise<PhageRepository> {
     if (this.repository) {
       return this.repository;
+    }
+
+    // Early check for WASM support - fail fast with clear error
+    if (!isWASMSupported()) {
+      const wasmStatus = await detectWASM();
+      const reason = wasmStatus.supported ? 'unknown' : wasmStatus.reason;
+      this.progress('error', 0, `WebAssembly not supported: ${reason}. This browser cannot run Phage Explorer.`);
+      throw new Error(`WebAssembly is not supported in this browser: ${reason}. Phage Explorer requires WebAssembly to run the SQLite database engine.`);
     }
 
     try {
