@@ -2,13 +2,20 @@ import React, { useCallback } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { useOverlay } from '../overlays/OverlayProvider';
 import {
+  IconChevronLeft,
+  IconChevronRight,
   IconCube,
   IconLayers,
   IconSearch,
-  IconSettings,
-  IconTarget,
 } from '../ui';
 import { haptics } from '../../utils/haptics';
+
+interface ControlDeckProps {
+  /** Handler for navigating to previous phage (loads full data) */
+  onPrevPhage?: () => void;
+  /** Handler for navigating to next phage (loads full data) */
+  onNextPhage?: () => void;
+}
 
 /**
  * Mobile Bottom Tab Bar
@@ -21,30 +28,22 @@ import { haptics } from '../../utils/haptics';
  *
  * Each tap performs an action immediately (no nested tabs).
  */
-export function ControlDeck(): JSX.Element {
+export function ControlDeck({ onPrevPhage, onNextPhage }: ControlDeckProps): JSX.Element {
   const viewMode = usePhageStore(s => s.viewMode);
   const toggleViewMode = usePhageStore(s => s.toggleViewMode);
   const show3DModel = usePhageStore(s => s.show3DModel);
   const toggle3DModel = usePhageStore(s => s.toggle3DModel);
+  const phages = usePhageStore(s => s.phages);
   const { open } = useOverlay();
 
   const viewModeLabel = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'AA' : 'Both';
+  const canNavigate = phages.length > 0 && onPrevPhage && onNextPhage;
 
   // Wrap actions with haptic feedback
-  const handleSearch = useCallback(() => {
-    haptics.light();
-    open('search');
-  }, [open]);
-
   const handleViewMode = useCallback(() => {
     haptics.selection();
     toggleViewMode();
   }, [toggleViewMode]);
-
-  const handleGoTo = useCallback(() => {
-    haptics.light();
-    open('goto');
-  }, [open]);
 
   const handle3DToggle = useCallback(() => {
     haptics.medium();
@@ -56,19 +55,33 @@ export function ControlDeck(): JSX.Element {
     open('commandPalette');
   }, [open]);
 
+  // Phage navigation handlers - wrap with haptic feedback
+  const handlePrevPhage = useCallback(() => {
+    if (!onPrevPhage) return;
+    haptics.selection();
+    onPrevPhage();
+  }, [onPrevPhage]);
+
+  const handleNextPhage = useCallback(() => {
+    if (!onNextPhage) return;
+    haptics.selection();
+    onNextPhage();
+  }, [onNextPhage]);
+
   return (
     <nav className="control-deck" aria-label="Mobile navigation">
-      {/* Search */}
+      {/* Previous Phage */}
       <button
         type="button"
         className="tab-btn"
-        onClick={handleSearch}
-        aria-label="Search sequence"
+        onClick={handlePrevPhage}
+        aria-label="Previous phage"
+        disabled={!canNavigate}
       >
         <span className="tab-icon">
-          <IconSearch size={20} />
+          <IconChevronLeft size={22} />
         </span>
-        <span className="tab-label">Search</span>
+        <span className="tab-label">Prev</span>
       </button>
 
       {/* View Mode Toggle */}
@@ -82,19 +95,6 @@ export function ControlDeck(): JSX.Element {
           <IconLayers size={20} />
         </span>
         <span className="tab-label">{viewModeLabel}</span>
-      </button>
-
-      {/* Go To Position */}
-      <button
-        type="button"
-        className="tab-btn"
-        onClick={handleGoTo}
-        aria-label="Go to position"
-      >
-        <span className="tab-icon">
-          <IconTarget size={20} />
-        </span>
-        <span className="tab-label">Go To</span>
       </button>
 
       {/* 3D Toggle */}
@@ -112,17 +112,31 @@ export function ControlDeck(): JSX.Element {
         <span className="tab-label">3D</span>
       </button>
 
-      {/* More/Settings - Opens Command Palette */}
+      {/* Search / More - Opens Command Palette */}
       <button
         type="button"
         className="tab-btn"
         onClick={handleMore}
-        aria-label="More options"
+        aria-label="Menu and search"
       >
         <span className="tab-icon">
-          <IconSettings size={20} />
+          <IconSearch size={20} />
         </span>
-        <span className="tab-label">More</span>
+        <span className="tab-label">Menu</span>
+      </button>
+
+      {/* Next Phage */}
+      <button
+        type="button"
+        className="tab-btn"
+        onClick={handleNextPhage}
+        aria-label="Next phage"
+        disabled={!canNavigate}
+      >
+        <span className="tab-icon">
+          <IconChevronRight size={22} />
+        </span>
+        <span className="tab-label">Next</span>
       </button>
     </nav>
   );

@@ -7,6 +7,19 @@ const resolveFromRoot = (relativePath: string) =>
 
 export default defineConfig({
   plugins: [react()],
+  server: {
+    headers: {
+      // Enable SharedArrayBuffer for local development
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
+  preview: {
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin',
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+    },
+  },
   resolve: {
     dedupe: ['react', 'react-dom'],
     alias: {

@@ -1106,7 +1106,7 @@ export default function App(): JSX.Element {
         </div>
       )}
       <BlockedHotkeyToast info={blockedHotkey} onDismiss={dismissBlockedHotkey} />
-      <ControlDeck />
+      <ControlDeck onPrevPhage={handlePrevPhage} onNextPhage={handleNextPhage} />
       <DataFreshnessIndicator isCached={isCached} isLoading={isLoading} />
     </>
   );
