@@ -140,24 +140,35 @@ export function parseMMCIF(text: string): AtomRecord[] {
   return atoms;
 }
 
-// CPK-based colors optimized for dark backgrounds
+// CPK-based colors optimized for dark backgrounds - vibrant and distinctive
 const ELEMENT_COLORS: Record<string, Color> = {
-  H: new Color('#f8fafc'),
-  C: new Color('#cbd5e1'),
-  N: new Color('#3b82f6'),
-  O: new Color('#ef4444'),
-  S: new Color('#fde047'),
-  P: new Color('#fb923c'),
-  MG: new Color('#22c55e'),
-  FE: new Color('#ea580c'),
-  CA: new Color('#16a34a'),
-  ZN: new Color('#7c3aed'),
-  CL: new Color('#4ade80'),
-  NA: new Color('#a855f7'),
-  K: new Color('#8b5cf6'),
-  MN: new Color('#9333ea'),
-  CU: new Color('#f97316'),
-  SE: new Color('#eab308'),
+  // Common organic elements
+  H: new Color('#f8fafc'),      // White - hydrogen
+  C: new Color('#64748b'),      // Slate gray - carbon (darker for contrast)
+  N: new Color('#3b82f6'),      // Bright blue - nitrogen
+  O: new Color('#ef4444'),      // Bright red - oxygen
+  S: new Color('#fde047'),      // Bright yellow - sulfur
+  P: new Color('#fb923c'),      // Orange - phosphorus
+  // Metals
+  MG: new Color('#22c55e'),     // Bright green - magnesium
+  FE: new Color('#f97316'),     // Orange/rust - iron
+  CA: new Color('#16a34a'),     // Green - calcium
+  ZN: new Color('#7c3aed'),     // Purple - zinc
+  CL: new Color('#4ade80'),     // Light green - chlorine
+  NA: new Color('#a855f7'),     // Purple - sodium
+  K: new Color('#8b5cf6'),      // Violet - potassium
+  MN: new Color('#9333ea'),     // Dark purple - manganese
+  CU: new Color('#ea580c'),     // Copper orange - copper
+  SE: new Color('#eab308'),     // Yellow-gold - selenium
+  // Additional elements
+  BR: new Color('#a3262c'),     // Dark red - bromine
+  I: new Color('#940094'),      // Dark purple - iodine
+  F: new Color('#90e050'),      // Yellow-green - fluorine
+  B: new Color('#ffb5b5'),      // Pink - boron
+  SI: new Color('#f0c8a0'),     // Beige - silicon
+  AL: new Color('#bfa6a6'),     // Gray-pink - aluminum
+  CO: new Color('#f090a0'),     // Pink - cobalt
+  NI: new Color('#50d050'),     // Green - nickel
 };
 
 function detectFormat(idOrUrl: string): StructureFormat {
@@ -306,14 +317,14 @@ export function buildBallAndStick(
   } = options;
   const group = new Group();
 
-  // ATOMS - use instanced mesh with per-instance colors
+  // ATOMS - use instanced mesh with per-instance element-based colors
   const atomGeo = new SphereGeometry(sphereRadius, sphereSegments, sphereSegments);
   const atomMat = new MeshPhongMaterial({
-    shininess: 140,              // High shininess for crisp highlights
-    specular: new Color('#cbd5e1'),  // Bright specular
-    emissive: new Color('#0b1224'),  // Base illumination to prevent blackness
-    emissiveIntensity: 0.14,
-    vertexColors: true,
+    shininess: 80,               // Moderate shininess for natural look
+    specular: new Color('#888888'),  // Neutral specular
+    emissive: new Color('#000000'),  // No emissive - let element colors shine
+    emissiveIntensity: 0,
+    vertexColors: true,          // CRITICAL: enables per-instance colors
   });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
@@ -328,14 +339,14 @@ export function buildBallAndStick(
   if (atomMesh.instanceColor) atomMesh.instanceColor.needsUpdate = true;
   group.add(atomMesh);
 
-  // BONDS - bright silver/white for visibility
+  // BONDS - neutral gray, thin, doesn't compete with atom colors
   const bondGeo = new CylinderGeometry(bondRadius, bondRadius, 1, bondRadialSegments, 1, true);
   const bondMat = new MeshPhongMaterial({
-    color: '#f3f4f6',  // Very bright zinc/silver
-    shininess: 90,
-    specular: new Color('#cbd5e1'),
-    emissive: new Color('#1f2937'),  // Gentle self-illumination
-    emissiveIntensity: 0.16,
+    color: '#9ca3af',  // Medium gray - visible but not distracting
+    shininess: 50,
+    specular: new Color('#666666'),
+    emissive: new Color('#000000'),
+    emissiveIntensity: 0,
   });
   const bondMesh = new InstancedMesh(bondGeo, bondMat, bonds.length);
   const bondMatrix = new Matrix4();
@@ -420,42 +431,53 @@ export function buildSurfaceImpostor(
 ): Group {
   const group = new Group();
 
-  // Create a more visible, colorful surface
-  const geo = new SphereGeometry(0.7 * scale, segments, segments);
-
-  // Outer surface - semi-transparent blue
+  // Outer surface - element-colored, semi-transparent
+  const outerGeo = new SphereGeometry(0.7 * scale, segments, segments);
   const outerMat = new MeshPhongMaterial({
-    color: '#38bdf8', // Bright sky blue
     transparent: true,
-    opacity: 0.5,
+    opacity: 0.55,
     shininess: 60,
-    specular: new Color('#88ccff'),
+    specular: new Color('#666666'),
     side: 2, // DoubleSide
     depthWrite: false,
+    vertexColors: true,  // Enable per-instance element colors
   });
-  const outerMesh = new InstancedMesh(geo, outerMat, atoms.length);
+  const outerMesh = new InstancedMesh(outerGeo, outerMat, atoms.length);
   const matrix = new Matrix4();
+  const color = new Color();
+
+  // Apply element-based colors to each atom
   atoms.forEach((atom, idx) => {
     matrix.makeTranslation(atom.x, atom.y, atom.z);
     outerMesh.setMatrixAt(idx, matrix);
+    outerMesh.setColorAt(idx, color.copy(colorForElement(atom.element)));
   });
   outerMesh.instanceMatrix.needsUpdate = true;
+  if (outerMesh.instanceColor) outerMesh.instanceColor.needsUpdate = true;
   group.add(outerMesh);
 
-  // Inner core - brighter for depth perception
-  const innerGeo = new SphereGeometry(0.3 * scale, 8, 8);
+  // Inner core - smaller, brighter, element-colored for depth perception
+  const innerGeo = new SphereGeometry(0.35 * scale, 8, 8);
   const innerMat = new MeshPhongMaterial({
-    color: '#f0f9ff', // Very light blue/white
     shininess: 100,
-    emissive: new Color('#60a5fa'),
-    emissiveIntensity: 0.2,
+    specular: new Color('#ffffff'),
+    vertexColors: true,  // Enable per-instance element colors
   });
   const innerMesh = new InstancedMesh(innerGeo, innerMat, atoms.length);
+
+  // Reuse Color objects to avoid allocations in the loop
+  const innerColor = new Color();
+  const whiteColor = new Color('#ffffff');
+
   atoms.forEach((atom, idx) => {
     matrix.makeTranslation(atom.x, atom.y, atom.z);
     innerMesh.setMatrixAt(idx, matrix);
+    // Use slightly brighter version of element color for inner core
+    innerColor.copy(colorForElement(atom.element)).lerp(whiteColor, 0.3);
+    innerMesh.setColorAt(idx, innerColor);
   });
   innerMesh.instanceMatrix.needsUpdate = true;
+  if (innerMesh.instanceColor) innerMesh.instanceColor.needsUpdate = true;
   group.add(innerMesh);
 
   return group;
