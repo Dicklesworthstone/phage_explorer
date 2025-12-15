@@ -41,6 +41,10 @@ const INDEXEDDB_NAME = 'phage-explorer-db';
 const INDEXEDDB_STORE = 'database';
 const INDEXEDDB_VERSION = 1;
 
+// Cache keys for ETag-based conditional requests
+const MANIFEST_ETAG_KEY = 'manifest-etag';
+const MANIFEST_CACHE_KEY = 'manifest-cache';
+
 /**
  * Open IndexedDB database
  */
@@ -147,6 +151,58 @@ async function deleteFromIndexedDB(key: string): Promise<void> {
 }
 
 /**
+ * Fetch manifest with ETag-based conditional request.
+ * Returns cached manifest if server returns 304 Not Modified.
+ */
+async function fetchManifestWithETag(
+  manifestUrl: string
+): Promise<{ manifest: DatabaseManifest | null; fromCache: boolean }> {
+  try {
+    // Get cached ETag and manifest
+    const cachedEtag = await getFromIndexedDB<string>(MANIFEST_ETAG_KEY);
+    const cachedManifest = await getFromIndexedDB<DatabaseManifest>(MANIFEST_CACHE_KEY);
+
+    const headers: HeadersInit = {};
+    if (cachedEtag) {
+      headers['If-None-Match'] = cachedEtag;
+    }
+
+    const response = await fetch(manifestUrl, {
+      cache: 'no-cache', // Revalidate but allow conditional response
+      headers,
+    });
+
+    // 304 Not Modified - use cached manifest
+    if (response.status === 304 && cachedManifest) {
+      return { manifest: cachedManifest, fromCache: true };
+    }
+
+    if (!response.ok) {
+      // Offline or error - try to use cached manifest
+      if (cachedManifest) {
+        return { manifest: cachedManifest, fromCache: true };
+      }
+      return { manifest: null, fromCache: false };
+    }
+
+    const manifest: DatabaseManifest = await response.json();
+
+    // Cache the new manifest and ETag
+    const newEtag = response.headers.get('ETag');
+    if (newEtag) {
+      await setInIndexedDB(MANIFEST_ETAG_KEY, newEtag);
+    }
+    await setInIndexedDB(MANIFEST_CACHE_KEY, manifest);
+
+    return { manifest, fromCache: false };
+  } catch {
+    // Network error - try cached manifest
+    const cachedManifest = await getFromIndexedDB<DatabaseManifest>(MANIFEST_CACHE_KEY);
+    return { manifest: cachedManifest, fromCache: !!cachedManifest };
+  }
+}
+
+/**
  * Database loader class
  */
 export class DatabaseLoader {
@@ -204,20 +260,10 @@ export class DatabaseLoader {
         return { valid: false };
       }
 
-      // Try to fetch manifest to check for updates
-      try {
-        const manifestResponse = await fetch(this.config.manifestUrl, {
-          cache: 'no-store',
-        });
-
-        if (manifestResponse.ok) {
-          const manifest: DatabaseManifest = await manifestResponse.json();
-          if (manifest.hash !== cachedHash) {
-            return { valid: false, hash: cachedHash };
-          }
-        }
-      } catch {
-        // Offline or manifest unavailable - use cached version
+      // Try to fetch manifest with ETag support (much faster for unchanged manifests)
+      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
+      if (manifest && manifest.hash !== cachedHash) {
+        return { valid: false, hash: cachedHash };
       }
 
       return { valid: true, hash: cachedHash };
@@ -406,15 +452,18 @@ export class DatabaseLoader {
    */
   async checkForUpdates(): Promise<boolean> {
     try {
-      const manifestResponse = await fetch(this.config.manifestUrl, {
-        cache: 'no-store',
-      });
+      // Use ETag-based conditional request for efficient checking
+      const { manifest, fromCache } = await fetchManifestWithETag(this.config.manifestUrl);
 
-      if (!manifestResponse.ok) {
+      if (!manifest) {
         return false;
       }
 
-      const manifest: DatabaseManifest = await manifestResponse.json();
+      // If we got a cached manifest via 304, no update needed
+      if (fromCache) {
+        return false;
+      }
+
       const cachedHash = await getFromIndexedDB<string>(`${this.config.dbName}:hash`);
 
       if (manifest.hash !== cachedHash) {

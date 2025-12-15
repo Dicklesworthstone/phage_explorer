@@ -20,6 +20,7 @@ import { readFileSync, existsSync } from 'fs';
 const DB_PATH = './phage.db';
 const CHUNK_SIZE = 10000; // 10kb chunks
 const TROPISM_PATH = './data/tropism-embeddings.json';
+const BATCH_INSERT_SIZE = 100; // Batch inserts for 5-10x faster writes
 
 async function main() {
   console.log('Building phage database...\n');
@@ -251,33 +252,42 @@ async function main() {
       const phageId = phageRecord.id;
       console.log(`  Inserted phage record (id: ${phageId})`);
 
-      // Insert sequence chunks
+      // Insert sequence chunks (batched for performance)
       const seq = sequenceData.sequence;
       const numChunks = Math.ceil(seq.length / CHUNK_SIZE);
+      const seqChunks: Array<{ phageId: number; chunkIndex: number; sequence: string }> = [];
 
       for (let i = 0; i < numChunks; i++) {
-        const chunk = seq.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-        await db.insert(sequences).values({
+        seqChunks.push({
           phageId,
           chunkIndex: i,
-          sequence: chunk,
+          sequence: seq.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
         });
+      }
+
+      // Insert in batches
+      for (let i = 0; i < seqChunks.length; i += BATCH_INSERT_SIZE) {
+        const batch = seqChunks.slice(i, i + BATCH_INSERT_SIZE);
+        await db.insert(sequences).values(batch);
       }
       console.log(`  Inserted ${numChunks} sequence chunks`);
 
-      // Insert gene annotations
-      for (const feature of sequenceData.features) {
-        await db.insert(genes).values({
-          phageId,
-          name: feature.gene || null,
-          locusTag: feature.locusTag || null,
-          startPos: feature.start,
-          endPos: feature.end,
-          strand: feature.strand,
-          product: feature.product || null,
-          type: feature.type,
-          qualifiers: JSON.stringify(feature.qualifiers),
-        });
+      // Insert gene annotations (batched for performance)
+      const geneValues = sequenceData.features.map(feature => ({
+        phageId,
+        name: feature.gene || null,
+        locusTag: feature.locusTag || null,
+        startPos: feature.start,
+        endPos: feature.end,
+        strand: feature.strand,
+        product: feature.product || null,
+        type: feature.type,
+        qualifiers: JSON.stringify(feature.qualifiers),
+      }));
+
+      for (let i = 0; i < geneValues.length; i += BATCH_INSERT_SIZE) {
+        const batch = geneValues.slice(i, i + BATCH_INSERT_SIZE);
+        await db.insert(genes).values(batch);
       }
       console.log(`  Inserted ${sequenceData.features.length} gene annotations`);
 
@@ -341,7 +351,17 @@ async function main() {
         geneMap.get(key)!.set(g.locusTag.toLowerCase(), g.id);
       });
 
-      let inserted = 0;
+      // Collect all valid tropism prediction values
+      const tropismValues: Array<{
+        phageId: number;
+        geneId: number | null;
+        locusTag: string | null;
+        receptor: string;
+        confidence: number;
+        evidence: string | null;
+        source: string;
+      }> = [];
+
       for (const row of data) {
         const phageId =
           (row.phageSlug && bySlug.get(row.phageSlug.toLowerCase())) ||
@@ -350,7 +370,7 @@ async function main() {
         const geneId = row.locusTag
           ? geneMap.get(phageId)?.get(row.locusTag.toLowerCase()) ?? null
           : null;
-        await db.insert(tropismPredictions).values({
+        tropismValues.push({
           phageId,
           geneId,
           locusTag: row.locusTag ?? null,
@@ -359,9 +379,14 @@ async function main() {
           evidence: row.evidence ? JSON.stringify(row.evidence) : null,
           source: row.source ?? 'embedding',
         });
-        inserted++;
       }
-      console.log(`Inserted ${inserted} tropism predictions`);
+
+      // Insert in batches for performance
+      for (let i = 0; i < tropismValues.length; i += BATCH_INSERT_SIZE) {
+        const batch = tropismValues.slice(i, i + BATCH_INSERT_SIZE);
+        await db.insert(tropismPredictions).values(batch);
+      }
+      console.log(`Inserted ${tropismValues.length} tropism predictions`);
     } catch (err) {
       console.error('Failed to load tropism predictions:', err);
     }
