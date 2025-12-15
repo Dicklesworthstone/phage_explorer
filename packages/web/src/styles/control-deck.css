@@ -123,6 +123,37 @@
 }
 
 /* =============================================================================
+   DISABLED BUTTONS
+   Style for disabled navigation buttons (when no phages loaded)
+   ============================================================================= */
+
+.tab-btn:disabled,
+.tab-btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.tab-btn:disabled .tab-icon,
+.tab-btn[disabled] .tab-icon {
+  color: var(--color-text-disabled, var(--color-text-muted));
+}
+
+.tab-btn:disabled .tab-label,
+.tab-btn[disabled] .tab-label {
+  color: var(--color-text-disabled, var(--color-text-muted));
+}
+
+/* No hover/active effects on disabled */
+.tab-btn:disabled:hover,
+.tab-btn:disabled:active,
+.tab-btn[disabled]:hover,
+.tab-btn[disabled]:active {
+  background: transparent;
+  color: var(--color-text-muted);
+}
+
+/* =============================================================================
    LANDSCAPE ADJUSTMENTS
    ============================================================================= */
 

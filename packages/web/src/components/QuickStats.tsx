@@ -55,7 +55,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       {stats.gcContent != null && (
         <div className="quick-stat">
           <span className="quick-stat__label">GC Content</span>
-          <span className="quick-stat__value">{(stats.gcContent * 100).toFixed(1)}%</span>
+          <span className="quick-stat__value">{stats.gcContent.toFixed(1)}%</span>
         </div>
       )}
 

@@ -60,7 +60,7 @@ function phageSummary(phage: PhageFull | null): string {
   const parts = [
     phage.name,
     phage.genomeLength ? `${phage.genomeLength.toLocaleString()} bp` : null,
-    phage.gcContent != null ? `${(phage.gcContent * 100).toFixed(1)}% GC` : null,
+    phage.gcContent != null ? `${phage.gcContent.toFixed(1)}% GC` : null,
     phage.morphology ?? null,
   ].filter(Boolean);
   return parts.join(' · ');
