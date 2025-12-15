@@ -5,6 +5,15 @@
 // Main orchestrator
 export { ComputeOrchestrator, getOrchestrator } from './ComputeOrchestrator';
 
+// Shared memory pool for zero-copy sequence data
+export {
+  SharedSequencePool,
+  decodeSequence,
+  createSequenceView,
+  isSharedBuffer,
+  type SequenceBuffer,
+} from './SharedSequencePool';
+
 // Worker preloader - call preloadWorkers() on app mount for instant overlay feel
 export {
   preloadWorkers,
@@ -39,6 +48,12 @@ export type {
   SearchFeature,
   SearchOptions,
   WorkerPoolConfig,
+  // SharedArrayBuffer types
+  SharedSequenceRef,
+  SharedAnalysisRequest,
+  SharedSearchRequest,
+  SharedAnalysisWorkerAPI,
+  SharedSearchWorkerAPI,
 } from './types';
 
 // Re-export simulation types from core

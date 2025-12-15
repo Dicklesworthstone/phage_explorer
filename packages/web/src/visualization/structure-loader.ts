@@ -64,6 +64,157 @@ async function getStructureWorkerCtor(): Promise<StructureWorkerCtor> {
   return cachedStructureWorkerCtor;
 }
 
+// ============================================================
+// StructureWorkerPool - Reuses workers for structure parsing
+// ============================================================
+
+interface PooledWorker {
+  worker: Worker;
+  busy: boolean;
+  lastUsed: number;
+}
+
+/**
+ * Pool of structure parsing workers.
+ * Reuses workers instead of creating/destroying for each load.
+ */
+class StructureWorkerPool {
+  private static instance: StructureWorkerPool | null = null;
+  private pool: PooledWorker[] = [];
+  private maxWorkers: number;
+  private idleTimeout: number;
+  private cleanupInterval: ReturnType<typeof setInterval> | null = null;
+  private workerCtorPromise: Promise<StructureWorkerCtor> | null = null;
+
+  private constructor(maxWorkers = 2, idleTimeout = 60000) {
+    this.maxWorkers = maxWorkers;
+    this.idleTimeout = idleTimeout;
+
+    // Cleanup idle workers periodically
+    this.cleanupInterval = setInterval(() => this.cleanupIdleWorkers(), 30000);
+  }
+
+  static getInstance(): StructureWorkerPool {
+    if (!StructureWorkerPool.instance) {
+      StructureWorkerPool.instance = new StructureWorkerPool();
+    }
+    return StructureWorkerPool.instance;
+  }
+
+  /**
+   * Acquire a worker from the pool or create a new one if under capacity.
+   */
+  async acquire(): Promise<PooledWorker> {
+    // Find an available worker
+    const available = this.pool.find(pw => !pw.busy);
+    if (available) {
+      available.busy = true;
+      available.lastUsed = Date.now();
+      return available;
+    }
+
+    // Create new worker if under capacity
+    if (this.pool.length < this.maxWorkers) {
+      if (!this.workerCtorPromise) {
+        this.workerCtorPromise = getStructureWorkerCtor();
+      }
+      const WorkerCtor = await this.workerCtorPromise;
+      const worker = new WorkerCtor();
+      const pooledWorker: PooledWorker = {
+        worker,
+        busy: true,
+        lastUsed: Date.now(),
+      };
+      this.pool.push(pooledWorker);
+      return pooledWorker;
+    }
+
+    // At capacity - wait for one to become available
+    return new Promise((resolve) => {
+      const checkInterval = setInterval(() => {
+        const available = this.pool.find(pw => !pw.busy);
+        if (available) {
+          clearInterval(checkInterval);
+          available.busy = true;
+          available.lastUsed = Date.now();
+          resolve(available);
+        }
+      }, 10);
+    });
+  }
+
+  /**
+   * Release a worker back to the pool.
+   */
+  release(pooledWorker: PooledWorker): void {
+    pooledWorker.busy = false;
+    pooledWorker.lastUsed = Date.now();
+    // Reset message handlers to clean up previous listeners
+    pooledWorker.worker.onmessage = null;
+    pooledWorker.worker.onerror = null;
+  }
+
+  /**
+   * Clean up idle workers beyond the first one.
+   */
+  private cleanupIdleWorkers(): void {
+    const now = Date.now();
+    // Keep at least one worker ready
+    if (this.pool.length <= 1) return;
+
+    // Find idle workers to remove (keep the first one)
+    const toRemove: number[] = [];
+    for (let i = 1; i < this.pool.length; i++) {
+      const pw = this.pool[i];
+      if (!pw.busy && now - pw.lastUsed > this.idleTimeout) {
+        toRemove.push(i);
+      }
+    }
+
+    // Remove from end to avoid index shifting issues
+    for (let i = toRemove.length - 1; i >= 0; i--) {
+      const idx = toRemove[i];
+      const pw = this.pool[idx];
+      pw.worker.terminate();
+      this.pool.splice(idx, 1);
+    }
+  }
+
+  /**
+   * Terminate all workers and dispose the pool.
+   */
+  dispose(): void {
+    if (this.cleanupInterval) {
+      clearInterval(this.cleanupInterval);
+      this.cleanupInterval = null;
+    }
+    for (const pw of this.pool) {
+      pw.worker.terminate();
+    }
+    this.pool = [];
+    StructureWorkerPool.instance = null;
+  }
+
+  /**
+   * Get pool statistics.
+   */
+  getStats(): { total: number; busy: number; idle: number } {
+    const busy = this.pool.filter(pw => pw.busy).length;
+    return {
+      total: this.pool.length,
+      busy,
+      idle: this.pool.length - busy,
+    };
+  }
+}
+
+/**
+ * Get the structure worker pool singleton.
+ */
+export function getStructureWorkerPool(): StructureWorkerPool {
+  return StructureWorkerPool.getInstance();
+}
+
 export function parsePDB(text: string): AtomRecord[] {
   const atoms: AtomRecord[] = [];
   const lines = text.split(/\r?\n/);
@@ -204,25 +355,26 @@ export async function loadStructure(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  const WorkerCtor = await getStructureWorkerCtor();
+  // Use worker pool instead of creating/destroying workers each time
+  const pool = StructureWorkerPool.getInstance();
+  const pooledWorker = await pool.acquire();
+  const worker = pooledWorker.worker;
 
   // Offload to worker
   return new Promise((resolve, reject) => {
-    const worker = new WorkerCtor();
     let settled = false;
 
     function cleanup() {
       if (signal) {
         signal.removeEventListener('abort', onAbort);
       }
-      worker.onmessage = null;
-      worker.onerror = null;
+      // Release worker back to pool instead of terminating
+      pool.release(pooledWorker);
     }
 
     function onAbort() {
       if (settled) return;
       settled = true;
-      worker.terminate();
       cleanup();
       reject(new DOMException('Aborted', 'AbortError'));
     }
@@ -234,18 +386,17 @@ export async function loadStructure(
       }
       signal.addEventListener('abort', onAbort, { once: true });
     }
-    
+
     worker.onmessage = (e) => {
       const { type, data, error } = e.data;
       if (type === 'error') {
         if (settled) return;
         settled = true;
-        worker.terminate();
         cleanup();
         reject(new Error(error));
         return;
       }
-      
+
       if (type === 'success') {
         if (settled) return;
         settled = true;
@@ -253,21 +404,20 @@ export async function loadStructure(
         const atoms = data.atoms;
         const bonds = data.bonds;
         const chains = data.chains;
-        
+
         const center = new Vector3(data.center.x, data.center.y, data.center.z);
         const radius = data.radius;
-        
-        const backboneTraces = data.backboneTraces.map((trace: any[]) => 
+
+        const backboneTraces = data.backboneTraces.map((trace: any[]) =>
           trace.map((pt: any) => new Vector3(pt.x, pt.y, pt.z))
         );
-        
+
         const functionalGroups = data.functionalGroups.map((fg: any) => ({
           type: fg.type,
           atomIndices: fg.atomIndices,
           color: new Color(fg.colorHex),
         }));
 
-        worker.terminate();
         cleanup();
         resolve({
           atoms,
@@ -285,7 +435,6 @@ export async function loadStructure(
     worker.onerror = (e) => {
       if (settled) return;
       settled = true;
-      worker.terminate();
       cleanup();
       reject(new Error(e.message));
     };
@@ -320,12 +469,12 @@ export function buildBallAndStick(
   // ATOMS - use instanced mesh with per-instance element-based colors
   const atomGeo = new SphereGeometry(sphereRadius, sphereSegments, sphereSegments);
   const atomMat = new MeshPhongMaterial({
-    color: 0xffffff,             // CRITICAL: white base color for vertex color multiplication
+    color: 0xffffff,             // White base - instance colors multiply against this
     shininess: 80,               // Moderate shininess for natural look
     specular: new Color('#888888'),  // Neutral specular
     emissive: new Color('#000000'),  // No emissive - let element colors shine
     emissiveIntensity: 0,
-    vertexColors: true,          // CRITICAL: enables per-instance colors
+    // NOTE: Do NOT use vertexColors for InstancedMesh - it uses instanceColor instead
   });
   const atomMesh = new InstancedMesh(atomGeo, atomMat, atoms.length);
   const matrix = new Matrix4();
@@ -435,14 +584,14 @@ export function buildSurfaceImpostor(
   // Outer surface - element-colored, semi-transparent
   const outerGeo = new SphereGeometry(0.7 * scale, segments, segments);
   const outerMat = new MeshPhongMaterial({
-    color: 0xffffff,     // CRITICAL: white base color for vertex color multiplication
+    color: 0xffffff,     // White base - instance colors multiply against this
     transparent: true,
     opacity: 0.55,
     shininess: 60,
     specular: new Color('#666666'),
     side: 2, // DoubleSide
     depthWrite: false,
-    vertexColors: true,  // Enable per-instance element colors
+    // NOTE: Do NOT use vertexColors for InstancedMesh - it uses instanceColor instead
   });
   const outerMesh = new InstancedMesh(outerGeo, outerMat, atoms.length);
   const matrix = new Matrix4();
@@ -461,10 +610,10 @@ export function buildSurfaceImpostor(
   // Inner core - smaller, brighter, element-colored for depth perception
   const innerGeo = new SphereGeometry(0.35 * scale, 8, 8);
   const innerMat = new MeshPhongMaterial({
-    color: 0xffffff,     // CRITICAL: white base color for vertex color multiplication
+    color: 0xffffff,     // White base - instance colors multiply against this
     shininess: 100,
     specular: new Color('#ffffff'),
-    vertexColors: true,  // Enable per-instance element colors
+    // NOTE: Do NOT use vertexColors for InstancedMesh - it uses instanceColor instead
   });
   const innerMesh = new InstancedMesh(innerGeo, innerMat, atoms.length);
 
@@ -564,12 +713,12 @@ export function buildFunctionalGroupHighlights(
       const haloRadius = 0.65;
       const geo = new SphereGeometry(haloRadius, 14, 14);
       const mat = new MeshPhongMaterial({
-        color: 0xffffff,     // CRITICAL: white base color for vertex color multiplication
-        vertexColors: true,
+        color: 0xffffff,     // White base - instance colors multiply against this
         transparent: true,
         opacity: 0.35,
         shininess: 80,
         emissiveIntensity: 0.2,
+        // NOTE: Do NOT use vertexColors for InstancedMesh - it uses instanceColor instead
       });
       const mesh = new InstancedMesh(geo, mat, instances.length);
       const matrix = new Matrix4();

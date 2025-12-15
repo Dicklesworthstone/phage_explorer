@@ -276,3 +276,66 @@ export interface WorkerPoolConfig {
   maxWorkers?: number;
   idleTimeout?: number;
 }
+
+// ============================================================
+// SharedArrayBuffer Support Types
+// ============================================================
+
+/**
+ * Reference to a shared sequence buffer for zero-copy worker communication.
+ * When SharedArrayBuffer is available, the buffer can be accessed directly
+ * in workers without copying.
+ */
+export interface SharedSequenceRef {
+  /** Phage ID this sequence belongs to */
+  phageId: number;
+  /** SharedArrayBuffer (or ArrayBuffer fallback) containing ASCII-encoded sequence */
+  buffer: SharedArrayBuffer | ArrayBuffer;
+  /** Length of the sequence in characters */
+  length: number;
+  /** Whether this is a true SharedArrayBuffer (enables zero-copy) */
+  isShared: boolean;
+}
+
+/**
+ * Analysis request using shared buffer reference instead of string.
+ * Use this for large sequences to avoid copying data to workers.
+ */
+export interface SharedAnalysisRequest {
+  type: AnalysisType;
+  /** Reference to shared sequence buffer (instead of string) */
+  sequenceRef: SharedSequenceRef;
+  options?: AnalysisOptions;
+}
+
+/**
+ * Search request using shared buffer reference.
+ */
+export interface SharedSearchRequest {
+  mode: SearchMode;
+  query: string;
+  /** Reference to shared sequence buffer */
+  sequenceRef: SharedSequenceRef;
+  features: SearchFeature[];
+  options?: SearchOptions;
+}
+
+/**
+ * Extended Analysis Worker API with shared buffer support
+ */
+export interface SharedAnalysisWorkerAPI extends AnalysisWorkerAPI {
+  /** Run analysis using shared buffer reference */
+  runAnalysisShared(request: SharedAnalysisRequest): Promise<AnalysisResult>;
+  runAnalysisSharedWithProgress(
+    request: SharedAnalysisRequest,
+    onProgress: (progress: ProgressInfo) => void
+  ): Promise<AnalysisResult>;
+}
+
+/**
+ * Extended Search Worker API with shared buffer support
+ */
+export interface SharedSearchWorkerAPI extends SearchWorkerAPI {
+  /** Run search using shared buffer reference */
+  runSearchShared(request: SharedSearchRequest): Promise<SearchResponse>;
+}

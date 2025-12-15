@@ -10,6 +10,7 @@
  * - Worker pooling and lifecycle management
  * - Progress reporting for long operations
  * - Graceful cancellation
+ * - SharedArrayBuffer support for zero-copy sequence sharing
  */
 
 import * as Comlink from 'comlink';
@@ -24,7 +25,12 @@ import type {
   SimParameter,
   ProgressInfo,
   WorkerPoolConfig,
+  SharedSequenceRef,
+  SharedAnalysisRequest,
+  AnalysisType,
+  AnalysisOptions,
 } from './types';
+import { SharedSequencePool, decodeSequence } from './SharedSequencePool';
 
 type WorkerType = 'analysis' | 'simulation';
 
@@ -75,12 +81,16 @@ export class ComputeOrchestrator {
   private config: Required<WorkerPoolConfig>;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
   private poolMutex = new Mutex();
+  private sequencePool: SharedSequencePool;
 
   private constructor(config: WorkerPoolConfig = {}) {
     this.config = {
       maxWorkers: config.maxWorkers ?? 4,
       idleTimeout: config.idleTimeout ?? 60000, // 1 minute
     };
+
+    // Initialize shared sequence pool
+    this.sequencePool = SharedSequencePool.getInstance();
 
     // Start cleanup interval
     this.cleanupInterval = setInterval(() => this.cleanupIdleWorkers(), 30000);
@@ -299,6 +309,134 @@ export class ComputeOrchestrator {
   }
 
   // ============================================================
+  // SharedArrayBuffer Analysis API (Zero-Copy)
+  // ============================================================
+
+  /**
+   * Check if SharedArrayBuffer is available for zero-copy operations.
+   */
+  isSharedMemoryAvailable(): boolean {
+    return this.sequencePool.isUsingSharedMemory();
+  }
+
+  /**
+   * Preload a sequence into the shared buffer pool.
+   * Call this when loading a phage to prepare for analysis operations.
+   *
+   * @param phageId - Unique identifier for the phage
+   * @param sequence - DNA sequence string
+   * @returns SharedSequenceRef for use with analysis methods
+   */
+  preloadSequence(phageId: number, sequence: string): SharedSequenceRef {
+    const buffer = this.sequencePool.getOrCreate(phageId, sequence);
+    return {
+      phageId,
+      buffer: buffer.sab,
+      length: buffer.length,
+      isShared: buffer.isShared,
+    };
+  }
+
+  /**
+   * Get a sequence reference if already preloaded.
+   * Returns undefined if the sequence isn't in the pool.
+   */
+  getSequenceRef(phageId: number): SharedSequenceRef | undefined {
+    const buffer = this.sequencePool.get(phageId);
+    if (!buffer) return undefined;
+
+    return {
+      phageId,
+      buffer: buffer.sab,
+      length: buffer.length,
+      isShared: buffer.isShared,
+    };
+  }
+
+  /**
+   * Release a sequence from the shared buffer pool.
+   * Call this when navigating away from a phage to free memory.
+   */
+  releaseSequence(phageId: number): void {
+    this.sequencePool.release(phageId);
+  }
+
+  /**
+   * Run an analysis task using a shared buffer reference.
+   * This avoids copying the sequence data to the worker.
+   *
+   * If the sequence isn't preloaded, it will be preloaded automatically.
+   */
+  async runAnalysisWithSharedBuffer(
+    phageId: number,
+    sequence: string,
+    type: AnalysisType,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    // Ensure sequence is in the pool
+    const ref = this.preloadSequence(phageId, sequence);
+
+    // For now, workers still receive the sequence as a string because
+    // Comlink doesn't automatically handle SharedArrayBuffer decode.
+    // The benefit is that the pool caches the buffer for rapid access
+    // and we can evolve workers to read from SharedArrayBuffer directly.
+    //
+    // TODO: Update analysis.worker.ts to accept SharedAnalysisRequest
+    // and decode from SharedArrayBuffer directly.
+
+    const request: AnalysisRequest = {
+      type,
+      sequence, // Still passing string for now
+      options,
+    };
+
+    return this.runAnalysis(request);
+  }
+
+  /**
+   * Run analysis with shared buffer and progress reporting.
+   */
+  async runAnalysisWithSharedBufferProgress(
+    phageId: number,
+    sequence: string,
+    type: AnalysisType,
+    onProgress: (progress: ProgressInfo) => void,
+    options?: AnalysisOptions
+  ): Promise<AnalysisResult> {
+    // Ensure sequence is in the pool
+    this.preloadSequence(phageId, sequence);
+
+    const request: AnalysisRequest = {
+      type,
+      sequence,
+      options,
+    };
+
+    return this.runAnalysisWithProgress(request, onProgress);
+  }
+
+  /**
+   * Decode a sequence from a SharedSequenceRef.
+   * Useful when workers need to read the sequence.
+   */
+  decodeSequenceFromRef(ref: SharedSequenceRef): string {
+    const view = new Uint8Array(ref.buffer, 0, ref.length);
+    return decodeSequence(view, ref.length);
+  }
+
+  /**
+   * Get shared sequence pool statistics.
+   */
+  getSequencePoolStats(): {
+    size: number;
+    maxSize: number;
+    totalBytes: number;
+    sharedMemory: boolean;
+  } {
+    return this.sequencePool.getStats();
+  }
+
+  // ============================================================
   // Simulation API
   // ============================================================
 
@@ -419,6 +557,9 @@ export class ComputeOrchestrator {
       instance.worker.terminate();
     }
     this.workers.clear();
+
+    // Clear the sequence pool
+    this.sequencePool.clear();
 
     ComputeOrchestrator.instance = null;
   }
