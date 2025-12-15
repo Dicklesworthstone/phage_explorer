@@ -52,6 +52,10 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    // Track visibility for performance
+    let isVisible = !document.hidden;
+    let isInViewport = true;
+
     // Resize handler
     const resize = () => {
       const w = width || window.innerWidth;
@@ -62,12 +66,12 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
     };
 
     let { w, h } = resize();
-    
+
     // Initialize columns
     const fontSize = 14;
     const columns = Math.ceil(w / fontSize);
     const drops: number[] = [];
-    
+
     // Random start positions
     for (let i = 0; i < columns; i++) {
       drops[i] = Math.random() * -(h / fontSize);
@@ -76,14 +80,21 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
     const chars = CHAR_SETS[charSet as keyof typeof CHAR_SETS] || CHAR_SETS.dna;
     const colors = theme.colors;
 
-    let animationId: number;
+    let animationId: number | null = null;
     let lastTime = 0;
-    const targetFps = 30;
+    const targetFps = 24; // Reduced from 30 for better performance
     const frameInterval = 1000 / targetFps;
 
     const draw = (time: number) => {
+      animationId = null;
+
+      // Skip rendering if tab is hidden or element is offscreen
+      if (!isVisible || !isInViewport) {
+        return;
+      }
+
       const delta = time - lastTime;
-      
+
       if (delta >= frameInterval) {
         lastTime = time - (delta % frameInterval);
 
@@ -93,17 +104,17 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
 
         ctx.font = `${fontSize}px monospace`;
         const baseAlpha = clamp01(opacity);
-        
+
         for (let i = 0; i < drops.length; i++) {
           // Skip some columns based on density
           if (i % Math.ceil(2 / density) !== 0) continue;
 
           const text = chars[Math.floor(Math.random() * chars.length)];
-          
+
           // Color logic: head is bright, tail is themed
           const isHead = Math.random() > 0.95;
           ctx.fillStyle = isHead ? colors.highlight : colors.primary;
-          
+
           // Vary opacity
           ctx.globalAlpha = isHead ? Math.min(1, baseAlpha * 1.5) : baseAlpha;
 
@@ -116,7 +127,7 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
           if (y > h && Math.random() > 0.975) {
             drops[i] = 0;
           }
-          
+
           drops[i] += speed;
         }
         ctx.globalAlpha = 1.0;
@@ -125,20 +136,66 @@ export const MatrixRain: React.FC<MatrixRainProps> = ({
       animationId = requestAnimationFrame(draw);
     };
 
-    animationId = requestAnimationFrame(draw);
+    const startAnimation = () => {
+      if (animationId === null && isVisible && isInViewport) {
+        animationId = requestAnimationFrame(draw);
+      }
+    };
+
+    const stopAnimation = () => {
+      if (animationId !== null) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+    };
+
+    // Start initial animation
+    startAnimation();
 
     const handleResize = () => {
       const dims = resize();
       w = dims.w;
       h = dims.h;
-      // Re-init drops if needed, or just let them fall
     };
 
+    // Pause when tab is hidden
+    const handleVisibility = () => {
+      isVisible = !document.hidden;
+      if (isVisible) {
+        startAnimation();
+      } else {
+        stopAnimation();
+      }
+    };
+
+    // Intersection observer for viewport visibility
+    let observer: IntersectionObserver | null = null;
+    if ('IntersectionObserver' in window) {
+      observer = new IntersectionObserver(
+        (entries) => {
+          const entry = entries[0];
+          if (entry) {
+            isInViewport = entry.isIntersecting;
+            if (isInViewport) {
+              startAnimation();
+            } else {
+              stopAnimation();
+            }
+          }
+        },
+        { threshold: 0.01 }
+      );
+      observer.observe(canvas);
+    }
+
     window.addEventListener('resize', handleResize);
+    document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
-      cancelAnimationFrame(animationId);
+      stopAnimation();
       window.removeEventListener('resize', handleResize);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      observer?.disconnect();
     };
   }, [width, height, theme, density, speed, charSet, opacity, reducedMotion, tuiMode]);
 
