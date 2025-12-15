@@ -52,6 +52,25 @@ function selectGradient(config: RenderConfig): string {
   }
 }
 
+// Check if a line segment is entirely outside the viewport
+function isLineOutsideViewport(
+  x0: number, y0: number,
+  x1: number, y1: number,
+  width: number, height: number
+): boolean {
+  // If both endpoints are to the left, right, above, or below the viewport
+  if (x0 < 0 && x1 < 0) return true;
+  if (x0 >= width && x1 >= width) return true;
+  if (y0 < 0 && y1 < 0) return true;
+  if (y0 >= height && y1 >= height) return true;
+  return false;
+}
+
+// Check if a point is inside the viewport
+function isPointInViewport(x: number, y: number, width: number, height: number): boolean {
+  return x >= 0 && x < width && y >= 0 && y < height;
+}
+
 // Render a 3D model to ASCII
 export function renderModel(
   model: Model3D,
@@ -77,34 +96,43 @@ export function renderModel(
     projectedVertices.push(project(transformed, width, height, 1.5, 3));
   }
 
-  // Draw edges with z-buffering
+  // Draw edges with z-buffering (with viewport culling)
   for (const [i1, i2] of model.edges) {
     const p1 = projectedVertices[i1];
     const p2 = projectedVertices[i2];
 
-    // Simple line drawing with z-interpolation
-    drawLine(
-      Math.round(p1.x), Math.round(p1.y), p1.z,
-      Math.round(p2.x), Math.round(p2.y), p2.z,
-      zBuffer, bBuffer, width, height
-    );
+    const x0 = Math.round(p1.x);
+    const y0 = Math.round(p1.y);
+    const x1 = Math.round(p2.x);
+    const y1 = Math.round(p2.y);
+
+    // Skip edges entirely outside viewport (viewport culling)
+    if (isLineOutsideViewport(x0, y0, x1, y1, width, height)) {
+      continue;
+    }
+
+    // Draw line with z-interpolation
+    drawLine(x0, y0, p1.z, x1, y1, p2.z, zBuffer, bBuffer, width, height);
   }
 
-  // Draw vertices as points (brighter)
+  // Draw vertices as points (brighter) with viewport culling
   for (let i = 0; i < projectedVertices.length; i++) {
     const p = projectedVertices[i];
     const x = Math.round(p.x);
     const y = Math.round(p.y);
 
-    if (x >= 0 && x < width && y >= 0 && y < height) {
-      const idx = y * width + x;
-      if (p.z < zBuffer[idx]) {
-        // Vertices are brighter than edges - use full brightness range
-        const depthFactor = Math.max(0, Math.min(1, (4.5 - p.z) / 3));
-        const brightness = 0.5 + depthFactor * 0.5; // Range: 0.5 to 1.0
-        zBuffer[idx] = p.z;
-        bBuffer[idx] = brightness;
-      }
+    // Skip vertices outside viewport
+    if (!isPointInViewport(x, y, width, height)) {
+      continue;
+    }
+
+    const idx = y * width + x;
+    if (p.z < zBuffer[idx]) {
+      // Vertices are brighter than edges - use full brightness range
+      const depthFactor = Math.max(0, Math.min(1, (4.5 - p.z) / 3));
+      const brightness = 0.5 + depthFactor * 0.5; // Range: 0.5 to 1.0
+      zBuffer[idx] = p.z;
+      bBuffer[idx] = brightness;
     }
   }
 

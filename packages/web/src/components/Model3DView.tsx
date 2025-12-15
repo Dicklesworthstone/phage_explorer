@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import type { PhageFull } from '@phage-explorer/core';
 import { Model3DSkeleton } from './ui/Skeleton';
@@ -162,7 +162,7 @@ function suggestInitialRenderMode(options: {
   return 'ball';
 }
 
-export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
+function Model3DViewBase({ phage }: Model3DViewProps): JSX.Element {
   const coarsePointer = useMemo(() => isCoarsePointerDevice(), []);
   const webglSupport = useMemo(() => detectWebGLSupport(), []);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -1103,3 +1103,6 @@ export function Model3DView({ phage }: Model3DViewProps): JSX.Element {
     </div>
   );
 }
+
+// Memoize to prevent re-renders when parent updates but props haven't changed
+export const Model3DView = memo(Model3DViewBase);

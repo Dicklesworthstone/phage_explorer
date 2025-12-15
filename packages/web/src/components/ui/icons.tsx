@@ -436,3 +436,11 @@ export function IconChevronRight(props: IconProps): React.ReactElement {
     </IconBase>
   );
 }
+
+export function IconChevronLeft(props: IconProps): React.ReactElement {
+  return (
+    <IconBase {...props}>
+      <polyline points="15 18 9 12 15 6" />
+    </IconBase>
+  );
+}

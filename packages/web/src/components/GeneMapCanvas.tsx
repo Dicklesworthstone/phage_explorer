@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useMemo, useId } from 'react';
+import React, { memo, useEffect, useRef, useMemo, useId } from 'react';
 import type { GeneInfo } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
 import { useTheme } from '../hooks/useTheme';
@@ -23,7 +23,7 @@ interface GeneMapCanvasProps {
   onGeneSelect?: (gene: GeneInfo | null) => void;
 }
 
-export function GeneMapCanvas({
+function GeneMapCanvasBase({
   height = 60,
   className,
   onGeneClick,
@@ -517,3 +517,6 @@ export function GeneMapCanvas({
     </div>
   );
 }
+
+// Memoize to prevent re-renders when parent updates but props haven't changed
+export const GeneMapCanvas = memo(GeneMapCanvasBase);

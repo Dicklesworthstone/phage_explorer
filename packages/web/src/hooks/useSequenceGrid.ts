@@ -286,6 +286,48 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     };
   }, [scanlines, glow, postProcess, reducedMotion, initialZoomScale, enablePinchZoom, handleZoomChange, handleVisibleRangeFromRenderer, commitUiState]); // Recreate when visual pipeline changes
 
+  // Stop rendering when canvas is offscreen (battery/GPU saver, especially on mobile)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (!('IntersectionObserver' in window)) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const renderer = rendererRef.current;
+        if (!renderer) return;
+
+        if (entry.isIntersecting) {
+          renderer.resume();
+        } else {
+          renderer.pause();
+        }
+      },
+      { threshold: 0.05 }
+    );
+
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
+
+  // Avoid background GPU/CPU work when the tab is hidden
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      const renderer = rendererRef.current;
+      if (!renderer) return;
+
+      if (document.hidden) {
+        renderer.pause();
+      } else {
+        renderer.resume();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
   // Update theme - preserve scroll position across theme changes
   useEffect(() => {
     const renderer = rendererRef.current;

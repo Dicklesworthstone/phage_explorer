@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, memo } from 'react';
 import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import {
@@ -73,6 +73,47 @@ function groupCellsByColor(
 
   return segments;
 }
+
+// Memoized row component - only re-renders when row data changes
+interface SequenceRowProps {
+  row: GridRow;
+  theme: Theme;
+  viewMode: ViewMode;
+  diffEnabled: boolean;
+  width: number;
+}
+
+const SequenceRow = memo(function SequenceRow({
+  row,
+  theme,
+  viewMode,
+  diffEnabled,
+  width,
+}: SequenceRowProps): React.ReactElement {
+  // Memoize segment grouping per row
+  const segments = useMemo(
+    () => groupCellsByColor(row, theme, viewMode, diffEnabled),
+    [row, theme, viewMode, diffEnabled]
+  );
+
+  return (
+    <Box>
+      {segments.map((seg, segIdx) => (
+        <Text
+          key={segIdx}
+          color={seg.fg}
+          backgroundColor={seg.bg}
+        >
+          {seg.text}
+        </Text>
+      ))}
+      {/* Pad row to full width */}
+      {row.cells.length < width && width > 0 && (
+        <Text>{' '.repeat(Math.max(0, width - row.cells.length))}</Text>
+      )}
+    </Box>
+  );
+});
 
 export function SequenceGrid({
   sequence,
@@ -200,27 +241,16 @@ export function SequenceGrid({
             <Text color={colors.textDim}>No sequence data</Text>
           </Box>
         ) : (
-          grid.map((row, rowIdx) => {
-            const segments = groupCellsByColor(row, theme, viewMode, diffEnabled);
-
-            return (
-              <Box key={rowIdx}>
-                {segments.map((seg, segIdx) => (
-                  <Text
-                    key={segIdx}
-                    color={seg.fg}
-                    backgroundColor={seg.bg}
-                  >
-                    {seg.text}
-                  </Text>
-                ))}
-                {/* Pad row to full width */}
-                {row.cells.length < width && width > 0 && (
-                  <Text>{' '.repeat(Math.max(0, width - row.cells.length))}</Text>
-                )}
-              </Box>
-            );
-          })
+          grid.map((row, rowIdx) => (
+            <SequenceRow
+              key={rowIdx}
+              row={row}
+              theme={theme}
+              viewMode={viewMode}
+              diffEnabled={diffEnabled}
+              width={width}
+            />
+          ))
         )}
 
         {/* Pad with empty rows if needed */}

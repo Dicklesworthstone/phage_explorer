@@ -5,7 +5,7 @@
  * Displays DNA or amino acid sequences with diff highlighting.
  */
 
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useState, useRef } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { translateCodon, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
@@ -104,7 +104,7 @@ interface SequenceViewProps {
   onControlsReady?: (controls: { jumpToDiff: (direction: 'next' | 'prev') => number | null }) => void;
 }
 
-export function SequenceView({
+function SequenceViewBase({
   sequence,
   diffSequence = null,
   diffMask = null,
@@ -802,4 +802,6 @@ export function SequenceView({
   );
 }
 
+// Memoize to prevent re-renders when parent updates but props haven't changed
+export const SequenceView = memo(SequenceViewBase);
 export default SequenceView;

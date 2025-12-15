@@ -189,6 +189,9 @@ export class CanvasSequenceGridRenderer {
   private slowFrameLastLoggedAt = 0;
   private scanlinePattern: CanvasPattern | null = null;
   private scanlinePatternCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null = null;
+  private paused = false;
+  private isScrolling = false;
+  private scrollEndTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: SequenceGridOptions) {
     this.canvas = options.canvas;
@@ -254,8 +257,20 @@ export class CanvasSequenceGridRenderer {
     });
     this.updateCodonSnap();
 
-    // Set up scroll callback
+    // Set up scroll callback with scroll state tracking for performance
     this.scroller.onScroll((range) => {
+      // Mark as scrolling to disable expensive effects during animation
+      this.isScrolling = true;
+      if (this.scrollEndTimer) {
+        clearTimeout(this.scrollEndTimer);
+      }
+      // End scrolling state after 150ms of inactivity, then do final quality render
+      this.scrollEndTimer = setTimeout(() => {
+        this.isScrolling = false;
+        this.needsFullRedraw = true;
+        this.scheduleRender(); // Final high-quality render after scroll stops
+      }, 150);
+
       this.onVisibleRangeChange?.(range);
       this.scheduleRender();
     });
@@ -600,12 +615,42 @@ export class CanvasSequenceGridRenderer {
    * Schedule a render on next animation frame
    */
   scheduleRender(): void {
-    if (this.animationFrameId !== null) return;
+    if (this.animationFrameId !== null || this.paused) return;
 
     this.animationFrameId = requestAnimationFrame(() => {
       this.animationFrameId = null;
-      this.render();
+      if (!this.paused) {
+        this.render();
+      }
     });
+  }
+
+  /**
+   * Pause rendering (when component is offscreen or tab is hidden)
+   */
+  pause(): void {
+    this.paused = true;
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+  }
+
+  /**
+   * Resume rendering (when component becomes visible)
+   */
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.needsFullRedraw = true;
+    this.scheduleRender();
+  }
+
+  /**
+   * Check if renderer is paused
+   */
+  isPaused(): boolean {
+    return this.paused;
   }
 
   /**
@@ -639,13 +684,13 @@ export class CanvasSequenceGridRenderer {
     // Render visible characters
     this.renderVisibleRange(ctx, range, layout, sequence, aminoSequence, viewMode, diffSequence, diffEnabled, diffMask);
 
-    // Apply scanline effect
-    if (this.scanlines && !this.reducedMotion) {
+    // Apply scanline effect (skip during scroll for performance)
+    if (this.scanlines && !this.reducedMotion && !this.isScrolling) {
       this.renderScanlines(ctx);
     }
 
-    // Post-processing hook (no-op if not provided)
-    if (this.postProcess && !this.reducedMotion) {
+    // Post-processing hook (skip during scroll for performance)
+    if (this.postProcess && !this.reducedMotion && !this.isScrolling) {
       this.postProcess.process(this.canvas);
     }
 
@@ -810,7 +855,9 @@ export class CanvasSequenceGridRenderer {
       default: fillStyle = this.theme.colors.diffHighlight ?? '#facc15';
     }
 
-    if (this.glow && !this.reducedMotion && this.cellWidth >= 10 && this.cellHeight >= 10) {
+    // Skip expensive glow effect during scroll for 60fps performance
+    // Glow is re-applied in final render after scroll stops
+    if (this.glow && !this.reducedMotion && !this.isScrolling && this.cellWidth >= 10 && this.cellHeight >= 10) {
       const blur = Math.max(2, Math.min(10, Math.round(this.cellHeight * 0.35)));
       ctx.save();
       ctx.shadowColor = fillStyle;
@@ -1127,6 +1174,9 @@ export class CanvasSequenceGridRenderer {
   dispose(): void {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
+    }
+    if (this.scrollEndTimer !== null) {
+      clearTimeout(this.scrollEndTimer);
     }
     this.scroller.dispose();
   }
