@@ -31,6 +31,7 @@ import {
   IconTarget,
   IconTrendingUp,
   IconUsers,
+  IconX,
 } from '../ui';
 
 export type OverlaySize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
@@ -363,7 +364,7 @@ export function Overlay({
             {/* Mobile users get contextual hint */}
             {isPhone && (
               <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                {closeOnBackdrop ? 'Tap outside to close' : 'Tap × to close'}
+                {closeOnBackdrop ? 'Tap outside to close' : 'Tap X to close'}
               </span>
             )}
             <button
@@ -373,7 +374,6 @@ export function Overlay({
                 border: 'none',
                 color: 'var(--color-text-dim)',
                 cursor: 'pointer',
-                fontSize: '1.5rem',
                 // Min 44x44 touch target for accessibility (WCAG 2.5.5)
                 minWidth: '44px',
                 minHeight: '44px',
@@ -393,7 +393,7 @@ export function Overlay({
               }}
               aria-label="Close overlay"
             >
-              ×
+              <IconX size={20} />
             </button>
           </div>
         </div>
