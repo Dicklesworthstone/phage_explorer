@@ -642,41 +642,13 @@
   display: none;
 }
 
-/* Mobile: compact horizontal scrolling with visible scroll hint */
-@media (max-width: 640px) {
-  .quick-stats {
-    display: flex;
-    gap: var(--space-4);
-    padding: var(--space-2) var(--space-3);
-    overflow-x: auto;
-    /* Show subtle scroll indicator */
-    background:
-      linear-gradient(90deg, var(--color-background-alt) 0%, transparent 5%),
-      linear-gradient(270deg, var(--color-background-alt) 0%, transparent 5%),
-      var(--color-background-alt);
-    background-attachment: local, local, scroll;
-  }
-
-  .quick-stat {
-    min-width: 70px;
-    flex-shrink: 0;
-  }
-
-  .quick-stat__label {
-    font-size: 9px;
-  }
-
-  .quick-stat__value {
-    font-size: var(--text-xs);
-  }
-}
-
 /* Extra compact variant for mobile inline use */
 .quick-stats--mobile {
   border-radius: var(--radius-md);
   margin-bottom: var(--space-2);
 }
 
+/* Base quick-stat styles - MUST come before media queries */
 .quick-stat {
   display: flex;
   flex-direction: column;
@@ -717,6 +689,39 @@
   color: var(--color-primary);
   /* Subtle glow for highlighted values */
   text-shadow: 0 0 8px rgba(34, 211, 238, 0.3);
+}
+
+/* Mobile: compact horizontal scrolling with visible scroll hint */
+@media (max-width: 640px) {
+  .quick-stats {
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    /* Subtle scroll fade indicators at edges */
+    background:
+      linear-gradient(90deg, var(--color-background-alt) 0%, transparent 5%),
+      linear-gradient(270deg, var(--color-background-alt) 0%, transparent 5%),
+      var(--color-background-alt);
+    background-attachment: local, local, scroll;
+  }
+
+  .quick-stat {
+    min-width: 70px;
+    flex-shrink: 0;
+    padding-right: var(--space-3);
+  }
+
+  .quick-stat__label {
+    font-size: 9px;
+  }
+
+  .quick-stat__value {
+    font-size: var(--text-xs);
+  }
+
+  /* Hide separator on last visible item to prevent cut-off appearance */
+  .quick-stat:not(:last-child)::after {
+    opacity: 0.3;
+  }
 }
 
 /* =============================================================================

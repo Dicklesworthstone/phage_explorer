@@ -200,32 +200,30 @@
     min-width: 44px;
   }
 
-  /* Checkbox and radio targets - use transform for visual scaling without breaking layout */
+  /* Checkbox and radio targets
+     Note: Native inputs are "replaced elements" - ::before/::after pseudo-elements don't work.
+     Instead, we make the checkbox larger AND ensure the wrapping label is 44px+ tall.
+     Clicking anywhere on the label activates the checkbox, providing the large touch target. */
   input[type="checkbox"],
   input[type="radio"] {
     width: 24px;
     height: 24px;
-    /* Expand touch target without changing visual size */
-    position: relative;
+    /* Make cursor explicit for touch affordance */
+    cursor: pointer;
+    /* Accent color for better visibility */
+    accent-color: var(--color-primary);
   }
 
-  /* Invisible touch area expansion via pseudo-element */
-  input[type="checkbox"]::after,
-  input[type="radio"]::after {
-    content: '';
-    position: absolute;
-    inset: -10px;
-    /* Ensure it captures touch events */
-    z-index: 1;
-  }
-
-  /* Labels wrapping checkboxes need adequate height */
+  /* Labels wrapping checkboxes provide the touch target (clicking label activates checkbox) */
   label:has(input[type="checkbox"]),
   label:has(input[type="radio"]) {
     min-height: 44px;
     display: flex;
     align-items: center;
     gap: var(--space-2, 8px);
+    cursor: pointer;
+    /* Padding expands clickable area */
+    padding: var(--space-2) 0;
   }
 
   /* Select dropdowns */
