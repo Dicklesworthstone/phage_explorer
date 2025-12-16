@@ -5,7 +5,7 @@
  * Supports focus trapping, z-index management, and keyboard navigation.
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useState, useMemo, type ReactNode } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useState, type ReactNode } from 'react';
 
 // =============================================================================
 // Mobile Detection
