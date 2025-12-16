@@ -79,7 +79,7 @@ export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';
 
 // Comparison view tab
-export type ComparisonTab = 'summary' | 'kmer' | 'information' | 'correlation' | 'biological' | 'genes' | 'structural';
+export type ComparisonTab = 'summary' | 'kmer' | 'information' | 'correlation' | 'biological' | 'genes' | 'structural' | 'diff';
 
 // Mouse hover info for amino acids
 export interface HoveredAminoAcid {
