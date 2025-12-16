@@ -109,15 +109,16 @@ export class GlyphAtlas {
 
   private getColorForGlyph(char: string): string {
     const { theme } = this.options;
-    const palette = theme.palette as Record<string, string>;
-    if (char === '*') return palette.stop ?? '#e11d48';
+    // Access colors from theme.colors which contains nucleotide colors
+    const colors = theme.colors as unknown as Record<string, string>;
+    if (char === '*') return colors.error ?? '#e11d48';
     const upper = char.toUpperCase();
-    if (upper === 'A') return palette.adenine ?? palette.primary ?? '#7dd3fc';
-    if (upper === 'C') return palette.cytosine ?? palette.secondary ?? '#a5b4fc';
-    if (upper === 'G') return palette.guanine ?? palette.accent ?? '#34d399';
-    if (upper === 'T' || upper === 'U') return palette.thymine ?? '#fbbf24';
-    if (upper === 'N') return palette.unknown ?? '#94a3b8';
-    return palette.aminoAcid ?? palette.text ?? '#e2e8f0';
+    if (upper === 'A') return colors.adenine ?? colors.primary ?? '#7dd3fc';
+    if (upper === 'C') return colors.cytosine ?? colors.secondary ?? '#a5b4fc';
+    if (upper === 'G') return colors.guanine ?? colors.accent ?? '#34d399';
+    if (upper === 'T' || upper === 'U') return colors.thymine ?? '#fbbf24';
+    if (upper === 'N') return colors.unknown ?? '#94a3b8';
+    return colors.text ?? '#e2e8f0';
   }
 }
 

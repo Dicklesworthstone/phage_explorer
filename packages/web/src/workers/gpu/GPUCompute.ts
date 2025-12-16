@@ -252,7 +252,8 @@ export class GPUCompute {
       usage: usage | GPUBufferUsage.COPY_DST,
     });
 
-    this.device.queue.writeBuffer(buffer, 0, data);
+    // Cast to satisfy stricter TypeScript WebGPU types (Uint32Array generic variance)
+    this.device.queue.writeBuffer(buffer, 0, data as BufferSource);
     return buffer;
   }
 
@@ -327,9 +328,9 @@ export class GPUCompute {
       });
 
       // 3. Upload data
-      device.queue.writeBuffer(seqBuffer, 0, mappedSeq);
-      device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([sequence.length, k]));
-      device.queue.writeBuffer(countBuffer, 0, new Uint32Array(Math.pow(4, k)));
+      device.queue.writeBuffer(seqBuffer, 0, mappedSeq as BufferSource);
+      device.queue.writeBuffer(uniformBuffer, 0, new Uint32Array([sequence.length, k]) as BufferSource);
+      device.queue.writeBuffer(countBuffer, 0, new Uint32Array(Math.pow(4, k)) as BufferSource);
 
       // 4. Pipeline setup
       const module = device.createShaderModule({ code: kmerShader });
@@ -462,11 +463,11 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqBuffer, 0, encodedSeq);
+      device.queue.writeBuffer(seqBuffer, 0, encodedSeq as BufferSource);
       device.queue.writeBuffer(
         uniformBuffer,
         0,
-        new Uint32Array([sequence.length, windowSize, stepSize, numWindows])
+        new Uint32Array([sequence.length, windowSize, stepSize, numWindows]) as BufferSource
       );
 
       // Create bind group
@@ -581,13 +582,13 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqBuffer, 0, encodedSeq);
-      device.queue.writeBuffer(patternBuffer, 0, encodedPattern);
-      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]));
+      device.queue.writeBuffer(seqBuffer, 0, encodedSeq as BufferSource);
+      device.queue.writeBuffer(patternBuffer, 0, encodedPattern as BufferSource);
+      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]) as BufferSource);
       device.queue.writeBuffer(
         uniformBuffer,
         0,
-        new Uint32Array([sequence.length, pattern.length, maxMismatches, maxPositions])
+        new Uint32Array([sequence.length, pattern.length, maxMismatches, maxPositions]) as BufferSource
       );
 
       const bindGroup = device.createBindGroup({
@@ -690,11 +691,11 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqBuffer, 0, encodedSeq);
+      device.queue.writeBuffer(seqBuffer, 0, encodedSeq as BufferSource);
       device.queue.writeBuffer(
         uniformBuffer,
         0,
-        new Uint32Array([sequence.length, windowSize, kmerSize, numWindows])
+        new Uint32Array([sequence.length, windowSize, kmerSize, numWindows]) as BufferSource
       );
 
       const bindGroup = device.createBindGroup({
@@ -789,12 +790,12 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqBuffer, 0, encodedSeq);
-      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]));
+      device.queue.writeBuffer(seqBuffer, 0, encodedSeq as BufferSource);
+      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]) as BufferSource);
       device.queue.writeBuffer(
         uniformBuffer,
         0,
-        new Uint32Array([sequence.length, minArmLength, maxGap, maxRepeats])
+        new Uint32Array([sequence.length, minArmLength, maxGap, maxRepeats]) as BufferSource
       );
 
       const bindGroup = device.createBindGroup({
@@ -911,8 +912,8 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqBuffer, 0, encodedSeq);
-      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]));
+      device.queue.writeBuffer(seqBuffer, 0, encodedSeq as BufferSource);
+      device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]) as BufferSource);
 
       // Process in tiles for large sequences
       const tileSize = 4096;
@@ -923,11 +924,11 @@ export class GPUCompute {
         device.queue.writeBuffer(
           uniformBuffer,
           0,
-          new Uint32Array([sequence.length, kmerSize, maxMatches, startRow])
+          new Uint32Array([sequence.length, kmerSize, maxMatches, startRow]) as BufferSource
         );
 
         // Reset counter for each tile
-        device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]));
+        device.queue.writeBuffer(countBuffer, 0, new Uint32Array([0]) as BufferSource);
 
         const bindGroup = device.createBindGroup({
           layout: cachedPipeline.bindGroupLayout,
@@ -1055,8 +1056,8 @@ export class GPUCompute {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
 
-      device.queue.writeBuffer(seqABuffer, 0, encodedA);
-      device.queue.writeBuffer(seqBBuffer, 0, encodedB);
+      device.queue.writeBuffer(seqABuffer, 0, encodedA as BufferSource);
+      device.queue.writeBuffer(seqBBuffer, 0, encodedB as BufferSource);
 
       // Helper to compute diagonal offset (starting i index)
       const getDiagonalOffset = (d: number): number => Math.max(0, d - lenB);

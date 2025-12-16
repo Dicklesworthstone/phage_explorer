@@ -1115,11 +1115,12 @@ export class CanvasSequenceGridRenderer {
    * Handle touch end (for mobile momentum or end pinch)
    */
   handleTouchEnd(event: TouchEvent): void {
+    void event; // Parameter required by interface but not used internally
     if (this.isPinching) {
       this.handlePinchEnd();
       return;
     }
-    this.scroller.handleTouchEnd(event);
+    this.scroller.handleTouchEnd();
   }
 
   /**

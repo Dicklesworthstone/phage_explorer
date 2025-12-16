@@ -5,7 +5,7 @@ import type { RenderFrameInput, SequenceSource } from './types';
 import { RendererHost } from './rendererHost';
 
 interface UseRendererHostOptions {
-  canvasRef: React.RefObject<HTMLCanvasElement>;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
   repo?: PhageRepository | null;
   phageId?: number | null;
   source?: SequenceSource | null;

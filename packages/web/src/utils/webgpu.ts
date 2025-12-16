@@ -25,7 +25,12 @@ export async function detectWebGPU(): Promise<WebGPUSupport> {
       return { supported: false, reason: 'No GPU adapter found' };
     }
 
-    const { name, vendor, architecture, description } = adapter.getInfo?.() ?? {};
+    // getInfo() may not be in all type definitions yet
+    const adapterWithInfo = adapter as GPUAdapter & { getInfo?: () => Record<string, string | undefined> };
+    const info = adapterWithInfo.getInfo?.() ?? {};
+    const { name, vendor, architecture, description } = info as {
+      name?: string; vendor?: string; architecture?: string; description?: string
+    };
     return {
       supported: true,
       adapterInfo: { name, vendor, architecture, description },

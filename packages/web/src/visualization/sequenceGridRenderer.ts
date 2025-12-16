@@ -1,4 +1,5 @@
 import type {
+  GlyphMetrics,
   RenderFrameInput,
   SequenceGridRendererOptions,
   SequenceSource,
@@ -86,7 +87,7 @@ export class SequenceGridRenderer {
     }
   }
 
-  private drawRow(row: string, y: number, metrics: { width: number; height: number }, charsPerRow: number) {
+  private drawRow(row: string, y: number, metrics: GlyphMetrics, charsPerRow: number) {
     const ctx = this.ctx;
     for (let i = 0; i < row.length && i < charsPerRow; i++) {
       const char = row[i];

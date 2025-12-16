@@ -31,7 +31,8 @@ const MICRO_FONT_4x6: Record<Nucleotide, number[]> = {
 };
 
 // 5x7 pixel font for amino acids and misc symbols
-const MICRO_FONT_5x7: Record<AminoAcid | Nucleotide | '*', number[]> = {
+// Includes 'B' for ambiguous N/D and *5 variants for nucleotides at 5px scale
+const MICRO_FONT_5x7: Record<string, number[]> = {
   A: [0b01110, 0b10001, 0b11111, 0b10001, 0b10001, 0b00000, 0b00000],
   B: [0b11110, 0b10001, 0b11110, 0b10001, 0b11110, 0b00000, 0b00000], // use for N as needed
   C: [0b01110, 0b10001, 0b10000, 0b10001, 0b01110, 0b00000, 0b00000],
