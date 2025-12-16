@@ -1,0 +1,498 @@
+/**
+ * FullFeatureModal.css - Cyberpunk-styled Feature Browser
+ *
+ * Styling for the comprehensive feature modal with:
+ * - Neon glow effects
+ * - Gradient backgrounds
+ * - Smooth animations
+ * - Responsive design
+ */
+
+.full-feature-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 80vh;
+  overflow: hidden;
+}
+
+/* =============================================================================
+   Experience Level Selector
+   ============================================================================= */
+
+.ffm-level-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  background: linear-gradient(
+    135deg,
+    rgba(var(--color-background-rgb, 20, 20, 30), 0.8),
+    rgba(var(--color-background-alt-rgb, 30, 30, 45), 0.8)
+  );
+  border-radius: 8px;
+  border: 1px solid var(--color-border, #333);
+}
+
+.ffm-level-label {
+  color: var(--color-text-muted, #888);
+  font-size: 0.85rem;
+  margin-right: 0.5rem;
+}
+
+.ffm-level-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.75rem;
+  background: transparent;
+  border: 1px solid var(--color-border, #444);
+  border-radius: 6px;
+  color: var(--color-text-dim, #aaa);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ffm-level-btn:hover {
+  background: rgba(var(--color-accent-rgb, 0, 200, 255), 0.1);
+  border-color: var(--color-accent, #0af);
+}
+
+.ffm-level-btn--active {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--color-accent-rgb, 0, 200, 255), 0.2),
+    rgba(var(--color-primary-rgb, 100, 100, 255), 0.2)
+  );
+  border-color: var(--color-accent, #0af);
+  color: var(--color-text, #fff);
+  box-shadow: 0 0 10px rgba(var(--color-accent-rgb, 0, 200, 255), 0.3);
+}
+
+.ffm-level-btn-label {
+  text-transform: capitalize;
+}
+
+/* =============================================================================
+   Category Pills
+   ============================================================================= */
+
+.ffm-category-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+
+.ffm-category-pill {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  background: rgba(var(--color-background-alt-rgb, 30, 30, 45), 0.6);
+  border: 1px solid var(--color-border, #333);
+  border-radius: 16px;
+  color: var(--color-text-muted, #888);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ffm-category-pill:hover {
+  background: rgba(var(--color-accent-rgb, 0, 200, 255), 0.1);
+  border-color: var(--color-accent, #0af);
+  color: var(--color-text, #fff);
+}
+
+.ffm-category-pill--active {
+  background: linear-gradient(
+    135deg,
+    rgba(var(--color-accent-rgb, 0, 200, 255), 0.25),
+    rgba(var(--color-secondary-rgb, 200, 50, 200), 0.15)
+  );
+  border-color: var(--color-accent, #0af);
+  color: var(--color-text, #fff);
+  box-shadow: 0 0 8px rgba(var(--color-accent-rgb, 0, 200, 255), 0.25);
+}
+
+.ffm-category-pill-icon {
+  display: flex;
+  align-items: center;
+  opacity: 0.8;
+}
+
+.ffm-category-pill-count {
+  margin-left: 0.25rem;
+  padding: 0.1rem 0.35rem;
+  background: rgba(var(--color-text-rgb, 255, 255, 255), 0.1);
+  border-radius: 8px;
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* =============================================================================
+   Search Input
+   ============================================================================= */
+
+.ffm-search-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ffm-search-icon {
+  position: absolute;
+  left: 0.75rem;
+  color: var(--color-text-muted, #888);
+  pointer-events: none;
+}
+
+.ffm-search-input {
+  width: 100%;
+  padding: 0.75rem 2.5rem 0.75rem 2.5rem;
+  background: rgba(var(--color-background-rgb, 20, 20, 30), 0.9);
+  border: 1px solid var(--color-border, #444);
+  border-radius: 8px;
+  color: var(--color-text, #fff);
+  font-size: 1rem;
+  font-family: inherit;
+  outline: none;
+  transition: all 0.2s ease;
+}
+
+.ffm-search-input:focus {
+  border-color: var(--color-accent, #0af);
+  box-shadow: 0 0 12px rgba(var(--color-accent-rgb, 0, 200, 255), 0.3),
+    inset 0 0 20px rgba(var(--color-accent-rgb, 0, 200, 255), 0.05);
+}
+
+.ffm-search-input::placeholder {
+  color: var(--color-text-muted, #666);
+}
+
+.ffm-search-clear {
+  position: absolute;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: var(--color-text-muted, #888);
+  font-size: 1.25rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  line-height: 1;
+  transition: color 0.2s;
+}
+
+.ffm-search-clear:hover {
+  color: var(--color-text, #fff);
+}
+
+/* =============================================================================
+   Results Count
+   ============================================================================= */
+
+.ffm-results-count {
+  color: var(--color-text-muted, #888);
+  font-size: 0.8rem;
+  padding: 0 0.25rem;
+}
+
+/* =============================================================================
+   Feature List
+   ============================================================================= */
+
+.ffm-feature-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: 50vh;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-accent, #0af) transparent;
+}
+
+.ffm-feature-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.ffm-feature-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.ffm-feature-list::-webkit-scrollbar-thumb {
+  background: var(--color-accent, #0af);
+  border-radius: 3px;
+}
+
+/* =============================================================================
+   Section Headers
+   ============================================================================= */
+
+.ffm-section {
+  margin-bottom: 0.5rem;
+}
+
+.ffm-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  color: var(--color-text-muted, #888);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--color-border, #333);
+  background: linear-gradient(
+    90deg,
+    rgba(var(--color-background-alt-rgb, 30, 30, 45), 0.5),
+    transparent
+  );
+}
+
+.ffm-section-icon {
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+}
+
+.ffm-section-count {
+  margin-left: auto;
+  opacity: 0.6;
+  font-size: 0.7rem;
+}
+
+/* =============================================================================
+   Feature Items
+   ============================================================================= */
+
+.ffm-feature-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-left: 3px solid transparent;
+}
+
+.ffm-feature-item:hover {
+  background: rgba(var(--color-accent-rgb, 0, 200, 255), 0.08);
+}
+
+.ffm-feature-item--selected {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--color-accent-rgb, 0, 200, 255), 0.15),
+    rgba(var(--color-accent-rgb, 0, 200, 255), 0.05)
+  );
+  border-left-color: var(--color-accent, #0af);
+}
+
+.ffm-feature-item--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ffm-feature-item--active {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--color-success-rgb, 0, 200, 100), 0.12),
+    transparent
+  );
+}
+
+.ffm-feature-item--selected.ffm-feature-item--active {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--color-success-rgb, 0, 200, 100), 0.2),
+    rgba(var(--color-accent-rgb, 0, 200, 255), 0.1)
+  );
+}
+
+.ffm-feature-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: rgba(var(--color-text-rgb, 255, 255, 255), 0.05);
+  border-radius: 6px;
+  color: var(--color-text-muted, #888);
+  flex-shrink: 0;
+}
+
+.ffm-feature-item--selected .ffm-feature-icon {
+  background: rgba(var(--color-accent-rgb, 0, 200, 255), 0.2);
+  color: var(--color-accent, #0af);
+}
+
+.ffm-feature-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.ffm-feature-label {
+  color: var(--color-text, #fff);
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ffm-feature-item--selected .ffm-feature-label {
+  font-weight: 500;
+}
+
+.ffm-feature-desc {
+  color: var(--color-text-muted, #888);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ffm-feature-shortcut {
+  padding: 0.2rem 0.5rem;
+  background: rgba(var(--color-text-rgb, 255, 255, 255), 0.08);
+  border: 1px solid var(--color-border, #444);
+  border-radius: 4px;
+  color: var(--color-text-muted, #888);
+  font-size: 0.7rem;
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+.ffm-feature-item--selected .ffm-feature-shortcut {
+  background: rgba(var(--color-accent-rgb, 0, 200, 255), 0.15);
+  border-color: var(--color-accent, #0af);
+  color: var(--color-accent, #0af);
+}
+
+.ffm-feature-active-badge {
+  padding: 0.15rem 0.4rem;
+  background: var(--color-success, #0c8);
+  border-radius: 3px;
+  color: #000;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* =============================================================================
+   Highlight
+   ============================================================================= */
+
+.ffm-highlight {
+  color: var(--color-accent, #0af);
+  font-weight: 700;
+  text-shadow: 0 0 8px rgba(var(--color-accent-rgb, 0, 200, 255), 0.5);
+}
+
+/* =============================================================================
+   Empty State
+   ============================================================================= */
+
+.ffm-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--color-text-muted, #888);
+  font-style: italic;
+}
+
+/* =============================================================================
+   Footer Hints
+   ============================================================================= */
+
+.ffm-footer {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  padding: 0.75rem;
+  border-top: 1px solid var(--color-border, #333);
+  background: linear-gradient(
+    to top,
+    rgba(var(--color-background-rgb, 20, 20, 30), 0.8),
+    transparent
+  );
+}
+
+.ffm-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--color-text-muted, #888);
+  font-size: 0.75rem;
+}
+
+.ffm-hint kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  padding: 0.15rem 0.4rem;
+  background: rgba(var(--color-text-rgb, 255, 255, 255), 0.08);
+  border: 1px solid var(--color-border, #444);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 0.7rem;
+}
+
+/* =============================================================================
+   Responsive
+   ============================================================================= */
+
+@media (max-width: 640px) {
+  .ffm-category-pills {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 0.75rem;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .ffm-category-pill {
+    flex-shrink: 0;
+  }
+
+  .ffm-feature-desc {
+    display: none;
+  }
+
+  .ffm-footer {
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .ffm-level-btn-label {
+    display: none;
+  }
+}
+
+/* =============================================================================
+   Animation
+   ============================================================================= */
+
+@keyframes ffm-glow-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 8px rgba(var(--color-accent-rgb, 0, 200, 255), 0.3);
+  }
+  50% {
+    box-shadow: 0 0 16px rgba(var(--color-accent-rgb, 0, 200, 255), 0.5);
+  }
+}
+
+.ffm-feature-item--selected {
+  animation: ffm-glow-pulse 2s ease-in-out infinite;
+}
+
+/* Reduce motion for accessibility */
+@media (prefers-reduced-motion: reduce) {
+  .ffm-feature-item--selected {
+    animation: none;
+  }
+}

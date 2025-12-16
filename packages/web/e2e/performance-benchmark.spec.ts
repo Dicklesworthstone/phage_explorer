@@ -13,10 +13,15 @@
 
 import { test, expect, type Page, type CDPSession } from '@playwright/test';
 
-const BASE_URL = 'http://localhost:5173';
-const BENCHMARK_RESULTS_DIR = 'benchmark-results';
+// Base URL for tests - uses Playwright's baseURL from config
+const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
 
-// Performance thresholds (in milliseconds unless noted)
+// import * as path from 'path';
+
+// const REPORT_DIR = path.join(__dirname, '../../test-results');
+// const BENCHMARK_RESULTS_DIR = path.join(REPORT_DIR, 'benchmarks');
+
+// const CPU_THROTTLING_RATE = 4; // Simulate 4x slower CPU for mobile tests
 const THRESHOLDS = {
   // Load metrics (simulated 3G: ~1.5Mbps, 400ms RTT)
   FCP_3G: 2000,      // First Contentful Paint < 2s
@@ -279,7 +284,7 @@ test.describe('Performance Benchmarks', () => {
     await page.waitForTimeout(2000);
 
     // Find scrollable content area
-    const scrollContainer = page.locator('.sequence-viewer, [data-testid="genome-viewer"], main').first();
+    // const scrollContainer = page.locator('.sequence-viewer, [data-testid="genome-viewer"], main').first();
 
     // Start FPS measurement while scrolling
     const scrollPromise = (async () => {
