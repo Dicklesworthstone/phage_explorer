@@ -1,0 +1,140 @@
+/**
+ * Lenis Smooth Scroll Styles
+ *
+ * Configures smooth scroll behavior and marks containers for native scroll.
+ */
+
+/* =============================================================================
+   HTML/Body Scroll Configuration
+   ============================================================================= */
+
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+
+.lenis.lenis-stopped {
+  overflow: hidden;
+}
+
+.lenis.lenis-scrolling iframe {
+  pointer-events: none;
+}
+
+/* =============================================================================
+   Native Scroll Prevention Class
+   ============================================================================= */
+
+/**
+ * Add .lenis-prevent to containers that need native scroll behavior.
+ * Examples: sequence views, code editors, virtualized lists
+ */
+.lenis-prevent {
+  overscroll-behavior: contain;
+}
+
+/* =============================================================================
+   Scrollbar Styling (Premium Touch)
+   ============================================================================= */
+
+/* Custom scrollbar for webkit browsers */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-background-alt, rgba(0, 0, 0, 0.1));
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border, rgba(255, 255, 255, 0.2));
+  border-radius: 4px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-focus, rgba(255, 255, 255, 0.4));
+}
+
+/* Firefox scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border, rgba(255, 255, 255, 0.2)) var(--color-background-alt, rgba(0, 0, 0, 0.1));
+}
+
+/* =============================================================================
+   Scroll Snap for Lists (Optional Enhancement)
+   ============================================================================= */
+
+.scroll-snap-y {
+  scroll-snap-type: y proximity;
+}
+
+.scroll-snap-x {
+  scroll-snap-type: x mandatory;
+}
+
+.scroll-snap-item {
+  scroll-snap-align: start;
+}
+
+.scroll-snap-item-center {
+  scroll-snap-align: center;
+}
+
+/* =============================================================================
+   Scroll Indicators
+   ============================================================================= */
+
+.scroll-indicator {
+  position: absolute;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.scroll-indicator--top,
+.scroll-indicator--bottom {
+  left: 0;
+  right: 0;
+  height: 40px;
+}
+
+.scroll-indicator--top {
+  top: 0;
+  background: linear-gradient(to bottom, var(--color-background) 0%, transparent 100%);
+}
+
+.scroll-indicator--bottom {
+  bottom: 0;
+  background: linear-gradient(to top, var(--color-background) 0%, transparent 100%);
+}
+
+.scroll-indicator--visible {
+  opacity: 1;
+}
+
+/* =============================================================================
+   Reduced Motion
+   ============================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+  html,
+  html body {
+    scroll-behavior: auto !important;
+  }
+
+  * {
+    scroll-behavior: auto !important;
+  }
+}

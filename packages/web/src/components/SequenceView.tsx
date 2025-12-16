@@ -462,6 +462,7 @@ function SequenceViewBase({
   return (
     <div
       className={`sequence-view ${className}`}
+      data-lenis-prevent
       style={{
         display: 'flex',
         flexDirection: 'column',
