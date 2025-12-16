@@ -3,6 +3,7 @@ import { usePhageStore } from '@phage-explorer/state';
 import type { PhageFull } from '@phage-explorer/core';
 import { Model3DSkeleton } from './ui/Skeleton';
 import { Badge, SubtleBadge } from './ui/Badge';
+import { Tooltip } from './ui/Tooltip';
 import { IconAlertTriangle, IconCamera, IconCube, IconDna, IconFlask, IconRepeat } from './ui';
 import {
   ACESFilmicToneMapping,
@@ -913,7 +914,15 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
         <h3>3D Structure</h3>
         <div className="badge-row">
           <Badge>{hasNoStructure ? 'No Data' : stateLabel}</Badge>
-          {atomCount !== null && <SubtleBadge>{atomCount} atoms</SubtleBadge>}
+          {atomCount !== null && (
+            <Tooltip
+              content="PDB structures show the asymmetric unit (unique protein chains). Full virion capsids require 60-180 copies via icosahedral symmetry, containing ~100-500× more atoms."
+              position="bottom"
+              hintType="definition"
+            >
+              <SubtleBadge>{atomCount.toLocaleString()} atoms (asymmetric unit)</SubtleBadge>
+            </Tooltip>
+          )}
           {!hasNoStructure && <SubtleBadge>FPS {fps || '—'}</SubtleBadge>}
         </div>
       </div>
@@ -1098,7 +1107,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
 
       <div className="panel-footer text-dim">
         {pdbId
-          ? `Source: ${pdbId}${atomCount ? ` · ${atomCount.toLocaleString()} atoms` : ''}`
+          ? `Source: ${pdbId}${atomCount ? ` · ${atomCount.toLocaleString()} atoms (model)` : ''}`
           : 'No PDB/mmCIF structure available for this phage'}
       </div>
     </div>
