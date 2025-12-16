@@ -14,6 +14,8 @@
 @import './styles/mobile-ux.css';
 @import './styles/control-deck.css';
 @import './styles/fab.css';
+@import './styles/swipe-indicators.css';
+@import './styles/phage-picker.css';
 @import './styles/action-drawer.css';
 @import './styles/desktop-ui.css';
 

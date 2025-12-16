@@ -63,8 +63,25 @@
   z-index: calc(var(--z-modal-backdrop) + 10);
 }
 
+/* Show FAB on tablet/mobile screens */
 @media (max-width: 900px) {
   .fab {
     display: inline-flex;
+  }
+}
+
+/* On mobile with ControlDeck visible, position FAB above it */
+@media (max-width: 640px) {
+  .fab {
+    /* ControlDeck is 56px + safe-area, add 16px gap above it */
+    bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Landscape: ControlDeck is shorter (48px) */
+@media (max-width: 640px) and (orientation: landscape) {
+  .fab {
+    /* ControlDeck is 48px + safe-area in landscape, add 16px gap */
+    bottom: calc(64px + env(safe-area-inset-bottom, 0px));
   }
 }

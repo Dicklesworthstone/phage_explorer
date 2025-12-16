@@ -1,0 +1,121 @@
+/* =============================================================================
+   SWIPE NAVIGATION INDICATORS
+   Subtle edge arrows that hint at swipe navigation on mobile
+   ============================================================================= */
+
+.swipe-indicator {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: var(--z-sticky); /* 200 - below FAB/ControlDeck (300), above content */
+  opacity: 0.6;
+  pointer-events: none; /* Decorative only - don't interfere with touch */
+  transition: opacity var(--duration-normal) var(--ease-out);
+  display: none; /* Hidden by default, shown via media query */
+}
+
+.swipe-indicator--left {
+  left: 8px;
+}
+
+.swipe-indicator--right {
+  right: 8px;
+}
+
+/* Arrow icon styling */
+.swipe-indicator__arrow {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-background-glass);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-full);
+  color: var(--color-text-dim);
+  box-shadow: var(--shadow-sm);
+}
+
+.swipe-indicator__arrow svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Subtle state for learned users */
+.swipe-indicator--subtle {
+  opacity: 0.3;
+}
+
+.swipe-indicator--subtle .swipe-indicator__arrow {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Hidden state (at boundary or no navigation available) */
+.swipe-indicator--hidden {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Pulse animation for new users */
+.swipe-indicator--pulse .swipe-indicator__arrow {
+  animation: swipe-hint-pulse 2s ease-in-out 3;
+}
+
+@keyframes swipe-hint-pulse {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
+    box-shadow: var(--shadow-sm);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+    box-shadow: 0 0 12px rgba(34, 211, 238, 0.4);
+  }
+}
+
+/* Horizontal bounce to draw attention */
+.swipe-indicator--pulse.swipe-indicator--left .swipe-indicator__arrow {
+  animation: swipe-hint-pulse 2s ease-in-out 3, swipe-hint-bounce-left 1.5s ease-in-out 3;
+}
+
+.swipe-indicator--pulse.swipe-indicator--right .swipe-indicator__arrow {
+  animation: swipe-hint-pulse 2s ease-in-out 3, swipe-hint-bounce-right 1.5s ease-in-out 3;
+}
+
+@keyframes swipe-hint-bounce-left {
+  0%, 100% { transform: translateX(0) scale(1); }
+  50% { transform: translateX(-4px) scale(1.15); }
+}
+
+@keyframes swipe-hint-bounce-right {
+  0%, 100% { transform: translateX(0) scale(1); }
+  50% { transform: translateX(4px) scale(1.15); }
+}
+
+/* Show indicators only on mobile */
+@media (max-width: 640px) {
+  .swipe-indicator {
+    display: flex;
+  }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .swipe-indicator--pulse .swipe-indicator__arrow,
+  .swipe-indicator--pulse.swipe-indicator--left .swipe-indicator__arrow,
+  .swipe-indicator--pulse.swipe-indicator--right .swipe-indicator__arrow {
+    animation: none;
+  }
+}
+
+/* Landscape: adjust vertical position to avoid thumbs */
+@media (max-width: 640px) and (orientation: landscape) {
+  .swipe-indicator {
+    top: 45%; /* Slightly higher in landscape */
+  }
+}

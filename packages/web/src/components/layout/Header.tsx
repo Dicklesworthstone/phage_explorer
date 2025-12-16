@@ -8,7 +8,8 @@ import React from 'react';
 import { SubtleBadge, WarningBadge } from '../ui/Badge';
 
 export interface HeaderProps {
-  title?: string;
+  /** Title can be a string or a custom ReactNode (e.g., tappable picker trigger) */
+  title?: string | React.ReactNode;
   subtitle?: string;
   mode?: string;
   pendingSequence?: string | null;

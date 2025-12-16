@@ -42,7 +42,12 @@ import { LearnMenu } from './components/LearnMenu';
 import { PhageIllustration, hasIllustration } from './components/PhageIllustration';
 
 // Mobile controls
-import { ControlDeck } from './components/mobile/ControlDeck';
+import {
+  ControlDeck,
+  SwipeIndicators,
+  PhagePickerTrigger,
+  PhagePickerSheet,
+} from './components/mobile';
 import { FloatingActionButton, ActionDrawer } from './components/controls';
 import { DataFreshnessIndicator } from './components/ui/DataFreshnessIndicator';
 import { IconSettings } from './components/ui/icons';
@@ -70,6 +75,8 @@ export default function App(): React.ReactElement {
   const backgroundEffects = useWebPreferences((s) => s.backgroundEffects);
   const webPrefsHydrated = useWebPreferences((s) => s._hasHydrated);
   const hasSeenWelcome = useWebPreferences((s) => s.hasSeenWelcome);
+  const hasLearnedMobileSwipe = useWebPreferences((s) => s.hasLearnedMobileSwipe);
+  const setHasLearnedMobileSwipe = useWebPreferences((s) => s.setHasLearnedMobileSwipe);
 
   useBeginnerModeInit();
   const {
@@ -133,8 +140,10 @@ export default function App(): React.ReactElement {
   const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
+  const [phagePickerOpen, setPhagePickerOpen] = useState(false);
   const [analysisSidebarCollapsed, setAnalysisSidebarCollapsed] = useState(false);
   const swipeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+  const sessionSwipeCountRef = useRef(0); // Track successful swipes for learning hint
   const glossaryShellRef = useRef<HTMLDivElement | null>(null);
   const glossaryOpenerRef = useRef<HTMLElement | null>(null);
   const wasGlossaryOpenRef = useRef(false);
@@ -501,6 +510,12 @@ export default function App(): React.ReactElement {
       } else {
         handlePrevPhage();
       }
+
+      // Track successful swipes for learning the gesture
+      sessionSwipeCountRef.current += 1;
+      if (sessionSwipeCountRef.current >= 2 && !hasLearnedMobileSwipe) {
+        setHasLearnedMobileSwipe(true);
+      }
     };
 
     const onTouchCancel = () => {
@@ -516,7 +531,7 @@ export default function App(): React.ReactElement {
       container.removeEventListener('touchend', onTouchEnd);
       container.removeEventListener('touchcancel', onTouchCancel);
     };
-  }, [handleNextPhage, handlePrevPhage, hasBlockingOverlay, isMobile, mobileListOpen]);
+  }, [handleNextPhage, handlePrevPhage, hasBlockingOverlay, hasLearnedMobileSwipe, isMobile, mobileListOpen, setHasLearnedMobileSwipe]);
 
   useEffect(() => {
     if (!isGlossaryOpen) return;
@@ -731,7 +746,17 @@ export default function App(): React.ReactElement {
       <AppShell
         enableBackgroundEffects={enableBackgroundEffects}
         header={{
-          title: currentPhage?.name ?? 'Phage Explorer',
+          title: isMobile && phages.length > 0 ? (
+            <PhagePickerTrigger
+              phageName={currentPhage?.name ?? 'Select Phage'}
+              currentIndex={currentPhageIndex}
+              totalCount={phages.length}
+              onClick={() => setPhagePickerOpen(true)}
+              isOpen={phagePickerOpen}
+            />
+          ) : (
+            currentPhage?.name ?? 'Phage Explorer'
+          ),
           subtitle: headerSubtitle,
           mode,
           pendingSequence: pendingSequence ?? undefined,
@@ -1134,6 +1159,13 @@ export default function App(): React.ReactElement {
       <ControlDeck onPrevPhage={handlePrevPhage} onNextPhage={handleNextPhage} />
       {isMobile && (
         <>
+          <SwipeIndicators
+            isFirst={currentPhageIndex === 0}
+            isLast={currentPhageIndex === phages.length - 1}
+            isVisible={phages.length > 1}
+            showPulse={!hasLearnedMobileSwipe}
+            isSubtle={hasLearnedMobileSwipe}
+          />
           <FloatingActionButton
             isOpen={actionDrawerOpen}
             onToggle={handleToggleActionDrawer}
@@ -1141,6 +1173,17 @@ export default function App(): React.ReactElement {
           <ActionDrawer
             isOpen={actionDrawerOpen}
             onClose={handleCloseActionDrawer}
+          />
+          <PhagePickerSheet
+            isOpen={phagePickerOpen}
+            onClose={() => setPhagePickerOpen(false)}
+            phages={phages}
+            currentIndex={currentPhageIndex}
+            onSelectPhage={(index) => {
+              if (repository) {
+                void loadPhage(repository, index);
+              }
+            }}
           />
         </>
       )}

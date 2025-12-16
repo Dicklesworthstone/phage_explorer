@@ -21,7 +21,7 @@ export { usePhageStore } from '@phage-explorer/state';
 export type { PhageExplorerStore, PhageExplorerState, PhageExplorerActions } from '@phage-explorer/state';
 
 // Version for migration logic
-const STORE_VERSION = 4;
+const STORE_VERSION = 5;
 
 /**
  * Web-specific preferences that persist to localStorage
@@ -30,6 +30,7 @@ const STORE_VERSION = 4;
 export interface WebPreferencesState {
   // Persisted preferences
   hasSeenWelcome: boolean;
+  hasLearnedMobileSwipe: boolean;
   scanlines: boolean;
   scanlineIntensity: number;
   glow: boolean;
@@ -46,6 +47,7 @@ export interface WebPreferencesState {
 
 export interface WebPreferencesActions {
   setHasSeenWelcome: (seen: boolean) => void;
+  setHasLearnedMobileSwipe: (learned: boolean) => void;
   setScanlines: (enabled: boolean) => void;
   setScanlineIntensity: (intensity: number) => void;
   setGlow: (enabled: boolean) => void;
@@ -77,6 +79,7 @@ interface PersistedMainState {
  */
 const defaultWebPreferences: WebPreferencesState = {
   hasSeenWelcome: false,
+  hasLearnedMobileSwipe: false,
   scanlines: true,
   scanlineIntensity: 0.15,
   glow: true,
@@ -130,11 +133,24 @@ function migrateWebPrefs(
     };
   }
 
+  if (version < 5) {
+    // Version 4 -> 5: Add hasLearnedMobileSwipe for progressive disclosure
+    return {
+      ...defaultWebPreferences,
+      ...state,
+      scanlineIntensity: state.scanlineIntensity ?? 0.15,
+      backgroundEffects: state.backgroundEffects ?? true,
+      hasLearnedMobileSwipe: false, // New users haven't learned yet
+      _hasHydrated: false,
+    };
+  }
+
   return {
     ...defaultWebPreferences,
     ...state,
     scanlineIntensity: state.scanlineIntensity ?? 0.15, // Ensure default
     backgroundEffects: state.backgroundEffects ?? true,
+    hasLearnedMobileSwipe: state.hasLearnedMobileSwipe ?? false,
     _hasHydrated: false, // Always reset hydration on load
   };
 }
@@ -148,6 +164,7 @@ export const useWebPreferences = create<WebPreferencesStore>()(
       ...defaultWebPreferences,
 
       setHasSeenWelcome: (seen) => set({ hasSeenWelcome: seen }),
+      setHasLearnedMobileSwipe: (learned) => set({ hasLearnedMobileSwipe: learned }),
       setScanlines: (enabled) => set({ scanlines: enabled }),
       setScanlineIntensity: (intensity) => set({ scanlineIntensity: intensity }),
       setGlow: (enabled) => set({ glow: enabled }),
@@ -173,6 +190,7 @@ export const useWebPreferences = create<WebPreferencesStore>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
         hasSeenWelcome: state.hasSeenWelcome,
+        hasLearnedMobileSwipe: state.hasLearnedMobileSwipe,
         scanlines: state.scanlines,
         scanlineIntensity: state.scanlineIntensity,
         glow: state.glow,

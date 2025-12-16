@@ -10,3 +10,6 @@
 
 export { ControlDeck } from './ControlDeck';
 export { BottomSheet } from './BottomSheet';
+export { SwipeIndicators } from './SwipeIndicators';
+export { PhagePickerTrigger } from './PhagePickerTrigger';
+export { PhagePickerSheet } from './PhagePickerSheet';
