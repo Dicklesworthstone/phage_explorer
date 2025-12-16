@@ -5,7 +5,41 @@
  * Supports focus trapping, z-index management, and keyboard navigation.
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useState, useMemo, type ReactNode } from 'react';
+
+// =============================================================================
+// Mobile Detection
+// =============================================================================
+
+const MOBILE_BREAKPOINT = 640; // px - matches Tailwind 'sm' breakpoint
+
+/**
+ * Hook to detect if the viewport is mobile-sized.
+ * Uses matchMedia for efficient reactive updates.
+ */
+export function useMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.innerWidth <= MOBILE_BREAKPOINT;
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT}px)`);
+    setIsMobile(mediaQuery.matches);
+
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mediaQuery.addEventListener('change', handler);
+    return () => mediaQuery.removeEventListener('change', handler);
+  }, []);
+
+  return isMobile;
+}
+
+// =============================================================================
+// Overlay Types
+// =============================================================================
 
 // All possible overlay IDs (matching TUI)
 export type OverlayId =
@@ -74,6 +108,8 @@ interface OverlayContextValue {
   topOverlay: OverlayId | null;
   isOpen: (id: OverlayId) => boolean;
   hasBlockingOverlay: boolean;
+  /** Whether the viewport is mobile-sized */
+  isMobile: boolean;
 
   // Actions
   open: (id: OverlayId, config?: Partial<OverlayConfig>) => void;
@@ -107,6 +143,7 @@ interface OverlayProviderProps {
 export function OverlayProvider({ children }: OverlayProviderProps): React.ReactElement {
   const [stack, setStack] = useState<OverlayStackItem[]>([]);
   const [overlayData, setOverlayDataState] = useState<Record<string, unknown>>({});
+  const isMobile = useMobile();
 
   // Get the top overlay
   const topOverlay = stack.length > 0 ? stack[stack.length - 1].id : null;
@@ -203,6 +240,7 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
     topOverlay,
     isOpen,
     hasBlockingOverlay,
+    isMobile,
     open,
     close,
     toggle,
@@ -232,6 +270,7 @@ export function useOverlay(): OverlayContextValue {
     topOverlay: null,
     isOpen: () => false,
     hasBlockingOverlay: false,
+    isMobile: false,
     open: noop,
     close: noop,
     toggle: noop,

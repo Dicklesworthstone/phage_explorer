@@ -11,6 +11,7 @@
 
 import React, { useRef, useEffect, useCallback, useState, type ReactNode, type CSSProperties } from 'react';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
+import { BottomSheet } from '../mobile/BottomSheet';
 import {
   IconAlertTriangle,
   IconAperture,
@@ -130,7 +131,7 @@ export function Overlay({
   footer,
   className = '',
 }: OverlayProps): React.ReactElement | null {
-  const { isOpen, close, stack } = useOverlay();
+  const { isOpen, close, stack, isMobile } = useOverlay();
   const zIndex = useOverlayZIndex(id);
   const overlayRef = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
@@ -140,10 +141,10 @@ export function Overlay({
   const overlayStackItem = stack.find((item) => item.id === id);
   const closeOnEscape = overlayStackItem?.config.closeOnEscape ?? true;
   const closeOnBackdrop = overlayStackItem?.config.closeOnBackdrop ?? true;
-  const isPhone = typeof window !== 'undefined' && (window.matchMedia?.('(max-width: 640px)')?.matches ?? false);
-  const effectivePosition: OverlayPosition = isPhone && position === 'center' ? 'bottom' : position;
-  const isBottomSheet = isPhone && effectivePosition === 'bottom';
-  const overlayBorderRadius = isBottomSheet ? '16px 16px 0 0' : '8px';
+  // Use context-provided mobile detection for consistency
+  const effectivePosition: OverlayPosition = isMobile && position === 'center' ? 'bottom' : position;
+  const shouldUseBottomSheet = isMobile && effectivePosition === 'bottom';
+  const overlayBorderRadius = shouldUseBottomSheet ? '16px 16px 0 0' : '8px';
   const resolvedIcon = typeof icon === 'string' ? OVERLAY_HEADER_ICONS[id] ?? icon : icon;
 
   // Handle close - use useCallback to avoid stale closures
@@ -262,16 +263,16 @@ export function Overlay({
     display: 'flex',
     justifyContent: effectivePosition === 'left' ? 'flex-start' : effectivePosition === 'right' ? 'flex-end' : 'center',
     alignItems: effectivePosition === 'top' ? 'flex-start' : effectivePosition === 'bottom' ? 'flex-end' : 'center',
-    padding: isBottomSheet ? 0 : isPhone ? '1rem' : effectivePosition === 'center' ? '2rem' : 0,
+    padding: shouldUseBottomSheet ? 0 : isMobile ? '1rem' : effectivePosition === 'center' ? '2rem' : 0,
     zIndex,
     cursor: showBackdrop && closeOnBackdrop && isBackdropHovered ? 'pointer' : 'default',
     transition: showBackdrop ? 'background-color var(--duration-fast) var(--ease-out)' : undefined,
   };
 
   const overlayStyle: CSSProperties = {
-    width: isBottomSheet ? '100%' : SIZE_WIDTHS[size],
-    maxWidth: isBottomSheet ? '100%' : '95vw',
-    maxHeight: isBottomSheet ? '85dvh' : SIZE_MAX_HEIGHTS[size],
+    width: shouldUseBottomSheet ? '100%' : SIZE_WIDTHS[size],
+    maxWidth: shouldUseBottomSheet ? '100%' : '95vw',
+    maxHeight: shouldUseBottomSheet ? '85dvh' : SIZE_MAX_HEIGHTS[size],
     backgroundColor: 'var(--color-background)',
     border: '2px solid var(--color-border-focus)',
     borderRadius: overlayBorderRadius,
@@ -300,15 +301,38 @@ export function Overlay({
     flex: 1,
     overflow: 'auto',
     padding: '1rem',
-    paddingBottom: isBottomSheet ? 'calc(1rem + env(safe-area-inset-bottom))' : '1rem',
+    paddingBottom: shouldUseBottomSheet ? 'calc(1rem + env(safe-area-inset-bottom))' : '1rem',
   };
 
   const footerStyle: CSSProperties = {
     padding: '0.75rem 1rem',
     borderTop: '1px solid var(--color-border-light)',
-    paddingBottom: isBottomSheet ? 'calc(0.75rem + env(safe-area-inset-bottom))' : '0.75rem',
+    paddingBottom: shouldUseBottomSheet ? 'calc(0.75rem + env(safe-area-inset-bottom))' : '0.75rem',
   };
 
+  // Mobile: use BottomSheet for native gesture physics
+  if (shouldUseBottomSheet) {
+    return (
+      <BottomSheet
+        isOpen={overlayIsOpen}
+        onClose={handleClose}
+        title={title}
+        footer={footer}
+        showHandle={true}
+        closeOnBackdropTap={closeOnBackdrop}
+        swipeToDismiss={true}
+        initialSnapPoint={size === 'sm' ? 'half' : 'full'}
+        minHeight={size === 'sm' ? 30 : 50}
+        maxHeight={size === 'full' ? 95 : 90}
+      >
+        <div className={`overlay overlay-${id} ${className}`}>
+          {children}
+        </div>
+      </BottomSheet>
+    );
+  }
+
+  // Desktop: standard modal overlay
   return (
     <div
       style={backdropStyle}
@@ -355,18 +379,9 @@ export function Overlay({
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-            {/* Only show keyboard hints on non-touch devices */}
-            {!isPhone && (
-              <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                ESC{hotkey ? ` or ${hotkey}` : ''} to close
-              </span>
-            )}
-            {/* Mobile users get contextual hint */}
-            {isPhone && (
-              <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
-                {closeOnBackdrop ? 'Tap outside to close' : 'Tap X to close'}
-              </span>
-            )}
+            <span style={{ color: 'var(--color-text-muted)', fontSize: '0.85rem' }}>
+              ESC{hotkey ? ` or ${hotkey}` : ''} to close
+            </span>
             <button
               onClick={handleClose}
               style={{
