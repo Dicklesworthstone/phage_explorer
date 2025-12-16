@@ -6,13 +6,18 @@
  */
 
 import React, { useEffect, useRef, useMemo, useState } from 'react';
+import type { PhageFull } from '@phage-explorer/core';
+import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
+import { useHotkey } from '../../hooks';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { ColorLegend, createLinearColorScale } from './primitives';
+import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 
 interface KmerAnomalyOverlayProps {
-  sequence?: string;
+  repository: PhageRepository | null;
+  currentPhage: PhageFull | null;
 }
 
 interface KmerResult {
@@ -89,11 +94,17 @@ function calculateKmerAnomalies(
   return results;
 }
 
-export function KmerAnomalyOverlay({ sequence = '' }: KmerAnomalyOverlayProps): React.ReactElement | null {
+export function KmerAnomalyOverlay({
+  repository,
+  currentPhage,
+}: KmerAnomalyOverlayProps): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const [sequence, setSequence] = useState<string>('');
+  const [loading, setLoading] = useState(false);
   const [selectedPoint, setSelectedPoint] = useState<KmerResult | null>(null);
   const [kSize, setKSize] = useState(4);
   const colorScale = useMemo(
@@ -101,20 +112,43 @@ export function KmerAnomalyOverlay({ sequence = '' }: KmerAnomalyOverlayProps): 
     []
   );
 
-  const results = useMemo(() => calculateKmerAnomalies(sequence, kSize), [sequence, kSize]);
+  // Hotkey to toggle overlay
+  useHotkey(
+    { key: 'j' },
+    'K-mer Anomaly Cartography',
+    () => toggle('kmerAnomaly'),
+    { modes: ['NORMAL'], category: 'Analysis', minLevel: 'intermediate' }
+  );
 
-  // Register hotkey
+  // Fetch sequence when overlay opens
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'j' || e.key === 'J') && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        e.preventDefault();
-        toggle('kmerAnomaly');
-      }
-    };
+    if (!isOpen('kmerAnomaly')) return;
+    if (!repository || !currentPhage) {
+      setSequence('');
+      return;
+    }
 
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggle]);
+    const phageId = currentPhage.id;
+
+    // Check cache
+    if (sequenceCache.current.has(phageId)) {
+      setSequence(sequenceCache.current.get(phageId) ?? '');
+      return;
+    }
+
+    setLoading(true);
+    repository
+      .getFullGenomeLength(phageId)
+      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((seq: string) => {
+        sequenceCache.current.set(phageId, seq);
+        setSequence(seq);
+      })
+      .catch(() => setSequence(''))
+      .finally(() => setLoading(false));
+  }, [isOpen, repository, currentPhage]);
+
+  const results = useMemo(() => calculateKmerAnomalies(sequence, kSize), [sequence, kSize]);
 
   // Draw heatmap
   useEffect(() => {
@@ -200,85 +234,98 @@ export function KmerAnomalyOverlay({ sequence = '' }: KmerAnomalyOverlayProps): 
       size="lg"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {/* Loading State */}
+        {loading && (
+          <AnalysisPanelSkeleton message="Loading sequence data..." rows={3} />
+        )}
+
         {/* Description */}
-        <div style={{
-          padding: '0.75rem',
-          backgroundColor: colors.backgroundAlt,
-          borderRadius: '4px',
-          color: colors.textDim,
-          fontSize: '0.9rem',
-        }}>
-          <strong style={{ color: colors.primary }}>K-mer Anomaly</strong> detects regions with
-          unusual k-mer composition that may indicate horizontal gene transfer, mobile elements,
-          or unusual sequence features.
-        </div>
+        {!loading && (
+          <div style={{
+            padding: '0.75rem',
+            backgroundColor: colors.backgroundAlt,
+            borderRadius: '4px',
+            color: colors.textDim,
+            fontSize: '0.9rem',
+          }}>
+            <strong style={{ color: colors.primary }}>K-mer Anomaly</strong> detects regions with
+            unusual k-mer composition that may indicate horizontal gene transfer, mobile elements,
+            or unusual sequence features.
+          </div>
+        )}
 
         {/* Controls */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '1rem',
-        }}>
-          <label style={{ color: colors.textDim, fontSize: '0.85rem' }}>K-mer size:</label>
-          <select
-            value={kSize}
-            onChange={(e) => setKSize(Number(e.target.value))}
-            style={{
-              padding: '0.3rem 0.5rem',
-              border: `1px solid ${colors.borderLight}`,
-              borderRadius: '4px',
-              background: colors.backgroundAlt,
-              color: colors.text,
-            }}
-          >
-            <option value={3}>3-mers</option>
-            <option value={4}>4-mers</option>
-            <option value={5}>5-mers</option>
-            <option value={6}>6-mers</option>
-          </select>
-        </div>
+        {!loading && sequence.length > 0 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '1rem',
+          }}>
+            <label style={{ color: colors.textDim, fontSize: '0.85rem' }}>K-mer size:</label>
+            <select
+              value={kSize}
+              onChange={(e) => setKSize(Number(e.target.value))}
+              style={{
+                padding: '0.3rem 0.5rem',
+                border: `1px solid ${colors.borderLight}`,
+                borderRadius: '4px',
+                background: colors.backgroundAlt,
+                color: colors.text,
+              }}
+            >
+              <option value={3}>3-mers</option>
+              <option value={4}>4-mers</option>
+              <option value={5}>5-mers</option>
+              <option value={6}>6-mers</option>
+            </select>
+          </div>
+        )}
 
         {/* Stats */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 1fr)',
-          gap: '1rem',
-        }}>
-          <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
-            <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>Avg Deviation</div>
-            <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
-              {avgDeviation.toFixed(2)}
+        {!loading && results.length > 0 && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '1rem',
+          }}>
+            <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
+              <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>Avg Deviation</div>
+              <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
+                {avgDeviation.toFixed(2)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
+              <div style={{ color: colors.error, fontSize: '0.75rem' }}>Max Deviation</div>
+              <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
+                {maxDeviation.toFixed(2)}
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
+              <div style={{ color: colors.warning, fontSize: '0.75rem' }}>Anomaly Regions</div>
+              <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
+                {anomalyCount}
+              </div>
             </div>
           </div>
-          <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
-            <div style={{ color: colors.error, fontSize: '0.75rem' }}>Max Deviation</div>
-            <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
-              {maxDeviation.toFixed(2)}
-            </div>
-          </div>
-          <div style={{ textAlign: 'center', padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
-            <div style={{ color: colors.warning, fontSize: '0.75rem' }}>Anomaly Regions</div>
-            <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.25rem' }}>
-              {anomalyCount}
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Heatmap */}
-        <div style={{
-          border: `1px solid ${colors.borderLight}`,
-          borderRadius: '4px',
-          overflow: 'hidden',
-        }}>
-          <canvas
-            ref={canvasRef}
-            onClick={handleCanvasClick}
-            style={{ width: '100%', height: '120px', display: 'block', cursor: 'crosshair' }}
-          />
-        </div>
+        {!loading && results.length >= 2 && (
+          <div style={{
+            border: `1px solid ${colors.borderLight}`,
+            borderRadius: '4px',
+            overflow: 'hidden',
+          }}>
+            <canvas
+              ref={canvasRef}
+              onClick={handleCanvasClick}
+              style={{ width: '100%', height: '120px', display: 'block', cursor: 'crosshair' }}
+            />
+          </div>
+        )}
 
         {/* Selected point details */}
-        {selectedPoint && (
+        {!loading && selectedPoint && (
           <div style={{
             padding: '0.75rem',
             backgroundColor: colors.backgroundAlt,
@@ -313,20 +360,22 @@ export function KmerAnomalyOverlay({ sequence = '' }: KmerAnomalyOverlayProps): 
         )}
 
         {/* Legend */}
-        <div style={{ padding: '0.5rem' }}>
-          <ColorLegend
-            width={220}
-            height={32}
-            colorScale={colorScale}
-            tickCount={4}
-            minLabel="Low deviation"
-            maxLabel="High deviation"
-          />
-        </div>
+        {!loading && results.length >= 2 && (
+          <div style={{ padding: '0.5rem' }}>
+            <ColorLegend
+              width={220}
+              height={32}
+              colorScale={colorScale}
+              tickCount={4}
+              minLabel="Low deviation"
+              maxLabel="High deviation"
+            />
+          </div>
+        )}
 
-        {sequence.length === 0 && (
+        {!loading && sequence.length === 0 && (
           <div style={{ textAlign: 'center', padding: '2rem', color: colors.textMuted }}>
-            No sequence data available.
+            No sequence data available. Select a phage to analyze.
           </div>
         )}
       </div>

@@ -5,15 +5,20 @@
  * Uses canvas for the sparkline visualization.
  */
 
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
+import type { PhageFull } from '@phage-explorer/core';
+import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
+import { useHotkey } from '../../hooks';
 import { getOverlayContext, useBeginnerMode } from '../../education';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
 
 interface GCSkewOverlayProps {
-  sequence?: string;
+  repository: PhageRepository | null;
+  currentPhage: PhageFull | null;
 }
 
 // Calculate GC skew values
@@ -63,13 +68,55 @@ function findExtrema(values: number[]): { minIdx: number; maxIdx: number; min: n
   return { minIdx, maxIdx, min, max };
 }
 
-export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.ReactElement | null {
+export function GCSkewOverlay({
+  repository,
+  currentPhage,
+}: GCSkewOverlayProps): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const [sequence, setSequence] = useState<string>('');
+  const [loading, setLoading] = useState(false);
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('gcSkew');
+
+  // Hotkey to toggle overlay
+  useHotkey(
+    { key: 'g' },
+    'GC Skew Analysis',
+    () => toggle('gcSkew'),
+    { modes: ['NORMAL'], category: 'Analysis', minLevel: 'intermediate' }
+  );
+
+  // Fetch sequence when overlay opens
+  useEffect(() => {
+    if (!isOpen('gcSkew')) return;
+    if (!repository || !currentPhage) {
+      setSequence('');
+      return;
+    }
+
+    const phageId = currentPhage.id;
+
+    // Check cache
+    if (sequenceCache.current.has(phageId)) {
+      setSequence(sequenceCache.current.get(phageId) ?? '');
+      return;
+    }
+
+    setLoading(true);
+    repository
+      .getFullGenomeLength(phageId)
+      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((seq: string) => {
+        sequenceCache.current.set(phageId, seq);
+        setSequence(seq);
+      })
+      .catch(() => setSequence(''))
+      .finally(() => setLoading(false));
+  }, [isOpen, repository, currentPhage]);
 
   // Calculate GC skew data
   const { cumulative } = useMemo(() => {
@@ -79,19 +126,6 @@ export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.Reac
   const extrema = useMemo(() => {
     return cumulative.length > 0 ? findExtrema(cumulative) : null;
   }, [cumulative]);
-
-  // Register hotkey
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.key === 'g' || e.key === 'G') && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-        e.preventDefault();
-        toggle('gcSkew');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [toggle]);
 
   // Draw the sparkline
   useEffect(() => {
@@ -184,33 +218,40 @@ export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.Reac
       size="lg"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {/* Loading State */}
+        {loading && (
+          <AnalysisPanelSkeleton message="Loading sequence data..." rows={3} />
+        )}
+
         {/* Description */}
-        <div style={{
-          padding: '0.75rem',
-          backgroundColor: colors.backgroundAlt,
-          borderRadius: '4px',
-          color: colors.textDim,
-          fontSize: '0.9rem',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <strong style={{ color: colors.primary }}>Cumulative GC Skew</strong>
-            {beginnerModeEnabled && (
-              <InfoButton
-                size="sm"
-                label="Learn about GC skew"
-                tooltip={overlayHelp?.summary ?? 'GC skew compares the abundance of G vs C bases along the genome.'}
-                onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'gc-skew')}
-              />
-            )}
+        {!loading && (
+          <div style={{
+            padding: '0.75rem',
+            backgroundColor: colors.backgroundAlt,
+            borderRadius: '4px',
+            color: colors.textDim,
+            fontSize: '0.9rem',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+              <strong style={{ color: colors.primary }}>Cumulative GC Skew</strong>
+              {beginnerModeEnabled && (
+                <InfoButton
+                  size="sm"
+                  label="Learn about GC skew"
+                  tooltip={overlayHelp?.summary ?? 'GC skew compares the abundance of G vs C bases along the genome.'}
+                  onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'gc-skew')}
+                />
+              )}
+            </div>
+            <div>
+              Helps identify the origin (ori) and terminus (ter) of replication. The minimum typically
+              corresponds to the origin, maximum to the terminus.
+            </div>
           </div>
-          <div>
-            Helps identify the origin (ori) and terminus (ter) of replication. The minimum typically
-            corresponds to the origin, maximum to the terminus.
-          </div>
-        </div>
+        )}
 
         {/* Stats */}
-        {extrema && genomeLength > 0 && (
+        {!loading && extrema && genomeLength > 0 && (
           <div style={{
             display: 'grid',
             gridTemplateColumns: 'repeat(4, 1fr)',
@@ -236,61 +277,65 @@ export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.Reac
         )}
 
         {/* Canvas for sparkline */}
-        <div style={{
-          border: `1px solid ${colors.borderLight}`,
-          borderRadius: '4px',
-          overflow: 'hidden',
-        }}>
-          <canvas
-            ref={canvasRef}
-            style={{
-              width: '100%',
-              height: '200px',
-              display: 'block',
-            }}
-          />
-        </div>
+        {!loading && cumulative.length >= 2 && (
+          <div style={{
+            border: `1px solid ${colors.borderLight}`,
+            borderRadius: '4px',
+            overflow: 'hidden',
+          }}>
+            <canvas
+              ref={canvasRef}
+              style={{
+                width: '100%',
+                height: '200px',
+                display: 'block',
+              }}
+            />
+          </div>
+        )}
 
         {/* Legend */}
-        <div style={{
-          display: 'flex',
-          justifyContent: 'center',
-          gap: '2rem',
-          color: colors.textMuted,
-          fontSize: '0.85rem',
-        }}>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-            <span style={{ color: colors.primary }}>━</span>
-            <span>Cumulative GC Skew</span>
-            {beginnerModeEnabled && (
-              <InfoButton
-                size="sm"
-                label="What is GC skew?"
-                tooltip="GC skew highlights replication patterns by tracking G vs C imbalance along the genome."
-                onClick={() => showContextFor('gc-skew')}
-              />
-            )}
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-            <span style={{ color: colors.error }}>●</span>
-            <span>Origin (minimum)</span>
-            {beginnerModeEnabled && (
-              <InfoButton
-                size="sm"
-                label="What is the replication origin?"
-                tooltip="The origin is where DNA replication typically starts; in cumulative skew it often aligns with the minimum."
-                onClick={() => showContextFor('replication-origin')}
-              />
-            )}
-          </span>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-            <span style={{ color: colors.success }}>●</span>
-            <span>Terminus (maximum)</span>
-          </span>
-        </div>
+        {!loading && cumulative.length >= 2 && (
+          <div style={{
+            display: 'flex',
+            justifyContent: 'center',
+            gap: '2rem',
+            color: colors.textMuted,
+            fontSize: '0.85rem',
+          }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{ color: colors.primary }}>━</span>
+              <span>Cumulative GC Skew</span>
+              {beginnerModeEnabled && (
+                <InfoButton
+                  size="sm"
+                  label="What is GC skew?"
+                  tooltip="GC skew highlights replication patterns by tracking G vs C imbalance along the genome."
+                  onClick={() => showContextFor('gc-skew')}
+                />
+              )}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{ color: colors.error }}>●</span>
+              <span>Origin (minimum)</span>
+              {beginnerModeEnabled && (
+                <InfoButton
+                  size="sm"
+                  label="What is the replication origin?"
+                  tooltip="The origin is where DNA replication typically starts; in cumulative skew it often aligns with the minimum."
+                  onClick={() => showContextFor('replication-origin')}
+                />
+              )}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
+              <span style={{ color: colors.success }}>●</span>
+              <span>Terminus (maximum)</span>
+            </span>
+          </div>
+        )}
 
         {/* No data message */}
-        {(sequence.length === 0 || cumulative.length < 2) && (
+        {!loading && (sequence.length === 0 || cumulative.length < 2) && (
           <div style={{
             textAlign: 'center',
             padding: '2rem',

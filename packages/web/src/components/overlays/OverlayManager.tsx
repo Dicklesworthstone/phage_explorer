@@ -90,13 +90,13 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <CodonAdaptationOverlay repository={repository} currentPhage={currentPhage} />
       <DefenseArmsRaceOverlay repository={repository} currentPhage={currentPhage} />
       <ProphageExcisionOverlay repository={repository} currentPhage={currentPhage} />
-      {/* Sequence-based overlays - they use global state */}
-      <GCSkewOverlay />
-      <ComplexityOverlay />
-      <BendabilityOverlay />
-      <PromoterOverlay />
-      <RepeatsOverlay />
-      <KmerAnomalyOverlay />
+      {/* Sequence-based overlays - self-fetching */}
+      <GCSkewOverlay repository={repository} currentPhage={currentPhage} />
+      <ComplexityOverlay repository={repository} currentPhage={currentPhage} />
+      <BendabilityOverlay repository={repository} currentPhage={currentPhage} />
+      <PromoterOverlay repository={repository} currentPhage={currentPhage} />
+      <RepeatsOverlay repository={repository} currentPhage={currentPhage} />
+      <KmerAnomalyOverlay repository={repository} currentPhage={currentPhage} />
       <SettingsOverlay />
       <FeatureTour />
       <CommandPalette />
