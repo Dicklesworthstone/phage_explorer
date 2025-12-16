@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, memo } from 'react';
 import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 
@@ -36,8 +36,19 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
-// Create a mini GC bar visualization
-function GCBar({ gc, width = 10, colors }: { gc: number; width?: number; colors: any }): React.ReactElement {
+// Create a mini GC bar visualization - memoized for performance
+interface GCBarProps {
+  gc: number;
+  width?: number;
+  colors: {
+    info: string;
+    warning: string;
+    success: string;
+    textMuted: string;
+  };
+}
+
+const GCBar = memo(function GCBar({ gc, width = 10, colors }: GCBarProps): React.ReactElement {
   const filledWidth = Math.round((gc / 100) * width);
   const emptyWidth = width - filledWidth;
 
@@ -52,9 +63,9 @@ function GCBar({ gc, width = 10, colors }: { gc: number; width?: number; colors:
       <Text color={colors.textMuted}>{'░'.repeat(emptyWidth)}</Text>
     </Box>
   );
-}
+});
 
-export function Header(): React.ReactElement {
+export const Header = memo(function Header(): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const phage = usePhageStore(s => s.currentPhage);
   const phageIndex = usePhageStore(s => s.currentPhageIndex);
@@ -65,20 +76,42 @@ export function Header(): React.ReactElement {
   const experienceLevel = usePhageStore(s => s.experienceLevel);
 
   const colors = theme.colors;
-  const muted = colors.textDim;
-  const infoColor = colors.accent;
 
-  // Get glow and icon colors from enhanced theme
-  const glowColor = colors.glow ?? colors.primary;
-  const iconPrimary = colors.iconPrimary ?? colors.primary;
-  const iconSecondary = colors.iconSecondary ?? colors.accent;
+  // Memoize derived color values
+  const derivedColors = useMemo(() => ({
+    muted: colors.textDim,
+    infoColor: colors.accent,
+    glowColor: colors.glow ?? colors.primary,
+    iconPrimary: colors.iconPrimary ?? colors.primary,
+    iconSecondary: colors.iconSecondary ?? colors.accent,
+    separatorColor: colors.separator ?? colors.textMuted,
+  }), [colors]);
 
-  // Create visual experience level indicator with filled/empty stars
-  const levelIndicator = experienceLevel === 'power'
-    ? `${ICONS.star}${ICONS.star}${ICONS.star}`
-    : experienceLevel === 'intermediate'
-    ? `${ICONS.star}${ICONS.star}${ICONS.starEmpty}`
-    : `${ICONS.star}${ICONS.starEmpty}${ICONS.starEmpty}`;
+  const { muted, infoColor, glowColor, iconPrimary, iconSecondary, separatorColor } = derivedColors;
+
+  // Memoize level indicator - only changes when experience level changes
+  const levelIndicator = useMemo(() => {
+    if (experienceLevel === 'power') {
+      return `${ICONS.star}${ICONS.star}${ICONS.star}`;
+    } else if (experienceLevel === 'intermediate') {
+      return `${ICONS.star}${ICONS.star}${ICONS.starEmpty}`;
+    }
+    return `${ICONS.star}${ICONS.starEmpty}${ICONS.starEmpty}`;
+  }, [experienceLevel]);
+
+  // Memoize formatted genome length
+  const formattedGenomeLength = useMemo(
+    () => formatNumber(phage?.genomeLength ?? 0),
+    [phage?.genomeLength]
+  );
+
+  // Memoize GC colors for GCBar
+  const gcBarColors = useMemo(() => ({
+    info: colors.info,
+    warning: colors.warning,
+    success: colors.success,
+    textMuted: colors.textMuted,
+  }), [colors.info, colors.warning, colors.success, colors.textMuted]);
 
   return (
     <Box
@@ -105,7 +138,7 @@ export function Header(): React.ReactElement {
         </Box>
         <Box gap={2}>
           <Text color={experienceLevel === 'power' ? colors.accent : muted}>{levelIndicator}</Text>
-          <Text color={colors.separator ?? colors.textMuted}>{ICONS.separator}</Text>
+          <Text color={separatorColor}>{ICONS.separator}</Text>
           <Box gap={0}>
             <Text color={colors.accent} bold>[T]</Text>
             <Text color={colors.textDim}>heme</Text>
@@ -156,39 +189,39 @@ export function Header(): React.ReactElement {
             <Box gap={1}>
               <Text color={iconSecondary}>{ICONS.host}</Text>
               <Text color={colors.textDim}>Host</Text>
-              <Text color={colors.separator ?? colors.textMuted}>{ICONS.separator}</Text>
+              <Text color={separatorColor}>{ICONS.separator}</Text>
               <Text color={colors.text}>{phage.host ?? 'Unknown'}</Text>
             </Box>
 
-            <Text color={colors.separator ?? colors.textMuted}>{ICONS.dotSeparator}</Text>
+            <Text color={separatorColor}>{ICONS.dotSeparator}</Text>
 
             {/* Genome size with visual indicator */}
             <Box gap={1}>
               <Text color={colors.success}>{ICONS.size}</Text>
               <Text color={colors.textDim}>Size</Text>
-              <Text color={colors.separator ?? colors.textMuted}>{ICONS.separator}</Text>
+              <Text color={separatorColor}>{ICONS.separator}</Text>
               <Text color={colors.text} bold>{formatNumber(phage.genomeLength ?? 0)}</Text>
               <Text color={colors.textMuted}>bp</Text>
             </Box>
 
-            <Text color={colors.separator ?? colors.textMuted}>{ICONS.dotSeparator}</Text>
+            <Text color={separatorColor}>{ICONS.dotSeparator}</Text>
 
             {/* GC content with mini bar */}
             <Box gap={1}>
               <Text color={colors.warning}>{ICONS.gc}</Text>
               <Text color={colors.textDim}>GC</Text>
-              <Text color={colors.separator ?? colors.textMuted}>{ICONS.separator}</Text>
+              <Text color={separatorColor}>{ICONS.separator}</Text>
               <Text color={colors.text}>{phage.gcContent?.toFixed(1) ?? '?'}%</Text>
               {phage.gcContent && <GCBar gc={phage.gcContent} width={8} colors={colors} />}
             </Box>
 
-            <Text color={colors.separator ?? colors.textMuted}>{ICONS.dotSeparator}</Text>
+            <Text color={separatorColor}>{ICONS.dotSeparator}</Text>
 
             {/* Gene count */}
             <Box gap={1}>
               <Text color={colors.secondary}>{ICONS.gene}</Text>
               <Text color={colors.textDim}>Genes</Text>
-              <Text color={colors.separator ?? colors.textMuted}>{ICONS.separator}</Text>
+              <Text color={separatorColor}>{ICONS.separator}</Text>
               <Text color={colors.text} bold>{phage.genes?.length ?? '?'}</Text>
             </Box>
           </>
@@ -199,7 +232,7 @@ export function Header(): React.ReactElement {
       <Box gap={2} marginTop={0}>
         {/* View mode toggle - pill style */}
         <Box gap={0}>
-          <Text color={colors.separator ?? colors.textMuted}>╭─</Text>
+          <Text color={separatorColor}>╭─</Text>
           <Text
             color={viewMode === 'dna' ? colors.text : muted}
             bold={viewMode === 'dna'}
@@ -207,7 +240,7 @@ export function Header(): React.ReactElement {
           >
             {viewMode === 'dna' ? ' DNA ' : ' dna '}
           </Text>
-          <Text color={colors.separator ?? colors.textMuted}>│</Text>
+          <Text color={separatorColor}>│</Text>
           <Text
             color={viewMode === 'aa' ? colors.text : muted}
             bold={viewMode === 'aa'}
@@ -215,7 +248,7 @@ export function Header(): React.ReactElement {
           >
             {viewMode === 'aa' ? ' AA ' : ' aa '}
           </Text>
-          <Text color={colors.separator ?? colors.textMuted}>─╮</Text>
+          <Text color={separatorColor}>─╮</Text>
         </Box>
 
         {/* Reading frame (only shown in AA mode) - compact */}
@@ -223,7 +256,7 @@ export function Header(): React.ReactElement {
           <Box gap={0}>
             <Text color={infoColor}>{ICONS.frame}</Text>
             <Text color={colors.textDim}>Frame</Text>
-            <Text color={colors.separator ?? colors.textMuted}>[</Text>
+            <Text color={separatorColor}>[</Text>
             {[0, 1, 2, -1, -2, -3].map(f => {
               const label = f >= 0 ? `${f + 1}` : `r${Math.abs(f)}`;
               return (
@@ -237,7 +270,7 @@ export function Header(): React.ReactElement {
                 </Text>
               );
             })}
-            <Text color={colors.separator ?? colors.textMuted}>]</Text>
+            <Text color={separatorColor}>]</Text>
           </Box>
         )}
 
@@ -260,4 +293,4 @@ export function Header(): React.ReactElement {
       </Box>
     </Box>
   );
-}
+});

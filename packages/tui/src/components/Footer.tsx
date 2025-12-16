@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, memo } from 'react';
 import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { HudTheme } from '@phage-explorer/core';
@@ -77,40 +77,74 @@ function getOverlayName(o: string): string {
   return map[o] ?? o;
 }
 
-export function Footer(): React.ReactElement {
+// Memoized hint group component
+interface HintGroupProps {
+  category: HintCategory;
+  hints: KeyHint[];
+  colors: HudTheme;
+}
+
+const HintGroup = memo(function HintGroup({
+  category,
+  hints,
+  colors,
+}: HintGroupProps): React.ReactElement {
+  const categoryColor = getCategoryColor(category, colors);
+  const icon = CATEGORY_ICONS[category];
+
+  return (
+    <Box gap={0}>
+      <Text color={categoryColor}>{icon}</Text>
+      {hints.map((hint, idx) => (
+        <Box key={hint.key} gap={0}>
+          <Text color={categoryColor} bold>[{hint.key}]</Text>
+          <Text color={colors.textDim}>{hint.action}</Text>
+          {idx < hints.length - 1 && <Text color={colors.textMuted}>·</Text>}
+        </Box>
+      ))}
+    </Box>
+  );
+});
+
+// Modal overlay set for faster lookup
+const MODAL_OVERLAYS = new Set([
+  'analysisMenu', 'simulationHub', 'commandPalette',
+  'comparison', 'phasePortrait', 'help', 'search'
+]);
+
+// Data overlay set for faster lookup
+const DATA_OVERLAYS = new Set([
+  'gcSkew', 'complexity', 'bendability', 'promoter', 'repeats',
+  'kmerAnomaly', 'modules', 'pressure', 'transcriptionFlow', 'hgt'
+]);
+
+export const Footer = memo(function Footer(): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const viewMode = usePhageStore(s => s.viewMode);
   const overlays = usePhageStore(s => s.overlays);
   const experienceLevel = usePhageStore(s => s.experienceLevel);
 
-  // Find active modal (top-level menu-like overlay)
-  const modal = (() => {
+  const colors = theme.colors;
+
+  // Memoize modal lookup
+  const modal = useMemo(() => {
     for (let i = overlays.length - 1; i >= 0; i--) {
       const o = overlays[i];
-      if (
-        o === 'analysisMenu' ||
-        o === 'simulationHub' ||
-        o === 'commandPalette' ||
-        o === 'comparison' ||
-        o === 'phasePortrait' ||
-        o === 'help' ||
-        o === 'search'
-      ) {
+      if (MODAL_OVERLAYS.has(o)) {
         return o;
       }
     }
     return null;
-  })();
+  }, [overlays]);
 
-  const colors = theme.colors;
-
-  // Active data overlays
-  const dataOverlays = overlays.filter(o =>
-    ['gcSkew', 'complexity', 'bendability', 'promoter', 'repeats', 'kmerAnomaly', 'modules', 'pressure', 'transcriptionFlow', 'hgt'].includes(o)
+  // Memoize active data overlays
+  const dataOverlays = useMemo(
+    () => overlays.filter(o => DATA_OVERLAYS.has(o)),
+    [overlays]
   );
 
-  // Build key hints based on experience level
-  const keyHints: KeyHint[] = [
+  // Memoize key hints based on experience level and viewMode
+  const keyHints = useMemo((): KeyHint[] => [
     // Navigation (always shown)
     { key: '↑↓', action: 'phage', category: 'navigation' },
     { key: '←→', action: 'scroll', category: 'navigation' },
@@ -136,34 +170,16 @@ export function Footer(): React.ReactElement {
     { key: 'W', action: 'compare', category: 'overlay' },
     { key: 'S', action: 'search', category: 'overlay' },
     { key: 'F1', action: 'help', category: 'system' },
-  ];
+  ], [viewMode, experienceLevel]);
 
-  // Group hints by category
-  const groupedHints = groupHintsByCategory(keyHints);
-
-  // Separator element
-  const Separator = () => (
-    <Text color={colors.separator ?? colors.textMuted}>│</Text>
+  // Memoize grouped hints
+  const groupedHints = useMemo(
+    () => groupHintsByCategory(keyHints),
+    [keyHints]
   );
 
-  // Render a hint group
-  const renderHintGroup = (category: HintCategory, hints: KeyHint[]) => {
-    const categoryColor = getCategoryColor(category, colors);
-    const icon = CATEGORY_ICONS[category];
-
-    return (
-      <Box key={category} gap={0}>
-        <Text color={categoryColor}>{icon}</Text>
-        {hints.map((hint, idx) => (
-          <Box key={hint.key} gap={0}>
-            <Text color={categoryColor} bold>[{hint.key}]</Text>
-            <Text color={colors.textDim}>{hint.action}</Text>
-            {idx < hints.length - 1 && <Text color={colors.textMuted}>·</Text>}
-          </Box>
-        ))}
-      </Box>
-    );
-  };
+  // Memoize separator color
+  const separatorColorValue = colors.separator ?? colors.textMuted;
 
   return (
     <Box
@@ -176,8 +192,10 @@ export function Footer(): React.ReactElement {
       <Box gap={1} flexWrap="wrap">
         {Array.from(groupedHints.entries()).map(([category, hints], idx) => (
           <Box key={category} gap={1}>
-            {renderHintGroup(category, hints)}
-            {idx < groupedHints.size - 1 && <Separator />}
+            <HintGroup category={category} hints={hints} colors={colors} />
+            {idx < groupedHints.size - 1 && (
+              <Text color={separatorColorValue}>│</Text>
+            )}
           </Box>
         ))}
       </Box>
@@ -225,4 +243,4 @@ export function Footer(): React.ReactElement {
       </Box>
     </Box>
   );
-}
+});
