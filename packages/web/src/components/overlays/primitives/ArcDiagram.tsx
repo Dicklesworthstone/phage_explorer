@@ -64,7 +64,7 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       ctx.beginPath();
       const color = link.color ?? theme.colors.accent;
       ctx.strokeStyle = color;
-      ctx.lineWidth = Math.max(1, thickness * (link.value > 0 ? Math.log1p(link.value) : 1));
+      ctx.lineWidth = Math.max(1, thickness * ((link.weight ?? 0) > 0 ? Math.log1p(link.weight ?? 1) : 1));
       ctx.moveTo(x1, yBase);
       ctx.quadraticCurveTo((x1 + x2) / 2, yBase - arcHeight, x2, yBase);
       ctx.stroke();

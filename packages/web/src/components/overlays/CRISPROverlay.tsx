@@ -282,8 +282,9 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
                 height={40}
                 onHover={setHoverInfo}
                 onClick={(info) => {
-                  if (info.segment?.data && 'sequence' in info.segment.data) {
-                    setSelectedHit(info.segment.data as SpacerHit);
+                  const data = info.segment?.data;
+                  if (data && typeof data === 'object' && 'sequence' in data) {
+                    setSelectedHit(data as SpacerHit);
                   }
                 }}
                 ariaLabel="Spacer hit track"

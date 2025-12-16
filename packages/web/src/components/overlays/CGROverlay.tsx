@@ -10,6 +10,7 @@ import type { PhageFull } from '@phage-explorer/core';
 import { computeCGR } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
+import type { ThemePalette } from '../../theme/types';
 import { useHotkey } from '../../hooks';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
@@ -362,7 +363,7 @@ function StatCard({
 }: {
   label: string;
   value: string;
-  colors: Record<string, string>;
+  colors: ThemePalette;
 }): React.ReactElement {
   return (
     <div

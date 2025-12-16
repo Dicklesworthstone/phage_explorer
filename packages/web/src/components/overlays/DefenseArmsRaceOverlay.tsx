@@ -139,7 +139,7 @@ export function DefenseArmsRaceOverlay({
           color: getDefenseColor(sys.systemType),
           height: 16,
           data: sys,
-        };
+        } as GenomeTrackSegment;
       })
       .filter((segment): segment is GenomeTrackSegment => segment !== null);
   }, [filteredSystems, currentPhage]);
@@ -247,7 +247,7 @@ export function DefenseArmsRaceOverlay({
             </div>
 
             {/* Genome track */}
-            {currentPhage && (
+            {currentPhage && currentPhage.genomeLength && (
               <div>
                 <div style={{ fontSize: '0.75rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
                   Defense Gene Distribution

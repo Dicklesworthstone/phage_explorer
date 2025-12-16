@@ -580,9 +580,9 @@ export function StructureConstraintOverlay({
               )}
 
               {/* Hover tooltip */}
-              {hoverInfo?.segment?.data && (() => {
+              {hoverInfo?.segment?.data ? (() => {
                 const data = hoverInfo.segment.data;
-                if ('type' in data) {
+                if (typeof data === 'object' && data !== null && 'type' in data) {
                   const element = data as RNAElement;
                   return (
                     <div
@@ -604,7 +604,7 @@ export function StructureConstraintOverlay({
                       <ElementTooltip element={element} colors={colors} />
                     </div>
                   );
-                } else if ('energy' in data) {
+                } else if (typeof data === 'object' && data !== null && 'energy' in data) {
                   const energyData = data as { energy: number; position: number };
                   return (
                     <div
@@ -633,7 +633,7 @@ export function StructureConstraintOverlay({
                   );
                 }
                 return null;
-              })()}
+              })() : null}
             </div>
 
             {/* Summary stats */}

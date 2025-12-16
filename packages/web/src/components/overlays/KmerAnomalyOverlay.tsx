@@ -118,7 +118,8 @@ export function KmerAnomalyOverlay({ sequence = '' }: KmerAnomalyOverlayProps): 
 
   // Draw heatmap
   useEffect(() => {
-    if (!isOpen('kmerAnomaly') || !canvasRef.current || results.length === 0) return;
+    // Need at least 2 data points to draw lines and avoid division by zero
+    if (!isOpen('kmerAnomaly') || !canvasRef.current || results.length < 2) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');

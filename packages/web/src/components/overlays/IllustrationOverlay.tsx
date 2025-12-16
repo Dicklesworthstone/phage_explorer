@@ -4,9 +4,9 @@
  * Displays phage structural diagrams in a large, zoomable overlay.
  * Features:
  * - Full-screen black background for optimal viewing
- * - Pinch-to-zoom and drag to pan
+ * - Scroll wheel to zoom, drag to pan
  * - Download button for educational use
- * - Keyboard navigation (arrow keys to zoom, Escape to close)
+ * - Keyboard navigation (+/- to zoom, 0 to reset, Escape to close)
  */
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
@@ -27,16 +27,18 @@ export function IllustrationOverlay(): React.ReactElement | null {
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0 });
   const positionStart = useRef({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const illustration = overlayData.illustration as IllustrationData | undefined;
+  const illustrationIsOpen = isOpen('illustration');
 
   // Reset zoom and position when overlay opens
   useEffect(() => {
-    if (isOpen('illustration')) {
+    if (illustrationIsOpen) {
       setScale(1);
       setPosition({ x: 0, y: 0 });
     }
-  }, [isOpen]);
+  }, [illustrationIsOpen]);
 
   const handleZoomIn = useCallback(() => {
     setScale((s) => Math.min(s * 1.25, 4));
@@ -82,11 +84,21 @@ export function IllustrationOverlay(): React.ReactElement | null {
     setIsDragging(false);
   }, []);
 
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setScale((s) => Math.min(Math.max(s * delta, 0.5), 4));
-  }, []);
+  // Wheel handler needs native event listener with passive: false to allow preventDefault
+  // Depends on illustration so it re-runs when the overlay content becomes available
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 0.9 : 1.1;
+      setScale((s) => Math.min(Math.max(s * delta, 0.5), 4));
+    };
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [illustration]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     switch (e.key) {
@@ -194,6 +206,7 @@ export function IllustrationOverlay(): React.ReactElement | null {
 
         {/* Image container */}
         <div
+          ref={containerRef}
           style={{
             flex: 1,
             backgroundColor: '#000',
@@ -206,7 +219,6 @@ export function IllustrationOverlay(): React.ReactElement | null {
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
-          onWheel={handleWheel}
         >
           <img
             src={illustration.path}

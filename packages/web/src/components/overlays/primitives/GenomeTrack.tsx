@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../../../hooks/useTheme';
 import type { GenomeTrackInteraction, GenomeTrackSegment } from './types';
 
-interface GenomeTrackProps {
+export interface GenomeTrackProps {
   genomeLength: number;
   segments: GenomeTrackSegment[];
   width?: number;

@@ -98,7 +98,8 @@ export function ComplexityOverlay({ sequence = '' }: ComplexityOverlayProps): Re
 
   // Draw the visualization
   useEffect(() => {
-    if (!isOpen('complexity') || !canvasRef.current || entropy.length === 0) return;
+    // Need at least 2 data points to draw lines and avoid division by zero
+    if (!isOpen('complexity') || !canvasRef.current || entropy.length < 2) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');

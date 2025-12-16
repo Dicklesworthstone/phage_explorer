@@ -16,13 +16,15 @@ import {
   type ReceptorCandidate,
   type TropismPredictionInput,
 } from '@phage-explorer/comparison';
-import type { TropismPrediction } from '@phage-explorer/db-runtime';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import type { PhageRepository } from '../../db';
 
 type LoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+// Type matching PhageFull.tropismPredictions entries (without phageId)
+type TropismPredictionEntry = NonNullable<PhageFull['tropismPredictions']>[number];
 
 interface TropismOverlayProps {
   repository: PhageRepository | null;
@@ -129,7 +131,7 @@ function PredictionRow({ hit, colors }: { hit: TailFiberHit; colors: ReturnType<
   );
 }
 
-function toPredictionInputs(phage: PhageFull, preds: TropismPrediction[]): TropismPredictionInput[] {
+function toPredictionInputs(phage: PhageFull, preds: TropismPredictionEntry[]): TropismPredictionInput[] {
   const genes = phage.genes ?? [];
   const byId = new Map<number, GeneInfo>();
   const byLocus = new Map<string, GeneInfo>();

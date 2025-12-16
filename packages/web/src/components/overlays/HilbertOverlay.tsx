@@ -12,6 +12,7 @@ import type { PhageFull, Theme } from '@phage-explorer/core';
 import { getNucleotideColor } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
+import type { ThemePalette } from '../../theme/types';
 import { useHotkey } from '../../hooks';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
@@ -136,7 +137,7 @@ const [colorMode, setColorMode] = useState<ColorMode>('nucleotide');
     { modes: ['NORMAL'], category: 'Analysis', minLevel: 'intermediate' }
   );
 
-  // Fetch full genome when overlay opens
+  // Initialize web worker on mount
   useEffect(() => {
     if (workerRef.current) return () => undefined;
 
@@ -455,7 +456,7 @@ function StatCard({
 }: {
   label: string;
   value: string;
-  colors: Record<string, string>;
+  colors: ThemePalette;
 }): React.ReactElement {
   return (
     <div

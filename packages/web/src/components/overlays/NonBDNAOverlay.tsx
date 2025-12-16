@@ -544,7 +544,7 @@ export function NonBDNAOverlay({
               )}
 
               {/* Hover tooltip */}
-              {hoverInfo?.segment?.data && (() => {
+              {hoverInfo?.segment?.data ? (() => {
                 const structure = hoverInfo.segment.data as NonBDNAStructure;
                 return (
                   <div
@@ -566,7 +566,7 @@ export function NonBDNAOverlay({
                     <StructureTooltip structure={structure} colors={colors} />
                   </div>
                 );
-              })()}
+              })() : null}
             </div>
 
             {/* Summary stats */}

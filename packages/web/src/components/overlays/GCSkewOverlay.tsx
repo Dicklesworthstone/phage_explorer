@@ -95,7 +95,8 @@ export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.Reac
 
   // Draw the sparkline
   useEffect(() => {
-    if (!isOpen('gcSkew') || !canvasRef.current || cumulative.length === 0) return;
+    // Need at least 2 data points to draw a line and avoid division by zero
+    if (!isOpen('gcSkew') || !canvasRef.current || cumulative.length < 2) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -289,13 +290,15 @@ export function GCSkewOverlay({ sequence = '' }: GCSkewOverlayProps): React.Reac
         </div>
 
         {/* No data message */}
-        {sequence.length === 0 && (
+        {(sequence.length === 0 || cumulative.length < 2) && (
           <div style={{
             textAlign: 'center',
             padding: '2rem',
             color: colors.textMuted,
           }}>
-            No sequence data available. Select a phage to analyze.
+            {sequence.length === 0
+              ? 'No sequence data available. Select a phage to analyze.'
+              : 'Sequence too short for GC skew analysis (requires > 1000 bp).'}
           </div>
         )}
       </div>

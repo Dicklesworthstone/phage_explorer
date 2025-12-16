@@ -127,7 +127,7 @@ export function AMGPathwayOverlay({
           color: getAmgColor(amg.amgType),
           height: 16,
           data: amg,
-        };
+        } as GenomeTrackSegment;
       })
       .filter((segment): segment is GenomeTrackSegment => segment !== null);
   }, [filteredAmgs, currentPhage]);
@@ -259,7 +259,7 @@ export function AMGPathwayOverlay({
             </div>
 
             {/* Genome track */}
-            {currentPhage && (
+            {currentPhage && currentPhage.genomeLength && (
               <div>
                 <div style={{ fontSize: '0.75rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
                   AMG Distribution

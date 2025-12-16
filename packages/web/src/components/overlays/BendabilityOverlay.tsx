@@ -68,7 +68,8 @@ export function BendabilityOverlay({ sequence = '' }: BendabilityOverlayProps): 
 
   // Draw visualization
   useEffect(() => {
-    if (!isOpen('bendability') || !canvasRef.current || bendability.length === 0) return;
+    // Need at least 2 data points to draw lines and avoid division by zero
+    if (!isOpen('bendability') || !canvasRef.current || bendability.length < 2) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');

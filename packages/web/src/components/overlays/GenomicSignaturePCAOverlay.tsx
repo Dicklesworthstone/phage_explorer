@@ -120,7 +120,7 @@ export function GenomicSignaturePCAOverlay({
 
       try {
         // Get all phage metadata
-        const allPhages = await repository!.getAllPhages();
+        const allPhages = await repository!.listPhages();
 
         if (cancelled) return;
 

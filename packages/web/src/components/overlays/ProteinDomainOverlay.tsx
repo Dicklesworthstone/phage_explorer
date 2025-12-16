@@ -143,7 +143,7 @@ export function ProteinDomainOverlay({
           color: getDomainColor(domain.domainType),
           height: 16,
           data: domain,
-        };
+        } as GenomeTrackSegment;
       })
       .filter((segment): segment is GenomeTrackSegment => segment !== null);
   }, [filteredDomains, currentPhage]);
@@ -241,7 +241,7 @@ export function ProteinDomainOverlay({
             </div>
 
             {/* Genome track visualization */}
-            {currentPhage && (
+            {currentPhage && currentPhage.genomeLength && (
               <div>
                 <div style={{ fontSize: '0.75rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
                   Domain Distribution
