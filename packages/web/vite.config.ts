@@ -41,6 +41,9 @@ export default defineConfig({
       crypto: resolveFromRoot('web/src/shims/empty.ts'),
     },
   },
+  worker: {
+    format: 'es',
+  },
   build: {
     target: 'es2022',
     sourcemap: true,
