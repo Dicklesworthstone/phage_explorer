@@ -7,3 +7,4 @@ export { VirtualScroller, type VirtualScrollerOptions, type VisibleRange, type S
 export { CanvasSequenceGridRenderer, type SequenceGridOptions, type GridRenderState, type ZoomLevel, type ZoomPreset } from './CanvasSequenceGridRenderer';
 export { GeneMapRenderer, type GeneMapOptions, type GeneMapState } from './GeneMapRenderer';
 export { PostProcessPipeline, type PostProcessOptions } from './PostProcessPipeline';
+export { DiffSequenceSource, type DiffCode, type DiffStats, type DiffPosition } from './DiffSequenceSource';

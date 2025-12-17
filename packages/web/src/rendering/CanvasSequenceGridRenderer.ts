@@ -791,13 +791,15 @@ export class CanvasSequenceGridRenderer {
           // Collect for batch text rendering
           if (shouldDrawDiffText) {
             let fillStyle: string;
+            // For deletions (gaps), show gap marker character
+            const displayChar = diffCode === 3 ? '−' : char;
             switch (diffCode) {
               case 1: fillStyle = this.theme.colors.diffHighlight ?? '#facc15'; break;
               case 2: fillStyle = '#22c55e'; break;
               case 3: fillStyle = '#ef4444'; break;
               default: fillStyle = this.theme.colors.diffHighlight ?? '#facc15';
             }
-            diffCells.push({ x, y: rowY, char, fillStyle });
+            diffCells.push({ x, y: rowY, char: displayChar, fillStyle });
           }
         } else {
           // Flush pending diff run if we hit non-diff
@@ -808,10 +810,20 @@ export class CanvasSequenceGridRenderer {
             pendingDiffType = 0;
           }
 
+          // In diff mode, render matched bases with reduced opacity (dimmed)
+          if (diffEnabled) {
+            ctx.save();
+            ctx.globalAlpha = 0.5;
+          }
+
           if (drawAmino) {
             this.glyphAtlas.drawAminoAcid(ctx, char, x, rowY, cellWidth, cellHeight);
           } else {
             this.glyphAtlas.drawNucleotide(ctx, char, x, rowY, cellWidth, cellHeight);
+          }
+
+          if (diffEnabled) {
+            ctx.restore();
           }
         }
       }
@@ -930,6 +942,16 @@ export class CanvasSequenceGridRenderer {
             pendingDiffStartCol = col;
             pendingDiffType = diffCode;
           }
+          // Draw gap marker for deletions in dual mode
+          if (diffCode === 3 && cellWidth >= 10) {
+            ctx.save();
+            ctx.font = `bold ${Math.floor(cellHeight * 0.7)}px 'JetBrains Mono', monospace`;
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('−', x + cellWidth / 2, rowY + cellHeight / 2);
+            ctx.restore();
+          }
         } else {
           if (pendingDiffStartCol !== -1) {
             const runWidth = (col - pendingDiffStartCol) * cellWidth;
@@ -937,7 +959,15 @@ export class CanvasSequenceGridRenderer {
             pendingDiffStartCol = -1;
             pendingDiffType = 0;
           }
+          // In diff mode, render matched bases with reduced opacity (dimmed)
+          if (diffEnabled) {
+            ctx.save();
+            ctx.globalAlpha = 0.5;
+          }
           this.glyphAtlas.drawNucleotide(ctx, char, x, rowY, cellWidth, cellHeight);
+          if (diffEnabled) {
+            ctx.restore();
+          }
         }
       }
       if (pendingDiffStartCol !== -1) {
