@@ -85,11 +85,11 @@ packages/web/audit-ui.ts
 **/target/
 **/.cargo/
 **/wasm-pack.log
-**/*.wasm
 **/*.rmeta
 **/*.rlib
 packages/wasm-compute/target/
-packages/wasm-compute/pkg/
 packages/wasm-compute/node_modules/
+# Allow wasm-compute pkg/ to be tracked for Vercel deployment
+!packages/wasm-compute/pkg/
 .vercel
 .env*.local
