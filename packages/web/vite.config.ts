@@ -1,12 +1,52 @@
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
 
 const resolveFromRoot = (relativePath: string) =>
   path.resolve(__dirname, '..', relativePath);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      // Use custom service worker with Workbox strategies
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
+      injectRegister: false, // We register manually in registerSW.ts
+      injectManifest: {
+        // Include all build assets in precache
+        globPatterns: ['**/*.{js,css,html,woff2,wasm}'],
+        // Exclude workers from main precache (they're loaded on demand)
+        globIgnores: ['**/node_modules/**', '**/*.worker.js'],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024, // 5MB for database
+      },
+      devOptions: {
+        enabled: false, // Disable in dev to avoid caching issues
+      },
+      manifest: {
+        name: 'Phage Explorer',
+        short_name: 'PhageExp',
+        description: 'Explore bacteriophage genomes with interactive visualization',
+        theme_color: '#00ff41',
+        background_color: '#0a0a0a',
+        display: 'standalone',
+        icons: [
+          {
+            src: '/icons/icon-192.png',
+            sizes: '192x192',
+            type: 'image/png',
+          },
+          {
+            src: '/icons/icon-512.png',
+            sizes: '512x512',
+            type: 'image/png',
+          },
+        ],
+      },
+    }),
+  ],
   server: {
     headers: {
       // Enable SharedArrayBuffer for local development
