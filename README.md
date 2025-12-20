@@ -201,7 +201,7 @@ phage-explorer/
 
 ---
 
-## UI Design System (for contributors)
+## UI Design System
 
 To keep 31+ planned features coherent, Phage Explorer follows a lightweight design system tailored for text UIs:
 
@@ -361,13 +361,12 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 ---
 
-## Contributing
+## Development
 
-1. Fork and clone the repository
-2. `bun install` to set up dependencies
-3. `bun run build:db` to create the database
-4. `bun run dev` to run the TUI
-5. Make changes and run `bun run check` before submitting
+1. `bun install` to set up dependencies
+2. `bun run build:db` to create the database
+3. `bun run dev` to run the TUI
+4. Run `bun run check` before committing changes
 
 ---
 
