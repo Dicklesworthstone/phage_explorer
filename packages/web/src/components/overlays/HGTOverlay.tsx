@@ -1,14 +1,16 @@
 /**
- * HGTOverlay - Horizontal Gene Transfer Island Detection
+ * HGTOverlay - Horizontal Gene Transfer Provenance Tracer
  *
- * Visualizes potential HGT islands using compositional analysis:
+ * Enhanced HGT island detection with "passport stamp" visualization:
  * - GC% deviation from genome average
- * - Dinucleotide bias anomalies
- * - Composite HGT probability scoring
+ * - Dinucleotide bias anomalies (Karlin signature)
+ * - Donor lineage inference via k-mer similarity
+ * - Hallmark gene detection (integrase, transposase, etc.)
+ * - Amelioration timing (recent/intermediate/ancient)
  */
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -19,12 +21,32 @@ import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
-import { computeDinucleotideFrequencies } from '@phage-explorer/core';
+import {
+  analyzeHGTProvenance,
+  type HGTAnalysis,
+  type PassportStamp,
+} from '@phage-explorer/comparison';
 
-// HGT probability thresholds
-const HGT_LOW = 30;
-const HGT_MEDIUM = 50;
-const HGT_HIGH = 70;
+// Amelioration-based colors (time since transfer)
+type Amelioration = 'recent' | 'intermediate' | 'ancient' | 'unknown';
+
+function ameliorationColor(amelioration: Amelioration): string {
+  switch (amelioration) {
+    case 'recent': return '#ef4444';      // Red - recently acquired
+    case 'intermediate': return '#f59e0b'; // Orange - some time ago
+    case 'ancient': return '#22c55e';      // Green - well-integrated
+    default: return '#6b7280';             // Gray - unknown
+  }
+}
+
+function ameliorationLabel(amelioration: Amelioration): string {
+  switch (amelioration) {
+    case 'recent': return 'Recently acquired (strong GC deviation)';
+    case 'intermediate': return 'Intermediate age (moderate deviation)';
+    case 'ancient': return 'Ancient transfer (mostly ameliorated)';
+    default: return 'Unknown timing';
+  }
+}
 
 // Calculate GC content of a sequence
 function calculateGC(seq: string): number {
@@ -40,172 +62,12 @@ function calculateGC(seq: string): number {
   return total > 0 ? gc / total : 0.5;
 }
 
-// Calculate dinucleotide relative abundance (ρ-statistic / Karlin signature)
-function calculateKarlinSignature(
-  windowFreqs: number[],
-  genomeFreqs: number[]
-): number {
-  let sumDiff = 0;
-  for (let i = 0; i < windowFreqs.length; i++) {
-    const expected = genomeFreqs[i];
-    const observed = windowFreqs[i];
-    if (expected > 0.001) {
-      sumDiff += Math.abs(observed - expected);
-    }
-  }
-  return sumDiff;
-}
-
-// HGT island detection result
-interface HGTIsland {
-  start: number;
-  end: number;
-  gcDeviation: number;
-  karlinDeviation: number;
-  hgtScore: number;
-  features: string[];
-}
-
-// Window analysis result
-interface WindowAnalysis {
-  start: number;
-  end: number;
-  gc: number;
-  gcDeviation: number;
-  karlinDeviation: number;
-}
-
-// Analyze genome for HGT islands
-function analyzeHGT(
-  sequence: string,
-  windowSize: number,
-  stepSize: number
-): { windows: WindowAnalysis[]; islands: HGTIsland[]; genomeGC: number } {
-  if (sequence.length < windowSize * 2) {
-    return { windows: [], islands: [], genomeGC: 0.5 };
-  }
-
-  const genomeGC = calculateGC(sequence);
-  const genomeFreqs = computeDinucleotideFrequencies(sequence);
-
-  // Sliding window analysis
-  const windows: WindowAnalysis[] = [];
-  for (let start = 0; start + windowSize <= sequence.length; start += stepSize) {
-    const windowSeq = sequence.slice(start, start + windowSize);
-    const gc = calculateGC(windowSeq);
-    const gcDeviation = gc - genomeGC;
-    const windowFreqs = computeDinucleotideFrequencies(windowSeq);
-    const karlinDeviation = calculateKarlinSignature(windowFreqs, genomeFreqs);
-
-    windows.push({
-      start,
-      end: start + windowSize,
-      gc,
-      gcDeviation,
-      karlinDeviation,
-    });
-  }
-
-  // Detect islands by finding runs of anomalous windows
-  const islands: HGTIsland[] = [];
-  let islandStart: number | null = null;
-  let islandWindows: WindowAnalysis[] = [];
-
-  // Compute thresholds (mean + 2*std)
-  const gcDeviations = windows.map((w) => Math.abs(w.gcDeviation));
-  const karlinDeviations = windows.map((w) => w.karlinDeviation);
-
-  const gcMean = gcDeviations.reduce((a, b) => a + b, 0) / gcDeviations.length;
-  const gcStd = Math.sqrt(
-    gcDeviations.reduce((a, b) => a + Math.pow(b - gcMean, 2), 0) / gcDeviations.length
-  );
-  const gcThreshold = gcMean + 1.5 * gcStd;
-
-  const karlinMean = karlinDeviations.reduce((a, b) => a + b, 0) / karlinDeviations.length;
-  const karlinStd = Math.sqrt(
-    karlinDeviations.reduce((a, b) => a + Math.pow(b - karlinMean, 2), 0) / karlinDeviations.length
-  );
-  const karlinThreshold = karlinMean + 1.5 * karlinStd;
-
-  for (const w of windows) {
-    const isAnomalous =
-      Math.abs(w.gcDeviation) > gcThreshold || w.karlinDeviation > karlinThreshold;
-
-    if (isAnomalous) {
-      if (islandStart === null) {
-        islandStart = w.start;
-        islandWindows = [w];
-      } else {
-        islandWindows.push(w);
-      }
-    } else if (islandStart !== null) {
-      // End of island
-      const avgGcDev =
-        islandWindows.reduce((a, b) => a + Math.abs(b.gcDeviation), 0) / islandWindows.length;
-      const avgKarlin =
-        islandWindows.reduce((a, b) => a + b.karlinDeviation, 0) / islandWindows.length;
-
-      // Calculate HGT score (0-100)
-      const gcScore = Math.min(100, (avgGcDev / 0.1) * 30); // 30% weight
-      const karlinScore = Math.min(100, (avgKarlin / 0.5) * 30); // 30% weight
-      const lengthBonus = Math.min(20, islandWindows.length * 2); // Length bonus
-      const hgtScore = Math.min(100, gcScore + karlinScore + lengthBonus);
-
-      if (hgtScore >= HGT_LOW) {
-        islands.push({
-          start: islandStart,
-          end: islandWindows[islandWindows.length - 1].end,
-          gcDeviation: avgGcDev,
-          karlinDeviation: avgKarlin,
-          hgtScore,
-          features: [],
-        });
-      }
-
-      islandStart = null;
-      islandWindows = [];
-    }
-  }
-
-  // Handle trailing island
-  if (islandStart !== null && islandWindows.length > 0) {
-    const avgGcDev =
-      islandWindows.reduce((a, b) => a + Math.abs(b.gcDeviation), 0) / islandWindows.length;
-    const avgKarlin =
-      islandWindows.reduce((a, b) => a + b.karlinDeviation, 0) / islandWindows.length;
-    const gcScore = Math.min(100, (avgGcDev / 0.1) * 30);
-    const karlinScore = Math.min(100, (avgKarlin / 0.5) * 30);
-    const lengthBonus = Math.min(20, islandWindows.length * 2);
-    const hgtScore = Math.min(100, gcScore + karlinScore + lengthBonus);
-
-    if (hgtScore >= HGT_LOW) {
-      islands.push({
-        start: islandStart,
-        end: islandWindows[islandWindows.length - 1].end,
-        gcDeviation: avgGcDev,
-        karlinDeviation: avgKarlin,
-        hgtScore,
-        features: [],
-      });
-    }
-  }
-
-  return { windows, islands, genomeGC };
-}
-
-// Get color for HGT score
-function hgtScoreColor(score: number): string {
-  if (score >= HGT_HIGH) return '#ef4444'; // Red - high probability
-  if (score >= HGT_MEDIUM) return '#f59e0b'; // Orange - medium
-  return '#22c55e'; // Green - low
-}
-
 // Get color for GC deviation
 function gcDeviationColor(deviation: number): string {
   const absDeviation = Math.abs(deviation);
-  if (absDeviation > 0.08) return deviation > 0 ? '#3b82f6' : '#ef4444'; // Strong deviation
-  if (absDeviation > 0.04) return deviation > 0 ? '#60a5fa' : '#f87171'; // Moderate
-  return '#9ca3af'; // Normal
+  if (absDeviation > 0.08) return deviation > 0 ? '#3b82f6' : '#ef4444';
+  if (absDeviation > 0.04) return deviation > 0 ? '#60a5fa' : '#f87171';
+  return '#9ca3af';
 }
 
 interface HGTOverlayProps {
@@ -213,41 +75,158 @@ interface HGTOverlayProps {
   currentPhage: PhageFull | null;
 }
 
-// Tooltip component for island details
-function IslandTooltip({
-  island,
+// Passport Stamp card for provenance view
+function PassportStampCard({
+  stamp,
   colors,
+  onClose,
 }: {
-  island: HGTIsland;
-  colors: { textMuted: string; textDim: string };
+  stamp: PassportStamp;
+  colors: { text: string; textMuted: string; textDim: string; backgroundAlt: string; accent: string };
+  onClose: () => void;
 }): React.ReactElement {
+  const island = stamp.island;
+  const amelColor = ameliorationColor(stamp.amelioration);
+
   return (
-    <>
-      <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
-        Putative HGT Island
+    <div
+      style={{
+        padding: '0.75rem',
+        backgroundColor: colors.backgroundAlt,
+        border: `2px solid ${amelColor}`,
+        borderRadius: '6px',
+        fontSize: '0.8rem',
+      }}
+    >
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.5rem' }}>
+        <div>
+          <div style={{ fontWeight: 'bold', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            Passport Stamp
+            <span
+              style={{
+                fontSize: '0.7rem',
+                padding: '0.1rem 0.4rem',
+                backgroundColor: amelColor,
+                color: '#fff',
+                borderRadius: '3px',
+              }}
+            >
+              {stamp.amelioration.toUpperCase()}
+            </span>
+          </div>
+          <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>
+            {island.start.toLocaleString()} - {island.end.toLocaleString()} bp ({((island.end - island.start) / 1000).toFixed(1)} kb)
+          </div>
+        </div>
+        <button
+          onClick={onClose}
+          style={{ background: 'none', border: 'none', color: colors.textMuted, cursor: 'pointer', fontSize: '1rem' }}
+        >
+          x
+        </button>
       </div>
-      <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
-        Position: {island.start.toLocaleString()} - {island.end.toLocaleString()} bp
+
+      {/* GC & Compositional Info */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '0.5rem' }}>
+        <div>
+          <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>GC Content</div>
+          <div style={{ fontWeight: 'bold' }}>
+            {island.gc.toFixed(1)}%
+            <span style={{ color: stamp.gcDelta > 0 ? '#3b82f6' : '#ef4444', marginLeft: '0.25rem' }}>
+              ({stamp.gcDelta > 0 ? '+' : ''}{stamp.gcDelta.toFixed(1)}% vs genome)
+            </span>
+          </div>
+        </div>
+        <div>
+          <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>Z-Score</div>
+          <div style={{ fontWeight: 'bold' }}>{island.zScore.toFixed(2)}</div>
+        </div>
       </div>
-      <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
-        Size: {(island.end - island.start).toLocaleString()} bp
+
+      {/* Amelioration Timing */}
+      <div style={{ marginBottom: '0.5rem' }}>
+        <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>Transfer Timing</div>
+        <div style={{ color: amelColor, fontWeight: 'bold' }}>
+          {ameliorationLabel(stamp.amelioration)}
+        </div>
       </div>
-      <div
-        style={{
-          marginTop: '0.25rem',
-          color: hgtScoreColor(island.hgtScore),
-          fontWeight: 'bold',
-        }}
-      >
-        HGT Score: {island.hgtScore.toFixed(0)}/100
-      </div>
-      <div style={{ color: colors.textDim, fontSize: '0.7rem' }}>
-        GC deviation: {(island.gcDeviation * 100).toFixed(1)}%
-      </div>
-      <div style={{ color: colors.textDim, fontSize: '0.7rem' }}>
-        Karlin σ: {island.karlinDeviation.toFixed(3)}
-      </div>
-    </>
+
+      {/* Donor Candidates */}
+      {stamp.donorDistribution.length > 0 && (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <div style={{ color: colors.textMuted, fontSize: '0.7rem', marginBottom: '0.25rem' }}>
+            Putative Donors (k-mer similarity)
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+            {stamp.donorDistribution.slice(0, 3).map((d, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div
+                  style={{
+                    width: `${Math.max(20, d.similarity * 100)}%`,
+                    height: '8px',
+                    backgroundColor: d.confidence === 'high' ? '#22c55e' : d.confidence === 'medium' ? '#f59e0b' : '#6b7280',
+                    borderRadius: '2px',
+                  }}
+                />
+                <span style={{ fontSize: '0.7rem' }}>
+                  {d.taxon} ({(d.similarity * 100).toFixed(0)}%)
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Hallmark Genes */}
+      {stamp.hallmarks.length > 0 && (
+        <div style={{ marginBottom: '0.5rem' }}>
+          <div style={{ color: colors.textMuted, fontSize: '0.7rem', marginBottom: '0.25rem' }}>
+            Hallmark Genes ({stamp.hallmarks.length})
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+            {stamp.hallmarks.slice(0, 5).map((h, i) => (
+              <span
+                key={i}
+                style={{
+                  fontSize: '0.65rem',
+                  padding: '0.1rem 0.3rem',
+                  backgroundColor: colors.accent,
+                  color: '#fff',
+                  borderRadius: '2px',
+                }}
+              >
+                {h.length > 25 ? h.slice(0, 22) + '...' : h}
+              </span>
+            ))}
+            {stamp.hallmarks.length > 5 && (
+              <span style={{ fontSize: '0.65rem', color: colors.textMuted }}>
+                +{stamp.hallmarks.length - 5} more
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Genes in Island */}
+      {island.genes.length > 0 && (
+        <div>
+          <div style={{ color: colors.textMuted, fontSize: '0.7rem', marginBottom: '0.25rem' }}>
+            Genes in Island ({island.genes.length})
+          </div>
+          <div style={{ fontSize: '0.7rem', color: colors.textDim, maxHeight: '4rem', overflowY: 'auto' }}>
+            {island.genes.slice(0, 6).map((g, i) => (
+              <div key={i}>
+                {g.locusTag || g.name || `Gene ${g.id}`}: {g.product || 'hypothetical protein'}
+              </div>
+            ))}
+            {island.genes.length > 6 && (
+              <div style={{ color: colors.textMuted }}>+{island.genes.length - 6} more genes</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -262,15 +241,17 @@ export function HGTOverlay({
   const overlayHelp = getOverlayContext('hgt');
   const windowSelectId = 'hgt-window-size';
   const sequenceCache = useRef<Map<number, string>>(new Map());
+  const genesCache = useRef<Map<number, GeneInfo[]>>(new Map());
+
   const [sequence, setSequence] = useState<string>('');
+  const [genes, setGenes] = useState<GeneInfo[]>([]);
   const [loading, setLoading] = useState(false);
 
   // Analysis parameters
-  const [windowSize, setWindowSize] = useState(500);
-  const [stepSize] = useState(250);
+  const [windowSize, setWindowSize] = useState(2000);
 
-  // Selected island for details
-  const [selectedIsland, setSelectedIsland] = useState<HGTIsland | null>(null);
+  // Selected stamp for details
+  const [selectedStamp, setSelectedStamp] = useState<PassportStamp | null>(null);
 
   // Hover state
   const [hoverInfo, setHoverInfo] = useState<GenomeTrackInteraction | null>(null);
@@ -278,16 +259,17 @@ export function HGTOverlay({
   // Hotkey to toggle overlay (Alt+H)
   useHotkey(
     { key: 'h', modifiers: { alt: true } },
-    'HGT Island Detection',
+    'HGT Provenance Tracer',
     () => toggle('hgt'),
     { modes: ['NORMAL'], category: 'Analysis', minLevel: 'power' }
   );
 
-  // Fetch full genome when overlay opens or phage changes
+  // Fetch full genome and genes when overlay opens or phage changes
   useEffect(() => {
     if (!isOpen('hgt')) return;
     if (!repository || !currentPhage) {
       setSequence('');
+      setGenes([]);
       setLoading(false);
       return;
     }
@@ -295,55 +277,71 @@ export function HGTOverlay({
     const phageId = currentPhage.id;
 
     // Check cache first
-    if (sequenceCache.current.has(phageId)) {
+    if (sequenceCache.current.has(phageId) && genesCache.current.has(phageId)) {
       setSequence(sequenceCache.current.get(phageId) ?? '');
+      setGenes(genesCache.current.get(phageId) ?? []);
       setLoading(false);
       return;
     }
 
     setLoading(true);
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
+    Promise.all([
+      repository.getFullGenomeLength(phageId).then((length: number) => repository.getSequenceWindow(phageId, 0, length)),
+      repository.getGenes(phageId),
+    ])
+      .then(([seq, geneList]) => {
         sequenceCache.current.set(phageId, seq);
+        genesCache.current.set(phageId, geneList);
         setSequence(seq);
+        setGenes(geneList);
       })
-      .catch(() => setSequence(''))
+      .catch(() => {
+        setSequence('');
+        setGenes([]);
+      })
       .finally(() => setLoading(false));
   }, [isOpen, repository, currentPhage]);
 
-  // Run HGT analysis
-  const analysis = useMemo(() => {
+  // Run enhanced HGT provenance analysis
+  const provenanceAnalysis = useMemo((): HGTAnalysis | null => {
     if (!sequence || sequence.length < windowSize * 2) return null;
-    return analyzeHGT(sequence, windowSize, stepSize);
-  }, [sequence, windowSize, stepSize]);
+    return analyzeHGTProvenance(sequence, genes, {}, { window: windowSize, step: windowSize / 2 });
+  }, [sequence, genes, windowSize]);
 
-  // Convert islands to track segments
+  // Convert stamps to track segments (colored by amelioration)
   const islandSegments = useMemo((): GenomeTrackSegment[] => {
-    if (!analysis) return [];
-    return analysis.islands.map((island) => ({
-      start: island.start,
-      end: island.end,
-      label: `HGT Score: ${island.hgtScore.toFixed(0)}`,
-      color: hgtScoreColor(island.hgtScore),
-      height: Math.max(10, Math.min(24, island.hgtScore / 4)),
-      data: island,
+    if (!provenanceAnalysis) return [];
+    return provenanceAnalysis.stamps.map((stamp, idx) => ({
+      start: stamp.island.start,
+      end: stamp.island.end,
+      label: `${stamp.amelioration} (${stamp.hallmarks.length} hallmarks)`,
+      color: ameliorationColor(stamp.amelioration),
+      height: Math.max(12, Math.min(24, 12 + stamp.hallmarks.length * 2)),
+      data: { stamp, idx },
     }));
-  }, [analysis]);
+  }, [provenanceAnalysis]);
 
-  // Convert windows to GC deviation track
+  // Create GC deviation segments from windows
   const gcSegments = useMemo((): GenomeTrackSegment[] => {
-    if (!analysis) return [];
-    return analysis.windows.map((w) => ({
-      start: w.start,
-      end: w.end,
-      label: `GC: ${(w.gc * 100).toFixed(1)}%`,
-      color: gcDeviationColor(w.gcDeviation),
-      height: Math.min(20, Math.abs(w.gcDeviation) * 200),
-      data: w,
-    }));
-  }, [analysis]);
+    if (!sequence || !provenanceAnalysis) return [];
+    const genomeGC = provenanceAnalysis.genomeGC;
+    const step = windowSize / 2;
+    const segments: GenomeTrackSegment[] = [];
+    for (let start = 0; start + windowSize <= sequence.length; start += step) {
+      const windowSeq = sequence.slice(start, start + windowSize);
+      const gc = calculateGC(windowSeq);
+      const deviation = gc - genomeGC / 100;
+      segments.push({
+        start,
+        end: start + windowSize,
+        label: `GC: ${(gc * 100).toFixed(1)}%`,
+        color: gcDeviationColor(deviation),
+        height: Math.min(20, Math.abs(deviation) * 200),
+        data: { gc, deviation },
+      });
+    }
+    return segments;
+  }, [sequence, provenanceAnalysis, windowSize]);
 
   // Handle track hover
   const handleHover = useCallback((info: GenomeTrackInteraction | null) => {
@@ -352,11 +350,8 @@ export function HGTOverlay({
 
   // Handle track click
   const handleClick = useCallback((info: GenomeTrackInteraction) => {
-    if (info.segment?.data) {
-      const island = info.segment.data as HGTIsland;
-      if ('hgtScore' in island) {
-        setSelectedIsland(island);
-      }
+    if (info.segment?.data?.stamp) {
+      setSelectedStamp(info.segment.data.stamp as PassportStamp);
     }
   }, []);
 
@@ -365,7 +360,7 @@ export function HGTOverlay({
   return (
     <Overlay
       id="hgt"
-      title="HGT ISLAND DETECTION"
+      title="HGT PROVENANCE TRACER"
       hotkey="Alt+H"
       size="lg"
     >
@@ -381,26 +376,25 @@ export function HGTOverlay({
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <strong style={{ color: colors.accent }}>HGT Detection</strong>
+            <strong style={{ color: colors.accent }}>HGT Provenance Tracer</strong>
             {beginnerModeEnabled && (
               <InfoButton
                 size="sm"
                 label="Learn about horizontal gene transfer"
-                tooltip={overlayHelp?.summary ?? 'Horizontal gene transfer moves genes between organisms outside of parent-to-offspring inheritance.'}
+                tooltip={overlayHelp?.summary ?? 'HGT moves genes between organisms. This tool creates passport stamps for each island.'}
                 onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'horizontal-gene-transfer')}
               />
             )}
           </div>
           <div>
-            Identifies putative horizontal gene transfer islands based on compositional anomalies.
-            Regions with atypical GC content or dinucleotide bias may indicate recent acquisition
-            from other organisms.
+            Detects genomic islands and creates &quot;passport stamps&quot; showing donor lineage, hallmark genes,
+            and amelioration timing (how long ago the transfer occurred).
           </div>
         </div>
 
         {loading ? (
           <AnalysisPanelSkeleton />
-        ) : !analysis ? (
+        ) : !provenanceAnalysis ? (
           <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>
             {!sequence ? 'No sequence loaded' : 'Sequence too short for analysis'}
           </div>
@@ -420,14 +414,6 @@ export function HGTOverlay({
                 <label htmlFor={windowSelectId} style={{ color: colors.textMuted }}>
                   Window:
                 </label>
-                {beginnerModeEnabled && (
-                  <InfoButton
-                    size="sm"
-                    label="What is a sliding window?"
-                    tooltip="Analyses scan the genome in overlapping windows; larger windows smooth noise, smaller windows show finer detail."
-                    onClick={() => showContextFor('sliding-window')}
-                  />
-                )}
                 <select
                   id={windowSelectId}
                   value={windowSize}
@@ -440,16 +426,15 @@ export function HGTOverlay({
                     borderRadius: '3px',
                   }}
                 >
-                  <option value={250}>250 bp</option>
-                  <option value={500}>500 bp</option>
                   <option value={1000}>1000 bp</option>
                   <option value={2000}>2000 bp</option>
+                  <option value={5000}>5000 bp</option>
                 </select>
               </div>
 
               <span style={{ color: colors.textMuted }}>
-                Genome GC: {(analysis.genomeGC * 100).toFixed(1)}% |{' '}
-                {analysis.islands.length} island{analysis.islands.length !== 1 ? 's' : ''} detected
+                Genome GC: {provenanceAnalysis.genomeGC.toFixed(1)}% |{' '}
+                {provenanceAnalysis.islands.length} island{provenanceAnalysis.islands.length !== 1 ? 's' : ''} detected
               </span>
             </div>
 
@@ -465,15 +450,7 @@ export function HGTOverlay({
                   gap: '0.5rem',
                 }}
               >
-                <span>HGT Islands (click for details)</span>
-                {beginnerModeEnabled && (
-                  <InfoButton
-                    size="sm"
-                    label="What are HGT islands?"
-                    tooltip="HGT islands are genome regions whose composition looks more like a different donor than the rest of the phage."
-                    onClick={() => showContextFor('horizontal-gene-transfer')}
-                  />
-                )}
+                <span>HGT Islands (click for passport stamp)</span>
               </div>
               <GenomeTrack
                 genomeLength={sequence.length}
@@ -493,20 +470,9 @@ export function HGTOverlay({
                   fontSize: '0.75rem',
                   color: colors.textMuted,
                   marginBottom: '0.25rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem',
                 }}
               >
-                <span>GC% Deviation (blue = high GC, red = low GC)</span>
-                {beginnerModeEnabled && (
-                  <InfoButton
-                    size="sm"
-                    label="What is GC deviation?"
-                    tooltip="GC deviation compares a window’s GC% to the genome average; large shifts can indicate atypical regions."
-                    onClick={() => showContextFor('gc-content')}
-                  />
-                )}
+                GC% Deviation (blue = high GC, red = low GC)
               </div>
               <GenomeTrack
                 genomeLength={sequence.length}
@@ -537,38 +503,13 @@ export function HGTOverlay({
               </div>
             )}
 
-            {/* Selected island details */}
-            {selectedIsland && (
-              <div
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: colors.backgroundAlt,
-                  border: `1px solid ${hgtScoreColor(selectedIsland.hgtScore)}`,
-                  borderRadius: '4px',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                  }}
-                >
-                  <IslandTooltip island={selectedIsland} colors={colors} />
-                  <button
-                    onClick={() => setSelectedIsland(null)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: colors.textMuted,
-                      cursor: 'pointer',
-                      fontSize: '1rem',
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              </div>
+            {/* Selected passport stamp */}
+            {selectedStamp && (
+              <PassportStampCard
+                stamp={selectedStamp}
+                colors={colors}
+                onClose={() => setSelectedStamp(null)}
+              />
             )}
 
             {/* Legend */}
@@ -581,65 +522,41 @@ export function HGTOverlay({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <span
-                  style={{
-                    width: '12px',
-                    height: '12px',
-                    backgroundColor: '#22c55e',
-                    borderRadius: '2px',
-                  }}
-                />
-                <span style={{ color: colors.textMuted }}>Low (&lt;{HGT_MEDIUM})</span>
+                <span style={{ width: '12px', height: '12px', backgroundColor: '#ef4444', borderRadius: '2px' }} />
+                <span style={{ color: colors.textMuted }}>Recent</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <span
-                  style={{
-                    width: '12px',
-                    height: '12px',
-                    backgroundColor: '#f59e0b',
-                    borderRadius: '2px',
-                  }}
-                />
-                <span style={{ color: colors.textMuted }}>Medium ({HGT_MEDIUM}-{HGT_HIGH})</span>
+                <span style={{ width: '12px', height: '12px', backgroundColor: '#f59e0b', borderRadius: '2px' }} />
+                <span style={{ color: colors.textMuted }}>Intermediate</span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                <span
-                  style={{
-                    width: '12px',
-                    height: '12px',
-                    backgroundColor: '#ef4444',
-                    borderRadius: '2px',
-                  }}
-                />
-                <span style={{ color: colors.textMuted }}>High (&gt;{HGT_HIGH})</span>
+                <span style={{ width: '12px', height: '12px', backgroundColor: '#22c55e', borderRadius: '2px' }} />
+                <span style={{ color: colors.textMuted }}>Ancient</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                <span style={{ width: '12px', height: '12px', backgroundColor: '#6b7280', borderRadius: '2px' }} />
+                <span style={{ color: colors.textMuted }}>Unknown</span>
               </div>
             </div>
 
-            {/* Interpretation */}
-            <div
-              style={{
-                padding: '0.5rem',
-                backgroundColor: colors.backgroundAlt,
-                borderRadius: '4px',
-                fontSize: '0.75rem',
-                color: colors.textDim,
-              }}
-            >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem' }}>
-                <strong>Interpretation:</strong>
-                {beginnerModeEnabled && (
-                  <InfoButton
-                    size="sm"
-                    label="Learn about HGT interpretation"
-                    tooltip="Treat HGT calls as hypotheses; corroborate with gene annotations and other overlays (k-mer anomaly, synteny breaks)."
-                    onClick={() => showContextFor('horizontal-gene-transfer')}
-                  />
-                )}
-              </span>{' '}
-              High scores indicate regions with compositional signatures inconsistent with the bulk genome. These may represent recent
-              horizontal transfer events, prophages, mobile elements, or regions under different selection pressures. Consider in context
-              with gene annotations.
-            </div>
+            {/* Summary */}
+            {provenanceAnalysis.stamps.length > 0 && (
+              <div
+                style={{
+                  padding: '0.5rem',
+                  backgroundColor: colors.backgroundAlt,
+                  borderRadius: '4px',
+                  fontSize: '0.75rem',
+                  color: colors.textDim,
+                }}
+              >
+                <strong>Summary:</strong>{' '}
+                {provenanceAnalysis.stamps.filter(s => s.amelioration === 'recent').length} recent,{' '}
+                {provenanceAnalysis.stamps.filter(s => s.amelioration === 'intermediate').length} intermediate,{' '}
+                {provenanceAnalysis.stamps.filter(s => s.amelioration === 'ancient').length} ancient transfers.{' '}
+                {provenanceAnalysis.stamps.reduce((sum, s) => sum + s.hallmarks.length, 0)} total hallmark genes.
+              </div>
+            )}
           </>
         )}
       </div>
