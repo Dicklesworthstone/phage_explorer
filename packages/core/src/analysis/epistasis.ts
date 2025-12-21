@@ -723,7 +723,7 @@ export function analyzeFitnessLandscape(
     fragileRegions,
     escapeRoutes,
     positionFrequencies: posFreqs,
-    averageFitness,
+    averageFitness: avgFitness,
     fitnessVariance,
   };
 }

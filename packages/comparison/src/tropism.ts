@@ -38,15 +38,28 @@ const fiberKeywords = [
 ];
 
 const receptorPatterns: Array<{ receptor: string; patterns: string[] }> = [
-  { receptor: 'LamB (maltoporin)', patterns: ['lamb', 'malb', 'maltoporin'] },
-  { receptor: 'OmpC', patterns: ['ompc'] },
-  { receptor: 'OmpA', patterns: ['ompa'] },
-  { receptor: 'FhuA', patterns: ['fhua', 'fhu-a', 'tonb-dependent'] },
-  { receptor: 'BtuB', patterns: ['btub', 'vitamin b12'] },
-  { receptor: 'Tsx', patterns: ['tsx'] },
-  { receptor: 'Flagellum', patterns: ['flagell', 'flagella', 'flagellar'] },
-  { receptor: 'Type IV pilus', patterns: ['pilus', 'pili', 'pil ', 'pilA', 'pilB', 'pilC'] },
-  { receptor: 'LPS / tailspike', patterns: ['tailspike', 'o-antigen', 'o antigen', 'lyase', 'polysaccharide', 'lps'] },
+  // Outer membrane porins
+  { receptor: 'LamB (maltoporin)', patterns: ['lamb', 'malb', 'maltoporin', 'maltose'] },
+  { receptor: 'OmpC', patterns: ['ompc', 'outer membrane protein c'] },
+  { receptor: 'OmpA', patterns: ['ompa', 'outer membrane protein a'] },
+  { receptor: 'OmpF', patterns: ['ompf', 'outer membrane protein f'] },
+  { receptor: 'FhuA', patterns: ['fhua', 'fhu-a', 'tonb-dependent', 'ferrichrome'] },
+  { receptor: 'BtuB', patterns: ['btub', 'vitamin b12', 'cobalamin'] },
+  { receptor: 'Tsx', patterns: ['tsx', 'nucleoside-specific'] },
+  { receptor: 'FepA', patterns: ['fepa', 'enterobactin', 'ferric enterobactin'] },
+  { receptor: 'TolC', patterns: ['tolc', 'outer membrane channel'] },
+  // Appendages
+  { receptor: 'Flagellum', patterns: ['flagell', 'flagella', 'flagellar', 'flic', 'flgk'] },
+  { receptor: 'Type IV pilus', patterns: ['pilus', 'pili', 'pil ', 'pilA', 'pilB', 'pilC', 'type iv'] },
+  { receptor: 'F-pilus (TraT)', patterns: ['trat', 'f-pilus', 'f pilus', 'conjugative'] },
+  // Surface polysaccharides
+  { receptor: 'LPS / O-antigen', patterns: ['tailspike', 'o-antigen', 'o antigen', 'lyase', 'polysaccharide', 'lps', 'lipopolysaccharide'] },
+  { receptor: 'Capsular polysaccharide', patterns: ['capsul', 'k-antigen', 'k antigen', 'cps', 'kps'] },
+  { receptor: 'Sialic acid', patterns: ['sialic', 'neuraminic', 'sialidase', 'neu5ac'] },
+  { receptor: 'Teichoic acid (Gram+)', patterns: ['teichoic', 'wall teichoic', 'lipoteichoic'] },
+  // Other surface structures
+  { receptor: 'ManY (mannose PTS)', patterns: ['many', 'mannose', 'pts'] },
+  { receptor: 'S-layer', patterns: ['s-layer', 's layer', 'surface layer'] },
 ];
 
 function containsAny(text: string, needles: string[]): boolean {
@@ -79,12 +92,25 @@ function aminoAcidComposition(aa: string): Record<string, number> {
 
 function motifHits(aa: string): string[] {
   const motifs: Array<{ id: string; re: RegExp }> = [
-    { id: 'beta-helix (GGXGXD)', re: /GG.GD/i },
+    // Structural motifs
+    { id: 'beta-helix (GGXGXD)', re: /GG.G.D/i },
+    { id: 'beta-helix repeat', re: /([TV].{2}[DN]){3,}/i },
+    { id: 'collagen-like (GXX)n', re: /(G..){5,}/i },
+    { id: 'Ig-like domain', re: /[YF].{10,20}G.{5,15}[YF]/i },
+    { id: 'fibronectin type III', re: /[WY].{20,40}[WY].{20,40}[WY]/i },
+    // Binding motifs
     { id: 'RGD integrin-like', re: /RGD/i },
-    { id: 'collagen-like (GXT)n', re: /(G..){4,}/i },
     { id: 'pilus-binding (VQGDT)', re: /VQGDT/i },
     { id: 'porin-tip (SYG/ALG)', re: /(SYG|ALG)/i },
     { id: 'polysaccharide lyase (HXH)', re: /H.H/i },
+    { id: 'carbohydrate-binding', re: /(W.{4,8}W)|(QXW)/i },
+    { id: 'lectin domain', re: /[DN].{20,40}[DN].{20,40}W/i },
+    // Enzymatic motifs
+    { id: 'endosialidase', re: /[DE].{40,80}H.{40,80}[DE]/i },
+    { id: 'depolymerase', re: /(GXSXG)|(D.{50,100}E)/i },
+    { id: 'lysozyme-like', re: /E.{5,15}D/i },
+    // Repeat structures
+    { id: 'tandem repeat', re: /(.{6,12})\1{2,}/i },
   ];
   return motifs.filter(m => m.re.test(aa)).map(m => m.id);
 }
@@ -93,47 +119,99 @@ function sequenceDrivenReceptors(aa: string): ReceptorCandidate[] {
   const hits = motifHits(aa);
   const comp = aminoAcidComposition(aa);
   const gly = comp['G'] ?? 0;
+  const trp = comp['W'] ?? 0;
   const acidic = (comp['D'] ?? 0) + (comp['E'] ?? 0);
   const basic = (comp['K'] ?? 0) + (comp['R'] ?? 0);
+  const aromatic = (comp['W'] ?? 0) + (comp['Y'] ?? 0) + (comp['F'] ?? 0);
+  const aaLen = aa.length;
 
   const candidates: ReceptorCandidate[] = [];
 
-  // LPS / tailspike signatures: gly-rich, beta-helix motif
-  if (gly > 0.12 || hits.includes('beta-helix (GGXGXD)')) {
+  // LPS / O-antigen tailspike: gly-rich, beta-helix motifs, often >500 aa
+  const hasBetaHelix = hits.some(h => h.includes('beta-helix'));
+  const hasDepolymerase = hits.some(h => h.includes('depolymerase'));
+  if (gly > 0.10 || hasBetaHelix || hasDepolymerase) {
+    const evidence: string[] = [];
+    let conf = 0.35;
+    if (gly > 0.10) { conf += gly * 1.2; evidence.push(`gly=${(gly * 100).toFixed(1)}%`); }
+    if (hasBetaHelix) { conf += 0.2; evidence.push('beta-helix motif'); }
+    if (hasDepolymerase) { conf += 0.15; evidence.push('depolymerase signature'); }
+    if (aaLen > 500) { conf += 0.1; evidence.push(`long protein (${aaLen} aa)`); }
     candidates.push({
-      receptor: 'LPS / tailspike',
-      confidence: clamp01(0.4 + gly * 1.5 + (hits.includes('beta-helix (GGXGXD)') ? 0.2 : 0)),
-      evidence: [
-        `gly=${gly.toFixed(2)}`,
-        ...(hits.includes('beta-helix (GGXGXD)') ? ['beta-helix motif'] : []),
-      ],
+      receptor: 'LPS / O-antigen',
+      confidence: clamp01(conf),
+      evidence,
     });
   }
 
-  // Porin tips: slightly acidic, SYG/ALG motifs
+  // Capsular polysaccharide: similar to LPS but with endosialidase
+  const hasEndosialidase = hits.some(h => h.includes('endosialidase'));
+  if (hasEndosialidase) {
+    candidates.push({
+      receptor: 'Capsular polysaccharide',
+      confidence: clamp01(0.65 + acidic * 0.3),
+      evidence: ['endosialidase signature', `acidic=${(acidic * 100).toFixed(1)}%`],
+    });
+  }
+
+  // Porin binding: SYG/ALG motifs, moderate acidic content
   if (hits.some(h => h.includes('porin-tip'))) {
     candidates.push({
       receptor: 'Porin (LamB/OmpC family)',
-      confidence: clamp01(0.5 + acidic * 0.8),
-      evidence: hits.filter(h => h.includes('porin-tip')),
+      confidence: clamp01(0.5 + acidic * 0.6),
+      evidence: [...hits.filter(h => h.includes('porin-tip')), `acidic=${(acidic * 100).toFixed(1)}%`],
     });
   }
 
-  // Pilus binding
+  // Type IV pilus binding: basic residues, pilus motif
   if (hits.some(h => h.includes('pilus'))) {
     candidates.push({
       receptor: 'Type IV pilus',
-      confidence: clamp01(0.55 + basic * 0.5),
-      evidence: hits.filter(h => h.includes('pilus')),
+      confidence: clamp01(0.55 + basic * 0.4),
+      evidence: [...hits.filter(h => h.includes('pilus')), `basic=${(basic * 100).toFixed(1)}%`],
     });
   }
 
-  // Generic tail fiber if nothing else
+  // Carbohydrate-binding (lectin-like): W-rich, carbohydrate/lectin motifs
+  const hasCarb = hits.some(h => h.includes('carbohydrate') || h.includes('lectin'));
+  if (hasCarb || trp > 0.04) {
+    const evidence: string[] = [];
+    let conf = 0.4;
+    if (hasCarb) { conf += 0.25; evidence.push(...hits.filter(h => h.includes('carbohydrate') || h.includes('lectin'))); }
+    if (trp > 0.04) { conf += 0.15; evidence.push(`trp=${(trp * 100).toFixed(1)}%`); }
+    candidates.push({
+      receptor: 'Carbohydrate receptor',
+      confidence: clamp01(conf),
+      evidence,
+    });
+  }
+
+  // Ig-like / fibronectin domains suggest protein-protein interactions
+  const hasIgLike = hits.some(h => h.includes('Ig-like') || h.includes('fibronectin'));
+  if (hasIgLike) {
+    candidates.push({
+      receptor: 'Protein receptor (OMP)',
+      confidence: clamp01(0.45 + aromatic * 0.5),
+      evidence: [...hits.filter(h => h.includes('Ig-like') || h.includes('fibronectin')), `aromatic=${(aromatic * 100).toFixed(1)}%`],
+    });
+  }
+
+  // Collagen-like repeats suggest host ECM or flagella binding
+  const hasCollagen = hits.some(h => h.includes('collagen'));
+  if (hasCollagen && gly > 0.15) {
+    candidates.push({
+      receptor: 'Flagellum / ECM',
+      confidence: clamp01(0.4 + gly * 1.0),
+      evidence: ['collagen-like repeats', `gly=${(gly * 100).toFixed(1)}%`],
+    });
+  }
+
+  // Generic tail fiber if nothing else detected
   if (candidates.length === 0) {
     candidates.push({
-      receptor: 'Unknown tail receptor',
-      confidence: 0.25,
-      evidence: ['no motif match'],
+      receptor: 'Unknown receptor',
+      confidence: 0.2,
+      evidence: hits.length > 0 ? hits : ['no clear receptor signature'],
     });
   }
 
