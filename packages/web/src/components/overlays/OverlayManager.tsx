@@ -85,6 +85,9 @@ const PackagingPressureOverlay = lazy(() => import('./PackagingPressureOverlay')
 // Module analysis overlays
 const ModuleOverlay = lazy(() => import('./ModuleOverlay').then(m => ({ default: m.ModuleOverlay })));
 
+// Epistasis & fitness landscape
+const EpistasisOverlay = lazy(() => import('./EpistasisOverlay').then(m => ({ default: m.EpistasisOverlay })));
+
 // Benchmark & diagnostic
 const GpuWasmBenchmarkOverlay = lazy(() => import('./GpuWasmBenchmarkOverlay').then(m => ({ default: m.GpuWasmBenchmarkOverlay })));
 
@@ -171,6 +174,9 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
 
         {/* Module analysis */}
         <ModuleOverlay repository={repository} currentPhage={currentPhage} />
+
+        {/* Epistasis & fitness landscape */}
+        <EpistasisOverlay repository={repository} currentPhage={currentPhage} />
 
         {/* Benchmark */}
         <GpuWasmBenchmarkOverlay repository={repository} currentPhage={currentPhage} />

@@ -80,3 +80,6 @@ export * from './analysis/periodicity';
 
 // RNA Structure & Packaging Signal analysis
 export * from './analysis/rna-structure';
+
+// Epistasis & Fitness Landscape analysis
+export * from './analysis/epistasis';

@@ -74,7 +74,8 @@ export type OverlayId =
   | 'hilbert'
   | 'gel'
   | 'welcome'
-  | 'tour';
+  | 'tour'
+  | 'epistasis';
 
 export type HelpDetailLevel = 'essential' | 'detailed';
 export type ExperienceLevel = 'novice' | 'intermediate' | 'power';

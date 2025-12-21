@@ -197,6 +197,16 @@ const ANALYSIS_ITEMS: AnalysisItem[] = [
 
   // Evolutionary Analysis
   {
+    id: 'epistasis',
+    overlayId: 'epistasis',
+    label: 'Epistasis Explorer',
+    description: 'Fitness landscape & compensatory mutation analysis',
+    icon: <IconLayers size={ITEM_ICON_SIZE} />,
+    shortcut: 'Alt+E',
+    category: 'Evolutionary',
+    requiresLevel: 'power',
+  },
+  {
     id: 'kmer',
     overlayId: 'kmerAnomaly',
     label: 'K-mer Anomaly',
