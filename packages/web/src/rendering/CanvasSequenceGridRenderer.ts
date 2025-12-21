@@ -674,12 +674,13 @@ export class CanvasSequenceGridRenderer {
     const range = this.scroller.getVisibleRange();
     const layout = this.scroller.getLayout();
 
-    // Clear or redraw only dirty regions
-    if (this.needsFullRedraw) {
-      ctx.fillStyle = this.theme.colors.background;
-      ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
-      this.needsFullRedraw = false;
-    }
+    // Always clear the back buffer before drawing to prevent ghosting during scroll.
+    // The old approach only cleared on needsFullRedraw, but during scrolling the offsetY
+    // changes frame-to-frame, leaving stale pixels at row edges. Clearing every frame
+    // with the background color is cheap and eliminates flickering.
+    ctx.fillStyle = this.theme.colors.background;
+    ctx.fillRect(0, 0, this.canvas.clientWidth, this.canvas.clientHeight);
+    this.needsFullRedraw = false;
 
     // Render visible characters
     this.renderVisibleRange(ctx, range, layout, sequence, aminoSequence, viewMode, diffSequence, diffEnabled, diffMask);

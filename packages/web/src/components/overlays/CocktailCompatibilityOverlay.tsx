@@ -190,8 +190,8 @@ function computeDomainSimilarity(
     sumMin += Math.min(aCount, bCount);
     sumMax += Math.max(aCount, bCount);
   }
-  for (const [, bCount] of b) {
-    if (a.has(bCount.toString())) continue;
+  for (const [key, bCount] of b) {
+    if (a.has(key)) continue; // Skip keys already counted in the first loop
     unionPresence++;
     sumMax += bCount;
   }
