@@ -5,6 +5,7 @@ export type IconProps = {
   title?: string;
   className?: string;
   strokeWidth?: number;
+  style?: React.CSSProperties;
 };
 
 type IconBaseProps = IconProps & {
@@ -17,6 +18,7 @@ function IconBase({
   title,
   className,
   strokeWidth = 2,
+  style,
   viewBox = '0 0 24 24',
   children,
 }: IconBaseProps): React.ReactElement {
@@ -30,6 +32,7 @@ function IconBase({
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
+      style={style}
       stroke="currentColor"
       strokeWidth={strokeWidth}
       strokeLinecap="round"
@@ -499,6 +502,28 @@ export function IconImage(props: IconProps): React.ReactElement {
       <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
       <circle cx="8.5" cy="8.5" r="1.5" />
       <polyline points="21 15 16 10 5 21" />
+    </IconBase>
+  );
+}
+
+/**
+ * CRT Monitor icon - curved screen with scanlines
+ * Used for the retro CRT effect toggle
+ */
+export function IconCRT(props: IconProps): React.ReactElement {
+  return (
+    <IconBase {...props} strokeWidth={1.5}>
+      {/* Monitor body with rounded corners */}
+      <rect x="2" y="3" width="20" height="15" rx="2" ry="2" />
+      {/* Curved screen surface (bulging outward) */}
+      <path d="M4 5 Q12 4 20 5 Q21 10.5 20 16 Q12 17 4 16 Q3 10.5 4 5" fill="none" />
+      {/* Scanlines */}
+      <line x1="5" y1="8" x2="19" y2="8" opacity="0.5" />
+      <line x1="5" y1="11" x2="19" y2="11" opacity="0.5" />
+      <line x1="5" y1="14" x2="19" y2="14" opacity="0.5" />
+      {/* Stand */}
+      <path d="M8 18 L8 21 L16 21 L16 18" />
+      <line x1="6" y1="21" x2="18" y2="21" />
     </IconBase>
   );
 }

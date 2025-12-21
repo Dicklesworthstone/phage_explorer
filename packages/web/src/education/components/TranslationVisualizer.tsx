@@ -44,8 +44,13 @@ function toSteps(sequence: string): TranslationStep[] {
 }
 
 function anticodon(dnaCodon: string): string {
-  // DNA complement for display; conceptually tRNA anticodon pairs with mRNA codon.
-  const map: Record<string, string> = { A: 'T', T: 'A', G: 'C', C: 'G' };
+  // tRNA anticodon (RNA) pairs with mRNA codon.
+  // DNA T -> RNA A. DNA A -> RNA U. G-C pair.
+  // DNA template: TAC. mRNA: AUG. tRNA: UAC.
+  // We input DNA coding strand (ATG).
+  // ATG -> (complement) TAC -> (RNA) UAC.
+  // Map: A->U, T->A, G->C, C->G.
+  const map: Record<string, string> = { A: 'U', T: 'A', G: 'C', C: 'G' };
   return dnaCodon
     .split('')
     .map((b) => map[b] ?? 'N')
@@ -127,7 +132,7 @@ export function TranslationVisualizer({
                 className={`translation-viz__codon translation-viz__codon--${status}`}
                 aria-current={status === 'active'}
               >
-                <div className="translation-viz__codon-text">{step.codon}</div>
+                <div className="translation-viz__codon-text">{step.codon.replace(/T/g, 'U')}</div>
                 <div
                   className="translation-viz__codon-aa"
                   style={{
@@ -161,7 +166,7 @@ export function TranslationVisualizer({
             <div className="translation-viz__cards">
               <div className="translation-viz__card">
                 <div className="label">mRNA codon</div>
-                <div className="value mono">{current.codon}</div>
+                <div className="value mono">{current.codon.replace(/T/g, 'U')}</div>
                 <div className="hint">Position {index + 1} of {steps.length}</div>
               </div>
               <div className="translation-viz__card">

@@ -15,9 +15,17 @@ import {
   type SearchFeature,
   type SearchRequest,
   type SearchResponse,
+  type FuzzySearchEntry,
+  type FuzzySearchResult,
 } from '../../workers';
 
 type StrandOption = SearchOptions['strand'];
+
+type SearchOverlayFuzzyMeta = {
+  feature: SearchFeature;
+  label: string;
+  matchType: string;
+};
 
 interface SearchOverlayProps {
   repository: PhageRepository | null;
@@ -39,6 +47,12 @@ const DEFAULT_OPTIONS: SearchOptions = {
   maxResults: 500,
 };
 
+function extractContext(sequence: string, start: number, end: number, pad = 20): string {
+  const s = Math.max(0, start - pad);
+  const e = Math.min(sequence.length, end + pad);
+  return sequence.slice(s, e);
+}
+
 export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps): React.ReactElement | null {
   const { isOpen, close } = useOverlay();
   const { theme } = useTheme();
@@ -58,6 +72,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
   const searchAbortRef = useRef<number | null>(null);
+  const searchSeqRef = useRef(0);
 
   // Track if we're using a preloaded worker (don't terminate on unmount)
   const usingPreloadedRef = useRef(false);
@@ -126,6 +141,11 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   useEffect(() => {
     if (!isOpen('search')) return;
     if (!repository || !currentPhage) {
+      setStatus('idle');
+      setSequence('');
+      setFeatures([]);
+      setHits([]);
+      setSummary('');
       setError('Database not loaded yet.');
       return;
     }
@@ -180,6 +200,56 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
     };
   }, [sequence, currentPhage, mode, query, features, options]);
 
+  // Keep fuzzy indices in sync for fast gene/feature search.
+  useEffect(() => {
+    if (!isOpen('search')) return;
+    if (!workerReady || !workerRef.current) return;
+    if (!currentPhage?.id) return;
+    if (features.length === 0) return;
+
+    const geneIndex = `search-overlay-gene:${currentPhage.id}`;
+    const featureIndex = `search-overlay-feature:${currentPhage.id}`;
+
+    const geneEntries: Array<FuzzySearchEntry<SearchOverlayFuzzyMeta>> = [];
+    const featureEntries: Array<FuzzySearchEntry<SearchOverlayFuzzyMeta>> = [];
+
+    for (let idx = 0; idx < features.length; idx++) {
+      const f = features[idx];
+
+      const name = f.name ?? '';
+      const product = f.product ?? '';
+      const geneText = `${name} ${product}`.trim();
+      if (geneText) {
+        geneEntries.push({
+          id: `${currentPhage.id}:${idx}:${f.start}-${f.end}`,
+          text: geneText,
+          meta: {
+            feature: f,
+            label: f.name || f.product || 'Gene/feature match',
+            matchType: 'gene/annotation',
+          },
+        });
+      }
+
+      const type = f.type ?? '';
+      const featureText = `${type} ${name} ${product}`.trim();
+      if (featureText) {
+        featureEntries.push({
+          id: `${currentPhage.id}:${idx}:${f.start}-${f.end}`,
+          text: featureText,
+          meta: {
+            feature: f,
+            label: `${type || 'Feature'}${name ? `: ${name}` : ''}`,
+            matchType: 'feature',
+          },
+        });
+      }
+    }
+
+    void workerRef.current.setFuzzyIndex({ index: geneIndex, entries: geneEntries });
+    void workerRef.current.setFuzzyIndex({ index: featureIndex, entries: featureEntries });
+  }, [currentPhage?.id, features, isOpen, workerReady]);
+
   const runSearch = useCallback(
     async (req: SearchRequest) => {
       if (!workerRef.current) return;
@@ -204,7 +274,8 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   // Debounced search on query/options/mode
   useEffect(() => {
     if (!isOpen('search')) return;
-    if (!request || !request.query.trim()) {
+    const q = query.trim();
+    if (!q) {
       setHits([]);
       setSummary('');
       return;
@@ -214,7 +285,59 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
       window.clearTimeout(searchAbortRef.current);
     }
     searchAbortRef.current = window.setTimeout(() => {
-      void runSearch(request);
+      const seq = ++searchSeqRef.current;
+
+      const shouldUseFuzzy = (mode === 'gene' || mode === 'feature') && workerReady && workerRef.current && currentPhage?.id;
+      if (!shouldUseFuzzy) {
+        if (request) void runSearch(request);
+        return;
+      }
+
+      void (async () => {
+        try {
+          setStatus('searching');
+          const indexName =
+            mode === 'gene' ? `search-overlay-gene:${currentPhage!.id}` : `search-overlay-feature:${currentPhage!.id}`;
+          const limit = options.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
+
+          const results = (await workerRef.current!.fuzzySearch({
+            index: indexName,
+            query: q,
+            limit,
+          })) as Array<FuzzySearchResult<SearchOverlayFuzzyMeta>>;
+          if (searchSeqRef.current !== seq) return;
+
+          const mapped: SearchHit[] = results
+            .map((r): SearchHit | null => {
+              const f = r.meta?.feature;
+              if (!f) return null;
+              const strand: SearchHit['strand'] = f.strand === '-' ? '-' : '+';
+              return {
+                position: f.start,
+                end: f.end,
+                strand,
+                label: r.meta?.label ?? r.text,
+                context: extractContext(sequence, f.start, f.end),
+                feature: f,
+                matchType: r.meta?.matchType,
+                score: r.score,
+              } as SearchHit;
+            })
+            .filter((h): h is SearchHit => h !== null);
+
+          setHits(mapped);
+          setSummary(
+            `${mapped.length}/${limit} results for "${q}" in ${mode} mode${mapped.length === limit ? ' (truncated)' : ''}`
+          );
+        } catch (e) {
+          if (searchSeqRef.current !== seq) return;
+          const msg = e instanceof Error ? e.message : 'Search failed';
+          setError(msg);
+        } finally {
+          if (searchSeqRef.current !== seq) return;
+          setStatus('idle');
+        }
+      })();
     }, 200);
 
     return () => {
@@ -222,7 +345,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
         window.clearTimeout(searchAbortRef.current);
       }
     };
-  }, [isOpen, request, runSearch]);
+  }, [currentPhage, isOpen, mode, options.maxResults, query, request, runSearch, sequence, workerReady]);
 
   const toggleStrand = (value: StrandOption) => {
     setOptions((prev) => ({ ...prev, strand: value }));

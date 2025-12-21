@@ -32,18 +32,7 @@ export default defineConfig({
         theme_color: '#00ff41',
         background_color: '#0a0a0a',
         display: 'standalone',
-        icons: [
-          {
-            src: '/icons/icon-192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: '/icons/icon-512.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-        ],
+        // Icons omitted - add /icons/icon-192.png and /icons/icon-512.png for PWA install prompt
       },
     }),
   ],

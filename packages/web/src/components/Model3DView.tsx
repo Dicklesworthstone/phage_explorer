@@ -14,8 +14,10 @@ import {
   HemisphereLight,
   PerspectiveCamera,
   Quaternion,
+  Raycaster,
   Scene,
   SRGBColorSpace,
+  Vector2,
   WebGLRenderer,
   Vector3,
 } from 'three';
@@ -36,6 +38,15 @@ type RenderMode = 'ball' | 'ribbon' | 'surface';
 
 interface Model3DViewProps {
   phage: PhageFull | null;
+}
+
+interface PickedResidueInfo {
+  chainId: string;
+  resSeq: number;
+  resName: string;
+  atomName: string;
+  geneLabel?: string;
+  genomePos?: number;
 }
 
 function isCoarsePointerDevice(): boolean {
@@ -214,6 +225,22 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     lastChange: 0,
   });
   const initialModeForPdbRef = useRef<string | null>(null);
+  const chainMappingRef = useRef(
+    new Map<
+      string,
+      {
+        minResSeq: number;
+        geneStart: number;
+        geneEnd: number;
+        geneStrand: string | null;
+        geneAaLen: number;
+        geneLabel: string;
+      }
+    >()
+  );
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
+  const raycasterRef = useRef(new Raycaster());
+  const [pickedResidue, setPickedResidue] = useState<PickedResidueInfo | null>(null);
 
   const show3DModel = usePhageStore(s => s.show3DModel);
   const paused = usePhageStore(s => s.model3DPaused);
@@ -319,6 +346,65 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     idOrUrl: pdbId ?? undefined,
     enabled: show3DModel && Boolean(pdbId),
   });
+
+  // Build a lightweight mapping index from PDB chain residues -> likely gene coordinates (heuristic by length).
+  useEffect(() => {
+    if (!structureData || !phage?.genes?.length) {
+      chainMappingRef.current = new Map();
+      setPickedResidue(null);
+      return;
+    }
+
+    const chainRanges = new Map<string, { minResSeq: number; maxResSeq: number }>();
+    for (const atom of structureData.atoms) {
+      const chainId = atom.chainId || 'A';
+      const resSeq = atom.resSeq;
+      if (!Number.isFinite(resSeq)) continue;
+      const existing = chainRanges.get(chainId);
+      if (existing) {
+        existing.minResSeq = Math.min(existing.minResSeq, resSeq);
+        existing.maxResSeq = Math.max(existing.maxResSeq, resSeq);
+      } else {
+        chainRanges.set(chainId, { minResSeq: resSeq, maxResSeq: resSeq });
+      }
+    }
+
+    const genes = phage.genes.filter((g) => Number.isFinite(g.startPos) && Number.isFinite(g.endPos));
+    const mapping = new Map<
+      string,
+      { minResSeq: number; geneStart: number; geneEnd: number; geneStrand: string | null; geneAaLen: number; geneLabel: string }
+    >();
+
+    for (const [chainId, range] of chainRanges.entries()) {
+      const chainLen = Math.max(1, range.maxResSeq - range.minResSeq + 1);
+      let bestGene = genes[0] ?? null;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      for (const gene of genes) {
+        const aaLen = Math.max(1, Math.floor((gene.endPos - gene.startPos) / 3));
+        const score = Math.abs(aaLen - chainLen);
+        if (score < bestScore) {
+          bestScore = score;
+          bestGene = gene;
+        }
+      }
+
+      if (!bestGene) continue;
+      const label = bestGene.product ?? bestGene.name ?? bestGene.locusTag ?? `Gene ${bestGene.id}`;
+      const geneAaLen = Math.max(1, Math.floor((bestGene.endPos - bestGene.startPos) / 3));
+      mapping.set(chainId, {
+        minResSeq: range.minResSeq,
+        geneStart: bestGene.startPos,
+        geneEnd: bestGene.endPos,
+        geneStrand: bestGene.strand ?? null,
+        geneAaLen,
+        geneLabel: label,
+      });
+    }
+
+    chainMappingRef.current = mapping;
+    setPickedResidue(null);
+  }, [phage?.genes, phage?.id, structureData]);
 
   // Handle retry with useCallback to avoid stale closures
   const handleRetry = useCallback(() => {
@@ -488,6 +574,82 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     controls.addEventListener('change', syncHeadlamp);
     syncHeadlamp();
 
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      pointerDownRef.current = { x: event.clientX, y: event.clientY };
+    };
+
+    const handlePointerUp = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      const start = pointerDownRef.current;
+      pointerDownRef.current = null;
+      if (!start) return;
+
+      const dx = event.clientX - start.x;
+      const dy = event.clientY - start.y;
+      if (dx * dx + dy * dy > 9 * 9) return; // treat as drag, not click
+
+      const group = structureRef.current;
+      const data = structureDataRef.current;
+      if (!group || !data) return;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const ndc = new Vector2(
+        ((event.clientX - rect.left) / rect.width) * 2 - 1,
+        -(((event.clientY - rect.top) / rect.height) * 2 - 1)
+      );
+
+      const raycaster = raycasterRef.current;
+      raycaster.setFromCamera(ndc, camera);
+      const hits = raycaster.intersectObject(group, true);
+      const hit = hits.find((h) => (h as any).instanceId != null && (h.object as any)?.userData?.pickKind === 'atom');
+      if (!hit) return;
+
+      const instanceId = (hit as any).instanceId as number;
+      const atom = data.atoms[instanceId];
+      if (!atom) return;
+
+      const chainId = atom.chainId || 'A';
+      const mapping = chainMappingRef.current.get(chainId);
+      if (!mapping) {
+        setPickedResidue({
+          chainId,
+          resSeq: atom.resSeq,
+          resName: atom.resName,
+          atomName: atom.atomName,
+        });
+        return;
+      }
+
+      const residueIndex = atom.resSeq - mapping.minResSeq;
+      if (!Number.isFinite(residueIndex) || residueIndex < 0) return;
+
+      const strand = mapping.geneStrand;
+      const clampedResidueIndex = Math.min(residueIndex, Math.max(0, mapping.geneAaLen - 1));
+      let basePos = strand === '-' ? mapping.geneEnd - clampedResidueIndex * 3 : mapping.geneStart + clampedResidueIndex * 3;
+
+      const state = usePhageStore.getState();
+      const genomeLen = state.currentPhage?.genomeLength;
+      if (typeof genomeLen === 'number' && Number.isFinite(genomeLen)) {
+        basePos = Math.max(0, Math.min(basePos, Math.max(0, genomeLen - 1)));
+      }
+      const scrollPos = state.viewMode === 'aa' ? Math.floor(basePos / 3) : basePos;
+      state.setScrollPosition(scrollPos);
+
+      setPickedResidue({
+        chainId,
+        resSeq: atom.resSeq,
+        resName: atom.resName,
+        atomName: atom.atomName,
+        geneLabel: mapping.geneLabel,
+        genomePos: basePos,
+      });
+    };
+
+    renderer.domElement.addEventListener('pointerdown', handlePointerDown);
+    renderer.domElement.addEventListener('pointerup', handlePointerUp);
+
     container.appendChild(renderer.domElement);
 
     const resize = () => {
@@ -514,6 +676,8 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
       observer.disconnect();
       controls.removeEventListener('start', requestRender);
       controls.removeEventListener('change', syncHeadlamp);
+      renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
+      renderer.domElement.removeEventListener('pointerup', handlePointerUp);
       controls.dispose();
       if (renderer.domElement.parentElement === container) {
         container.removeChild(renderer.domElement);
@@ -1169,6 +1333,47 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
         {!show3DModel && (
           <div className="three-overlay">
             <p className="text-dim">3D model hidden (toggle with M)</p>
+          </div>
+        )}
+
+        {/* Residue selection */}
+        {loadState === 'ready' && pickedResidue && (
+          <div
+            className="three-overlay"
+            style={{
+              left: '1rem',
+              top: '1rem',
+              right: 'auto',
+              width: 'auto',
+              background: 'rgba(15, 21, 41, 0.85)',
+              backdropFilter: 'blur(4px)',
+              borderRadius: '8px',
+              padding: '10px 14px',
+            }}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <Badge>Selected</Badge>
+                <span style={{ color: 'var(--text-primary)', fontSize: '12px' }}>
+                  {pickedResidue.chainId}:{pickedResidue.resName}{pickedResidue.resSeq}
+                </span>
+              </div>
+              {pickedResidue.geneLabel && (
+                <div className="text-dim" style={{ fontSize: '11px' }}>
+                  Gene: {pickedResidue.geneLabel}
+                </div>
+              )}
+              {pickedResidue.geneLabel && (
+                <div className="text-dim" style={{ fontSize: '11px' }}>
+                  Mapping: chain length heuristic
+                </div>
+              )}
+              {pickedResidue.genomePos !== undefined && (
+                <div className="text-dim" style={{ fontSize: '11px' }}>
+                  Jumped to {pickedResidue.genomePos.toLocaleString()} bp
+                </div>
+              )}
+            </div>
           </div>
         )}
 

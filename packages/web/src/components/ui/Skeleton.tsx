@@ -229,16 +229,22 @@ export function GeneMapSkeleton({
  */
 export interface AnalysisPanelSkeletonProps {
   className?: string;
+  /** Custom loading message for aria-label */
+  message?: string;
+  /** Number of detail rows to show */
+  rows?: number;
 }
 
 export function AnalysisPanelSkeleton({
   className = '',
+  message = 'Loading analysis',
+  rows = 3,
 }: AnalysisPanelSkeletonProps): React.ReactElement {
   return (
     <div
       className={`skeleton-analysis-panel ${className}`}
       aria-busy="true"
-      aria-label="Loading analysis"
+      aria-label={message}
     >
       {/* Header */}
       <div className="skeleton-analysis-panel__header">
@@ -269,9 +275,9 @@ export function AnalysisPanelSkeleton({
 
       {/* Detail rows */}
       <div className="skeleton-analysis-panel__details">
-        <Skeleton variant="text" width="90%" height={14} />
-        <Skeleton variant="text" width="75%" height={14} />
-        <Skeleton variant="text" width="85%" height={14} />
+        {Array.from({ length: rows }).map((_, i) => (
+          <Skeleton key={i} variant="text" width={`${90 - (i % 3) * 7}%`} height={14} />
+        ))}
       </div>
     </div>
   );

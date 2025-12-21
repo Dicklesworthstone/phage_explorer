@@ -91,6 +91,39 @@ export interface SearchResponse {
 }
 
 /**
+ * Fuzzy search index types (used by CommandPalette + PhagePickerSheet).
+ *
+ * Kept in the SearchWorker so fuzzy search can run off the main thread.
+ */
+export interface FuzzySearchEntry<TMeta = unknown> {
+  /** Stable ID understood by the caller (e.g. `phage:12`, `gene:34`) */
+  id: string;
+  /** Text used for matching (caller can display something else if desired) */
+  text: string;
+  /** Optional metadata blob returned alongside results */
+  meta?: TMeta;
+}
+
+export interface FuzzyIndexRequest<TMeta = unknown> {
+  /** Logical index name (e.g. `phage-picker`, `command-palette`) */
+  index: string;
+  /** Replace the entire index contents */
+  entries: Array<FuzzySearchEntry<TMeta>>;
+}
+
+export interface FuzzySearchRequest {
+  index: string;
+  query: string;
+  limit?: number;
+}
+
+export interface FuzzySearchResult<TMeta = unknown> extends FuzzySearchEntry<TMeta> {
+  score: number;
+  /** Matched character indices in `text` (for highlight) */
+  indices: number[];
+}
+
+/**
  * Analysis request
  */
 export interface AnalysisRequest {
@@ -269,6 +302,10 @@ export interface SearchWorkerAPI {
   runSearch(request: SearchRequest): Promise<SearchResponse>;
   /** Verify worker is initialized and responsive */
   ping(): Promise<boolean>;
+  /** Replace (or create) a named fuzzy-search index */
+  setFuzzyIndex<TMeta = unknown>(request: FuzzyIndexRequest<TMeta>): Promise<void>;
+  /** Search a named index and return ranked results */
+  fuzzySearch<TMeta = unknown>(request: FuzzySearchRequest): Promise<Array<FuzzySearchResult<TMeta>>>;
 }
 
 /**

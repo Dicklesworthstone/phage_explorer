@@ -22,6 +22,8 @@ export interface BadgeProps {
   className?: string;
   /** Accessible label for screen readers */
   'aria-label'?: string;
+  /** Native HTML title for tooltip */
+  title?: string;
   /** Click handler when interactive */
   onClick?: () => void;
   /** Inline styles override */
@@ -82,6 +84,7 @@ export function Badge({
   pulse = false,
   className,
   'aria-label': ariaLabel,
+  title,
   onClick,
   style,
 }: BadgeProps): React.ReactElement {
@@ -95,6 +98,7 @@ export function Badge({
       type={interactive ? 'button' : undefined}
       className={badgeClass}
       aria-label={ariaLabel}
+      title={title}
       onClick={interactive ? onClick : undefined}
       style={style}
     >

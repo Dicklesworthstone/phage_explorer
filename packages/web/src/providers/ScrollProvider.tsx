@@ -273,17 +273,23 @@ export function ScrollProvider({
 export function useScroll(): ScrollContextValue {
   const context = useContext(ScrollContext);
   if (!context) {
+    const prefersReducedMotion =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const behavior = prefersReducedMotion ? 'auto' : 'smooth';
+
     // Return safe defaults when used outside provider
     return {
       lenis: null,
       isEnabled: false,
       scrollTo: (target) => {
         if (typeof target === 'number') {
-          window.scrollTo({ top: target, behavior: 'smooth' });
+          window.scrollTo({ top: target, behavior });
         } else if (typeof target === 'string') {
-          document.querySelector(target)?.scrollIntoView({ behavior: 'smooth' });
+          document.querySelector(target)?.scrollIntoView({ behavior });
         } else if (target instanceof HTMLElement) {
-          target.scrollIntoView({ behavior: 'smooth' });
+          target.scrollIntoView({ behavior });
         }
       },
       stop: () => {},

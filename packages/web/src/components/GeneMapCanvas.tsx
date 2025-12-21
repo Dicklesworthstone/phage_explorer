@@ -479,44 +479,42 @@ function GeneMapCanvasBase({
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
-        aria-hidden="true"
-        title="Click to jump to position"
-      />
-      {hoveredGene && (
-        <div
-          id={tooltipId}
-          role="tooltip"
-          aria-hidden="false"
-          style={{
-            position: 'fixed',
-            left:
-              typeof window === 'undefined'
-                ? hoveredGene.x
-                : Math.min(Math.max(hoveredGene.x, 12), window.innerWidth - 12),
-            top: hoveredGene.y,
-            transform: 'translate(-50%, -100%)',
-            backgroundColor: colors.backgroundAlt,
-            border: `1px solid ${colors.border}`,
-            borderRadius: '4px',
-            padding: '4px 8px',
-            pointerEvents: 'none',
-            zIndex: 1000,
-            boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-            fontSize: '12px',
-            maxWidth: 'min(240px, calc(100vw - 24px))',
-          }}
-        >
-          <div style={{ fontWeight: 'bold', color: colors.text }}>{hoveredGene.name}</div>
-          {hoveredGene.product && (
-            <div style={{ color: colors.textDim, fontSize: '10px', marginTop: '2px' }}>
-              {hoveredGene.product}
+                  aria-hidden="true"
+                title="Click to jump to position"
+              />
+              {hoveredGene && (
+                <div
+                  id={tooltipId}
+                  role="tooltip"
+                  aria-hidden="false"
+                  style={{
+                    position: 'fixed',
+                    left: typeof window === 'undefined'
+                      ? hoveredGene.x
+                      : Math.min(Math.max(hoveredGene.x, 12), window.innerWidth - 12),
+                    top: hoveredGene.y,
+                    transform: hoveredGene.y < 60 ? 'translate(-50%, 14px)' : 'translate(-50%, -100%)',
+                    backgroundColor: colors.backgroundAlt,
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: '4px',
+                    padding: '4px 8px',
+                    pointerEvents: 'none',
+                    zIndex: 1000,
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+                    fontSize: '12px',
+                    maxWidth: 'min(240px, calc(100vw - 24px))',
+                  }}
+                >
+                  <div style={{ fontWeight: 'bold', color: colors.text }}>{hoveredGene.name}</div>
+                  {hoveredGene.product && (
+                    <div style={{ color: colors.textDim, fontSize: '10px', marginTop: '2px' }}>
+                      {hoveredGene.product}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
+          );
+        }
 // Memoize to prevent re-renders when parent updates but props haven't changed
 export const GeneMapCanvas = memo(GeneMapCanvasBase);

@@ -6,7 +6,7 @@
  */
 
 import type { Database, Statement } from 'sql.js';
-import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData } from '@phage-explorer/core';
+import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding } from '@phage-explorer/core';
 import type {
   PhageRepository,
   CacheEntry,
@@ -58,6 +58,7 @@ interface PreparedStatements {
   getHostTrnaPoolsAll?: Statement;
   getCodonAdaptationByHost?: Statement;
   getCodonAdaptationAll?: Statement;
+  getFoldEmbeddings?: Statement;
 }
 
 /**
@@ -215,6 +216,15 @@ export class SqlJsRepository implements PhageRepository {
       WHERE phage_id = ?
       ORDER BY host_name, gene_id ASC
     `);
+
+    this.statements.getFoldEmbeddings = this.safelyPrepare(`
+      SELECT fe.gene_id as geneId, fe.dims as dims, fe.vector as vector,
+             g.name as name, g.product as product, g.start_pos as startPos, g.end_pos as endPos
+      FROM fold_embeddings fe
+      JOIN genes g ON g.id = fe.gene_id
+      WHERE fe.phage_id = ? AND fe.model = ?
+      ORDER BY fe.gene_id ASC
+    `);
   }
 
   /**
@@ -253,6 +263,42 @@ export class SqlJsRepository implements PhageRepository {
 
     this.phageList = this.execStatement<PhageSummary>(this.statements.listPhages);
     return this.phageList;
+  }
+
+  async getFoldEmbeddings(phageId: number, model = 'protein-k3-hash-v1'): Promise<FoldEmbedding[]> {
+    const cacheKey = `foldEmbeddings:${phageId}:${model}`;
+    const cached = this.cache.get(cacheKey) as CacheEntry<FoldEmbedding[]> | undefined;
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
+
+    if (!this.statements) {
+      throw new Error('Database not initialized');
+    }
+    if (!this.statements.getFoldEmbeddings) {
+      return [];
+    }
+
+    const rows = this.execStatement<{
+      geneId: number;
+      dims: number;
+      vector: Uint8Array;
+      name: string | null;
+      product: string | null;
+      startPos: number;
+      endPos: number;
+    }>(this.statements.getFoldEmbeddings, [phageId, model]);
+
+    const parsed: FoldEmbedding[] = rows.map((row) => ({
+      geneId: row.geneId,
+      vector: decodeFloat32VectorLE(row.vector as Uint8Array, row.dims),
+      length: Math.max(0, Math.floor((row.endPos - row.startPos) / 3)),
+      name: row.name ?? null,
+      product: row.product ?? null,
+    }));
+
+    this.cache.set(cacheKey, { data: parsed, timestamp: Date.now() });
+    return parsed;
   }
 
   async getPhageByIndex(index: number): Promise<PhageFull | null> {

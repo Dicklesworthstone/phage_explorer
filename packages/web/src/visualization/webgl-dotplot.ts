@@ -322,6 +322,15 @@ export class WebGLDotPlotRenderer {
   }
 
   /**
+   * Update match and background colors
+   */
+  setColors(matchColor: [number, number, number], bgColor: [number, number, number]): void {
+    this.matchColor = matchColor;
+    this.bgColor = bgColor;
+    this.needsRender = true;
+  }
+
+  /**
    * Set window size for k-mer matching
    */
   setWindowSize(size: number): void {

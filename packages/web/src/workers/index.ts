@@ -47,6 +47,10 @@ export type {
   SearchHit,
   SearchFeature,
   SearchOptions,
+  FuzzySearchEntry,
+  FuzzyIndexRequest,
+  FuzzySearchRequest,
+  FuzzySearchResult,
   WorkerPoolConfig,
   // SharedArrayBuffer types
   SharedSequenceRef,

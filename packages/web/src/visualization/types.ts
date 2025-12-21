@@ -34,11 +34,16 @@ export interface GlyphAtlasBuild {
   entries: Map<string, GlyphEntry>;
 }
 
+export type ReadingFrame = 0 | 1 | 2 | -1 | -2 | -3;
+export type ViewMode = 'dna' | 'aa' | 'dual';
+
 export interface RenderFrameInput {
   scrollTop: number;
   viewportHeight: number;
   viewportWidth: number;
   overscanRows: number;
+  viewMode: ViewMode;
+  readingFrame: ReadingFrame;
 }
 
 export interface SequenceWindow {

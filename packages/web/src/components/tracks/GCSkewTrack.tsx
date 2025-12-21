@@ -5,9 +5,8 @@
  * Highlights origin (minimum) and terminus (maximum) of replication.
  */
 
-import React, { useMemo, useEffect, useState, memo } from 'react';
+import React, { useMemo, memo } from 'react';
 import { CanvasTrack, type TrackData } from './CanvasTrack';
-import { useTrackSync } from './TrackContainer';
 import { useTheme } from '../../hooks/useTheme';
 
 interface GCSkewTrackProps {
@@ -26,7 +25,8 @@ interface GCSkewTrackProps {
 // Calculate GC skew values
 function calculateGCSkew(
   sequence: string,
-  windowSize: number
+  windowSize: number,
+  cumulativeMode: boolean
 ): { values: number[]; labels: Array<{ position: number; label: string; color?: string }> } {
   if (!sequence || sequence.length === 0) {
     return { values: [], labels: [] };
@@ -50,24 +50,28 @@ function calculateGCSkew(
     }
 
     const gcSkew = g + c > 0 ? (g - c) / (g + c) : 0;
-    cumSum += gcSkew;
-    values.push(cumSum);
+    if (cumulativeMode) {
+      cumSum += gcSkew;
+      values.push(cumSum);
 
-    // Track min/max for origin/terminus detection
-    if (cumSum < minVal) {
-      minVal = cumSum;
-      minIdx = values.length - 1;
-    }
-    if (cumSum > maxVal) {
-      maxVal = cumSum;
-      maxIdx = values.length - 1;
+      // Track min/max for origin/terminus detection
+      if (cumSum < minVal) {
+        minVal = cumSum;
+        minIdx = values.length - 1;
+      }
+      if (cumSum > maxVal) {
+        maxVal = cumSum;
+        maxIdx = values.length - 1;
+      }
+    } else {
+      values.push(gcSkew);
     }
   }
 
   // Create labels for origin and terminus
   const labels: Array<{ position: number; label: string; color?: string }> = [];
 
-  if (values.length > 0) {
+  if (cumulativeMode && values.length > 0) {
     labels.push({
       position: minIdx * windowSize + windowSize / 2,
       label: 'ori',
@@ -92,7 +96,6 @@ function GCSkewTrackBase({
 }: GCSkewTrackProps): React.ReactElement {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const sync = useTrackSync();
 
   // Calculate GC skew data
   const trackData = useMemo<TrackData | null>(() => {
@@ -100,7 +103,7 @@ function GCSkewTrackBase({
       return null;
     }
 
-    const { values, labels } = calculateGCSkew(sequence, windowSize);
+    const { values, labels } = calculateGCSkew(sequence, windowSize, cumulative);
 
     if (values.length === 0) {
       return null;
@@ -112,7 +115,7 @@ function GCSkewTrackBase({
       genomeLength: sequence.length,
       labels,
     };
-  }, [sequence, windowSize]);
+  }, [sequence, windowSize, cumulative]);
 
   return (
     <CanvasTrack

@@ -51,6 +51,8 @@ export const VisualizationPreview: React.FC<VisualizationPreviewProps> = ({ repo
     viewportHeight: 400,
     viewportWidth: 800,
     overscanRows: 20,
+    viewMode: 'dna',
+    readingFrame: 0,
   });
 
   // Update viewport dims from canvas client rect

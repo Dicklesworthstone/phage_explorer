@@ -28,7 +28,8 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
   // Fetch target sequence when overlay is open
   useEffect(() => {
     if (!isOpen('selectionPressure') || !repository || !currentPhage) {
-      if (!isOpen('selectionPressure')) setTargetSequence('');
+      setTargetSequence('');
+      setLoading(false);
       return;
     }
 

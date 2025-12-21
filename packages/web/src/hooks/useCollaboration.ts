@@ -9,11 +9,17 @@ export function useCollaboration() {
     sessionId: store.id,
     peers: Object.values(store.peers),
     currentUser: store.currentUser,
+    hostId: store.hostId,
+    chatMessages: store.chatMessages,
+    syncNavigation: store.syncNavigation,
+    syncOverlays: store.syncOverlays,
     
     createSession: store.createSession,
     joinSession: store.joinSession,
     leaveSession: store.leaveSession,
     updatePresence: store.updatePresence,
-    // sendMessage: TODO - implement when collaboration messaging is needed
+    sendMessage: store.sendMessage,
+    setSyncNavigation: store.setSyncNavigation,
+    setSyncOverlays: store.setSyncOverlays,
   };
 }

@@ -11,6 +11,7 @@ import { Main, type MainProps } from './Main';
 import { SkipNavigation } from './SkipNavigation';
 import { CRTOverlay } from './CRTOverlay';
 import { MatrixRain } from '../MatrixRain';
+import { CRTToggleButton } from '../ui/CRTToggleButton';
 
 export interface AppShellProps {
   header?: HeaderProps;
@@ -45,6 +46,8 @@ export const AppShell: React.FC<AppShellProps> = ({
         {children}
       </main>
       <Footer {...footer} />
+      {/* CRT effect toggle - cute mini monitor button */}
+      <CRTToggleButton position="bottom-right" size="md" />
     </div>
   );
 };

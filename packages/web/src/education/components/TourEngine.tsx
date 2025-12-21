@@ -9,6 +9,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTheme } from '../../hooks/useTheme';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { useBeginnerMode } from '../hooks/useBeginnerMode';
 import type { Tour, TourId, TourStep } from '../types';
 
@@ -66,13 +67,13 @@ function getTour(tourId: TourId): Tour | null {
   return JSON_TOURS[tourId] ?? BUILTIN_TOURS[tourId] ?? null;
 }
 
-function resolveTargetRect(step: TourStep): DOMRect | null {
+function resolveTargetRect(step: TourStep, behavior: ScrollBehavior): DOMRect | null {
   if (!step.target) return null;
   try {
     const el = document.querySelector(step.target);
     if (!el) return null;
     // Scroll first so the measured rect reflects the on-screen position.
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.scrollIntoView({ behavior, block: 'center' });
     return el.getBoundingClientRect();
   } catch (e) {
     console.warn(`Invalid tour target selector: ${step.target}`, e);
@@ -83,6 +84,7 @@ function resolveTargetRect(step: TourStep): DOMRect | null {
 export function TourEngine(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
+  const reducedMotion = useReducedMotion();
   const { activeTourId, cancelTour, completeTour, isEnabled } = useBeginnerMode();
 
   const tourId = (activeTourId as TourId | null) ?? null;
@@ -119,7 +121,7 @@ export function TourEngine(): React.ReactElement | null {
     }
 
     const step = tour.steps[stepIndex];
-    const targetRect = resolveTargetRect(step);
+    const targetRect = resolveTargetRect(step, reducedMotion ? 'auto' : 'smooth');
     if (targetRect) {
       setRect(targetRect);
       return;
@@ -130,7 +132,7 @@ export function TourEngine(): React.ReactElement | null {
     } else {
       cancelTour();
     }
-  }, [tour, stepIndex, isEnabled, cancelTour]);
+  }, [tour, stepIndex, isEnabled, cancelTour, reducedMotion]);
 
   const handleSkip = useCallback(() => {
     cancelTour();

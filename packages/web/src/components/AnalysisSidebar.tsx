@@ -79,7 +79,7 @@ const ANALYSIS_CATEGORIES: AnalysisCategory[] = [
       { id: 'pressure', name: 'Packaging', shortcut: 'v', description: 'Capsid fill & pressure' },
       { id: 'stability', name: 'Stability', description: 'Capsid robustness' },
       { id: 'nonBDNA', name: 'Non-B DNA', description: 'Z-DNA, G-quadruplexes' },
-      { id: 'structureConstraint', name: 'Structure Constraints', description: 'DNA structural constraints' },
+      { id: 'structureConstraint', name: 'Structure Constraints', description: 'RNA signals + capsid/tail fragility scan' },
     ],
   },
   {

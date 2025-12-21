@@ -118,6 +118,7 @@ const OVERLAY_HEADER_ICONS: Partial<Record<OverlayId, React.ReactNode>> = {
   codonAdaptation: <IconTrendingUp size={OVERLAY_ICON_SIZE} />,
   defenseArmsRace: <IconShield size={OVERLAY_ICON_SIZE} />,
   illustration: <IconImage size={OVERLAY_ICON_SIZE} />,
+  logo: <IconBookmark size={OVERLAY_ICON_SIZE} />,
 };
 
 export function Overlay({

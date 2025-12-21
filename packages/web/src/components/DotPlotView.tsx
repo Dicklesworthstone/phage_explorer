@@ -9,7 +9,7 @@
  */
 
 import React, { useRef, useEffect, useCallback, useState, memo } from 'react';
-import { WebGLDotPlotRenderer, type DotPlotState } from '../visualization/webgl-dotplot';
+import { WebGLDotPlotRenderer } from '../visualization/webgl-dotplot';
 import { useTheme } from '../hooks/useTheme';
 
 export interface DotPlotViewProps {
@@ -142,6 +142,13 @@ function DotPlotViewBase({
     renderer.setWindowSize(windowSize);
     renderer.setThreshold(threshold);
   }, [windowSize, threshold]);
+
+  // Update theme colors
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.setColors(getMatchColor(), getBgColor());
+  }, [getMatchColor, getBgColor]);
 
   // Handle resize
   useEffect(() => {

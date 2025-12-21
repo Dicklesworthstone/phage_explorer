@@ -5,6 +5,7 @@ import type {
   GlyphMetrics,
   Nucleotide,
 } from './types';
+import type { Theme } from '@phage-explorer/core';
 
 const NUCLEOTIDES: Nucleotide[] = ['A', 'C', 'G', 'T', 'N'];
 const AMINO_ACIDS = [
@@ -48,6 +49,11 @@ export class GlyphAtlas {
     }
 
     this.build = { canvas, context, metrics, entries };
+  }
+
+  async updateTheme(theme: Theme): Promise<void> {
+    this.options.theme = theme;
+    await this.prepare();
   }
 
   getMetrics(): GlyphMetrics {

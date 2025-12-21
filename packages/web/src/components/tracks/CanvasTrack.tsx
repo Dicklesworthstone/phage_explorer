@@ -5,7 +5,7 @@
  * and integration with TrackContainer's scroll sync.
  */
 
-import React, { useRef, useEffect, useCallback, memo } from 'react';
+import React, { useRef, useEffect, useCallback, useState, memo } from 'react';
 import { useTrackSync, type TrackSyncState } from './TrackContainer';
 import { useTheme } from '../../hooks/useTheme';
 import type { Theme } from '@phage-explorer/core';
@@ -57,6 +57,13 @@ export interface CanvasTrackProps {
   formatTooltip?: (value: number, position: number) => string;
 }
 
+interface TrackTooltipState {
+  visible: boolean;
+  x: number;
+  y: number;
+  text: string;
+}
+
 function CanvasTrackBase({
   label,
   height = 60,
@@ -74,6 +81,12 @@ function CanvasTrackBase({
   const { theme } = useTheme();
   const colors = theme.colors;
   const sync = useTrackSync();
+  const [tooltip, setTooltip] = useState<TrackTooltipState>({
+    visible: false,
+    x: 0,
+    y: 0,
+    text: '',
+  });
 
   // Render the track
   const render = useCallback(() => {
@@ -143,7 +156,7 @@ function CanvasTrackBase({
     }
 
     // Calculate which values are visible
-    const { visibleStart, visibleEnd, genomeLength } = sync;
+    const { visibleStart, visibleEnd } = sync;
     const startIdx = Math.max(0, Math.floor(visibleStart / windowSize) - 1);
     const endIdx = Math.min(values.length, Math.ceil(visibleEnd / windowSize) + 1);
 
@@ -251,6 +264,46 @@ function CanvasTrackBase({
     [onClick, data, sync]
   );
 
+  const handleMouseMove = useCallback(
+    (event: React.MouseEvent<HTMLCanvasElement>) => {
+      if (!formatTooltip || !data) return;
+
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0) return;
+
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const span = sync.visibleEnd - sync.visibleStart;
+      if (span <= 0) return;
+
+      const basePosition = Math.max(
+        0,
+        Math.round(sync.visibleStart + (x / rect.width) * span)
+      );
+
+      const idx = Math.floor(basePosition / data.windowSize);
+      const value = data.values[idx];
+      if (value == null) {
+        setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+        return;
+      }
+
+      const text = formatTooltip(value, basePosition);
+      setTooltip((prev) => {
+        if (prev.visible && prev.x === x && prev.y === y && prev.text === text) return prev;
+        return { visible: true, x, y, text };
+      });
+    },
+    [data, formatTooltip, sync]
+  );
+
+  const handleMouseLeave = useCallback(() => {
+    setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
+
   return (
     <div
       className="canvas-track"
@@ -312,6 +365,8 @@ function CanvasTrackBase({
           <canvas
             ref={canvasRef}
             onClick={onClick ? handleClick : undefined}
+            onMouseMove={formatTooltip ? handleMouseMove : undefined}
+            onMouseLeave={formatTooltip ? handleMouseLeave : undefined}
             style={{
               width: '100%',
               height,
@@ -319,6 +374,29 @@ function CanvasTrackBase({
               cursor: onClick ? 'crosshair' : 'default',
             }}
           />
+        )}
+        {tooltip.visible && (
+          <div
+            className="track-tooltip"
+            style={{
+              position: 'absolute',
+              left: tooltip.x + 10,
+              top: tooltip.y + 10,
+              zIndex: 20,
+              pointerEvents: 'none',
+              backgroundColor: colors.backgroundAlt,
+              color: colors.text,
+              border: `1px solid ${colors.border}`,
+              borderRadius: '6px',
+              padding: '0.25rem 0.5rem',
+              fontSize: '0.75rem',
+              fontFamily: 'monospace',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 6px 16px rgba(0,0,0,0.35)',
+            }}
+          >
+            {tooltip.text}
+          </div>
         )}
       </div>
     </div>

@@ -84,8 +84,15 @@ export function RibosomeVisualizer({
     }
     const production = toSpark(deltas, 32);
 
-    return { density, codon, production };
-  }, [state.densityHistory, state.productionHistory, codonRates]);
+    const stallHistory = state.stallHistory ?? [];
+    const stallDeltas: number[] = [];
+    for (let i = 1; i < stallHistory.length; i++) {
+      stallDeltas.push(stallHistory[i] - stallHistory[i - 1]);
+    }
+    const stalls = toSpark(stallDeltas, 32);
+
+    return { density, codon, production, stalls };
+  }, [state.densityHistory, state.productionHistory, state.stallHistory, codonRates]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -265,6 +272,11 @@ export function RibosomeVisualizer({
         {spark.production && (
           <div>
             Proteins/step: <span style={{ color: colors.success }}>{spark.production}</span>
+          </div>
+        )}
+        {spark.stalls && (
+          <div>
+            Stalls/step: <span style={{ color: colors.warning }}>{spark.stalls}</span>
           </div>
         )}
         {spark.density && (

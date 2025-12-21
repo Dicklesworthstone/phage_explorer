@@ -9,7 +9,14 @@
  */
 
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import * as Comlink from 'comlink';
 import { BottomSheet } from './BottomSheet';
+import {
+  getSearchWorker,
+  type SearchWorkerAPI,
+  type FuzzySearchEntry,
+  type FuzzySearchResult,
+} from '../../workers';
 
 interface PhageListItem {
   id: number;
@@ -83,17 +90,124 @@ export function PhagePickerSheet({
 }: PhagePickerSheetProps): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const [workerReady, setWorkerReady] = useState(false);
+  const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
+  const workerInstanceRef = useRef<Worker | null>(null);
+  const usingPreloadedRef = useRef(false);
+  const searchSeqRef = useRef(0);
+  const [rankedIds, setRankedIds] = useState<number[] | null>(null);
+
+  // Initialize search worker (prefer preloaded instance).
+  useEffect(() => {
+    let cancelled = false;
+
+    const preloaded = getSearchWorker();
+    if (preloaded) {
+      usingPreloadedRef.current = true;
+      workerInstanceRef.current = preloaded.worker;
+      workerRef.current = preloaded.api;
+      if (preloaded.ready) {
+        setWorkerReady(true);
+      } else {
+        void (async () => {
+          try {
+            await preloaded.api.ping();
+            if (!cancelled) setWorkerReady(true);
+          } catch {
+            // Keep workerReady false; fallback will still work.
+          }
+        })();
+      }
+      return;
+    }
+
+    usingPreloadedRef.current = false;
+    const worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url), { type: 'module' });
+    workerInstanceRef.current = worker;
+    const wrapped = Comlink.wrap<SearchWorkerAPI>(worker);
+    workerRef.current = wrapped;
+
+    void (async () => {
+      try {
+        await wrapped.ping();
+        if (!cancelled) setWorkerReady(true);
+      } catch {
+        // Keep workerReady false; fallback will still work.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (!usingPreloadedRef.current && workerInstanceRef.current) {
+        workerInstanceRef.current.terminate();
+      }
+      workerInstanceRef.current = null;
+      workerRef.current = null;
+      setWorkerReady(false);
+    };
+  }, []);
+
+  // Keep worker index in sync with phage list.
+  useEffect(() => {
+    if (!workerReady || !workerRef.current) return;
+    const entries: Array<FuzzySearchEntry<{ phageId: number }>> = phages.map((p) => ({
+      id: String(p.id),
+      text: `${p.name} ${p.host ?? ''}`.trim(),
+      meta: { phageId: p.id },
+    }));
+    void workerRef.current.setFuzzyIndex({ index: 'phage-picker', entries });
+  }, [phages, workerReady]);
 
   // Filter phages by search query
   const filteredPhages = useMemo(() => {
     if (!searchQuery.trim()) return phages;
+    if (rankedIds && rankedIds.length > 0) {
+      const byId = new Map(phages.map((p) => [p.id, p] as const));
+      const ranked = rankedIds.map((id) => byId.get(id)).filter(Boolean) as PhageListItem[];
+      if (ranked.length > 0) return ranked;
+    }
+    // Fallback while the worker warms up / for very small datasets.
     const query = searchQuery.toLowerCase();
     return phages.filter(
       (phage) =>
         phage.name.toLowerCase().includes(query) ||
         phage.host?.toLowerCase().includes(query)
     );
-  }, [phages, searchQuery]);
+  }, [phages, searchQuery, rankedIds]);
+
+  // Run fuzzy search in worker when query changes.
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!searchQuery.trim()) {
+      setRankedIds(null);
+      return;
+    }
+    if (!workerReady || !workerRef.current) return;
+
+    const seq = ++searchSeqRef.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const results = (await workerRef.current!.fuzzySearch({
+            index: 'phage-picker',
+            query: searchQuery,
+            limit: 200,
+          })) as Array<FuzzySearchResult<{ phageId: number }>>;
+          if (searchSeqRef.current !== seq) return;
+          setRankedIds(
+            results
+              .map((r) => Number(r.id))
+              .filter((id) => Number.isFinite(id))
+          );
+        } catch {
+          if (searchSeqRef.current !== seq) return;
+          setRankedIds(null);
+        }
+      })();
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [isOpen, searchQuery, workerReady]);
 
   // Handle phage selection
   const handleSelect = useCallback(
@@ -101,6 +215,7 @@ export function PhagePickerSheet({
       onSelectPhage(index);
       onClose();
       setSearchQuery(''); // Reset search on close
+      setRankedIds(null);
     },
     [onSelectPhage, onClose]
   );
@@ -120,6 +235,7 @@ export function PhagePickerSheet({
   useEffect(() => {
     if (!isOpen) {
       setSearchQuery('');
+      setRankedIds(null);
     }
   }, [isOpen]);
 

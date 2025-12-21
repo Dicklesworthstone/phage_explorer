@@ -8,7 +8,7 @@
  * - Memory usage over time
  * - Analysis computation timing
  *
- * Run with: bunx playwright test e2e/performance-benchmark.spec.ts --project=chromium
+ * Run with: bunx playwright test e2e/performance-benchmark.e2e.ts --project=chromium
  */
 
 import { test, expect, type Page, type CDPSession } from '@playwright/test';
@@ -556,8 +556,7 @@ test.describe('Performance Regression Guards', () => {
 
     // Force garbage collection if available (V8-specific, may not exist)
     await page.evaluate(() => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const globalGc = (globalThis as any).gc;
+      const globalGc = (globalThis as unknown as { gc?: () => void }).gc;
       if (typeof globalGc === 'function') globalGc();
     });
 

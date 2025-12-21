@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
@@ -11,13 +11,36 @@ export function CollaborationOverlay(): React.ReactElement | null {
   
   const connected = useCollaborationStore(s => s.connected);
   const sessionId = useCollaborationStore(s => s.id);
+  const hostId = useCollaborationStore(s => s.hostId);
   const peers = useCollaborationStore(s => s.peers);
   const createSession = useCollaborationStore(s => s.createSession);
   const joinSession = useCollaborationStore(s => s.joinSession);
   const leaveSession = useCollaborationStore(s => s.leaveSession);
+  const chatMessages = useCollaborationStore(s => s.chatMessages);
+  const sendMessage = useCollaborationStore(s => s.sendMessage);
+  const syncNavigation = useCollaborationStore(s => s.syncNavigation);
+  const syncOverlays = useCollaborationStore(s => s.syncOverlays);
+  const setSyncNavigation = useCollaborationStore(s => s.setSyncNavigation);
+  const setSyncOverlays = useCollaborationStore(s => s.setSyncOverlays);
   
   const [name, setName] = useState('Explorer');
   const [joinId, setJoinId] = useState('');
+  const [messageDraft, setMessageDraft] = useState('');
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const sortedPeers = useMemo(() => {
+    const list = Object.values(peers);
+    return list.sort((a, b) => {
+      if (hostId && a.id === hostId) return -1;
+      if (hostId && b.id === hostId) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [peers, hostId]);
+
+  useEffect(() => {
+    if (!connected) return;
+    chatEndRef.current?.scrollIntoView({ block: 'end' });
+  }, [connected, chatMessages.length]);
 
   if (!isOpen('collaboration')) return null;
 
@@ -145,11 +168,30 @@ export function CollaborationOverlay(): React.ReactElement | null {
               </div>
             </div>
 
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', color: colors.textDim, fontSize: '0.85rem' }}>
+                <input
+                  type="checkbox"
+                  checked={syncNavigation}
+                  onChange={(e) => setSyncNavigation(e.target.checked)}
+                />
+                Sync navigation (phage/scroll/view)
+              </label>
+              <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', color: colors.textDim, fontSize: '0.85rem' }}>
+                <input
+                  type="checkbox"
+                  checked={syncOverlays}
+                  onChange={(e) => setSyncOverlays(e.target.checked)}
+                />
+                Sync overlays
+              </label>
+            </div>
+
             <h3 style={{ color: colors.text, fontSize: '1rem', marginBottom: '0.5rem' }}>
               Active Peers ({Object.keys(peers).length})
             </h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {Object.values(peers).map(peer => (
+              {sortedPeers.map(peer => (
                 <div key={peer.id} style={{ 
                   display: 'flex', 
                   alignItems: 'center', 
@@ -166,11 +208,93 @@ export function CollaborationOverlay(): React.ReactElement | null {
                     backgroundColor: peer.color 
                   }} />
                   <span style={{ color: colors.text }}>{peer.name}</span>
+                  {hostId && peer.id === hostId && (
+                    <span style={{ color: colors.textMuted, fontSize: '0.8rem' }}>(Host)</span>
+                  )}
                   {peer.id === useCollaborationStore.getState().currentUser.id && (
                     <span style={{ color: colors.textMuted, fontSize: '0.8rem' }}>(You)</span>
                   )}
                 </div>
               ))}
+            </div>
+
+            <div style={{ marginTop: '1.5rem' }}>
+              <h3 style={{ color: colors.text, fontSize: '1rem', marginBottom: '0.5rem' }}>Chat</h3>
+              <div
+                style={{
+                  maxHeight: '220px',
+                  overflowY: 'auto',
+                  backgroundColor: colors.backgroundAlt,
+                  border: `1px solid ${colors.borderLight}`,
+                  borderRadius: '6px',
+                  padding: '0.75rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem',
+                }}
+              >
+                {chatMessages.length === 0 ? (
+                  <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
+                    No messages yet.
+                  </div>
+                ) : (
+                  chatMessages.map((m) => (
+                    <div key={m.id} style={{ display: 'flex', gap: '0.5rem', alignItems: 'baseline' }}>
+                      <span style={{ color: colors.textDim, fontSize: '0.8rem', fontFamily: 'monospace' }}>
+                        {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <span style={{ color: colors.text, fontWeight: 700 }}>
+                        {m.senderName}
+                      </span>
+                      <span style={{ color: colors.text }}>
+                        {m.text}
+                      </span>
+                    </div>
+                  ))
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!messageDraft.trim()) return;
+                  sendMessage(messageDraft);
+                  setMessageDraft('');
+                }}
+                style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}
+              >
+                <input
+                  type="text"
+                  value={messageDraft}
+                  onChange={(e) => setMessageDraft(e.target.value)}
+                  placeholder="Message"
+                  style={{
+                    flex: 1,
+                    padding: '0.6rem 0.75rem',
+                    backgroundColor: colors.background,
+                    border: `1px solid ${colors.borderLight}`,
+                    borderRadius: '6px',
+                    color: colors.text,
+                  }}
+                />
+                <button
+                  type="submit"
+                  disabled={!messageDraft.trim()}
+                  style={{
+                    padding: '0.6rem 0.9rem',
+                    backgroundColor: colors.accent,
+                    color: '#000',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: messageDraft.trim() ? 'pointer' : 'not-allowed',
+                    opacity: messageDraft.trim() ? 1 : 0.6,
+                    fontWeight: 700,
+                  }}
+                >
+                  Send
+                </button>
+              </form>
             </div>
 
             <button

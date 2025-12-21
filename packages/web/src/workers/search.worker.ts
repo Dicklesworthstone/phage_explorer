@@ -14,6 +14,10 @@ import type {
   SearchFeature,
   StrandOption,
   SearchMode,
+  FuzzyIndexRequest,
+  FuzzySearchRequest,
+  FuzzySearchResult,
+  FuzzySearchEntry,
 } from './types';
 
 const IUPAC_MAP: Record<string, string> = {
@@ -36,6 +40,17 @@ const IUPAC_MAP: Record<string, string> = {
 
 const DEFAULT_MAX_RESULTS = 500;
 
+type FuzzyIndexEntry<TMeta = unknown> = FuzzySearchEntry<TMeta> & {
+  textLower: string;
+};
+
+type FuzzyIndex<TMeta = unknown> = {
+  entries: Array<FuzzyIndexEntry<TMeta>>;
+  trigramIndex: Map<string, number[]>;
+};
+
+const fuzzyIndices = new Map<string, FuzzyIndex>();
+
 function reverseComplement(seq: string): string {
   const map: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C', a: 't', t: 'a', c: 'g', g: 'c' };
   return seq
@@ -57,6 +72,147 @@ function toRegexFromIupac(pattern: string): RegExp {
 function clampMaxResults<T>(items: T[], max: number): T[] {
   if (items.length <= max) return items;
   return items.slice(0, max);
+}
+
+function normalizeForSearch(text: string): string {
+  return text.trim().toLowerCase();
+}
+
+function buildTrigramIndex(entries: Array<FuzzyIndexEntry>): Map<string, number[]> {
+  const index = new Map<string, number[]>();
+
+  for (let entryIdx = 0; entryIdx < entries.length; entryIdx++) {
+    const s = entries[entryIdx].textLower;
+    if (s.length < 3) continue;
+
+    const seen = new Set<string>();
+    for (let i = 0; i <= s.length - 3; i++) {
+      const tri = s.slice(i, i + 3);
+      if (seen.has(tri)) continue;
+      seen.add(tri);
+      const posting = index.get(tri);
+      if (posting) {
+        posting.push(entryIdx);
+      } else {
+        index.set(tri, [entryIdx]);
+      }
+    }
+  }
+
+  return index;
+}
+
+function fuzzyMatch(patternLower: string, textLower: string): { match: boolean; score: number; indices: number[] } {
+  if (!patternLower) return { match: true, score: 0, indices: [] };
+  if (!textLower) return { match: false, score: 0, indices: [] };
+
+  const indices: number[] = [];
+  let score = 0;
+  let patternIdx = 0;
+  let prevMatchIdx = -1;
+
+  for (let i = 0; i < textLower.length && patternIdx < patternLower.length; i++) {
+    if (textLower[i] !== patternLower[patternIdx]) continue;
+
+    indices.push(i);
+
+    // Bonus for consecutive matches
+    if (prevMatchIdx === i - 1) score += 2;
+
+    // Bonus for matching at start or after a separator
+    const prev = i === 0 ? '' : textLower[i - 1];
+    if (
+      i === 0 ||
+      prev === ' ' ||
+      prev === ':' ||
+      prev === '/' ||
+      prev === '-' ||
+      prev === '_' ||
+      prev === '.'
+    ) {
+      score += 3;
+    }
+
+    score += 1;
+    prevMatchIdx = i;
+    patternIdx++;
+  }
+
+  const matched = patternIdx === patternLower.length;
+  if (!matched) return { match: false, score: 0, indices: [] };
+
+  if (textLower.startsWith(patternLower)) score += 10;
+  else if (textLower.includes(patternLower)) score += 5;
+
+  // Small preference for shorter strings when scores tie.
+  score += Math.max(0, 20 - textLower.length) * 0.02;
+
+  return { match: true, score, indices };
+}
+
+function getFuzzyCandidates(index: FuzzyIndex, queryLower: string): number[] {
+  if (queryLower.length < 3 || index.trigramIndex.size === 0) {
+    return index.entries.map((_, i) => i);
+  }
+
+  const trigrams = new Set<string>();
+  for (let i = 0; i <= queryLower.length - 3; i++) {
+    trigrams.add(queryLower.slice(i, i + 3));
+  }
+
+  const voteCounts = new Map<number, number>();
+  for (const tri of trigrams) {
+    const posting = index.trigramIndex.get(tri);
+    if (!posting) continue;
+    for (const entryIdx of posting) {
+      voteCounts.set(entryIdx, (voteCounts.get(entryIdx) ?? 0) + 1);
+    }
+  }
+
+  if (voteCounts.size === 0) return [];
+
+  const MAX_CANDIDATES = 2000;
+  return [...voteCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, MAX_CANDIDATES)
+    .map(([entryIdx]) => entryIdx);
+}
+
+function fuzzySearchIndex<TMeta = unknown>(
+  indexName: string,
+  query: string,
+  limit: number
+): Array<FuzzySearchResult<TMeta>> {
+  const index = fuzzyIndices.get(indexName) as FuzzyIndex<TMeta> | undefined;
+  if (!index) return [];
+
+  const queryLower = normalizeForSearch(query);
+  if (!queryLower) return [];
+
+  const candidates = getFuzzyCandidates(index, queryLower);
+  const ranked: Array<FuzzySearchResult<TMeta>> = [];
+
+  for (const entryIdx of candidates) {
+    const entry = index.entries[entryIdx];
+    if (!entry) continue;
+    const match = fuzzyMatch(queryLower, entry.textLower);
+    if (!match.match) continue;
+    ranked.push({
+      id: entry.id,
+      text: entry.text,
+      meta: entry.meta,
+      score: match.score,
+      indices: match.indices,
+    });
+  }
+
+  ranked.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    if (a.text.length !== b.text.length) return a.text.length - b.text.length;
+    return a.text.localeCompare(b.text);
+  });
+
+  return ranked.slice(0, Math.max(1, limit));
 }
 
 function extractContext(sequence: string, start: number, end: number, pad = 20): string {
@@ -110,6 +266,7 @@ function runSequenceSearch(req: SearchRequest): SearchHit[] {
   const haystack = options?.caseSensitive ? sequence : sequence.toUpperCase();
   const needle = options?.caseSensitive ? query : query.toUpperCase();
   const len = needle.length;
+  const seqLength = sequence.length;
   const hits: SearchHit[] = [];
 
   const searchOneStrand = (seq: string, strand: StrandOption) => {
@@ -117,12 +274,25 @@ function runSequenceSearch(req: SearchRequest): SearchHit[] {
       const window = seq.slice(i, i + len);
       if (maxMismatches === 0) {
         if (window === needle) {
-          hits.push(createHit(i, len, strand, `${strand} strand match`, seq));
+          const position = strand === '-' ? seqLength - (i + len) : i;
+          hits.push(createHit(position, len, strand, `${strand} strand match`, sequence));
         }
       } else {
         const dist = sequenceDistance(window, needle);
         if (dist <= maxMismatches) {
-          hits.push(createHit(i, len, strand, `${strand} strand (${dist} mm)`, seq, undefined, undefined, 1 - dist / len));
+          const position = strand === '-' ? seqLength - (i + len) : i;
+          hits.push(
+            createHit(
+              position,
+              len,
+              strand,
+              `${strand} strand (${dist} mm)`,
+              sequence,
+              undefined,
+              undefined,
+              1 - dist / len
+            )
+          );
         }
       }
       if (hits.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
@@ -146,12 +316,14 @@ function runMotifSearch(req: SearchRequest): SearchHit[] {
   const regex = toRegexFromIupac(query);
   const strandOpt = options?.strand ?? 'both';
   const hits: SearchHit[] = [];
+  const seqLength = sequence.length;
 
   const scan = (seq: string, strand: StrandOption) => {
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(seq)) !== null) {
-      hits.push(createHit(match.index, match[0].length, strand, `${strand} motif`, seq, undefined, 'motif'));
+      const position = strand === '-' ? seqLength - (match.index + match[0].length) : match.index;
+      hits.push(createHit(position, match[0].length, strand, `${strand} motif`, sequence, undefined, 'motif'));
       if (hits.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
     }
   };
@@ -344,6 +516,32 @@ const workerAPI: SearchWorkerAPI = {
   // Ping method for SearchOverlay to verify worker is ready
   async ping(): Promise<boolean> {
     return true;
+  },
+
+  async setFuzzyIndex<TMeta = unknown>(request: FuzzyIndexRequest<TMeta>): Promise<void> {
+    const name = request.index?.trim();
+    if (!name) return;
+
+    const normalizedEntries: Array<FuzzyIndexEntry<TMeta>> = (request.entries ?? [])
+      .filter((e): e is FuzzySearchEntry<TMeta> => Boolean(e && typeof e.id === 'string' && typeof e.text === 'string'))
+      .map((e) => ({
+        ...e,
+        text: e.text,
+        textLower: normalizeForSearch(e.text),
+      }))
+      .filter((e) => e.textLower.length > 0);
+
+    fuzzyIndices.set(name, {
+      entries: normalizedEntries,
+      trigramIndex: buildTrigramIndex(normalizedEntries as Array<FuzzyIndexEntry>),
+    });
+  },
+
+  async fuzzySearch<TMeta = unknown>(request: FuzzySearchRequest): Promise<Array<FuzzySearchResult<TMeta>>> {
+    const name = request.index?.trim();
+    if (!name) return [];
+    const limit = request.limit ?? 50;
+    return fuzzySearchIndex<TMeta>(name, request.query, limit);
   },
 };
 

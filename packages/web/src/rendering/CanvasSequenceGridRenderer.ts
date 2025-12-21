@@ -689,15 +689,21 @@ export class CanvasSequenceGridRenderer {
       this.renderScanlines(ctx);
     }
 
-    // Post-processing hook (skip during scroll for performance)
-    if (this.postProcess && !this.reducedMotion && !this.isScrolling) {
-      this.postProcess.process(this.canvas);
-    }
-
-    // Copy back buffer to main canvas (reset transform to avoid double-scaling)
+    // Copy back buffer to main canvas (reset transform to avoid double-scaling).
+    // IMPORTANT: If we have a WebGL post-process pipeline, apply it *after* the back buffer render
+    // (or directly from backBuffer -> canvas), otherwise the back buffer copy would overwrite it.
+    const shouldPostProcess = !!this.postProcess && !this.reducedMotion && !this.isScrolling;
     if (this.backBuffer && this.backCtx) {
       this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      this.ctx.drawImage(this.backBuffer, 0, 0);
+      const postProcessed = shouldPostProcess ? this.postProcess!.process(this.backBuffer, this.canvas) : false;
+      if (!postProcessed) {
+        this.ctx.drawImage(this.backBuffer, 0, 0);
+      }
+      this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); // Restore DPR scaling
+    } else if (shouldPostProcess) {
+      // Ensure identity transform for the 2D context copy inside PostProcessPipeline.
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.postProcess!.process(this.canvas, this.canvas);
       this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0); // Restore DPR scaling
     }
 
@@ -752,6 +758,9 @@ export class CanvasSequenceGridRenderer {
     // Pre-validate diffMask length to avoid checking in inner loop
     const validDiffMask = diffMask && diffMask.length === sequence.length ? diffMask : null;
 
+    // Track alpha state to avoid excessive context calls
+    let currentAlpha = 1.0;
+
     // Render row by row
     for (let row = startRow; row < endRow; row++) {
       const rowY = (row - startRow) * rowHeight + offsetY;
@@ -777,6 +786,12 @@ export class CanvasSequenceGridRenderer {
         }
 
         if (diffCode > 0) {
+          // Reset alpha for diffs (full visibility)
+          if (currentAlpha !== 1.0) {
+            ctx.globalAlpha = 1.0;
+            currentAlpha = 1.0;
+          }
+
           // Coalesce diffs
           if (diffCode !== pendingDiffType) {
             // Flush pending diff run
@@ -804,6 +819,11 @@ export class CanvasSequenceGridRenderer {
         } else {
           // Flush pending diff run if we hit non-diff
           if (pendingDiffStartCol !== -1) {
+            // Ensure alpha is 1.0 for rect drawing (though we reset above, check just in case logic flows change)
+            if (currentAlpha !== 1.0) {
+              ctx.globalAlpha = 1.0;
+              currentAlpha = 1.0;
+            }
             const runWidth = (col - pendingDiffStartCol) * cellWidth;
             this.drawDiffRect(ctx, pendingDiffStartCol * cellWidth, rowY, runWidth, cellHeight, pendingDiffType);
             pendingDiffStartCol = -1;
@@ -812,8 +832,13 @@ export class CanvasSequenceGridRenderer {
 
           // In diff mode, render matched bases with reduced opacity (dimmed)
           if (diffEnabled) {
-            ctx.save();
-            ctx.globalAlpha = 0.5;
+            if (currentAlpha !== 0.5) {
+              ctx.globalAlpha = 0.5;
+              currentAlpha = 0.5;
+            }
+          } else if (currentAlpha !== 1.0) {
+             ctx.globalAlpha = 1.0;
+             currentAlpha = 1.0;
           }
 
           if (drawAmino) {
@@ -821,29 +846,73 @@ export class CanvasSequenceGridRenderer {
           } else {
             this.glyphAtlas.drawNucleotide(ctx, char, x, rowY, cellWidth, cellHeight);
           }
-
-          if (diffEnabled) {
-            ctx.restore();
-          }
         }
       }
 
       // Flush pending diff at end of row
       if (pendingDiffStartCol !== -1) {
+        if (currentAlpha !== 1.0) {
+          ctx.globalAlpha = 1.0;
+          currentAlpha = 1.0;
+        }
         const runWidth = ((rowEnd - rowStart) - pendingDiffStartCol) * cellWidth;
         this.drawDiffRect(ctx, pendingDiffStartCol * cellWidth, rowY, runWidth, cellHeight, pendingDiffType);
       }
     }
 
+    // Ensure alpha is reset after loop
+    if (currentAlpha !== 1.0) {
+      ctx.globalAlpha = 1.0;
+    }
+
     // Batch render diff text with proper save/restore
     if (diffCells.length > 0) {
+      const contrastCache = new Map<string, string>();
+      const getContrastText = (bg: string): string => {
+        const cached = contrastCache.get(bg);
+        if (cached) return cached;
+        let r = 255;
+        let g = 255;
+        let b = 255;
+
+        if (bg.startsWith('#')) {
+          const hex = bg.slice(1);
+          if (hex.length === 3) {
+            r = parseInt(hex[0] + hex[0], 16);
+            g = parseInt(hex[1] + hex[1], 16);
+            b = parseInt(hex[2] + hex[2], 16);
+          } else if (hex.length === 6) {
+            r = parseInt(hex.slice(0, 2), 16);
+            g = parseInt(hex.slice(2, 4), 16);
+            b = parseInt(hex.slice(4, 6), 16);
+          }
+        } else if (bg.startsWith('rgb')) {
+          const match = bg.match(/rgba?\(([^)]+)\)/);
+          if (match) {
+            const parts = match[1].split(',').map((v) => Number.parseFloat(v.trim()));
+            if (parts.length >= 3 && parts.every((v) => Number.isFinite(v))) {
+              [r, g, b] = parts;
+            }
+          }
+        }
+
+        const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+        const text = luminance > 0.6 ? '#0b0b0b' : '#ffffff';
+        contrastCache.set(bg, text);
+        return text;
+      };
+
       ctx.save();
       ctx.font = `bold ${diffFontSize}px 'JetBrains Mono', monospace`;
-      ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
 
+      let lastFillStyle = '';
       for (const cell of diffCells) {
+        if (cell.fillStyle !== lastFillStyle) {
+          ctx.fillStyle = getContrastText(cell.fillStyle);
+          lastFillStyle = cell.fillStyle;
+        }
         ctx.fillText(cell.char, cell.x + cellWidth / 2, cell.y + cellHeight / 2);
       }
 
@@ -910,6 +979,8 @@ export class CanvasSequenceGridRenderer {
     const seqLength = sequence.length;
     const validDiffMask = diffMask && diffMask.length === sequence.length ? diffMask : null;
 
+    let currentAlpha = 1.0;
+
     for (let row = startRow; row < endRow; row++) {
       const rowY = (row - startRow) * rowHeight + offsetY;
       const rowStart = row * layout.cols;
@@ -934,6 +1005,11 @@ export class CanvasSequenceGridRenderer {
         }
 
         if (diffCode > 0) {
+          if (currentAlpha !== 1.0) {
+            ctx.globalAlpha = 1.0;
+            currentAlpha = 1.0;
+          }
+
           if (diffCode !== pendingDiffType) {
             if (pendingDiffStartCol !== -1) {
               const runWidth = (col - pendingDiffStartCol) * cellWidth;
@@ -954,6 +1030,10 @@ export class CanvasSequenceGridRenderer {
           }
         } else {
           if (pendingDiffStartCol !== -1) {
+            if (currentAlpha !== 1.0) {
+              ctx.globalAlpha = 1.0;
+              currentAlpha = 1.0;
+            }
             const runWidth = (col - pendingDiffStartCol) * cellWidth;
             this.drawDiffRect(ctx, pendingDiffStartCol * cellWidth, rowY, runWidth, rowHeight, pendingDiffType);
             pendingDiffStartCol = -1;
@@ -961,18 +1041,29 @@ export class CanvasSequenceGridRenderer {
           }
           // In diff mode, render matched bases with reduced opacity (dimmed)
           if (diffEnabled) {
-            ctx.save();
-            ctx.globalAlpha = 0.5;
+            if (currentAlpha !== 0.5) {
+              ctx.globalAlpha = 0.5;
+              currentAlpha = 0.5;
+            }
+          } else if (currentAlpha !== 1.0) {
+             ctx.globalAlpha = 1.0;
+             currentAlpha = 1.0;
           }
           this.glyphAtlas.drawNucleotide(ctx, char, x, rowY, cellWidth, cellHeight);
-          if (diffEnabled) {
-            ctx.restore();
-          }
         }
       }
       if (pendingDiffStartCol !== -1) {
+        if (currentAlpha !== 1.0) {
+          ctx.globalAlpha = 1.0;
+          currentAlpha = 1.0;
+        }
         const runWidth = ((rowEnd - rowStart) - pendingDiffStartCol) * cellWidth;
         this.drawDiffRect(ctx, pendingDiffStartCol * cellWidth, rowY, runWidth, rowHeight, pendingDiffType);
+      }
+
+      if (currentAlpha !== 1.0) {
+        ctx.globalAlpha = 1.0;
+        currentAlpha = 1.0;
       }
 
       // Second pass: amino acids (bottom row)

@@ -7,7 +7,7 @@
  * - Slow network conditions (3G, slow 3G)
  * - Limited viewports and touch interactions
  *
- * Run with: bunx playwright test e2e/mobile-performance.spec.ts --project=chromium
+ * Run with: bunx playwright test e2e/mobile-performance.e2e.ts --project=chromium
  */
 
 import { test, expect, type Page, type CDPSession } from '@playwright/test';
@@ -210,38 +210,13 @@ async function collectWebVitals(page: Page): Promise<PerformanceMetrics> {
  */
 async function getMemoryMetrics(page: Page): Promise<MemoryMetrics | null> {
   return await page.evaluate(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const memory = (performance as any).memory;
+    // @ts-expect-error - memory is Chrome-specific
+    const memory = performance.memory;
     if (!memory) return null;
     return {
       usedJSHeapSize: memory.usedJSHeapSize / (1024 * 1024),
       totalJSHeapSize: memory.totalJSHeapSize / (1024 * 1024),
     };
-  });
-}
-
-/**
- * Measure touch interaction responsiveness
- */
-async function measureTouchResponse(page: Page): Promise<number> {
-  return await page.evaluate(() => {
-    return new Promise<number>((resolve) => {
-      const start = performance.now();
-      const handler = () => {
-        const end = performance.now();
-        document.removeEventListener('touchend', handler);
-        resolve(end - start);
-      };
-      document.addEventListener('touchend', handler);
-
-      // Simulate touch event
-      const event = new TouchEvent('touchend', {
-        bubbles: true,
-        cancelable: true,
-        touches: [],
-      });
-      document.body.dispatchEvent(event);
-    });
   });
 }
 

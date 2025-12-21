@@ -40,6 +40,7 @@ import { ReadingFrameVisualizer } from './components/ReadingFrameVisualizer';
 import { GlossaryPanel } from './education/glossary/GlossaryPanel';
 import { LearnMenu } from './components/LearnMenu';
 import { PhageIllustration, hasIllustration } from './components/PhageIllustration';
+import { PhageList } from './components/PhageList';
 
 // Mobile controls
 import {
@@ -148,7 +149,6 @@ export default function App(): React.ReactElement {
   const glossaryOpenerRef = useRef<HTMLElement | null>(null);
   const wasGlossaryOpenRef = useRef(false);
   const glossaryTitleId = useId();
-  const activePhageItemRef = useRef<HTMLButtonElement>(null);
   const enableBackgroundEffects = backgroundEffects && !reducedMotion;
   const geneHint = useMemo(() => {
     if (!beginnerModeEnabled || !selectedGene) return null;
@@ -398,13 +398,6 @@ export default function App(): React.ReactElement {
     const prevIndex = (currentPhageIndex - 1 + phages.length) % phages.length;
     void loadPhage(repository, prevIndex);
   }, [currentPhageIndex, loadPhage, phages.length, repository]);
-
-  // Scroll active phage list item into view when navigating with j/k
-  useEffect(() => {
-    const node = activePhageItemRef.current;
-    if (!node) return;
-    node.scrollIntoView({ block: 'nearest', behavior: reducedMotion ? 'auto' : 'smooth' });
-  }, [currentPhageIndex, reducedMotion]);
 
   // Touch feedback: set ripple origin vars and trigger light haptics when supported.
   useEffect(() => {
@@ -830,59 +823,16 @@ export default function App(): React.ReactElement {
         <div className={`dashboard-layout ${isWide ? 'dashboard-layout--with-sidebar' : ''}`}>
           <section className="panel two-column" aria-label="Phage browser">
             {showList && (
-              <div className={`column column--list ${isMobile && hasSelection ? 'mobile-drawer' : ''}`}>
-              <div className="panel-header">
-                <h3>Phages</h3>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span className="badge">{phages.length}</span>
-                  {isMobile && hasSelection && (
-                    <button
-                      className="btn btn-sm"
-                      onClick={() => setMobileListOpen(false)}
-                      type="button"
-                      aria-label="Close phage list"
-                    >
-                      Close
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="list">
-                {phages.map((phage, idx) => {
-                  const isActive = idx === currentPhageIndex;
-                  return (
-                    <button
-                      key={phage.id}
-                      ref={isActive ? activePhageItemRef : undefined}
-                      className={`list-item ${isActive ? 'active' : ''}`}
-                      onClick={() => handleSelectPhage(idx)}
-                      type="button"
-                    >
-                      <div className="list-item-main">
-                        <div className="list-title">{phage.name}</div>
-                        <div className="list-subtitle text-dim">
-                          {phage.host ?? 'Unknown host'} · {(phage.genomeLength ?? 0).toLocaleString()} bp
-                        </div>
-                      </div>
-                      <div className="list-item-meta">
-                        {phage.lifecycle && (
-                          <span className={`badge badge-tiny ${phage.lifecycle === 'lytic' ? 'badge-warning' : 'badge-info'}`}>
-                            {phage.lifecycle}
-                          </span>
-                        )}
-                        {phage.gcContent != null && (
-                          <span className="meta-gc text-dim">{phage.gcContent.toFixed(1)}%</span>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
-                {phages.length === 0 && (
-                  <div className="text-dim">Phage list will appear once the database loads.</div>
-                )}
-              </div>
-            </div>
-          )}
+              <PhageList
+                phages={phages}
+                currentIndex={currentPhageIndex}
+                onSelect={handleSelectPhage}
+                onClose={() => setMobileListOpen(false)}
+                mobileListOpen={mobileListOpen}
+                hasSelection={hasSelection}
+                isMobile={isMobile}
+              />
+            )}
 
           {showDetail && (
             <div className="column column--detail">

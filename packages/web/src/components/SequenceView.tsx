@@ -5,12 +5,13 @@
  * Displays DNA or amino acid sequences with diff highlighting.
  */
 
-import React, { memo, useCallback, useEffect, useState, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useState, useRef, useMemo } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { translateCodon, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
 import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
 import { useWebPreferences } from '../store/createWebStore';
+import { PostProcessPipeline } from '../rendering';
 import { AminoAcidHUD } from './AminoAcidHUD';
 import { SequenceViewSkeleton } from './ui/Skeleton';
 import { IconDna, IconFlask, IconLayers } from './ui';
@@ -137,6 +138,7 @@ function SequenceViewBase({
   // Store state
   const viewMode = usePhageStore((s) => s.viewMode);
   const readingFrame = usePhageStore((s) => s.readingFrame);
+  const storeScrollPosition = usePhageStore((s) => s.scrollPosition);
   const setViewMode = usePhageStore((s) => s.setViewMode);
   const storeToggleViewMode = usePhageStore((s) => s.toggleViewMode);
   const setReadingFrame = usePhageStore((s) => s.setReadingFrame);
@@ -146,7 +148,35 @@ function SequenceViewBase({
 
   // Web preferences
   const scanlines = useWebPreferences((s) => s.scanlines);
+  const scanlineIntensity = useWebPreferences((s) => s.scanlineIntensity);
   const glow = useWebPreferences((s) => s.glow);
+
+  // Create PostProcessPipeline for WebGL2 CRT effects
+  const postProcess = useMemo(() => {
+    if (reducedMotion || !scanlines) return undefined;
+    return new PostProcessPipeline({
+      reducedMotion,
+      enableScanlines: scanlines,
+      enableBloom: glow,
+      enableChromaticAberration: scanlines,
+      scanlineIntensity: scanlineIntensity,
+      bloomIntensity: glow ? 0.4 : 0,
+      aberrationOffset: scanlines ? 1.5 : 0,
+    });
+  }, [reducedMotion, scanlines, scanlineIntensity, glow]);
+
+  // Update pipeline options when preferences change
+  useEffect(() => {
+    if (postProcess) {
+      postProcess.updateOptions({
+        enableScanlines: scanlines,
+        enableBloom: glow,
+        enableChromaticAberration: scanlines,
+        scanlineIntensity: scanlineIntensity,
+        bloomIntensity: glow ? 0.4 : 0,
+      });
+    }
+  }, [postProcess, scanlines, scanlineIntensity, glow]);
 
   // Sequence grid hook with zoom support
   const {
@@ -154,6 +184,7 @@ function SequenceViewBase({
     visibleRange,
     orientation,
     isMobile,
+    scrollPosition,
     scrollToStart,
     scrollToEnd,
     jumpToDiff,
@@ -174,6 +205,7 @@ function SequenceViewBase({
     diffPositions,
     scanlines,
     glow,
+    postProcess,
     reducedMotion,
     enablePinchZoom: true,
     snapToCodon,
@@ -183,6 +215,18 @@ function SequenceViewBase({
       setScrollPosition(range.startIndex);
     },
   });
+
+  // Keep the renderer in sync when other UI components set scrollPosition
+  // (e.g. gene map clicks, collaboration state sync).
+  const lastExternalScrollRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof storeScrollPosition !== 'number' || !Number.isFinite(storeScrollPosition)) return;
+    const current = scrollPosition;
+    if (Math.abs(storeScrollPosition - current) < 1) return;
+    if (lastExternalScrollRef.current === storeScrollPosition) return;
+    lastExternalScrollRef.current = storeScrollPosition;
+    scrollToPosition(storeScrollPosition);
+  }, [storeScrollPosition, scrollPosition, scrollToPosition]);
 
   // Auto-compact for landscape mobile unless user overrode
   useEffect(() => {

@@ -18,25 +18,20 @@ import React, {
   useCallback,
 } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import { useTheme } from '../../hooks/useTheme';
+// import { useTheme } from '../../hooks/useTheme';
 import { useOverlay, type OverlayId } from '../overlays/OverlayProvider';
 import { Overlay } from '../overlays/Overlay';
 import {
-  FEATURES,
   CATEGORY_META,
   getFeaturesForLevel,
-  getFeaturesByCategory,
   type Feature,
   type FeatureCategory,
   type FeatureContext,
   type ExperienceLevel,
 } from '../../lib/featureRegistry';
 import {
-  IconChevronDown,
-  IconChevronUp,
   IconArrowRight,
   IconSearch,
-  IconCommand,
   IconLayers,
   IconCube,
   IconZap,
@@ -45,7 +40,6 @@ import {
   IconLearn,
   IconDownload,
   IconSettings,
-  IconTarget,
 } from '../ui';
 import './FullFeatureModal.css';
 
@@ -220,8 +214,8 @@ function addRecentFeature(featureId: string): void {
 // =============================================================================
 
 export function FullFeatureModal(): React.ReactElement | null {
-  const { theme } = useTheme();
-  const colors = theme.colors;
+  // const { theme } = useTheme();
+  // const colors = theme.colors;
   const { isOpen, close, open } = useOverlay();
   const modalOpen = isOpen('commandPalette'); // Reusing commandPalette slot for now
 

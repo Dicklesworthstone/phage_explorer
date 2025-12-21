@@ -33,9 +33,10 @@ textarea:focus-visible {
     0 0 12px var(--color-glow);
 }
 
-/* Remove default focus for elements with custom focus handling */
-[tabindex]:focus-visible {
+/* Avoid focus rings on programmatically-focused containers */
+[tabindex="-1"]:focus-visible {
   outline: none;
+  box-shadow: none;
 }
 
 /* =============================================================================

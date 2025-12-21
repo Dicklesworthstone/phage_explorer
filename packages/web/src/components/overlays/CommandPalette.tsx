@@ -11,11 +11,13 @@
  */
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { usePhageStore } from '@phage-explorer/state';
 import { formatFasta, downloadString, copyToClipboard, buildSequenceClipboardPayload } from '../../utils/export';
+import { getSearchWorker, type SearchWorkerAPI, type FuzzySearchEntry, type FuzzySearchResult } from '../../workers';
 import {
   IconAperture,
   IconArrowRight,
@@ -52,6 +54,11 @@ interface Command {
   minLevel?: ExperienceLevel;        // Minimum experience level to show
   contexts?: CommandContext[];       // Show only in these contexts (empty = always)
 }
+
+type CommandPaletteFuzzyMeta =
+  | { kind: 'phage'; phageId: number; host?: string | null }
+  | { kind: 'gene'; phageId: number; startPos: number; endPos?: number; locusTag?: string | null }
+  | { kind: 'command'; commandId: string };
 
 // Fuzzy search scoring
 function fuzzyMatch(pattern: string, str: string): { match: boolean; score: number; indices: number[] } {
@@ -204,13 +211,20 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
+  const [fuzzyCommands, setFuzzyCommands] = useState<Command[]>([]);
+  const [workerReady, setWorkerReady] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
+  const workerInstanceRef = useRef<Worker | null>(null);
+  const usingPreloadedRef = useRef(false);
+  const workerSeqRef = useRef(0);
 
   // Get user's experience level from main store
   const experienceLevel = usePhageStore((s) => s.experienceLevel) as ExperienceLevel;
   const setExperienceLevel = usePhageStore((s) => s.setExperienceLevel);
   const viewMode = usePhageStore((s) => s.viewMode);
+  const phageSummaries = usePhageStore((s) => s.phages);
   const currentPhage = usePhageStore((s) => s.currentPhage);
   const diffReferenceSequence = usePhageStore((s) => s.diffReferenceSequence);
   const activeSimulationId = usePhageStore((s) => s.activeSimulationId);
@@ -233,6 +247,56 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   // Load recent commands on mount
   useEffect(() => {
     setRecentCommandIds(getRecentCommands());
+  }, []);
+
+  // Initialize search worker for off-main-thread fuzzy search (prefer preloaded).
+  useEffect(() => {
+    let cancelled = false;
+
+    const preloaded = getSearchWorker();
+    if (preloaded) {
+      usingPreloadedRef.current = true;
+      workerInstanceRef.current = preloaded.worker;
+      workerRef.current = preloaded.api;
+      if (preloaded.ready) {
+        setWorkerReady(true);
+      } else {
+        void (async () => {
+          try {
+            await preloaded.api.ping();
+            if (!cancelled) setWorkerReady(true);
+          } catch {
+            // Keep workerReady false; the palette still works for commands.
+          }
+        })();
+      }
+      return;
+    }
+
+    usingPreloadedRef.current = false;
+    const worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url), { type: 'module' });
+    workerInstanceRef.current = worker;
+    const wrapped = Comlink.wrap<SearchWorkerAPI>(worker);
+    workerRef.current = wrapped;
+
+    void (async () => {
+      try {
+        await wrapped.ping();
+        if (!cancelled) setWorkerReady(true);
+      } catch {
+        // Keep workerReady false; the palette still works for commands.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (!usingPreloadedRef.current && workerInstanceRef.current) {
+        workerInstanceRef.current.terminate();
+      }
+      workerInstanceRef.current = null;
+      workerRef.current = null;
+      setWorkerReady(false);
+    };
   }, []);
 
   const executeCommand = useCallback((cmd: Command) => {
@@ -267,6 +331,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     { id: 'overlay:analysis', label: 'Analysis Menu', category: 'Analysis', shortcut: 'a', action: () => { close(); open('analysisMenu'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
     { id: 'overlay:simulation', label: 'Simulation Hub', category: 'Simulation', shortcut: 'S', action: () => { close(); open('simulationHub'); }, minLevel: 'intermediate' },
     { id: 'overlay:comparison', label: 'Genome Comparison', category: 'Analysis', shortcut: 'c', action: () => { close(); open('comparison'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'overlay:collaboration', label: 'Collaboration', category: 'Navigation', action: () => { close(); open('collaboration'); }, minLevel: 'intermediate' },
 
     // Analysis commands (require phage loaded)
     { id: 'analysis:gc', label: 'GC Skew Analysis', category: 'Analysis', shortcut: 'g', action: () => { close(); open('gcSkew'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
@@ -275,22 +340,22 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     { id: 'analysis:promoter', label: 'Promoter/RBS Sites', category: 'Analysis', shortcut: 'p', action: () => { close(); open('promoter'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
     { id: 'analysis:repeat', label: 'Repeat Finder', category: 'Analysis', shortcut: 'r', action: () => { close(); open('repeats'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
     { id: 'analysis:cgr', label: 'Chaos Game Representation', category: 'Analysis', shortcut: 'Alt+Shift+C', action: () => { close(); open('cgr'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
-    { id: 'analysis:hilbert', label: 'Hilbert Curve Visualization', category: 'Analysis', shortcut: 'H', action: () => { close(); open('hilbert'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
-    { id: 'analysis:dotplot', label: 'Synteny Dotplot', category: 'Analysis', shortcut: '.', action: () => { close(); open('dotPlot'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
-    { id: 'analysis:gel', label: 'Virtual Gel Electrophoresis', category: 'Analysis', shortcut: 'G', action: () => { close(); open('gel'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
-    { id: 'analysis:constraints', label: 'Structure Constraints', category: 'Analysis', action: () => { close(); open('structureConstraint'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:non-b', label: 'Non-B DNA Structures', category: 'Analysis', action: () => { close(); open('nonBDNA'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:crispr', label: 'CRISPR Arrays', category: 'Analysis', action: () => { close(); open('crispr'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:hilbert', label: 'Hilbert Curve Visualization', category: 'Analysis', shortcut: 'Alt+Shift+H', action: () => { close(); open('hilbert'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:dotplot', label: 'Dot Plot', category: 'Analysis', shortcut: 'Alt+O', action: () => { close(); open('dotPlot'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:gel', label: 'Virtual Gel Electrophoresis', category: 'Analysis', shortcut: 'Alt+G', action: () => { close(); open('gel'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
+    { id: 'analysis:constraints', label: 'Structure Constraints', category: 'Analysis', shortcut: 'Alt+R', action: () => { close(); open('structureConstraint'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:non-b', label: 'Non-B DNA Structures', category: 'Analysis', shortcut: 'Alt+N', action: () => { close(); open('nonBDNA'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:crispr', label: 'CRISPR Arrays', category: 'Analysis', shortcut: 'Alt+C', action: () => { close(); open('crispr'); }, minLevel: 'intermediate', contexts: ['has-phage'] },
 
     // Advanced analysis (power users)
-    { id: 'analysis:kmer', label: 'K-mer Anomaly Detection', category: 'Advanced', shortcut: 'V', action: () => { close(); open('kmerAnomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:anomaly', label: 'Anomaly Detection', category: 'Advanced', shortcut: 'A', action: () => { close(); open('anomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:hgt', label: 'HGT Provenance', category: 'Advanced', shortcut: 'Y', action: () => { close(); open('hgt'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:kmer', label: 'K-mer Anomaly Detection', category: 'Advanced', shortcut: 'j', action: () => { close(); open('kmerAnomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:anomaly', label: 'Anomaly Detection', category: 'Advanced', shortcut: 'Alt+Y', action: () => { close(); open('anomaly'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:hgt', label: 'HGT Provenance', category: 'Advanced', shortcut: 'Alt+H', action: () => { close(); open('hgt'); }, minLevel: 'power', contexts: ['has-phage'] },
     { id: 'analysis:tropism', label: 'Tropism & Receptors', category: 'Advanced', shortcut: '0', action: () => { close(); open('tropism'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:bias', label: 'Codon Bias Decomposition', category: 'Advanced', shortcut: 'J', action: () => { close(); open('biasDecomposition'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:phase', label: 'Phase Portrait', category: 'Advanced', shortcut: 'P', action: () => { close(); open('phasePortrait'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:packaging', label: 'Packaging Pressure', category: 'Advanced', action: () => { close(); open('pressure'); }, minLevel: 'power', contexts: ['has-phage'] },
-    { id: 'analysis:stability', label: 'Virion Stability', category: 'Advanced', action: () => { close(); open('stability'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:bias', label: 'Codon Bias Decomposition', category: 'Advanced', shortcut: 'Alt+B', action: () => { close(); open('biasDecomposition'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:phase', label: 'Phase Portrait', category: 'Advanced', shortcut: 'Alt+Shift+P', action: () => { close(); open('phasePortrait'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:packaging', label: 'Packaging Pressure', category: 'Advanced', shortcut: 'v', action: () => { close(); open('pressure'); }, minLevel: 'power', contexts: ['has-phage'] },
+    { id: 'analysis:stability', label: 'Virion Stability', category: 'Advanced', shortcut: 'Alt+V', action: () => { close(); open('stability'); }, minLevel: 'power', contexts: ['has-phage'] },
 
     { id: 'reference:aa-key', label: 'Amino Acid Key', category: 'Reference', shortcut: 'k', action: () => { close(); open('aaKey'); }, minLevel: 'novice' },
     { id: 'reference:aa-legend', label: 'Amino Acid Legend (compact)', category: 'Reference', shortcut: 'l', action: () => { close(); open('aaLegend'); }, minLevel: 'novice' },
@@ -411,6 +476,51 @@ export function CommandPalette({ commands: customCommands, context: propContext 
 
   const allCommands = customCommands ?? defaultCommands;
 
+  // Keep worker index in sync with current phage list + current phage genes.
+  useEffect(() => {
+    if (!workerReady || !workerRef.current) return;
+
+    const entries: Array<FuzzySearchEntry<CommandPaletteFuzzyMeta>> = [];
+
+    for (const p of phageSummaries) {
+      entries.push({
+        id: `phage:${p.id}`,
+        text: p.name,
+        meta: { kind: 'phage', phageId: p.id, host: p.host },
+      });
+    }
+
+    if (currentPhage?.id && Array.isArray(currentPhage.genes)) {
+      for (const g of currentPhage.genes) {
+        const label = g.product ?? g.name ?? g.locusTag ?? '';
+        if (!label) continue;
+        entries.push({
+          id: `gene:${g.id}`,
+          text: label,
+          meta: {
+            kind: 'gene',
+            phageId: currentPhage.id,
+            startPos: g.startPos ?? 0,
+            endPos: g.endPos ?? undefined,
+            locusTag: g.locusTag ?? null,
+          },
+        });
+      }
+    }
+
+    for (const cmd of allCommands) {
+      if (!meetsLevelRequirement(experienceLevel, cmd.minLevel)) continue;
+      if (!matchesContext(cmd, appContext)) continue;
+      entries.push({
+        id: `cmd:${cmd.id}`,
+        text: cmd.label,
+        meta: { kind: 'command', commandId: cmd.id },
+      });
+    }
+
+    void workerRef.current.setFuzzyIndex({ index: 'command-palette', entries });
+  }, [allCommands, appContext, currentPhage?.genes, currentPhage?.id, experienceLevel, phageSummaries, workerReady]);
+
   // Filter commands by experience level and context
   const commands = useMemo(() => {
     return allCommands.filter(cmd => {
@@ -440,6 +550,10 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       return commands;
     }
 
+    if (workerReady) {
+      return fuzzyCommands;
+    }
+
     const results = commands
       .map(cmd => {
         const labelMatch = fuzzyMatch(query, cmd.label);
@@ -461,7 +575,99 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       .sort((a, b) => b.score - a.score);
 
     return results.map(r => ({ ...r.command, _indices: r.labelIndices }));
-  }, [commands, query]);
+  }, [commands, fuzzyCommands, query, workerReady]);
+
+  // Run off-main-thread fuzzy search (phages + current genes) as the user types.
+  useEffect(() => {
+    if (!paletteOpen) return;
+    if (!workerReady || !workerRef.current) return;
+    if (!query.trim()) {
+      setFuzzyCommands([]);
+      return;
+    }
+
+    const seq = ++workerSeqRef.current;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const results = (await workerRef.current!.fuzzySearch({
+            index: 'command-palette',
+            query,
+            limit: 30,
+          })) as Array<FuzzySearchResult<CommandPaletteFuzzyMeta>>;
+          if (workerSeqRef.current !== seq) return;
+
+          const commandById = new Map(commands.map((c) => [c.id, c] as const));
+
+          const cmds = results
+            .map((r) => {
+              if (r.meta?.kind === 'command') {
+                const base = commandById.get(r.meta.commandId);
+                if (!base) return null;
+                const cmd: Command = { ...base };
+                (cmd as any)._indices = r.indices;
+                return cmd;
+              }
+
+            if (r.meta?.kind === 'phage') {
+              const phageId = r.meta.phageId;
+              const cmd: Command = {
+                id: `nav:phage:${phageId}`,
+                label: r.text,
+                description: r.meta.host ? `Host: ${r.meta.host}` : undefined,
+                category: 'Phages',
+                action: () => {
+                  const state = usePhageStore.getState();
+                  const idx = state.phages.findIndex((p) => p.id === phageId);
+                  if (idx >= 0) state.setCurrentPhageIndex(idx);
+                },
+                minLevel: 'novice',
+              };
+              (cmd as any)._indices = r.indices;
+              return cmd;
+            }
+
+            if (r.meta?.kind === 'gene') {
+              const startBase = r.meta.startPos;
+              const cmd: Command = {
+                id: `nav:gene:${r.id}`,
+                label: r.text,
+                description: `Jump to ${startBase.toLocaleString()} bp${r.meta.locusTag ? ` · ${r.meta.locusTag}` : ''}`,
+                category: 'Genes',
+                action: () => {
+                  const state = usePhageStore.getState();
+                  const target = state.viewMode === 'aa' ? Math.floor(startBase / 3) : startBase;
+                  state.setScrollPosition(target);
+                },
+                minLevel: 'novice',
+                contexts: ['has-phage'],
+              };
+              (cmd as any)._indices = r.indices;
+              return cmd;
+            }
+
+            const cmd: Command = {
+              id: `nav:fuzzy:${r.id}`,
+              label: r.text,
+              category: 'Search',
+              action: () => {},
+              minLevel: 'novice',
+            };
+            (cmd as any)._indices = r.indices;
+            return cmd;
+            })
+            .filter((c): c is Command => Boolean(c));
+
+          setFuzzyCommands(cmds);
+        } catch {
+          if (workerSeqRef.current !== seq) return;
+          setFuzzyCommands([]);
+        }
+      })();
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [commands, paletteOpen, query, workerReady]);
 
   // Reset selection when results change
   useEffect(() => {
@@ -540,7 +746,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
         }
         break;
     }
-  }, [totalItems, selectedIndex, getCommandAtIndex, close]);
+  }, [executeCommand, getCommandAtIndex, selectedIndex, totalItems]);
 
   // Scroll selected item into view
   useEffect(() => {

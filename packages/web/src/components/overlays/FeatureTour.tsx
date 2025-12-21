@@ -4,8 +4,9 @@
  * Guided tour that highlights key UI elements with explanations.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTheme } from '../../hooks/useTheme';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { useOverlay } from './OverlayProvider';
 
 interface TourStep {
@@ -45,6 +46,7 @@ const TOUR_STEPS: TourStep[] = [
 export function FeatureTour(): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
+  const reducedMotion = useReducedMotion();
   const { isOpen, close } = useOverlay();
   const [stepIndex, setStepIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
@@ -65,7 +67,7 @@ export function FeatureTour(): React.ReactElement | null {
     
     if (el) {
       setRect(el.getBoundingClientRect());
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'center' });
     } else {
       // Skip if target not found
       if (stepIndex < TOUR_STEPS.length - 1) {
@@ -74,7 +76,7 @@ export function FeatureTour(): React.ReactElement | null {
         close('tour');
       }
     }
-  }, [stepIndex, isOpen]);
+  }, [stepIndex, isOpen, close, reducedMotion]);
 
   if (!isOpen('tour') || !rect) return null;
 

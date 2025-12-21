@@ -487,6 +487,7 @@ export function buildBallAndStick(
   });
   atomMesh.instanceMatrix.needsUpdate = true;
   if (atomMesh.instanceColor) atomMesh.instanceColor.needsUpdate = true;
+  atomMesh.userData = { pickKind: 'atom' };
   group.add(atomMesh);
 
   // BONDS - neutral gray, thin, doesn't compete with atom colors
@@ -527,6 +528,7 @@ export function buildBallAndStick(
     bondMesh.setMatrixAt(i, bondMatrix);
   }
   bondMesh.instanceMatrix.needsUpdate = true;
+  bondMesh.userData = { pickKind: 'bond' };
   group.add(bondMesh);
   return group;
 }
@@ -605,6 +607,7 @@ export function buildSurfaceImpostor(
   });
   outerMesh.instanceMatrix.needsUpdate = true;
   if (outerMesh.instanceColor) outerMesh.instanceColor.needsUpdate = true;
+  outerMesh.userData = { pickKind: 'atom' };
   group.add(outerMesh);
 
   // Inner core - smaller, brighter, element-colored for depth perception
@@ -630,6 +633,7 @@ export function buildSurfaceImpostor(
   });
   innerMesh.instanceMatrix.needsUpdate = true;
   if (innerMesh.instanceColor) innerMesh.instanceColor.needsUpdate = true;
+  innerMesh.userData = { pickKind: 'atom' };
   group.add(innerMesh);
 
   return group;

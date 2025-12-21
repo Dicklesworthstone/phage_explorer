@@ -4,7 +4,7 @@
  * Types for the browser SQLite adapter and database loading.
  */
 
-import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData } from '@phage-explorer/core';
+import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData, FoldEmbedding } from '@phage-explorer/core';
 
 /**
  * Protein domain annotation from InterPro/Pfam
@@ -116,6 +116,9 @@ export interface PhageRepository {
   getHostTrnaPools?(hostName?: string): Promise<HostTrnaPool[]>;
   getCodonAdaptation?(phageId: number, hostName?: string): Promise<CodonAdaptation[]>;
 
+  // Optional embeddings for FoldQuickview
+  getFoldEmbeddings?(phageId: number, model?: string): Promise<FoldEmbedding[]>;
+
   close(): Promise<void>;
 }
 
@@ -147,10 +150,10 @@ export interface DatabaseLoadProgress {
  * Database manifest for cache invalidation
  */
 export interface DatabaseManifest {
-  version: string;
+  version: number;
   hash: string;
   size: number;
-  compressedSize: number;
+  sizeFormatted?: string;
   generatedAt: string;
 }
 
