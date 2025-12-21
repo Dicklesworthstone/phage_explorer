@@ -8,8 +8,6 @@
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import {
-  detectPromoters,
-  detectTerminators,
   computeRegulatoryConstellation,
   type PromoterHit,
   type TerminatorHit,

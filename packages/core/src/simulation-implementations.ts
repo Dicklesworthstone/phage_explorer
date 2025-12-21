@@ -606,12 +606,10 @@ function runResistanceStep(
   }
 
   // 2. Infection by each phage type (only affects sensitive bacteria)
-  let infected = 0;
   for (let i = 0; i < cocktailSize; i++) {
     const infProp = infectionRate * S * P[i] * tau;
     const infections = Math.min(S, poissonSample(infProp, random));
     S -= infections;
-    infected += infections;
 
     // 3. Burst after latent period (modeled as rate-based release)
     // Infected cells lyse at rate 1/latentPeriod
