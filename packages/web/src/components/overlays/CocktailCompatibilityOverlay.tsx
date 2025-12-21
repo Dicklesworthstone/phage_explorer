@@ -364,10 +364,12 @@ export function CocktailCompatibilityOverlay({
       setPhages([]);
       setDomainsById({});
       setGenesById({});
+      setLoading(false);
       return;
     }
     if (!repository.listPhages || !repository.getProteinDomains) {
       setError('Cocktail matrix requires listPhages + getProteinDomains in the repository.');
+      setLoading(false);
       return;
     }
 
