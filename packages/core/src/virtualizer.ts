@@ -35,6 +35,7 @@ export interface GridBuilderConfig {
   mode: ViewMode;
   frame: ReadingFrame;
   totalLength?: number;
+  contextBefore?: string;
 }
 
 // Build grid from sequence data
@@ -43,7 +44,7 @@ export function buildGrid(
   startIndex: number,
   config: GridBuilderConfig
 ): GridRow[] {
-  const { viewportCols, viewportRows, mode, frame } = config;
+  const { viewportCols, viewportRows, mode, frame, contextBefore } = config;
   const rows: GridRow[] = [];
   const forwardFrame: 0 | 1 | 2 = frame >= 0
     ? (frame as 0 | 1 | 2)
@@ -77,10 +78,6 @@ export function buildGrid(
           // AA Row - Align to center of codon (frame + 1, frame + 4...)
           // Codon starts at p where (p - frame) % 3 == 0
           // Middle is p + 1. So (p + 1 - frame) % 3 == 1 => (p - frame) % 3 == 0.
-          // Wait. 0,1,2. Middle is 1.
-          // If frame=0. Codon 0,1,2. Middle is 1. (1-0)%3 = 1.
-          // If frame=1. Codon 1,2,3. Middle is 2. (2-1)%3 = 1.
-          // So we check if (absolutePos - forwardFrame) % 3 === 1.
           
           const offset = (absolutePos - forwardFrame);
           // Handle negative modulo correctly
@@ -89,8 +86,21 @@ export function buildGrid(
           if (mod === 1) {
             // This is the middle base. Translate the codon surrounding it.
             // Codon is at seqIndex-1, seqIndex, seqIndex+1
-            if (seqIndex > 0 && seqIndex + 1 < sequence.length) {
-              const codon = sequence.substring(seqIndex - 1, seqIndex + 2);
+            
+            let codon = '';
+            if (seqIndex > 0) {
+              codon += sequence[seqIndex - 1];
+            } else if (contextBefore && contextBefore.length > 0) {
+              codon += contextBefore.slice(-1);
+            }
+
+            codon += sequence[seqIndex];
+
+            if (seqIndex + 1 < sequence.length) {
+              codon += sequence[seqIndex + 1];
+            }
+
+            if (codon.length === 3) {
               const aa = translateCodon(codon);
               cells.push({
                 char: aa,
@@ -191,7 +201,7 @@ export function buildGrid(
           // 3N = length of translated part * 3
           // usedLen = sequence.length - offset
           // gap = usedLen % 3
-          const gap = (sequence.length - offset) % 3;
+          const gap = ((sequence.length - offset) % 3 + 3) % 3;
           dnaPos = startIndex + gap + aaIndex * 3;
         }
         
@@ -215,12 +225,23 @@ export function applyDiff(
   grid: GridRow[],
   referenceSequence: string,
   mode: ViewMode,
-  frame: ReadingFrame
+  frame: ReadingFrame,
+  startIndex: number = 0
 ): GridRow[] {
   const forwardFrame: 0 | 1 | 2 = frame >= 0
     ? (frame as 0 | 1 | 2)
     : ((Math.abs(frame) - 1) as 0 | 1 | 2);
-  const refToCompare = mode === 'aa' ? translateSequence(referenceSequence, forwardFrame) : referenceSequence;
+    
+  let refToCompare: string;
+  
+  if (mode === 'aa') {
+    // Calculate local offset into the reference chunk that aligns with global frame
+    // We want (startIndex + offset - forwardFrame) % 3 == 0
+    const offset = ((forwardFrame - startIndex) % 3 + 3) % 3;
+    refToCompare = translateSequence(referenceSequence, offset as 0 | 1 | 2);
+  } else {
+    refToCompare = referenceSequence;
+  }
 
   return grid.map(row => ({
     ...row,
@@ -228,12 +249,44 @@ export function applyDiff(
       // Calculate the index in the reference to compare
       let refIndex: number;
       if (mode === 'aa') {
-        refIndex = Math.floor((cell.position - forwardFrame) / 3);
+        // Calculate AA index relative to the start of this chunk's translation
+        // Absolute AA index = (cell.position - forwardFrame) / 3
+        // Start AA index of chunk = (startIndex + offset - forwardFrame) / 3
+        // relative index = Absolute - Start
+        // Or simpler: mapping the grid cell back to the refToCompare string
+        
+        // cell.position is absolute DNA index of the codon start (or middle?)
+        // In buildGrid AA mode: cell.position is DNA pos (start of codon? no, buildGrid uses slightly diff logic for dual vs aa)
+        // In 'aa' mode, buildGrid sets cell.position to:
+        // Forward: startIndex + offset + index*3. 
+        // This is the DNA start index of the codon represented by this AA.
+        
+        // So we want to find which AA in refToCompare corresponds to this DNA position.
+        // refToCompare[0] corresponds to DNA at (startIndex + offset).
+        // refToCompare[k] corresponds to DNA at (startIndex + offset + k*3).
+        
+        // cell.position = startIndex + offset + k*3
+        // k = (cell.position - (startIndex + offset)) / 3
+        
+        const offset = ((forwardFrame - startIndex) % 3 + 3) % 3;
+        const alignStart = startIndex + offset;
+        
+        // Only valid if cell.position is aligned to the frame grid (which it should be from buildGrid)
+        refIndex = Math.floor((cell.position - alignStart) / 3);
+        
       } else {
-        refIndex = cell.position;
+        // DNA mode: cell.position is absolute.
+        // referenceSequence starts at startIndex.
+        refIndex = cell.position - startIndex;
+      }
+
+      // Bounds check
+      if (refIndex < 0 || refIndex >= refToCompare.length) {
+        return cell; // No diff info available
       }
 
       const refChar = refToCompare[refIndex];
+      // Compare (case-insensitive for DNA just in case, though usually uppercase)
       const diff: GridCell['diff'] = refChar === cell.char ? 'same' : 'different';
 
       return { ...cell, diff };

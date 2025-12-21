@@ -36,7 +36,9 @@ export function digestGenome(
   // Find all matches
   while ((match = regex.exec(seq)) !== null) {
     const cutPos = match.index + enzyme.cutOffset;
-    cutSites.push(cutPos);
+    if (cutPos >= 0 && cutPos <= seq.length) {
+      cutSites.push(cutPos);
+    }
   }
 
   if (cutSites.length === 0) {

@@ -181,14 +181,23 @@ function powerIteration(
     const vNew = XTXv;
     normalize(vNew);
 
-    // Check convergence
+    // Check convergence (handle sign flip)
+    // If v and vNew point in opposite directions (dot product < 0),
+    // they represent the same eigenvector. Align them before checking diff.
+    const dot = dotProduct(v, vNew);
+    if (dot < 0) {
+      for (let i = 0; i < dim; i++) {
+        vNew[i] = -vNew[i];
+      }
+    }
+
     let diff = 0;
     for (let i = 0; i < dim; i++) {
       diff += Math.abs(vNew[i] - v[i]);
     }
 
     v = vNew;
-    eigenvalue = newEigenvalue;
+    eigenvalue = newEigenvalue; // Eigenvalue magnitude is the same regardless of sign
 
     if (diff < tolerance) {
       break;

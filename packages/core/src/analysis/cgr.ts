@@ -55,11 +55,11 @@ export function computeCGR(sequence: string, k: number = 6): CGRResult {
     // Only start plotting after k steps (transient removal)
     if (i >= k - 1) {
       // Map to grid coordinates
-      const gridX = Math.floor(x * resolution);
-      const gridY = Math.floor(y * resolution);
+      // Clamp independently to prevent row wrapping artifacts at x=1.0 or y=1.0
+      const gridX = Math.min(Math.floor(x * resolution), resolution - 1);
+      const gridY = Math.min(Math.floor(y * resolution), resolution - 1);
       
-      // Safety clamp
-      const idx = Math.min(gridY * resolution + gridX, grid.length - 1);
+      const idx = gridY * resolution + gridX;
       
       grid[idx]++;
       maxCount = Math.max(maxCount, grid[idx]);

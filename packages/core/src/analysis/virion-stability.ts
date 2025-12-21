@@ -2,6 +2,7 @@ import type { PhageFull } from '../types';
 
 export interface StabilityInputs {
   genomeLength?: number | null;
+  /** GC percentage (0–100), consistent with DB storage */
   gcContent?: number | null;
   morphology?: string | null;
   baltimoreGroup?: string | null;
@@ -61,8 +62,8 @@ function packagingPenalty(genomeLength?: number | null): number {
 }
 
 function estimateMeltingTemp(gcContent?: number | null, baseIndex = 0.5): number {
-  const gc = gcContent ?? 0.45;
-  const gcNorm = normalize(gc, 0.35, 0.70);
+  const gc = gcContent ?? 50;
+  const gcNorm = normalize(gc, 35, 70);
   // Baseline 45–65°C depending on GC and intrinsic stability
   const baseTm = 45 + gcNorm * 15;
   const bonus = (baseIndex - 0.5) * 25;
@@ -77,7 +78,7 @@ function temperatureFactor(tempC: number, meltingTemp: number): number {
   if (tempC >= meltingTemp) return 0.1;
   const span = Math.max(1, meltingTemp - 25);
   const drop = (tempC - 25) / span;
-  return clamp01(0.75 - drop * 0.65); // Falls toward 0.1 near melting
+  return clamp01(0.748 - drop * 0.65); // Falls toward ~0.1 near melting
 }
 
 function saltFactor(saltMilliMolar: number): number {
@@ -97,14 +98,13 @@ export function predictVirionStability(
   inputs: StabilityInputs,
   env: StabilityEnvironment
 ): StabilityEstimate {
-  const gc = inputs.gcContent ?? 0.5;
-  const gcNorm = normalize(gc, 0.35, 0.7);
+  const gc = inputs.gcContent ?? 50;
+  const gcNorm = normalize(gc, 35, 70);
   const morph = morphologyBoost(inputs.morphology);
   const baltimore = baltimoreBoost(inputs.baltimoreGroup);
   const packaging = packagingPenalty(inputs.genomeLength);
 
-  const intrinsic =
-    clamp01(0.48 + 0.32 * (gcNorm - 0.5) + morph + baltimore) - packaging;
+  const intrinsic = 0.53 + 0.32 * (gcNorm - 0.5) + morph + baltimore - packaging;
   const intrinsicClamped = clamp01(intrinsic);
 
   const meltingTemp = estimateMeltingTemp(gc, intrinsicClamped);
@@ -117,7 +117,7 @@ export function predictVirionStability(
   const warnings: string[] = [];
   const notes: string[] = [];
 
-  if ((inputs.gcContent ?? 0) < 0.42) warnings.push('Low GC content reduces thermal robustness.');
+  if (inputs.gcContent != null && inputs.gcContent < 42) warnings.push('Low GC content reduces thermal robustness.');
   if ((inputs.genomeLength ?? 0) > 120_000) warnings.push('Large genome increases capsid pressure; avoid high temp.');
   if (env.temperatureC > 37) warnings.push('Handling above 37°C risks premature capsid softening.');
   if (env.saltMilliMolar < 30) warnings.push('Very low salt can disrupt capsid charge shielding.');
@@ -160,4 +160,3 @@ export function predictVirionStabilityFromPhage(
     env
   );
 }
-

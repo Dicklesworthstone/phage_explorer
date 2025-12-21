@@ -8,6 +8,26 @@ export interface FoldEmbedding {
   product: string | null;
 }
 
+export function encodeFloat32VectorLE(vector: number[]): Uint8Array {
+  const buffer = new ArrayBuffer(vector.length * 4);
+  const view = new DataView(buffer);
+  for (let i = 0; i < vector.length; i++) {
+    view.setFloat32(i * 4, vector[i] ?? 0, true);
+  }
+  return new Uint8Array(buffer);
+}
+
+export function decodeFloat32VectorLE(bytes: Uint8Array | ArrayBuffer, dims?: number): number[] {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const count = dims ?? Math.floor(data.byteLength / 4);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const out = new Array<number>(count);
+  for (let i = 0; i < count; i++) {
+    out[i] = view.getFloat32(i * 4, true);
+  }
+  return out;
+}
+
 export interface Neighbor {
   geneId: number;
   distance: number; // lower = closer
@@ -19,6 +39,11 @@ export interface QuickviewResult {
   novelty: number; // 0..1, higher = more novel
   neighbors: Neighbor[];
   note?: string;
+}
+
+export interface SelfSimilarityMatrixResult {
+  bins: number;
+  matrix: Float32Array; // row-major, length = bins * bins, values 0..1
 }
 
 // Lightweight cosine distance for small vectors
@@ -72,6 +97,76 @@ export function computeNovelty(
   const novelty = Math.min(1, Math.max(0, meanDist)); // cosine distance in [0,2]; clamp to 0..1
 
   return { novelty, neighbors };
+}
+
+function countKmers(sequence: string, k: number): Map<string, number> {
+  const counts = new Map<string, number>();
+  const upper = sequence.toUpperCase();
+  if (upper.length < k) return counts;
+
+  for (let i = 0; i <= upper.length - k; i++) {
+    const kmer = upper.slice(i, i + k);
+    // Skip windows that contain stop codons/unknowns; this is a visualization, so be conservative.
+    if (kmer.includes('*')) continue;
+    counts.set(kmer, (counts.get(kmer) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function cosineSimilaritySparse(a: Map<string, number>, b: Map<string, number>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+
+  for (const v of a.values()) na += v * v;
+  for (const v of b.values()) nb += v * v;
+
+  for (const [key, v] of small.entries()) {
+    const w = large.get(key);
+    if (w) dot += v * w;
+  }
+
+  const denom = Math.sqrt(na) * Math.sqrt(nb) || 1;
+  const sim = dot / denom;
+  return Math.max(0, Math.min(1, sim));
+}
+
+/**
+ * Compute a lightweight protein self-similarity matrix suitable for an ASCII thumbnail.
+ *
+ * This is NOT a physical contact map; it's a k-mer composition similarity map between
+ * bins along the protein. It’s meant as a cheap “shape” hint for quickviews.
+ */
+export function computeProteinSelfSimilarityMatrix(
+  aminoAcids: string,
+  options: { k?: number; bins?: number } = {}
+): SelfSimilarityMatrixResult {
+  const seq = aminoAcids.trim();
+  const len = seq.length;
+  if (len === 0) return { bins: 0, matrix: new Float32Array(0) };
+
+  const k = Math.max(2, Math.min(5, options.k ?? 3));
+  const targetBins = options.bins ?? Math.min(24, Math.max(8, Math.floor(len / 10)));
+  const bins = Math.max(1, Math.min(targetBins, len));
+
+  const windows: Array<Map<string, number>> = new Array(bins);
+  for (let i = 0; i < bins; i++) {
+    const start = Math.floor((i / bins) * len);
+    const end = Math.max(start + 1, Math.floor(((i + 1) / bins) * len));
+    windows[i] = countKmers(seq.slice(start, Math.min(len, end)), k);
+  }
+
+  const matrix = new Float32Array(bins * bins);
+  for (let y = 0; y < bins; y++) {
+    for (let x = 0; x < bins; x++) {
+      matrix[y * bins + x] = cosineSimilaritySparse(windows[y], windows[x]);
+    }
+  }
+
+  return { bins, matrix };
 }
 
 // Map genes to embeddings by geneId

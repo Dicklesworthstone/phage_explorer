@@ -82,7 +82,7 @@ export function computeSequenceLogo(
         char,
         height: freq * infoContent,
       }))
-      .filter(l => l.height > 0.01) // Filter minimal contributions
+      .filter(l => l.height > 0.001) // Filter minimal contributions
       .sort((a, b) => a.height - b.height); // Sort ascending for stacking
 
     columns.push({

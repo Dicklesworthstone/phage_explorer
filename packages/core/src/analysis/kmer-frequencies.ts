@@ -5,6 +5,8 @@
  * genomic signature comparison and phylogenetic profiling.
  */
 
+import { reverseComplement } from '../codons';
+
 export interface KmerVector {
   phageId: number;
   name: string;
@@ -21,20 +23,12 @@ export interface KmerFrequencyOptions {
 
 const NUCLEOTIDES = ['A', 'C', 'G', 'T'] as const;
 
-// Precompute nucleotide to index mapping
-const NUCLEOTIDE_INDEX: Record<string, number> = {
-  A: 0,
-  C: 1,
-  G: 2,
-  T: 3,
-  a: 0,
-  c: 1,
-  g: 2,
-  t: 3,
-};
-
-// Import reverseComplement from codons to avoid duplicate export
-import { reverseComplement } from '../codons';
+// Optimized char code map
+const CHAR_MAP = new Int8Array(256).fill(-1);
+CHAR_MAP['A'.charCodeAt(0)] = 0; CHAR_MAP['a'.charCodeAt(0)] = 0;
+CHAR_MAP['C'.charCodeAt(0)] = 1; CHAR_MAP['c'.charCodeAt(0)] = 1;
+CHAR_MAP['G'.charCodeAt(0)] = 2; CHAR_MAP['g'.charCodeAt(0)] = 2;
+CHAR_MAP['T'.charCodeAt(0)] = 3; CHAR_MAP['t'.charCodeAt(0)] = 3;
 
 /**
  * Generate all k-mers of length k
@@ -59,9 +53,9 @@ export function generateKmers(k: number): string[] {
 export function kmerToIndex(kmer: string): number {
   let index = 0;
   for (let i = 0; i < kmer.length; i++) {
-    const nucIndex = NUCLEOTIDE_INDEX[kmer[i]];
-    if (nucIndex === undefined) return -1; // Invalid nucleotide
-    index = index * 4 + nucIndex;
+    const code = CHAR_MAP[kmer.charCodeAt(i)];
+    if (code === -1) return -1;
+    index = (index << 2) | code;
   }
   return index;
 }
@@ -73,44 +67,56 @@ export function indexToKmer(index: number, k: number): string {
   let result = '';
   let remaining = index;
   for (let i = 0; i < k; i++) {
-    result = NUCLEOTIDES[remaining % 4] + result;
-    remaining = Math.floor(remaining / 4);
+    result = NUCLEOTIDES[remaining & 3] + result; // & 3 is equivalent to % 4
+    remaining >>= 2; // equivalent to floor(remaining / 4)
   }
   return result;
 }
 
 /**
  * Compute k-mer frequency vector for a sequence
+ * Optimized with bitwise rolling hash
  */
 export function computeKmerFrequencies(
   sequence: string,
   options: KmerFrequencyOptions = {}
 ): Float32Array {
   const { k = 4, normalize = true, includeReverseComplement = true } = options;
-  const vectorSize = Math.pow(4, k); // 256 for k=4
+  
+  // Limit k to 12 to prevent excessive memory usage.
+  // 4^12 * 4 bytes = 64MB. 4^13 would be 256MB, 4^15 would be 4GB.
+  if (k > 12) throw new Error('k > 12 not supported by dense vector implementation (use sparse map for k > 12)');
+
+  const vectorSize = 1 << (2 * k); // 4^k
   const counts = new Float32Array(vectorSize);
+  const mask = vectorSize - 1; // All 1s for 2*k bits
 
-  const seq = sequence.toUpperCase();
-
-  // Count k-mers in forward strand
-  for (let i = 0; i <= seq.length - k; i++) {
-    const kmer = seq.slice(i, i + k);
-    const index = kmerToIndex(kmer);
-    if (index >= 0) {
-      counts[index]++;
-    }
-  }
-
-  // Optionally add reverse complement counts
-  if (includeReverseComplement) {
-    const revComp = reverseComplement(seq);
-    for (let i = 0; i <= revComp.length - k; i++) {
-      const kmer = revComp.slice(i, i + k);
-      const index = kmerToIndex(kmer);
-      if (index >= 0) {
-        counts[index]++;
+  // Helper to count k-mers in a string
+  const countInSeq = (seq: string) => {
+    let hash = 0;
+    let len = 0;
+    
+    for (let i = 0; i < seq.length; i++) {
+      const code = CHAR_MAP[seq.charCodeAt(i)];
+      
+      if (code !== -1) {
+        hash = ((hash << 2) & mask) | code;
+        len++;
+        if (len >= k) {
+          counts[hash]++;
+        }
+      } else {
+        // Reset on invalid char (N, etc.)
+        hash = 0;
+        len = 0;
       }
     }
+  };
+
+  countInSeq(sequence);
+
+  if (includeReverseComplement) {
+    countInSeq(reverseComplement(sequence));
   }
 
   // Normalize to frequencies

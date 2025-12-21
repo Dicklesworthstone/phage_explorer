@@ -54,32 +54,37 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
 
   init: (phage: PhageFull | null = null, params = {}, rng?: () => number): RibosomeTrafficState => {
     const random = rng ?? Math.random;
-    // Determine mRNA to simulate
-    // For now, take the first gene's sequence or a chunk of the genome if no genes
-    // Or simpler: just use a dummy sequence if no phage, or the first 300 codons of the genome
-    // In a real app, we'd want to select a specific gene.
-
     let codonRates: number[] = [];
     let mRnaId = 'Synthetic';
 
     if (phage && phage.genes && phage.genes.length > 0) {
       // Pick the longest gene for interesting dynamics
-      // Or just the first one
       const gene = [...phage.genes].sort((a, b) => (b.endPos - b.startPos) - (a.endPos - a.startPos))[0];
       mRnaId = gene.product ?? gene.locusTag ?? `Gene ${gene.id}`;
-      // We don't have the sequence here directly in PhageFull!
-      // This is a limitation of the interface. `init` assumes it has everything.
-      // But `PhageFull` doesn't contain the raw sequence.
-      // We might need to pass the sequence in `init` or handle it differently.
-      // For TUI, the store holds the sequence.
-      // But `init` is called by `usePhageStore`.
-      // The store has `currentPhage` and `sequence` (string).
-      // However, `launchSimulation` calls `init`.
-      // We will assume for now we generate random rates if we can't get real ones,
-      // OR we update the state later with real rates once loaded.
       
-      // Generating synthetic rates for now to ensure it works
-      codonRates = Array.from({ length: 300 }, () => 0.1 + random() * 0.9);
+      const geneLen = Math.floor((gene.endPos - gene.startPos) / 3);
+      const len = Math.min(1000, Math.max(100, geneLen));
+
+      // Use codon usage to generate "realistic" rate landscape
+      // Rare codons -> slow (low rate), Abundant -> fast (high rate)
+      if (phage.codonUsage && phage.codonUsage.codonCounts) {
+        const counts = Object.values(phage.codonUsage.codonCounts);
+        const maxCount = Math.max(1, ...counts);
+        
+        // Generate rates based on sampling from the usage distribution
+        // (Since we don't have the exact sequence, we simulate a gene with similar codon bias)
+        codonRates = Array.from({ length: len }, () => {
+          // Pick a random codon based on frequency? 
+          // Simplified: just pick a random efficiency from the genome's distribution
+          const randomCount = counts[Math.floor(random() * counts.length)] ?? 1;
+          const efficiency = randomCount / maxCount;
+          // Map efficiency 0..1 to rate 0.1..1.0
+          return 0.1 + efficiency * 0.9;
+        });
+      } else {
+        // Fallback if no usage data
+        codonRates = Array.from({ length: len }, () => 0.1 + random() * 0.9);
+      }
     } else {
       // Synthetic mRNA
       codonRates = Array.from({ length: 200 }, () => 0.1 + random() * 0.9);
@@ -103,27 +108,84 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
       stallEvents: 0,
       densityHistory: Array(40).fill(0),
       productionHistory: Array(40).fill(0),
+      stallHistory: Array(40).fill(0),
     };
   },
 
   step: (state: RibosomeTrafficState, dt: number, rng?: () => number): RibosomeTrafficState => {
     const random = rng ?? Math.random;
-    const { ribosomes, codonRates, params } = state;
+    
+    // Determine number of discrete steps to execute
+    // discrete speed scaling: floor(dt) steps + probability check for remainder
+    const steps = Math.floor(dt);
+    const remainder = dt - steps;
+    const totalSteps = steps + (random() < remainder ? 1 : 0);
+    
+    if (totalSteps === 0) {
+      return {
+        ...state,
+        time: state.time + dt
+      };
+    }
+
+    let currentRibosomes = state.ribosomes;
+    let currentProteins = state.proteinsProduced;
+    let currentStalls = state.stallEvents;
+
+    for (let s = 0; s < totalSteps; s++) {
+      const result = runSingleTasepStep(
+        currentRibosomes,
+        currentProteins,
+        currentStalls,
+        state.codonRates,
+        state.params,
+        random
+      );
+      currentRibosomes = result.ribosomes;
+      currentProteins = result.proteinsProduced;
+      currentStalls = result.stallEvents;
+    }
+
+    // Update history only once per frame
+    const newDensityHistory = [...state.densityHistory.slice(1), currentRibosomes.length];
+    const newProductionHistory = [...state.productionHistory.slice(1), currentProteins];
+    const newStallHistory = [...(state.stallHistory || Array(40).fill(0)).slice(1), currentStalls];
+
+    return {
+      ...state,
+      time: state.time + dt,
+      ribosomes: currentRibosomes,
+      proteinsProduced: currentProteins,
+      stallEvents: currentStalls,
+      densityHistory: newDensityHistory,
+      productionHistory: newProductionHistory,
+      stallHistory: newStallHistory,
+    };
+  },
+
+  getSummary: (state: RibosomeTrafficState) => {
+    return `Ribosomes: ${state.ribosomes.length} | Proteins: ${state.proteinsProduced} | Stalls: ${state.stallEvents}`;
+  },
+};
+
+function runSingleTasepStep(
+  ribosomes: number[],
+  proteinsProduced: number,
+  stallEvents: number,
+  codonRates: number[],
+  params: Record<string, number | boolean | string>,
+  random: () => number
+): { ribosomes: number[]; proteinsProduced: number; stallEvents: number } {
     const alpha = Number(params.initiationRate);
     const beta = Number(params.terminationRate);
     const footprint = Number(params.footprint);
     const length = codonRates.length;
 
     let stalls = 0;
+    let proteins = proteinsProduced;
 
     // Rebuild positions from 3' to 5' to handle exclusion.
-    // We use push() to build [3' ... 5'] array (descending indices) then reverse it at the end to get [5' ... 3'] (ascending).
-    // This avoids O(N^2) behavior of unshift() in a loop.
     const newPositionsReversed: number[] = [];
-    let proteins = state.proteinsProduced;
-    
-    // We process from 3' to 5' (end of array to start)
-    // `ribosomes` is sorted ascending. 3' is at end.
     
     for (let i = ribosomes.length - 1; i >= 0; i--) {
         const pos = ribosomes[i];
@@ -146,11 +208,10 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
         const rate = codonRates[pos] || 0.1;
         
         // Check obstruction from the ribosome ahead
-        // The ribosome ahead was just processed and is the *last* element in newPositionsReversed
         let blocked = false;
         if (newPositionsReversed.length > 0) {
             const nextPos = newPositionsReversed[newPositionsReversed.length - 1]; 
-            if (nextPos - pos <= footprint) {
+            if (nextPos - pos < footprint) {
                 blocked = true;
             }
         }
@@ -183,25 +244,9 @@ export const ribosomeTrafficSimulation: Simulation<RibosomeTrafficState> = {
         }
     }
     
-    // Reverse to restore ascending order [0, ..., length]
-    const newPositions = newPositionsReversed.reverse();
-    
-    // Update history
-    const newDensityHistory = [...state.densityHistory.slice(1), newPositions.length];
-    const newProductionHistory = [...state.productionHistory.slice(1), proteins];
-
     return {
-      ...state,
-      time: state.time + dt,
-      ribosomes: newPositions,
+      ribosomes: newPositionsReversed.reverse(),
       proteinsProduced: proteins,
-      stallEvents: state.stallEvents + stalls,
-      densityHistory: newDensityHistory,
-      productionHistory: newProductionHistory,
+      stallEvents: stallEvents + stalls,
     };
-  },
-
-  getSummary: (state: RibosomeTrafficState) => {
-    return `Ribosomes: ${state.ribosomes.length} | Proteins: ${state.proteinsProduced} | Stalls: ${state.stallEvents}`;
-  },
-};
+}

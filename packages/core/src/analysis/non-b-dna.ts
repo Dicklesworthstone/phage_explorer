@@ -97,11 +97,15 @@ export function detectG4(sequence: string, windowSize = 25, threshold = 1.5): No
       }
     } else if (inRegion) {
       inRegion = false;
-      const regionEnd = i + windowSize - 1;
+      // Last valid window was at i-1.
+      // Window range: [i-1, i-1 + windowSize)
+      // Inclusive end: i-1 + windowSize - 1 = i + windowSize - 2
+      const regionEnd = i + windowSize - 2;
       // Determine strand based on sign of sum
       // Positive sum -> G-rich -> + strand G4
       // Negative sum -> C-rich -> - strand G4 (G-rich on complement)
-      const regionSum = scores.slice(regionStart, i + windowSize).reduce((a, b) => a + b, 0);
+      // Recalculate sum for the specific region
+      const regionSum = scores.slice(regionStart, regionEnd + 1).reduce((a, b) => a + b, 0);
       
       structures.push({
         type: 'G4',
@@ -146,13 +150,11 @@ export function detectG4(sequence: string, windowSize = 25, threshold = 1.5): No
  */
 const Z_SCORES: Record<string, number> = {
   'CG': 1.0,
-  'CA': 0.5, 'TG': 0.5, 'AC': 0.5, 'GT': 0.5, // TG/AC are CA/GT on complement?
-  // Actually Z-DNA favors alternating purine-pyrimidine
-  // (GC)n is good but (CG)n is best.
-  // Let's use simplified propensity.
+  'CA': 0.5, 'TG': 0.5, 'AC': 0.5, 'GT': 0.5, // TG/AC are CA/GT on complement
   'GC': 0.4,
   'AT': -0.1, 'TA': -0.1,
-  'AA': -0.5, 'TT': -0.5, 'GG': -0.5, 'CC': -0.5, // Homo-dinucleotides bad for Z
+  'AA': -0.5, 'TT': -0.5, 'GG': -0.5, 'CC': -0.5, // Homo-dinucleotides bad
+  'AG': -0.5, 'GA': -0.5, 'CT': -0.5, 'TC': -0.5, // Purine-Purine / Pyrimidine-Pyrimidine bad
 };
 
 export function detectZDNA(sequence: string, windowSize = 12, threshold = 0.5): NonBStructure[] {
@@ -188,14 +190,15 @@ export function detectZDNA(sequence: string, windowSize = 12, threshold = 0.5): 
       }
     } else if (inRegion) {
       inRegion = false;
-      const regionEnd = i + windowSize;
+      // Last valid window at i-1. Inclusive end = i + windowSize - 2
+      const regionEnd = i + windowSize - 2;
       structures.push({
         type: 'Z-DNA',
         start: regionStart,
         end: regionEnd,
         strand: 'both', // Z-DNA involves both strands
         score: maxScore,
-        sequence: seq.slice(regionStart, regionEnd),
+        sequence: seq.slice(regionStart, regionEnd + 1),
       });
     }
 

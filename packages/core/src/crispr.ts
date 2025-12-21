@@ -127,7 +127,7 @@ export function analyzeCRISPRPressure(sequence: string, genes: GeneInfo[]): CRIS
       }
 
       spacerHits.push({
-        position: pos + 1,
+        position: pos,
         sequence: spacer,
         host: 'E. coli K-12', // Mock host
         crisprType: type,
@@ -140,22 +140,6 @@ export function analyzeCRISPRPressure(sequence: string, genes: GeneInfo[]): CRIS
     }
   });
 
-  // Add some random noise hits for visual density if sequence is long
-  if (sequence.length > 5000) {
-    const numRandomHits = Math.floor(sequence.length / 2000);
-    for (let i = 0; i < numRandomHits; i++) {
-        spacerHits.push({
-            position: Math.floor(Math.random() * sequence.length) + 1,
-            sequence: 'RANDOM',
-            host: 'S. enterica',
-            crisprType: 'I',
-            matchScore: 0.5 + Math.random() * 0.4,
-            pamStatus: Math.random() > 0.7 ? 'valid' : 'invalid',
-            strand: Math.random() > 0.5 ? 'coding' : 'template'
-        });
-    }
-  }
-
   // 2. Predict Acr Candidates
   const acrCandidates = predictAcrCandidates(genes, seqUpper);
 
@@ -165,13 +149,13 @@ export function analyzeCRISPRPressure(sequence: string, genes: GeneInfo[]): CRIS
 
   for (let i = 0; i < sequence.length; i += windowSize) {
     const end = Math.min(i + windowSize, sequence.length);
-    const pressure = calculatePressure(spacerHits, i + 1, end);
-    const count = spacerHits.filter(h => h.position >= i + 1 && h.position < end).length;
+    const pressure = calculatePressure(spacerHits, i, end);
+    const count = spacerHits.filter(h => h.position >= i && h.position < end).length;
     
     if (pressure > maxPressure) maxPressure = pressure;
 
     pressureWindows.push({
-      start: i + 1,
+      start: i,
       end,
       pressureIndex: pressure,
       spacerCount: count,

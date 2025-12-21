@@ -56,16 +56,26 @@ export function calculateSelectionPressure(
   windowSize = 150
 ): SelectionAnalysis {
   const len = Math.min(seqA.length, seqB.length);
+  if (len < 3) {
+    return { windows: [], globalOmega: 1.0 };
+  }
+
+  // Align window to codons
+  let effectiveWindow = Math.max(3, Math.min(windowSize, len));
+  effectiveWindow -= (effectiveWindow % 3);
+  
   const windows: SelectionWindow[] = [];
   let totalDN = 0;
   let totalDS = 0;
   let validWindows = 0;
 
   // Process in codon windows
-  for (let i = 0; i < len - windowSize; i += windowSize) {
-    // Adjust to codon boundary
-    const start = i - (i % 3);
-    const end = Math.min(len, start + windowSize);
+  for (let i = 0; i < len; i += effectiveWindow) {
+    const start = i;
+    const end = Math.min(len, start + effectiveWindow);
+    
+    // Skip if remainder is too small for a codon
+    if (end - start < 3) break;
     
     let Sd = 0; // Synonymous differences
     let Nd = 0; // Non-synonymous differences
@@ -91,29 +101,31 @@ export function calculateSelectionPressure(
       // Compare
       if (codonA !== codonB) {
         const aaA = translateCodon(codonA);
-        const aaB = translateCodon(codonB);
         
-        // Simply count diffs (simplified, ignores multiple mutations per codon path)
-        let diffs = 0;
-        if (codonA[0] !== codonB[0]) diffs++;
-        if (codonA[1] !== codonB[1]) diffs++;
-        if (codonA[2] !== codonB[2]) diffs++;
-
-        if (aaA === aaB) {
-          Sd += diffs; // All changes synonymous
-        } else {
-          Nd += diffs; // Assume non-synonymous (simplification)
+        // Count differences per position
+        for (let pos = 0; pos < 3; pos++) {
+          if (codonA[pos] !== codonB[pos]) {
+             // Create a hypothetical intermediate codon with just this single base change
+             const mutantCodon = codonA.slice(0, pos) + codonB[pos] + codonA.slice(pos + 1);
+             const mutantAA = translateCodon(mutantCodon);
+             
+             if (mutantAA === aaA) {
+               Sd++;
+             } else {
+               Nd++;
+             }
+          }
         }
       }
     }
 
     // Jukes-Cantor correction (simplified)
-    const pN = N_sites > 0 ? Nd / N_sites : 0;
-    const pS = S_sites > 0 ? Sd / S_sites : 0;
+    // Clamp proportions to < 0.75 to avoid log domain errors
+    const pN = N_sites > 0 ? Math.min(0.74, Nd / N_sites) : 0;
+    const pS = S_sites > 0 ? Math.min(0.74, Sd / S_sites) : 0;
 
-    // Avoid log(0) or log(negative)
-    const dN = pN < 0.75 ? -0.75 * Math.log(1 - 4 * pN / 3) : pN;
-    const dS = pS < 0.75 ? -0.75 * Math.log(1 - 4 * pS / 3) : pS;
+    const dN = -0.75 * Math.log(1 - 4 * pN / 3);
+    const dS = -0.75 * Math.log(1 - 4 * pS / 3);
 
     let omega = 1.0;
     let classification: SelectionWindow['classification'] = 'neutral';
