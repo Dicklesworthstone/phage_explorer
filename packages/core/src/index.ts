@@ -89,3 +89,6 @@ export * from './analysis/metagenomic-niche';
 
 // Phylodynamic Trajectory analysis
 export * from './analysis/phylodynamics';
+
+// Environmental & Geospatial Provenance
+export * from './analysis/environmental-provenance';

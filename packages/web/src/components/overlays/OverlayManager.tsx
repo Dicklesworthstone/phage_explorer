@@ -98,6 +98,9 @@ const NicheNetworkOverlay = lazy(() => import('./NicheNetworkOverlay').then(m =>
 // Phylodynamic trajectory analysis
 const PhylodynamicsOverlay = lazy(() => import('./PhylodynamicsOverlay').then(m => ({ default: m.PhylodynamicsOverlay })));
 
+// Environmental provenance analysis
+const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvenanceOverlay').then(m => ({ default: m.EnvironmentalProvenanceOverlay })));
+
 interface OverlayManagerProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
@@ -194,6 +197,9 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
 
         {/* Phylodynamic trajectory analysis */}
         <PhylodynamicsOverlay repository={repository} currentPhage={currentPhage} />
+
+        {/* Environmental provenance analysis */}
+        <EnvironmentalProvenanceOverlay repository={repository} currentPhage={currentPhage} />
       </Suspense>
     </>
   );
