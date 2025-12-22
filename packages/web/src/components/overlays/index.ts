@@ -63,6 +63,7 @@ export { LogoOverlay } from './LogoOverlay';
 // Advanced Analysis Overlays
 export { RNAStructureOverlay } from './RNAStructureOverlay';
 export { ResistanceEvolutionOverlay } from './ResistanceEvolutionOverlay';
+export { NicheNetworkOverlay } from './NicheNetworkOverlay';
 
 // Primitives
 export * from './primitives';

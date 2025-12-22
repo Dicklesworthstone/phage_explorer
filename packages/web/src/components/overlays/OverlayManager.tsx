@@ -92,6 +92,9 @@ const EpistasisOverlay = lazy(() => import('./EpistasisOverlay').then(m => ({ de
 // Benchmark & diagnostic
 const GpuWasmBenchmarkOverlay = lazy(() => import('./GpuWasmBenchmarkOverlay').then(m => ({ default: m.GpuWasmBenchmarkOverlay })));
 
+// Metagenomic niche analysis
+const NicheNetworkOverlay = lazy(() => import('./NicheNetworkOverlay').then(m => ({ default: m.NicheNetworkOverlay })));
+
 interface OverlayManagerProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
@@ -182,6 +185,9 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
 
         {/* Benchmark */}
         <GpuWasmBenchmarkOverlay repository={repository} currentPhage={currentPhage} />
+
+        {/* Metagenomic niche analysis */}
+        <NicheNetworkOverlay />
       </Suspense>
     </>
   );
