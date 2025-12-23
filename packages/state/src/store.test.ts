@@ -13,9 +13,42 @@ beforeEach(() => {
 
 // Mock phage data
 const mockPhages: PhageSummary[] = [
-  { id: 1, name: 'Phage A', slug: 'phage-a', genomeLength: 50000 },
-  { id: 2, name: 'Lambda', slug: 'lambda', genomeLength: 48502 },
-  { id: 3, name: 'Phage C', slug: 'phage-c', genomeLength: 45000 },
+  {
+    id: 1,
+    name: 'Phage A',
+    slug: 'phage-a',
+    accession: 'NC_001416',
+    family: 'Siphoviridae',
+    host: 'Escherichia coli',
+    genomeLength: 50000,
+    gcContent: 49.5,
+    morphology: 'Siphovirus',
+    lifecycle: 'temperate',
+  },
+  {
+    id: 2,
+    name: 'Lambda',
+    slug: 'lambda',
+    accession: 'NC_001417',
+    family: 'Siphoviridae',
+    host: 'Escherichia coli',
+    genomeLength: 48502,
+    gcContent: 49.8,
+    morphology: 'Siphovirus',
+    lifecycle: 'temperate',
+  },
+  {
+    id: 3,
+    name: 'Phage C',
+    slug: 'phage-c',
+    accession: 'NC_001418',
+    family: 'Myoviridae',
+    host: 'Salmonella',
+    genomeLength: 45000,
+    gcContent: 44.2,
+    morphology: 'Myovirus',
+    lifecycle: 'lytic',
+  },
 ];
 
 describe('PhageExplorerStore - Phage Navigation', () => {
@@ -459,20 +492,33 @@ describe('PhageExplorerStore - Comparison Phage Selection', () => {
 });
 
 describe('PhageExplorerStore - Simulation Controls', () => {
+  // Mock simulation state that satisfies LysogenyCircuitState
+  const mockSimState = {
+    type: 'lysogeny-circuit' as const,
+    time: 0,
+    running: false,
+    speed: 1,
+    params: {},
+    ci: 0.5,
+    cro: 0.5,
+    n: 0.3,
+    phase: 'lysogenic' as const,
+    history: [] as Array<{ time: number; ci: number; cro: number }>,
+  };
+
   it('launches simulation', () => {
     const store = usePhageStore.getState();
-    const initialState = { time: 0, type: 'test' as const };
-    store.launchSimulation('pacman', initialState as any);
+    store.launchSimulation('lysogeny-circuit', mockSimState);
 
-    expect(usePhageStore.getState().activeSimulationId).toBe('pacman');
-    expect(usePhageStore.getState().simulationState).toEqual(initialState);
+    expect(usePhageStore.getState().activeSimulationId).toBe('lysogeny-circuit');
+    expect(usePhageStore.getState().simulationState).toEqual(mockSimState);
     expect(usePhageStore.getState().simulationPaused).toBe(false);
     expect(usePhageStore.getState().overlays).toContain('simulationView');
   });
 
   it('closes simulation', () => {
     const store = usePhageStore.getState();
-    store.launchSimulation('pacman', { time: 0, type: 'test' } as any);
+    store.launchSimulation('lysogeny-circuit', mockSimState);
     store.closeSimulation();
 
     expect(usePhageStore.getState().activeSimulationId).toBeNull();
@@ -482,7 +528,7 @@ describe('PhageExplorerStore - Simulation Controls', () => {
 
   it('toggles simulation pause', () => {
     const store = usePhageStore.getState();
-    store.launchSimulation('pacman', { time: 0, type: 'test' } as any);
+    store.launchSimulation('lysogeny-circuit', mockSimState);
 
     expect(usePhageStore.getState().simulationPaused).toBe(false);
     store.toggleSimulationPause();
@@ -500,19 +546,19 @@ describe('PhageExplorerStore - Simulation Controls', () => {
 
   it('updates simulation state', () => {
     const store = usePhageStore.getState();
-    const newState = { time: 100, type: 'test' as const };
-    store.updateSimulationState(newState as any);
+    const newState = { ...mockSimState, time: 100, ci: 0.8 };
+    store.updateSimulationState(newState);
 
     expect(usePhageStore.getState().simulationState).toEqual(newState);
   });
 
   it('resets simulation', () => {
     const store = usePhageStore.getState();
-    store.launchSimulation('pacman', { time: 50, type: 'test' } as any);
-    const initialState = { time: 0, type: 'test' as const };
-    store.resetSimulation(initialState as any);
+    const runningState = { ...mockSimState, time: 50, ci: 0.9 };
+    store.launchSimulation('lysogeny-circuit', runningState);
+    store.resetSimulation(mockSimState);
 
-    expect(usePhageStore.getState().simulationState).toEqual(initialState);
+    expect(usePhageStore.getState().simulationState).toEqual(mockSimState);
     expect(usePhageStore.getState().simulationPaused).toBe(true);
   });
 });
