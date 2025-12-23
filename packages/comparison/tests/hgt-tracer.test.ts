@@ -48,4 +48,33 @@ describe('HGT tracer', () => {
     expect(stamp.hallmarks.length).toBeGreaterThan(0);
     expect(stamp.hallmarks.join(' ')).toContain('transposase');
   });
+
+  it('does not merge islands across gaps of invalid data', () => {
+    // Host (AT) + Island1 (GC) + Gap (N) + Island2 (GC) + Host (AT)
+    // Ensures mean GC is low so islands stand out
+    const host = 'AT'.repeat(1000); // 2000 bp, 0% GC
+    const highGC = 'GC'.repeat(250); // 500 bp, 100% GC
+    const gap = 'N'.repeat(2000); // 2000 bp
+    
+    const genome = host + highGC + gap + highGC + host;
+    
+    // Window 500, step 250.
+    // Host windows: GC ~0. Islands: GC ~100.
+    const result = analyzeHGTProvenance(genome, [], {}, { window: 500, step: 250, zThreshold: 1.0, minValidRatio: 0.9 });
+    
+    expect(result.islands.length).toBeGreaterThanOrEqual(2);
+    
+    // First island should be around the first highGC block (starts after 2000)
+    // Host ends at 2000. Island1 2000-2500.
+    const i1 = result.islands.find(i => i.start >= 1500 && i.end <= 3000);
+    const i2 = result.islands.find(i => i.start >= 4000); // Gap ends at 2500+2000=4500? No. 2000+500+2000 = 4500.
+    
+    expect(i1).toBeDefined();
+    expect(i2).toBeDefined();
+    
+    // Ensure they are not merged (end of first < start of second)
+    if (i1 && i2) {
+        expect(i1.end).toBeLessThan(i2.start);
+    }
+  });
 });
