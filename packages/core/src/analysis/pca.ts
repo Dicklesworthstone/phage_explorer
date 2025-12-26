@@ -205,7 +205,8 @@ function powerIteration(
   }
 
   // The eigenvalue is scaled by n-1 for sample covariance
-  return { eigenvector: v, eigenvalue: eigenvalue / (n - 1) };
+  // Guard against n=1 (single sample)
+  return { eigenvector: v, eigenvalue: eigenvalue / Math.max(1, n - 1) };
 }
 
 /**
@@ -246,7 +247,8 @@ export function performPCA(
       totalVariance += sample[i] * sample[i];
     }
   }
-  totalVariance /= n - 1;
+  // Guard against n=1 (single sample has undefined variance)
+  totalVariance /= Math.max(1, n - 1);
 
   // Find top principal components using power iteration
   const eigenvalues: number[] = [];
