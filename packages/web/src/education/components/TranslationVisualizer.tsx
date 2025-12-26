@@ -193,7 +193,7 @@ export function TranslationVisualizer({
             <div className="translation-viz__chain-track">
               {produced.length === 0 && <span className="text-dim">No amino acids yet</span>}
               {produced.map((aa, idx) => {
-                const palette = theme.aminoAcids[aa as AminoAcid];
+                const palette = theme.aminoAcids[aa as AminoAcid] ?? { bg: theme.colors.backgroundAlt, fg: theme.colors.text };
                 const info = aminoInfo(aa);
                 return (
                   <span
