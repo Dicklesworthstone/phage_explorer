@@ -612,7 +612,7 @@ export class CanvasSequenceGridRenderer {
     if (!this.currentState || !this.encodedSequence) return;
 
     const { sequence, aminoSequence, diffSequence, diffEnabled, diffMask } = this.currentState;
-    const { cellWidth, cellHeight } = this;
+    const { cellWidth } = this;
     const rowStart = row * cols;
     const rowEnd = Math.min(rowStart + cols, sequence.length);
 
