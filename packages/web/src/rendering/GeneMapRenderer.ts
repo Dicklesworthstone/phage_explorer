@@ -121,6 +121,9 @@ export class GeneMapRenderer {
     const height = this.height;
     const { genomeLength, genes, viewportStart, viewportEnd, highlightedGene } = this.state;
 
+    // Guard against invalid genomeLength to prevent Infinity scale
+    if (!genomeLength || genomeLength <= 0) return;
+
     // Clear
     this.ctx.fillStyle = this.theme.colors.background;
     this.ctx.fillRect(0, 0, width, height);
@@ -384,7 +387,7 @@ export class GeneMapRenderer {
    * Get gene at x coordinate
    */
   getGeneAtX(x: number): GeneInfo | null {
-    if (!this.state) return null;
+    if (!this.state || !this.state.genomeLength || this.state.genomeLength <= 0) return null;
 
     const width = this.canvas.clientWidth;
     const scale = width / this.state.genomeLength;
@@ -403,7 +406,7 @@ export class GeneMapRenderer {
    * Get genome position at x coordinate
    */
   getPositionAtX(x: number): number | null {
-    if (!this.state) return null;
+    if (!this.state || !this.state.genomeLength || this.state.genomeLength <= 0) return null;
 
     const width = this.canvas.clientWidth;
     const scale = width / this.state.genomeLength;
