@@ -336,11 +336,26 @@ export class DatabaseLoader {
   /**
    * Download and initialize the database
    */
-  async downloadDatabase(): Promise<{ db: Database; hash: string }> {
+  async downloadDatabase(expectedHash?: string): Promise<{ db: Database; hash: string }> {
     this.progress('downloading', 10, 'Downloading database...');
 
+    const downloadUrl = (() => {
+      if (!expectedHash) return this.config.databaseUrl;
+      if (typeof window === 'undefined') return this.config.databaseUrl;
+
+      try {
+        const url = new URL(this.config.databaseUrl, window.location.href);
+        // Cache-bust any service-worker CacheFirst/SWR behavior by making the request URL unique per version.
+        url.searchParams.set('v', expectedHash);
+        return url.toString();
+      } catch {
+        const separator = this.config.databaseUrl.includes('?') ? '&' : '?';
+        return `${this.config.databaseUrl}${separator}v=${encodeURIComponent(expectedHash)}`;
+      }
+    })();
+
     // Fetch the database
-    const response = await fetch(this.config.databaseUrl);
+    const response = await fetch(downloadUrl, { cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`Failed to download database: ${response.statusText}`);
     }
@@ -401,6 +416,13 @@ export class DatabaseLoader {
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     const hash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 
+    if (expectedHash && hash !== expectedHash) {
+      throw new Error(
+        `Database hash mismatch (expected ${expectedHash.slice(0, 16)}…, got ${hash.slice(0, 16)}…). ` +
+          'This can happen if a service worker served a stale cached database.'
+      );
+    }
+
     const db = new SQL.Database(combined);
     return { db, hash };
   }
@@ -439,8 +461,17 @@ export class DatabaseLoader {
         }
       }
 
+      // Try to fetch the manifest so we can cache-bust service worker DB caching and validate the hash.
+      let expectedHash: string | undefined;
+      try {
+        const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
+        expectedHash = manifest?.hash;
+      } catch {
+        expectedHash = undefined;
+      }
+
       // Download fresh copy
-      const { db, hash } = await this.downloadDatabase();
+      const { db, hash } = await this.downloadDatabase(expectedHash);
 
       // Save to cache
       this.progress('initializing', 95, 'Saving to cache...');
@@ -476,13 +507,17 @@ export class DatabaseLoader {
       const cachedHash = await getFromIndexedDB<string>(`${this.config.dbName}:hash`);
 
       if (manifest.hash !== cachedHash) {
-        console.log('Database update available, downloading in background...');
+        if (import.meta.env.DEV) {
+          console.log('Database update available, downloading in background...');
+        }
         // Download new version
-        const { db, hash } = await this.downloadDatabase();
+        const { db, hash } = await this.downloadDatabase(manifest.hash);
         await this.saveToCache(db, hash);
 
         // Note: The old repository is still valid until reload
-        console.log('Database updated, reload to use new version');
+        if (import.meta.env.DEV) {
+          console.log('Database updated, reload to use new version');
+        }
         return true;
       }
 

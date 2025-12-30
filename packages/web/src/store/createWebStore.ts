@@ -21,7 +21,7 @@ export { usePhageStore } from '@phage-explorer/state';
 export type { PhageExplorerStore, PhageExplorerState, PhageExplorerActions } from '@phage-explorer/state';
 
 // Version for migration logic
-const STORE_VERSION = 5;
+const STORE_VERSION = 6;
 
 function getDefaultBackgroundEffects(): boolean {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
@@ -87,8 +87,8 @@ interface PersistedMainState {
 const defaultWebPreferences: WebPreferencesState = {
   hasSeenWelcome: false,
   hasLearnedMobileSwipe: false,
-  scanlines: true,
-  scanlineIntensity: 0.15,
+  scanlines: false,
+  scanlineIntensity: 0.06,
   glow: true,
   tuiMode: false,
   highContrast: false,
@@ -112,8 +112,8 @@ function migrateWebPrefs(
     return {
       ...defaultWebPreferences,
       hasSeenWelcome: state.hasSeenWelcome ?? false,
-      scanlines: state.scanlines ?? true,
-      scanlineIntensity: state.scanlineIntensity ?? 0.15,
+      scanlines: state.scanlines ?? false,
+      scanlineIntensity: Math.min(state.scanlineIntensity ?? 0.06, 0.08),
       glow: state.glow ?? true,
       tuiMode: state.tuiMode ?? false,
       highContrast: state.highContrast ?? false,
@@ -134,7 +134,7 @@ function migrateWebPrefs(
     return {
       ...defaultWebPreferences,
       ...state,
-      scanlineIntensity: state.scanlineIntensity ?? 0.15,
+      scanlineIntensity: Math.min(state.scanlineIntensity ?? 0.06, 0.08),
       backgroundEffects: state.backgroundEffects ?? defaultWebPreferences.backgroundEffects,
       _hasHydrated: false,
     };
@@ -145,9 +145,21 @@ function migrateWebPrefs(
     return {
       ...defaultWebPreferences,
       ...state,
-      scanlineIntensity: state.scanlineIntensity ?? 0.15,
+      scanlineIntensity: Math.min(state.scanlineIntensity ?? 0.06, 0.08),
       backgroundEffects: state.backgroundEffects ?? defaultWebPreferences.backgroundEffects,
       hasLearnedMobileSwipe: false, // New users haven't learned yet
+      _hasHydrated: false,
+    };
+  }
+
+  if (version < 6) {
+    return {
+      ...defaultWebPreferences,
+      ...state,
+      scanlines: false,
+      scanlineIntensity: Math.min(state.scanlineIntensity ?? 0.06, 0.08),
+      backgroundEffects: state.backgroundEffects ?? defaultWebPreferences.backgroundEffects,
+      hasLearnedMobileSwipe: state.hasLearnedMobileSwipe ?? false,
       _hasHydrated: false,
     };
   }
@@ -155,7 +167,7 @@ function migrateWebPrefs(
   return {
     ...defaultWebPreferences,
     ...state,
-    scanlineIntensity: state.scanlineIntensity ?? 0.15, // Ensure default
+    scanlineIntensity: Math.min(state.scanlineIntensity ?? 0.06, 0.08),
     backgroundEffects: state.backgroundEffects ?? defaultWebPreferences.backgroundEffects,
     hasLearnedMobileSwipe: state.hasLearnedMobileSwipe ?? false,
     _hasHydrated: false, // Always reset hydration on load

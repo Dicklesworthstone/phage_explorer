@@ -24,3 +24,10 @@ if (container) {
     </React.StrictMode>,
   );
 }
+
+// Register service worker in production builds (disabled for automation via navigator.webdriver).
+if (import.meta.env.PROD && typeof window !== 'undefined' && 'serviceWorker' in navigator && !navigator.webdriver) {
+  window.addEventListener('load', () => {
+    void import('./registerSW').then(({ registerServiceWorker }) => registerServiceWorker());
+  });
+}

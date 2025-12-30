@@ -7,7 +7,9 @@
  * - Precache: Build assets (HTML, JS, CSS) - versioned by build tool
  * - CacheFirst: WASM, fonts, PDB structures - immutable content
  * - StaleWhileRevalidate: Database, static resources - use cache, update background
- * - NetworkFirst: Manifest, navigation - prefer fresh but fallback to cache
+ * - NetworkFirst: Navigation - prefer fresh but fallback to cache
+ *
+ * Note: The DB manifest is fetched by the app with its own ETag + IndexedDB cache.
  */
 
 import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching';
@@ -25,7 +27,6 @@ declare const self: ServiceWorkerGlobalScope;
 const CACHE_NAMES = {
   precache: 'phage-precache-v1',
   database: 'phage-database',
-  manifest: 'phage-manifest',
   wasm: 'wasm-cache',
   sqlJs: 'sql-js-wasm',
   pdb: 'pdb-structures',
@@ -62,22 +63,6 @@ registerRoute(
       new ExpirationPlugin({
         maxEntries: 2, // Current + one backup
         maxAgeSeconds: 30 * 24 * 60 * 60, // 30 days
-      }),
-    ],
-  })
-);
-
-// Cache manifest with NetworkFirst (always try to get fresh)
-// Manifest tells us if database has updates, so freshness matters
-registerRoute(
-  ({ url }) => url.pathname.endsWith('.manifest.json'),
-  new NetworkFirst({
-    cacheName: CACHE_NAMES.manifest,
-    networkTimeoutSeconds: NETWORK_TIMEOUT_MS / 1000,
-    plugins: [
-      new ExpirationPlugin({
-        maxEntries: 5,
-        maxAgeSeconds: 24 * 60 * 60, // 1 day
       }),
     ],
   })
@@ -227,14 +212,18 @@ self.addEventListener('message', (event) => {
 
 // Claim clients immediately on activation
 self.addEventListener('activate', (event) => {
-  console.log('[SW] Activated');
+  if (import.meta.env.DEV) {
+    console.log('[SW] Activated');
+  }
   // Take control of all pages immediately
   event.waitUntil(self.clients.claim());
 });
 
 // Log installation
 self.addEventListener('install', () => {
-  console.log('[SW] Installed');
+  if (import.meta.env.DEV) {
+    console.log('[SW] Installed');
+  }
 });
 
 // =============================================================================

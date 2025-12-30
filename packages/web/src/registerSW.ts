@@ -17,7 +17,9 @@ export async function registerServiceWorker(
   callbacks: ServiceWorkerCallbacks = {}
 ): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) {
-    console.log('[SW] Service workers not supported');
+    if (import.meta.env.DEV) {
+      console.log('[SW] Service workers not supported');
+    }
     return null;
   }
 
@@ -39,7 +41,9 @@ export async function registerServiceWorker(
       newWorker.addEventListener('statechange', () => {
         if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
           // New content available
-          console.log('[SW] New content available');
+          if (import.meta.env.DEV) {
+            console.log('[SW] New content available');
+          }
           callbacks.onUpdate?.();
         }
       });
@@ -47,13 +51,17 @@ export async function registerServiceWorker(
 
     // Initial registration success
     if (registration.active) {
-      console.log('[SW] Service worker active');
+      if (import.meta.env.DEV) {
+        console.log('[SW] Service worker active');
+      }
       callbacks.onSuccess?.();
     }
 
     // Handle offline/online events
     window.addEventListener('offline', () => {
-      console.log('[SW] App is offline');
+      if (import.meta.env.DEV) {
+        console.log('[SW] App is offline');
+      }
       callbacks.onOffline?.();
     });
 

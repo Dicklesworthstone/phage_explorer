@@ -123,9 +123,11 @@ function isLikelyTouchDevice(): boolean {
   const canMatchMedia = typeof window.matchMedia === 'function';
   const pointerCoarse = canMatchMedia && window.matchMedia('(pointer: coarse)').matches;
   const hoverNone = canMatchMedia && window.matchMedia('(hover: none)').matches;
+  const narrowViewport = window.innerWidth <= 768;
 
   // On iOS/iPadOS, touch-capable devices often report coarse pointer / no hover.
-  return hasTouch && (pointerCoarse || hoverNone);
+  // In automation and some mobile UAs, pointer/hover media queries can be inconsistent; the viewport is a reliable fallback.
+  return hasTouch && (pointerCoarse || hoverNone || narrowViewport);
 }
 
 function cleanupLenisDomState(): void {
