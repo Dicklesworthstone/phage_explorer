@@ -85,15 +85,17 @@ export function computeGCskew(sequence: string, window = 500): NumericOverlay {
 export function computeComplexity(sequence: string, window = 500): NumericOverlay {
   const values = sliding(sequence, window, (chunk) => {
     const freq: Record<string, number> = {};
+    let total = 0;
     for (const ch of chunk) {
       if (!'ACGTacgt'.includes(ch)) continue;
       const u = ch.toUpperCase();
       freq[u] = (freq[u] ?? 0) + 1;
+      total++;
     }
-    const total = chunk.length || 1;
+    const denom = total || 1;
     let h = 0;
     for (const v of Object.values(freq)) {
-      const p = v / total;
+      const p = v / denom;
       h -= p * Math.log2(p);
     }
     return h; // 0..2 for DNA

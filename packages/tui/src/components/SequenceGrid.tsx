@@ -4,8 +4,6 @@ import { usePhageStore } from '@phage-explorer/state';
 import {
   buildGrid,
   applyDiff,
-  getNucleotideColor,
-  getAminoAcidColor,
   type GridRow,
   type Theme,
   type ViewMode,
@@ -27,11 +25,24 @@ interface ColorSegment {
   bg: string;
 }
 
+type ColorLookup = Record<string, { fg: string; bg: string }>;
+
+function buildColorLookup(colors: Record<string, { fg: string; bg: string }>): ColorLookup {
+  const lookup: ColorLookup = {};
+  for (const [key, value] of Object.entries(colors)) {
+    lookup[key] = value;
+    lookup[key.toLowerCase()] = value;
+  }
+  return lookup;
+}
+
 function groupCellsByColor(
   row: GridRow,
   theme: Theme,
   viewMode: ViewMode,
-  diffEnabled: boolean
+  diffEnabled: boolean,
+  nucleotideColors: ColorLookup,
+  aminoColors: ColorLookup
 ): ColorSegment[] {
   const segments: ColorSegment[] = [];
   let currentSegment: ColorSegment | null = null;
@@ -43,8 +54,8 @@ function groupCellsByColor(
   for (const cell of row.cells) {
     // In dual mode, use nucleotide coloring for the primary display
     const colorPair = isAminoRow
-      ? getAminoAcidColor(theme, cell.char)
-      : getNucleotideColor(theme, cell.char);
+      ? (aminoColors[cell.char] ?? theme.aminoAcids['*'])
+      : (nucleotideColors[cell.char] ?? theme.nucleotides['N']);
 
     // Modify colors for diff highlighting
     const fg = colorPair.fg;
@@ -75,6 +86,29 @@ function groupCellsByColor(
   return segments;
 }
 
+function groupStringByColor(
+  text: string,
+  nucleotideColors: ColorLookup,
+  fallback: { fg: string; bg: string }
+): ColorSegment[] {
+  const segments: ColorSegment[] = [];
+  let current: ColorSegment | null = null;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    const colors = nucleotideColors[ch] ?? fallback;
+    if (current && current.fg === colors.fg && current.bg === colors.bg) {
+      current.text += ch;
+    } else {
+      if (current) segments.push(current);
+      current = { text: ch, fg: colors.fg, bg: colors.bg };
+    }
+  }
+
+  if (current) segments.push(current);
+  return segments;
+}
+
 // Memoized row component - only re-renders when row data changes
 interface SequenceRowProps {
   row: GridRow;
@@ -82,6 +116,8 @@ interface SequenceRowProps {
   viewMode: ViewMode;
   diffEnabled: boolean;
   width: number;
+  nucleotideColors: ColorLookup;
+  aminoColors: ColorLookup;
 }
 
 const SequenceRow = memo(function SequenceRow({
@@ -90,11 +126,13 @@ const SequenceRow = memo(function SequenceRow({
   viewMode,
   diffEnabled,
   width,
+  nucleotideColors,
+  aminoColors,
 }: SequenceRowProps): React.ReactElement {
   // Memoize segment grouping per row
   const segments = useMemo(
-    () => groupCellsByColor(row, theme, viewMode, diffEnabled),
-    [row, theme, viewMode, diffEnabled]
+    () => groupCellsByColor(row, theme, viewMode, diffEnabled, nucleotideColors, aminoColors),
+    [row, theme, viewMode, diffEnabled, nucleotideColors, aminoColors]
   );
 
   return (
@@ -116,6 +154,38 @@ const SequenceRow = memo(function SequenceRow({
   );
 });
 
+interface SequenceRowFastProps {
+  text: string;
+  width: number;
+  nucleotideColors: ColorLookup;
+  fallback: { fg: string; bg: string };
+}
+
+const SequenceRowFast = memo(function SequenceRowFast({
+  text,
+  width,
+  nucleotideColors,
+  fallback,
+}: SequenceRowFastProps): React.ReactElement {
+  const segments = useMemo(
+    () => groupStringByColor(text, nucleotideColors, fallback),
+    [text, nucleotideColors, fallback]
+  );
+
+  return (
+    <Box>
+      {segments.map((seg, segIdx) => (
+        <Text key={segIdx} color={seg.fg} backgroundColor={seg.bg}>
+          {seg.text}
+        </Text>
+      ))}
+      {text.length < width && width > 0 && (
+        <Text>{' '.repeat(Math.max(0, width - text.length))}</Text>
+      )}
+    </Box>
+  );
+});
+
 export function SequenceGrid({
   sequence,
   width = 60,
@@ -129,10 +199,28 @@ export function SequenceGrid({
   const scrollPosition = usePhageStore(s => s.scrollPosition);
   const diffEnabled = usePhageStore(s => s.diffEnabled);
   const diffReferenceSequence = usePhageStore(s => s.diffReferenceSequence);
+  const nucleotideColors = useMemo(() => buildColorLookup(theme.nucleotides), [theme]);
+  const aminoColors = useMemo(() => buildColorLookup(theme.aminoAcids), [theme]);
+  const fallbackNucleotide = theme.nucleotides['N'];
+
+  const fastRows = useMemo(() => {
+    if (!sequence || viewMode !== 'dna' || diffEnabled) return null;
+    const rows: string[] = [];
+    const startIndex = scrollPosition;
+    for (let row = 0; row < height; row++) {
+      const rowStart = startIndex + row * width;
+      if (rowStart >= sequence.length) break;
+      rows.push(sequence.substring(rowStart, rowStart + width));
+    }
+    return rows;
+  }, [sequence, viewMode, diffEnabled, scrollPosition, width, height]);
 
   // Build the grid based on current scroll position
   const grid = useMemo(() => {
     if (!sequence) return [];
+    if (viewMode === 'dna' && !diffEnabled) {
+      return [];
+    }
 
     // Calculate effective start based on scroll position
     const effectiveCols = width;
@@ -207,6 +295,7 @@ export function SequenceGrid({
   }, [kmerOverlay, genomeLength, viewMode, scrollPosition, width, height]);
 
   const colors = theme.colors;
+  const renderedRowCount = fastRows ? fastRows.length : grid.length;
 
   // Calculate position info
   const totalLength = sequence?.length ?? 0;
@@ -249,7 +338,17 @@ export function SequenceGrid({
 
       {/* Sequence grid */}
       <Box flexDirection="column" paddingX={0}>
-        {grid.length === 0 ? (
+        {fastRows ? (
+          fastRows.map((rowText, rowIdx) => (
+            <SequenceRowFast
+              key={rowIdx}
+              text={rowText}
+              width={width}
+              nucleotideColors={nucleotideColors}
+              fallback={fallbackNucleotide}
+            />
+          ))
+        ) : grid.length === 0 ? (
           <Box height={height} alignItems="center" justifyContent="center">
             <Text color={colors.textDim}>No sequence data</Text>
           </Box>
@@ -262,13 +361,15 @@ export function SequenceGrid({
               viewMode={viewMode}
               diffEnabled={diffEnabled}
               width={width}
+              nucleotideColors={nucleotideColors}
+              aminoColors={aminoColors}
             />
           ))
         )}
 
         {/* Pad with empty rows if needed */}
-        {grid.length < height && width > 0 && (
-          Array(height - grid.length).fill(0).map((_, i) => (
+        {renderedRowCount < height && width > 0 && (
+          Array(height - renderedRowCount).fill(0).map((_, i) => (
             <Text key={`empty-${i}`}>{' '.repeat(Math.max(0, width))}</Text>
           ))
         )}
