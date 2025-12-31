@@ -24,6 +24,7 @@ debug*.ts
 repro_*.ts
 test-*.ts
 phage_illustrations/
+a.out
 
 # Generated database (root level only, web public db is tracked for deployment)
 /phage.db
