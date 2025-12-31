@@ -431,7 +431,7 @@ export function getBestMemoryTransport(): 'sab' | 'transfer' {
 export async function getCapabilitiesSummary(): Promise<string> {
   const caps = await getBrowserCapabilities();
 
-  const lines = [
+  const lines: string[] = [
     '=== Browser Capabilities ===',
     '',
     'WebAssembly:',
@@ -439,7 +439,13 @@ export async function getCapabilitiesSummary(): Promise<string> {
     `  Streaming: ${caps.wasm.streaming}`,
     `  SIMD: ${caps.wasm.simd}`,
     `  BigInt: ${caps.wasm.bigInt}`,
-    caps.wasm.reason ? `  Reason: ${caps.wasm.reason}` : null,
+  ];
+
+  if (caps.wasm.reason) {
+    lines.push(`  Reason: ${caps.wasm.reason}`);
+  }
+
+  lines.push(
     '',
     'Memory:',
     `  SharedArrayBuffer: ${caps.memory.sharedArrayBuffer}`,
@@ -449,8 +455,8 @@ export async function getCapabilitiesSummary(): Promise<string> {
     '',
     'Workers:',
     `  Web Workers: ${caps.workers.webWorkers}`,
-    `  Module Workers: ${caps.workers.moduleWorkers}`,
-  ].filter(Boolean);
+    `  Module Workers: ${caps.workers.moduleWorkers}`
+  );
 
   return lines.join('\n');
 }
@@ -494,7 +500,7 @@ export async function getWasmLoadingStrategy(): Promise<{
  * @returns Strategy for sequence transport
  */
 export function getSequenceTransportStrategy(): {
-  method: 'sab' | 'transfer' | 'clone';
+  method: 'sab' | 'transfer';
   zeroCopy: boolean;
   description: string;
 } {
