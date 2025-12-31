@@ -13,6 +13,13 @@ import {
   logDbTiming,
   type DbLoadTiming,
 } from './db-timing';
+import {
+  isQuotaError,
+  safeCacheWrite,
+  getStorageEstimate,
+  logCacheStats,
+  type CacheWriteResult,
+} from './db-cache';
 
 // Cached sql.js instance - use dynamic import because sql.js is CommonJS
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
@@ -218,6 +225,14 @@ export class DatabaseLoader {
   private sqlPromise: Promise<SqlJsStatic> | null = null;
   /** Current timing recorder (dev-only instrumentation) */
   private timing: DbTimingRecorder | null = null;
+
+  // --- gzip decompression worker (pako fallback) ---
+  private gzipWorker: Worker | null = null;
+  private gzipWorkerNextId = 1;
+  private gzipWorkerRequests = new Map<
+    number,
+    { resolve: (data: Uint8Array) => void; reject: (error: Error) => void }
+  >();
   /** Last completed timing result (for external access) */
   private lastTiming: DbLoadTiming | null = null;
 
@@ -351,20 +366,7 @@ export class DatabaseLoader {
 
     // Fallback for browsers without `DecompressionStream('gzip')` (e.g., older Safari):
     // dynamically import pako so modern browsers don't pay the cost.
-    try {
-      const mod: any = await import('pako');
-      const ungzip: unknown = mod?.ungzip ?? mod?.default?.ungzip;
-      if (typeof ungzip !== 'function') return null;
-      return {
-        label: 'pako',
-        decompress: async (data) => {
-          const result = ungzip(data);
-          return result instanceof Uint8Array ? result : new Uint8Array(result);
-        },
-      };
-    } catch {
-      return null;
-    }
+    return { label: 'pako', decompress: (data) => this.decompressGzipWithPako(data) };
   }
 
   private async decompressGzip(data: Uint8Array): Promise<Uint8Array> {
@@ -376,6 +378,96 @@ export class DatabaseLoader {
     const decompressedStream = new Blob([data]).stream().pipeThrough(ds);
     const buffer = await new Response(decompressedStream).arrayBuffer();
     return new Uint8Array(buffer);
+  }
+
+  private canUseModuleWorker(): boolean {
+    return typeof Worker !== 'undefined';
+  }
+
+  private ensureGzipWorker(): Worker {
+    if (this.gzipWorker) return this.gzipWorker;
+
+    if (!this.canUseModuleWorker()) {
+      throw new Error('Worker not available');
+    }
+
+    const worker = new Worker(new URL('./gzip-decompress.worker.ts', import.meta.url), {
+      type: 'module',
+    });
+
+    worker.onmessage = (event: MessageEvent) => {
+      const payload = event.data as
+        | { id: number; ok: true; buffer: ArrayBuffer }
+        | { id: number; ok: false; error: string };
+
+      const pending = this.gzipWorkerRequests.get(payload.id);
+      if (!pending) return;
+      this.gzipWorkerRequests.delete(payload.id);
+
+      if (!payload.ok) {
+        pending.reject(new Error(payload.error));
+        return;
+      }
+
+      pending.resolve(new Uint8Array(payload.buffer));
+    };
+
+    worker.onerror = () => {
+      const error = new Error('gzip worker error');
+      for (const pending of this.gzipWorkerRequests.values()) {
+        pending.reject(error);
+      }
+      this.gzipWorkerRequests.clear();
+
+      // Reset so future calls can attempt to recreate a fresh worker.
+      worker.terminate();
+      if (this.gzipWorker === worker) {
+        this.gzipWorker = null;
+      }
+    };
+
+    this.gzipWorker = worker;
+    return worker;
+  }
+
+  private async decompressGzipWithPakoWorker(data: Uint8Array): Promise<Uint8Array> {
+    const worker = this.ensureGzipWorker();
+    const id = this.gzipWorkerNextId++;
+
+    return new Promise<Uint8Array>((resolve, reject) => {
+      this.gzipWorkerRequests.set(id, { resolve, reject });
+
+      try {
+        // Do NOT transfer the input buffer so we can safely fall back to the main-thread path on error.
+        worker.postMessage({ id, data });
+      } catch (error) {
+        this.gzipWorkerRequests.delete(id);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private async decompressGzipWithPakoMainThread(data: Uint8Array): Promise<Uint8Array> {
+    const mod: any = await import('pako');
+    const ungzip: unknown = mod?.ungzip ?? mod?.default?.ungzip;
+    if (typeof ungzip !== 'function') {
+      throw new Error('pako.ungzip not available');
+    }
+    const result = ungzip(data);
+    return result instanceof Uint8Array ? result : new Uint8Array(result);
+  }
+
+  private async decompressGzipWithPako(data: Uint8Array): Promise<Uint8Array> {
+    // Prefer worker decompression to avoid main-thread stalls on Safari-class browsers.
+    if (this.canUseModuleWorker()) {
+      try {
+        return await this.decompressGzipWithPakoWorker(data);
+      } catch {
+        // Fall back to main-thread pako; still better than failing DB load entirely.
+      }
+    }
+
+    return this.decompressGzipWithPakoMainThread(data);
   }
 
   private async fetchBytes(url: string, label: string): Promise<Uint8Array> {
@@ -420,16 +512,83 @@ export class DatabaseLoader {
   }
 
   /**
-   * Save database to cache
+   * Save database to cache with quota error handling.
+   *
+   * @returns Result indicating success or quota error
    */
-  async saveToCache(db: Database, hash: string): Promise<void> {
+  async saveToCache(db: Database, hash: string): Promise<CacheWriteResult> {
     try {
       const data = db.export();
-      await setInIndexedDB(`${this.config.dbName}:data`, data);
-      await setInIndexedDB(`${this.config.dbName}:hash`, hash);
+      const idb = await openIndexedDB();
+
+      try {
+        // Write data first (largest payload)
+        const dataResult = await safeCacheWrite(
+          idb,
+          INDEXEDDB_STORE,
+          `${this.config.dbName}:data`,
+          data
+        );
+
+        if (!dataResult.success) {
+          if (dataResult.quotaExceeded) {
+            console.warn(
+              '[DatabaseLoader] Cache quota exceeded, falling back to network-only mode. ' +
+                `Tried to cache ${(data.byteLength / 1024 / 1024).toFixed(1)}MB.`
+            );
+            // Log storage stats for debugging
+            if (import.meta.env.DEV) {
+              await logCacheStats();
+            }
+          } else {
+            console.error('[DatabaseLoader] Failed to cache database:', dataResult.error);
+          }
+          idb.close();
+          return dataResult;
+        }
+
+        // Write hash (small payload, unlikely to fail if data succeeded)
+        const hashResult = await safeCacheWrite(
+          idb,
+          INDEXEDDB_STORE,
+          `${this.config.dbName}:hash`,
+          hash
+        );
+
+        idb.close();
+
+        if (!hashResult.success) {
+          console.error('[DatabaseLoader] Failed to cache hash:', hashResult.error);
+          return hashResult;
+        }
+
+        if (import.meta.env.DEV) {
+          console.log(
+            `[DatabaseLoader] Cached ${(data.byteLength / 1024 / 1024).toFixed(1)}MB database (hash: ${hash.slice(0, 8)}...)`
+          );
+        }
+
+        return {
+          success: true,
+          quotaExceeded: false,
+          bytesWritten: data.byteLength,
+        };
+      } catch (error) {
+        idb.close();
+        throw error;
+      }
     } catch (error) {
-      console.error('Failed to save to cache:', error);
-      // Non-fatal - continue without caching
+      const quotaExceeded = isQuotaError(error);
+      if (quotaExceeded) {
+        console.warn('[DatabaseLoader] Cache quota exceeded during save');
+      } else {
+        console.error('[DatabaseLoader] Failed to save to cache:', error);
+      }
+      return {
+        success: false,
+        quotaExceeded,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -730,6 +889,15 @@ export class DatabaseLoader {
       await this.repository.close();
       this.repository = null;
     }
+
+    if (this.gzipWorker) {
+      this.gzipWorker.terminate();
+      this.gzipWorker = null;
+    }
+    for (const pending of this.gzipWorkerRequests.values()) {
+      pending.reject(new Error('DatabaseLoader closed'));
+    }
+    this.gzipWorkerRequests.clear();
   }
 }
 

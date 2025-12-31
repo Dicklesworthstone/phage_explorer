@@ -17,3 +17,13 @@ export {
   printTimingReport,
   compareTimings,
 } from './db-timing';
+
+// Cache utilities (quota handling, storage estimation)
+export {
+  type CacheWriteResult,
+  type CacheStats,
+  isQuotaError,
+  getStorageEstimate,
+  hasStorageSpace,
+  logCacheStats,
+} from './db-cache';
