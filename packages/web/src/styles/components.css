@@ -6,6 +6,186 @@
  */
 
 /* =============================================================================
+   PREMIUM FOCUS STATES (Stripe-inspired animated focus rings)
+   ============================================================================= */
+
+/* Animated focus ring keyframes */
+@keyframes focus-ring-pulse {
+  0%, 100% {
+    box-shadow: var(--shadow-focus-ring);
+  }
+  50% {
+    box-shadow:
+      0 0 0 var(--focus-ring-offset) var(--color-background),
+      0 0 0 calc(var(--focus-ring-offset) + var(--focus-ring-width)) var(--focus-ring-color),
+      0 0 12px var(--focus-ring-color-soft);
+  }
+}
+
+@keyframes focus-ring-expand {
+  from {
+    box-shadow:
+      0 0 0 var(--focus-ring-offset) var(--color-background),
+      0 0 0 var(--focus-ring-offset) var(--focus-ring-color);
+    opacity: 0.5;
+  }
+  to {
+    box-shadow: var(--shadow-focus-ring);
+    opacity: 1;
+  }
+}
+
+/* Global focus-visible enhancement for all interactive elements */
+:focus-visible {
+  outline: none;
+}
+
+/* Premium focus ring mixin class */
+.focus-ring:focus-visible,
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible:not([tabindex="-1"]) {
+  outline: none;
+  box-shadow: var(--shadow-focus-ring);
+  animation: focus-ring-expand var(--duration-focus) var(--ease-expo-out);
+}
+
+/* Sustained subtle pulse for focused elements (accessibility enhancement) */
+.focus-ring--pulse:focus-visible {
+  animation: focus-ring-pulse 2s var(--ease-smooth) infinite;
+}
+
+/* =============================================================================
+   SKELETON LOADING ANIMATIONS (Premium shimmer effect)
+   ============================================================================= */
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-background-elevated);
+  border-radius: var(--radius-md);
+}
+
+/* Premium shimmer effect */
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 20%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 80%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.8s var(--ease-smooth) infinite;
+}
+
+/* Alternative pulse animation for simpler skeletons */
+.skeleton--pulse {
+  animation: skeleton-pulse 1.5s var(--ease-smooth) infinite;
+}
+
+.skeleton--pulse::after {
+  display: none;
+}
+
+/* Skeleton variants */
+.skeleton-text {
+  height: 1em;
+  width: 100%;
+}
+
+.skeleton-text--sm {
+  height: 0.875em;
+  width: 60%;
+}
+
+.skeleton-text--lg {
+  height: 1.25em;
+  width: 80%;
+}
+
+.skeleton-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+}
+
+.skeleton-card {
+  height: 120px;
+  border-radius: var(--radius-lg);
+}
+
+.skeleton-button {
+  height: 36px;
+  width: 100px;
+  border-radius: var(--radius-lg);
+}
+
+/* Skeleton group with staggered animation */
+.skeleton-group > .skeleton {
+  animation-delay: calc(var(--skeleton-index, 0) * 0.1s);
+}
+
+.skeleton-group > :nth-child(1) { --skeleton-index: 0; }
+.skeleton-group > :nth-child(2) { --skeleton-index: 1; }
+.skeleton-group > :nth-child(3) { --skeleton-index: 2; }
+.skeleton-group > :nth-child(4) { --skeleton-index: 3; }
+.skeleton-group > :nth-child(5) { --skeleton-index: 4; }
+
+/* =============================================================================
+   GLASS MORPHISM UTILITIES
+   ============================================================================= */
+
+.glass {
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+}
+
+.glass-elevated {
+  background: var(--glass-bg-elevated);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-floating);
+}
+
+/* Fallback for browsers without backdrop-filter support */
+@supports not (backdrop-filter: blur(1px)) {
+  .glass,
+  .glass-elevated {
+    background: var(--color-background-elevated);
+  }
+}
+
+/* =============================================================================
    RESPONSIVE BREAKPOINTS
    ============================================================================= */
 
@@ -346,7 +526,7 @@
 
 /* =============================================================================
    DETAIL CARD
-   Premium card for displaying detailed information
+   Premium card for displaying detailed information with glass effects
    ============================================================================= */
 
 .detail-card {
@@ -359,6 +539,22 @@
   gap: var(--space-5);
   position: relative;
   overflow: hidden;
+  /* Premium elevation */
+  box-shadow: var(--shadow-elevated);
+  /* Smooth content transitions */
+  transition: box-shadow var(--duration-normal) var(--ease-out);
+}
+
+/* Subtle top edge highlight */
+.detail-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 10%, rgba(255, 255, 255, 0.08) 50%, transparent 90%);
+  pointer-events: none;
 }
 
 /* Subtle gradient overlay for depth */
@@ -376,6 +572,14 @@
   );
   pointer-events: none;
   opacity: 0.5;
+}
+
+/* Glass variant */
+.detail-card--glass {
+  background: var(--glass-bg-elevated);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-color: var(--glass-border);
 }
 
 .detail-card > * {
@@ -741,7 +945,7 @@
 
 /* =============================================================================
    PANEL ENHANCEMENTS
-   Upgraded panel styling for better visual hierarchy
+   Upgraded panel styling with premium elevation and glass effects
    ============================================================================= */
 
 .panel {
@@ -752,6 +956,57 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  /* Premium elevation with subtle glow */
+  box-shadow: var(--shadow-elevated);
+  position: relative;
+}
+
+/* Subtle top highlight for depth perception */
+.panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+  pointer-events: none;
+}
+
+/* Glass variant for floating panels */
+.panel--glass {
+  background: var(--glass-bg-elevated);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border-color: var(--glass-border);
+  box-shadow: var(--shadow-floating);
+}
+
+/* Elevated variant with stronger shadows */
+.panel--elevated {
+  box-shadow: var(--shadow-xl);
+  border-color: var(--color-border-light);
+}
+
+/* Interactive panel with hover state */
+.panel--interactive {
+  transition:
+    box-shadow var(--duration-hover) var(--ease-out),
+    transform var(--duration-hover) var(--ease-out),
+    border-color var(--duration-hover) var(--ease-out);
+  cursor: pointer;
+}
+
+.panel--interactive:hover {
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(34, 211, 238, 0.08);
+  transform: translateY(-2px);
+  border-color: var(--color-border-light);
+}
+
+.panel--interactive:active {
+  transform: translateY(0);
+  box-shadow: var(--shadow-md);
 }
 
 .panel-header {
@@ -919,17 +1174,21 @@
   background: var(--color-background-elevated);
   color: var(--color-text);
   cursor: pointer;
+  /* Premium multi-property transitions with staggered timing */
   transition:
-    background var(--duration-fast) var(--ease-out),
-    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-hover) var(--ease-out),
+    border-color var(--duration-hover) var(--ease-out),
     color var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out),
-    box-shadow var(--duration-fast) var(--ease-out);
+    transform var(--duration-press) var(--ease-spring-soft),
+    box-shadow var(--duration-hover) var(--ease-out);
   white-space: nowrap;
   text-overflow: ellipsis;
   user-select: none;
   position: relative;
   overflow: hidden;
+  /* GPU acceleration for smooth transforms */
+  will-change: transform, box-shadow;
+  transform: translateZ(0);
 }
 
 @media (max-width: 640px) {
@@ -971,23 +1230,29 @@
   pointer-events: none;
 }
 
-/* Hover state with subtle lift */
+/* Hover state with subtle lift and glow */
 .btn:hover {
   background: var(--color-background-hover);
   border-color: var(--color-border-light);
   color: var(--color-text);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-elevated), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  transform: translateY(-1px);
 }
 
-/* Active/pressed state with spring physics */
+/* Inner highlight on hover for depth */
+.btn:hover::before {
+  background: linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+}
+
+/* Active/pressed state with satisfying spring physics */
 .btn:active {
-  transform: scale(0.96);
+  transform: scale(0.96) translateY(0);
   background: var(--color-background-active);
-  box-shadow: var(--shadow-sm);
+  box-shadow: var(--shadow-xs), inset 0 1px 2px rgba(0, 0, 0, 0.15);
   transition:
-    transform 80ms var(--ease-out),
-    background 80ms var(--ease-out),
-    box-shadow 80ms var(--ease-out);
+    transform var(--duration-micro) var(--ease-out),
+    background var(--duration-micro) var(--ease-out),
+    box-shadow var(--duration-micro) var(--ease-out);
 }
 
 /* Ripple expands from press point */
@@ -1020,17 +1285,28 @@
   box-shadow: 0 0 0 2px var(--color-background), 0 0 0 4px var(--color-primary);
 }
 
-/* Primary button variant */
+/* Primary button variant - premium gradient with glow */
 .btn-primary {
-  background: var(--color-primary);
+  background: linear-gradient(180deg, var(--color-primary-hover) 0%, var(--color-primary) 100%);
   border-color: var(--color-primary);
   color: var(--color-background);
+  box-shadow: var(--shadow-sm), 0 0 0 1px rgba(34, 211, 238, 0.2);
+}
+
+.btn-primary::before {
+  background: linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 50%);
 }
 
 .btn-primary:hover {
-  background: var(--color-primary-hover);
+  background: linear-gradient(180deg, #7dd3fc 0%, var(--color-primary-hover) 100%);
   border-color: var(--color-primary-hover);
   color: var(--color-background);
+  box-shadow: var(--shadow-md), 0 0 16px var(--color-glow-soft);
+}
+
+.btn-primary:active {
+  background: var(--color-primary);
+  box-shadow: var(--shadow-xs), inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* Ghost button variant */
@@ -1206,11 +1482,11 @@
    ============================================================================= */
 
 /* =============================================================================
-   TOUCH DEVICE OPTIMIZATIONS
+   TOUCH DEVICE OPTIMIZATIONS - Premium mobile experience
    ============================================================================= */
 
 @media (hover: none) and (pointer: coarse) {
-  /* Larger touch targets */
+  /* Larger touch targets - 44px minimum per Apple HIG */
   .list-item {
     padding: var(--space-4);
     min-height: 60px;
@@ -1221,7 +1497,7 @@
     padding: var(--space-3) var(--space-5);
   }
 
-  /* Remove hover states on touch */
+  /* Remove hover states on touch - they feel sticky/wrong */
   .list-item:hover {
     background: transparent;
     border-color: transparent;
@@ -1230,6 +1506,47 @@
   .list-item.active:hover {
     background: var(--color-background-active);
     border-color: var(--color-primary);
+  }
+
+  /* IMMEDIATE touch feedback - no delay, snappy response */
+  .btn,
+  .list-item,
+  [role="button"],
+  button {
+    /* Disable touch delay */
+    touch-action: manipulation;
+    /* Faster active state transition for tactile feel */
+    transition:
+      transform var(--duration-micro) var(--ease-out),
+      background var(--duration-micro) var(--ease-out),
+      box-shadow var(--duration-micro) var(--ease-out);
+  }
+
+  /* Enhanced active state for touch - more obvious feedback */
+  .btn:active,
+  .list-item:active {
+    transform: scale(0.97);
+    background: var(--color-background-active);
+    transition:
+      transform 0ms,
+      background 0ms;
+  }
+
+  /* Touch highlight effect */
+  .touch-highlight {
+    -webkit-tap-highlight-color: rgba(34, 211, 238, 0.15);
+  }
+}
+
+/* iOS-specific optimizations */
+@supports (-webkit-touch-callout: none) {
+  .btn,
+  .list-item,
+  [role="button"] {
+    /* Prevent long-press context menu delay */
+    -webkit-touch-callout: none;
+    /* Immediate touch feedback */
+    -webkit-tap-highlight-color: rgba(34, 211, 238, 0.12);
   }
 }
 
@@ -1925,4 +2242,238 @@ kbd {
   kbd {
     font-size: max(0.9em, 11px);
   }
+}
+
+/* =============================================================================
+   SMOOTH TRANSITION ANIMATIONS
+   Premium content transitions for page and component changes
+   ============================================================================= */
+
+/* Fade in animation */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Slide up with fade */
+@keyframes slide-up-fade {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Slide down with fade */
+@keyframes slide-down-fade {
+  from {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Scale up with fade (for modals/overlays) */
+@keyframes scale-up-fade {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Content reveal animation */
+@keyframes content-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* Animation utility classes */
+.animate-fade-in {
+  animation: fade-in var(--duration-normal) var(--ease-out) forwards;
+}
+
+.animate-slide-up {
+  animation: slide-up-fade var(--duration-normal) var(--ease-expo-out) forwards;
+}
+
+.animate-slide-down {
+  animation: slide-down-fade var(--duration-normal) var(--ease-expo-out) forwards;
+}
+
+.animate-scale-up {
+  animation: scale-up-fade var(--duration-normal) var(--ease-spring-soft) forwards;
+}
+
+.animate-content-reveal {
+  animation: content-reveal var(--duration-slow) var(--ease-expo-out) forwards;
+}
+
+/* Staggered children animation */
+.animate-stagger > * {
+  opacity: 0;
+  animation: slide-up-fade var(--duration-normal) var(--ease-expo-out) forwards;
+}
+
+.animate-stagger > :nth-child(1) { animation-delay: 0ms; }
+.animate-stagger > :nth-child(2) { animation-delay: 50ms; }
+.animate-stagger > :nth-child(3) { animation-delay: 100ms; }
+.animate-stagger > :nth-child(4) { animation-delay: 150ms; }
+.animate-stagger > :nth-child(5) { animation-delay: 200ms; }
+.animate-stagger > :nth-child(6) { animation-delay: 250ms; }
+.animate-stagger > :nth-child(7) { animation-delay: 300ms; }
+.animate-stagger > :nth-child(8) { animation-delay: 350ms; }
+
+/* Reduce motion for users who prefer it */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .animate-fade-in,
+  .animate-slide-up,
+  .animate-slide-down,
+  .animate-scale-up,
+  .animate-content-reveal,
+  .animate-stagger > * {
+    animation: none;
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* =============================================================================
+   LOADING INDICATOR - Premium spinner
+   ============================================================================= */
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spinner-dash {
+  0% {
+    stroke-dasharray: 1, 150;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 90, 150;
+    stroke-dashoffset: -124;
+  }
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  animation: spinner-rotate 2s linear infinite;
+}
+
+.spinner-track {
+  stroke: var(--color-border-subtle);
+  stroke-width: 3;
+  fill: none;
+}
+
+.spinner-fill {
+  stroke: var(--color-primary);
+  stroke-width: 3;
+  stroke-linecap: round;
+  fill: none;
+  animation: spinner-dash 1.5s var(--ease-in-out) infinite;
+}
+
+.spinner--sm {
+  width: 16px;
+  height: 16px;
+}
+
+.spinner--lg {
+  width: 40px;
+  height: 40px;
+}
+
+/* =============================================================================
+   TOOLTIP ENHANCEMENTS
+   ============================================================================= */
+
+.tooltip {
+  position: absolute;
+  z-index: var(--z-tooltip);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-background-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-floating);
+  font-size: var(--text-xs);
+  color: var(--color-text);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
+.tooltip--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Arrow */
+.tooltip::before {
+  content: '';
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--color-background-elevated);
+  border: 1px solid var(--color-border-subtle);
+  border-right: none;
+  border-bottom: none;
+  transform: rotate(45deg);
+}
+
+.tooltip--top::before {
+  bottom: -5px;
+  left: 50%;
+  margin-left: -4px;
+  transform: rotate(-135deg);
+}
+
+.tooltip--bottom::before {
+  top: -5px;
+  left: 50%;
+  margin-left: -4px;
+  transform: rotate(45deg);
 }
