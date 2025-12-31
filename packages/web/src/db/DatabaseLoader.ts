@@ -7,6 +7,12 @@
 
 import type { Database, SqlJsStatic } from 'sql.js';
 import { isWASMSupported, detectWASM } from '../utils/wasm';
+import {
+  DbTimingRecorder,
+  storeDbTiming,
+  logDbTiming,
+  type DbLoadTiming,
+} from './db-timing';
 
 // Cached sql.js instance - use dynamic import because sql.js is CommonJS
 let sqlJsPromise: Promise<SqlJsStatic> | null = null;
@@ -210,6 +216,10 @@ export class DatabaseLoader {
   private config: Required<DatabaseLoaderConfig>;
   private repository: SqlJsRepository | null = null;
   private sqlPromise: Promise<SqlJsStatic> | null = null;
+  /** Current timing recorder (dev-only instrumentation) */
+  private timing: DbTimingRecorder | null = null;
+  /** Last completed timing result (for external access) */
+  private lastTiming: DbLoadTiming | null = null;
 
   constructor(config: DatabaseLoaderConfig) {
     this.config = {
@@ -311,6 +321,104 @@ export class DatabaseLoader {
     return header.startsWith('SQLite format 3');
   }
 
+  private canUseGzipDecompressionStream(): boolean {
+    const ctor = (globalThis as any).DecompressionStream as undefined | (new (format: string) => TransformStream);
+    if (!ctor) return false;
+    try {
+      // Some environments may expose the ctor but not support gzip.
+      new ctor('gzip');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private withGzipSuffix(url: string): string {
+    const qIndex = url.indexOf('?');
+    const base = qIndex >= 0 ? url.slice(0, qIndex) : url;
+    const query = qIndex >= 0 ? url.slice(qIndex) : '';
+    if (base.endsWith('.gz')) return url;
+    return `${base}.gz${query}`;
+  }
+
+  private async getGzipDecompressor(): Promise<
+    | { label: string; decompress: (data: Uint8Array) => Promise<Uint8Array> }
+    | null
+  > {
+    if (this.canUseGzipDecompressionStream()) {
+      return { label: 'native', decompress: (data) => this.decompressGzip(data) };
+    }
+
+    // Fallback for browsers without `DecompressionStream('gzip')` (e.g., older Safari):
+    // dynamically import pako so modern browsers don't pay the cost.
+    try {
+      const mod: any = await import('pako');
+      const ungzip: unknown = mod?.ungzip ?? mod?.default?.ungzip;
+      if (typeof ungzip !== 'function') return null;
+      return {
+        label: 'pako',
+        decompress: async (data) => {
+          const result = ungzip(data);
+          return result instanceof Uint8Array ? result : new Uint8Array(result);
+        },
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async decompressGzip(data: Uint8Array): Promise<Uint8Array> {
+    const ctor = (globalThis as any).DecompressionStream as undefined | (new (format: string) => TransformStream);
+    if (!ctor) {
+      throw new Error('DecompressionStream not available');
+    }
+    const ds = new ctor('gzip');
+    const decompressedStream = new Blob([data]).stream().pipeThrough(ds);
+    const buffer = await new Response(decompressedStream).arrayBuffer();
+    return new Uint8Array(buffer);
+  }
+
+  private async fetchBytes(url: string, label: string): Promise<Uint8Array> {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Failed to download database: ${response.statusText}`);
+    }
+
+    const contentLength = response.headers.get('content-length');
+    const total = contentLength ? parseInt(contentLength, 10) : 0;
+    let loaded = 0;
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      const buffer = await response.arrayBuffer();
+      this.progress('downloading', 50, `${label}: ${Math.round(buffer.byteLength / 1024)}KB`);
+      return new Uint8Array(buffer);
+    }
+
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      loaded += value.length;
+
+      if (total > 0) {
+        const percent = Math.round((loaded / total) * 40) + 10;
+        this.progress('downloading', percent, `${label}: ${Math.round(loaded / 1024)}KB`);
+      }
+    }
+
+    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const combined = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return combined;
+  }
+
   /**
    * Save database to cache
    */
@@ -354,44 +462,58 @@ export class DatabaseLoader {
       }
     })();
 
-    // Fetch the database
-    const response = await fetch(downloadUrl, { cache: 'no-store' });
-    if (!response.ok) {
-      throw new Error(`Failed to download database: ${response.statusText}`);
-    }
+    let combined: Uint8Array | null = null;
 
-    const contentLength = response.headers.get('content-length');
-    const total = contentLength ? parseInt(contentLength, 10) : 0;
-    let loaded = 0;
+    // Prefer a pre-compressed asset (`.db.gz`) when supported to cut first-load latency.
+    // Fallback to the raw `.db` if decompression isn't available or the `.gz` is missing.
+    const gz = await this.getGzipDecompressor();
+    if (gz) {
+      const gzUrl = this.withGzipSuffix(downloadUrl);
+      try {
+        this.progress('downloading', 10, 'Downloading database (compressed)...');
 
-    // Stream the download with progress
-    const reader = response.body?.getReader();
-    if (!reader) {
-      throw new Error('No response body');
-    }
+        this.timing?.startStage('fetch');
+        const compressed = await this.fetchBytes(gzUrl, 'Downloading (gzip)');
+        this.timing?.endStage('fetch');
+        this.timing?.setBytesTransferred(compressed.length);
 
-    const chunks: Uint8Array[] = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      loaded += value.length;
+        // In some deployments the server may auto-decompress; if so, accept the bytes as-is.
+        if (this.isValidSqliteData(compressed)) {
+          combined = compressed;
+          this.timing?.setSource('db');
+          this.timing?.setDecompressionMethod('none');
+        } else {
+          this.progress(
+            'decompressing',
+            55,
+            gz.label === 'native' ? 'Decompressing database...' : 'Decompressing database (fallback)...'
+          );
 
-      if (total > 0) {
-        const percent = Math.round((loaded / total) * 40) + 10;
-        this.progress('downloading', percent, `Downloading: ${Math.round(loaded / 1024)}KB`);
+          this.timing?.startStage('decompress');
+          combined = await gz.decompress(compressed);
+          this.timing?.endStage('decompress');
+
+          this.timing?.setSource('db.gz');
+          this.timing?.setDecompressionMethod(gz.label === 'native' ? 'native' : 'pako');
+        }
+      } catch {
+        combined = null;
       }
     }
 
-    // Combine chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
+    if (!combined) {
+      this.progress('downloading', 10, 'Downloading database...');
+
+      this.timing?.startStage('fetch');
+      combined = await this.fetchBytes(downloadUrl, 'Downloading');
+      this.timing?.endStage('fetch');
+
+      this.timing?.setBytesTransferred(combined.length);
+      this.timing?.setSource('db');
+      this.timing?.setDecompressionMethod('none');
     }
 
+    this.timing?.setBytesDecompressed(combined.length);
     this.progress('decompressing', 60, 'Processing database...');
 
     // Validate downloaded data is a valid SQLite database
@@ -409,7 +531,10 @@ export class DatabaseLoader {
     }
 
     this.progress('initializing', 80, 'Initializing database...');
+
+    this.timing?.startStage('sqlJsInit');
     const SQL = await this.getSqlJs();
+    this.timing?.endStage('sqlJsInit');
 
     // Calculate hash from data
     const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
@@ -423,7 +548,12 @@ export class DatabaseLoader {
       );
     }
 
+    this.timing?.startStage('dbOpen');
     const db = new SQL.Database(combined);
+    // Run a simple query to warm up the database
+    db.exec('SELECT 1');
+    this.timing?.endStage('dbOpen');
+
     return { db, hash };
   }
 
@@ -435,6 +565,9 @@ export class DatabaseLoader {
       return this.repository;
     }
 
+    // Initialize timing recorder (dev-only instrumentation)
+    this.timing = new DbTimingRecorder();
+
     // Early check for WASM support - fail fast with clear error
     if (!isWASMSupported()) {
       const wasmStatus = await detectWASM();
@@ -445,14 +578,37 @@ export class DatabaseLoader {
 
     try {
       // Check cache first
+      this.timing.startStage('cacheCheck');
       const cacheStatus = await this.checkCache();
+      this.timing.endStage('cacheCheck');
 
       if (cacheStatus.valid) {
         this.progress('initializing', 80, 'Loading from cache...', true);
-        const db = await this.loadFromCache();
-        if (db) {
+        this.timing.setCached(true);
+        this.timing.setSource('cache');
+
+        this.timing.startStage('cacheRead');
+        const cachedData = await getFromIndexedDB<Uint8Array>(`${this.config.dbName}:data`);
+        this.timing.endStage('cacheRead');
+
+        if (cachedData && this.isValidSqliteData(cachedData)) {
+          this.timing.setBytesDecompressed(cachedData.length);
+
+          this.timing.startStage('sqlJsInit');
+          const SQL = await this.getSqlJs();
+          this.timing.endStage('sqlJsInit');
+
+          this.timing.startStage('dbOpen');
+          const db = new SQL.Database(cachedData);
+          // Run a simple query to warm up the database
+          db.exec('SELECT 1');
+          this.timing.endStage('dbOpen');
+
           this.progress('ready', 100, 'Database ready (cached)', true);
           this.repository = new SqlJsRepository(db);
+
+          // Finalize and log timing
+          this.finalizeTiming();
 
           // Check for updates in background
           void this.checkForUpdates();
@@ -460,6 +616,9 @@ export class DatabaseLoader {
           return this.repository;
         }
       }
+
+      // Cold load path
+      this.timing.setCached(false);
 
       // Try to fetch the manifest so we can cache-bust service worker DB caching and validate the hash.
       let expectedHash: string | undefined;
@@ -470,21 +629,46 @@ export class DatabaseLoader {
         expectedHash = undefined;
       }
 
-      // Download fresh copy
+      // Download fresh copy (timing is recorded inside downloadDatabase)
       const { db, hash } = await this.downloadDatabase(expectedHash);
 
       // Save to cache
       this.progress('initializing', 95, 'Saving to cache...');
+      this.timing.startStage('cacheWrite');
       await this.saveToCache(db, hash);
+      this.timing.endStage('cacheWrite');
 
       this.progress('ready', 100, 'Database ready');
       this.repository = new SqlJsRepository(db);
+
+      // Finalize and log timing
+      this.finalizeTiming();
+
       return this.repository;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.progress('error', 0, `Failed to load database: ${message}`);
       throw error;
     }
+  }
+
+  /**
+   * Finalize timing and log/store results (dev-only)
+   */
+  private finalizeTiming(): void {
+    if (!this.timing) return;
+
+    this.lastTiming = this.timing.finalize();
+    logDbTiming(this.lastTiming);
+    storeDbTiming(this.lastTiming);
+    this.timing = null;
+  }
+
+  /**
+   * Get the last timing result (for external access/testing)
+   */
+  getLastTiming(): DbLoadTiming | null {
+    return this.lastTiming;
   }
 
   /**
