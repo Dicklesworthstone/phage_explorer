@@ -66,6 +66,9 @@ export * from './analysis/translation-simulation';
 // K-mer frequency analysis for genomic signatures
 export * from './analysis/kmer-frequencies';
 
+// Dense k-mer counter utilities (WASM wrapper)
+export * from './analysis/dense-kmer';
+
 // Principal Component Analysis
 export * from './analysis/pca';
 

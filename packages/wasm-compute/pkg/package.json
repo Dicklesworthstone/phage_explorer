@@ -1,5 +1,6 @@
 {
   "name": "wasm-compute",
+  "type": "module",
   "version": "0.1.0",
   "files": [
     "wasm_compute_bg.wasm",
@@ -7,5 +8,8 @@
     "wasm_compute.d.ts"
   ],
   "main": "wasm_compute.js",
-  "types": "wasm_compute.d.ts"
+  "types": "wasm_compute.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
 }

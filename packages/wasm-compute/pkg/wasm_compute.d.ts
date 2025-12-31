@@ -25,6 +25,51 @@ export class CodonUsageResult {
   readonly json: string;
 }
 
+/**
+ * Error codes for dense k-mer counting.
+ */
+export enum DenseKmerError {
+  /**
+   * K value exceeds safe maximum (currently 10)
+   */
+  KTooLarge = 1,
+  /**
+   * K value is zero
+   */
+  KZero = 2,
+  /**
+   * Sequence is shorter than k
+   */
+  SequenceTooShort = 3,
+}
+
+export class DenseKmerResult {
+  private constructor();
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Total number of valid k-mers counted (windows without N/ambiguous bases).
+   */
+  readonly total_valid: bigint;
+  /**
+   * Get the number of unique k-mers (non-zero counts).
+   */
+  readonly unique_count: number;
+  /**
+   * K value used for counting.
+   */
+  readonly k: number;
+  /**
+   * Get the k-mer counts as a Uint32Array.
+   * Length is 4^k where each index represents a k-mer in base-4 encoding:
+   * - A=0, C=1, G=2, T=3
+   * - Index = sum(base[i] * 4^(k-1-i)) for i in 0..k
+   *
+   * Example for k=2: index 0=AA, 1=AC, 2=AG, 3=AT, 4=CA, ... 15=TT
+   */
+  readonly counts: Uint32Array;
+}
+
 export class GridResult {
   private constructor();
   free(): void;
@@ -284,6 +329,71 @@ export function compute_windowed_complexity(seq: string, window_size: number, st
 export function count_codon_usage(seq: string, frame: number): CodonUsageResult;
 
 /**
+ * Dense k-mer counting with typed array output.
+ *
+ * Uses a rolling 2-bit index algorithm with no per-position heap allocations.
+ * Ambiguous bases (N and non-ACGT) reset the rolling state.
+ *
+ * # Arguments
+ * * `seq` - Sequence as bytes (ASCII). Accepts both upper and lower case.
+ * * `k` - K-mer size. Must be 1 <= k <= 10 (4^10 = ~4MB max array).
+ *
+ * # Returns
+ * `DenseKmerResult` with:
+ * - `counts`: Uint32Array of length 4^k (dense count vector)
+ * - `total_valid`: Total valid k-mers counted
+ * - `k`: K value used
+ * - `unique_count`: Number of unique k-mers observed
+ *
+ * Returns an empty result with all-zero counts if k is invalid.
+ *
+ * # Ownership
+ * Caller must call `.free()` when done to release WASM memory.
+ *
+ * # Ambiguous Bases
+ * Windows containing non-ACGT bases are skipped. The rolling state resets
+ * on any ambiguous base, so no k-mer spans an N.
+ *
+ * # Example (from JS)
+ * ```js
+ * const result = wasm.count_kmers_dense(sequenceBytes, 6);
+ * try {
+ *   const counts = result.counts; // Uint32Array[4096]
+ *   const total = result.total_valid;
+ *   // Use counts...
+ * } finally {
+ *   result.free(); // Required!
+ * }
+ * ```
+ *
+ * # Determinism
+ * Output is fully deterministic. No random number generation.
+ *
+ * @see phage_explorer-vk7b.1.1
+ * @see docs/WASM_ABI_SPEC.md
+ */
+export function count_kmers_dense(seq: Uint8Array, k: number): DenseKmerResult;
+
+/**
+ * Dense k-mer counting with reverse complement combined.
+ *
+ * Counts both forward and reverse complement k-mers into the same array.
+ * Uses canonical k-mers (min of forward and RC) for strand-independent analysis.
+ *
+ * # Arguments
+ * * `seq` - Sequence as bytes (ASCII)
+ * * `k` - K-mer size (1 <= k <= 10)
+ *
+ * # Returns
+ * `DenseKmerResult` with combined forward + RC counts.
+ *
+ * # Note
+ * For odd k values, forward and RC k-mers are always different.
+ * For even k values, some palindromic k-mers are their own RC.
+ */
+export function count_kmers_dense_canonical(seq: Uint8Array, k: number): DenseKmerResult;
+
+/**
  * Detect bonds using spatial hashing for O(N) complexity.
  *
  * This is the CRITICAL optimization replacing the O(N²) algorithm.
@@ -357,6 +467,11 @@ export function detect_tandem_repeats(seq: string, min_unit: number, max_unit: n
 export function encode_sequence_fast(seq: string): Uint8Array;
 
 /**
+ * Get the maximum allowed k for dense k-mer counting.
+ */
+export function get_dense_kmer_max_k(): number;
+
+/**
  * Compute Hoeffding's D statistic for measuring statistical dependence.
  *
  * Hoeffding's D is a non-parametric measure of association that can detect
@@ -387,6 +502,13 @@ export function encode_sequence_fast(seq: string): Uint8Array;
 export function hoeffdings_d(x: Float64Array, y: Float64Array): HoeffdingResult;
 
 export function init_panic_hook(): void;
+
+/**
+ * Check if a k value is valid for dense k-mer counting.
+ *
+ * Returns true if 1 <= k <= DENSE_KMER_MAX_K (10).
+ */
+export function is_valid_dense_kmer_k(k: number): boolean;
 
 /**
  * Compute Jensen-Shannon Divergence between two probability distributions.
@@ -520,3 +642,120 @@ export function shannon_entropy_from_counts(counts: Float64Array): number;
  * Amino acid sequence as a string. Unknown codons (containing N) become 'X'.
  */
 export function translate_sequence(seq: string, frame: number): string;
+
+export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
+
+export interface InitOutput {
+  readonly memory: WebAssembly.Memory;
+  readonly __wbg_bonddetectionresult_free: (a: number, b: number) => void;
+  readonly __wbg_codonusageresult_free: (a: number, b: number) => void;
+  readonly __wbg_densekmerresult_free: (a: number, b: number) => void;
+  readonly __wbg_get_hoeffdingresult_d: (a: number) => number;
+  readonly __wbg_get_hoeffdingresult_n: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_bray_curtis_dissimilarity: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_containment_a_in_b: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_containment_b_in_a: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_cosine_similarity: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_k: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_shared_kmers: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_unique_kmers_a: (a: number) => number;
+  readonly __wbg_get_kmeranalysisresult_unique_kmers_b: (a: number) => number;
+  readonly __wbg_gridresult_free: (a: number, b: number) => void;
+  readonly __wbg_hoeffdingresult_free: (a: number, b: number) => void;
+  readonly __wbg_kmeranalysisresult_free: (a: number, b: number) => void;
+  readonly __wbg_pcaresult_free: (a: number, b: number) => void;
+  readonly __wbg_repeatresult_free: (a: number, b: number) => void;
+  readonly __wbg_set_hoeffdingresult_d: (a: number, b: number) => void;
+  readonly __wbg_set_hoeffdingresult_n: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_bray_curtis_dissimilarity: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_containment_a_in_b: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_containment_b_in_a: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_cosine_similarity: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_k: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_shared_kmers: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_unique_kmers_a: (a: number, b: number) => void;
+  readonly __wbg_set_kmeranalysisresult_unique_kmers_b: (a: number, b: number) => void;
+  readonly analyze_kmers: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly bonddetectionresult_bond_count: (a: number) => number;
+  readonly bonddetectionresult_bonds: (a: number) => [number, number];
+  readonly build_grid: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
+  readonly calculate_gc_content: (a: number, b: number) => number;
+  readonly codonusageresult_json: (a: number) => [number, number];
+  readonly compute_cumulative_gc_skew: (a: number, b: number) => [number, number];
+  readonly compute_diff_mask: (a: number, b: number, c: number, d: number) => [number, number];
+  readonly compute_diff_mask_encoded: (a: number, b: number, c: number, d: number) => [number, number];
+  readonly compute_gc_skew: (a: number, b: number, c: number, d: number) => [number, number];
+  readonly compute_linguistic_complexity: (a: number, b: number, c: number) => number;
+  readonly compute_micro_runs: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number];
+  readonly compute_windowed_complexity: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+  readonly count_codon_usage: (a: number, b: number, c: number) => number;
+  readonly count_kmers_dense: (a: number, b: number, c: number) => number;
+  readonly count_kmers_dense_canonical: (a: number, b: number, c: number) => number;
+  readonly densekmerresult_counts: (a: number) => any;
+  readonly densekmerresult_k: (a: number) => number;
+  readonly densekmerresult_total_valid: (a: number) => bigint;
+  readonly densekmerresult_unique_count: (a: number) => number;
+  readonly detect_bonds_spatial: (a: number, b: number, c: number, d: number) => number;
+  readonly detect_palindromes: (a: number, b: number, c: number, d: number) => number;
+  readonly detect_tandem_repeats: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly encode_sequence_fast: (a: number, b: number) => [number, number];
+  readonly get_dense_kmer_max_k: () => number;
+  readonly gridresult_json: (a: number) => [number, number];
+  readonly hoeffdings_d: (a: number, b: number, c: number, d: number) => number;
+  readonly is_valid_dense_kmer_k: (a: number) => number;
+  readonly jensen_shannon_divergence: (a: number, b: number, c: number, d: number) => number;
+  readonly jensen_shannon_divergence_from_counts: (a: number, b: number, c: number, d: number) => number;
+  readonly kmer_hoeffdings_d: (a: number, b: number, c: number, d: number, e: number) => number;
+  readonly levenshtein_distance: (a: number, b: number, c: number, d: number) => number;
+  readonly min_hash_jaccard: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly pca_power_iteration: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+  readonly pcaresult_eigenvalues: (a: number) => [number, number];
+  readonly pcaresult_eigenvectors: (a: number) => [number, number];
+  readonly pcaresult_n_features: (a: number) => number;
+  readonly repeatresult_json: (a: number) => [number, number];
+  readonly reverse_complement: (a: number, b: number) => [number, number];
+  readonly shannon_entropy: (a: number, b: number) => number;
+  readonly shannon_entropy_from_counts: (a: number, b: number) => number;
+  readonly translate_sequence: (a: number, b: number, c: number) => [number, number];
+  readonly init_panic_hook: () => void;
+  readonly __wbg_set_kmeranalysisresult_jaccard_index: (a: number, b: number) => void;
+  readonly __wbg_get_kmeranalysisresult_jaccard_index: (a: number) => number;
+  readonly pcaresult_n_components: (a: number) => number;
+  readonly __wbg_get_vector3_x: (a: number) => number;
+  readonly __wbg_get_vector3_y: (a: number) => number;
+  readonly __wbg_get_vector3_z: (a: number) => number;
+  readonly __wbg_model3d_free: (a: number, b: number) => void;
+  readonly __wbg_set_vector3_x: (a: number, b: number) => void;
+  readonly __wbg_set_vector3_y: (a: number, b: number) => void;
+  readonly __wbg_set_vector3_z: (a: number, b: number) => void;
+  readonly __wbg_vector3_free: (a: number, b: number) => void;
+  readonly model3d_new: (a: number, b: number, c: number, d: number) => number;
+  readonly render_ascii_model: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number];
+  readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+  readonly __wbindgen_malloc: (a: number, b: number) => number;
+  readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+  readonly __wbindgen_externrefs: WebAssembly.Table;
+  readonly __wbindgen_start: () => void;
+}
+
+export type SyncInitInput = BufferSource | WebAssembly.Module;
+
+/**
+* Instantiates the given `module`, which can either be bytes or
+* a precompiled `WebAssembly.Module`.
+*
+* @param {{ module: SyncInitInput }} module - Passing `SyncInitInput` directly is deprecated.
+*
+* @returns {InitOutput}
+*/
+export function initSync(module: { module: SyncInitInput } | SyncInitInput): InitOutput;
+
+/**
+* If `module_or_path` is {RequestInfo} or {URL}, makes a request and
+* for everything else, calls `WebAssembly.instantiate` directly.
+*
+* @param {{ module_or_path: InitInput | Promise<InitInput> }} module_or_path - Passing `InitInput` directly is deprecated.
+*
+* @returns {Promise<InitOutput>}
+*/
+export default function __wbg_init (module_or_path?: { module_or_path: InitInput | Promise<InitInput> } | InitInput | Promise<InitInput>): Promise<InitOutput>;

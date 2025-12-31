@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
+use js_sys;
 
 mod renderer;
 
@@ -499,6 +500,268 @@ fn get_min_hash_signature(seq: &str, k: usize, num_hashes: usize) -> Vec<u32> {
         }
     }
     signature
+}
+
+// ============================================================================
+// Dense K-mer Counter (bytes-first ABI)
+// Optimized for browser-based k-mer analysis with typed array output
+// See: docs/WASM_ABI_SPEC.md for conventions
+// ============================================================================
+
+/// Maximum k value for dense counting (4^10 = 1,048,576 entries = ~4MB)
+const DENSE_KMER_MAX_K: usize = 10;
+
+/// Result of dense k-mer counting.
+///
+/// # Ownership
+/// The caller must call `.free()` to release WASM memory.
+#[wasm_bindgen]
+pub struct DenseKmerResult {
+    /// Dense count array of length 4^k
+    counts: Vec<u32>,
+    /// Total valid k-mers counted (excludes windows with N)
+    total_valid: u64,
+    /// K value used
+    k: usize,
+}
+
+#[wasm_bindgen]
+impl DenseKmerResult {
+    /// Get the k-mer counts as a Uint32Array.
+    /// Length is 4^k where each index represents a k-mer in base-4 encoding:
+    /// - A=0, C=1, G=2, T=3
+    /// - Index = sum(base[i] * 4^(k-1-i)) for i in 0..k
+    ///
+    /// Example for k=2: index 0=AA, 1=AC, 2=AG, 3=AT, 4=CA, ... 15=TT
+    #[wasm_bindgen(getter)]
+    pub fn counts(&self) -> js_sys::Uint32Array {
+        let arr = js_sys::Uint32Array::new_with_length(self.counts.len() as u32);
+        arr.copy_from(&self.counts);
+        arr
+    }
+
+    /// Total number of valid k-mers counted (windows without N/ambiguous bases).
+    #[wasm_bindgen(getter)]
+    pub fn total_valid(&self) -> u64 {
+        self.total_valid
+    }
+
+    /// K value used for counting.
+    #[wasm_bindgen(getter)]
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Get the number of unique k-mers (non-zero counts).
+    #[wasm_bindgen(getter)]
+    pub fn unique_count(&self) -> usize {
+        self.counts.iter().filter(|&&c| c > 0).count()
+    }
+}
+
+/// Error codes for dense k-mer counting.
+#[wasm_bindgen]
+#[derive(Clone, Copy)]
+pub enum DenseKmerError {
+    /// K value exceeds safe maximum (currently 10)
+    KTooLarge = 1,
+    /// K value is zero
+    KZero = 2,
+    /// Sequence is shorter than k
+    SequenceTooShort = 3,
+}
+
+/// Dense k-mer counting with typed array output.
+///
+/// Uses a rolling 2-bit index algorithm with no per-position heap allocations.
+/// Ambiguous bases (N and non-ACGT) reset the rolling state.
+///
+/// # Arguments
+/// * `seq` - Sequence as bytes (ASCII). Accepts both upper and lower case.
+/// * `k` - K-mer size. Must be 1 <= k <= 10 (4^10 = ~4MB max array).
+///
+/// # Returns
+/// `DenseKmerResult` with:
+/// - `counts`: Uint32Array of length 4^k (dense count vector)
+/// - `total_valid`: Total valid k-mers counted
+/// - `k`: K value used
+/// - `unique_count`: Number of unique k-mers observed
+///
+/// Returns an empty result with all-zero counts if k is invalid.
+///
+/// # Ownership
+/// Caller must call `.free()` when done to release WASM memory.
+///
+/// # Ambiguous Bases
+/// Windows containing non-ACGT bases are skipped. The rolling state resets
+/// on any ambiguous base, so no k-mer spans an N.
+///
+/// # Example (from JS)
+/// ```js
+/// const result = wasm.count_kmers_dense(sequenceBytes, 6);
+/// try {
+///   const counts = result.counts; // Uint32Array[4096]
+///   const total = result.total_valid;
+///   // Use counts...
+/// } finally {
+///   result.free(); // Required!
+/// }
+/// ```
+///
+/// # Determinism
+/// Output is fully deterministic. No random number generation.
+///
+/// @see phage_explorer-vk7b.1.1
+/// @see docs/WASM_ABI_SPEC.md
+#[wasm_bindgen]
+pub fn count_kmers_dense(seq: &[u8], k: usize) -> DenseKmerResult {
+    // Validate k
+    if k == 0 || k > DENSE_KMER_MAX_K {
+        // Return empty result for invalid k
+        return DenseKmerResult {
+            counts: Vec::new(),
+            total_valid: 0,
+            k,
+        };
+    }
+
+    // Calculate array size: 4^k
+    let array_size = 1usize << (2 * k); // 4^k = 2^(2k)
+    let mut counts = vec![0u32; array_size];
+
+    // Mask for k bases: (4^k - 1) = all 1s in the lower 2k bits
+    let mask = array_size - 1;
+
+    // Rolling index state
+    let mut rolling_index: usize = 0;
+    let mut valid_bases: usize = 0; // How many consecutive valid bases we have
+    let mut total_valid: u64 = 0;
+
+    for &byte in seq {
+        // Encode base to 2-bit value (A=0, C=1, G=2, T=3)
+        let base_code = match byte {
+            b'A' | b'a' => 0usize,
+            b'C' | b'c' => 1usize,
+            b'G' | b'g' => 2usize,
+            b'T' | b't' | b'U' | b'u' => 3usize,
+            _ => {
+                // Ambiguous base - reset rolling state
+                rolling_index = 0;
+                valid_bases = 0;
+                continue;
+            }
+        };
+
+        // Update rolling index: shift left by 2 bits, add new base, mask to k bases
+        rolling_index = ((rolling_index << 2) | base_code) & mask;
+        valid_bases += 1;
+
+        // Only count once we have k valid bases
+        if valid_bases >= k {
+            counts[rolling_index] = counts[rolling_index].saturating_add(1);
+            total_valid += 1;
+        }
+    }
+
+    DenseKmerResult {
+        counts,
+        total_valid,
+        k,
+    }
+}
+
+/// Dense k-mer counting with reverse complement combined.
+///
+/// Counts both forward and reverse complement k-mers into the same array.
+/// Uses canonical k-mers (min of forward and RC) for strand-independent analysis.
+///
+/// # Arguments
+/// * `seq` - Sequence as bytes (ASCII)
+/// * `k` - K-mer size (1 <= k <= 10)
+///
+/// # Returns
+/// `DenseKmerResult` with combined forward + RC counts.
+///
+/// # Note
+/// For odd k values, forward and RC k-mers are always different.
+/// For even k values, some palindromic k-mers are their own RC.
+#[wasm_bindgen]
+pub fn count_kmers_dense_canonical(seq: &[u8], k: usize) -> DenseKmerResult {
+    // Validate k
+    if k == 0 || k > DENSE_KMER_MAX_K {
+        return DenseKmerResult {
+            counts: Vec::new(),
+            total_valid: 0,
+            k,
+        };
+    }
+
+    let array_size = 1usize << (2 * k);
+    let mut counts = vec![0u32; array_size];
+    let mask = array_size - 1;
+
+    // We need to track both forward and reverse complement rolling indices
+    let mut fwd_index: usize = 0;
+    let mut rc_index: usize = 0;
+    let mut valid_bases: usize = 0;
+    let mut total_valid: u64 = 0;
+
+    // Shift amount for RC: we build RC from the right (LSB)
+    let rc_shift = 2 * (k - 1);
+
+    for &byte in seq {
+        // Encode base to 2-bit value
+        let base_code = match byte {
+            b'A' | b'a' => 0usize,
+            b'C' | b'c' => 1usize,
+            b'G' | b'g' => 2usize,
+            b'T' | b't' | b'U' | b'u' => 3usize,
+            _ => {
+                fwd_index = 0;
+                rc_index = 0;
+                valid_bases = 0;
+                continue;
+            }
+        };
+
+        // Complement: A<->T (0<->3), C<->G (1<->2)
+        let comp_code = 3 - base_code;
+
+        // Forward: shift left, add new base at LSB
+        fwd_index = ((fwd_index << 2) | base_code) & mask;
+
+        // RC: shift right, add complement at MSB position
+        rc_index = (rc_index >> 2) | (comp_code << rc_shift);
+
+        valid_bases += 1;
+
+        if valid_bases >= k {
+            // Use canonical (smaller index) for strand-independent counting
+            let canonical = fwd_index.min(rc_index);
+            counts[canonical] = counts[canonical].saturating_add(1);
+            total_valid += 1;
+        }
+    }
+
+    DenseKmerResult {
+        counts,
+        total_valid,
+        k,
+    }
+}
+
+/// Check if a k value is valid for dense k-mer counting.
+///
+/// Returns true if 1 <= k <= DENSE_KMER_MAX_K (10).
+#[wasm_bindgen]
+pub fn is_valid_dense_kmer_k(k: usize) -> bool {
+    k >= 1 && k <= DENSE_KMER_MAX_K
+}
+
+/// Get the maximum allowed k for dense k-mer counting.
+#[wasm_bindgen]
+pub fn get_dense_kmer_max_k() -> usize {
+    DENSE_KMER_MAX_K
 }
 
 // ============================================================================
