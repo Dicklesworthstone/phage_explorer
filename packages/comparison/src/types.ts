@@ -243,7 +243,8 @@ export interface DonorCandidate {
   taxon: string;
   similarity: number;
   confidence: 'low' | 'medium' | 'high';
-  evidence: 'kmer';
+  /** Evidence type: 'kmer' = exact Jaccard, 'minhash' = approximate MinHash Jaccard */
+  evidence: 'kmer' | 'minhash';
 }
 
 export interface PassportStamp {
