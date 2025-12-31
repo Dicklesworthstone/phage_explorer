@@ -397,4 +397,211 @@ declare module '@phage/wasm-compute' {
     mode: string,
     frame: number
   ): GridResult;
+
+  // ============================================================================
+  // Dense K-mer Counter (WASM ABI: bytes-first, typed-array output)
+  // @see docs/wasm-abi.md, phage_explorer-vk7b.1
+  // ============================================================================
+
+  /**
+   * Error codes for dense k-mer counting.
+   */
+  export enum DenseKmerError {
+    KTooLarge = 1,
+    KZero = 2,
+    SequenceTooShort = 3,
+  }
+
+  /**
+   * Result of dense k-mer counting.
+   *
+   * IMPORTANT: Must call `.free()` when done to release WASM memory.
+   *
+   * @example
+   * ```ts
+   * const result = wasm.count_kmers_dense(sequenceBytes, 6);
+   * try {
+   *   const counts = result.counts; // Uint32Array[4096]
+   *   const total = Number(result.total_valid); // bigint → number
+   * } finally {
+   *   result.free(); // Required!
+   * }
+   * ```
+   */
+  export class DenseKmerResult {
+    free(): void;
+    /**
+     * Dense count array of length 4^k.
+     * Index encoding: A=0, C=1, G=2, T=3
+     * Index = sum(base[i] * 4^(k-1-i)) for i in 0..k
+     */
+    readonly counts: Uint32Array;
+    /** Total valid k-mers counted (Rust u64 → JS bigint) */
+    readonly total_valid: bigint;
+    /** K value used */
+    readonly k: number;
+    /** Number of unique k-mers (non-zero counts) */
+    readonly unique_count: number;
+  }
+
+  /**
+   * Dense k-mer counting with typed array output.
+   *
+   * Uses a rolling 2-bit index algorithm with no per-position heap allocations.
+   * Ambiguous bases (N and non-ACGT) reset the rolling state.
+   *
+   * @param seq - Sequence as bytes (ASCII). Accepts both upper and lower case.
+   * @param k - K-mer size. Must be 1 <= k <= 10 (4^10 = ~4MB max array).
+   * @returns DenseKmerResult (caller must call `.free()`)
+   *
+   * Returns empty result with all-zero counts if k is invalid.
+   *
+   * @see phage_explorer-vk7b.1.1
+   * @see docs/wasm-abi.md
+   */
+  export function count_kmers_dense(seq: Uint8Array, k: number): DenseKmerResult;
+
+  /**
+   * Dense k-mer counting with reverse complement combined.
+   *
+   * Counts both forward and reverse complement k-mers into the same array.
+   * Uses canonical k-mers (min of forward and RC) for strand-independent analysis.
+   *
+   * @param seq - Sequence as bytes (ASCII)
+   * @param k - K-mer size (1 <= k <= 10)
+   * @returns DenseKmerResult with combined forward + RC counts
+   */
+  export function count_kmers_dense_canonical(seq: Uint8Array, k: number): DenseKmerResult;
+
+  /**
+   * Check if a k value is valid for dense k-mer counting.
+   * Returns true if 1 <= k <= 10.
+   */
+  export function is_valid_dense_kmer_k(k: number): boolean;
+
+  /**
+   * Get the maximum allowed k for dense k-mer counting (currently 10).
+   */
+  export function get_dense_kmer_max_k(): number;
+
+  // ============================================================================
+  // MinHash Signature (rolling index, typed array output)
+  // @see phage_explorer-vk7b.2.1
+  // ============================================================================
+
+  /**
+   * Result of MinHash signature computation.
+   *
+   * IMPORTANT: Must call `.free()` when done to release WASM memory.
+   *
+   * @example
+   * ```ts
+   * const sig = wasm.minhash_signature(seqBytes, 16, 128);
+   * try {
+   *   const values = sig.signature; // Uint32Array[128]
+   *   const totalKmers = Number(sig.total_kmers);
+   * } finally {
+   *   sig.free(); // Required!
+   * }
+   * ```
+   */
+  export class MinHashSignature {
+    free(): void;
+    /** Signature values as Uint32Array (minimum hash for each seed) */
+    readonly signature: Uint32Array;
+    /** Total valid k-mers hashed (bigint from Rust u64) */
+    readonly total_kmers: bigint;
+    /** K value used */
+    readonly k: number;
+    /** Number of hash functions (signature length) */
+    readonly num_hashes: number;
+  }
+
+  /**
+   * Compute MinHash signature using rolling k-mer index.
+   *
+   * Uses a rolling 2-bit index algorithm with no per-k-mer string allocations.
+   * Much faster than string-based approach for long sequences.
+   *
+   * @param seq - Sequence as bytes (ASCII). Case-insensitive, U treated as T.
+   * @param k - K-mer size (capped at 32 for u64 index)
+   * @param num_hashes - Number of hash functions (signature length, e.g., 128)
+   * @returns MinHashSignature (caller must call `.free()`)
+   *
+   * @see phage_explorer-vk7b.2.1
+   */
+  export function minhash_signature(seq: Uint8Array, k: number, num_hashes: number): MinHashSignature;
+
+  /**
+   * Compute MinHash signature using canonical k-mers (strand-independent).
+   *
+   * For each k-mer position, uses the minimum of forward and reverse complement
+   * indices before hashing. This makes the signature identical regardless of
+   * which strand the sequence represents.
+   *
+   * @param seq - Sequence as bytes (ASCII)
+   * @param k - K-mer size (capped at 32)
+   * @param num_hashes - Number of hash functions
+   * @returns MinHashSignature with strand-independent hashes
+   */
+  export function minhash_signature_canonical(seq: Uint8Array, k: number, num_hashes: number): MinHashSignature;
+
+  /**
+   * Estimate Jaccard similarity between two MinHash signatures.
+   *
+   * @param sig_a - First signature (Uint32Array)
+   * @param sig_b - Second signature (must have same length)
+   * @returns Estimated Jaccard similarity (0.0 to 1.0)
+   */
+  export function minhash_jaccard_from_signatures(sig_a: Uint32Array, sig_b: Uint32Array): number;
+
+  // ============================================================================
+  // Spatial-Hash Bond Detection
+  // ============================================================================
+
+  /**
+   * Result of spatial-hash bond detection.
+   */
+  export class BondDetectionResult {
+    free(): void;
+    /** Flat array of bond pairs: [a0, b0, a1, b1, ...] */
+    readonly bonds: Uint32Array;
+    /** Number of bonds found */
+    readonly bond_count: number;
+  }
+
+  /**
+   * Detect bonds using spatial hashing for O(N) complexity.
+   *
+   * This is the CRITICAL optimization replacing the O(N²) algorithm.
+   * For a 50,000 atom structure:
+   * - Old: ~60+ seconds
+   * - New: <1 second
+   *
+   * @param positions - Flat array of atom positions [x0, y0, z0, x1, y1, z1, ...]
+   * @param elements - String of element symbols (one char per atom: "CCCCNNO...")
+   * @returns BondDetectionResult with pairs of bonded atom indices
+   */
+  export function detect_bonds_spatial(positions: Float32Array, elements: string): BondDetectionResult;
+
+  // ============================================================================
+  // Sequence Rendering Helpers (Optional, not currently wired in)
+  // ============================================================================
+
+  /**
+   * Fast sequence encoding for canvas rendering.
+   * Encodes nucleotides to numeric codes: A=0, C=1, G=2, T=3, other=4.
+   */
+  export function encode_sequence_fast(seq: string): Uint8Array;
+
+  /**
+   * Compute diff mask between two sequences.
+   * Returns 0 for match, 1 for mismatch at each position.
+   */
+  export function compute_diff_mask(query: string, reference: string): Uint8Array;
+
+  /**
+   * Compute diff mask from pre-encoded sequences (faster).
+   */
+  export function compute_diff_mask_encoded(query_encoded: Uint8Array, ref_encoded: Uint8Array): Uint8Array;
 }

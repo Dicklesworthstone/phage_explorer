@@ -108,6 +108,30 @@ export class KmerAnalysisResult {
   bray_curtis_dissimilarity: number;
 }
 
+export class MinHashSignature {
+  private constructor();
+  free(): void;
+  [Symbol.dispose](): void;
+  /**
+   * Number of hash functions (signature length).
+   */
+  readonly num_hashes: number;
+  /**
+   * Total number of valid k-mers hashed.
+   */
+  readonly total_kmers: bigint;
+  /**
+   * K value used for hashing.
+   */
+  readonly k: number;
+  /**
+   * Get the signature as a Uint32Array.
+   * Length equals num_hashes parameter.
+   * Each element is the minimum hash value for that seed.
+   */
+  readonly signature: Uint32Array;
+}
+
 export class Model3D {
   free(): void;
   [Symbol.dispose](): void;
@@ -557,6 +581,58 @@ export function levenshtein_distance(s1: string, s2: string): number;
 export function min_hash_jaccard(sequence_a: string, sequence_b: string, k: number, num_hashes: number): number;
 
 /**
+ * Estimate Jaccard similarity between two MinHash signatures.
+ *
+ * # Arguments
+ * * `sig_a` - First signature (Uint32Array)
+ * * `sig_b` - Second signature (must have same length as sig_a)
+ *
+ * # Returns
+ * Estimated Jaccard similarity (0.0 to 1.0).
+ * Returns 0.0 if signatures have different lengths or are empty.
+ */
+export function minhash_jaccard_from_signatures(sig_a: Uint32Array, sig_b: Uint32Array): number;
+
+/**
+ * Compute MinHash signature using rolling k-mer index.
+ *
+ * Uses a rolling 2-bit index algorithm with no per-k-mer string allocations.
+ * Much faster than the string-based approach for long sequences.
+ *
+ * # Arguments
+ * * `seq` - Sequence as bytes (ASCII). Case-insensitive, U treated as T.
+ * * `k` - K-mer size (no practical limit, uses u64 index)
+ * * `num_hashes` - Number of hash functions (signature length)
+ *
+ * # Returns
+ * MinHashSignature with `num_hashes` minimum values.
+ *
+ * # Algorithm
+ * 1. Maintain rolling 64-bit k-mer index (allows k up to 32)
+ * 2. For each valid k-mer, compute hash for each seed
+ * 3. Track minimum hash value per seed
+ * 4. Ambiguous bases reset rolling state (no k-mer spans N)
+ */
+export function minhash_signature(seq: Uint8Array, k: number, num_hashes: number): MinHashSignature;
+
+/**
+ * Compute MinHash signature using canonical k-mers (strand-independent).
+ *
+ * For each k-mer position, uses the minimum of forward and reverse complement
+ * indices before hashing. This makes the signature identical regardless of
+ * which strand the sequence represents.
+ *
+ * # Arguments
+ * * `seq` - Sequence as bytes (ASCII). Case-insensitive, U treated as T.
+ * * `k` - K-mer size (capped at 32 for u64 index)
+ * * `num_hashes` - Number of hash functions (signature length)
+ *
+ * # Returns
+ * MinHashSignature with strand-independent hashes.
+ */
+export function minhash_signature_canonical(seq: Uint8Array, k: number, num_hashes: number): MinHashSignature;
+
+/**
  * Compute PCA using power iteration method.
  *
  * # Arguments
@@ -663,6 +739,7 @@ export interface InitOutput {
   readonly __wbg_gridresult_free: (a: number, b: number) => void;
   readonly __wbg_hoeffdingresult_free: (a: number, b: number) => void;
   readonly __wbg_kmeranalysisresult_free: (a: number, b: number) => void;
+  readonly __wbg_minhashsignature_free: (a: number, b: number) => void;
   readonly __wbg_pcaresult_free: (a: number, b: number) => void;
   readonly __wbg_repeatresult_free: (a: number, b: number) => void;
   readonly __wbg_set_hoeffdingresult_d: (a: number, b: number) => void;
@@ -708,6 +785,11 @@ export interface InitOutput {
   readonly kmer_hoeffdings_d: (a: number, b: number, c: number, d: number, e: number) => number;
   readonly levenshtein_distance: (a: number, b: number, c: number, d: number) => number;
   readonly min_hash_jaccard: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+  readonly minhash_jaccard_from_signatures: (a: number, b: number, c: number, d: number) => number;
+  readonly minhash_signature: (a: number, b: number, c: number, d: number) => number;
+  readonly minhash_signature_canonical: (a: number, b: number, c: number, d: number) => number;
+  readonly minhashsignature_num_hashes: (a: number) => number;
+  readonly minhashsignature_signature: (a: number) => any;
   readonly pca_power_iteration: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
   readonly pcaresult_eigenvalues: (a: number) => [number, number];
   readonly pcaresult_eigenvectors: (a: number) => [number, number];
@@ -720,6 +802,8 @@ export interface InitOutput {
   readonly init_panic_hook: () => void;
   readonly __wbg_set_kmeranalysisresult_jaccard_index: (a: number, b: number) => void;
   readonly __wbg_get_kmeranalysisresult_jaccard_index: (a: number) => number;
+  readonly minhashsignature_k: (a: number) => number;
+  readonly minhashsignature_total_kmers: (a: number) => bigint;
   readonly pcaresult_n_components: (a: number) => number;
   readonly __wbg_get_vector3_x: (a: number) => number;
   readonly __wbg_get_vector3_y: (a: number) => number;

@@ -7,7 +7,13 @@
 
 import * as Comlink from 'comlink';
 import { simulateTranscriptionFlow } from '@phage-explorer/core';
+import {
+  DENSE_KMER_MAX_K,
+  topKFromDenseCounts,
+  canUseDenseKmerCounts,
+} from '@phage-explorer/core/analysis/dense-kmer';
 import { gpuCompute } from './gpu/GPUCompute';
+import { getWasmCompute } from '../lib/wasm-loader';
 import type {
   AnalysisRequest,
   AnalysisResult,
@@ -19,8 +25,12 @@ import type {
   RepeatResult,
   CodonUsageResult,
   KmerSpectrumResult,
-  AnalysisWorkerAPI,
+  SharedAnalysisRequest,
+  SharedAnalysisWorkerAPI,
+  SequenceBytesRef,
 } from './types';
+
+const textDecoder = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
 
 // Dinucleotide bendability values (simplified model)
 const BENDABILITY: Record<string, number> = {
@@ -49,6 +59,114 @@ const CODON_TABLE: Record<string, string> = {
   'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
   'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
 };
+
+// ============================================================
+// Byte-backed sequence helpers (no giant intermediate strings)
+// ============================================================
+
+function isACGTAsciiByte(b: number): boolean {
+  // Upper + lower case; treat U as T for robustness.
+  return (
+    b === 65 || b === 67 || b === 71 || b === 84 || b === 85 ||
+    b === 97 || b === 99 || b === 103 || b === 116 || b === 117
+  );
+}
+
+function asciiToAcgt05(b: number): 0 | 1 | 2 | 3 | 4 {
+  // Uppercase
+  if (b === 65 || b === 97) return 0; // A/a
+  if (b === 67 || b === 99) return 1; // C/c
+  if (b === 71 || b === 103) return 2; // G/g
+  if (b === 84 || b === 116) return 3; // T/t
+  if (b === 85 || b === 117) return 3; // U/u -> T
+  return 4; // N/ambiguous
+}
+
+function encodeAsciiToAcgt05(src: Uint8Array, dst?: Uint8Array): Uint8Array {
+  const out = dst ?? new Uint8Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    out[i] = asciiToAcgt05(src[i]);
+  }
+  return out;
+}
+
+interface Rolling2BitState {
+  /** Packed 2-bit codes for the last k bases. */
+  value: number;
+  /** Consecutive valid (ACGT) bases observed so far (resets on ambiguity). */
+  valid: number;
+  /** Bitmask for keeping only the last k codes (2*k bits). */
+  mask: number;
+  k: number;
+}
+
+function createRolling2BitState(k: number): Rolling2BitState {
+  // This representation is limited to k <= 15 (2*k <= 30) to stay in safe 32-bit bitwise ops.
+  const safeK = Math.max(1, Math.min(15, Math.floor(k)));
+  return {
+    value: 0,
+    valid: 0,
+    mask: (1 << (safeK * 2)) - 1,
+    k: safeK,
+  };
+}
+
+/**
+ * Rolling 2-bit update with deterministic ambiguity handling.
+ *
+ * ABI rule: anything not A/C/G/T (code 4) resets rolling state, so no k-mer spans ambiguity.
+ * Returns true if the rolling window is "full" (k consecutive valid bases observed).
+ */
+function rolling2bitUpdate(state: Rolling2BitState, code: 0 | 1 | 2 | 3 | 4): boolean {
+  if (code > 3) {
+    state.value = 0;
+    state.valid = 0;
+    return false;
+  }
+
+  state.value = ((state.value << 2) | code) & state.mask;
+  state.valid = Math.min(state.k, state.valid + 1);
+  return state.valid === state.k;
+}
+
+function decodeAsciiBytes(bytes: Uint8Array): string {
+  if (textDecoder) return textDecoder.decode(bytes);
+
+  const CHUNK = 0x2000;
+  let out = '';
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const chunk = bytes.subarray(i, i + CHUNK);
+    out += String.fromCharCode(...chunk);
+  }
+  return out;
+}
+
+function decodeSequenceRef(ref: SequenceBytesRef): string {
+  const view = new Uint8Array(ref.buffer, ref.byteOffset, ref.byteLength);
+
+  if (ref.encoding === 'ascii') {
+    const slice = ref.length < view.length ? view.subarray(0, ref.length) : view;
+    return decodeAsciiBytes(slice);
+  }
+
+  // Temporary compatibility path: map 0-4 codes to ASCII bases.
+  const out = new Uint8Array(ref.length);
+  for (let i = 0; i < ref.length; i++) {
+    const code = view[i] ?? 4;
+    out[i] =
+      code === 0 ? 65 : // A
+      code === 1 ? 67 : // C
+      code === 2 ? 71 : // G
+      code === 3 ? 84 : // T
+      78;              // N
+  }
+  return decodeAsciiBytes(out);
+}
+
+function getSequenceBytesView(ref: SequenceBytesRef): Uint8Array {
+  const view = new Uint8Array(ref.buffer, ref.byteOffset, ref.byteLength);
+  return ref.length < view.length ? view.subarray(0, ref.length) : view;
+}
 
 /**
  * Calculate GC skew along the sequence
@@ -354,90 +472,238 @@ function calculateCodonUsage(sequence: string): CodonUsageResult {
 
 /**
  * Calculate k-mer spectrum
+ *
+ * Uses a tiered approach for performance:
+ * 1. GPU (k <= 12) - fastest when available
+ * 2. WASM dense counter (k <= 10) - fast, no string allocations
+ * 3. CPU Map-based fallback - slowest, used for k > 10 without GPU
+ *
+ * @see phage_explorer-vk7b.3
  */
 async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpectrumResult> {
   const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
-  let counts: Map<string, number> | null = null;
+  let spectrum: Array<{ kmer: string; count: number; frequency: number }> | null = null;
+  let uniqueKmers = 0;
+  let totalKmers = Math.max(1, seq.length - k + 1);
 
-  // Try GPU if k is small enough (shader limit) - must await ready() for initialization
+  // Tier 1: Try GPU if k is small enough (shader limit)
   if (k <= 12) {
     try {
       const gpuSupported = await gpuCompute.ready();
       if (gpuSupported) {
-        counts = await gpuCompute.countKmers(seq, k);
+        const counts = await gpuCompute.countKmers(seq, k);
+        if (counts) {
+          uniqueKmers = counts.size;
+          spectrum = Array.from(counts.entries())
+            .map(([kmer, count]) => ({
+              kmer,
+              count,
+              frequency: count / totalKmers,
+            }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 100);
+        }
       }
     } catch (e) {
-      console.warn('GPU k-mer count failed, falling back to CPU', e);
-      counts = null;
+      console.warn('GPU k-mer count failed, trying WASM fallback', e);
+      spectrum = null;
     }
   }
 
-  if (!counts) {
-    // CPU Fallback
-    counts = new Map<string, number>();
+  // Tier 2: Try WASM dense counter (k <= 10, ~4MB max)
+  // This is the key optimization: no per-k-mer string allocations
+  if (!spectrum && canUseDenseKmerCounts(k)) {
+    try {
+      const wasm = await getWasmCompute();
+      if (wasm) {
+        // Convert sequence to bytes for WASM
+        const seqBytes = new TextEncoder().encode(seq);
+        const result = wasm.count_kmers_dense(seqBytes, k);
+
+        try {
+          const counts = result.counts;
+          // total_valid is bigint from Rust u64
+          totalKmers = Number(result.total_valid);
+          uniqueKmers = result.unique_count;
+
+          // Extract top 100 k-mers efficiently (min-heap, O(n log 100))
+          const topKmers = topKFromDenseCounts(counts, k, 100);
+          spectrum = topKmers.map(({ kmer, count }) => ({
+            kmer,
+            count,
+            frequency: totalKmers > 0 ? count / totalKmers : 0,
+          }));
+        } finally {
+          // IMPORTANT: Free WASM memory
+          result.free();
+        }
+      }
+    } catch (e) {
+      console.warn('WASM k-mer count failed, falling back to CPU', e);
+      spectrum = null;
+    }
+  }
+
+  // Tier 3: CPU fallback (slow, uses Map<string, number>)
+  if (!spectrum) {
+    const counts = new Map<string, number>();
     for (let i = 0; i <= seq.length - k; i++) {
       const kmer = seq.slice(i, i + k);
       counts.set(kmer, (counts.get(kmer) || 0) + 1);
     }
+    uniqueKmers = counts.size;
+    totalKmers = Math.max(1, seq.length - k + 1);
+    spectrum = Array.from(counts.entries())
+      .map(([kmer, count]) => ({
+        kmer,
+        count,
+        frequency: count / totalKmers,
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 100);
   }
-
-  const totalKmers = Math.max(1, seq.length - k + 1);
-  const spectrum = Array.from(counts.entries())
-    .map(([kmer, count]) => ({
-      kmer,
-      count,
-      frequency: count / totalKmers,
-    }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 100); // Top 100
 
   return {
     type: 'kmer-spectrum',
     kmerSize: k,
     spectrum,
-    uniqueKmers: counts.size,
+    uniqueKmers,
     totalKmers,
   };
+}
+
+function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSkewResult {
+  const bytes = getSequenceBytesView(ref);
+  const skew: number[] = [];
+  const cumulative: number[] = [];
+  let cumSum = 0;
+
+  const winSize = Math.max(1, Math.floor(windowSize));
+  const stepSize = Math.max(1, Math.floor(winSize / 4));
+
+  for (let i = 0; i < bytes.length - winSize; i += stepSize) {
+    const end = Math.min(bytes.length, i + winSize);
+    let g = 0;
+    let c = 0;
+
+    if (ref.encoding === 'ascii') {
+      for (let j = i; j < end; j++) {
+        const b = bytes[j];
+        if (b === 71 || b === 103) g++; // G/g
+        else if (b === 67 || b === 99) c++; // C/c
+      }
+    } else {
+      // acgt05 codes: A=0, C=1, G=2, T=3, N=4
+      for (let j = i; j < end; j++) {
+        const code = bytes[j];
+        if (code === 2) g++;
+        else if (code === 1) c++;
+      }
+    }
+
+    const total = g + c;
+    const skewVal = total > 0 ? (g - c) / total : 0;
+    skew.push(skewVal);
+    cumSum += skewVal;
+    cumulative.push(cumSum);
+  }
+
+  // Find origin (min cumulative) and terminus (max cumulative)
+  let minIdx = 0;
+  let maxIdx = 0;
+  let minVal = cumulative[0] ?? 0;
+  let maxVal = cumulative[0] ?? 0;
+  for (let i = 1; i < cumulative.length; i++) {
+    const val = cumulative[i];
+    if (val < minVal) {
+      minVal = val;
+      minIdx = i;
+    }
+    if (val > maxVal) {
+      maxVal = val;
+      maxIdx = i;
+    }
+  }
+
+  return {
+    type: 'gc-skew',
+    skew,
+    cumulative,
+    originPosition: minIdx * stepSize,
+    terminusPosition: maxIdx * stepSize,
+  };
+}
+
+async function runAnalysisImpl(request: AnalysisRequest): Promise<AnalysisResult> {
+  const { type, sequence, options = {} } = request;
+
+  switch (type) {
+    case 'gc-skew':
+      return calculateGCSkew(sequence, options.windowSize || 1000);
+    case 'complexity':
+      return calculateComplexity(sequence, options.windowSize || 100);
+    case 'bendability':
+      return calculateBendability(sequence, options.windowSize || 50);
+    case 'promoters':
+      return findPromoters(sequence);
+    case 'repeats':
+      return findRepeats(sequence, options.minLength || 8, options.maxGap || 5000);
+    case 'codon-usage':
+      return calculateCodonUsage(sequence);
+    case 'kmer-spectrum':
+      return await calculateKmerSpectrum(sequence, options.kmerSize || 6);
+    case 'transcription-flow': {
+      const flow = simulateTranscriptionFlow(sequence);
+      return { type: 'transcription-flow', ...flow };
+    }
+    default:
+      throw new Error(`Unknown analysis type: ${type}`);
+  }
+}
+
+async function runAnalysisWithProgressImpl(
+  request: AnalysisRequest,
+  onProgress: (progress: ProgressInfo) => void
+): Promise<AnalysisResult> {
+  onProgress({ current: 0, total: 100, message: `Starting ${request.type} analysis...` });
+  const result = await runAnalysisImpl(request);
+  onProgress({ current: 100, total: 100, message: 'Complete' });
+  return result;
 }
 
 /**
  * Analysis Worker API implementation
  */
-const workerAPI: AnalysisWorkerAPI = {
-  async runAnalysis(request: AnalysisRequest): Promise<AnalysisResult> {
-    const { type, sequence, options = {} } = request;
+const workerAPI: SharedAnalysisWorkerAPI = {
+  runAnalysis: runAnalysisImpl,
 
-    switch (type) {
-      case 'gc-skew':
-        return calculateGCSkew(sequence, options.windowSize || 1000);
-      case 'complexity':
-        return calculateComplexity(sequence, options.windowSize || 100);
-      case 'bendability':
-        return calculateBendability(sequence, options.windowSize || 50);
-      case 'promoters':
-        return findPromoters(sequence);
-      case 'repeats':
-        return findRepeats(sequence, options.minLength || 8, options.maxGap || 5000);
-      case 'codon-usage':
-        return calculateCodonUsage(sequence);
-      case 'kmer-spectrum':
-        return await calculateKmerSpectrum(sequence, options.kmerSize || 6);
-      case 'transcription-flow':
-        const flow = simulateTranscriptionFlow(sequence);
-        return { type: 'transcription-flow', ...flow };
-      default:
-        throw new Error(`Unknown analysis type: ${type}`);
+  runAnalysisWithProgress: runAnalysisWithProgressImpl,
+
+  async runAnalysisShared(request: SharedAnalysisRequest): Promise<AnalysisResult> {
+    if (request.type === 'gc-skew') {
+      return calculateGCSkewFromRef(request.sequenceRef, request.options?.windowSize || 1000);
     }
+
+    // Fall back to string-based implementations for now (some rely on regex/string APIs).
+    const sequence = decodeSequenceRef(request.sequenceRef);
+    return runAnalysisImpl({ type: request.type, sequence, options: request.options });
   },
 
-  async runAnalysisWithProgress(
-    request: AnalysisRequest,
+  async runAnalysisSharedWithProgress(
+    request: SharedAnalysisRequest,
     onProgress: (progress: ProgressInfo) => void
   ): Promise<AnalysisResult> {
-    // For now, just run the analysis and report completion
-    // More granular progress can be added for specific analyses
     onProgress({ current: 0, total: 100, message: `Starting ${request.type} analysis...` });
-    const result = await this.runAnalysis(request);
+
+    const result =
+      request.type === 'gc-skew'
+        ? calculateGCSkewFromRef(request.sequenceRef, request.options?.windowSize || 1000)
+        : await runAnalysisImpl({
+            type: request.type,
+            sequence: decodeSequenceRef(request.sequenceRef),
+            options: request.options,
+          });
+
     onProgress({ current: 100, total: 100, message: 'Complete' });
     return result;
   },

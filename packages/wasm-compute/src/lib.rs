@@ -765,6 +765,275 @@ pub fn get_dense_kmer_max_k() -> usize {
 }
 
 // ============================================================================
+// MinHash Signature (rolling index, typed array output)
+// Optimized for fast similarity estimation without string allocations
+// See: phage_explorer-vk7b.2.1
+// ============================================================================
+
+/// Result of MinHash signature computation.
+///
+/// # Ownership
+/// The caller must call `.free()` to release WASM memory.
+#[wasm_bindgen]
+pub struct MinHashSignature {
+    /// Signature values (minimum hash values for each seed)
+    signature: Vec<u32>,
+    /// Total valid k-mers processed
+    total_kmers: u64,
+    /// K value used
+    k: usize,
+}
+
+#[wasm_bindgen]
+impl MinHashSignature {
+    /// Get the signature as a Uint32Array.
+    /// Length equals num_hashes parameter.
+    /// Each element is the minimum hash value for that seed.
+    #[wasm_bindgen(getter)]
+    pub fn signature(&self) -> js_sys::Uint32Array {
+        let arr = js_sys::Uint32Array::new_with_length(self.signature.len() as u32);
+        arr.copy_from(&self.signature);
+        arr
+    }
+
+    /// Total number of valid k-mers hashed.
+    #[wasm_bindgen(getter)]
+    pub fn total_kmers(&self) -> u64 {
+        self.total_kmers
+    }
+
+    /// K value used for hashing.
+    #[wasm_bindgen(getter)]
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Number of hash functions (signature length).
+    #[wasm_bindgen(getter)]
+    pub fn num_hashes(&self) -> usize {
+        self.signature.len()
+    }
+}
+
+/// Fast 64-bit to 32-bit hash mixing (splitmix-style).
+/// Takes a 64-bit k-mer index and a seed, returns a 32-bit hash.
+#[inline(always)]
+fn mix_hash(index: u64, seed: u32) -> u32 {
+    // Combine index with seed
+    let mut x = index ^ (seed as u64);
+    // Splitmix64-style mixing
+    x = x.wrapping_mul(0x9E3779B97F4A7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
+    x = x ^ (x >> 31);
+    // Take lower 32 bits
+    x as u32
+}
+
+/// Compute MinHash signature using rolling k-mer index.
+///
+/// Uses a rolling 2-bit index algorithm with no per-k-mer string allocations.
+/// Much faster than the string-based approach for long sequences.
+///
+/// # Arguments
+/// * `seq` - Sequence as bytes (ASCII). Case-insensitive, U treated as T.
+/// * `k` - K-mer size (no practical limit, uses u64 index)
+/// * `num_hashes` - Number of hash functions (signature length)
+///
+/// # Returns
+/// MinHashSignature with `num_hashes` minimum values.
+///
+/// # Algorithm
+/// 1. Maintain rolling 64-bit k-mer index (allows k up to 32)
+/// 2. For each valid k-mer, compute hash for each seed
+/// 3. Track minimum hash value per seed
+/// 4. Ambiguous bases reset rolling state (no k-mer spans N)
+#[wasm_bindgen]
+pub fn minhash_signature(seq: &[u8], k: usize, num_hashes: usize) -> MinHashSignature {
+    // Edge cases
+    if k == 0 || num_hashes == 0 || seq.len() < k {
+        return MinHashSignature {
+            signature: vec![u32::MAX; num_hashes],
+            total_kmers: 0,
+            k,
+        };
+    }
+
+    // Limit k to 32 for u64 index (4^32 = 2^64)
+    let k = k.min(32);
+
+    let mut signature = vec![u32::MAX; num_hashes];
+    let mut total_kmers: u64 = 0;
+
+    // Rolling state
+    let mut rolling_index: u64 = 0;
+    let mut valid_bases: usize = 0;
+    let mask: u64 = if k >= 32 { u64::MAX } else { (1u64 << (2 * k)) - 1 };
+
+    // Pre-compute seeds for each hash function
+    let seeds: Vec<u32> = (0..num_hashes)
+        .map(|i| (i as u32).wrapping_mul(0x9e3779b9))
+        .collect();
+
+    for &byte in seq {
+        // Encode base: A=0, C=1, G=2, T/U=3
+        let base_code: u64 = match byte {
+            b'A' | b'a' => 0,
+            b'C' | b'c' => 1,
+            b'G' | b'g' => 2,
+            b'T' | b't' | b'U' | b'u' => 3,
+            _ => {
+                // Ambiguous base - reset rolling state
+                rolling_index = 0;
+                valid_bases = 0;
+                continue;
+            }
+        };
+
+        // Update rolling index: shift left by 2 bits, add new base
+        rolling_index = ((rolling_index << 2) | base_code) & mask;
+        valid_bases += 1;
+
+        // Once we have k valid bases, we have a valid k-mer
+        if valid_bases >= k {
+            total_kmers += 1;
+
+            // Compute hash for each seed and update minimum
+            for (i, &seed) in seeds.iter().enumerate() {
+                let h = mix_hash(rolling_index, seed);
+                if h < signature[i] {
+                    signature[i] = h;
+                }
+            }
+        }
+    }
+
+    MinHashSignature {
+        signature,
+        total_kmers,
+        k,
+    }
+}
+
+/// Compute MinHash signature using canonical k-mers (strand-independent).
+///
+/// For each k-mer position, uses the minimum of forward and reverse complement
+/// indices before hashing. This makes the signature identical regardless of
+/// which strand the sequence represents.
+///
+/// # Arguments
+/// * `seq` - Sequence as bytes (ASCII). Case-insensitive, U treated as T.
+/// * `k` - K-mer size (capped at 32 for u64 index)
+/// * `num_hashes` - Number of hash functions (signature length)
+///
+/// # Returns
+/// MinHashSignature with strand-independent hashes.
+#[wasm_bindgen]
+pub fn minhash_signature_canonical(seq: &[u8], k: usize, num_hashes: usize) -> MinHashSignature {
+    // Edge cases
+    if k == 0 || num_hashes == 0 || seq.len() < k {
+        return MinHashSignature {
+            signature: vec![u32::MAX; num_hashes],
+            total_kmers: 0,
+            k,
+        };
+    }
+
+    // Limit k to 32 for u64 index
+    let k = k.min(32);
+
+    let mut signature = vec![u32::MAX; num_hashes];
+    let mut total_kmers: u64 = 0;
+
+    // Rolling state for both forward and reverse complement
+    let mut fwd_index: u64 = 0;
+    let mut rc_index: u64 = 0;
+    let mut valid_bases: usize = 0;
+    let mask: u64 = if k >= 32 { u64::MAX } else { (1u64 << (2 * k)) - 1 };
+    let rc_shift = 2 * (k - 1);
+
+    // Pre-compute seeds
+    let seeds: Vec<u32> = (0..num_hashes)
+        .map(|i| (i as u32).wrapping_mul(0x9e3779b9))
+        .collect();
+
+    for &byte in seq {
+        // Encode base: A=0, C=1, G=2, T=3
+        let (base_code, comp_code): (u64, u64) = match byte {
+            b'A' | b'a' => (0, 3), // A complement is T (3)
+            b'C' | b'c' => (1, 2), // C complement is G (2)
+            b'G' | b'g' => (2, 1), // G complement is C (1)
+            b'T' | b't' | b'U' | b'u' => (3, 0), // T complement is A (0)
+            _ => {
+                // Ambiguous base - reset
+                fwd_index = 0;
+                rc_index = 0;
+                valid_bases = 0;
+                continue;
+            }
+        };
+
+        // Forward: shift left, add new base at LSB
+        fwd_index = ((fwd_index << 2) | base_code) & mask;
+
+        // RC: shift right, add complement at MSB position
+        rc_index = (rc_index >> 2) | (comp_code << rc_shift);
+
+        valid_bases += 1;
+
+        if valid_bases >= k {
+            total_kmers += 1;
+
+            // Use canonical (smaller) index for strand independence
+            let canonical = fwd_index.min(rc_index);
+
+            // Compute hash for each seed
+            for (i, &seed) in seeds.iter().enumerate() {
+                let h = mix_hash(canonical, seed);
+                if h < signature[i] {
+                    signature[i] = h;
+                }
+            }
+        }
+    }
+
+    MinHashSignature {
+        signature,
+        total_kmers,
+        k,
+    }
+}
+
+/// Estimate Jaccard similarity between two MinHash signatures.
+///
+/// # Arguments
+/// * `sig_a` - First signature (Uint32Array)
+/// * `sig_b` - Second signature (must have same length as sig_a)
+///
+/// # Returns
+/// Estimated Jaccard similarity (0.0 to 1.0).
+/// Returns 0.0 if signatures have different lengths or are empty.
+#[wasm_bindgen]
+pub fn minhash_jaccard_from_signatures(sig_a: &[u32], sig_b: &[u32]) -> f64 {
+    if sig_a.len() != sig_b.len() || sig_a.is_empty() {
+        return 0.0;
+    }
+
+    // Check for empty signatures (all MAX)
+    let empty_a = sig_a.iter().all(|&v| v == u32::MAX);
+    let empty_b = sig_b.iter().all(|&v| v == u32::MAX);
+    if empty_a || empty_b {
+        return 0.0;
+    }
+
+    let matches = sig_a.iter().zip(sig_b.iter())
+        .filter(|(&a, &b)| a == b)
+        .count();
+
+    matches as f64 / sig_a.len() as f64
+}
+
+// ============================================================================
 // PCA (Principal Component Analysis) via Power Iteration
 // Optimized matrix operations for high-dimensional genomic data
 // ============================================================================

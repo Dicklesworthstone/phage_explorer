@@ -15,7 +15,6 @@
 
 import * as Comlink from 'comlink';
 import type {
-  AnalysisWorkerAPI,
   SimulationWorkerAPI,
   AnalysisRequest,
   AnalysisResult,
@@ -26,17 +25,20 @@ import type {
   ProgressInfo,
   WorkerPoolConfig,
   SharedSequenceRef,
+  SharedAnalysisRequest,
+  SharedAnalysisWorkerAPI,
   AnalysisType,
   AnalysisOptions,
 } from './types';
 import { SharedSequencePool, decodeSequence } from './SharedSequencePool';
+import { startOperation, cancelOperation, getAggregateStats, printReport } from './perf-instrumentation';
 
 type WorkerType = 'analysis' | 'simulation';
 
 interface WorkerInstance {
   id: string;
   worker: Worker;
-  api: AnalysisWorkerAPI | SimulationWorkerAPI;
+  api: SharedAnalysisWorkerAPI | SimulationWorkerAPI;
   type: WorkerType;
   busy: boolean;
   lastUsed: number;
@@ -112,7 +114,7 @@ export class ComputeOrchestrator {
     const workerId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     let worker: Worker;
-    let api: AnalysisWorkerAPI | SimulationWorkerAPI;
+    let api: SharedAnalysisWorkerAPI | SimulationWorkerAPI;
 
     try {
       if (type === 'analysis') {
@@ -120,7 +122,7 @@ export class ComputeOrchestrator {
           new URL('./analysis.worker.ts', import.meta.url),
           { type: 'module' }
         );
-        api = Comlink.wrap<AnalysisWorkerAPI>(worker);
+        api = Comlink.wrap<SharedAnalysisWorkerAPI>(worker);
       } else {
         worker = new Worker(
           new URL('./simulation.worker.ts', import.meta.url),
@@ -274,13 +276,17 @@ export class ComputeOrchestrator {
    * Run an analysis task
    */
   async runAnalysis(request: AnalysisRequest): Promise<AnalysisResult> {
+    const { opId, finish } = startOperation('analysis', request.type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
     try {
-      const api = instance.api as AnalysisWorkerAPI;
-      return await api.runAnalysis(request);
+      const api = instance.api as SharedAnalysisWorkerAPI;
+      const result = await api.runAnalysis(request);
+      finish(false);
+      return result;
     } catch (e) {
       error = e instanceof Error ? e : new Error(String(e));
+      finish(true);
       throw error;
     } finally {
       this.releaseWorker(instance, error);
@@ -294,13 +300,17 @@ export class ComputeOrchestrator {
     request: AnalysisRequest,
     onProgress: (progress: ProgressInfo) => void
   ): Promise<AnalysisResult> {
+    const { opId, finish } = startOperation('analysis', request.type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
     try {
-      const api = instance.api as AnalysisWorkerAPI;
-      return await api.runAnalysisWithProgress(request, Comlink.proxy(onProgress));
+      const api = instance.api as SharedAnalysisWorkerAPI;
+      const result = await api.runAnalysisWithProgress(request, Comlink.proxy(onProgress));
+      finish(false);
+      return result;
     } catch (e) {
       error = e instanceof Error ? e : new Error(String(e));
+      finish(true);
       throw error;
     } finally {
       this.releaseWorker(instance, error);
@@ -327,13 +337,7 @@ export class ComputeOrchestrator {
    * @returns SharedSequenceRef for use with analysis methods
    */
   preloadSequence(phageId: number, sequence: string): SharedSequenceRef {
-    const buffer = this.sequencePool.getOrCreate(phageId, sequence);
-    return {
-      phageId,
-      buffer: buffer.sab,
-      length: buffer.length,
-      isShared: buffer.isShared,
-    };
+    return this.sequencePool.getOrCreateRef(phageId, sequence).ref;
   }
 
   /**
@@ -341,15 +345,7 @@ export class ComputeOrchestrator {
    * Returns undefined if the sequence isn't in the pool.
    */
   getSequenceRef(phageId: number): SharedSequenceRef | undefined {
-    const buffer = this.sequencePool.get(phageId);
-    if (!buffer) return undefined;
-
-    return {
-      phageId,
-      buffer: buffer.sab,
-      length: buffer.length,
-      isShared: buffer.isShared,
-    };
+    return this.sequencePool.getRef(phageId)?.ref;
   }
 
   /**
@@ -372,24 +368,30 @@ export class ComputeOrchestrator {
     type: AnalysisType,
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
-    // Ensure sequence is in the pool (ref unused for now but preload required)
-    this.preloadSequence(phageId, sequence);
+    const { opId, finish } = startOperation('analysis', type);
+    const instance = await this.getAvailableWorker('analysis');
+    let error: Error | undefined;
 
-    // For now, workers still receive the sequence as a string because
-    // Comlink doesn't automatically handle SharedArrayBuffer decode.
-    // The benefit is that the pool caches the buffer for rapid access
-    // and we can evolve workers to read from SharedArrayBuffer directly.
-    //
-    // TODO: Update analysis.worker.ts to accept SharedAnalysisRequest
-    // and decode from SharedArrayBuffer directly.
+    try {
+      const api = instance.api as SharedAnalysisWorkerAPI;
+      const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
+      const request: SharedAnalysisRequest = { type, sequenceRef, options };
 
-    const request: AnalysisRequest = {
-      type,
-      sequence, // Still passing string for now
-      options,
-    };
-
-    return this.runAnalysis(request);
+      let result: AnalysisResult;
+      if (transfer.length > 0) {
+        result = await api.runAnalysisShared(Comlink.transfer(request, transfer));
+      } else {
+        result = await api.runAnalysisShared(request);
+      }
+      finish(false);
+      return result;
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      finish(true);
+      throw error;
+    } finally {
+      this.releaseWorker(instance, error);
+    }
   }
 
   /**
@@ -402,16 +404,33 @@ export class ComputeOrchestrator {
     onProgress: (progress: ProgressInfo) => void,
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
-    // Ensure sequence is in the pool
-    this.preloadSequence(phageId, sequence);
+    const { opId, finish } = startOperation('analysis', type);
+    const instance = await this.getAvailableWorker('analysis');
+    let error: Error | undefined;
 
-    const request: AnalysisRequest = {
-      type,
-      sequence,
-      options,
-    };
+    try {
+      const api = instance.api as SharedAnalysisWorkerAPI;
+      const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
+      const request: SharedAnalysisRequest = { type, sequenceRef, options };
 
-    return this.runAnalysisWithProgress(request, onProgress);
+      let result: AnalysisResult;
+      if (transfer.length > 0) {
+        result = await api.runAnalysisSharedWithProgress(
+          Comlink.transfer(request, transfer),
+          Comlink.proxy(onProgress)
+        );
+      } else {
+        result = await api.runAnalysisSharedWithProgress(request, Comlink.proxy(onProgress));
+      }
+      finish(false);
+      return result;
+    } catch (e) {
+      error = e instanceof Error ? e : new Error(String(e));
+      finish(true);
+      throw error;
+    } finally {
+      this.releaseWorker(instance, error);
+    }
   }
 
   /**
@@ -419,7 +438,7 @@ export class ComputeOrchestrator {
    * Useful when workers need to read the sequence.
    */
   decodeSequenceFromRef(ref: SharedSequenceRef): string {
-    const view = new Uint8Array(ref.buffer, 0, ref.length);
+    const view = new Uint8Array(ref.buffer, ref.byteOffset, ref.byteLength);
     return decodeSequence(view, ref.length);
   }
 
@@ -443,13 +462,17 @@ export class ComputeOrchestrator {
    * Initialize a simulation
    */
   async initSimulation(params: SimInitParams): Promise<SimState> {
+    const { opId, finish } = startOperation('simulation', params.simulationId);
     const instance = await this.getAvailableWorker('simulation');
     let error: Error | undefined;
     try {
       const api = instance.api as SimulationWorkerAPI;
-      return await api.init(params);
+      const result = await api.init(params);
+      finish(false);
+      return result;
     } catch (e) {
       error = e instanceof Error ? e : new Error(String(e));
+      finish(true);
       throw error;
     } finally {
       this.releaseWorker(instance, error);
@@ -541,6 +564,21 @@ export class ComputeOrchestrator {
     }
 
     return stats;
+  }
+
+  /**
+   * Get performance instrumentation stats (dev-only).
+   * Call this to see timing/cancellation metrics.
+   */
+  getPerfStats() {
+    return getAggregateStats();
+  }
+
+  /**
+   * Print a formatted performance report to the console (dev-only).
+   */
+  printPerfReport() {
+    printReport();
   }
 
   /**
