@@ -387,6 +387,149 @@
   animation-delay: 350ms;
 }
 
+/* =============================================================================
+   OVERLAY ENTRY/EXIT CHOREOGRAPHY
+   Premium staggered animations for modals and overlays
+   ============================================================================= */
+
+/* Backdrop fade with subtle blur transition */
+@keyframes overlay-backdrop-enter {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+}
+
+@keyframes overlay-backdrop-exit {
+  from {
+    opacity: 1;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  to {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+    -webkit-backdrop-filter: blur(0px);
+  }
+}
+
+/* Panel entry: slide up + scale with spring physics */
+@keyframes overlay-panel-enter {
+  0% {
+    opacity: 0;
+    transform: translateY(24px) scale(0.96);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.01);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Panel exit: quick fade + slight scale down */
+@keyframes overlay-panel-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+}
+
+/* Mobile panel: slide up from bottom with spring */
+@keyframes overlay-panel-enter-mobile {
+  0% {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(-8px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes overlay-panel-exit-mobile {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(30%);
+  }
+}
+
+/* Animation classes for overlays */
+.overlay-backdrop-enter {
+  animation: overlay-backdrop-enter 250ms var(--ease-out) forwards;
+}
+
+.overlay-backdrop-exit {
+  animation: overlay-backdrop-exit 180ms var(--ease-in) forwards;
+}
+
+.overlay-panel-enter {
+  animation: overlay-panel-enter 400ms var(--ease-spring-soft) forwards;
+  animation-delay: 80ms;
+  opacity: 0;
+}
+
+.overlay-panel-exit {
+  animation: overlay-panel-exit 180ms var(--ease-in) forwards;
+}
+
+.overlay-panel-enter-mobile {
+  animation: overlay-panel-enter-mobile 450ms var(--ease-spring-soft) forwards;
+  animation-delay: 60ms;
+  opacity: 0;
+}
+
+.overlay-panel-exit-mobile {
+  animation: overlay-panel-exit-mobile 200ms var(--ease-in) forwards;
+}
+
+/* Staggered content reveal for overlay contents */
+.overlay-content-stagger > * {
+  opacity: 0;
+  animation: slide-up var(--duration-normal) var(--ease-out) forwards;
+}
+
+.overlay-content-stagger > *:nth-child(1) { animation-delay: 150ms; }
+.overlay-content-stagger > *:nth-child(2) { animation-delay: 190ms; }
+.overlay-content-stagger > *:nth-child(3) { animation-delay: 230ms; }
+.overlay-content-stagger > *:nth-child(4) { animation-delay: 270ms; }
+.overlay-content-stagger > *:nth-child(5) { animation-delay: 310ms; }
+.overlay-content-stagger > *:nth-child(6) { animation-delay: 350ms; }
+
+/* =============================================================================
+   SHEET HANDLE ANIMATION
+   Subtle bounce for drag handle when sheet becomes interactive
+   ============================================================================= */
+
+@keyframes handle-bounce {
+  0%, 100% { transform: scaleX(1); }
+  50% { transform: scaleX(1.1); }
+}
+
+.sheet-handle-active {
+  animation: handle-bounce 300ms var(--ease-spring) forwards;
+}
+
 /* Reduced motion overrides */
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in,
@@ -403,6 +546,14 @@
   .animate-spin,
   .animate-bounce,
   .animate-shake,
+  .overlay-backdrop-enter,
+  .overlay-backdrop-exit,
+  .overlay-panel-enter,
+  .overlay-panel-exit,
+  .overlay-panel-enter-mobile,
+  .overlay-panel-exit-mobile,
+  .overlay-content-stagger > *,
+  .sheet-handle-active,
   .theme-transitioning,
   .theme-transitioning * {
     animation-duration: 0.01ms !important;
@@ -442,5 +593,156 @@
   /* Reduce glow pulse intensity on mobile */
   .animate-glow-pulse {
     animation-duration: 4s; /* Slower = less battery drain */
+  }
+}
+
+/* =============================================================================
+   CONTENT REVEAL ANIMATIONS
+   Premium reveal animations for page content with spring physics
+   ============================================================================= */
+
+/* Spring-like content reveal keyframe */
+@keyframes content-reveal {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.98);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.005);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Apply to container - children animate in sequence */
+.content-reveal > * {
+  opacity: 0;
+  animation: content-reveal 500ms var(--ease-spring-soft) forwards;
+}
+
+/* Progressive stagger delays */
+.content-reveal > *:nth-child(1) { animation-delay: 0ms; }
+.content-reveal > *:nth-child(2) { animation-delay: 60ms; }
+.content-reveal > *:nth-child(3) { animation-delay: 120ms; }
+.content-reveal > *:nth-child(4) { animation-delay: 180ms; }
+.content-reveal > *:nth-child(5) { animation-delay: 240ms; }
+.content-reveal > *:nth-child(6) { animation-delay: 300ms; }
+.content-reveal > *:nth-child(7) { animation-delay: 360ms; }
+.content-reveal > *:nth-child(8) { animation-delay: 420ms; }
+.content-reveal > *:nth-child(9) { animation-delay: 480ms; }
+.content-reveal > *:nth-child(10) { animation-delay: 540ms; }
+
+/* Faster variant for quick transitions */
+.content-reveal--fast > * {
+  animation-duration: 300ms;
+}
+
+.content-reveal--fast > *:nth-child(1) { animation-delay: 0ms; }
+.content-reveal--fast > *:nth-child(2) { animation-delay: 40ms; }
+.content-reveal--fast > *:nth-child(3) { animation-delay: 80ms; }
+.content-reveal--fast > *:nth-child(4) { animation-delay: 120ms; }
+.content-reveal--fast > *:nth-child(5) { animation-delay: 160ms; }
+.content-reveal--fast > *:nth-child(6) { animation-delay: 200ms; }
+
+/* Subtle variant for less dramatic reveals */
+.content-reveal--subtle > * {
+  animation: slide-up 400ms var(--ease-out) forwards;
+}
+
+/* =============================================================================
+   SKELETON CROSSFADE
+   Smooth transition from skeleton loading states to actual content
+   ============================================================================= */
+
+/* Skeleton exit animation */
+@keyframes skeleton-exit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+/* Content enter animation (paired with skeleton exit) */
+@keyframes content-enter {
+  from {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Container that manages the crossfade */
+.skeleton-crossfade {
+  position: relative;
+}
+
+/* Skeleton overlay that fades out */
+.skeleton-crossfade__skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  animation: skeleton-exit 300ms var(--ease-out) forwards;
+}
+
+/* Content that fades in */
+.skeleton-crossfade__content {
+  animation: content-enter 400ms var(--ease-out) forwards;
+  animation-delay: 100ms;
+  opacity: 0;
+}
+
+/* When skeleton is actively loading (before crossfade starts) */
+.skeleton-crossfade--loading .skeleton-crossfade__skeleton {
+  animation: none;
+  opacity: 1;
+}
+
+.skeleton-crossfade--loading .skeleton-crossfade__content {
+  display: none;
+}
+
+/* Shimmer effect for skeleton elements */
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-background-alt) 0%,
+    var(--color-background-elevated) 20%,
+    var(--color-background-alt) 40%,
+    var(--color-background-alt) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.5s ease-in-out infinite;
+}
+
+/* Reduced motion: instant transitions */
+@media (prefers-reduced-motion: reduce) {
+  .content-reveal > *,
+  .content-reveal--fast > *,
+  .content-reveal--subtle > *,
+  .skeleton-crossfade__skeleton,
+  .skeleton-crossfade__content,
+  .skeleton-shimmer {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
   }
 }

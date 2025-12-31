@@ -189,17 +189,31 @@ body {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   color: var(--color-text);
-  transition: border-color var(--duration-fast) var(--ease-out);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-focus) var(--ease-out);
 }
 
 .input:focus {
   outline: none;
-  border-color: var(--color-border-focus);
-  box-shadow: var(--shadow-glow);
+  border-color: var(--color-primary);
+  background: var(--color-background-alt);
+  /* Premium multi-layer glow: primary ring + soft secondary halo */
+  box-shadow:
+    0 0 0 3px var(--color-glow-soft),
+    0 0 12px -2px var(--color-glow),
+    0 0 20px -4px var(--color-glow-secondary),
+    inset 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
 .input::placeholder {
   color: var(--color-text-muted);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.input:focus::placeholder {
+  color: var(--color-text-dim);
 }
 
 /* === DIVIDER === */

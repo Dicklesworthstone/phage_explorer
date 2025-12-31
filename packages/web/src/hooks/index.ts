@@ -45,3 +45,9 @@ export {
   type UseSwipeNavigationOptions,
   type UseSwipeNavigationResult,
 } from './useSwipeNavigation';
+export {
+  useAnimatedNumber,
+  useAnimatedNumberRaw,
+  easings,
+  type AnimatedNumberOptions,
+} from './useAnimatedNumber';
