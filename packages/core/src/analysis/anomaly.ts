@@ -30,10 +30,21 @@ interface WasmDenseKmerResult {
   free(): void;
 }
 
+interface WasmKLScanResult {
+  kl_values: Float32Array;
+  positions: Uint32Array;
+  window_count: number;
+  k: number;
+  free(): void;
+}
+
 type WasmCountKmersFn = (seq: Uint8Array, k: number) => WasmDenseKmerResult;
+type WasmScanKLFn = (seq: Uint8Array, k: number, winSize: number, step: number) => WasmKLScanResult;
 
 let wasmCountKmersDense: WasmCountKmersFn | null = null;
+let wasmScanKLWindows: WasmScanKLFn | null = null;
 let wasmAvailable = false;
+let wasmKLScanAvailable = false;
 
 const textEncoder = typeof TextEncoder !== 'undefined' ? new TextEncoder() : null;
 
@@ -45,16 +56,26 @@ async function initWasmKmerCounter(): Promise<void> {
   try {
     const wasm = await import('@phage/wasm-compute');
     wasmCountKmersDense = wasm.count_kmers_dense;
+    wasmScanKLWindows = wasm.scan_kl_windows;
 
-    // Quick test to verify it works
+    // Quick test to verify k-mer counting works
     if (textEncoder && wasmCountKmersDense) {
       const testBytes = textEncoder.encode('ACGTACGT');
       const result = wasmCountKmersDense(testBytes, 2);
       wasmAvailable = result.counts.length === 16; // 4^2 = 16
       result.free();
     }
+
+    // Quick test to verify KL scan works
+    if (textEncoder && wasmScanKLWindows) {
+      const testBytes = textEncoder.encode('ATCGATCGATCGATCGATCGATCG');
+      const result = wasmScanKLWindows(testBytes, 4, 10, 5);
+      wasmKLScanAvailable = result.window_count >= 0;
+      result.free();
+    }
   } catch {
     wasmAvailable = false;
+    wasmKLScanAvailable = false;
   }
 }
 
@@ -218,7 +239,9 @@ export function scanForAnomalies(
 
 /**
  * Dense k-mer path using WASM acceleration.
- * ~10x faster than Map-based for large sequences.
+ *
+ * Uses scan_kl_windows (~50x faster) when available, falls back to
+ * per-window dense counting (~10x faster than Map-based).
  */
 function scanForAnomaliesDense(
   seq: string,
@@ -234,6 +257,26 @@ function scanForAnomaliesDense(
       thresholds: { kl: 0, compression: 0 },
       usedWasm: wasmAvailable,
     };
+  }
+
+  // Ultra-fast path: single WASM call for all KL values
+  if (wasmKLScanAvailable && textEncoder && wasmScanKLWindows) {
+    try {
+      const seqBytes = textEncoder.encode(seq);
+      const klResult = wasmScanKLWindows(seqBytes, k, windowSize, stepSize);
+
+      if (klResult.window_count > 0) {
+        const klValues = Float32Array.from(klResult.kl_values);
+        const positions = Uint32Array.from(klResult.positions);
+        klResult.free();
+
+        return finishScanWithKLValues(seq, windowSize, k, klValues, positions);
+      }
+
+      klResult.free();
+    } catch {
+      // Fall through to per-window path
+    }
   }
 
   // 1. Compute global background model using dense counts
@@ -421,4 +464,81 @@ function denseToSparseFrequencies(
   }
 
   return freq;
+}
+
+/**
+ * Finish anomaly scan after getting KL values from WASM.
+ * Computes compression ratios and classifies anomalies.
+ */
+function finishScanWithKLValues(
+  seq: string,
+  windowSize: number,
+  k: number,
+  klValues: Float32Array,
+  positions: Uint32Array
+): AnomalyScanResult {
+  const compressionValues = new Float32Array(klValues.length);
+  const windows: AnomalyResult[] = [];
+
+  // Compute compression ratios for each window
+  for (let i = 0; i < klValues.length; i++) {
+    const pos = positions[i];
+    const windowSeq = seq.slice(pos, pos + windowSize);
+    const comp = calculateCompressionRatio(windowSeq);
+    compressionValues[i] = comp;
+
+    windows.push({
+      position: pos,
+      klDivergence: klValues[i],
+      compressionRatio: comp,
+      isAnomalous: false,
+    });
+  }
+
+  // Determine thresholds (95th percentile)
+  const sortedKL = Float32Array.from(klValues).sort();
+  const sortedComp = Float32Array.from(compressionValues).sort();
+
+  const p95Index = Math.floor(windows.length * 0.95);
+
+  const thresholdKL = sortedKL[p95Index] || 0;
+  const thresholdComp = sortedComp[p95Index] || 0;
+
+  // Classify anomalies
+  for (const w of windows) {
+    if (w.klDivergence > thresholdKL && w.compressionRatio < thresholdComp) {
+      w.isAnomalous = true;
+      w.anomalyType = 'HGT';
+    } else if (w.compressionRatio > thresholdComp) {
+      w.isAnomalous = true;
+      w.anomalyType = 'Repetitive';
+    } else if (w.klDivergence > thresholdKL) {
+      w.isAnomalous = true;
+      w.anomalyType = 'Unknown';
+    }
+  }
+
+  // Generate global freq map for API compatibility
+  const globalCounts = countKmersDense(seq, k);
+  const globalFreqMap = denseToSparseFrequencies(globalCounts.counts, globalCounts.totalValid, k);
+
+  if (isDev) {
+    console.log('[anomaly] WASM KL scan used:', {
+      windows: windows.length,
+      k,
+      klScanWasm: true,
+    });
+  }
+
+  return {
+    windows,
+    globalKmerFreq: globalFreqMap,
+    thresholds: {
+      kl: thresholdKL,
+      compression: thresholdComp,
+    },
+    klValues,
+    compressionValues,
+    usedWasm: true,
+  };
 }

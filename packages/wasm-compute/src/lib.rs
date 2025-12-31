@@ -1034,6 +1034,218 @@ pub fn minhash_jaccard_from_signatures(sig_a: &[u32], sig_b: &[u32]) -> f64 {
 }
 
 // ============================================================================
+// DotPlot Kernel (flat Float32 buffers, no substring allocations)
+// See: phage_explorer-gim2.1.1
+// ============================================================================
+
+#[inline(always)]
+fn dotplot_upper_ascii(byte: u8) -> u8 {
+    if byte >= b'a' && byte <= b'z' {
+        byte - 32
+    } else {
+        byte
+    }
+}
+
+#[inline(always)]
+fn dotplot_complement_upper(byte: u8) -> u8 {
+    // Must match `packages/core/src/codons.ts::reverseComplement` behavior for uppercase inputs.
+    match byte {
+        b'A' => b'T',
+        b'T' => b'A',
+        b'G' => b'C',
+        b'C' => b'G',
+        // Ambiguity codes (IUPAC)
+        b'N' => b'N',
+        b'R' => b'Y',
+        b'Y' => b'R',
+        b'S' => b'S',
+        b'W' => b'W',
+        b'K' => b'M',
+        b'M' => b'K',
+        b'B' => b'V',
+        b'D' => b'H',
+        b'H' => b'D',
+        b'V' => b'B',
+        // Keep unknown chars as-is (matches JS fallback path).
+        _ => byte,
+    }
+}
+
+/// Result buffers for dotplot computation.
+///
+/// # Ownership
+/// The caller must call `.free()` to release WASM memory.
+#[wasm_bindgen]
+pub struct DotPlotBuffers {
+    direct: Vec<f32>,
+    inverted: Vec<f32>,
+    bins: usize,
+    window: usize,
+}
+
+#[wasm_bindgen]
+impl DotPlotBuffers {
+    /// Flattened direct identity values (row-major, bins*bins).
+    #[wasm_bindgen(getter)]
+    pub fn direct(&self) -> js_sys::Float32Array {
+        let arr = js_sys::Float32Array::new_with_length(self.direct.len() as u32);
+        arr.copy_from(&self.direct);
+        arr
+    }
+
+    /// Flattened inverted identity values (row-major, bins*bins).
+    #[wasm_bindgen(getter)]
+    pub fn inverted(&self) -> js_sys::Float32Array {
+        let arr = js_sys::Float32Array::new_with_length(self.inverted.len() as u32);
+        arr.copy_from(&self.inverted);
+        arr
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn bins(&self) -> usize {
+        self.bins
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn window(&self) -> usize {
+        self.window
+    }
+}
+
+/// Compute dotplot identity buffers for a sequence against itself.
+///
+/// Matches the semantics of `packages/core/src/analysis/dot-plot.ts` but avoids substring
+/// allocations and object-heavy grids by returning flat typed arrays.
+///
+/// # Arguments
+/// * `seq` - Sequence bytes (ASCII). Case-insensitive, U treated as T.
+/// * `bins` - Plot resolution (bins x bins). If 0, returns empty buffers.
+/// * `window` - Window size in bases. If 0, derives a conservative default similar to JS.
+///
+/// # Output layout
+/// Row-major, with index `i*bins + j`.
+#[wasm_bindgen]
+pub fn dotplot_self_buffers(seq: &[u8], bins: usize, window: usize) -> DotPlotBuffers {
+    if seq.is_empty() || bins == 0 {
+        return DotPlotBuffers {
+            direct: Vec::new(),
+            inverted: Vec::new(),
+            bins: 0,
+            window: 0,
+        };
+    }
+
+    // Uppercase once for JS parity: core `computeDotPlot` uses `sequence.toUpperCase()`.
+    let upper: Vec<u8> = seq.iter().copied().map(dotplot_upper_ascii).collect();
+    let len = upper.len();
+
+    // Match JS default: max(20, floor(len/bins) || len), clamped to [1, len].
+    let derived_window = {
+        let base = if bins > 0 { len / bins } else { len };
+        let base = if base == 0 { len } else { base };
+        std::cmp::max(20usize, base)
+    };
+    let window = if window == 0 { derived_window } else { window };
+    let window = std::cmp::max(1usize, std::cmp::min(len, window));
+
+    // Precompute starts[] exactly like JS: floor(i * step) where step is float.
+    let mut starts: Vec<usize> = vec![0; bins];
+    if bins > 1 {
+        let span = (len - window) as f64;
+        let step = span / (bins as f64 - 1.0);
+        for i in 0..bins {
+            let s = ((i as f64) * step).floor() as usize;
+            starts[i] = std::cmp::min(s, len - window);
+        }
+    } else if bins == 1 {
+        starts[0] = 0;
+    }
+
+    let n = bins * bins;
+    let mut direct = vec![0.0f32; n];
+    let mut inverted = vec![0.0f32; n];
+    let denom = window as f32;
+
+    for i in 0..bins {
+        let a0 = starts[i];
+
+        for j in i..bins {
+            let b0 = starts[j];
+
+            let mut same_dir: u32 = 0;
+            let mut same_inv: u32 = 0;
+
+            // Direct: compare aligned window positions.
+            // Inverted: compare reverse-complement of A window against B.
+            for k in 0..window {
+                let a = upper[a0 + k];
+                let b = upper[b0 + k];
+                if a == b {
+                    same_dir += 1;
+                }
+
+                let a_rc = dotplot_complement_upper(upper[a0 + (window - 1 - k)]);
+                if a_rc == b {
+                    same_inv += 1;
+                }
+            }
+
+            let dir_val = (same_dir as f32) / denom;
+            let inv_val = (same_inv as f32) / denom;
+
+            let idx1 = i * bins + j;
+            direct[idx1] = dir_val;
+            inverted[idx1] = inv_val;
+
+            if i != j {
+                let idx2 = j * bins + i;
+                direct[idx2] = dir_val;
+                inverted[idx2] = inv_val;
+            }
+        }
+    }
+
+    DotPlotBuffers {
+        direct,
+        inverted,
+        bins,
+        window,
+    }
+}
+
+#[cfg(test)]
+mod dotplot_tests {
+    use super::*;
+
+    #[test]
+    fn dotplot_self_buffers_matches_expected_acgt() {
+        // Mirrors `packages/core/src/analysis/dot-plot.test.ts` expectations.
+        let result = dotplot_self_buffers(b"ACGT", 2, 2);
+
+        assert_eq!(result.bins, 2);
+        assert_eq!(result.window, 2);
+        assert_eq!(result.direct.len(), 4);
+        assert_eq!(result.inverted.len(), 4);
+
+        // Row-major indices:
+        // (0,0)=0 (0,1)=1
+        // (1,0)=2 (1,1)=3
+        assert!((result.direct[0] - 1.0).abs() < 1e-6);
+        assert!((result.inverted[0] - 0.0).abs() < 1e-6);
+
+        assert!((result.direct[1] - 0.0).abs() < 1e-6);
+        assert!((result.inverted[1] - 1.0).abs() < 1e-6);
+
+        assert!((result.direct[2] - 0.0).abs() < 1e-6);
+        assert!((result.inverted[2] - 1.0).abs() < 1e-6);
+
+        assert!((result.direct[3] - 1.0).abs() < 1e-6);
+        assert!((result.inverted[3] - 0.0).abs() < 1e-6);
+    }
+}
+
+// ============================================================================
 // PCA (Principal Component Analysis) via Power Iteration
 // Optimized matrix operations for high-dimensional genomic data
 // ============================================================================
@@ -2527,4 +2739,940 @@ pub fn compute_diff_mask_encoded(query_encoded: &[u8], ref_encoded: &[u8]) -> Ve
     }
 
     mask
+}
+
+// ============================================================================
+// KL Divergence for Anomaly Detection
+// ============================================================================
+
+/// Compute Kullback-Leibler divergence between two dense k-mer count arrays.
+///
+/// D_KL(P || Q) = sum(P(i) * log2(P(i) / Q(i)))
+///
+/// Both arrays are normalized internally to probability distributions.
+/// Missing k-mers in Q are smoothed with epsilon to avoid log(0).
+///
+/// # Arguments
+/// * `p_counts` - Dense count array for distribution P (window)
+/// * `q_counts` - Dense count array for distribution Q (background)
+///
+/// # Returns
+/// KL divergence value (non-negative). Returns 0.0 if inputs are invalid.
+///
+/// # Note
+/// Arrays must be the same length. For k-mer analysis, length should be 4^k.
+///
+/// @see phage_explorer-vk7b.5
+#[wasm_bindgen]
+pub fn kl_divergence_dense(p_counts: &[u32], q_counts: &[u32]) -> f64 {
+    if p_counts.len() != q_counts.len() || p_counts.is_empty() {
+        return 0.0;
+    }
+
+    // Calculate totals for normalization
+    let p_total: u64 = p_counts.iter().map(|&c| c as u64).sum();
+    let q_total: u64 = q_counts.iter().map(|&c| c as u64).sum();
+
+    if p_total == 0 || q_total == 0 {
+        return 0.0;
+    }
+
+    let p_total_f = p_total as f64;
+    let q_total_f = q_total as f64;
+    let epsilon = 1e-10; // Smoothing for zero counts in Q
+
+    let mut kl = 0.0;
+
+    for i in 0..p_counts.len() {
+        let p_val = p_counts[i] as f64 / p_total_f;
+        if p_val > 0.0 {
+            let q_val = (q_counts[i] as f64 / q_total_f).max(epsilon);
+            kl += p_val * (p_val / q_val).log2();
+        }
+    }
+
+    kl.max(0.0) // Ensure non-negative due to floating point
+}
+
+/// Result of KL divergence window scan.
+#[wasm_bindgen]
+pub struct KLScanResult {
+    /// KL divergence values for each window position
+    kl_values: Vec<f32>,
+    /// Window positions (start indices)
+    positions: Vec<u32>,
+    /// Number of windows scanned
+    window_count: usize,
+    /// K-mer size used
+    k: usize,
+}
+
+#[wasm_bindgen]
+impl KLScanResult {
+    /// Get the KL divergence values as Float32Array
+    #[wasm_bindgen(getter)]
+    pub fn kl_values(&self) -> Vec<f32> {
+        self.kl_values.clone()
+    }
+
+    /// Get the window start positions as Uint32Array
+    #[wasm_bindgen(getter)]
+    pub fn positions(&self) -> Vec<u32> {
+        self.positions.clone()
+    }
+
+    /// Get the number of windows
+    #[wasm_bindgen(getter)]
+    pub fn window_count(&self) -> usize {
+        self.window_count
+    }
+
+    /// Get the k-mer size used
+    #[wasm_bindgen(getter)]
+    pub fn k(&self) -> usize {
+        self.k
+    }
+}
+
+/// Scan a sequence for k-mer KL divergence anomalies.
+///
+/// Computes KL divergence of each sliding window against the global
+/// sequence background. This is the core computation for anomaly detection.
+///
+/// # Arguments
+/// * `seq` - Sequence bytes (ASCII DNA)
+/// * `k` - K-mer size (1-10)
+/// * `window_size` - Size of each window in bases
+/// * `step_size` - Step size between windows
+///
+/// # Returns
+/// `KLScanResult` with:
+/// - `kl_values`: Float32Array of KL divergence for each window
+/// - `positions`: Uint32Array of window start positions
+/// - `window_count`: Number of windows scanned
+///
+/// # Performance
+/// Uses dense k-mer counting for O(1) k-mer lookups.
+/// Avoids string allocations by working directly with byte arrays.
+///
+/// # Example (from JS)
+/// ```js
+/// const seqBytes = new TextEncoder().encode(sequence);
+/// const result = wasm.scan_kl_windows(seqBytes, 4, 500, 100);
+/// try {
+///   const klValues = result.kl_values; // Float32Array
+///   const positions = result.positions; // Uint32Array
+///   // Process anomalies...
+/// } finally {
+///   result.free();
+/// }
+/// ```
+///
+/// @see phage_explorer-vk7b.5
+#[wasm_bindgen]
+pub fn scan_kl_windows(
+    seq: &[u8],
+    k: usize,
+    window_size: usize,
+    step_size: usize,
+) -> KLScanResult {
+    // Validate inputs
+    if k == 0 || k > DENSE_KMER_MAX_K || window_size == 0 || step_size == 0 {
+        return KLScanResult {
+            kl_values: Vec::new(),
+            positions: Vec::new(),
+            window_count: 0,
+            k,
+        };
+    }
+
+    if seq.len() < window_size || window_size < k {
+        return KLScanResult {
+            kl_values: Vec::new(),
+            positions: Vec::new(),
+            window_count: 0,
+            k,
+        };
+    }
+
+    let array_size = 1usize << (2 * k);
+    let mask = array_size - 1;
+
+    // Step 1: Compute global k-mer counts
+    let mut global_counts = vec![0u32; array_size];
+    let mut global_total: u64 = 0;
+
+    {
+        let mut rolling_index: usize = 0;
+        let mut valid_bases: usize = 0;
+
+        for &byte in seq {
+            let base_code = match byte {
+                b'A' | b'a' => 0usize,
+                b'C' | b'c' => 1usize,
+                b'G' | b'g' => 2usize,
+                b'T' | b't' | b'U' | b'u' => 3usize,
+                _ => {
+                    rolling_index = 0;
+                    valid_bases = 0;
+                    continue;
+                }
+            };
+
+            rolling_index = ((rolling_index << 2) | base_code) & mask;
+            valid_bases += 1;
+
+            if valid_bases >= k {
+                global_counts[rolling_index] = global_counts[rolling_index].saturating_add(1);
+                global_total += 1;
+            }
+        }
+    }
+
+    if global_total == 0 {
+        return KLScanResult {
+            kl_values: Vec::new(),
+            positions: Vec::new(),
+            window_count: 0,
+            k,
+        };
+    }
+
+    let global_total_f = global_total as f64;
+    let epsilon = 1e-10;
+
+    // Step 2: Scan sliding windows
+    let mut kl_values = Vec::new();
+    let mut positions = Vec::new();
+
+    let mut pos = 0usize;
+    while pos + window_size <= seq.len() {
+        // Compute window k-mer counts
+        let window = &seq[pos..pos + window_size];
+        let mut window_counts = vec![0u32; array_size];
+        let mut window_total: u64 = 0;
+
+        let mut rolling_index: usize = 0;
+        let mut valid_bases: usize = 0;
+
+        for &byte in window {
+            let base_code = match byte {
+                b'A' | b'a' => 0usize,
+                b'C' | b'c' => 1usize,
+                b'G' | b'g' => 2usize,
+                b'T' | b't' | b'U' | b'u' => 3usize,
+                _ => {
+                    rolling_index = 0;
+                    valid_bases = 0;
+                    continue;
+                }
+            };
+
+            rolling_index = ((rolling_index << 2) | base_code) & mask;
+            valid_bases += 1;
+
+            if valid_bases >= k {
+                window_counts[rolling_index] = window_counts[rolling_index].saturating_add(1);
+                window_total += 1;
+            }
+        }
+
+        // Compute KL divergence: D_KL(window || global)
+        let kl = if window_total > 0 {
+            let window_total_f = window_total as f64;
+            let mut kl_sum = 0.0f64;
+
+            for i in 0..array_size {
+                let p_val = window_counts[i] as f64 / window_total_f;
+                if p_val > 0.0 {
+                    let q_val = (global_counts[i] as f64 / global_total_f).max(epsilon);
+                    kl_sum += p_val * (p_val / q_val).log2();
+                }
+            }
+
+            kl_sum.max(0.0) as f32
+        } else {
+            0.0f32
+        };
+
+        kl_values.push(kl);
+        positions.push(pos as u32);
+
+        pos += step_size;
+    }
+
+    let window_count = kl_values.len();
+
+    KLScanResult {
+        kl_values,
+        positions,
+        window_count,
+        k,
+    }
+}
+
+// ============================================================================
+// Myers Diff Algorithm for DNA Sequences
+// Implements O(ND) diff with compact mask encoding + summary stats
+// See: phage_explorer-kyo0.1.1
+// ============================================================================
+
+/// Op codes for diff mask encoding.
+/// Using small values to fit in Uint8Array efficiently.
+pub const DIFF_OP_MATCH: u8 = 0;
+pub const DIFF_OP_MISMATCH: u8 = 1;  // Substitution
+pub const DIFF_OP_INSERT: u8 = 2;    // Present in B, not in A
+pub const DIFF_OP_DELETE: u8 = 3;    // Present in A, not in B
+
+/// Guardrails for Myers diff to prevent OOM/long runtime.
+/// These can be adjusted based on profiling.
+pub const DIFF_MAX_LEN: usize = 500_000;       // Max sequence length
+pub const DIFF_MAX_EDIT_DISTANCE: usize = 10_000;  // Max edit distance to compute
+
+/// Result of Myers diff computation.
+///
+/// # Ownership
+/// The caller must call `.free()` to release WASM memory.
+#[wasm_bindgen]
+pub struct MyersDiffResult {
+    /// Diff mask for sequence A: MATCH/MISMATCH/DELETE codes
+    mask_a: Vec<u8>,
+    /// Diff mask for sequence B: MATCH/MISMATCH/INSERT codes
+    mask_b: Vec<u8>,
+    /// Edit distance (total edits)
+    edit_distance: usize,
+    /// Number of matches
+    matches: usize,
+    /// Number of mismatches (substitutions)
+    mismatches: usize,
+    /// Number of insertions (in B, not in A)
+    insertions: usize,
+    /// Number of deletions (in A, not in B)
+    deletions: usize,
+    /// Whether computation was truncated due to guardrails
+    truncated: bool,
+    /// Error message if any
+    error: Option<String>,
+}
+
+#[wasm_bindgen]
+impl MyersDiffResult {
+    /// Get mask for sequence A as Uint8Array.
+    /// Values: 0=MATCH, 1=MISMATCH, 3=DELETE
+    #[wasm_bindgen(getter)]
+    pub fn mask_a(&self) -> js_sys::Uint8Array {
+        let arr = js_sys::Uint8Array::new_with_length(self.mask_a.len() as u32);
+        arr.copy_from(&self.mask_a);
+        arr
+    }
+
+    /// Get mask for sequence B as Uint8Array.
+    /// Values: 0=MATCH, 1=MISMATCH, 2=INSERT
+    #[wasm_bindgen(getter)]
+    pub fn mask_b(&self) -> js_sys::Uint8Array {
+        let arr = js_sys::Uint8Array::new_with_length(self.mask_b.len() as u32);
+        arr.copy_from(&self.mask_b);
+        arr
+    }
+
+    /// Edit distance (total number of edits).
+    #[wasm_bindgen(getter)]
+    pub fn edit_distance(&self) -> usize {
+        self.edit_distance
+    }
+
+    /// Number of matching positions.
+    #[wasm_bindgen(getter)]
+    pub fn matches(&self) -> usize {
+        self.matches
+    }
+
+    /// Number of mismatches (substitutions).
+    #[wasm_bindgen(getter)]
+    pub fn mismatches(&self) -> usize {
+        self.mismatches
+    }
+
+    /// Number of insertions.
+    #[wasm_bindgen(getter)]
+    pub fn insertions(&self) -> usize {
+        self.insertions
+    }
+
+    /// Number of deletions.
+    #[wasm_bindgen(getter)]
+    pub fn deletions(&self) -> usize {
+        self.deletions
+    }
+
+    /// Sequence identity as fraction (0.0 - 1.0).
+    #[wasm_bindgen(getter)]
+    pub fn identity(&self) -> f64 {
+        let total = self.matches + self.mismatches + self.insertions + self.deletions;
+        if total == 0 {
+            1.0
+        } else {
+            self.matches as f64 / total as f64
+        }
+    }
+
+    /// Whether the computation was truncated.
+    #[wasm_bindgen(getter)]
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Error message if any.
+    #[wasm_bindgen(getter)]
+    pub fn error(&self) -> Option<String> {
+        self.error.clone()
+    }
+
+    /// Length of sequence A.
+    #[wasm_bindgen(getter)]
+    pub fn len_a(&self) -> usize {
+        self.mask_a.len()
+    }
+
+    /// Length of sequence B.
+    #[wasm_bindgen(getter)]
+    pub fn len_b(&self) -> usize {
+        self.mask_b.len()
+    }
+}
+
+/// Normalize a DNA base for comparison.
+/// - Case-insensitive (returns uppercase code)
+/// - U treated as T
+/// - Returns the byte as-is for ambiguous bases (N, etc.)
+#[inline(always)]
+fn normalize_base(b: u8) -> u8 {
+    match b {
+        b'A' | b'a' => b'A',
+        b'C' | b'c' => b'C',
+        b'G' | b'g' => b'G',
+        b'T' | b't' | b'U' | b'u' => b'T',
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+/// Compare two normalized bases for equality.
+/// N does not match anything including itself (conservative behavior).
+#[inline(always)]
+fn bases_equal(a: u8, b: u8) -> bool {
+    let na = normalize_base(a);
+    let nb = normalize_base(b);
+    // N doesn't match anything
+    if na == b'N' || nb == b'N' {
+        return false;
+    }
+    na == nb
+}
+
+/// Compute Myers diff between two DNA sequences.
+///
+/// Uses the Myers O(ND) algorithm with bounded edit distance for safety.
+/// Returns a diff result with masks for both sequences and summary statistics.
+///
+/// # Arguments
+/// * `seq_a` - First sequence (bytes)
+/// * `seq_b` - Second sequence (bytes)
+///
+/// # Returns
+/// MyersDiffResult with masks and statistics.
+///
+/// # Guardrails
+/// - Max sequence length: 500,000 bp
+/// - Max edit distance: 10,000
+/// - If exceeded, returns truncated result with partial stats
+#[wasm_bindgen]
+pub fn myers_diff(seq_a: &[u8], seq_b: &[u8]) -> MyersDiffResult {
+    myers_diff_with_limit(seq_a, seq_b, DIFF_MAX_EDIT_DISTANCE)
+}
+
+/// Compute Myers diff with custom edit distance limit.
+///
+/// # Arguments
+/// * `seq_a` - First sequence (bytes)
+/// * `seq_b` - Second sequence (bytes)
+/// * `max_d` - Maximum edit distance to compute
+#[wasm_bindgen]
+pub fn myers_diff_with_limit(seq_a: &[u8], seq_b: &[u8], max_d: usize) -> MyersDiffResult {
+    let n = seq_a.len();
+    let m = seq_b.len();
+
+    // Check length guardrails
+    if n > DIFF_MAX_LEN || m > DIFF_MAX_LEN {
+        return MyersDiffResult {
+            mask_a: vec![],
+            mask_b: vec![],
+            edit_distance: 0,
+            matches: 0,
+            mismatches: 0,
+            insertions: 0,
+            deletions: 0,
+            truncated: true,
+            error: Some(format!(
+                "Sequence too long: len_a={}, len_b={}, max={}",
+                n, m, DIFF_MAX_LEN
+            )),
+        };
+    }
+
+    // Empty sequence cases
+    if n == 0 && m == 0 {
+        return MyersDiffResult {
+            mask_a: vec![],
+            mask_b: vec![],
+            edit_distance: 0,
+            matches: 0,
+            mismatches: 0,
+            insertions: 0,
+            deletions: 0,
+            truncated: false,
+            error: None,
+        };
+    }
+
+    if n == 0 {
+        // All insertions
+        return MyersDiffResult {
+            mask_a: vec![],
+            mask_b: vec![DIFF_OP_INSERT; m],
+            edit_distance: m,
+            matches: 0,
+            mismatches: 0,
+            insertions: m,
+            deletions: 0,
+            truncated: false,
+            error: None,
+        };
+    }
+
+    if m == 0 {
+        // All deletions
+        return MyersDiffResult {
+            mask_a: vec![DIFF_OP_DELETE; n],
+            mask_b: vec![],
+            edit_distance: n,
+            matches: 0,
+            mismatches: 0,
+            insertions: 0,
+            deletions: n,
+            truncated: false,
+            error: None,
+        };
+    }
+
+    // Fast path: equal-length sequences - check if all match first
+    if n == m {
+        let mut all_match = true;
+        for i in 0..n {
+            if !bases_equal(seq_a[i], seq_b[i]) {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            return MyersDiffResult {
+                mask_a: vec![DIFF_OP_MATCH; n],
+                mask_b: vec![DIFF_OP_MATCH; m],
+                edit_distance: 0,
+                matches: n,
+                mismatches: 0,
+                insertions: 0,
+                deletions: 0,
+                truncated: false,
+                error: None,
+            };
+        }
+    }
+
+    // Run Myers algorithm
+    myers_diff_core(seq_a, seq_b, max_d)
+}
+
+/// Core Myers diff algorithm implementation.
+///
+/// Myers O(ND) algorithm finds the shortest edit script.
+/// We trace back to reconstruct the alignment.
+fn myers_diff_core(seq_a: &[u8], seq_b: &[u8], max_d: usize) -> MyersDiffResult {
+    let n = seq_a.len() as isize;
+    let m = seq_b.len() as isize;
+    let max_steps = (n + m) as usize;
+    let max_d = max_d.min(max_steps);
+
+    // V array stores furthest reaching point for each diagonal k
+    // Diagonal k = x - y (where x is position in A, y is position in B)
+    // We need diagonals from -(max_d) to +(max_d)
+    // Array index: k + offset where offset = max_d
+    let offset = max_d as isize;
+    let v_size = 2 * max_d + 1;
+
+    // Store V arrays for each d value (for traceback)
+    let mut history: Vec<Vec<isize>> = Vec::with_capacity(max_d + 1);
+    let mut v: Vec<isize> = vec![-1; v_size];
+    v[offset as usize] = 0; // Start at (0,0)
+
+    let mut found_d: Option<usize> = None;
+
+    // Forward pass: find shortest edit path
+    'outer: for d in 0..=max_d {
+        // Save current V for traceback
+        history.push(v.clone());
+
+        for k in (-(d as isize)..=(d as isize)).step_by(2) {
+            let idx = (k + offset) as usize;
+
+            // Choose starting x based on whether we came from diagonal k-1 or k+1
+            let mut x: isize;
+            if k == -(d as isize) {
+                // Must come from k+1 (insertion from B)
+                x = v[(k + 1 + offset) as usize];
+            } else if k == (d as isize) {
+                // Must come from k-1 (deletion from A)
+                x = v[(k - 1 + offset) as usize] + 1;
+            } else {
+                // Choose the path that goes further
+                let from_above = v[(k - 1 + offset) as usize] + 1; // deletion
+                let from_left = v[(k + 1 + offset) as usize];       // insertion
+                x = if from_above > from_left { from_above } else { from_left };
+            }
+
+            let mut y = x - k;
+
+            // Extend along diagonal (matches)
+            // Note: y can be negative if k > x, so we must check y >= 0
+            while x >= 0 && y >= 0 && x < n && y < m && bases_equal(seq_a[x as usize], seq_b[y as usize]) {
+                x += 1;
+                y += 1;
+            }
+
+            v[idx] = x;
+
+            // Check if we've reached the end
+            if x >= n && y >= m {
+                found_d = Some(d);
+                history.push(v.clone()); // Save final state
+                break 'outer;
+            }
+        }
+    }
+
+    // Check if we found a solution
+    let final_d = match found_d {
+        Some(d) => d,
+        None => {
+            // Edit distance exceeded limit
+            return MyersDiffResult {
+                mask_a: vec![],
+                mask_b: vec![],
+                edit_distance: 0,
+                matches: 0,
+                mismatches: 0,
+                insertions: 0,
+                deletions: 0,
+                truncated: true,
+                error: Some(format!(
+                    "Edit distance exceeds limit: max_d={}",
+                    max_d
+                )),
+            };
+        }
+    };
+
+    // Traceback to reconstruct alignment
+    // Build edit script in reverse, then reverse at the end
+    let mut edits: Vec<(u8, usize, usize)> = Vec::new(); // (op, pos_a, pos_b)
+
+    let mut x = n as usize;
+    let mut y = m as usize;
+    let mut d = final_d;
+
+    while x > 0 || y > 0 {
+        if d == 0 {
+            // Only matches remain
+            while x > 0 && y > 0 {
+                x -= 1;
+                y -= 1;
+                edits.push((DIFF_OP_MATCH, x, y));
+            }
+            break;
+        }
+
+        let k = x as isize - y as isize;
+        let v_prev = &history[d - 1];
+
+        // Determine if we came from k-1 (deletion) or k+1 (insertion)
+        let k_prev_del = k - 1;
+        let k_prev_ins = k + 1;
+
+        let from_del = if ((k_prev_del + offset) as usize) < v_prev.len() {
+            v_prev[(k_prev_del + offset) as usize]
+        } else {
+            -2
+        };
+        let from_ins = if ((k_prev_ins + offset) as usize) < v_prev.len() {
+            v_prev[(k_prev_ins + offset) as usize]
+        } else {
+            -2
+        };
+
+        // Compute snake start point
+        let snake_start_x: usize;
+        let is_deletion: bool;
+
+        if k == -(d as isize) {
+            // Must be insertion
+            snake_start_x = from_ins as usize;
+            is_deletion = false;
+        } else if k == (d as isize) {
+            // Must be deletion
+            snake_start_x = (from_del + 1) as usize;
+            is_deletion = true;
+        } else if from_del + 1 > from_ins {
+            // Deletion gives better path
+            snake_start_x = (from_del + 1) as usize;
+            is_deletion = true;
+        } else {
+            // Insertion gives better path
+            snake_start_x = from_ins as usize;
+            is_deletion = false;
+        }
+
+        let snake_start_y = (snake_start_x as isize - k) as usize;
+
+        // Trace matches in the snake
+        while x > snake_start_x && y > snake_start_y {
+            x -= 1;
+            y -= 1;
+            edits.push((DIFF_OP_MATCH, x, y));
+        }
+
+        // The edit step
+        if is_deletion {
+            if x > 0 {
+                x -= 1;
+                edits.push((DIFF_OP_DELETE, x, y));
+            }
+        } else {
+            if y > 0 {
+                y -= 1;
+                edits.push((DIFF_OP_INSERT, x, y));
+            }
+        }
+
+        d -= 1;
+    }
+
+    // Reverse to get forward order
+    edits.reverse();
+
+    // Build masks from edits
+    let mut mask_a = vec![DIFF_OP_MATCH; seq_a.len()];
+    let mut mask_b = vec![DIFF_OP_MATCH; seq_b.len()];
+    let mut matches = 0usize;
+    let mismatches = 0usize; // Myers algorithm doesn't produce substitutions, only ins/del
+    let mut insertions = 0usize;
+    let mut deletions = 0usize;
+
+    for (op, pos_a, pos_b) in edits {
+        match op {
+            DIFF_OP_MATCH => {
+                if pos_a < mask_a.len() {
+                    mask_a[pos_a] = DIFF_OP_MATCH;
+                }
+                if pos_b < mask_b.len() {
+                    mask_b[pos_b] = DIFF_OP_MATCH;
+                }
+                matches += 1;
+            }
+            DIFF_OP_DELETE => {
+                if pos_a < mask_a.len() {
+                    mask_a[pos_a] = DIFF_OP_DELETE;
+                }
+                deletions += 1;
+            }
+            DIFF_OP_INSERT => {
+                if pos_b < mask_b.len() {
+                    mask_b[pos_b] = DIFF_OP_INSERT;
+                }
+                insertions += 1;
+            }
+            _ => {}
+        }
+    }
+
+    MyersDiffResult {
+        mask_a,
+        mask_b,
+        edit_distance: final_d,
+        matches,
+        mismatches,
+        insertions,
+        deletions,
+        truncated: false,
+        error: None,
+    }
+}
+
+/// Fast equal-length diff for sequences with only substitutions.
+///
+/// This is O(n) and much faster than Myers when we know there are no indels.
+/// Use this when sequences are already aligned or have equal length.
+///
+/// # Arguments
+/// * `seq_a` - First sequence (bytes)
+/// * `seq_b` - Second sequence (bytes)
+///
+/// # Returns
+/// MyersDiffResult with mask codes 0=MATCH, 1=MISMATCH only.
+#[wasm_bindgen]
+pub fn equal_len_diff(seq_a: &[u8], seq_b: &[u8]) -> MyersDiffResult {
+    let n = seq_a.len();
+    let m = seq_b.len();
+
+    if n != m {
+        return MyersDiffResult {
+            mask_a: vec![],
+            mask_b: vec![],
+            edit_distance: 0,
+            matches: 0,
+            mismatches: 0,
+            insertions: 0,
+            deletions: 0,
+            truncated: true,
+            error: Some(format!(
+                "Sequences must have equal length for equal_len_diff: {} vs {}",
+                n, m
+            )),
+        };
+    }
+
+    let mut mask = Vec::with_capacity(n);
+    let mut matches = 0usize;
+    let mut mismatches = 0usize;
+
+    for i in 0..n {
+        if bases_equal(seq_a[i], seq_b[i]) {
+            mask.push(DIFF_OP_MATCH);
+            matches += 1;
+        } else {
+            mask.push(DIFF_OP_MISMATCH);
+            mismatches += 1;
+        }
+    }
+
+    MyersDiffResult {
+        mask_a: mask.clone(),
+        mask_b: mask,
+        edit_distance: mismatches,
+        matches,
+        mismatches,
+        insertions: 0,
+        deletions: 0,
+        truncated: false,
+        error: None,
+    }
+}
+
+#[cfg(test)]
+mod myers_diff_tests {
+    use super::*;
+
+    #[test]
+    fn test_identical_sequences() {
+        let result = myers_diff(b"ACGT", b"ACGT");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.matches, 4);
+        assert_eq!(result.insertions, 0);
+        assert_eq!(result.deletions, 0);
+        assert!(!result.truncated);
+        assert!(result.error.is_none());
+        assert_eq!(result.mask_a.len(), 4);
+        assert_eq!(result.mask_b.len(), 4);
+    }
+
+    #[test]
+    fn test_empty_sequences() {
+        let result = myers_diff(b"", b"");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.matches, 0);
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn test_insertion() {
+        // B has extra base
+        let result = myers_diff(b"ACGT", b"ACGGT");
+        assert_eq!(result.edit_distance, 1);
+        assert_eq!(result.insertions, 1);
+        assert_eq!(result.deletions, 0);
+        assert_eq!(result.matches, 4);
+    }
+
+    #[test]
+    fn test_deletion() {
+        // A has extra base
+        let result = myers_diff(b"ACGGT", b"ACGT");
+        assert_eq!(result.edit_distance, 1);
+        assert_eq!(result.deletions, 1);
+        assert_eq!(result.insertions, 0);
+        assert_eq!(result.matches, 4);
+    }
+
+    #[test]
+    fn test_case_insensitive() {
+        let result = myers_diff(b"acgt", b"ACGT");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.matches, 4);
+    }
+
+    #[test]
+    fn test_u_treated_as_t() {
+        let result = myers_diff(b"ACGU", b"ACGT");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.matches, 4);
+    }
+
+    #[test]
+    fn test_n_never_matches() {
+        // N doesn't match anything, not even N
+        let result = myers_diff(b"ANCGT", b"ATCGT");
+        // N vs T is a mismatch, handled as edit
+        assert!(result.edit_distance > 0);
+    }
+
+    #[test]
+    fn test_equal_len_diff_identical() {
+        let result = equal_len_diff(b"ACGT", b"ACGT");
+        assert_eq!(result.edit_distance, 0);
+        assert_eq!(result.matches, 4);
+        assert_eq!(result.mismatches, 0);
+    }
+
+    #[test]
+    fn test_equal_len_diff_with_mismatches() {
+        let result = equal_len_diff(b"ACGT", b"ACCT");
+        assert_eq!(result.edit_distance, 1);
+        assert_eq!(result.matches, 3);
+        assert_eq!(result.mismatches, 1);
+    }
+
+    #[test]
+    fn test_equal_len_diff_different_lengths() {
+        let result = equal_len_diff(b"ACGT", b"ACG");
+        assert!(result.truncated);
+        assert!(result.error.is_some());
+    }
+
+    #[test]
+    fn test_guardrails_max_edit_distance() {
+        // Create sequences with high edit distance
+        let a = vec![b'A'; 100];
+        let b = vec![b'G'; 100];
+        let result = myers_diff_with_limit(&a, &b, 10);
+        // Should truncate since edit distance is 100 but limit is 10
+        assert!(result.truncated);
+    }
 }

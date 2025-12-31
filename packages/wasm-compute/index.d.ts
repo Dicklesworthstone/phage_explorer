@@ -604,4 +604,72 @@ declare module '@phage/wasm-compute' {
    * Compute diff mask from pre-encoded sequences (faster).
    */
   export function compute_diff_mask_encoded(query_encoded: Uint8Array, ref_encoded: Uint8Array): Uint8Array;
+
+  // ============================================================================
+  // KL Divergence for Anomaly Detection
+  // @see phage_explorer-vk7b.5
+  // ============================================================================
+
+  /**
+   * Compute Kullback-Leibler divergence between two dense k-mer count arrays.
+   *
+   * D_KL(P || Q) = sum(P(i) * log2(P(i) / Q(i)))
+   *
+   * Both arrays are normalized internally to probability distributions.
+   * Missing k-mers in Q are smoothed with epsilon to avoid log(0).
+   *
+   * @param p_counts - Dense count array for distribution P (window)
+   * @param q_counts - Dense count array for distribution Q (background)
+   * @returns KL divergence value (non-negative). Returns 0.0 if inputs are invalid.
+   */
+  export function kl_divergence_dense(p_counts: Uint32Array, q_counts: Uint32Array): number;
+
+  /**
+   * Result of KL divergence window scan.
+   *
+   * IMPORTANT: Must call `.free()` when done to release WASM memory.
+   *
+   * @example
+   * ```ts
+   * const seqBytes = new TextEncoder().encode(sequence);
+   * const result = wasm.scan_kl_windows(seqBytes, 4, 500, 100);
+   * try {
+   *   const klValues = result.kl_values; // Float32Array
+   *   const positions = result.positions; // Uint32Array
+   *   // Process anomalies...
+   * } finally {
+   *   result.free();
+   * }
+   * ```
+   */
+  export class KLScanResult {
+    free(): void;
+    /** KL divergence values for each window position */
+    readonly kl_values: Float32Array;
+    /** Window start positions as Uint32Array */
+    readonly positions: Uint32Array;
+    /** Number of windows scanned */
+    readonly window_count: number;
+    /** K-mer size used */
+    readonly k: number;
+  }
+
+  /**
+   * Scan a sequence for k-mer KL divergence anomalies.
+   *
+   * Computes KL divergence of each sliding window against the global
+   * sequence background. This is the core computation for anomaly detection.
+   *
+   * Uses dense k-mer counting internally for O(1) k-mer lookups and avoids
+   * string allocations by working directly with byte arrays.
+   *
+   * @param seq - Sequence bytes (ASCII DNA)
+   * @param k - K-mer size (1-10)
+   * @param window_size - Size of each window in bases
+   * @param step_size - Step size between windows
+   * @returns KLScanResult (caller must call `.free()`)
+   *
+   * @see phage_explorer-vk7b.5
+   */
+  export function scan_kl_windows(seq: Uint8Array, k: number, window_size: number, step_size: number): KLScanResult;
 }
