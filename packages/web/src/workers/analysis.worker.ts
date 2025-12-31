@@ -8,7 +8,6 @@
 import * as Comlink from 'comlink';
 import { simulateTranscriptionFlow } from '@phage-explorer/core';
 import {
-  DENSE_KMER_MAX_K,
   topKFromDenseCounts,
   canUseDenseKmerCounts,
 } from '@phage-explorer/core/analysis/dense-kmer';

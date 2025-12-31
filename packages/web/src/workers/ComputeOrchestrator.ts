@@ -31,7 +31,7 @@ import type {
   AnalysisOptions,
 } from './types';
 import { SharedSequencePool, decodeSequence } from './SharedSequencePool';
-import { startOperation, cancelOperation, getAggregateStats, printReport } from './perf-instrumentation';
+import { startOperation, getAggregateStats, printReport } from './perf-instrumentation';
 
 type WorkerType = 'analysis' | 'simulation';
 
@@ -276,7 +276,7 @@ export class ComputeOrchestrator {
    * Run an analysis task
    */
   async runAnalysis(request: AnalysisRequest): Promise<AnalysisResult> {
-    const { opId, finish } = startOperation('analysis', request.type);
+    const { finish } = startOperation('analysis', request.type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
     try {
@@ -300,7 +300,7 @@ export class ComputeOrchestrator {
     request: AnalysisRequest,
     onProgress: (progress: ProgressInfo) => void
   ): Promise<AnalysisResult> {
-    const { opId, finish } = startOperation('analysis', request.type);
+    const { finish } = startOperation('analysis', request.type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
     try {
@@ -368,7 +368,7 @@ export class ComputeOrchestrator {
     type: AnalysisType,
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
-    const { opId, finish } = startOperation('analysis', type);
+    const { finish } = startOperation('analysis', type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
 
@@ -404,7 +404,7 @@ export class ComputeOrchestrator {
     onProgress: (progress: ProgressInfo) => void,
     options?: AnalysisOptions
   ): Promise<AnalysisResult> {
-    const { opId, finish } = startOperation('analysis', type);
+    const { finish } = startOperation('analysis', type);
     const instance = await this.getAvailableWorker('analysis');
     let error: Error | undefined;
 
@@ -462,7 +462,7 @@ export class ComputeOrchestrator {
    * Initialize a simulation
    */
   async initSimulation(params: SimInitParams): Promise<SimState> {
-    const { opId, finish } = startOperation('simulation', params.simulationId);
+    const { finish } = startOperation('simulation', params.simulationId);
     const instance = await this.getAvailableWorker('simulation');
     let error: Error | undefined;
     try {

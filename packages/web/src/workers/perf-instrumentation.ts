@@ -138,11 +138,11 @@ export function startOperation(
       stages,
     };
 
-    // Add to ring buffer
-    if (!timings.has(type)) {
-      timings.set(type, []);
+    // Add to ring buffer (use op.type for consistency with entry)
+    if (!timings.has(op.type)) {
+      timings.set(op.type, []);
     }
-    const buffer = timings.get(type)!;
+    const buffer = timings.get(op.type)!;
     buffer.push(entry);
     if (buffer.length > MAX_SAMPLES) {
       buffer.shift();
