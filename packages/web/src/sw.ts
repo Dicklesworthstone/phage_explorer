@@ -26,15 +26,15 @@ declare const self: ServiceWorkerGlobalScope;
 
 /** Cache names for organization and debugging */
 const CACHE_NAMES = {
-  precache: 'phage-precache-v1',
-  database: 'phage-database',
-  wasm: 'wasm-cache',
-  sqlJs: 'sql-js-wasm',
-  pdb: 'pdb-structures',
-  fonts: 'google-fonts',
-  images: 'images',
-  static: 'static-resources',
-  pages: 'pages',
+  // v2: Removed StaleWhileRevalidate for JS/CSS to fix stale code bugs
+  precache: 'phage-precache-v2',
+  database: 'phage-database-v2',
+  wasm: 'wasm-cache-v2',
+  sqlJs: 'sql-js-wasm-v2',
+  pdb: 'pdb-structures-v2',
+  fonts: 'google-fonts-v2',
+  images: 'images-v2',
+  pages: 'pages-v2',
 } as const;
 
 /** Network timeout before falling back to cache (ms) */
@@ -46,6 +46,34 @@ const NETWORK_TIMEOUT_MS = 3000;
 
 // Clean up old caches from previous versions
 cleanupOutdatedCaches();
+
+// Also clean up v1 caches that may contain stale JS
+const OLD_CACHE_PREFIXES = [
+  'phage-precache-v1',
+  'phage-database',
+  'wasm-cache',
+  'sql-js-wasm',
+  'pdb-structures',
+  'google-fonts',
+  'images',
+  'static-resources', // v1 JS/CSS cache that caused stale code bugs
+  'pages',
+];
+
+/** Delete old v1 caches */
+async function deleteOldCaches(): Promise<void> {
+  const cacheNames = await caches.keys();
+  await Promise.all(
+    cacheNames
+      .filter((name) => OLD_CACHE_PREFIXES.some((prefix) => name === prefix))
+      .map((name) => {
+        if (import.meta.env.DEV) {
+          console.log('[SW] Deleting old cache:', name);
+        }
+        return caches.delete(name);
+      })
+  );
+}
 
 // Precache static assets (injected by build tool)
 precacheAndRoute(self.__WB_MANIFEST || []);
@@ -179,21 +207,11 @@ registerRoute(
   })
 );
 
-// Cache JS and CSS with StaleWhileRevalidate
-// These may update between deployments, so SWR ensures we get updates
-registerRoute(
-  ({ request }) =>
-    request.destination === 'script' || request.destination === 'style',
-  new StaleWhileRevalidate({
-    cacheName: CACHE_NAMES.static,
-    plugins: [
-      new ExpirationPlugin({
-        maxEntries: 50,
-        maxAgeSeconds: 7 * 24 * 60 * 60, // 7 days
-      }),
-    ],
-  })
-);
+// NOTE: JS/CSS caching for build assets is handled by precacheAndRoute above,
+// which uses content-hashed filenames (e.g., index-abc123.js) for proper versioning.
+// We intentionally do NOT add a fallback StaleWhileRevalidate route for scripts/styles
+// because it can serve stale cached versions when precache misses, causing bugs.
+// If a script isn't in the precache manifest, it will be fetched fresh from network.
 
 // =============================================================================
 // Navigation Caching
@@ -232,20 +250,25 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Claim clients immediately on activation
+// Claim clients immediately on activation and clean up old caches
 self.addEventListener('activate', (event) => {
   if (import.meta.env.DEV) {
     console.log('[SW] Activated');
   }
-  // Take control of all pages immediately
-  event.waitUntil(self.clients.claim());
+  // Delete old v1 caches that may contain stale JS, then take control
+  event.waitUntil(
+    deleteOldCaches().then(() => self.clients.claim())
+  );
 });
 
-// Log installation
+// Force immediate activation on install (don't wait for old SW to be released)
+// This ensures users get the latest code as quickly as possible
 self.addEventListener('install', () => {
   if (import.meta.env.DEV) {
-    console.log('[SW] Installed');
+    console.log('[SW] Installed, skipping wait');
   }
+  // Skip waiting immediately - don't wait for all clients to close
+  self.skipWaiting();
 });
 
 // =============================================================================
