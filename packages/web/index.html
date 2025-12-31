@@ -2,9 +2,20 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover enables safe-area-inset-* CSS env() values for iPhone notch/Dynamic Island -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="Phage Explorer: Terminal-style visualization for bacteriophage genomes" />
+    <!-- iOS Safari theme color for address bar -->
+    <meta name="theme-color" content="#0a0a0f" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f0f0f8" media="(prefers-color-scheme: light)" />
+    <!-- iOS PWA: enable standalone mode when added to home screen -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Phage Explorer" />
+    <!-- Prevent telephone number detection on iOS -->
+    <meta name="format-detection" content="telephone=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Phage Explorer Web</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
