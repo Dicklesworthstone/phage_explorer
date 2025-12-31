@@ -84,6 +84,12 @@ async function tryComputeDiffWasm(
 
     // Use fast O(n) path for equal-length sequences
     const useEqualLen = seqABytes.length === seqBBytes.length && typeof wasm.equal_len_diff === 'function';
+
+    // If we can't use equal_len_diff and myers_diff doesn't exist, fall back to JS
+    if (!useEqualLen && typeof wasm.myers_diff !== 'function') {
+      return null;
+    }
+
     const result = useEqualLen
       ? wasm.equal_len_diff(seqABytes, seqBBytes)
       : wasm.myers_diff(seqABytes, seqBBytes);
