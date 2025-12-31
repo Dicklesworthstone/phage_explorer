@@ -47,36 +47,6 @@ function getSequenceBytesForWasm(job: DotPlotJob): Uint8Array | null {
 }
 
 /**
- * Compute dotplot using SequenceHandle for efficient multi-resolution.
- * The handle encodes the sequence once and can be reused for preview + full resolution.
- */
-async function tryComputeDotPlotWasmWithHandle(
-  wasm: Awaited<ReturnType<typeof getWasmCompute>>,
-  seqBytes: Uint8Array,
-  bins: number,
-  window: number
-): Promise<{ directValues: Float32Array; invertedValues: Float32Array; bins: number; window: number } | null> {
-  if (!wasm || typeof wasm.SequenceHandle !== 'function') return null;
-
-  const handle = new wasm.SequenceHandle(seqBytes);
-  try {
-    const result = handle.dotplot_self(bins, window);
-    try {
-      return {
-        directValues: result.direct,
-        invertedValues: result.inverted,
-        bins: result.bins,
-        window: result.window,
-      };
-    } finally {
-      result.free();
-    }
-  } finally {
-    handle.free();
-  }
-}
-
-/**
  * Fallback: compute dotplot using dotplot_self_buffers (one-shot, no handle reuse).
  */
 async function tryComputeDotPlotWasm(
