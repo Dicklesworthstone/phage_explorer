@@ -31,6 +31,11 @@ export const DENSE_KMER_MAX_K = 10;
  * Returns 4^k × 4 bytes (Uint32Array).
  */
 export function denseKmerMemoryCost(k: number): number {
+  // Use Math.pow for k > 15 to avoid 32-bit integer overflow with bit shift
+  // (1 << 32 = 1 in JS due to 32-bit masking, but 4^16 = 4294967296)
+  if (k > 15) {
+    return Math.pow(4, k) * 4;
+  }
   return (1 << (2 * k)) * 4; // 4^k * sizeof(u32)
 }
 
@@ -57,12 +62,20 @@ export interface TopKmer {
 }
 
 /**
- * Dense k-mer counting result (from WASM or JS).
+ * Dense k-mer counting result from JS fallback.
+ *
+ * Note: The WASM `DenseKmerResult` class has a different interface:
+ * - WASM uses snake_case: `.total_valid`, `.unique_count`
+ * - WASM `.total_valid` returns `bigint` (Rust u64), use `Number()` to convert
+ * - JS fallback uses camelCase and `number` types
+ *
+ * When using WASM, access the result directly via the class getters.
+ * When using the JS fallback (`countKmersDenseJS`), use this interface.
  */
 export interface DenseKmerCountResult {
   /** Dense count array of length 4^k */
   counts: Uint32Array;
-  /** Total valid k-mers counted */
+  /** Total valid k-mers counted (number in JS, bigint in WASM) */
   totalValid: number;
   /** K value used */
   k: number;
