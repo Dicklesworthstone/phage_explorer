@@ -19,6 +19,8 @@ function installViewportVariables(): void {
     const width = vv?.width ?? window.innerWidth;
     root.style.setProperty('--visual-viewport-height', `${height}px`);
     root.style.setProperty('--visual-viewport-width', `${width}px`);
+    root.style.setProperty('--vvh', `${height * 0.01}px`);
+    root.style.setProperty('--vvw', `${width * 0.01}px`);
   };
 
   const schedule = () => {
