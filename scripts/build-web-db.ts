@@ -13,6 +13,7 @@ import { mkdir, copyFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { gzipSync } from "node:zlib";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -25,6 +26,7 @@ const { values } = parseArgs({
 const SOURCE_DB = values.source;
 const OUTPUT_DIR = values.output;
 const OUTPUT_DB = `${OUTPUT_DIR}/phage.db`;
+const OUTPUT_DB_GZ = `${OUTPUT_DIR}/phage.db.gz`;
 const OUTPUT_MANIFEST = `${OUTPUT_DIR}/phage.db.manifest.json`;
 
 async function main() {
@@ -62,7 +64,8 @@ async function main() {
   // Calculate hash for cache invalidation
   console.log("Generating manifest...");
   const fileData = await Bun.file(OUTPUT_DB).arrayBuffer();
-  const hash = createHash("sha256").update(Buffer.from(fileData)).digest("hex");
+  const fileBuffer = Buffer.from(fileData);
+  const hash = createHash("sha256").update(fileBuffer).digest("hex");
 
   const stats = await stat(OUTPUT_DB);
   const manifest = {
@@ -75,8 +78,15 @@ async function main() {
 
   await Bun.write(OUTPUT_MANIFEST, JSON.stringify(manifest, null, 2));
 
+  // Generate gzip-compressed artifact for faster cold loads (DatabaseLoader prefers `.db.gz` when present).
+  console.log("Generating gzip-compressed database...");
+  const gzBytes = gzipSync(fileBuffer, { level: 9 });
+  await Bun.write(OUTPUT_DB_GZ, gzBytes);
+  const gzStats = await stat(OUTPUT_DB_GZ);
+
   console.log(`✓ Built web database:`);
   console.log(`  Database: ${OUTPUT_DB} (${manifest.sizeFormatted})`);
+  console.log(`  Database (gzip): ${OUTPUT_DB_GZ} (${formatBytes(gzStats.size)})`);
   console.log(`  Manifest: ${OUTPUT_MANIFEST}`);
   console.log(`  Hash: ${hash.substring(0, 16)}...`);
 }

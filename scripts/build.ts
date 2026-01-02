@@ -28,7 +28,10 @@ console.log(`Building${target ? ` for ${target}` : ""}...`);
 
 console.log("Building wasm-compute (canonical wasm module)...");
 try {
-  await $`cd packages/wasm-compute && wasm-pack build --target nodejs --out-dir pkg`;
+  // Build as a bundler-targeted package so the JS glue lives in `wasm_compute_bg.js`.
+  // We then inline the `.wasm` bytes to avoid relying on bundler `.wasm` module support
+  // and to keep Bun `--compile` single-binary builds working.
+  await $`cd packages/wasm-compute && RUSTFLAGS="-C target-feature=-simd128" wasm-pack build --target bundler --out-dir pkg`;
   await $`bun run ./scripts/inline-wasm-compute.ts`;
 } catch (e) {
   console.error("Failed to build wasm-compute:", e);

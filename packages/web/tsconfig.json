@@ -31,7 +31,9 @@
       "@phage-explorer/tui": ["../../packages/tui/src"],
       "@phage-explorer/tui/*": ["../../packages/tui/src/*"],
       "@phage/wasm-compute": ["../../packages/wasm-compute/pkg/wasm_compute"],
+      "@phage/wasm-compute/simd": ["../../packages/wasm-compute/pkg-simd/wasm_compute"],
       "@phage/wasm-compute/pkg/*": ["../../packages/wasm-compute/pkg/*"],
+      "@phage/wasm-compute/pkg-simd/*": ["../../packages/wasm-compute/pkg-simd/*"],
       "@phage-explorer/web/*": ["./src/*"]
     }
   },
