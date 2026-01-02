@@ -483,17 +483,30 @@ function GeneMapCanvasBase({
         title="Click to jump to position"
       />
       {hoveredGene && (
+        (() => {
+          const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+          const viewportWidth = vv?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 0);
+          const viewportHeight = vv?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 0);
+          const viewportLeft = vv?.offsetLeft ?? 0;
+          const viewportTop = vv?.offsetTop ?? 0;
+          const leftMin = viewportLeft + 12;
+          const leftMax = viewportLeft + viewportWidth - 12;
+          const topMin = viewportTop + 12;
+          const topMax = viewportTop + viewportHeight - 12;
+          const safeLeftMax = Math.max(leftMin, leftMax);
+          const safeTopMax = Math.max(topMin, topMax);
+          const clampedLeft = Math.min(Math.max(hoveredGene.x, leftMin), safeLeftMax);
+          const clampedTop = Math.min(Math.max(hoveredGene.y, topMin), safeTopMax);
+          return (
         <div
           id={tooltipId}
           role="tooltip"
           aria-hidden="false"
           style={{
             position: 'fixed',
-            left: typeof window === 'undefined'
-              ? hoveredGene.x
-              : Math.min(Math.max(hoveredGene.x, 12), window.innerWidth - 12),
-            top: hoveredGene.y,
-            transform: hoveredGene.y < 60 ? 'translate(-50%, 14px)' : 'translate(-50%, -100%)',
+            left: typeof window === 'undefined' ? hoveredGene.x : clampedLeft,
+            top: typeof window === 'undefined' ? hoveredGene.y : clampedTop,
+            transform: clampedTop < topMin + 48 ? 'translate(-50%, 14px)' : 'translate(-50%, -100%)',
             backgroundColor: colors.backgroundAlt,
             border: `1px solid ${colors.border}`,
             borderRadius: '4px',
@@ -502,7 +515,7 @@ function GeneMapCanvasBase({
             zIndex: 1000,
             boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
             fontSize: '12px',
-            maxWidth: 'min(240px, calc(100vw - 24px))',
+            maxWidth: 'min(240px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px))',
           }}
         >
           <div style={{ fontWeight: 'bold', color: colors.text }}>{hoveredGene.name}</div>
@@ -512,6 +525,8 @@ function GeneMapCanvasBase({
             </div>
           )}
         </div>
+          );
+        })()
       )}
     </div>
   );

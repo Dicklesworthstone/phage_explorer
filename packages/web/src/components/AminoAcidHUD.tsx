@@ -76,21 +76,30 @@ export function AminoAcidHUD({
 
     const hud = hudRef.current;
     const rect = hud.getBoundingClientRect();
-    const viewportWidth = window.innerWidth;
+    const vv = window.visualViewport;
+    const viewportWidth = vv?.width ?? window.innerWidth;
+    const viewportHeight = vv?.height ?? window.innerHeight;
+    const viewportLeft = vv?.offsetLeft ?? 0;
+    const viewportTop = vv?.offsetTop ?? 0;
 
     // Adjust horizontal position
     let left = position.x - rect.width / 2;
-    if (left < 10) left = 10;
-    if (left + rect.width > viewportWidth - 10) {
-      left = viewportWidth - rect.width - 10;
-    }
+    const minLeft = viewportLeft + 10;
+    const maxLeft = viewportLeft + viewportWidth - rect.width - 10;
+    const leftMax = Math.max(minLeft, maxLeft);
+    if (left < minLeft) left = minLeft;
+    if (left > leftMax) left = leftMax;
 
     // Position above the touch point by default
     let top = position.y - rect.height - 20;
-    if (top < 10) {
+    const minTop = viewportTop + 10;
+    const maxTop = viewportTop + viewportHeight - rect.height - 10;
+    if (top < minTop) {
       // If not enough room above, show below
       top = position.y + 30;
     }
+    if (top > maxTop) top = maxTop;
+    if (top < minTop) top = minTop;
 
     hud.style.left = `${left}px`;
     hud.style.top = `${top}px`;
@@ -113,8 +122,8 @@ export function AminoAcidHUD({
       style={{
         position: 'fixed',
         zIndex: 9999,
-        width: '320px',
-        maxWidth: 'calc(100vw - 20px)',
+        width: 'min(320px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px))',
+        maxWidth: 'calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 20px)',
         backgroundColor: colors.background,
         border: `2px solid ${classificationColor}`,
         borderRadius: '12px',

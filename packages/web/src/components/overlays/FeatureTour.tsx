@@ -96,11 +96,18 @@ export function FeatureTour(): React.ReactElement | null {
     }
   };
 
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+  const viewportWidth = vv?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 0);
+  const viewportHeight = vv?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 0);
+  const viewportLeft = vv?.offsetLeft ?? 0;
+  const viewportTop = vv?.offsetTop ?? 0;
+
   // Calculate position
   const popoverStyle: React.CSSProperties = {
     position: 'fixed',
     zIndex: 1000,
-    width: '300px',
+    width: 'min(300px, calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px))',
+    maxWidth: 'calc(100vw - env(safe-area-inset-left) - env(safe-area-inset-right) - 24px)',
     backgroundColor: colors.background,
     border: `2px solid ${colors.accent}`,
     borderRadius: '8px',
@@ -112,19 +119,36 @@ export function FeatureTour(): React.ReactElement | null {
     popoverStyle.top = rect.bottom + 16;
     popoverStyle.left = rect.left + (rect.width / 2) - 150;
   } else if (step.position === 'top') {
-    popoverStyle.bottom = window.innerHeight - rect.top + 16;
+    popoverStyle.bottom = viewportTop + viewportHeight - rect.top + 16;
     popoverStyle.left = rect.left + (rect.width / 2) - 150;
   } else if (step.position === 'right') {
     popoverStyle.top = rect.top + (rect.height / 2) - 100;
     popoverStyle.left = rect.right + 16;
   } else if (step.position === 'left') {
     popoverStyle.top = rect.top + (rect.height / 2) - 100;
-    popoverStyle.right = window.innerWidth - rect.left + 16;
+    popoverStyle.right = viewportLeft + viewportWidth - rect.left + 16;
   }
 
   // Ensure onscreen
-  if (Number(popoverStyle.left) < 10) popoverStyle.left = 10;
-  if (Number(popoverStyle.right) < 10) popoverStyle.right = 10;
+  const minX = viewportLeft + 10;
+  const maxX = viewportLeft + viewportWidth - 10;
+  if (typeof popoverStyle.left === 'number') {
+    const leftMax = Math.max(minX, maxX - 300);
+    popoverStyle.left = Math.min(Math.max(popoverStyle.left, minX), leftMax);
+  }
+  if (typeof popoverStyle.right === 'number') {
+    popoverStyle.right = Math.min(Math.max(popoverStyle.right, 10), maxX - minX);
+  }
+  if (typeof popoverStyle.top === 'number') {
+    const topMin = viewportTop + 10;
+    const topMax = Math.max(topMin, viewportTop + viewportHeight - 10 - 200);
+    popoverStyle.top = Math.min(Math.max(popoverStyle.top, topMin), topMax);
+  }
+  if (typeof popoverStyle.bottom === 'number') {
+    const bottomMin = 10;
+    const bottomMax = Math.max(bottomMin, viewportHeight - 10 - 200);
+    popoverStyle.bottom = Math.min(Math.max(popoverStyle.bottom, bottomMin), bottomMax);
+  }
 
   return (
     <>

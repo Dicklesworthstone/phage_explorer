@@ -31,7 +31,7 @@ import {
   type FunctionalGroupStyle,
   type LoadedStructure,
 } from '../visualization/structure-loader';
-import { useStructureQuery } from '../hooks/useStructureQuery';
+import { useStructureQuery, usePrefetchAdjacentStructures } from '../hooks/useStructureQuery';
 
 type LoadState = 'idle' | 'loading' | 'ready' | 'error';
 type RenderMode = 'ball' | 'ribbon' | 'surface';
@@ -282,6 +282,15 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
   const qualityPreset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
+
+  // Prefetch additional PDB structures from the current phage (if it has multiple)
+  // Note: Adjacent phage prefetching requires pdbIds in PhageSummary (future enhancement)
+  const additionalPdbIds = useMemo(() => {
+    if (!phage?.pdbIds || phage.pdbIds.length <= 1) return [];
+    return phage.pdbIds.slice(1); // Skip the first one (already loading)
+  }, [phage?.pdbIds]);
+
+  usePrefetchAdjacentStructures(additionalPdbIds, show3DModel && Boolean(pdbId));
 
   useEffect(() => {
     renderModeRef.current = renderMode;
@@ -1286,7 +1295,9 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
           fullscreen
             ? {
                 width: '100%',
-                height: supportsDvh ? 'calc(100dvh - 120px)' : 'calc(100vh - 120px)',
+                height: supportsDvh
+                  ? 'calc(100dvh - 120px)'
+                  : 'calc(var(--vvh, 1vh) * 100 - 120px)',
               }
             : undefined
         }

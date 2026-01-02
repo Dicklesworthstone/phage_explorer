@@ -241,7 +241,7 @@ export default function App(): React.ReactElement {
   // Dynamic sequence height based on screen size
   // Mobile/narrow: use viewport height; desktop: use clamp for responsive scaling
   const sequenceHeight = isNarrow
-    ? (isLandscape ? '85dvh' : '65dvh')
+    ? (isLandscape ? 'calc(var(--vvh, 1vh) * 85)' : 'calc(var(--vvh, 1vh) * 65)')
     : 'clamp(500px, 70vh, 1000px)';
 
   // Dynamic gene map height - scales with screen width for better visibility on large monitors
