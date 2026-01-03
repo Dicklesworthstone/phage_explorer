@@ -42,21 +42,42 @@ export class PostProcessPipeline {
     if (this.gl || this.disabled) return;
 
     try {
-      if (typeof OffscreenCanvas !== 'undefined') {
-        this.glCanvas = new OffscreenCanvas(1, 1);
-      } else {
-        this.glCanvas = document.createElement('canvas');
-      }
-
-      this.gl = this.glCanvas.getContext('webgl2', {
+      const contextOptions = {
         alpha: false,
         desynchronized: true,
-        antialias: false
-      }) as WebGL2RenderingContext;
+        antialias: false,
+      };
+      let canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
+      let gl: WebGL2RenderingContext | null = null;
 
-      if (!this.gl) {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        try {
+          const offscreen = new OffscreenCanvas(1, 1);
+          const offscreenGl = offscreen.getContext('webgl2', contextOptions) as WebGL2RenderingContext | null;
+          if (offscreenGl) {
+            canvas = offscreen;
+            gl = offscreenGl;
+          }
+        } catch {
+          // Fall back to DOM canvas if OffscreenCanvas is present but unsupported.
+        }
+      }
+
+      if (!gl && typeof document !== 'undefined') {
+        const domCanvas = document.createElement('canvas');
+        const domGl = domCanvas.getContext('webgl2', contextOptions) as WebGL2RenderingContext | null;
+        if (domGl) {
+          canvas = domCanvas;
+          gl = domGl;
+        }
+      }
+
+      if (!gl || !canvas) {
         throw new Error('WebGL2 not supported');
       }
+
+      this.glCanvas = canvas;
+      this.gl = gl;
 
       // Compile Shaders
       const vert = this.compileShader(this.gl.VERTEX_SHADER, VERTEX_SHADER);

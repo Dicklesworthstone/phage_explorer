@@ -75,6 +75,13 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
+    rollupOptions: {
+      output: {
+        // Force .js extension for workers to avoid MIME type issues on CDNs
+        // (.ts is interpreted as MPEG-2 Transport Stream, not JavaScript)
+        entryFileNames: 'assets/[name]-[hash].js',
+      },
+    },
   },
   build: {
     target: 'es2022',
