@@ -1137,7 +1137,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
             padding: '32px',
             textAlign: 'center',
             minHeight: '280px',
-            background: 'var(--bg-darker)',
+            background: 'var(--color-background-alt)',
           }}
           role="alert"
           aria-live="polite"
@@ -1145,7 +1145,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
           <div style={{ opacity: 0.6 }} aria-hidden="true">
             <IconCube size={48} />
           </div>
-          <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>3D Viewer Not Available</h4>
+          <h4 style={{ margin: 0, color: 'var(--color-text)' }}>3D Viewer Not Available</h4>
           <p className="text-dim" style={{ margin: 0, maxWidth: '320px' }}>
             Your browser doesn't support WebGL, which is required for 3D visualization.
             Try using a modern browser like Chrome, Firefox, or Edge.
@@ -1272,10 +1272,10 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
             style={{
               fontSize: '11px',
               padding: '4px 8px',
-              background: 'var(--bg-darker)',
+              background: 'var(--color-background-alt)',
               border: '1px solid var(--border)',
               borderRadius: '4px',
-              color: 'var(--text-primary)',
+              color: 'var(--color-text)',
             }}
           >
             <option value="auto">auto ({autoQuality})</option>
@@ -1338,7 +1338,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
             <div style={{ opacity: 0.6, color: 'var(--color-error)' }} aria-hidden="true">
               <IconAlertTriangle size={40} />
             </div>
-            <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>Unable to Load Structure</h4>
+            <h4 style={{ margin: 0, color: 'var(--color-text)' }}>Unable to Load Structure</h4>
             <p className="text-dim" style={{ margin: 0, maxWidth: '280px' }}>
               {error}
             </p>
@@ -1374,7 +1374,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
             <div style={{ opacity: 0.5 }} aria-hidden="true">
               <IconDna size={40} />
             </div>
-            <h4 style={{ margin: 0, color: 'var(--text-primary)' }}>No Structure Available</h4>
+            <h4 style={{ margin: 0, color: 'var(--color-text)' }}>No Structure Available</h4>
             <p className="text-dim" style={{ margin: 0, maxWidth: '320px' }}>
               This phage doesn't have a 3D structure in our database yet.
               Not all phages have experimentally determined or predicted structures.
@@ -1422,7 +1422,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <Badge>Selected</Badge>
-                <span style={{ color: 'var(--text-primary)', fontSize: '12px' }}>
+                <span style={{ color: 'var(--color-text)', fontSize: '12px' }}>
                   {pickedResidue.chainId}:{pickedResidue.resName}{pickedResidue.resSeq}
                 </span>
               </div>

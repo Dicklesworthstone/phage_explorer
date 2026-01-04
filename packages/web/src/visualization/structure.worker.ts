@@ -91,7 +91,7 @@ function parsePDB(text: string): AtomRecord[] {
   const lines = text.split(/\r?\n/);
   for (const line of lines) {
     if (!line.startsWith('ATOM') && !line.startsWith('HETATM')) continue;
-    const atomName = line.slice(12, 16).trim();
+    const atomName = line.slice(12, 16).trim().toUpperCase();
     const x = parseFloat(line.slice(30, 38));
     const y = parseFloat(line.slice(38, 46));
     const z = parseFloat(line.slice(46, 54));
