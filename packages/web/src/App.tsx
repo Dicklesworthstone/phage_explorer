@@ -76,6 +76,7 @@ import { ActionToolbar } from './components/ActionToolbar';
 import { AnalysisSidebar } from './components/AnalysisSidebar';
 import { QuickStats } from './components/QuickStats';
 import { haptics } from './utils/haptics';
+import { Analytics } from '@vercel/analytics/react';
 
 const BREAKPOINT_PHONE_PX = 640;
 const BREAKPOINT_TOUCH_UI_PX = 900;
@@ -1458,6 +1459,7 @@ export default function App(): React.ReactElement {
         </>
       )}
       <DataFreshnessIndicator isCached={isCached} isLoading={isLoading} />
+      <Analytics />
     </>
   );
 }
