@@ -31,7 +31,7 @@ def run_step(name: str, cmd: list[str], skip: bool = False):
     print(f"{'='*60}\n")
 
     try:
-        result = subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
         print(f"\n✅ {name} completed successfully")
         return True
     except subprocess.CalledProcessError as e:
@@ -202,7 +202,7 @@ def main():
         print(f"Error: Database not found: {db_path}")
         return 1
 
-    print(f"🧬 Phage Annotation Pipeline")
+    print("🧬 Phage Annotation Pipeline")
     print(f"   Database: {db_path}")
     print(f"   Script dir: {script_dir}")
 

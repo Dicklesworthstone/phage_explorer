@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import json
-import re
 import sqlite3
 import time
 from pathlib import Path
