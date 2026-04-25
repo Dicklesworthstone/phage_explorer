@@ -111,19 +111,23 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate aggregate SHA256SUMS
+      - name: Generate aggregate sha256.txt
+        # install.sh expects this filename verbatim:
+        #   https://github.com/$OWNER/$REPO/releases/download/$VERSION/sha256.txt
+        # with one `<sha256>  <asset_name>` line per binary asset, then
+        # greps for the asset name to find the expected hash.
         run: |
           set -euo pipefail
           shopt -s nullglob
           cd dist
-          rm -f SHA256SUMS
+          rm -f sha256.txt
           for f in phage-explorer-*; do
             case "$f" in
-              *.sha256|SHA256SUMS) ;;
-              *) shasum -a 256 "$f" >> SHA256SUMS ;;
+              *.sha256|*.sigstore.json|sha256.txt) ;;
+              *) shasum -a 256 "$f" >> sha256.txt ;;
             esac
           done
-          cat SHA256SUMS
+          cat sha256.txt
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.1
