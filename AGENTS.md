@@ -564,3 +564,5 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 ## Contribution Policy
 
 Remove any mention of contributing/contributors from README and don't reinsert it.
+
+For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
