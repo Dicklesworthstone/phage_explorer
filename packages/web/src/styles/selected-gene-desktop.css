@@ -1,0 +1,161 @@
+/* Authoritative selected-gene surface for desktop layouts. */
+
+@media (min-width: 901px) {
+  /* The legacy App-local card is driven by a separate React state. Keep it out
+     of the rendered experience so deep links, browser history, and dock
+     navigation cannot show two conflicting selected genes. */
+  .panel[aria-label='Selected gene details'] {
+    display: none !important;
+  }
+
+  .selected-gene-dock {
+    position: fixed;
+    right: max(var(--space-5), env(safe-area-inset-right, 0px));
+    bottom: max(var(--space-5), env(safe-area-inset-bottom, 0px));
+    z-index: calc(var(--z-modal) - 10);
+    display: flex;
+    align-items: stretch;
+    width: min(460px, calc(100vw - 2 * var(--space-5)));
+    min-height: 74px;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
+    border-radius: var(--radius-xl);
+    background:
+      linear-gradient(
+        135deg,
+        color-mix(in srgb, var(--color-primary) 10%, var(--color-background-elevated)),
+        var(--color-background-elevated) 58%
+      );
+    box-shadow:
+      0 14px 38px rgba(0, 0, 0, 0.34),
+      0 0 0 1px rgba(255, 255, 255, 0.025) inset;
+    transform: translateZ(0);
+    transition:
+      opacity var(--duration-fast) var(--ease-out),
+      transform 320ms var(--ease-spring),
+      visibility var(--duration-fast) var(--ease-out);
+  }
+
+  .selected-gene-dock--sheet-open {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(10px) translateZ(0);
+  }
+
+  .selected-gene-dock__main {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+    min-height: 74px;
+    padding: var(--space-2) var(--space-3);
+    border: 0;
+    background: transparent;
+    color: var(--color-text);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .selected-gene-dock__main:hover {
+    background: color-mix(in srgb, var(--color-primary) 7%, transparent);
+  }
+
+  .selected-gene-dock__main:focus-visible,
+  .selected-gene-dock__clear:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -3px;
+  }
+
+  .selected-gene-dock__icon {
+    flex: 0 0 42px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--color-primary) 15%, var(--color-background-alt));
+    color: var(--color-primary);
+  }
+
+  .selected-gene-dock__copy {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    gap: 1px;
+  }
+
+  .selected-gene-dock__eyebrow {
+    color: var(--color-primary);
+    font-size: var(--text-2xs);
+    font-weight: var(--font-semibold);
+    letter-spacing: 0.045em;
+    text-transform: uppercase;
+  }
+
+  .selected-gene-dock__label,
+  .selected-gene-dock__product {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .selected-gene-dock__label {
+    color: var(--color-text);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    font-weight: var(--font-bold);
+  }
+
+  .selected-gene-dock__product {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .selected-gene-dock__details {
+    flex: 0 0 auto;
+    color: var(--color-text-dim);
+    font-size: var(--text-xs);
+    font-weight: var(--font-semibold);
+  }
+
+  .selected-gene-dock__clear {
+    flex: 0 0 52px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 52px;
+    min-height: 74px;
+    padding: 0;
+    border: 0;
+    border-left: 1px solid var(--color-border-subtle);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+
+  .selected-gene-dock__clear:hover {
+    background: var(--color-background-active);
+    color: var(--color-text);
+  }
+
+  .has-selected-gene-dock .toast-container {
+    bottom: calc(var(--space-5) + 90px);
+  }
+
+  .bottom-sheet:has(.selected-gene-inspector) {
+    align-items: flex-end;
+    padding: var(--space-5);
+  }
+
+  .bottom-sheet:has(.selected-gene-inspector) .bottom-sheet__container {
+    width: min(680px, calc(100vw - 2 * var(--space-5)));
+    min-height: min(680px, calc(100dvh - 2 * var(--space-5)));
+    max-height: calc(100dvh - 2 * var(--space-5));
+    border-radius: var(--radius-2xl);
+  }
+}

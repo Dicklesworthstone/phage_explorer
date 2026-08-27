@@ -7,12 +7,14 @@ import ErrorBoundary from './components/layout/ErrorBoundary';
 import { ScrollProvider } from './providers';
 import App from './App';
 import { GeneSelectionBridge } from './components/GeneSelectionBridge';
+import { SelectedGeneLifecycleController } from './components/SelectedGeneLifecycleController';
 import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
 import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import './styles.css';
 import './styles/scroll.css';
 import './styles/phage-picker-accessibility.css';
 import './styles/selected-gene-dock.css';
+import './styles/selected-gene-desktop.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
 
@@ -27,8 +29,6 @@ function installViewportVariables(): () => void {
     const vv = window.visualViewport;
     const heightCandidate = vv?.height;
     const widthCandidate = vv?.width;
-    // iOS Safari can report `visualViewport.height === 0` transiently during page load / rotation.
-    // Never allow that to collapse layout (e.g. sequence canvas height becomes 0).
     const height =
       typeof heightCandidate === 'number' && Number.isFinite(heightCandidate) && heightCandidate > 0
         ? heightCandidate
@@ -38,8 +38,6 @@ function installViewportVariables(): () => void {
         ? widthCandidate
         : window.innerWidth;
 
-    // Avoid style recalculation churn during scroll: on iOS, `visualViewport.scroll`
-    // can fire continuously even when the viewport size is unchanged.
     if (
       lastHeight !== null &&
       lastWidth !== null &&
@@ -70,9 +68,6 @@ function installViewportVariables(): () => void {
   const vv = window.visualViewport;
   if (vv) {
     vv.addEventListener('resize', schedule);
-    // Some iOS Safari versions fire `visualViewport.scroll` more reliably than `resize`
-    // when browser chrome shows/hides. `schedule` is RAF-throttled and `update()` is
-    // no-op when dimensions are unchanged, so this is safe.
     vv.addEventListener('scroll', schedule);
   }
 
@@ -91,9 +86,6 @@ function installViewportVariables(): () => void {
 }
 
 const cleanupViewportVariables = installViewportVariables();
-
-// Hydrate/persist main-store preferences (including device-aware defaults) before first render.
-// This avoids flashing expensive UI (e.g., 3D viewer) on first-run for coarse-pointer devices.
 const cleanupStorePersistence = initializeStorePersistence();
 applyInitialShareState();
 
@@ -131,6 +123,7 @@ if (container) {
               <OverlayProvider>
                 <App />
                 <GeneSelectionBridge />
+                <SelectedGeneLifecycleController />
                 <SelectedGeneDock />
                 <ShareStateController />
               </OverlayProvider>
@@ -142,14 +135,12 @@ if (container) {
   );
 }
 
-// Register service worker in production builds (disabled for automation via navigator.webdriver).
 if (import.meta.env.PROD && typeof window !== 'undefined' && 'serviceWorker' in navigator && !navigator.webdriver) {
   window.addEventListener('load', () => {
     void import('./registerSW').then(({ registerServiceWorker, updateServiceWorker }) => {
       const reloadKey = 'phage-explorer-sw-updated';
       void registerServiceWorker({
         onUpdate: () => {
-          // Avoid reload loops (e.g., on flaky networks or repeated SW install attempts).
           try {
             if (sessionStorage.getItem(reloadKey)) return;
             sessionStorage.setItem(reloadKey, '1');
