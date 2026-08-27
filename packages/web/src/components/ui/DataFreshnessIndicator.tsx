@@ -1,8 +1,8 @@
 /**
- * DataFreshnessIndicator - Mobile-friendly cache status indicator
+ * DataFreshnessIndicator - Mobile-friendly database transfer indicator
  *
- * Shows whether the database is loaded from cache or fresh from the network.
- * Designed for mobile where the main panel may be hidden.
+ * Distinguishes a local offline-cache load from a network download without
+ * implying that the underlying scientific records themselves are newly curated.
  */
 
 import React from 'react';
@@ -22,7 +22,6 @@ export function DataFreshnessIndicator({
   mobileOnly = true,
   className = '',
 }: DataFreshnessIndicatorProps): React.ReactElement | null {
-  // Don't show while loading
   if (isLoading) {
     return null;
   }
@@ -34,12 +33,20 @@ export function DataFreshnessIndicator({
   return (
     <div className={containerClass}>
       {isCached ? (
-        <SubtleBadge size="tiny" aria-label="Data loaded from cache">
-          Cached
+        <SubtleBadge
+          size="tiny"
+          aria-label="Database loaded from the local offline cache"
+          title="Database loaded from the local offline cache"
+        >
+          Offline ready
         </SubtleBadge>
       ) : (
-        <InfoBadge size="tiny" aria-label="Data freshly loaded">
-          Fresh
+        <InfoBadge
+          size="tiny"
+          aria-label="Database downloaded for this browser session"
+          title="Database downloaded for this browser session"
+        >
+          Downloaded
         </InfoBadge>
       )}
     </div>
