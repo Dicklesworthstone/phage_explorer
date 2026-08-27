@@ -1,4 +1,4 @@
-/* QuickStats primary-source and sharing actions */
+/* QuickStats primary-source, collection, citation, and sharing actions */
 
 .quick-stat--actions {
   min-width: max-content;
@@ -55,6 +55,18 @@
 
 .quick-stat__action:first-child {
   border-color: rgba(34, 211, 238, 0.35);
+  color: var(--color-primary);
+}
+
+.quick-stat__action--active {
+  border-color: color-mix(in srgb, var(--color-primary) 65%, var(--color-border));
+  background: color-mix(in srgb, var(--color-primary) 13%, var(--color-background-elevated));
+  color: var(--color-primary);
+}
+
+.quick-stat__action--active:hover {
+  border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 18%, var(--color-background-hover));
   color: var(--color-primary);
 }
 
