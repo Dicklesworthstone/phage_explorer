@@ -6,6 +6,7 @@ import { ToastProvider } from './components/ui/Toast';
 import ErrorBoundary from './components/layout/ErrorBoundary';
 import { ScrollProvider } from './providers';
 import App from './App';
+import { GeneSelectionBridge } from './components/GeneSelectionBridge';
 import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
 import './styles.css';
 import './styles/scroll.css';
@@ -127,6 +128,7 @@ if (container) {
             <ToastProvider>
               <OverlayProvider>
                 <App />
+                <GeneSelectionBridge />
                 <ShareStateController />
               </OverlayProvider>
             </ToastProvider>
