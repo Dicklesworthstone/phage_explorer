@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -18,8 +19,12 @@ function removeRawDbPlugin(): Plugin {
   };
 }
 
+const require = createRequire(import.meta.url);
 const resolveFromRoot = (relativePath: string) =>
   path.resolve(__dirname, '..', relativePath);
+const resolveInstalledEntry = (specifier: string) => require.resolve(specifier);
+const resolveInstalledPackage = (specifier: string) =>
+  path.dirname(resolveInstalledEntry(specifier));
 
 export default defineConfig({
   plugins: [
@@ -83,9 +88,11 @@ export default defineConfig({
       // Match only the bare package import. The adapter's deep sql.js imports
       // must continue resolving to the upstream browser build and WASM asset.
       { find: /^sql\.js$/, replacement: resolveFromRoot('web/src/db/sqljs-runtime.js') },
-      { find: 'react/jsx-runtime', replacement: path.resolve(__dirname, 'node_modules/react/jsx-runtime') },
-      { find: 'react-dom', replacement: path.resolve(__dirname, 'node_modules/react-dom') },
-      { find: 'react', replacement: path.resolve(__dirname, 'node_modules/react') },
+      // Resolve from the config's module graph rather than assuming a package-local
+      // node_modules directory; both hoisted workspaces and Vercel installs are valid.
+      { find: 'react/jsx-runtime', replacement: resolveInstalledEntry('react/jsx-runtime') },
+      { find: 'react-dom', replacement: resolveInstalledPackage('react-dom') },
+      { find: 'react', replacement: resolveInstalledPackage('react') },
       // Browser shims for optional Node deps pulled by sql.js
       { find: 'fs', replacement: resolveFromRoot('web/src/shims/empty.ts') },
       { find: 'path', replacement: resolveFromRoot('web/src/shims/empty.ts') },
@@ -115,7 +122,7 @@ export default defineConfig({
           'phage-core': ['@phage-explorer/core'],
           'phage-state': ['@phage-explorer/state'],
           // Group remaining smaller dependencies
-          'vendor-utils': [], 
+          'vendor-utils': [],
         },
       },
     },
