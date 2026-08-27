@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  createResilientCollectionStorage,
   getPhageCollectionKey,
   sanitizeCollectionKeys,
 } from './phage-collections';
@@ -45,5 +46,55 @@ describe('sanitizeCollectionKeys', () => {
   it('rejects implausibly long keys and non-positive limits', () => {
     expect(sanitizeCollectionKeys(['x'.repeat(181), 'id:1'], 10)).toEqual(['id:1']);
     expect(sanitizeCollectionKeys(['id:1'], 0)).toEqual([]);
+  });
+});
+
+describe('createResilientCollectionStorage', () => {
+  it('keeps failed writes available for the current session', () => {
+    const primary = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('storage blocked');
+      },
+    };
+    const storage = createResilientCollectionStorage(() => primary);
+
+    expect(storage.setItem('favorites', '["slug:t4"]')).toBe(false);
+    expect(storage.getItem('favorites')).toBe('["slug:t4"]');
+  });
+
+  it('flushes the session fallback when persistent storage recovers', () => {
+    const values = new Map<string, string>();
+    let failWrites = true;
+    const primary = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        if (failWrites) throw new Error('quota exceeded');
+        values.set(key, value);
+      },
+    };
+    const storage = createResilientCollectionStorage(() => primary);
+
+    expect(storage.setItem('recent', '["slug:lambda"]')).toBe(false);
+    failWrites = false;
+    expect(storage.getItem('recent')).toBe('["slug:lambda"]');
+    expect(values.get('recent')).toBe('["slug:lambda"]');
+  });
+
+  it('uses the last observed value if the primary storage later becomes unreadable', () => {
+    const values = new Map([['favorites', '["slug:mu"]']]);
+    let failReads = false;
+    const primary = {
+      getItem: (key: string) => {
+        if (failReads) throw new Error('storage unavailable');
+        return values.get(key) ?? null;
+      },
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const storage = createResilientCollectionStorage(() => primary);
+
+    expect(storage.getItem('favorites')).toBe('["slug:mu"]');
+    failReads = true;
+    expect(storage.getItem('favorites')).toBe('["slug:mu"]');
   });
 });

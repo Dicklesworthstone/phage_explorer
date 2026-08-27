@@ -9,11 +9,100 @@ export interface PhageCollectionsSnapshot {
   recentKeys: string[];
 }
 
+interface KeyValueStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export interface ResilientCollectionStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): boolean;
+}
+
 export const FAVORITE_PHAGES_STORAGE_KEY = 'phage-explorer:favorite-phages:v1';
 export const RECENT_PHAGES_STORAGE_KEY = 'phage-explorer:recent-phages:v1';
 export const PHAGE_COLLECTIONS_EVENT = 'phage-explorer:collections-changed';
 export const MAX_RECENT_PHAGES = 12;
 export const MAX_FAVORITE_PHAGES = 500;
+
+export function createResilientCollectionStorage(
+  getPrimaryStorage: () => KeyValueStorage | null
+): ResilientCollectionStorage {
+  const fallbackValues = new Map<string, string>();
+  const fallbackIsAuthoritative = new Set<string>();
+
+  const getPrimary = (): KeyValueStorage | null => {
+    try {
+      return getPrimaryStorage();
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    getItem(key) {
+      if (fallbackIsAuthoritative.has(key)) {
+        const fallbackValue = fallbackValues.get(key) ?? null;
+        const primary = getPrimary();
+
+        if (primary && fallbackValue !== null) {
+          try {
+            primary.setItem(key, fallbackValue);
+            fallbackIsAuthoritative.delete(key);
+          } catch {
+            // Keep the current-session value authoritative until persistence recovers.
+          }
+        }
+
+        return fallbackValue;
+      }
+
+      const primary = getPrimary();
+      if (primary) {
+        try {
+          const value = primary.getItem(key);
+          if (value === null) {
+            fallbackValues.delete(key);
+          } else {
+            fallbackValues.set(key, value);
+          }
+          return value;
+        } catch {
+          // Fall through to the last successfully observed value.
+        }
+      }
+
+      return fallbackValues.get(key) ?? null;
+    },
+
+    setItem(key, value) {
+      const primary = getPrimary();
+      if (primary) {
+        try {
+          primary.setItem(key, value);
+          fallbackValues.set(key, value);
+          fallbackIsAuthoritative.delete(key);
+          return true;
+        } catch {
+          // Preserve the write in memory for this session.
+        }
+      }
+
+      fallbackValues.set(key, value);
+      fallbackIsAuthoritative.add(key);
+      return false;
+    },
+  };
+}
+
+const collectionStorage = createResilientCollectionStorage(() => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+});
 
 function normalizeCollectionKey(value: string): string {
   return value.trim().toLowerCase();
@@ -51,7 +140,7 @@ function readStoredKeys(storageKey: string, maxItems: number): string[] {
   if (typeof window === 'undefined') return [];
 
   try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]');
+    const parsed = JSON.parse(collectionStorage.getItem(storageKey) ?? '[]');
     return sanitizeCollectionKeys(parsed, maxItems);
   } catch {
     return [];
@@ -60,12 +149,7 @@ function readStoredKeys(storageKey: string, maxItems: number): string[] {
 
 function persistStoredKeys(storageKey: string, values: readonly string[]): void {
   if (typeof window === 'undefined') return;
-
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify(values));
-  } catch {
-    // Collections remain usable for the current interaction when storage is unavailable.
-  }
+  collectionStorage.setItem(storageKey, JSON.stringify(values));
 }
 
 export function readPhageCollections(): PhageCollectionsSnapshot {
