@@ -24,10 +24,12 @@ function queryParam(page: Page, name: string): string | null {
   return new URL(page.url()).searchParams.get(name);
 }
 
-async function expectT4State(page: Page): Promise<void> {
-  await expect(page.locator('.detail-card h4')).toHaveText('Enterobacteria phage T4', {
-    timeout: 20_000,
-  });
+async function expectPhageName(page: Page, name: string): Promise<void> {
+  await expect(page.locator('.detail-card h4')).toHaveText(name, { timeout: 20_000 });
+}
+
+async function expectT4AminoAcidState(page: Page): Promise<void> {
+  await expectPhageName(page, 'Enterobacteria phage T4');
 
   const aminoAcidView = page.getByRole('radio', { name: 'Amino Acids view' });
   await expect(aminoAcidView).toBeVisible({ timeout: 20_000 });
@@ -41,7 +43,7 @@ async function expectT4State(page: Page): Promise<void> {
 }
 
 test.describe('Shareable explorer state', () => {
-  test('restores the linked phage, sequence view, and position after reload', async ({ page }, testInfo) => {
+  test('restores deep links and phage-level browser history', async ({ page }, testInfo) => {
     const { finalize, consoleErrors, pageErrors } = setupTestHarness(page, testInfo);
 
     await test.step('Open a complete phage deep link', async () => {
@@ -50,7 +52,7 @@ test.describe('Shareable explorer state', () => {
       });
       await expect(page.locator('header.app-header')).toBeVisible();
       await dismissWelcomeIfPresent(page);
-      await expectT4State(page);
+      await expectT4AminoAcidState(page);
     });
 
     await test.step('Reload the canonicalized URL and restore the same state', async () => {
@@ -60,15 +62,31 @@ test.describe('Shareable explorer state', () => {
 
       await page.reload({ waitUntil: 'domcontentloaded' });
       await dismissWelcomeIfPresent(page);
-      await expectT4State(page);
+      await expectT4AminoAcidState(page);
     });
 
-    await test.step('Update the URL when the user changes view mode', async () => {
+    await test.step('Update the current history entry for view-only changes', async () => {
       const dnaView = page.getByRole('radio', { name: 'DNA view' });
       await dnaView.click();
       await expect(dnaView).toHaveAttribute('aria-checked', 'true');
       await expect.poll(() => queryParam(page, 'view')).toBe('dna');
       await expect.poll(() => queryParam(page, 'pos')).toBe('0');
+    });
+
+    await test.step('Push a history entry for a new phage and restore T4 with Back', async () => {
+      await page.keyboard.press('ArrowDown');
+      await expect.poll(() => queryParam(page, 'phage')).not.toBe('t4');
+      await expect(page.locator('.detail-card h4')).not.toHaveText('Enterobacteria phage T4');
+
+      await page.goBack({ waitUntil: 'domcontentloaded' });
+      await dismissWelcomeIfPresent(page);
+      await expectPhageName(page, 'Enterobacteria phage T4');
+      await expect.poll(() => queryParam(page, 'phage')).toBe('t4');
+      await expect.poll(() => queryParam(page, 'view')).toBe('dna');
+      await expect(page.getByRole('radio', { name: 'DNA view' })).toHaveAttribute(
+        'aria-checked',
+        'true'
+      );
     });
 
     expect(consoleErrors).toEqual([]);
