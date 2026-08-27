@@ -6,6 +6,7 @@ import { ToastProvider } from './components/ui/Toast';
 import ErrorBoundary from './components/layout/ErrorBoundary';
 import { ScrollProvider } from './providers';
 import App from './App';
+import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
 import './styles.css';
 import './styles/scroll.css';
 import { queryClient } from './queryClient';
@@ -90,6 +91,7 @@ const cleanupViewportVariables = installViewportVariables();
 // Hydrate/persist main-store preferences (including device-aware defaults) before first render.
 // This avoids flashing expensive UI (e.g., 3D viewer) on first-run for coarse-pointer devices.
 const cleanupStorePersistence = initializeStorePersistence();
+applyInitialShareState();
 
 let didCleanup = false;
 const cleanupAll = () => {
@@ -124,6 +126,7 @@ if (container) {
             <ToastProvider>
               <OverlayProvider>
                 <App />
+                <ShareStateController />
               </OverlayProvider>
             </ToastProvider>
           </ScrollProvider>
