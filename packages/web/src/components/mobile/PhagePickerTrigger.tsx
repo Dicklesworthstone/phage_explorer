@@ -20,9 +20,6 @@ interface PhagePickerTriggerProps {
   isOpen?: boolean;
 }
 
-/**
- * Chevron down SVG icon
- */
 function ChevronDown(): React.ReactElement {
   return (
     <svg
@@ -52,15 +49,18 @@ export function PhagePickerTrigger({
   const positionLabel = totalCount > 0
     ? `${currentIndex + 1}/${totalCount}`
     : '';
+  const positionDescription = totalCount > 0
+    ? `${currentIndex + 1} of ${totalCount}`
+    : 'no phages loaded';
 
   return (
     <button
       type="button"
       className={`phage-picker-trigger ${isOpen ? 'phage-picker-trigger--open' : ''}`}
       onClick={onClick}
-      aria-haspopup="listbox"
+      aria-haspopup="dialog"
       aria-expanded={isOpen}
-      aria-label={`Select phage. Currently viewing ${phageName}, ${currentIndex + 1} of ${totalCount}`}
+      aria-label={`Explore phages. Currently viewing ${phageName}, ${positionDescription}`}
     >
       <span className="phage-picker-trigger__name">{phageName}</span>
       <ChevronDown />
