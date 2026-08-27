@@ -1,24 +1,21 @@
 name: Annotate Phages
 
 on:
-  # Run on push to main when phage data changes
   push:
     branches: [main]
     paths:
       - 'packages/data-pipeline/src/phage-catalog.ts'
       - 'scripts/annotation/**'
 
-  # Run weekly on Sundays at midnight UTC
   schedule:
     - cron: '0 0 * * 0'
 
-  # Allow manual trigger
   workflow_dispatch:
     inputs:
       skip_domains:
         description: 'Skip InterProScan domain annotation'
         required: false
-        default: 'false'
+        default: false
         type: boolean
       limit:
         description: 'Limit genes to annotate (0 = all)'
@@ -26,9 +23,12 @@ on:
         default: '0'
         type: string
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false  # Don't cancel long-running annotation jobs
+  cancel-in-progress: false
 
 env:
   BUN_VERSION: "1.2.4"
@@ -36,13 +36,13 @@ env:
 jobs:
   annotate:
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # InterProScan can be slow
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Need write access to commit updated database
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Bun
@@ -58,52 +58,55 @@ jobs:
           cache-dependency-path: scripts/annotation/requirements.txt
 
       - name: Install Python dependencies
-        run: |
-          pip install -r scripts/annotation/requirements.txt
+        run: python -m pip install -r scripts/annotation/requirements.txt
 
       - name: Cache Bun dependencies
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'bun.lockb', 'package.json', 'packages/*/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
-      - name: Install Node dependencies
+      - name: Install JavaScript dependencies
         run: bun install --frozen-lockfile
-
-      - name: Build data pipeline
-        run: bun run build --filter=@phage-explorer/data-pipeline
 
       - name: Fetch phage sequences from NCBI
         working-directory: packages/data-pipeline
-        run: |
-          bun run src/build-db.ts
+        run: bun run src/build-db.ts
         env:
           NCBI_API_KEY: ${{ secrets.NCBI_API_KEY }}
 
       - name: Cache annotation results
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.interpro_cache
-          key: interpro-cache-${{ hashFiles('packages/data-pipeline/src/phage-catalog.ts') }}
+          path: ~/.interpro_cache
+          key: ${{ runner.os }}-interpro-${{ hashFiles('packages/data-pipeline/src/phage-catalog.ts', 'scripts/annotation/**') }}
           restore-keys: |
-            interpro-cache-
+            ${{ runner.os }}-interpro-
 
       - name: Run annotation pipeline
+        env:
+          SKIP_DOMAINS: ${{ inputs.skip_domains || false }}
+          ANNOTATION_LIMIT: ${{ inputs.limit || '0' }}
         run: |
-          ARGS="--db packages/data-pipeline/phage.db"
+          set -euo pipefail
+          args=(--db packages/data-pipeline/phage.db)
 
-          if [ "${{ inputs.skip_domains }}" = "true" ]; then
-            ARGS="$ARGS --skip-domains"
+          if [ "$SKIP_DOMAINS" = "true" ]; then
+            args+=(--skip-domains)
           fi
 
-          if [ "${{ inputs.limit }}" != "0" ] && [ -n "${{ inputs.limit }}" ]; then
-            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          if ! [[ "$ANNOTATION_LIMIT" =~ ^[0-9]+$ ]]; then
+            echo "::error::limit must be a non-negative integer"
+            exit 2
           fi
 
-          python scripts/annotation/run_pipeline.py $ARGS
+          if [ "$ANNOTATION_LIMIT" != "0" ]; then
+            args+=(--limit "$ANNOTATION_LIMIT")
+          fi
+
+          python scripts/annotation/run_pipeline.py "${args[@]}"
 
       - name: Build optimized web database
         run: |
@@ -113,6 +116,8 @@ jobs:
 
       - name: Verify database
         run: |
+          set -euo pipefail
+          test -s packages/web/public/phage.db
           echo "Database size:"
           ls -lh packages/web/public/phage.db
 
@@ -128,32 +133,29 @@ jobs:
 
       - name: Commit updated database
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Check if there are changes
-          if git diff --quiet packages/web/public/phage.db packages/web/public/phage.db.manifest.json; then
+          if git diff --quiet -- packages/web/public/phage.db packages/web/public/phage.db.manifest.json; then
             echo "No changes to database"
             exit 0
           fi
 
           git add packages/web/public/phage.db packages/web/public/phage.db.manifest.json
-          git commit -m "chore: update phage annotations [automated]
+          git commit -m "chore: update phage annotations [automated]" \
+            -m "Updated via the annotation workflow: protein domains, AMG mappings, and host tRNA data."
 
-          Updated via GitHub Actions annotation pipeline.
+          git pull --rebase origin main
+          git push origin HEAD:main
 
-          Changes:
-          - Protein domain annotations (InterProScan)
-          - AMG detection (KEGG mapping)
-          - Host tRNA data loaded
-          "
-          git push
-
-      - name: Upload annotation logs
+      - name: Upload annotation diagnostics
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: annotation-logs
+          name: annotation-diagnostics
           path: |
             packages/data-pipeline/phage.db
+            packages/web/public/phage.db.manifest.json
+          if-no-files-found: warn
           retention-days: 7
