@@ -8,7 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { haptics } from '../utils/haptics';
-import { buildShareUrl, parseShareState } from '../utils/share-state';
+import { buildShareUrl, getGeneShareKey, parseShareState } from '../utils/share-state';
 import {
   getPhageCollectionKey,
   readPhageCollections,
@@ -150,6 +150,7 @@ function CitationIcon(): React.ReactElement {
 
 export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElement | null {
   const currentPhage = usePhageStore((state) => state.currentPhage);
+  const selectedGeneId = usePhageStore((state) => state.selectedGeneId);
   const viewMode = usePhageStore((state) => state.viewMode);
   const readingFrame = usePhageStore((state) => state.readingFrame);
   const scrollPosition = usePhageStore((state) => state.scrollPosition);
@@ -157,6 +158,21 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
   const [isSaved, setIsSaved] = useState(false);
   const feedbackTimerRef = useRef<number | null>(null);
+
+  const selectedGene = useMemo(() => {
+    if (!currentPhage || selectedGeneId === null) return null;
+    return currentPhage.genes.find((gene) => gene.id === selectedGeneId) ?? null;
+  }, [currentPhage, selectedGeneId]);
+
+  const selectedGeneLabel = useMemo(() => {
+    if (!selectedGene) return null;
+    return (
+      selectedGene.locusTag?.trim() ||
+      selectedGene.name?.trim() ||
+      selectedGene.product?.trim() ||
+      `Gene ${selectedGene.id}`
+    );
+  }, [selectedGene]);
 
   const stats = useMemo(() => {
     if (!currentPhage) return null;
@@ -228,13 +244,14 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
 
     return buildShareUrl(baseUrl, {
       phageKey: stats.slug?.trim() || stats.accession,
+      geneKey: getGeneShareKey(selectedGene),
       viewMode,
       position: scrollPosition,
       readingFrame,
       show3DModel,
       tool: currentTool,
     });
-  }, [readingFrame, scrollPosition, show3DModel, stats, viewMode]);
+  }, [readingFrame, scrollPosition, selectedGene, show3DModel, stats, viewMode]);
 
   const handleCopyAccession = useCallback(async () => {
     if (!stats) return;
@@ -250,7 +267,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const handleCopyCitation = useCallback(async () => {
     if (!stats || !shareUrl) return;
     const citation = buildPhageCitation({
-      name: stats.name,
+      name: selectedGeneLabel ? `${selectedGeneLabel} in ${stats.name}` : stats.name,
       accession: stats.accession,
       pdbIds: stats.pdbIds,
       explorerUrl: shareUrl,
@@ -263,7 +280,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
     } catch {
       haptics.error();
     }
-  }, [shareUrl, showFeedback, stats]);
+  }, [selectedGeneLabel, shareUrl, showFeedback, stats]);
 
   const handleToggleSaved = useCallback(() => {
     if (!stats) return;
@@ -277,8 +294,12 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const handleShare = useCallback(async () => {
     if (!stats || !shareUrl) return;
     const shareData = {
-      title: `${stats.name} — Phage Explorer`,
-      text: `Explore ${stats.name} (${stats.accession}) at this exact genome position and view in Phage Explorer.`,
+      title: selectedGeneLabel
+        ? `${selectedGeneLabel} — ${stats.name} — Phage Explorer`
+        : `${stats.name} — Phage Explorer`,
+      text: selectedGeneLabel
+        ? `Explore ${selectedGeneLabel} in ${stats.name} (${stats.accession}) at this exact genome position and view.`
+        : `Explore ${stats.name} (${stats.accession}) at this exact genome position and view in Phage Explorer.`,
       url: shareUrl,
     };
 
@@ -296,7 +317,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       if (error instanceof DOMException && error.name === 'AbortError') return;
       haptics.error();
     }
-  }, [shareUrl, showFeedback, stats]);
+  }, [selectedGeneLabel, shareUrl, showFeedback, stats]);
 
   if (!stats) {
     return null;
@@ -400,7 +421,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             type="button"
             className="quick-stat__action"
             onClick={() => void handleShare()}
-            aria-label={`Share ${stats.name} explorer state`}
+            aria-label={`Share ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name} explorer state`}
           >
             <ShareIcon />
             <span>{feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
@@ -409,7 +430,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             type="button"
             className="quick-stat__action"
             onClick={() => void handleCopyCitation()}
-            aria-label={`Copy a research citation for ${stats.name}`}
+            aria-label={`Copy a research citation for ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name}`}
           >
             <CitationIcon />
             <span>{feedback === 'citation-copied' ? 'Copied' : 'Cite'}</span>
