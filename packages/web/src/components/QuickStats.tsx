@@ -2,12 +2,13 @@
  * QuickStats Component
  *
  * A compact bar showing key phage metrics at a glance, plus direct access to
- * the primary NCBI record and mobile-native sharing.
+ * primary NCBI/PDB records and mobile-native sharing of the exact explorer state.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { haptics } from '../utils/haptics';
+import { buildShareUrl, parseShareState } from '../utils/share-state';
 import '../styles/quick-stats-actions.css';
 
 interface QuickStatsProps {
@@ -18,6 +19,10 @@ type ActionFeedback = 'accession-copied' | 'link-copied' | null;
 
 export function buildNcbiNucleotideUrl(accession: string): string {
   return `https://www.ncbi.nlm.nih.gov/nuccore/${encodeURIComponent(accession.trim())}`;
+}
+
+export function buildRcsbPdbUrl(pdbId: string): string {
+  return `https://www.rcsb.org/structure/${encodeURIComponent(pdbId.trim().toUpperCase())}`;
 }
 
 async function copyText(text: string): Promise<void> {
@@ -100,7 +105,11 @@ function CopyIcon(): React.ReactElement {
 }
 
 export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElement | null {
-  const currentPhage = usePhageStore((s) => s.currentPhage);
+  const currentPhage = usePhageStore((state) => state.currentPhage);
+  const viewMode = usePhageStore((state) => state.viewMode);
+  const readingFrame = usePhageStore((state) => state.readingFrame);
+  const scrollPosition = usePhageStore((state) => state.scrollPosition);
+  const show3DModel = usePhageStore((state) => state.show3DModel);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
   const feedbackTimerRef = useRef<number | null>(null);
 
@@ -109,9 +118,11 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
 
     const forwardGenes = currentPhage.genes?.filter((gene) => gene.strand !== '-').length ?? 0;
     const reverseGenes = currentPhage.genes?.filter((gene) => gene.strand === '-').length ?? 0;
+    const pdbIds = currentPhage.pdbIds ?? [];
 
     return {
       name: currentPhage.name,
+      slug: currentPhage.slug,
       accession: currentPhage.accession,
       length: currentPhage.genomeLength ?? 0,
       gcContent: currentPhage.gcContent,
@@ -120,7 +131,8 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       reverseGenes,
       baltimore: currentPhage.baltimoreGroup,
       host: currentPhage.host,
-      hasPdb: (currentPhage.pdbIds?.length ?? 0) > 0,
+      pdbIds,
+      hasPdb: pdbIds.length > 0,
     };
   }, [currentPhage]);
 
@@ -144,6 +156,24 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   }, []);
 
   const ncbiUrl = stats ? buildNcbiNucleotideUrl(stats.accession) : '';
+  const primaryPdbId = stats?.pdbIds[0] ?? null;
+  const pdbUrl = primaryPdbId ? buildRcsbPdbUrl(primaryPdbId) : '';
+  const shareUrl = useMemo(() => {
+    if (!stats) return '';
+    const baseUrl = typeof window === 'undefined'
+      ? 'https://phage-explorer.org/'
+      : window.location.href;
+    const currentTool = parseShareState(baseUrl).tool;
+
+    return buildShareUrl(baseUrl, {
+      phageKey: stats.slug?.trim() || stats.accession,
+      viewMode,
+      position: scrollPosition,
+      readingFrame,
+      show3DModel,
+      tool: currentTool,
+    });
+  }, [readingFrame, scrollPosition, show3DModel, stats, viewMode]);
 
   const handleCopyAccession = useCallback(async () => {
     if (!stats) return;
@@ -157,11 +187,11 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   }, [showFeedback, stats]);
 
   const handleShare = useCallback(async () => {
-    if (!stats) return;
+    if (!stats || !shareUrl) return;
     const shareData = {
       title: `${stats.name} — Phage Explorer`,
-      text: `${stats.name} (${stats.accession}) on Phage Explorer. Primary nucleotide record:`,
-      url: ncbiUrl,
+      text: `Explore ${stats.name} (${stats.accession}) at this exact genome position and view in Phage Explorer.`,
+      url: shareUrl,
     };
 
     try {
@@ -171,14 +201,14 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
         return;
       }
 
-      await copyText(`${shareData.title}\n${shareData.text}\n${shareData.url}`);
+      await copyText(shareUrl);
       haptics.success();
       showFeedback('link-copied');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') return;
       haptics.error();
     }
-  }, [ncbiUrl, showFeedback, stats]);
+  }, [shareUrl, showFeedback, stats]);
 
   if (!stats) {
     return null;
@@ -231,7 +261,9 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       {stats.hasPdb && (
         <div className="quick-stat">
           <span className="quick-stat__label">Structure</span>
-          <span className="quick-stat__value quick-stat__value--highlight">Available</span>
+          <span className="quick-stat__value quick-stat__value--highlight">
+            {stats.pdbIds.length === 1 ? 'Available' : `${stats.pdbIds.length} records`}
+          </span>
         </div>
       )}
 
@@ -253,11 +285,23 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             <ExternalLinkIcon />
             <span>NCBI</span>
           </a>
+          {primaryPdbId && (
+            <a
+              className="quick-stat__action"
+              href={pdbUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`Open PDB structure ${primaryPdbId}${stats.pdbIds.length > 1 ? `, first of ${stats.pdbIds.length}` : ''}`}
+            >
+              <ExternalLinkIcon />
+              <span>{stats.pdbIds.length > 1 ? `PDB ×${stats.pdbIds.length}` : 'PDB'}</span>
+            </a>
+          )}
           <button
             type="button"
             className="quick-stat__action"
             onClick={() => void handleShare()}
-            aria-label={`Share ${stats.name} primary record`}
+            aria-label={`Share ${stats.name} explorer state`}
           >
             <ShareIcon />
             <span>{feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
