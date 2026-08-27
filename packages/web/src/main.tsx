@@ -8,9 +8,11 @@ import { ScrollProvider } from './providers';
 import App from './App';
 import { GeneSelectionBridge } from './components/GeneSelectionBridge';
 import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
+import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import './styles.css';
 import './styles/scroll.css';
 import './styles/phage-picker-accessibility.css';
+import './styles/selected-gene-dock.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
 
@@ -129,6 +131,7 @@ if (container) {
               <OverlayProvider>
                 <App />
                 <GeneSelectionBridge />
+                <SelectedGeneDock />
                 <ShareStateController />
               </OverlayProvider>
             </ToastProvider>
