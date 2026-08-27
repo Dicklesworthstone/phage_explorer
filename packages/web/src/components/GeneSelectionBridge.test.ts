@@ -23,6 +23,16 @@ const genes: GeneInfo[] = [
     product: null,
     type: 'CDS',
   },
+  {
+    id: 3,
+    name: 'unstranded gene',
+    locusTag: 'gp3',
+    startPos: 400,
+    endPos: 500,
+    strand: null,
+    product: null,
+    type: 'CDS',
+  },
 ];
 
 const geometry = {
@@ -58,10 +68,27 @@ describe('findGeneAtMapPoint', () => {
     ).toBeNull();
   });
 
-  it('keeps narrow genes touchable with the same 44px hit target as the canvas', () => {
+  it('keeps unknown strands distinct instead of treating them as forward', () => {
+    expect(
+      findGeneAtMapPoint(genes, 1_000, {
+        ...geometry,
+        x: 450,
+        y: 52,
+      })?.id
+    ).toBe(3);
+    expect(
+      findGeneAtMapPoint(genes, 1_000, {
+        ...geometry,
+        x: 450,
+        y: 16,
+      })
+    ).toBeNull();
+  });
+
+  it('keeps narrow genes touchable with a 44px horizontal hit target', () => {
     const narrowGene: GeneInfo = {
       ...genes[0],
-      id: 3,
+      id: 4,
       startPos: 500,
       endPos: 501,
     };
@@ -72,7 +99,24 @@ describe('findGeneAtMapPoint', () => {
         x: 520,
         y: 16,
       })?.id
-    ).toBe(3);
+    ).toBe(4);
+  });
+
+  it('supports defensively reversed coordinates', () => {
+    const reversedCoordinates: GeneInfo = {
+      ...genes[0],
+      id: 5,
+      startPos: 600,
+      endPos: 550,
+    };
+
+    expect(
+      findGeneAtMapPoint([reversedCoordinates], 1_000, {
+        ...geometry,
+        x: 575,
+        y: 16,
+      })?.id
+    ).toBe(5);
   });
 
   it('returns null outside the gene tracks and canvas bounds', () => {

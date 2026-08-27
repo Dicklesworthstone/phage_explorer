@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactElement } from 'react';
 import type { GeneInfo } from '@phage-explorer/core';
 import { usePhageStore, useSelectedGeneStore } from '../store';
+import { classifyGeneStrand } from '../utils/gene-strand';
+import { getGeneMapTrackDirectionAtY } from '../utils/gene-map-layout';
 
 interface GeneMapGeometry {
   width: number;
@@ -15,11 +17,13 @@ interface PointerStart {
   y: number;
 }
 
-const FORWARD_TRACK_Y = 10;
-const REVERSE_TRACK_Y = 30;
-const TRACK_HEIGHT = 12;
 const MIN_GENE_HIT_WIDTH = 44;
 const MAX_TAP_TRAVEL = 12;
+const CLEAR_SELECTION_SELECTOR = [
+  '[data-clear-selected-gene]',
+  'button[aria-label="Clear selected gene"]',
+  'button[title="Clear selection"]',
+].join(', ');
 
 export function findGeneAtMapPoint(
   genes: readonly GeneInfo[],
@@ -27,7 +31,12 @@ export function findGeneAtMapPoint(
   geometry: GeneMapGeometry
 ): GeneInfo | null {
   if (
+    !Number.isFinite(genomeLength) ||
     genomeLength <= 0 ||
+    !Number.isFinite(geometry.width) ||
+    !Number.isFinite(geometry.height) ||
+    !Number.isFinite(geometry.x) ||
+    !Number.isFinite(geometry.y) ||
     geometry.width <= 0 ||
     geometry.height <= 0 ||
     geometry.x < 0 ||
@@ -38,24 +47,19 @@ export function findGeneAtMapPoint(
     return null;
   }
 
-  const inForward =
-    geometry.y >= FORWARD_TRACK_Y &&
-    geometry.y <= FORWARD_TRACK_Y + TRACK_HEIGHT;
-  const inReverse =
-    geometry.y >= REVERSE_TRACK_Y &&
-    geometry.y <= REVERSE_TRACK_Y + TRACK_HEIGHT;
-  if (!inForward && !inReverse) return null;
+  const targetDirection = getGeneMapTrackDirectionAtY(geometry.y);
+  if (!targetDirection) return null;
 
   let bestGene: GeneInfo | null = null;
   let bestDistance = Number.POSITIVE_INFINITY;
 
   for (const gene of genes) {
-    const isForward = gene.strand !== '-';
-    if (inForward && !isForward) continue;
-    if (inReverse && isForward) continue;
+    if (classifyGeneStrand(gene.strand) !== targetDirection) continue;
 
-    const startX = (gene.startPos / genomeLength) * geometry.width;
-    const endX = (gene.endPos / genomeLength) * geometry.width;
+    const startPosition = Math.min(gene.startPos, gene.endPos);
+    const endPosition = Math.max(gene.startPos, gene.endPos);
+    const startX = (startPosition / genomeLength) * geometry.width;
+    const endX = (endPosition / genomeLength) * geometry.width;
     const renderedWidth = Math.max(1, endX - startX);
     const hitWidth = Math.max(renderedWidth, MIN_GENE_HIT_WIDTH);
     const centerX = startX + renderedWidth / 2;
@@ -77,6 +81,10 @@ function getGeneMapCanvas(target: EventTarget | null): HTMLCanvasElement | null 
   if (!(target instanceof Element)) return null;
   const canvas = target.closest('.gene-map-container canvas');
   return canvas instanceof HTMLCanvasElement ? canvas : null;
+}
+
+function isClearSelectionTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && Boolean(target.closest(CLEAR_SELECTION_SELECTOR));
 }
 
 export function GeneSelectionBridge(): ReactElement | null {
@@ -123,11 +131,7 @@ export function GeneSelectionBridge(): ReactElement | null {
     };
 
     const handleClick = (event: MouseEvent) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      if (target.closest('button[title="Clear selection"]')) {
-        clearSelectedGene();
-      }
+      if (isClearSelectionTarget(event.target)) clearSelectedGene();
     };
 
     document.addEventListener('pointerdown', handlePointerDown, true);
