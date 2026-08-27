@@ -2,28 +2,33 @@
  * QuickStats Component
  *
  * A compact bar showing key phage metrics at a glance, plus direct access to
- * primary NCBI/PDB records and mobile-native sharing of the exact explorer state.
+ * primary records, synchronized saved state, exact sharing, and citations.
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { haptics } from '../utils/haptics';
 import { buildShareUrl, parseShareState } from '../utils/share-state';
+import {
+  getPhageCollectionKey,
+  readPhageCollections,
+  subscribeToPhageCollections,
+  toggleFavoritePhage,
+} from '../utils/phage-collections';
+import {
+  buildNcbiNucleotideUrl,
+  buildPhageCitation,
+  buildRcsbPdbUrl,
+} from '../utils/research-record';
 import '../styles/quick-stats-actions.css';
+
+export { buildNcbiNucleotideUrl, buildRcsbPdbUrl } from '../utils/research-record';
 
 interface QuickStatsProps {
   className?: string;
 }
 
-type ActionFeedback = 'accession-copied' | 'link-copied' | null;
-
-export function buildNcbiNucleotideUrl(accession: string): string {
-  return `https://www.ncbi.nlm.nih.gov/nuccore/${encodeURIComponent(accession.trim())}`;
-}
-
-export function buildRcsbPdbUrl(pdbId: string): string {
-  return `https://www.rcsb.org/structure/${encodeURIComponent(pdbId.trim().toUpperCase())}`;
-}
+type ActionFeedback = 'accession-copied' | 'link-copied' | 'citation-copied' | null;
 
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -104,6 +109,45 @@ function CopyIcon(): React.ReactElement {
   );
 }
 
+function StarIcon({ filled }: { filled: boolean }): React.ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m12 2.8 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
+    </svg>
+  );
+}
+
+function CitationIcon(): React.ReactElement {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+      <path d="M8 7h8" />
+      <path d="M8 11h6" />
+    </svg>
+  );
+}
+
 export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElement | null {
   const currentPhage = usePhageStore((state) => state.currentPhage);
   const viewMode = usePhageStore((state) => state.viewMode);
@@ -111,6 +155,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const scrollPosition = usePhageStore((state) => state.scrollPosition);
   const show3DModel = usePhageStore((state) => state.show3DModel);
   const [feedback, setFeedback] = useState<ActionFeedback>(null);
+  const [isSaved, setIsSaved] = useState(false);
   const feedbackTimerRef = useRef<number | null>(null);
 
   const stats = useMemo(() => {
@@ -121,6 +166,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
     const pdbIds = currentPhage.pdbIds ?? [];
 
     return {
+      id: currentPhage.id,
       name: currentPhage.name,
       slug: currentPhage.slug,
       accession: currentPhage.accession,
@@ -155,6 +201,21 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
     };
   }, []);
 
+  useEffect(() => {
+    if (!stats) {
+      setIsSaved(false);
+      return;
+    }
+
+    const key = getPhageCollectionKey(stats);
+    const syncSavedState = (favoriteKeys: readonly string[]) => {
+      setIsSaved(favoriteKeys.includes(key));
+    };
+
+    syncSavedState(readPhageCollections().favoriteKeys);
+    return subscribeToPhageCollections((snapshot) => syncSavedState(snapshot.favoriteKeys));
+  }, [stats]);
+
   const ncbiUrl = stats ? buildNcbiNucleotideUrl(stats.accession) : '';
   const primaryPdbId = stats?.pdbIds[0] ?? null;
   const pdbUrl = primaryPdbId ? buildRcsbPdbUrl(primaryPdbId) : '';
@@ -185,6 +246,33 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       haptics.error();
     }
   }, [showFeedback, stats]);
+
+  const handleCopyCitation = useCallback(async () => {
+    if (!stats || !shareUrl) return;
+    const citation = buildPhageCitation({
+      name: stats.name,
+      accession: stats.accession,
+      pdbIds: stats.pdbIds,
+      explorerUrl: shareUrl,
+    });
+
+    try {
+      await copyText(citation);
+      haptics.success();
+      showFeedback('citation-copied');
+    } catch {
+      haptics.error();
+    }
+  }, [shareUrl, showFeedback, stats]);
+
+  const handleToggleSaved = useCallback(() => {
+    if (!stats) return;
+    const snapshot = toggleFavoritePhage(stats);
+    const key = getPhageCollectionKey(stats);
+    const nextSaved = snapshot.favoriteKeys.includes(key);
+    setIsSaved(nextSaved);
+    haptics.success();
+  }, [stats]);
 
   const handleShare = useCallback(async () => {
     if (!stats || !shareUrl) return;
@@ -291,6 +379,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
               href={pdbUrl}
               target="_blank"
               rel="noopener noreferrer"
+              title={stats.pdbIds.length > 1 ? `Structures: ${stats.pdbIds.join(', ')}` : undefined}
               aria-label={`Open PDB structure ${primaryPdbId}${stats.pdbIds.length > 1 ? `, first of ${stats.pdbIds.length}` : ''}`}
             >
               <ExternalLinkIcon />
@@ -299,12 +388,31 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
           )}
           <button
             type="button"
+            className={`quick-stat__action ${isSaved ? 'quick-stat__action--active' : ''}`}
+            onClick={handleToggleSaved}
+            aria-label={`${isSaved ? 'Remove' : 'Save'} ${stats.name}`}
+            aria-pressed={isSaved}
+          >
+            <StarIcon filled={isSaved} />
+            <span>{isSaved ? 'Saved' : 'Save'}</span>
+          </button>
+          <button
+            type="button"
             className="quick-stat__action"
             onClick={() => void handleShare()}
             aria-label={`Share ${stats.name} explorer state`}
           >
             <ShareIcon />
             <span>{feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
+          </button>
+          <button
+            type="button"
+            className="quick-stat__action"
+            onClick={() => void handleCopyCitation()}
+            aria-label={`Copy a research citation for ${stats.name}`}
+          >
+            <CitationIcon />
+            <span>{feedback === 'citation-copied' ? 'Copied' : 'Cite'}</span>
           </button>
           <button
             type="button"
