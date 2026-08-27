@@ -4,8 +4,10 @@
  * React hook for loading and accessing the phage database.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { PhageRepository, DatabaseLoadProgress } from '../db';
+import { createShareAwareRepository } from '../db/createShareAwareRepository';
+import { getInitialShareState } from '../utils/share-state';
 import { useDatabaseQuery } from './useDatabaseQuery';
 
 export interface UseDatabaseOptions {
@@ -54,13 +56,19 @@ export interface UseDatabaseResult {
 export function useDatabase(options: UseDatabaseOptions = {}): UseDatabaseResult {
   const { databaseUrl = '/phage.db', autoLoad = true } = options;
   const query = useDatabaseQuery({ databaseUrl, enabled: autoLoad });
+  const initialShareState = getInitialShareState();
+
+  const repository = useMemo(() => {
+    if (!query.repository) return null;
+    return createShareAwareRepository(query.repository, initialShareState.phageKey);
+  }, [initialShareState.phageKey, query.repository]);
 
   const load = useCallback(async () => {
     await query.load();
   }, [query.load]);
 
   return {
-    repository: query.repository,
+    repository,
     isLoading: query.isLoading,
     isFetching: query.isFetching,
     progress: query.progress,
