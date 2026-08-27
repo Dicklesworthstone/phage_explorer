@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import type { PhageSummary } from '@phage-explorer/core';
+import type { GeneInfo, PhageSummary } from '@phage-explorer/core';
 import {
   buildShareUrl,
+  findGeneId,
   findPhageIndex,
+  getGeneShareKey,
   isShareableOverlayId,
   normalizeShareableOverlayId,
   parseShareState,
@@ -35,14 +37,38 @@ const phages: PhageSummary[] = [
   },
 ];
 
+const genes: GeneInfo[] = [
+  {
+    id: 101,
+    name: 'major capsid protein',
+    locusTag: 'T4_gp23',
+    startPos: 1_000,
+    endPos: 2_500,
+    strand: '+',
+    product: 'major capsid protein',
+    type: 'CDS',
+  },
+  {
+    id: 102,
+    name: 'tail protein',
+    locusTag: null,
+    startPos: 3_000,
+    endPos: 3_900,
+    strand: '-',
+    product: 'tail protein',
+    type: 'CDS',
+  },
+];
+
 describe('parseShareState', () => {
   it('parses a complete validated share state', () => {
     expect(
       parseShareState(
-        'https://phage-explorer.org/?phage=t4&view=aa&pos=12345&frame=-2&model=0&tool=gcSkew'
+        'https://phage-explorer.org/?phage=t4&gene=T4_gp23&view=aa&pos=12345&frame=-2&model=0&tool=gcSkew'
       )
     ).toEqual({
       phageKey: 't4',
+      geneKey: 'T4_gp23',
       viewMode: 'aa',
       position: 12_345,
       readingFrame: -2,
@@ -53,9 +79,10 @@ describe('parseShareState', () => {
 
   it('rejects malformed or unsupported values without throwing', () => {
     expect(
-      parseShareState('/?phage=%20&view=protein&pos=-1&frame=7&model=maybe&tool=settings')
+      parseShareState('/?phage=%20&gene=%20&view=protein&pos=-1&frame=7&model=maybe&tool=settings')
     ).toEqual({
       phageKey: null,
+      geneKey: null,
       viewMode: null,
       position: null,
       readingFrame: null,
@@ -75,6 +102,7 @@ describe('buildShareUrl', () => {
   it('builds a deterministic clean URL and removes tracking fragments', () => {
     const url = buildShareUrl('https://phage-explorer.org/?utm_source=test#old', {
       phageKey: 'lambda-phage',
+      geneKey: 'LAMBDA_cI',
       viewMode: 'dual',
       position: 900.9,
       readingFrame: 1,
@@ -83,11 +111,11 @@ describe('buildShareUrl', () => {
     });
 
     expect(url).toBe(
-      'https://phage-explorer.org/?phage=lambda-phage&view=dual&pos=900&frame=1&model=1&tool=tropism'
+      'https://phage-explorer.org/?phage=lambda-phage&gene=LAMBDA_cI&view=dual&pos=900&frame=1&model=1&tool=tropism'
     );
   });
 
-  it('omits an absent analysis tool', () => {
+  it('omits absent gene and analysis-tool state', () => {
     const url = new URL(
       buildShareUrl('https://preview.example/app?stale=1', {
         phageKey: 'NC_000866',
@@ -100,6 +128,7 @@ describe('buildShareUrl', () => {
 
     expect(url.pathname).toBe('/app');
     expect(url.searchParams.get('phage')).toBe('NC_000866');
+    expect(url.searchParams.get('gene')).toBeNull();
     expect(url.searchParams.get('tool')).toBeNull();
     expect(url.searchParams.get('stale')).toBeNull();
   });
@@ -116,6 +145,25 @@ describe('findPhageIndex', () => {
   it('returns -1 for empty and unknown keys', () => {
     expect(findPhageIndex(phages, null)).toBe(-1);
     expect(findPhageIndex(phages, 'unknown-phage')).toBe(-1);
+  });
+});
+
+describe('gene share identity', () => {
+  it('prefers stable locus tags and falls back to the database gene ID', () => {
+    expect(getGeneShareKey(genes[0])).toBe('T4_gp23');
+    expect(getGeneShareKey(genes[1])).toBe('102');
+    expect(getGeneShareKey(null)).toBeNull();
+  });
+
+  it('restores genes by locus tag, ID, or exact name case-insensitively', () => {
+    expect(findGeneId(genes, 't4_GP23')).toBe(101);
+    expect(findGeneId(genes, '102')).toBe(102);
+    expect(findGeneId(genes, 'MAJOR CAPSID PROTEIN')).toBe(101);
+  });
+
+  it('returns null for missing and unknown genes', () => {
+    expect(findGeneId(genes, null)).toBeNull();
+    expect(findGeneId(genes, 'missing')).toBeNull();
   });
 });
 
