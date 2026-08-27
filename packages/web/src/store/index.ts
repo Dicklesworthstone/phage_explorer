@@ -1,8 +1,8 @@
 /**
  * Store Module Exports
  *
- * Provides both the main application store (from @phage-explorer/state)
- * and web-specific preferences with localStorage persistence.
+ * Provides the main application store, web-specific preferences, and
+ * web-only interaction state such as the selected genome feature.
  */
 
 // Re-export main store
@@ -39,6 +39,14 @@ export {
   type WebPreferencesActions,
   type WebPreferencesStore,
 } from './createWebStore';
+
+// Selected gene interaction state
+export {
+  useSelectedGeneStore,
+  type SelectedGeneState,
+  type SelectedGeneActions,
+  type SelectedGeneStore,
+} from './selectedGeneStore';
 
 // Persistence utilities
 export {
