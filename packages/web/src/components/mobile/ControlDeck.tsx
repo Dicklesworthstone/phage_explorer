@@ -20,63 +20,59 @@ interface ControlDeckProps {
 /**
  * Mobile Bottom Tab Bar
  *
- * iOS/Android-style navigation with 5 direct action buttons.
- * Features:
- * - Haptic feedback on tap
- * - Visual active state indicator
- * - Accessible labels and states
- *
- * Each tap performs an action immediately (no nested tabs).
+ * iOS/Android-style navigation with five direct actions. Context-dependent
+ * controls stay disabled until a phage is ready, while search remains available.
  */
 export function ControlDeck({ onPrevPhage, onNextPhage }: ControlDeckProps): React.ReactElement {
-  const viewMode = usePhageStore(s => s.viewMode);
-  const toggleViewMode = usePhageStore(s => s.toggleViewMode);
-  const show3DModel = usePhageStore(s => s.show3DModel);
-  const toggle3DModel = usePhageStore(s => s.toggle3DModel);
-  const phages = usePhageStore(s => s.phages);
+  const viewMode = usePhageStore((s) => s.viewMode);
+  const toggleViewMode = usePhageStore((s) => s.toggleViewMode);
+  const show3DModel = usePhageStore((s) => s.show3DModel);
+  const toggle3DModel = usePhageStore((s) => s.toggle3DModel);
+  const phages = usePhageStore((s) => s.phages);
+  const currentPhage = usePhageStore((s) => s.currentPhage);
   const { open } = useOverlay();
 
   const viewModeLabelLong = viewMode === 'dna' ? 'DNA' : viewMode === 'aa' ? 'Amino Acids' : 'Dual';
   const viewModeLabelShort = viewMode === 'aa' ? 'AA' : viewModeLabelLong;
-  const canNavigate = phages.length > 0 && onPrevPhage && onNextPhage;
+  const hasPhage = currentPhage !== null;
+  const canNavigate = Boolean(phages.length > 1 && onPrevPhage && onNextPhage);
 
-  // Wrap actions with haptic feedback
   const handleViewMode = useCallback(() => {
+    if (!hasPhage) return;
     haptics.selection();
     toggleViewMode();
-  }, [toggleViewMode]);
+  }, [hasPhage, toggleViewMode]);
 
   const handle3DToggle = useCallback(() => {
+    if (!hasPhage) return;
     haptics.medium();
     toggle3DModel();
-  }, [toggle3DModel]);
+  }, [hasPhage, toggle3DModel]);
 
-  const handleMore = useCallback(() => {
+  const handleSearch = useCallback(() => {
     haptics.light();
-    open('commandPalette');
+    open('search');
   }, [open]);
 
-  // Phage navigation handlers - wrap with haptic feedback
   const handlePrevPhage = useCallback(() => {
-    if (!onPrevPhage) return;
+    if (!canNavigate || !onPrevPhage) return;
     haptics.selection();
     onPrevPhage();
-  }, [onPrevPhage]);
+  }, [canNavigate, onPrevPhage]);
 
   const handleNextPhage = useCallback(() => {
-    if (!onNextPhage) return;
+    if (!canNavigate || !onNextPhage) return;
     haptics.selection();
     onNextPhage();
-  }, [onNextPhage]);
+  }, [canNavigate, onNextPhage]);
 
   return (
     <nav className="control-deck" aria-label="Mobile navigation">
-      {/* Previous Phage */}
       <button
         type="button"
         className="tab-btn"
         onClick={handlePrevPhage}
-        aria-label="Previous phage"
+        aria-label={canNavigate ? 'Previous phage' : 'Previous phage unavailable'}
         disabled={!canNavigate}
       >
         <span className="tab-icon">
@@ -85,12 +81,16 @@ export function ControlDeck({ onPrevPhage, onNextPhage }: ControlDeckProps): Rea
         <span className="tab-label">Prev</span>
       </button>
 
-      {/* View Mode Toggle */}
       <button
         type="button"
         className="tab-btn"
         onClick={handleViewMode}
-        aria-label={`View mode: ${viewModeLabelLong}. Tap to cycle.`}
+        aria-label={
+          hasPhage
+            ? `View mode: ${viewModeLabelLong}. Tap to cycle.`
+            : 'View mode unavailable until a phage is selected'
+        }
+        disabled={!hasPhage}
       >
         <span className="tab-icon">
           <IconLayers size={20} />
@@ -98,40 +98,42 @@ export function ControlDeck({ onPrevPhage, onNextPhage }: ControlDeckProps): Rea
         <span className="tab-label">{viewModeLabelShort}</span>
       </button>
 
-      {/* 3D Toggle */}
       <button
         type="button"
-        className={`tab-btn ${show3DModel ? 'active' : ''}`}
+        className={`tab-btn ${show3DModel && hasPhage ? 'active' : ''}`}
         onClick={handle3DToggle}
-        aria-label={`3D model: ${show3DModel ? 'on' : 'off'}`}
-        aria-pressed={show3DModel}
+        aria-label={
+          hasPhage
+            ? `3D model: ${show3DModel ? 'on' : 'off'}`
+            : '3D model unavailable until a phage is selected'
+        }
+        aria-pressed={hasPhage ? show3DModel : false}
+        disabled={!hasPhage}
       >
         <span className="tab-icon">
           <IconCube size={20} />
-          {show3DModel && <span className="state-badge" aria-hidden="true" />}
+          {show3DModel && hasPhage && <span className="state-badge" aria-hidden="true" />}
         </span>
         <span className="tab-label">3D</span>
       </button>
 
-      {/* Search / More - Opens Command Palette */}
       <button
         type="button"
         className="tab-btn"
-        onClick={handleMore}
-        aria-label="Menu and search"
+        onClick={handleSearch}
+        aria-label="Search phages, genes, and tools"
       >
         <span className="tab-icon">
           <IconSearch size={20} />
         </span>
-        <span className="tab-label">Menu</span>
+        <span className="tab-label">Search</span>
       </button>
 
-      {/* Next Phage */}
       <button
         type="button"
         className="tab-btn"
         onClick={handleNextPhage}
-        aria-label="Next phage"
+        aria-label={canNavigate ? 'Next phage' : 'Next phage unavailable'}
         disabled={!canNavigate}
       >
         <span className="tab-icon">
