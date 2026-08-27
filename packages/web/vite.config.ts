@@ -80,6 +80,9 @@ export default defineConfig({
       { find: '@phage-explorer/comparison', replacement: resolveFromRoot('comparison/src') },
       { find: '@phage-explorer/data-pipeline', replacement: resolveFromRoot('data-pipeline/src') },
       { find: '@phage-explorer/tui', replacement: resolveFromRoot('tui/src') },
+      // Match only the bare package import. The adapter's deep sql.js imports
+      // must continue resolving to the upstream browser build and WASM asset.
+      { find: /^sql\.js$/, replacement: resolveFromRoot('web/src/db/sqljs-runtime.js') },
       { find: 'react/jsx-runtime', replacement: path.resolve(__dirname, 'node_modules/react/jsx-runtime') },
       { find: 'react-dom', replacement: path.resolve(__dirname, 'node_modules/react-dom') },
       { find: 'react', replacement: path.resolve(__dirname, 'node_modules/react') },
@@ -118,7 +121,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'sql.js'],
+    include: ['react', 'react-dom', 'sql.js/dist/sql-wasm-browser.js'],
     esbuildOptions: {
       define: {
         global: 'globalThis',
