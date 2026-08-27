@@ -3,7 +3,7 @@
  *
  * Features:
  * - Search across names, accessions, hosts, families, and lifecycle
- * - Saved and recently viewed phage collections
+ * - Saved and recently viewed phage collections shared across the application
  * - Lifecycle filters, useful sorting, and live counts
  * - Random discovery action scoped to the current results
  * - Current phage highlighting and automatic scroll positioning
@@ -20,6 +20,14 @@ import {
   type FuzzySearchResult,
 } from '../../workers';
 import { haptics } from '../../utils/haptics';
+import {
+  clearRecentPhages,
+  getPhageCollectionKey,
+  readPhageCollections,
+  recordRecentPhage,
+  subscribeToPhageCollections,
+  toggleFavoritePhage,
+} from '../../utils/phage-collections';
 
 export interface PhageListItem {
   id: number;
@@ -52,10 +60,6 @@ interface FilterOption<T extends string> {
   count: number;
 }
 
-const FAVORITES_STORAGE_KEY = 'phage-explorer:favorite-phages:v1';
-const RECENT_STORAGE_KEY = 'phage-explorer:recent-phages:v1';
-const MAX_RECENT_PHAGES = 12;
-
 export function classifyLifecycle(lifecycle: string | null | undefined): Exclude<LifecycleFilter, 'all'> {
   const normalized = lifecycle?.trim().toLowerCase() ?? '';
   if (
@@ -75,13 +79,7 @@ export function classifyLifecycle(lifecycle: string | null | undefined): Exclude
   return 'other';
 }
 
-export function getPhageStorageKey(phage: PhageListItem): string {
-  const slug = phage.slug?.trim();
-  if (slug) return `slug:${slug.toLowerCase()}`;
-  const accession = phage.accession?.trim();
-  if (accession) return `accession:${accession.toLowerCase()}`;
-  return `id:${phage.id}`;
-}
+export const getPhageStorageKey = getPhageCollectionKey;
 
 export function sortPhageList(
   phages: readonly PhageListItem[],
@@ -113,28 +111,6 @@ export function sortPhageList(
   return sorted.sort((left, right) =>
     (right.gcContent ?? -1) - (left.gcContent ?? -1) || byName(left, right)
   );
-}
-
-function readStoredKeys(storageKey: string, maxItems: number): string[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]');
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 180)
-      .slice(0, maxItems);
-  } catch {
-    return [];
-  }
-}
-
-function persistKeys(storageKey: string, keys: readonly string[]): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify(keys));
-  } catch {
-    // Favorites and recents are progressive enhancements; private-mode failures are harmless.
-  }
 }
 
 function SearchIcon(): React.ReactElement {
@@ -225,12 +201,8 @@ export function PhagePickerSheet({
   const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>('all');
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all');
   const [sortMode, setSortMode] = useState<PhageSortMode>('relevance');
-  const [favoriteKeys, setFavoriteKeys] = useState<string[]>(() =>
-    readStoredKeys(FAVORITES_STORAGE_KEY, 500)
-  );
-  const [recentKeys, setRecentKeys] = useState<string[]>(() =>
-    readStoredKeys(RECENT_STORAGE_KEY, MAX_RECENT_PHAGES)
-  );
+  const [collections, setCollections] = useState(readPhageCollections);
+  const { favoriteKeys, recentKeys } = collections;
   const [workerRequested, setWorkerRequested] = useState(false);
   const [workerReady, setWorkerReady] = useState(false);
   const [rankedIds, setRankedIds] = useState<number[] | null>(null);
@@ -241,17 +213,12 @@ export function PhagePickerSheet({
   const usingPreloadedRef = useRef(false);
   const searchSeqRef = useRef(0);
 
-  useEffect(() => persistKeys(FAVORITES_STORAGE_KEY, favoriteKeys), [favoriteKeys]);
-  useEffect(() => persistKeys(RECENT_STORAGE_KEY, recentKeys), [recentKeys]);
+  useEffect(() => subscribeToPhageCollections(setCollections), []);
 
   useEffect(() => {
     const currentPhage = phages[currentIndex];
     if (!currentPhage) return;
-    const key = getPhageStorageKey(currentPhage);
-    setRecentKeys((previous) => {
-      if (previous[0] === key) return previous;
-      return [key, ...previous.filter((candidate) => candidate !== key)].slice(0, MAX_RECENT_PHAGES);
-    });
+    recordRecentPhage(currentPhage);
   }, [currentIndex, phages]);
 
   useEffect(() => {
@@ -468,13 +435,8 @@ export function PhagePickerSheet({
   );
 
   const handleToggleFavorite = useCallback((phage: PhageListItem) => {
-    const key = getPhageStorageKey(phage);
     haptics.selection();
-    setFavoriteKeys((previous) =>
-      previous.includes(key)
-        ? previous.filter((candidate) => candidate !== key)
-        : [key, ...previous]
-    );
+    toggleFavoritePhage(phage);
   }, []);
 
   const handleSurpriseMe = useCallback(() => {
@@ -603,7 +565,7 @@ export function PhagePickerSheet({
                 className="phage-picker-sheet__clear-recents"
                 onClick={() => {
                   haptics.light();
-                  setRecentKeys([]);
+                  clearRecentPhages();
                 }}
               >
                 Clear
