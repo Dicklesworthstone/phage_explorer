@@ -3,8 +3,9 @@
  *
  * Features:
  * - Search across names, accessions, hosts, families, and lifecycle
- * - Lifecycle filters with live counts
- * - Random discovery action
+ * - Saved and recently viewed phage collections
+ * - Lifecycle filters, useful sorting, and live counts
+ * - Random discovery action scoped to the current results
  * - Current phage highlighting and automatic scroll positioning
  * - Lazy worker startup so first paint and database loading stay fast
  */
@@ -20,7 +21,7 @@ import {
 } from '../../workers';
 import { haptics } from '../../utils/haptics';
 
-interface PhageListItem {
+export interface PhageListItem {
   id: number;
   slug?: string | null;
   name: string;
@@ -42,12 +43,18 @@ interface PhagePickerSheetProps {
 }
 
 type LifecycleFilter = 'all' | 'lytic' | 'temperate' | 'other';
+type CollectionFilter = 'all' | 'favorites' | 'recent';
+export type PhageSortMode = 'relevance' | 'name' | 'genomeLength' | 'gcContent';
 
-interface FilterOption {
-  id: LifecycleFilter;
+interface FilterOption<T extends string> {
+  id: T;
   label: string;
   count: number;
 }
+
+const FAVORITES_STORAGE_KEY = 'phage-explorer:favorite-phages:v1';
+const RECENT_STORAGE_KEY = 'phage-explorer:recent-phages:v1';
+const MAX_RECENT_PHAGES = 12;
 
 export function classifyLifecycle(lifecycle: string | null | undefined): Exclude<LifecycleFilter, 'all'> {
   const normalized = lifecycle?.trim().toLowerCase() ?? '';
@@ -66,6 +73,68 @@ export function classifyLifecycle(lifecycle: string | null | undefined): Exclude
     return 'temperate';
   }
   return 'other';
+}
+
+export function getPhageStorageKey(phage: PhageListItem): string {
+  const slug = phage.slug?.trim();
+  if (slug) return `slug:${slug.toLowerCase()}`;
+  const accession = phage.accession?.trim();
+  if (accession) return `accession:${accession.toLowerCase()}`;
+  return `id:${phage.id}`;
+}
+
+export function sortPhageList(
+  phages: readonly PhageListItem[],
+  mode: PhageSortMode,
+  recentKeys: readonly string[] = []
+): PhageListItem[] {
+  const sorted = phages.slice();
+  const byName = (left: PhageListItem, right: PhageListItem) =>
+    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+
+  if (mode === 'relevance') {
+    if (recentKeys.length === 0) return sorted;
+    const rank = new Map(recentKeys.map((key, index) => [key, index]));
+    return sorted.sort((left, right) => {
+      const leftRank = rank.get(getPhageStorageKey(left)) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = rank.get(getPhageStorageKey(right)) ?? Number.MAX_SAFE_INTEGER;
+      return leftRank - rightRank || byName(left, right);
+    });
+  }
+
+  if (mode === 'name') return sorted.sort(byName);
+
+  if (mode === 'genomeLength') {
+    return sorted.sort((left, right) =>
+      (right.genomeLength ?? -1) - (left.genomeLength ?? -1) || byName(left, right)
+    );
+  }
+
+  return sorted.sort((left, right) =>
+    (right.gcContent ?? -1) - (left.gcContent ?? -1) || byName(left, right)
+  );
+}
+
+function readStoredKeys(storageKey: string, maxItems: number): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(storageKey) ?? '[]');
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 180)
+      .slice(0, maxItems);
+  } catch {
+    return [];
+  }
+}
+
+function persistKeys(storageKey: string, keys: readonly string[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(keys));
+  } catch {
+    // Favorites and recents are progressive enhancements; private-mode failures are harmless.
+  }
 }
 
 function SearchIcon(): React.ReactElement {
@@ -127,6 +196,24 @@ function ShuffleIcon(): React.ReactElement {
   );
 }
 
+function StarIcon({ filled }: { filled: boolean }): React.ReactElement {
+  return (
+    <svg
+      width="19"
+      height="19"
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="m12 2.8 2.8 5.7 6.3.9-4.6 4.4 1.1 6.3-5.6-3-5.6 3 1.1-6.3-4.6-4.4 6.3-.9L12 2.8Z" />
+    </svg>
+  );
+}
+
 export function PhagePickerSheet({
   isOpen,
   onClose,
@@ -136,15 +223,36 @@ export function PhagePickerSheet({
 }: PhagePickerSheetProps): React.ReactElement {
   const [searchQuery, setSearchQuery] = useState('');
   const [lifecycleFilter, setLifecycleFilter] = useState<LifecycleFilter>('all');
+  const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all');
+  const [sortMode, setSortMode] = useState<PhageSortMode>('relevance');
+  const [favoriteKeys, setFavoriteKeys] = useState<string[]>(() =>
+    readStoredKeys(FAVORITES_STORAGE_KEY, 500)
+  );
+  const [recentKeys, setRecentKeys] = useState<string[]>(() =>
+    readStoredKeys(RECENT_STORAGE_KEY, MAX_RECENT_PHAGES)
+  );
   const [workerRequested, setWorkerRequested] = useState(false);
   const [workerReady, setWorkerReady] = useState(false);
   const [rankedIds, setRankedIds] = useState<number[] | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const selectedItemRef = useRef<HTMLButtonElement>(null);
+  const selectedItemRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
   const usingPreloadedRef = useRef(false);
   const searchSeqRef = useRef(0);
+
+  useEffect(() => persistKeys(FAVORITES_STORAGE_KEY, favoriteKeys), [favoriteKeys]);
+  useEffect(() => persistKeys(RECENT_STORAGE_KEY, recentKeys), [recentKeys]);
+
+  useEffect(() => {
+    const currentPhage = phages[currentIndex];
+    if (!currentPhage) return;
+    const key = getPhageStorageKey(currentPhage);
+    setRecentKeys((previous) => {
+      if (previous[0] === key) return previous;
+      return [key, ...previous.filter((candidate) => candidate !== key)].slice(0, MAX_RECENT_PHAGES);
+    });
+  }, [currentIndex, phages]);
 
   useEffect(() => {
     if (isOpen) setWorkerRequested(true);
@@ -226,8 +334,25 @@ export function PhagePickerSheet({
     () => new Map(phages.map((phage, index) => [phage.id, index])),
     [phages]
   );
+  const phageKeySet = useMemo(() => new Set(phages.map(getPhageStorageKey)), [phages]);
+  const favoriteKeySet = useMemo(() => new Set(favoriteKeys), [favoriteKeys]);
+  const recentKeySet = useMemo(() => new Set(recentKeys), [recentKeys]);
+  const favoriteCount = useMemo(
+    () => favoriteKeys.filter((key) => phageKeySet.has(key)).length,
+    [favoriteKeys, phageKeySet]
+  );
+  const recentCount = useMemo(
+    () => recentKeys.filter((key) => phageKeySet.has(key)).length,
+    [phageKeySet, recentKeys]
+  );
 
-  const filterOptions = useMemo<FilterOption[]>(() => {
+  const collectionOptions = useMemo<FilterOption<CollectionFilter>[]>(() => [
+    { id: 'all', label: 'All', count: phages.length },
+    { id: 'favorites', label: 'Saved', count: favoriteCount },
+    { id: 'recent', label: 'Recent', count: recentCount },
+  ], [favoriteCount, phages.length, recentCount]);
+
+  const lifecycleOptions = useMemo<FilterOption<LifecycleFilter>[]>(() => {
     const counts: Record<Exclude<LifecycleFilter, 'all'>, number> = {
       lytic: 0,
       temperate: 0,
@@ -238,11 +363,11 @@ export function PhagePickerSheet({
     }
 
     return [
-      { id: 'all', label: 'All', count: phages.length },
+      { id: 'all', label: 'Any lifecycle', count: phages.length },
       { id: 'lytic', label: 'Lytic', count: counts.lytic },
       { id: 'temperate', label: 'Temperate', count: counts.temperate },
       { id: 'other', label: 'Other', count: counts.other },
-    ].filter((option) => option.id === 'all' || option.count > 0) as FilterOption[];
+    ].filter((option) => option.id === 'all' || option.count > 0) as FilterOption<LifecycleFilter>[];
   }, [phages]);
 
   const searchedPhages = useMemo(() => {
@@ -270,11 +395,32 @@ export function PhagePickerSheet({
   }, [phages, phagesById, rankedIds, searchQuery]);
 
   const filteredPhages = useMemo(() => {
-    if (lifecycleFilter === 'all') return searchedPhages;
-    return searchedPhages.filter(
-      (phage) => classifyLifecycle(phage.lifecycle) === lifecycleFilter
+    let next = searchedPhages;
+
+    if (collectionFilter === 'favorites') {
+      next = next.filter((phage) => favoriteKeySet.has(getPhageStorageKey(phage)));
+    } else if (collectionFilter === 'recent') {
+      next = next.filter((phage) => recentKeySet.has(getPhageStorageKey(phage)));
+    }
+
+    if (lifecycleFilter !== 'all') {
+      next = next.filter((phage) => classifyLifecycle(phage.lifecycle) === lifecycleFilter);
+    }
+
+    return sortPhageList(
+      next,
+      sortMode,
+      collectionFilter === 'recent' && sortMode === 'relevance' ? recentKeys : []
     );
-  }, [lifecycleFilter, searchedPhages]);
+  }, [
+    collectionFilter,
+    favoriteKeySet,
+    lifecycleFilter,
+    recentKeySet,
+    recentKeys,
+    searchedPhages,
+    sortMode,
+  ]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -321,6 +467,16 @@ export function PhagePickerSheet({
     [onClose, onSelectPhage, phages.length]
   );
 
+  const handleToggleFavorite = useCallback((phage: PhageListItem) => {
+    const key = getPhageStorageKey(phage);
+    haptics.selection();
+    setFavoriteKeys((previous) =>
+      previous.includes(key)
+        ? previous.filter((candidate) => candidate !== key)
+        : [key, ...previous]
+    );
+  }, []);
+
   const handleSurpriseMe = useCallback(() => {
     const source = filteredPhages.length > 0 ? filteredPhages : phages;
     const eligible = source.filter((phage) => phageIndexById.get(phage.id) !== currentIndex);
@@ -334,13 +490,23 @@ export function PhagePickerSheet({
     handleSelect(index);
   }, [currentIndex, filteredPhages, handleSelect, phageIndexById, phages]);
 
+  const resetDiscoveryFilters = useCallback(() => {
+    setSearchQuery('');
+    setRankedIds(null);
+    setCollectionFilter('all');
+    setLifecycleFilter('all');
+    setSortMode('relevance');
+    searchInputRef.current?.focus();
+  }, []);
+
   useEffect(() => {
     if (!isOpen || !selectedItemRef.current) return;
+    if (collectionFilter !== 'all' || lifecycleFilter !== 'all' || searchQuery.trim()) return;
     const timer = window.setTimeout(() => {
       selectedItemRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [isOpen]);
+  }, [collectionFilter, isOpen, lifecycleFilter, searchQuery]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -352,6 +518,23 @@ export function PhagePickerSheet({
   const resultLabel = filteredPhages.length === 1
     ? '1 phage'
     : `${filteredPhages.length} phages`;
+  const collectionLabel = collectionFilter === 'favorites'
+    ? ' saved'
+    : collectionFilter === 'recent'
+      ? ' recently viewed'
+      : '';
+  const emptyTitle = searchQuery.trim()
+    ? 'No matching phages'
+    : collectionFilter === 'favorites'
+      ? 'No saved phages yet'
+      : collectionFilter === 'recent'
+        ? 'No recently viewed phages yet'
+        : 'No phages in this filter';
+  const emptyDescription = collectionFilter === 'favorites' && !searchQuery.trim()
+    ? 'Tap the star beside any phage to keep it close at hand.'
+    : collectionFilter === 'recent' && !searchQuery.trim()
+      ? 'Open a phage and it will appear here automatically.'
+      : 'Try a different search, collection, or lifecycle filter.';
 
   return (
     <BottomSheet
@@ -394,9 +577,43 @@ export function PhagePickerSheet({
             )}
           </div>
 
+          <div className="phage-picker-sheet__scope-row">
+            <div className="phage-picker-sheet__filters" aria-label="Choose a phage collection">
+              {collectionOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={`phage-picker-sheet__filter phage-picker-sheet__filter--collection ${
+                    collectionFilter === option.id ? 'phage-picker-sheet__filter--active' : ''
+                  }`}
+                  onClick={() => {
+                    haptics.selection();
+                    setCollectionFilter(option.id);
+                  }}
+                  aria-pressed={collectionFilter === option.id}
+                >
+                  <span>{option.label}</span>
+                  <span className="phage-picker-sheet__filter-count">{option.count}</span>
+                </button>
+              ))}
+            </div>
+            {collectionFilter === 'recent' && recentCount > 0 && (
+              <button
+                type="button"
+                className="phage-picker-sheet__clear-recents"
+                onClick={() => {
+                  haptics.light();
+                  setRecentKeys([]);
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
           <div className="phage-picker-sheet__toolbar">
             <div className="phage-picker-sheet__filters" aria-label="Filter phages by lifecycle">
-              {filterOptions.map((option) => (
+              {lifecycleOptions.map((option) => (
                 <button
                   key={option.id}
                   type="button"
@@ -414,6 +631,22 @@ export function PhagePickerSheet({
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="phage-picker-sheet__actions-row">
+            <label className="phage-picker-sheet__sort">
+              <span>Sort</span>
+              <select
+                value={sortMode}
+                onChange={(event) => setSortMode(event.target.value as PhageSortMode)}
+                aria-label="Sort phages"
+              >
+                <option value="relevance">Recommended</option>
+                <option value="name">Name A–Z</option>
+                <option value="genomeLength">Largest genome</option>
+                <option value="gcContent">Highest GC</option>
+              </select>
+            </label>
 
             <button
               type="button"
@@ -428,26 +661,36 @@ export function PhagePickerSheet({
           </div>
 
           <div className="phage-picker-sheet__result-count" role="status" aria-live="polite">
-            {resultLabel}
+            {resultLabel}{collectionLabel}
             {searchQuery.trim() ? ` matching “${searchQuery.trim()}”` : ''}
           </div>
         </div>
 
         <div
           className="phage-picker-sheet__list"
-          role="listbox"
+          role="list"
           aria-label="Phage list"
         >
           {filteredPhages.length === 0 ? (
             <div className="phage-picker-sheet__empty">
-              <strong>No matching phages</strong>
-              <span>Try a different search or lifecycle filter.</span>
+              <strong>{emptyTitle}</strong>
+              <span>{emptyDescription}</span>
+              <button
+                type="button"
+                className="phage-picker-sheet__empty-reset"
+                onClick={resetDiscoveryFilters}
+              >
+                Show all phages
+              </button>
             </div>
           ) : (
             filteredPhages.map((phage) => {
               const originalIndex = phageIndexById.get(phage.id) ?? -1;
               const isSelected = originalIndex === currentIndex;
+              const storageKey = getPhageStorageKey(phage);
+              const isFavorite = favoriteKeySet.has(storageKey);
               const headlineMeta = [phage.host, phage.family].filter(Boolean).join(' · ');
+              const identifierMeta = [phage.accession, phage.morphology].filter(Boolean).join(' · ');
               const numericMeta = [
                 phage.genomeLength ? `${phage.genomeLength.toLocaleString()} bp` : null,
                 phage.gcContent !== null && phage.gcContent !== undefined
@@ -456,42 +699,63 @@ export function PhagePickerSheet({
               ].filter(Boolean).join(' · ');
 
               return (
-                <button
+                <div
                   key={phage.id}
                   ref={isSelected ? selectedItemRef : undefined}
-                  type="button"
                   className={`phage-picker-sheet__item ${
                     isSelected ? 'phage-picker-sheet__item--selected' : ''
                   }`}
-                  onClick={() => handleSelect(originalIndex)}
-                  role="option"
-                  aria-selected={isSelected}
+                  role="listitem"
                   data-testid={`phage-picker-item-${phage.id}`}
                 >
-                  <div className="phage-picker-sheet__item-content">
-                    <div className="phage-picker-sheet__item-heading">
-                      <span className="phage-picker-sheet__item-name">{phage.name}</span>
-                      {phage.lifecycle && (
-                        <span className="phage-picker-sheet__item-lifecycle">
-                          {phage.lifecycle}
+                  <button
+                    type="button"
+                    className="phage-picker-sheet__item-main"
+                    onClick={() => handleSelect(originalIndex)}
+                    aria-current={isSelected ? 'true' : undefined}
+                    aria-label={`Open ${phage.name}${isSelected ? ', current phage' : ''}`}
+                  >
+                    <div className="phage-picker-sheet__item-content">
+                      <div className="phage-picker-sheet__item-heading">
+                        <span className="phage-picker-sheet__item-name">{phage.name}</span>
+                        {phage.lifecycle && (
+                          <span className="phage-picker-sheet__item-lifecycle">
+                            {phage.lifecycle}
+                          </span>
+                        )}
+                      </div>
+                      {headlineMeta && (
+                        <span className="phage-picker-sheet__item-meta">{headlineMeta}</span>
+                      )}
+                      {identifierMeta && (
+                        <span className="phage-picker-sheet__item-meta phage-picker-sheet__item-meta--identifier">
+                          {identifierMeta}
+                        </span>
+                      )}
+                      {numericMeta && (
+                        <span className="phage-picker-sheet__item-meta phage-picker-sheet__item-meta--numeric">
+                          {numericMeta}
                         </span>
                       )}
                     </div>
-                    {headlineMeta && (
-                      <span className="phage-picker-sheet__item-meta">{headlineMeta}</span>
-                    )}
-                    {numericMeta && (
-                      <span className="phage-picker-sheet__item-meta phage-picker-sheet__item-meta--numeric">
-                        {numericMeta}
+                    {isSelected && (
+                      <span className="phage-picker-sheet__item-check" aria-hidden="true">
+                        <CheckIcon />
                       </span>
                     )}
-                  </div>
-                  {isSelected && (
-                    <span className="phage-picker-sheet__item-check" aria-label="Current phage">
-                      <CheckIcon />
-                    </span>
-                  )}
-                </button>
+                  </button>
+                  <button
+                    type="button"
+                    className={`phage-picker-sheet__favorite ${
+                      isFavorite ? 'phage-picker-sheet__favorite--active' : ''
+                    }`}
+                    onClick={() => handleToggleFavorite(phage)}
+                    aria-label={`${isFavorite ? 'Remove' : 'Save'} ${phage.name}`}
+                    aria-pressed={isFavorite}
+                  >
+                    <StarIcon filled={isFavorite} />
+                  </button>
+                </div>
               );
             })
           )}
