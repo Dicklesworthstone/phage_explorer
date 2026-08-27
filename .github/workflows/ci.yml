@@ -8,6 +8,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -16,11 +19,8 @@ env:
   BUN_VERSION: "1.2.4"
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────
-  # Lint, Type Check, and Test
-  # ─────────────────────────────────────────────────────────────────────────
   check:
-    name: Lint, Typecheck & Test
+    name: Lint, Typecheck, Test & Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'bun.lockb', 'package.json', 'packages/*/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
@@ -50,9 +50,9 @@ jobs:
       - name: Run tests
         run: bun run test
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Build Binaries (only on tags)
-  # ─────────────────────────────────────────────────────────────────────────
+      - name: Verify web production build
+        run: bun run build:web
+
   build-release:
     name: Build (${{ matrix.os }})
     needs: check
@@ -80,7 +80,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'bun.lockb', 'package.json', 'packages/*/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
@@ -127,9 +127,6 @@ jobs:
           path: dist/phage-explorer-*
           retention-days: 7
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Build Database (only on tags)
-  # ─────────────────────────────────────────────────────────────────────────
   build-database:
     name: Build Database
     needs: check
@@ -147,7 +144,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'bun.lockb', 'package.json', 'packages/*/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bun-
 
@@ -159,8 +156,8 @@ jobs:
 
       - name: Verify database
         run: |
+          test -s phage.db
           ls -la phage.db
-          # Quick verification that DB is valid
           sqlite3 phage.db "SELECT COUNT(*) FROM phages;"
 
       - name: Upload database artifact
@@ -170,9 +167,6 @@ jobs:
           path: phage.db
           retention-days: 7
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # Create Release
-  # ─────────────────────────────────────────────────────────────────────────
   release:
     name: Create Release
     needs: [build-release, build-database]
@@ -191,17 +185,9 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-
-          # Copy all binaries
           find artifacts -name "phage-explorer-*" -type f -exec cp {} release/ \;
-
-          # Copy database
           cp artifacts/database/phage.db release/
-
-          # Make binaries executable
           chmod +x release/phage-explorer-* 2>/dev/null || true
-
-          # List files
           ls -la release/
 
       - name: Generate checksums
