@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { usePhageStore } from '../store';
 import { useOverlay } from './overlays/OverlayProvider';
 import {
@@ -8,6 +8,7 @@ import {
   getInitialShareState,
   normalizeShareableOverlayId,
   parseShareState,
+  type ShareableOverlayId,
 } from '../utils/share-state';
 
 let pendingInitialRestore = true;
@@ -28,7 +29,7 @@ export function applyInitialShareState(): void {
   }));
 }
 
-export function ShareStateController(): React.ReactElement | null {
+export function ShareStateController(): ReactElement | null {
   const currentPhage = usePhageStore((state) => state.currentPhage);
   const selectedGeneId = usePhageStore((state) => state.selectedGeneId);
   const viewMode = usePhageStore((state) => state.viewMode);
@@ -92,7 +93,7 @@ export function ShareStateController(): React.ReactElement | null {
     const timer = window.setTimeout(() => {
       const phageKey = currentPhage.slug?.trim() || currentPhage.accession.trim();
       const geneKey = getGeneShareKey(selectedGene);
-      let tool = null;
+      let tool: ShareableOverlayId | null = null;
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         tool = normalizeShareableOverlayId(stack[index]);
         if (tool) break;
