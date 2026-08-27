@@ -1,13 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { usePhageStore } from '../store';
 import { useOverlay } from './overlays/OverlayProvider';
 import {
   buildShareUrl,
   getInitialShareState,
   normalizeShareableOverlayId,
+  parseShareState,
 } from '../utils/share-state';
 
 let pendingInitialRestore = true;
+
+function normalizePhageKey(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? '';
+}
 
 export function applyInitialShareState(): void {
   if (typeof window === 'undefined') return;
@@ -27,8 +32,9 @@ export function ShareStateController(): React.ReactElement | null {
   const readingFrame = usePhageStore((state) => state.readingFrame);
   const scrollPosition = usePhageStore((state) => state.scrollPosition);
   const show3DModel = usePhageStore((state) => state.show3DModel);
-  const { topOverlay, open } = useOverlay();
+  const { stack, open } = useOverlay();
   const [restoreComplete, setRestoreComplete] = useState(false);
+  const lastHistoryPhageKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!currentPhage) return;
@@ -63,11 +69,21 @@ export function ShareStateController(): React.ReactElement | null {
   }, [currentPhage, open]);
 
   useEffect(() => {
+    if (!currentPhage || typeof document === 'undefined') return;
+    document.title = `${currentPhage.name} — Phage Explorer`;
+  }, [currentPhage]);
+
+  useEffect(() => {
     if (!restoreComplete || !currentPhage || typeof window === 'undefined') return;
 
     const timer = window.setTimeout(() => {
       const phageKey = currentPhage.slug?.trim() || currentPhage.accession.trim();
-      const tool = normalizeShareableOverlayId(topOverlay);
+      let tool = null;
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        tool = normalizeShareableOverlayId(stack[index]);
+        if (tool) break;
+      }
+
       const nextUrl = buildShareUrl(window.location.href, {
         phageKey,
         viewMode,
@@ -76,10 +92,17 @@ export function ShareStateController(): React.ReactElement | null {
         show3DModel,
         tool,
       });
+      const previousPhageKey = lastHistoryPhageKeyRef.current;
+      const phageChanged = previousPhageKey !== null && previousPhageKey !== phageKey;
+      lastHistoryPhageKeyRef.current = phageKey;
 
       if (nextUrl === window.location.href) return;
       try {
-        window.history.replaceState(window.history.state, '', nextUrl);
+        if (phageChanged) {
+          window.history.pushState(window.history.state, '', nextUrl);
+        } else {
+          window.history.replaceState(window.history.state, '', nextUrl);
+        }
       } catch {
         // Sharing still constructs a fresh URL at interaction time if history mutation is blocked.
       }
@@ -92,9 +115,30 @@ export function ShareStateController(): React.ReactElement | null {
     restoreComplete,
     scrollPosition,
     show3DModel,
-    topOverlay,
+    stack,
     viewMode,
   ]);
+
+  useEffect(() => {
+    if (!currentPhage || typeof window === 'undefined') return;
+
+    const handlePopState = () => {
+      const linkedPhageKey = normalizePhageKey(parseShareState(window.location.href).phageKey);
+      const currentKeys = [
+        currentPhage.slug,
+        currentPhage.accession,
+        String(currentPhage.id),
+        currentPhage.name,
+      ].map(normalizePhageKey);
+
+      if (linkedPhageKey && !currentKeys.includes(linkedPhageKey)) {
+        window.location.reload();
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentPhage]);
 
   return null;
 }
