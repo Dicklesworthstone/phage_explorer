@@ -39,7 +39,7 @@ export function buildPhageCitation({
     ? `NCBI Nucleotide accession ${cleanAccession}.`
     : 'NCBI Nucleotide record.';
   const pdbPart = uniquePdbIds.length > 0
-    ? ` RCSB PDB ${uniquePdbIds.join(', ')}.`
+    ? ` Associated phage-level RCSB PDB records: ${uniquePdbIds.join(', ')}.`
     : '';
   const cleanExplorerUrl = explorerUrl.trim();
   const explorerPart = cleanExplorerUrl

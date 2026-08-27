@@ -19,7 +19,7 @@ describe('primary-source URLs', () => {
 });
 
 describe('buildPhageCitation', () => {
-  it('includes the primary accession, unique structures, exact explorer state, and access date', () => {
+  it('includes the primary accession, scoped structures, exact explorer state, and access date', () => {
     expect(
       buildPhageCitation({
         name: 'Enterobacteria phage T4',
@@ -29,8 +29,21 @@ describe('buildPhageCitation', () => {
         accessedAt: new Date('2026-08-27T12:00:00.000Z'),
       })
     ).toBe(
-      'Enterobacteria phage T4. NCBI Nucleotide accession NC_000866.4. RCSB PDB 5VF3, 7ABC. Phage Explorer, https://phage-explorer.org/?phage=t4&view=dna&pos=120 (accessed 2026-08-27).'
+      'Enterobacteria phage T4. NCBI Nucleotide accession NC_000866.4. Associated phage-level RCSB PDB records: 5VF3, 7ABC. Phage Explorer, https://phage-explorer.org/?phage=t4&view=dna&pos=120 (accessed 2026-08-27).'
     );
+  });
+
+  it('does not imply that phage-level structures belong to a selected gene', () => {
+    const citation = buildPhageCitation({
+      name: 'gp23 in Enterobacteria phage T4',
+      accession: 'NC_000866.4',
+      pdbIds: ['5VF3'],
+      explorerUrl: 'https://phage-explorer.org/?phage=t4&gene=gp23',
+      accessedAt: new Date('2026-08-27T12:00:00.000Z'),
+    });
+
+    expect(citation).toContain('Associated phage-level RCSB PDB records: 5VF3.');
+    expect(citation).not.toContain('gp23 RCSB PDB');
   });
 
   it('remains useful when no structure record is available', () => {
