@@ -1,7 +1,8 @@
 /**
- * DataLoadingOverlay - Database Loading Screen
+ * DataLoadingOverlay - Database Loading and Recovery Screen
  *
- * Displays progress while loading the SQLite database.
+ * Displays database progress, classifies startup failures, and offers a scoped
+ * local-runtime repair path for stale IndexedDB, Workbox, and WASM caches.
  */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -16,6 +17,28 @@ interface DataLoadingOverlayProps {
   onRetry?: () => void;
 }
 
+function deleteIndexedDatabase(name: string): Promise<void> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    try {
+      const request = indexedDB.deleteDatabase(name);
+      request.onsuccess = finish;
+      request.onerror = finish;
+      request.onblocked = finish;
+    } catch {
+      finish();
+    }
+  });
+}
+
 export function DataLoadingOverlay({
   progress,
   error,
@@ -28,11 +51,12 @@ export function DataLoadingOverlay({
     if (typeof navigator === 'undefined') return true;
     return navigator.onLine;
   });
-
-  // Track if loading is taking longer than expected
   const [isSlowLoad, setIsSlowLoad] = useState(false);
   const [retryAttempt, setRetryAttempt] = useState(0);
   const [estimatedRemainingSeconds, setEstimatedRemainingSeconds] = useState<number | null>(null);
+  const [isRepairing, setIsRepairing] = useState(false);
+  const [repairError, setRepairError] = useState<string | null>(null);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const progressSamplesRef = useRef<Array<{ timeMs: number; percent: number }>>([]);
   const lastStageRef = useRef<DatabaseLoadProgress['stage'] | null>(null);
   const lastPercentRef = useRef<number | null>(null);
@@ -55,14 +79,20 @@ export function DataLoadingOverlay({
     };
   }, []);
 
-  const handleRetry = (): void => {
-    if (!onRetry) return;
+  const resetProgressEstimation = (): void => {
     setIsSlowLoad(false);
     setEstimatedRemainingSeconds(null);
     progressSamplesRef.current = [];
     lastStageRef.current = null;
     lastPercentRef.current = null;
-    setRetryAttempt((prev) => prev + 1);
+  };
+
+  const handleRetry = (): void => {
+    if (!onRetry) return;
+    resetProgressEstimation();
+    setRepairError(null);
+    setDiagnosticsCopied(false);
+    setRetryAttempt((previous) => previous + 1);
     onRetry();
   };
 
@@ -74,9 +104,6 @@ export function DataLoadingOverlay({
     }
 
     setIsSlowLoad(false);
-
-    // After 15 seconds without completion, show slow load message.
-    // Use refs so this timer doesn't reset on every progress update.
     const timer = window.setTimeout(() => {
       const current = progressRef.current;
       if (!current || current.percent < 100) {
@@ -88,7 +115,13 @@ export function DataLoadingOverlay({
   }, [retryAttempt, error]);
 
   useEffect(() => {
-    if (!progress || progress.percent <= 0 || progress.percent >= 100 || progress.stage === 'ready' || progress.stage === 'error') {
+    if (
+      !progress ||
+      progress.percent <= 0 ||
+      progress.percent >= 100 ||
+      progress.stage === 'ready' ||
+      progress.stage === 'error'
+    ) {
       progressSamplesRef.current = [];
       lastStageRef.current = progress?.stage ?? null;
       lastPercentRef.current = progress?.percent ?? null;
@@ -104,9 +137,9 @@ export function DataLoadingOverlay({
       lastPercentRef.current = null;
     }
 
-    const prevPercent = lastPercentRef.current;
-    if (prevPercent === null || progress.percent !== prevPercent) {
-      if (prevPercent !== null && progress.percent < prevPercent) {
+    const previousPercent = lastPercentRef.current;
+    if (previousPercent === null || progress.percent !== previousPercent) {
+      if (previousPercent !== null && progress.percent < previousPercent) {
         progressSamplesRef.current = [];
       }
       progressSamplesRef.current.push({ timeMs: nowMs, percent: progress.percent });
@@ -114,9 +147,9 @@ export function DataLoadingOverlay({
     }
 
     const samples = progressSamplesRef.current;
-    const MAX_SAMPLES = 8;
-    if (samples.length > MAX_SAMPLES) {
-      samples.splice(0, samples.length - MAX_SAMPLES);
+    const maxSamples = 8;
+    if (samples.length > maxSamples) {
+      samples.splice(0, samples.length - maxSamples);
     }
 
     if (samples.length < 2) {
@@ -130,12 +163,7 @@ export function DataLoadingOverlay({
     const deltaSeconds = (last.timeMs - first.timeMs) / 1000;
     const secondsSinceLastUpdate = (nowMs - last.timeMs) / 1000;
 
-    if (secondsSinceLastUpdate > 5) {
-      setEstimatedRemainingSeconds(null);
-      return;
-    }
-
-    if (deltaSeconds <= 0.5 || deltaPercent <= 0.5) {
+    if (secondsSinceLastUpdate > 5 || deltaSeconds <= 0.5 || deltaPercent <= 0.5) {
       setEstimatedRemainingSeconds(null);
       return;
     }
@@ -155,7 +183,12 @@ export function DataLoadingOverlay({
     const normalizedError = error.toLowerCase();
     const isWasmUnsupported =
       normalizedError.includes('webassembly not supported') ||
-      normalizedError.includes('wasm') && normalizedError.includes('not supported');
+      (normalizedError.includes('wasm') && normalizedError.includes('not supported'));
+    const isWasmLoadFailure =
+      normalizedError.includes('both async and sync fetching of the wasm failed') ||
+      normalizedError.includes('failed to asynchronously prepare wasm') ||
+      normalizedError.includes('wasm streaming compile failed') ||
+      normalizedError.includes('failed to load wasm');
     const isDownloadFailure =
       normalizedError.includes('failed to download') ||
       normalizedError.includes('network error') ||
@@ -165,21 +198,84 @@ export function DataLoadingOverlay({
       ? 'You appear to be offline'
       : isWasmUnsupported
         ? 'This browser cannot run the database engine'
-        : isDownloadFailure
-          ? 'Could not download the database'
-          : 'Database load failed';
+        : isWasmLoadFailure
+          ? 'Could not start the local database engine'
+          : isDownloadFailure
+            ? 'Could not download the database'
+            : 'Database load failed';
 
     const helperText = offline
       ? 'Phage Explorer needs to download the database on first load. Reconnect to the internet and retry.'
       : isWasmUnsupported
-        ? 'Phage Explorer requires WebAssembly to run SQLite in your browser. Try a modern Chromium, Firefox, or Safari.'
-        : isDownloadFailure
-          ? 'This can happen due to a flaky network, a blocked asset request, or a transient CDN issue.'
-          : 'Please retry. If the issue persists, refresh the page or try another browser.';
+        ? 'Phage Explorer requires WebAssembly to run SQLite in your browser. Use a current Chromium, Firefox, or Safari release.'
+        : isWasmLoadFailure
+          ? 'A stale service worker or cached WASM response can block SQLite startup. Retry first; if it repeats, repair the local cache and reload cleanly.'
+          : isDownloadFailure
+            ? 'This can happen because of a flaky network, a blocked asset request, or a transient edge-cache issue.'
+            : 'Retry the load. The repair option below can recover from stale local application data without changing your preferences.';
 
-    const diagnostics = progress
-      ? `${progress.stage} (${progress.percent}%): ${progress.message}`
-      : error;
+    const diagnostics = [
+      progress
+        ? `${progress.stage} (${progress.percent}%): ${progress.message}`
+        : error,
+      typeof window !== 'undefined' ? `URL: ${window.location.href}` : null,
+      `Online: ${isOnline ? 'yes' : 'no'}`,
+      typeof navigator !== 'undefined' ? `Browser: ${navigator.userAgent}` : null,
+    ].filter(Boolean).join('\n');
+
+    const handleCopyDiagnostics = async (): Promise<void> => {
+      try {
+        await navigator.clipboard.writeText(diagnostics);
+        setDiagnosticsCopied(true);
+        window.setTimeout(() => setDiagnosticsCopied(false), 2000);
+      } catch {
+        setDiagnosticsCopied(false);
+      }
+    };
+
+    const handleRepairLocalData = async (): Promise<void> => {
+      if (typeof window === 'undefined') return;
+      setIsRepairing(true);
+      setRepairError(null);
+
+      try {
+        await Promise.all([
+          deleteIndexedDatabase('phage-explorer-db'),
+          deleteIndexedDatabase('workbox-expiration'),
+        ]);
+
+        if ('caches' in window) {
+          const cacheNames = await window.caches.keys();
+          const appCacheNames = cacheNames.filter((name) => {
+            const normalized = name.toLowerCase();
+            return (
+              normalized.includes('phage') ||
+              normalized.includes('wasm') ||
+              normalized.includes('sql-js') ||
+              normalized.includes('workbox-precache')
+            );
+          });
+          await Promise.all(appCacheNames.map((name) => window.caches.delete(name)));
+        }
+
+        if ('serviceWorker' in navigator) {
+          const registrations = typeof navigator.serviceWorker.getRegistrations === 'function'
+            ? await navigator.serviceWorker.getRegistrations()
+            : [await navigator.serviceWorker.getRegistration()].filter(
+                (registration): registration is ServiceWorkerRegistration => Boolean(registration)
+              );
+          await Promise.all(registrations.map((registration) => registration.unregister()));
+        }
+
+        window.setTimeout(() => window.location.reload(), 50);
+      } catch (repairFailure) {
+        const message = repairFailure instanceof Error
+          ? repairFailure.message
+          : 'Could not clear local application data';
+        setRepairError(message);
+        setIsRepairing(false);
+      }
+    };
 
     return (
       <div
@@ -192,25 +288,32 @@ export function DataLoadingOverlay({
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
+          padding: 'max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom))',
+          boxSizing: 'border-box',
           backgroundColor: colors.background,
           zIndex: 9999,
+          overflow: 'hidden',
         }}
       >
         <div
           style={{
+            width: 'min(520px, 100%)',
+            maxHeight: 'calc(100dvh - 2rem)',
+            overflowY: 'auto',
+            WebkitOverflowScrolling: 'touch',
             border: `1px solid ${colors.error}`,
-            padding: '2rem',
-            borderRadius: '8px',
+            padding: 'clamp(1.25rem, 5vw, 2rem)',
+            borderRadius: '12px',
             textAlign: 'center',
             backgroundColor: 'rgba(255, 0, 0, 0.1)',
-            maxWidth: '520px',
+            boxSizing: 'border-box',
           }}
         >
           <div style={{ marginBottom: '1rem', color: colors.error }} aria-hidden="true">
-            <IconAlertTriangle size={32} />
+            <IconAlertTriangle size={34} />
           </div>
-          <h2 style={{ color: colors.error, marginBottom: '1rem' }}>{headline}</h2>
-          <p style={{ color: colors.text, marginBottom: '0.75rem' }}>{helperText}</p>
+          <h2 style={{ color: colors.error, margin: '0 0 1rem' }}>{headline}</h2>
+          <p style={{ color: colors.text, margin: '0 0 0.9rem', lineHeight: 1.55 }}>{helperText}</p>
           <details
             style={{
               margin: '0 auto 1.25rem',
@@ -219,45 +322,90 @@ export function DataLoadingOverlay({
               fontSize: '0.85rem',
             }}
           >
-            <summary style={{ cursor: 'pointer', color: colors.textDim }}>Details</summary>
+            <summary style={{ cursor: 'pointer', color: colors.textDim, minHeight: '44px', display: 'flex', alignItems: 'center' }}>
+              Details
+            </summary>
             <pre
               style={{
+                maxHeight: '180px',
                 marginTop: '0.5rem',
                 padding: '0.75rem',
                 backgroundColor: colors.backgroundAlt,
                 border: `1px solid ${colors.border}`,
-                borderRadius: '6px',
-                overflowX: 'auto',
+                borderRadius: '8px',
+                overflow: 'auto',
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
+                fontSize: '0.75rem',
+                lineHeight: 1.45,
               }}
             >
               {diagnostics}
             </pre>
-          </details>
-          {onRetry && (
             <button
               type="button"
-              onClick={handleRetry}
-              className="btn btn-primary"
+              onClick={() => void handleCopyDiagnostics()}
+              className="btn btn-ghost btn-sm"
+              style={{ marginTop: '0.5rem' }}
             >
-              Retry
+              {diagnosticsCopied ? 'Copied' : 'Copy diagnostics'}
             </button>
+          </details>
+
+          {repairError && (
+            <div style={{ color: colors.error, fontSize: '0.85rem', marginBottom: '0.75rem' }}>
+              Repair failed: {repairError}
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.75rem',
+            }}
+          >
+            {onRetry && (
+              <button
+                type="button"
+                onClick={handleRetry}
+                className="btn btn-primary"
+                disabled={isRepairing}
+              >
+                Retry
+              </button>
+            )}
+            {!offline && !isWasmUnsupported && (
+              <button
+                type="button"
+                onClick={() => void handleRepairLocalData()}
+                className="btn btn-ghost"
+                disabled={isRepairing}
+              >
+                {isRepairing ? 'Repairing…' : 'Repair local cache'}
+              </button>
+            )}
+          </div>
+
+          {!offline && !isWasmUnsupported && (
+            <p style={{ color: colors.textMuted, fontSize: '0.75rem', lineHeight: 1.45, margin: '1rem 0 0' }}>
+              Repair removes only this site’s downloaded database, service worker, and runtime caches. Saved display preferences remain intact.
+            </p>
           )}
         </div>
       </div>
     );
   }
 
-  // Show initial loading state when no progress data yet
-  // This ensures the overlay is never invisible
   const displayProgress: DatabaseLoadProgress = progress ?? {
     stage: 'initializing',
     percent: 0,
     message: 'Initializing...',
   };
 
-  const formatDuration = (seconds: number) => {
+  const formatDuration = (seconds: number): string => {
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
@@ -281,17 +429,17 @@ export function DataLoadingOverlay({
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
+        padding: 'max(1rem, env(safe-area-inset-top)) 1rem max(1rem, env(safe-area-inset-bottom))',
+        boxSizing: 'border-box',
         backgroundColor: colors.background,
         zIndex: 9999,
       }}
     >
-      <div style={{ width: '320px', textAlign: 'center' }}>
-        {/* App title */}
+      <div style={{ width: 'min(320px, 100%)', textAlign: 'center' }}>
         <div style={{ marginBottom: '1.5rem', fontSize: '1.5rem', color: colors.accent }}>
           PHAGE EXPLORER
         </div>
 
-        {/* Animated loading indicator when progress is 0 or unknown */}
         {displayProgress.percent === 0 && (
           <div style={{ marginBottom: '1rem' }}>
             <Skeleton
@@ -304,7 +452,6 @@ export function DataLoadingOverlay({
           </div>
         )}
 
-        {/* Progress bar when we have actual progress */}
         {displayProgress.percent > 0 && (
           <div
             className="progress-bar"
@@ -321,8 +468,13 @@ export function DataLoadingOverlay({
           </div>
         )}
 
-        {/* Status message */}
-        <div style={{ color: colors.textDim, fontSize: '0.9rem', marginBottom: estimatedRemainingSeconds ? '0.25rem' : '0.5rem' }}>
+        <div
+          style={{
+            color: colors.textDim,
+            fontSize: '0.9rem',
+            marginBottom: estimatedRemainingSeconds ? '0.25rem' : '0.5rem',
+          }}
+        >
           {displayProgress.message}
           {displayProgress.percent > 0 && ` (${displayProgress.percent}%)`}
         </div>
@@ -340,28 +492,28 @@ export function DataLoadingOverlay({
           </div>
         )}
 
-        {/* Slow load warning */}
         {isSlowLoad && (
           <div
             style={{
               marginTop: '1rem',
               padding: '0.75rem',
               backgroundColor: colors.backgroundAlt,
-              borderRadius: '6px',
+              borderRadius: '8px',
               border: `1px solid ${colors.border}`,
             }}
           >
             <div style={{ color: colors.warning, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-              Taking longer than expected...
+              Taking longer than expected…
             </div>
-            <div style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
-              This may be due to a slow network or large database.
+            <div style={{ color: colors.textMuted, fontSize: '0.8rem', lineHeight: 1.45 }}>
+              The first visit downloads and opens the local genome database. A slow connection or constrained device can add a few seconds.
             </div>
             {onRetry && (
               <button
                 onClick={handleRetry}
                 type="button"
                 className="btn btn-ghost btn-sm"
+                style={{ marginTop: '0.75rem' }}
               >
                 Retry
               </button>
@@ -369,7 +521,6 @@ export function DataLoadingOverlay({
           </div>
         )}
 
-        {/* Screen reader announcement */}
         <div className="sr-only">
           Loading database: {displayProgress.message},{' '}
           {displayProgress.percent > 0
