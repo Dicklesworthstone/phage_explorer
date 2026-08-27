@@ -8,6 +8,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { haptics } from '../utils/haptics';
+import '../styles/quick-stats-actions.css';
 
 interface QuickStatsProps {
   className?: string;
