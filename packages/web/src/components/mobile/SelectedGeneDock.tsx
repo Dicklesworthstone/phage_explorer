@@ -8,11 +8,14 @@ import {
 } from 'react';
 import type { GeneInfo, ViewMode } from '@phage-explorer/core';
 import { usePhageStore, useSelectedGeneStore } from '../../store';
+import { copyToClipboard } from '../../utils/export';
+import { formatGeneStrand } from '../../utils/gene-strand';
 import { haptics } from '../../utils/haptics';
 import {
   buildShareUrl,
   getGeneShareKey,
   normalizeShareableOverlayId,
+  type ShareableOverlayId,
 } from '../../utils/share-state';
 import {
   buildNcbiNucleotideUrl,
@@ -26,12 +29,26 @@ export type GeneNavigationDirection = 'previous' | 'next';
 
 type FeedbackState = 'id-copied' | 'link-copied' | 'citation-copied' | null;
 
+function getOrderedGeneBounds(gene: Pick<GeneInfo, 'startPos' | 'endPos'>): {
+  start: number;
+  end: number;
+} {
+  return {
+    start: Math.min(gene.startPos, gene.endPos),
+    end: Math.max(gene.startPos, gene.endPos),
+  };
+}
+
 export function sortGenesForNavigation(genes: readonly GeneInfo[]): GeneInfo[] {
-  return genes.slice().sort((left, right) =>
-    left.startPos - right.startPos ||
-    left.endPos - right.endPos ||
-    left.id - right.id
-  );
+  return genes.slice().sort((left, right) => {
+    const leftBounds = getOrderedGeneBounds(left);
+    const rightBounds = getOrderedGeneBounds(right);
+    return (
+      leftBounds.start - rightBounds.start ||
+      leftBounds.end - rightBounds.end ||
+      left.id - right.id
+    );
+  });
 }
 
 export function getAdjacentGene(
@@ -50,7 +67,7 @@ export function getAdjacentGene(
 }
 
 export function getGeneFocusPosition(gene: GeneInfo, viewMode: ViewMode): number {
-  const nucleotidePosition = Math.max(0, Math.floor(gene.startPos));
+  const nucleotidePosition = Math.max(0, Math.floor(getOrderedGeneBounds(gene).start));
   return viewMode === 'aa'
     ? Math.floor(nucleotidePosition / 3)
     : nucleotidePosition;
@@ -65,38 +82,9 @@ export function getGeneDisplayLabel(gene: GeneInfo): string {
   );
 }
 
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textArea = document.createElement('textarea');
-  textArea.value = text;
-  textArea.setAttribute('readonly', '');
-  textArea.style.position = 'fixed';
-  textArea.style.opacity = '0';
-  textArea.style.pointerEvents = 'none';
-  document.body.appendChild(textArea);
-  textArea.select();
-  const copied = document.execCommand('copy');
-  textArea.remove();
-  if (!copied) throw new Error('Clipboard copy failed');
-}
-
 function GeneIcon(): ReactElement {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 7h16" />
       <path d="M4 17h16" />
       <path d="m7 7 3 5-3 5" />
@@ -108,17 +96,7 @@ function GeneIcon(): ReactElement {
 function ChevronIcon({ direction }: { direction: 'left' | 'right' }): ReactElement {
   const points = direction === 'left' ? '15 18 9 12 15 6' : '9 18 15 12 9 6';
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.25}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.25} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <polyline points={points} />
     </svg>
   );
@@ -126,17 +104,7 @@ function ChevronIcon({ direction }: { direction: 'left' | 'right' }): ReactEleme
 
 function FocusIcon(): ReactElement {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="12" cy="12" r="3" />
       <path d="M3 12h3" />
       <path d="M18 12h3" />
@@ -148,16 +116,7 @@ function FocusIcon(): ReactElement {
 
 function CloseIcon(): ReactElement {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2.25}
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.25} strokeLinecap="round" aria-hidden="true">
       <path d="M18 6 6 18" />
       <path d="m6 6 12 12" />
     </svg>
@@ -166,17 +125,7 @@ function CloseIcon(): ReactElement {
 
 function ShareIcon(): ReactElement {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <circle cx="18" cy="5" r="3" />
       <circle cx="6" cy="12" r="3" />
       <circle cx="18" cy="19" r="3" />
@@ -188,17 +137,7 @@ function ShareIcon(): ReactElement {
 
 function CopyIcon(): ReactElement {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="8" y="8" width="13" height="13" rx="2" />
       <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
     </svg>
@@ -207,17 +146,7 @@ function CopyIcon(): ReactElement {
 
 function BookIcon(): ReactElement {
   return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
     </svg>
@@ -226,17 +155,7 @@ function BookIcon(): ReactElement {
 
 function ExternalLinkIcon(): ReactElement {
   return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M15 3h6v6" />
       <path d="M10 14 21 3" />
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
@@ -285,7 +204,7 @@ export function SelectedGeneDock(): ReactElement | null {
     const baseUrl = typeof window === 'undefined'
       ? 'https://phage-explorer.org/'
       : window.location.href;
-    let tool = null;
+    let tool: ShareableOverlayId | null = null;
     for (let index = stack.length - 1; index >= 0; index -= 1) {
       tool = normalizeShareableOverlayId(stack[index]);
       if (tool) break;
@@ -342,8 +261,7 @@ export function SelectedGeneDock(): ReactElement | null {
   const navigateGene = useCallback((direction: GeneNavigationDirection) => {
     if (!selectedGene) return;
     const adjacent = direction === 'previous' ? previousGene : nextGene;
-    if (!adjacent) return;
-    focusGene(adjacent);
+    if (adjacent) focusGene(adjacent);
   }, [focusGene, nextGene, previousGene, selectedGene]);
 
   const handleClear = useCallback(() => {
@@ -355,7 +273,7 @@ export function SelectedGeneDock(): ReactElement | null {
   const handleCopyId = useCallback(async () => {
     if (!geneId) return;
     try {
-      await copyText(geneId);
+      await copyToClipboard(geneId);
       haptics.success();
       showFeedback('id-copied');
     } catch {
@@ -371,17 +289,22 @@ export function SelectedGeneDock(): ReactElement | null {
       url: shareUrl,
     };
 
-    try {
-      if (typeof navigator.share === 'function') {
+    if (typeof navigator.share === 'function') {
+      try {
         await navigator.share(shareData);
         haptics.success();
         return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        // Fall through to copying the exact URL.
       }
-      await copyText(shareUrl);
+    }
+
+    try {
+      await copyToClipboard(shareUrl);
       haptics.success();
       showFeedback('link-copied');
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
+    } catch {
       haptics.error();
     }
   }, [currentPhage, geneLabel, selectedGene, shareUrl, showFeedback]);
@@ -396,7 +319,7 @@ export function SelectedGeneDock(): ReactElement | null {
     });
 
     try {
-      await copyText(citation);
+      await copyToClipboard(citation);
       haptics.success();
       showFeedback('citation-copied');
     } catch {
@@ -404,7 +327,9 @@ export function SelectedGeneDock(): ReactElement | null {
     }
   }, [currentPhage, geneLabel, selectedGene, shareUrl, showFeedback]);
 
-  const handleOpenAnalysis = useCallback((overlayId: 'proteinDomains' | 'foldQuickview' | 'selectionPressure' | 'rnaStructure') => {
+  const handleOpenAnalysis = useCallback((
+    overlayId: 'proteinDomains' | 'foldQuickview' | 'selectionPressure' | 'rnaStructure'
+  ) => {
     haptics.selection();
     setIsSheetOpen(false);
     open(overlayId);
@@ -412,8 +337,9 @@ export function SelectedGeneDock(): ReactElement | null {
 
   if (!currentPhage || !selectedGene) return null;
 
-  const coordinates = `${selectedGene.startPos.toLocaleString()}–${selectedGene.endPos.toLocaleString()}`;
-  const strand = selectedGene.strand === '-' ? 'Reverse (−)' : 'Forward (+)';
+  const bounds = getOrderedGeneBounds(selectedGene);
+  const coordinates = `${bounds.start.toLocaleString()}–${bounds.end.toLocaleString()}`;
+  const strand = formatGeneStrand(selectedGene.strand);
   const pdbIds = Array.from(
     new Set(
       (currentPhage.pdbIds ?? [])
@@ -457,6 +383,7 @@ export function SelectedGeneDock(): ReactElement | null {
           className="selected-gene-dock__clear"
           onClick={handleClear}
           aria-label={`Clear selected gene ${geneLabel}`}
+          data-clear-selected-gene
         >
           <CloseIcon />
         </button>
@@ -476,9 +403,7 @@ export function SelectedGeneDock(): ReactElement | null {
             <div className="selected-gene-inspector__hero-copy">
               <span className="selected-gene-inspector__context">{currentPhage.name}</span>
               <h3>{geneLabel}</h3>
-              {selectedGene.product?.trim() && (
-                <p>{selectedGene.product.trim()}</p>
-              )}
+              {selectedGene.product?.trim() && <p>{selectedGene.product.trim()}</p>}
             </div>
             <span className="selected-gene-inspector__position">
               {selectedIndex + 1}/{genes.length}
@@ -517,30 +442,12 @@ export function SelectedGeneDock(): ReactElement | null {
           <section className="selected-gene-inspector__section" aria-labelledby="selected-gene-details-heading">
             <h4 id="selected-gene-details-heading">Annotation</h4>
             <dl className="selected-gene-inspector__facts">
-              <div>
-                <dt>Locus tag</dt>
-                <dd>{selectedGene.locusTag?.trim() || 'Not provided'}</dd>
-              </div>
-              <div>
-                <dt>Gene name</dt>
-                <dd>{selectedGene.name?.trim() || 'Not provided'}</dd>
-              </div>
-              <div>
-                <dt>Feature type</dt>
-                <dd>{selectedGene.type?.trim() || 'Not provided'}</dd>
-              </div>
-              <div>
-                <dt>Coordinates</dt>
-                <dd>{coordinates}</dd>
-              </div>
-              <div>
-                <dt>Strand</dt>
-                <dd>{strand}</dd>
-              </div>
-              <div>
-                <dt>Database ID</dt>
-                <dd>{selectedGene.id}</dd>
-              </div>
+              <div><dt>Locus tag</dt><dd>{selectedGene.locusTag?.trim() || 'Not provided'}</dd></div>
+              <div><dt>Gene name</dt><dd>{selectedGene.name?.trim() || 'Not provided'}</dd></div>
+              <div><dt>Feature type</dt><dd>{selectedGene.type?.trim() || 'Not provided'}</dd></div>
+              <div><dt>Coordinates</dt><dd>{coordinates}</dd></div>
+              <div><dt>Strand</dt><dd>{strand}</dd></div>
+              <div><dt>Database ID</dt><dd>{selectedGene.id}</dd></div>
             </dl>
           </section>
 
@@ -559,11 +466,7 @@ export function SelectedGeneDock(): ReactElement | null {
                 <CopyIcon />
                 <span>{feedback === 'id-copied' ? 'ID copied' : 'Copy gene ID'}</span>
               </button>
-              <a
-                href={buildNcbiNucleotideUrl(currentPhage.accession)}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
+              <a href={buildNcbiNucleotideUrl(currentPhage.accession)} target="_blank" rel="noopener noreferrer">
                 <ExternalLinkIcon />
                 <span>NCBI record</span>
               </a>
@@ -582,20 +485,16 @@ export function SelectedGeneDock(): ReactElement | null {
             </p>
             <div className="selected-gene-inspector__analysis-grid">
               <button type="button" onClick={() => handleOpenAnalysis('proteinDomains')}>
-                <strong>Protein domains</strong>
-                <span>InterPro and Pfam architecture</span>
+                <strong>Protein domains</strong><span>InterPro and Pfam architecture</span>
               </button>
               <button type="button" onClick={() => handleOpenAnalysis('foldQuickview')}>
-                <strong>Fold quickview</strong>
-                <span>Structural fold evidence</span>
+                <strong>Fold quickview</strong><span>Structural fold evidence</span>
               </button>
               <button type="button" onClick={() => handleOpenAnalysis('selectionPressure')}>
-                <strong>Selection pressure</strong>
-                <span>Evolutionary constraint signals</span>
+                <strong>Selection pressure</strong><span>Evolutionary constraint signals</span>
               </button>
               <button type="button" onClick={() => handleOpenAnalysis('rnaStructure')}>
-                <strong>RNA structure</strong>
-                <span>Local secondary-structure view</span>
+                <strong>RNA structure</strong><span>Local secondary-structure view</span>
               </button>
             </div>
           </section>
@@ -608,16 +507,8 @@ export function SelectedGeneDock(): ReactElement | null {
               </p>
               <div className="selected-gene-inspector__pdb-list">
                 {pdbIds.map((pdbId) => (
-                  <a
-                    key={pdbId}
-                    href={buildRcsbPdbUrl(pdbId)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <span>
-                      <strong>{pdbId}</strong>
-                      <small>RCSB Protein Data Bank</small>
-                    </span>
+                  <a key={pdbId} href={buildRcsbPdbUrl(pdbId)} target="_blank" rel="noopener noreferrer">
+                    <span><strong>{pdbId}</strong><small>RCSB Protein Data Bank</small></span>
                     <ExternalLinkIcon />
                   </a>
                 ))}
@@ -629,6 +520,7 @@ export function SelectedGeneDock(): ReactElement | null {
             type="button"
             className="selected-gene-inspector__clear"
             onClick={handleClear}
+            data-clear-selected-gene
           >
             Clear gene selection
           </button>

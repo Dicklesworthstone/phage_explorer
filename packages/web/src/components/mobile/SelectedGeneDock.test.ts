@@ -47,11 +47,11 @@ describe('sortGenesForNavigation', () => {
     expect(genes.map((gene) => gene.id)).toEqual(originalIds);
   });
 
-  it('uses end position and ID as deterministic tie breakers', () => {
+  it('uses ordered bounds and ID as deterministic tie breakers', () => {
     const tied: GeneInfo[] = [
-      { ...genes[0], id: 8, startPos: 100, endPos: 300 },
+      { ...genes[0], id: 8, startPos: 300, endPos: 100 },
       { ...genes[0], id: 7, startPos: 100, endPos: 200 },
-      { ...genes[0], id: 6, startPos: 100, endPos: 200 },
+      { ...genes[0], id: 6, startPos: 200, endPos: 100 },
     ];
     expect(sortGenesForNavigation(tied).map((gene) => gene.id)).toEqual([6, 7, 8]);
   });
@@ -78,6 +78,11 @@ describe('getGeneFocusPosition', () => {
 
   it('converts nucleotide coordinates to amino-acid coordinates', () => {
     expect(getGeneFocusPosition({ ...genes[0], startPos: 901 }, 'aa')).toBe(300);
+  });
+
+  it('focuses the lower genomic coordinate when endpoints are reversed', () => {
+    expect(getGeneFocusPosition({ ...genes[0], startPos: 1_200, endPos: 900 }, 'dna')).toBe(900);
+    expect(getGeneFocusPosition({ ...genes[0], startPos: 1_200, endPos: 901 }, 'aa')).toBe(300);
   });
 
   it('never returns a negative focus position', () => {
