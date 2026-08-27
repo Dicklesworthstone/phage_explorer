@@ -1,7 +1,7 @@
 name: release-automation
 
 # Watches main for a package.json version bump and auto-creates a
-# matching `vX.Y.Z` tag, which then triggers release.yml.
+# matching `vX.Y.Z` tag, which then triggers the release workflow.
 
 on:
   push:
@@ -29,23 +29,47 @@ jobs:
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Read latest tag
-        id: latest
+      - name: Classify requested release tag
+        id: tag
         run: |
+          desired="v${{ steps.version.outputs.version }}"
           latest=$(git tag --list 'v*' --sort=-v:refname | head -1)
+
+          echo "desired=$desired" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
-      - name: Create tag
-        if: steps.latest.outputs.latest != format('v{0}', steps.version.outputs.version)
+          if git show-ref --tags --verify --quiet "refs/tags/$desired"; then
+            echo "status=exists" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -n "$latest" ]; then
+            highest=$(printf '%s\n%s\n' "$latest" "$desired" | sort -V | tail -1)
+            if [ "$highest" != "$desired" ]; then
+              echo "status=behind" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "status=create" >> "$GITHUB_OUTPUT"
+
+      - name: Reject a version behind the latest release
+        if: steps.tag.outputs.status == 'behind'
         run: |
-          tag="v${{ steps.version.outputs.version }}"
+          echo "::error::package.json requests ${{ steps.tag.outputs.desired }}, which is behind latest tag ${{ steps.tag.outputs.latest }}"
+          exit 1
+
+      - name: Create tag
+        if: steps.tag.outputs.status == 'create'
+        run: |
+          tag="${{ steps.tag.outputs.desired }}"
           echo "Creating release tag $tag"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$tag" -m "Release $tag"
           git push origin "$tag"
 
-      - name: Skip (already tagged)
-        if: steps.latest.outputs.latest == format('v{0}', steps.version.outputs.version)
+      - name: Skip existing tag
+        if: steps.tag.outputs.status == 'exists'
         run: |
-          echo "Latest tag matches package.json version; nothing to do."
+          echo "${{ steps.tag.outputs.desired }} already exists; nothing to do."
