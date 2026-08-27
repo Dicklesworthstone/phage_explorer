@@ -1,4 +1,4 @@
-import type { PhageSummary, ReadingFrame, ViewMode } from '@phage-explorer/core';
+import type { GeneInfo, PhageSummary, ReadingFrame, ViewMode } from '@phage-explorer/core';
 import type { OverlayId } from '../components/overlays/OverlayProvider';
 
 export const SHAREABLE_OVERLAY_IDS = [
@@ -52,6 +52,7 @@ export type ShareableOverlayId = (typeof SHAREABLE_OVERLAY_IDS)[number];
 
 export interface ParsedShareState {
   phageKey: string | null;
+  geneKey: string | null;
   viewMode: ViewMode | null;
   position: number | null;
   readingFrame: ReadingFrame | null;
@@ -61,6 +62,7 @@ export interface ParsedShareState {
 
 export interface ShareUrlState {
   phageKey: string;
+  geneKey?: string | null;
   viewMode: ViewMode;
   position: number;
   readingFrame: ReadingFrame;
@@ -75,6 +77,7 @@ const SHAREABLE_OVERLAY_BY_NORMALIZED = new Map<string, ShareableOverlayId>(
 );
 const EMPTY_SHARE_STATE: ParsedShareState = Object.freeze({
   phageKey: null,
+  geneKey: null,
   viewMode: null,
   position: null,
   readingFrame: null,
@@ -91,6 +94,11 @@ function toUrl(input: string | URL): URL {
 
 function normalizeKey(value: string | null | undefined): string {
   return value?.trim().toLowerCase() ?? '';
+}
+
+function parseBoundedKey(value: string | null, maxLength: number): string | null {
+  const trimmed = value?.trim() ?? '';
+  return trimmed ? trimmed.slice(0, maxLength) : null;
 }
 
 function parsePosition(value: string | null): number | null {
@@ -132,14 +140,14 @@ export function parseShareState(input: string | URL): ParsedShareState {
     return EMPTY_SHARE_STATE;
   }
 
-  const rawPhageKey = url.searchParams.get('phage')?.trim() ?? '';
   const rawViewMode = url.searchParams.get('view')?.trim().toLowerCase() ?? '';
   const viewMode = VALID_VIEW_MODES.has(rawViewMode as ViewMode)
     ? (rawViewMode as ViewMode)
     : null;
 
   return {
-    phageKey: rawPhageKey ? rawPhageKey.slice(0, 128) : null,
+    phageKey: parseBoundedKey(url.searchParams.get('phage'), 128),
+    geneKey: parseBoundedKey(url.searchParams.get('gene'), 128),
     viewMode,
     position: parsePosition(url.searchParams.get('pos')),
     readingFrame: parseReadingFrame(url.searchParams.get('frame')),
@@ -165,13 +173,36 @@ export function findPhageIndex(phages: readonly PhageSummary[], phageKey: string
   );
 }
 
+export function getGeneShareKey(gene: GeneInfo | null | undefined): string | null {
+  if (!gene) return null;
+  const locusTag = gene.locusTag?.trim();
+  if (locusTag) return locusTag;
+  return String(gene.id);
+}
+
+export function findGeneId(
+  genes: readonly GeneInfo[],
+  geneKey: string | null | undefined
+): number | null {
+  const normalized = normalizeKey(geneKey);
+  if (!normalized) return null;
+
+  const match = genes.find((gene) =>
+    [gene.locusTag, String(gene.id), gene.name]
+      .some((candidate) => normalizeKey(candidate) === normalized)
+  );
+  return match?.id ?? null;
+}
+
 export function buildShareUrl(baseUrl: string | URL, state: ShareUrlState): string {
   const url = toUrl(baseUrl);
   url.search = '';
   url.hash = '';
 
   const phageKey = state.phageKey.trim();
+  const geneKey = state.geneKey?.trim() ?? '';
   if (phageKey) url.searchParams.set('phage', phageKey);
+  if (geneKey) url.searchParams.set('gene', geneKey);
   url.searchParams.set('view', state.viewMode);
   url.searchParams.set('pos', String(Math.max(0, Math.floor(state.position))));
   url.searchParams.set('frame', String(state.readingFrame));
