@@ -20,6 +20,7 @@ import {
   buildPhageCitation,
   buildRcsbPdbUrl,
 } from '../utils/research-record';
+import { summarizeGeneStrands } from '../utils/gene-strand';
 import '../styles/quick-stats-actions.css';
 
 export { buildNcbiNucleotideUrl, buildRcsbPdbUrl } from '../utils/research-record';
@@ -32,8 +33,12 @@ type ActionFeedback = 'accession-copied' | 'link-copied' | 'citation-copied' | n
 
 async function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch {
+      // Fall through to the selection-based copy path.
+    }
   }
 
   const textArea = document.createElement('textarea');
@@ -41,6 +46,7 @@ async function copyText(text: string): Promise<void> {
   textArea.setAttribute('readonly', '');
   textArea.style.position = 'fixed';
   textArea.style.opacity = '0';
+  textArea.style.pointerEvents = 'none';
   document.body.appendChild(textArea);
   textArea.select();
   const copied = document.execCommand('copy');
@@ -177,20 +183,26 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const stats = useMemo(() => {
     if (!currentPhage) return null;
 
-    const forwardGenes = currentPhage.genes?.filter((gene) => gene.strand !== '-').length ?? 0;
-    const reverseGenes = currentPhage.genes?.filter((gene) => gene.strand === '-').length ?? 0;
-    const pdbIds = currentPhage.pdbIds ?? [];
+    const strandSummary = summarizeGeneStrands(currentPhage.genes ?? []);
+    const pdbIds = Array.from(
+      new Set(
+        (currentPhage.pdbIds ?? [])
+          .map((pdbId) => pdbId.trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
 
     return {
       id: currentPhage.id,
       name: currentPhage.name,
       slug: currentPhage.slug,
       accession: currentPhage.accession,
-      length: currentPhage.genomeLength ?? 0,
+      length: currentPhage.genomeLength,
       gcContent: currentPhage.gcContent,
       geneCount: currentPhage.genes?.length ?? 0,
-      forwardGenes,
-      reverseGenes,
+      forwardGenes: strandSummary.forward,
+      reverseGenes: strandSummary.reverse,
+      unknownStrandGenes: strandSummary.unknown,
       baltimore: currentPhage.baltimoreGroup,
       host: currentPhage.host,
       pdbIds,
@@ -303,18 +315,22 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       url: shareUrl,
     };
 
-    try {
-      if (typeof navigator.share === 'function') {
+    if (typeof navigator.share === 'function') {
+      try {
         await navigator.share(shareData);
         haptics.success();
         return;
+      } catch (error) {
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        // Fall back to copying the exact URL when native sharing is unavailable at call time.
       }
+    }
 
+    try {
       await copyText(shareUrl);
       haptics.success();
       showFeedback('link-copied');
-    } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') return;
+    } catch {
       haptics.error();
     }
   }, [selectedGeneLabel, shareUrl, showFeedback, stats]);
@@ -329,11 +345,21 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
     return value.toLocaleString();
   };
 
+  const strandAriaLabel = [
+    `${stats.forwardGenes} forward strand`,
+    `${stats.reverseGenes} reverse strand`,
+    ...(stats.unknownStrandGenes > 0
+      ? [`${stats.unknownStrandGenes} unknown strand`]
+      : []),
+  ].join(', ');
+
   return (
     <div className={`quick-stats ${className}`} aria-label="Phage statistics">
       <div className="quick-stat">
         <span className="quick-stat__label">Length</span>
-        <span className="quick-stat__value">{formatNumber(stats.length)} bp</span>
+        <span className="quick-stat__value">
+          {stats.length == null ? 'Not reported' : `${formatNumber(stats.length)} bp`}
+        </span>
       </div>
 
       {stats.gcContent != null && (
@@ -347,8 +373,9 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
         <span className="quick-stat__label">Genes</span>
         <span className="quick-stat__value">
           {stats.geneCount}{' '}
-          <span className="quick-stat__detail">
-            ({stats.forwardGenes}+ / {stats.reverseGenes}-)
+          <span className="quick-stat__detail" aria-label={strandAriaLabel}>
+            ({stats.forwardGenes}+ / {stats.reverseGenes}-
+            {stats.unknownStrandGenes > 0 ? ` / ${stats.unknownStrandGenes}?` : ''})
           </span>
         </span>
       </div>
