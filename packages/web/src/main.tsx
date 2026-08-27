@@ -9,6 +9,7 @@ import App from './App';
 import { ShareStateController, applyInitialShareState } from './components/ShareStateController';
 import './styles.css';
 import './styles/scroll.css';
+import './styles/phage-picker-accessibility.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
 
