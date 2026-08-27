@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '../store';
 import { useOverlay } from './overlays/OverlayProvider';
 import {
   buildShareUrl,
+  findGeneId,
+  getGeneShareKey,
   getInitialShareState,
   normalizeShareableOverlayId,
   parseShareState,
@@ -28,6 +30,7 @@ export function applyInitialShareState(): void {
 
 export function ShareStateController(): React.ReactElement | null {
   const currentPhage = usePhageStore((state) => state.currentPhage);
+  const selectedGeneId = usePhageStore((state) => state.selectedGeneId);
   const viewMode = usePhageStore((state) => state.viewMode);
   const readingFrame = usePhageStore((state) => state.readingFrame);
   const scrollPosition = usePhageStore((state) => state.scrollPosition);
@@ -35,6 +38,11 @@ export function ShareStateController(): React.ReactElement | null {
   const { stack, open } = useOverlay();
   const [restoreComplete, setRestoreComplete] = useState(false);
   const lastHistoryPhageKeyRef = useRef<string | null>(null);
+
+  const selectedGene = useMemo(() => {
+    if (!currentPhage || selectedGeneId === null) return null;
+    return currentPhage.genes.find((gene) => gene.id === selectedGeneId) ?? null;
+  }, [currentPhage, selectedGeneId]);
 
   useEffect(() => {
     if (!currentPhage) return;
@@ -51,12 +59,14 @@ export function ShareStateController(): React.ReactElement | null {
           : genomeLength;
         const maxPosition = Math.max(0, coordinateLength - 1);
         const requestedPosition = initial.position ?? state.scrollPosition;
+        const linkedGeneId = findGeneId(currentPhage.genes, initial.geneKey);
 
         return {
           viewMode: effectiveViewMode,
           readingFrame: initial.readingFrame ?? state.readingFrame,
           scrollPosition: Math.min(Math.max(0, requestedPosition), maxPosition),
           show3DModel: initial.show3DModel ?? state.show3DModel,
+          selectedGeneId: linkedGeneId ?? state.selectedGeneId,
         };
       });
 
@@ -70,14 +80,18 @@ export function ShareStateController(): React.ReactElement | null {
 
   useEffect(() => {
     if (!currentPhage || typeof document === 'undefined') return;
-    document.title = `${currentPhage.name} — Phage Explorer`;
-  }, [currentPhage]);
+    const geneLabel = selectedGene?.locusTag?.trim() || selectedGene?.name?.trim();
+    document.title = geneLabel
+      ? `${geneLabel} — ${currentPhage.name} — Phage Explorer`
+      : `${currentPhage.name} — Phage Explorer`;
+  }, [currentPhage, selectedGene]);
 
   useEffect(() => {
     if (!restoreComplete || !currentPhage || typeof window === 'undefined') return;
 
     const timer = window.setTimeout(() => {
       const phageKey = currentPhage.slug?.trim() || currentPhage.accession.trim();
+      const geneKey = getGeneShareKey(selectedGene);
       let tool = null;
       for (let index = stack.length - 1; index >= 0; index -= 1) {
         tool = normalizeShareableOverlayId(stack[index]);
@@ -86,6 +100,7 @@ export function ShareStateController(): React.ReactElement | null {
 
       const nextUrl = buildShareUrl(window.location.href, {
         phageKey,
+        geneKey,
         viewMode,
         position: scrollPosition,
         readingFrame,
@@ -114,6 +129,7 @@ export function ShareStateController(): React.ReactElement | null {
     readingFrame,
     restoreComplete,
     scrollPosition,
+    selectedGene,
     show3DModel,
     stack,
     viewMode,
@@ -121,6 +137,7 @@ export function ShareStateController(): React.ReactElement | null {
 
   useEffect(() => {
     if (!currentPhage || typeof window === 'undefined') return;
+    let reloadScheduled = false;
 
     const handlePopState = () => {
       const linkedPhageKey = normalizePhageKey(parseShareState(window.location.href).phageKey);
@@ -131,8 +148,9 @@ export function ShareStateController(): React.ReactElement | null {
         currentPhage.name,
       ].map(normalizePhageKey);
 
-      if (linkedPhageKey && !currentKeys.includes(linkedPhageKey)) {
-        window.location.reload();
+      if (linkedPhageKey && !currentKeys.includes(linkedPhageKey) && !reloadScheduled) {
+        reloadScheduled = true;
+        window.setTimeout(() => window.location.reload(), 0);
       }
     };
 
