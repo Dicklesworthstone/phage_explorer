@@ -1,8 +1,8 @@
 /**
- * WorkerPreloader - Pre-initialize workers on app mount
+ * WorkerPreloader - Pre-initialize workers after critical app startup
  *
- * Creates singleton worker instances for frequently used overlays,
- * making them feel instant when opened.
+ * Creates singleton worker instances for frequently used overlays while deferring
+ * their startup until the browser is idle so database loading and first paint win.
  */
 
 import * as Comlink from 'comlink';
@@ -17,6 +17,14 @@ let searchWorkerReady = false;
 let preloadStarted = false;
 let preloadComplete = false;
 let preloadPromise: Promise<void> | null = null;
+let preloadGeneration = 0;
+
+type IdleWindow = Window & {
+  requestIdleCallback?: (
+    callback: (deadline: { didTimeout: boolean; timeRemaining: () => number }) => void,
+    options?: { timeout: number }
+  ) => number;
+};
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   return await new Promise<T | null>((resolve) => {
@@ -40,9 +48,33 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   });
 }
 
+function runWhenIdle(task: () => Promise<void>): Promise<void> {
+  if (typeof window === 'undefined') {
+    return task();
+  }
+
+  const requestIdleCallback = (window as IdleWindow).requestIdleCallback;
+  if (typeof requestIdleCallback === 'function') {
+    return new Promise<void>((resolve) => {
+      requestIdleCallback(
+        () => {
+          void task().finally(resolve);
+        },
+        { timeout: 2000 }
+      );
+    });
+  }
+
+  return new Promise<void>((resolve) => {
+    window.setTimeout(() => {
+      void task().finally(resolve);
+    }, 500);
+  });
+}
+
 /**
- * Get the preloaded search worker API
- * Returns null if worker hasn't been preloaded yet
+ * Get the preloaded search worker API.
+ * Returns null if worker startup has not completed yet.
  */
 export function getSearchWorker(): {
   worker: Worker;
@@ -60,73 +92,85 @@ export function getSearchWorker(): {
 }
 
 /**
- * Initialize all overlay workers
- * Call this on app mount to preload workers before overlays are opened.
- * Returns a promise that resolves when all workers are ready.
+ * Initialize all overlay workers after critical startup work has yielded.
+ * Repeated callers share one in-flight preload.
  */
 export async function preloadWorkers(): Promise<void> {
   if (preloadStarted) {
-    // Already started, return the in-flight promise (or resolve if done)
     if (preloadComplete) return;
     if (preloadPromise) return preloadPromise;
     return;
   }
 
   preloadStarted = true;
-  preloadPromise = (async () => {
+  const generation = ++preloadGeneration;
+
+  preloadPromise = runWhenIdle(async () => {
+    if (generation !== preloadGeneration) return;
+
     try {
-      // Initialize search worker
+      let worker: Worker;
       try {
-        searchWorker = new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });
+        worker = new Worker(new URL('./search.worker.ts', import.meta.url), { type: 'module' });
       } catch {
-        // Fallback for older browsers that support Workers but not module workers.
-        searchWorker = new Worker(new URL('./search.worker.ts', import.meta.url));
+        worker = new Worker(new URL('./search.worker.ts', import.meta.url));
       }
-      searchWorkerAPI = Comlink.wrap<SearchWorkerAPI>(searchWorker);
 
-      // Verify worker is ready
-      try {
-        const ok = await withTimeout(searchWorkerAPI.ping(), 2500);
-        searchWorkerReady = ok === true;
-        if (!searchWorkerReady) {
-          console.warn('Search worker ping timed out; continuing without preload readiness');
+      if (generation !== preloadGeneration) {
+        worker.terminate();
+        return;
+      }
+
+      const api = Comlink.wrap<SearchWorkerAPI>(worker);
+      searchWorker = worker;
+      searchWorkerAPI = api;
+
+      const ok = await withTimeout(api.ping(), 2500);
+      if (generation !== preloadGeneration) {
+        worker.terminate();
+        if (searchWorker === worker) {
+          searchWorker = null;
+          searchWorkerAPI = null;
+          searchWorkerReady = false;
         }
-      } catch (e) {
-        console.warn('Search worker failed to initialize:', e);
+        return;
       }
 
-      // Add more workers here as needed:
-      // - CRISPR worker
-      // - Anomaly worker
-      // - Hilbert worker
-      // - DotPlot worker
-      // etc.
-
+      searchWorkerReady = ok === true;
+      if (!searchWorkerReady && import.meta.env.DEV) {
+        console.warn('Search worker ping timed out; continuing without preload readiness');
+      }
     } catch (error) {
-      console.error('Worker preload failed:', error);
+      if (import.meta.env.DEV) {
+        console.warn('Worker preload failed:', error);
+      }
     }
 
-    preloadComplete = true;
-  })().finally(() => {
-    // Avoid holding on to resolved promises; keep only state flags.
-    preloadPromise = null;
+    if (generation === preloadGeneration) {
+      preloadComplete = true;
+    }
+  }).finally(() => {
+    if (generation === preloadGeneration) {
+      preloadPromise = null;
+    }
   });
 
   return preloadPromise;
 }
 
 /**
- * Check if workers have been preloaded
+ * Check if workers have been preloaded.
  */
 export function isPreloaded(): boolean {
   return preloadComplete;
 }
 
 /**
- * Terminate all preloaded workers
- * Call this on app unmount or when workers are no longer needed.
+ * Terminate all preloaded workers.
  */
 export function terminateWorkers(): void {
+  preloadGeneration += 1;
+
   if (searchWorker) {
     searchWorker.terminate();
     searchWorker = null;
@@ -136,4 +180,5 @@ export function terminateWorkers(): void {
 
   preloadStarted = false;
   preloadComplete = false;
+  preloadPromise = null;
 }
