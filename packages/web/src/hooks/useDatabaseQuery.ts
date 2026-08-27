@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { createDatabaseLoader, type PhageRepository, type DatabaseLoadProgress } from '../db';
 
 const DEFAULT_DATABASE_URL = '/phage.db';
@@ -29,19 +29,55 @@ export function useDatabaseQuery(
   const [progress, setProgress] = useState<DatabaseLoadProgress | null>(null);
   const [isCached, setIsCached] = useState(false);
   const loaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
-  const queryClient = useQueryClient();
+  const inFlightLoaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const query = useQuery<PhageRepository>({
     queryKey: ['database', databaseUrl],
     queryFn: async () => {
-      await loaderRef.current?.close().catch(() => {});
-      loaderRef.current = createDatabaseLoader(databaseUrl, (p) => {
-        setProgress(p);
-        if (p.cached !== undefined) {
-          setIsCached(p.cached);
+      const generation = ++loadGenerationRef.current;
+      const previousLoader = loaderRef.current;
+
+      await inFlightLoaderRef.current?.close().catch(() => {});
+      const nextLoader = createDatabaseLoader(databaseUrl, (nextProgress) => {
+        if (generation !== loadGenerationRef.current) return;
+        setProgress(nextProgress);
+        if (nextProgress.cached !== undefined) {
+          setIsCached(nextProgress.cached);
         }
       });
-      return loaderRef.current.load();
+      inFlightLoaderRef.current = nextLoader;
+
+      setProgress({
+        stage: 'checking',
+        percent: 0,
+        message: 'Starting database load...',
+        cached: false,
+      });
+      setIsCached(false);
+
+      try {
+        const repository = await nextLoader.load();
+        if (generation !== loadGenerationRef.current) {
+          await nextLoader.close().catch(() => {});
+          throw new Error('Database load superseded by a newer request');
+        }
+
+        loaderRef.current = nextLoader;
+        inFlightLoaderRef.current = null;
+
+        if (previousLoader && previousLoader !== nextLoader) {
+          await previousLoader.close().catch(() => {});
+        }
+
+        return repository;
+      } catch (error) {
+        if (inFlightLoaderRef.current === nextLoader) {
+          inFlightLoaderRef.current = null;
+        }
+        await nextLoader.close().catch(() => {});
+        throw error;
+      }
     },
     staleTime: Infinity,
     gcTime: Infinity,
@@ -51,22 +87,30 @@ export function useDatabaseQuery(
 
   useEffect(() => {
     return () => {
+      loadGenerationRef.current += 1;
+      inFlightLoaderRef.current?.close().catch(() => {});
+      inFlightLoaderRef.current = null;
       loaderRef.current?.close().catch(() => {});
       loaderRef.current = null;
     };
   }, [databaseUrl]);
 
   const load = useCallback(async () => {
-    await query.refetch();
+    await query.refetch({ cancelRefetch: false });
   }, [query.refetch]);
 
   const reload = useCallback(async () => {
-    if (loaderRef.current) {
-      await loaderRef.current.clearCache();
+    const loaders = [loaderRef.current, inFlightLoaderRef.current].filter(
+      (loader, index, all): loader is ReturnType<typeof createDatabaseLoader> =>
+        loader !== null && all.indexOf(loader) === index
+    );
+
+    for (const loader of loaders) {
+      await loader.clearCache().catch(() => {});
     }
-    await queryClient.invalidateQueries({ queryKey: ['database', databaseUrl] });
-    await query.refetch();
-  }, [databaseUrl, query.refetch, queryClient]);
+
+    await query.refetch({ cancelRefetch: true });
+  }, [query.refetch]);
 
   return {
     repository: query.data ?? null,
