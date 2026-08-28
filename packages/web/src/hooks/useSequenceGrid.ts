@@ -161,10 +161,15 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     return true;
   }, [options.useWorkerRenderer]);
 
+  // Once WebGL binds this canvas, Canvas 2D cannot be created on it. A constructor
+  // failure after getContext('webgl') must remount a fresh canvas (via rendererBackend).
+  const [webglInitFailed, setWebglInitFailed] = useState(false);
+
   // WebGL detection - re-evaluated when rendering requirements change
   // Detect WebGL 2 support with instanced rendering for 60fps GPU-accelerated scrolling
   const webglSupport = useMemo(() => {
     if (typeof window === 'undefined') return { supported: false, webgl2: false };
+    if (webglInitFailed) return { supported: false, webgl2: false };
     // Skip WebGL if explicitly disabled
     if (!preferWebGL) return { supported: false, webgl2: false };
     // Skip WebGL if using worker renderer (incompatible)
@@ -183,7 +188,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     } catch {
       return { supported: false, webgl2: false };
     }
-  }, [preferWebGL, options.useWorkerRenderer, scanlines, glow, postProcess, viewMode]);
+  }, [preferWebGL, options.useWorkerRenderer, scanlines, glow, postProcess, viewMode, webglInitFailed]);
 
   const resolvedPostProcessOptions = useMemo<PostProcessOptions | null>(() => {
     if (postProcessOptions) return postProcessOptions;
@@ -235,7 +240,6 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
   });
   // Track mobile device state for responsive features
   const [isMobile, setIsMobile] = useState(() => detectMobileDevice());
-
 
   const onVisibleRangeChangeRef = useRef(onVisibleRangeChange);
   useEffect(() => {
@@ -564,10 +568,11 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
         }
       } catch (error) {
         if (import.meta.env.DEV) {
-          console.warn('[SequenceGrid] WebGL renderer failed, falling back to Canvas 2D:', error);
+          console.warn('[SequenceGrid] WebGL renderer failed, remounting canvas for 2D fallback:', error);
         }
-        renderer = null;
-        usingWebGL = false;
+        // getContext('webgl') already bound this canvas. 2D cannot be created on it.
+        setWebglInitFailed(true);
+        return;
       }
     }
 
