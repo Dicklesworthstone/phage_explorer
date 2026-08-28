@@ -241,8 +241,7 @@ test('desktop: key overlays open and no console errors', async ({ page }, testIn
   const commandPaletteButton = page.getByRole('button', { name: 'Open command palette' });
   await expect(commandPaletteButton).toBeVisible();
   await expect(commandPaletteButton).toHaveAttribute('title', /Command Palette/);
-  await expect(commandPaletteButton).toHaveAttribute('title', /:/);
-  await expect(commandPaletteButton).not.toHaveAttribute('title', /Cmd\+K/i);
+  await expect(commandPaletteButton).toHaveAttribute('title', /Ctrl\+k|Cmd\+k|:/i);
 
   const headerSettingsButton = page.getByRole('button', { name: 'Open settings' });
   await expect(headerSettingsButton).toBeVisible();

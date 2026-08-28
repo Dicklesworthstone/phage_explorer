@@ -2,13 +2,21 @@ import { test, expect } from '@playwright/test';
 import { setupTestHarness } from './e2e-harness';
 
 test.describe('Hotkeys and Overlay Stack', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('header.app-header')).toBeVisible();
+    const welcome = page.locator('.overlay-welcome');
+    if (await welcome.isVisible().catch(() => false)) {
+      await page.keyboard.press('Escape');
+      await welcome.waitFor({ state: 'detached', timeout: 5000 }).catch(() => null);
+    }
+  });
+
   test('should enforce overlay stack limit and support undo', async ({ page }, testInfo) => {
     const { finalize } = setupTestHarness(page, testInfo);
 
     await test.step('Cold load', async () => {
-      await page.goto('/');
-      await expect(page.locator('header.app-header')).toBeVisible();
-      await page.waitForTimeout(500); // Wait for hydration
+      await page.waitForTimeout(300); // Wait for hydration
     });
 
     await test.step('Open 3 overlays (Help, Settings, AA Key)', async () => {

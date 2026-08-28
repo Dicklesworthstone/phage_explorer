@@ -40,6 +40,8 @@ export interface UseSequenceGridOptions {
   useWorkerRenderer?: boolean;
   /** Post-process pipeline options (worker-safe) */
   postProcessOptions?: PostProcessOptions;
+  /** Initial scroll position index */
+  initialPosition?: number;
   /**
    * Prefer WebGL-based GPU-accelerated rendering when available.
    * Falls back to Canvas 2D if WebGL is not supported.
@@ -132,6 +134,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     postProcessOptions,
     reducedMotion = false,
     initialZoomScale: initialZoomScaleOption,
+    initialPosition = 0,
     enablePinchZoom = true,
     snapToCodon = true,
     onVisibleRangeChange,
@@ -609,6 +612,9 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     // Initialize zoom preset state
     if (!usingWebGL) {
       setZoomPreset((renderer as CanvasSequenceGridRenderer).getZoomPreset());
+    }
+    if (typeof initialPosition === 'number' && initialPosition > 0) {
+      renderer.scrollToPosition(initialPosition, false);
     }
     latestRangeRef.current = renderer.getVisibleRange();
     commitUiState();

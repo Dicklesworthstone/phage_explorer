@@ -5,6 +5,17 @@ async function waitForSequenceReady(page: Page): Promise<void> {
   await page.goto('/');
   await expect(page.locator('header.app-header')).toBeVisible({ timeout: 30000 });
 
+  const welcome = page.locator('.overlay-welcome');
+  if (await welcome.isVisible().catch(() => false)) {
+    const skip = page.locator('.welcome-footer__skip');
+    if (await skip.isVisible().catch(() => false)) {
+      await skip.click().catch(() => {});
+    } else {
+      await page.keyboard.press('Escape');
+    }
+    await welcome.waitFor({ state: 'detached', timeout: 5000 }).catch(() => null);
+  }
+
   const canvas = page.locator('.sequence-grid-canvas');
   await expect(canvas).toBeVisible({ timeout: 30000 });
   await canvas.scrollIntoViewIfNeeded();
@@ -101,16 +112,25 @@ test.describe('Sequence scroll repaint regression', () => {
       });
 
       const canvas = page.locator('.sequence-grid-canvas');
+      await canvas.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(150);
       const box = await canvas.boundingBox();
       if (!box) {
         throw new Error('Expected canvas bounding box, got null');
       }
-      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await canvas.hover();
 
       // Aggressive wheel scrolling to provoke repaint issues.
       // Keep delays short to approximate a fast trackpad/mousewheel stream.
       for (let i = 0; i < 10; i++) {
-        await page.mouse.wheel(0, Math.max(240, box.height * 1.5));
+        await page.evaluate(() => {
+          const target =
+            document.querySelector('.sequence-view__canvas-wrapper') ??
+            document.querySelector('.sequence-grid-canvas');
+          target?.dispatchEvent(
+            new WheelEvent('wheel', { deltaY: 600, bubbles: true, cancelable: true })
+          );
+        });
         await page.waitForTimeout(20);
       }
 

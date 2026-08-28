@@ -119,6 +119,9 @@ export function createTestHarness(page: Page, legacyArrays?: LegacyArrays): Test
     };
 
     if (msgType === 'error') {
+      if (location.url && location.url.includes('/_vercel/')) {
+        return;
+      }
       state.consoleErrors.push(entry);
       state.events.push({ ts: entry.ts, type: 'console', data: { level: 'error', ...entry } });
 

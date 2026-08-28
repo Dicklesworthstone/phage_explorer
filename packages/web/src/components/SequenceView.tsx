@@ -373,6 +373,7 @@ function SequenceViewBase({
     snapToCodon,
     // Let the renderer pick a mobile-aware default zoom when the store has not yet set one.
     initialZoomScale: storeZoomScale ?? undefined,
+    initialPosition: storeScrollPosition > 0 ? storeScrollPosition : undefined,
     densityMode,
     onVisibleRangeChange: handleVisibleRangeChange,
     onZoomChange: handleZoomChange,

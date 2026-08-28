@@ -216,7 +216,7 @@ export class WebGLSequenceRenderer {
         depth: false,
         stencil: false,
         powerPreference: 'high-performance',
-        preserveDrawingBuffer: false,
+        preserveDrawingBuffer: true,
       }) as WebGL2RenderingContext | null;
 
       if (gl2) {
@@ -235,7 +235,7 @@ export class WebGLSequenceRenderer {
         depth: false,
         stencil: false,
         powerPreference: 'high-performance',
-        preserveDrawingBuffer: false,
+        preserveDrawingBuffer: true,
       }) as WebGLRenderingContext | null;
 
       if (gl1) {

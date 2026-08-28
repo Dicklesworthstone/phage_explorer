@@ -74,7 +74,7 @@ test.describe('Shareable explorer state', () => {
     });
 
     await test.step('Push a history entry for a new phage and restore T4 with Back', async () => {
-      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('j');
       await expect.poll(() => queryParam(page, 'phage')).not.toBe('t4');
       await expect(page.locator('.detail-card h4')).not.toHaveText('Enterobacteria phage T4');
 
