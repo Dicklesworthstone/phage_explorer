@@ -196,10 +196,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     }
   }, [resolvedPostProcessOptions, useWorkerRenderer]);
 
-  const initialZoomScaleRef = useRef<number | null>(null);
-  if (initialZoomScaleRef.current === null) {
-    initialZoomScaleRef.current = initialZoomScaleOption ?? getMobileAwareZoom();
-  }
+  const initialZoomScaleRef = useRef<number>(initialZoomScaleOption ?? getMobileAwareZoom());
   const initialZoomScale = initialZoomScaleRef.current;
 
   const canvasRef = useRef<HTMLCanvasElement>(null);

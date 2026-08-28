@@ -5,7 +5,7 @@
  * Supports focus trapping, z-index management, and keyboard navigation.
  */
 
-import React, { createContext, useContext, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActionRegistryList } from '../../keyboard/actionRegistry';
 
 const OVERLAY_TITLE_BY_ID = new Map<string, string>();
@@ -348,19 +348,34 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
     };
   }, [stack, close]);
 
-  const value: OverlayContextValue = {
-    stack,
-    topOverlay,
-    isOpen,
-    hasBlockingOverlay,
-    isMobile,
-    open,
-    close,
-    toggle,
-    closeAll,
-    overlayData,
-    setOverlayData,
-  };
+  const value = useMemo<OverlayContextValue>(
+    () => ({
+      stack,
+      topOverlay,
+      isOpen,
+      hasBlockingOverlay,
+      isMobile,
+      open,
+      close,
+      toggle,
+      closeAll,
+      overlayData,
+      setOverlayData,
+    }),
+    [
+      stack,
+      topOverlay,
+      isOpen,
+      hasBlockingOverlay,
+      isMobile,
+      open,
+      close,
+      toggle,
+      closeAll,
+      overlayData,
+      setOverlayData,
+    ]
+  );
 
   // React 19: Simplified context syntax (no .Provider needed)
   return (

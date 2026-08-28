@@ -38,6 +38,8 @@
     "@vercel/og": "^0.6.2",
     "eslint": "^9.39.2",
     "playwright": "^1.57.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
     "sharp": "^0.34.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.53.0"

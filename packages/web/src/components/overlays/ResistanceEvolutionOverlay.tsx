@@ -116,7 +116,12 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
 
   // Track if state is initialized (to avoid putting state in deps)
   const hasStateRef = useRef(false);
-  hasStateRef.current = state !== null;
+  useEffect(() => {
+    hasStateRef.current = state !== null;
+    if (state && !state.running && isRunning) {
+      setIsRunning(false);
+    }
+  }, [state, isRunning]);
 
   // Animation loop - only depends on isRunning to avoid re-running on every state update
   useEffect(() => {
@@ -132,7 +137,6 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
           if (!prev || !prev.running) return prev;
           const next = simulation.step(prev, 1, Math.random);
           if (simulation.isComplete?.(next)) {
-            setIsRunning(false);
             return { ...next, running: false };
           }
           return next;

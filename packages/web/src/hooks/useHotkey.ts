@@ -181,16 +181,18 @@ export function useKeyboardMode(): {
   setMode: (mode: KeyboardMode) => void;
 } {
   const manager = getKeyboardManager();
-  const [mode, setModeState] = useState<KeyboardMode>(manager.getMode());
+  const [mode, setModeState] = useState<KeyboardMode>(() => manager.getMode());
 
   useEffect(() => {
-    const unsubscribe = manager.addEventListener((event) => {
+    const unsubscribe = manager.subscribe((event) => {
       if (event.type === 'mode_change') {
         setModeState(event.mode);
       }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+    };
   }, [manager]);
 
   const setMode = useCallback(
@@ -212,10 +214,10 @@ export function useKeyboardMode(): {
  */
 export function usePendingSequence(): string | null {
   const manager = getKeyboardManager();
-  const [pending, setPending] = useState<string | null>(manager.getPendingSequence());
+  const [pending, setPending] = useState<string | null>(() => manager.getPendingSequence());
 
   useEffect(() => {
-    const unsubscribe = manager.addEventListener((event) => {
+    const unsubscribe = manager.subscribe((event) => {
       if (event.type === 'sequence_started') {
         setPending(event.key);
       } else if (event.type === 'sequence_completed' || event.type === 'sequence_cancelled') {
@@ -223,7 +225,9 @@ export function usePendingSequence(): string | null {
       }
     });
 
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+    };
   }, [manager]);
 
   return pending;
@@ -242,8 +246,10 @@ export function usePendingSequence(): string | null {
 export function useKeyboardEvents(listener: (event: KeyboardEvent) => void): void {
   useEffect(() => {
     const manager = getKeyboardManager();
-    const unsubscribe = manager.addEventListener(listener);
-    return unsubscribe;
+    const unsubscribe = manager.subscribe(listener);
+    return () => {
+      unsubscribe();
+    };
   }, [listener]);
 }
 

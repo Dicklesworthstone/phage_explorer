@@ -11,7 +11,7 @@
  * Uses @use-gesture/react and @react-spring/web for native-feeling physics.
  */
 
-import React, { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useSpring, animated, config } from '@react-spring/web';
 import { useDrag } from '@use-gesture/react';
 import { haptics } from '../../utils/haptics';
@@ -64,7 +64,9 @@ export function PullToRefresh({
   const reducedMotion = useReducedMotion();
   const [state, setState] = useState<RefreshState>('idle');
   const stateRef = useRef(state);
-  stateRef.current = state;
+  useLayoutEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // Track if we've triggered the ready haptic
   const hasTriggeredReadyHaptic = useRef(false);

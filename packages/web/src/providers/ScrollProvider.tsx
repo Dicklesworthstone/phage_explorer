@@ -15,6 +15,7 @@ import React, {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useCallback,
@@ -289,16 +290,19 @@ export function ScrollProvider({
     lenisRef.current?.start();
   }, []);
 
-  const value: ScrollContextValue = {
-    lenis: lenisRef.current,
-    isEnabled: shouldEnable,
-    scrollTo,
-    stop,
-    start,
-    progress,
-    velocity,
-    isScrolling,
-  };
+  const value = useMemo<ScrollContextValue>(
+    () => ({
+      lenis: lenisRef.current,
+      isEnabled: shouldEnable,
+      scrollTo,
+      stop,
+      start,
+      progress,
+      velocity,
+      isScrolling,
+    }),
+    [shouldEnable, scrollTo, stop, start, progress, velocity, isScrolling]
+  );
 
   return (
     <ScrollContext.Provider value={value}>

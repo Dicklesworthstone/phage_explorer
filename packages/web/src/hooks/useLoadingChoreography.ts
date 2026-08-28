@@ -6,7 +6,7 @@
  * content-reveal animation classes.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useReducedMotion } from './useReducedMotion';
 
 export type ChoreographyPhase = 'idle' | 'skeleton' | 'gap' | 'content';
@@ -23,9 +23,13 @@ export interface UseLoadingChoreographyOptions {
 export interface UseLoadingChoreographyResult {
   /** Current choreography phase */
   phase: ChoreographyPhase;
-  /** Whether to show skeleton UI */
+  /** Opacity for the skeleton overlay (0 or 1) */
+  skeletonOpacity: number;
+  /** Opacity for the main content (0 or 1) */
+  contentOpacity: number;
+  /** Whether the skeleton should be rendered at all */
   showSkeleton: boolean;
-  /** Whether to show content with reveal animation */
+  /** Whether the content should be rendered */
   showContent: boolean;
   /** CSS class to apply on the content container for staggered entrance */
   contentClassName: string;
@@ -38,7 +42,9 @@ export function useLoadingChoreography(
   const reducedMotion = useReducedMotion();
   const [phase, setPhase] = useState<ChoreographyPhase>(isLoading ? 'idle' : 'content');
   const phaseRef = useRef(phase);
-  phaseRef.current = phase;
+  useLayoutEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {

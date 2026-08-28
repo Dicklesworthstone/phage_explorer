@@ -378,12 +378,7 @@ function SequenceViewBase({
     onZoomChange: handleZoomChange,
   });
 
-  // CRITICAL: These refs must be updated synchronously during render, NOT in useEffect.
-  // Updating in useEffect creates a timing gap where wheel events can fire before the
-  // effect runs, causing the handler to see stale/null values and early-return.
-  // This was the root cause of the "scroll snaps back instantly" bug.
   const latestVisibleRangeRef = useRef(visibleRange);
-  latestVisibleRangeRef.current = visibleRange;
 
   const displaySequenceLength = useMemo(() => {
     const len = sequence?.length ?? 0;
@@ -394,7 +389,11 @@ function SequenceViewBase({
   }, [sequence, viewMode, readingFrame]);
 
   const sequenceLengthRef = useRef(displaySequenceLength);
-  sequenceLengthRef.current = displaySequenceLength;
+
+  useLayoutEffect(() => {
+    latestVisibleRangeRef.current = visibleRange;
+    sequenceLengthRef.current = displaySequenceLength;
+  });
 
   // Desktop wheel/trackpad scroll: attach ONLY to the canvas wrapper so page scroll
   // works when pointer is over header controls. This fixes mousewheel page scroll.

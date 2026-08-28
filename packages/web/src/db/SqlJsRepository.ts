@@ -360,10 +360,12 @@ export class SqlJsRepository implements PhageRepository {
     }
 
     const phage = results[0];
-    const geneList = await this.getGenes(id);
-    const usage = await this.getCodonUsage(id);
-    const hasModelFlag = await this.hasModel(id);
-    const tropism = await this.getTropismPredictions(id);
+    const [geneList, usage, hasModelFlag, tropism] = await Promise.all([
+      this.getGenes(id),
+      this.getCodonUsage(id),
+      this.hasModel(id),
+      this.getTropismPredictions(id),
+    ]);
 
     const fullPhage: PhageFull = {
       id: phage.id,

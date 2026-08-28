@@ -11,6 +11,7 @@ import React, {
   useContext,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -167,19 +168,7 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
         // Replace existing toast with same id
         const filtered = prev.filter((t) => t.id !== id);
         const next = [...filtered, entry];
-        // Evict oldest if over max
-        if (next.length > MAX_VISIBLE) {
-          const evicted = next[0];
-          if (evicted) {
-            const timer = timersRef.current.get(evicted.id);
-            if (timer) {
-              clearTimeout(timer);
-              timersRef.current.delete(evicted.id);
-            }
-          }
-          return next.slice(-MAX_VISIBLE);
-        }
-        return next;
+        return next.length > MAX_VISIBLE ? next.slice(-MAX_VISIBLE) : next;
       });
 
       if (duration > 0) {
@@ -204,16 +193,16 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
 
   const resume = useCallback(
     (id: string) => {
-      setToasts((prev) => {
-        const t = prev.find((x) => x.id === id);
-        if (!t || t.duration <= 0) return prev;
-        const elapsed = Date.now() - t.createdAt;
-        const remaining = Math.max(t.duration - elapsed, 500);
-        startTimer(id, remaining);
-        return prev.map((x) => (x.id === id ? { ...x, paused: false } : x));
-      });
+      const t = toasts.find((x) => x.id === id);
+      if (!t || t.duration <= 0) return;
+      const elapsed = Date.now() - t.createdAt;
+      const remaining = Math.max(t.duration - elapsed, 500);
+      startTimer(id, remaining);
+      setToasts((prev) =>
+        prev.map((x) => (x.id === id ? { ...x, paused: false } : x))
+      );
     },
-    [startTimer]
+    [toasts, startTimer]
   );
 
   // Cleanup all timers on unmount
@@ -224,7 +213,10 @@ export function ToastProvider({ children }: { children: ReactNode }): React.Reac
     };
   }, []);
 
-  const contextValue: ToastContextValue = { toast, dismiss, dismissAll };
+  const contextValue = useMemo<ToastContextValue>(
+    () => ({ toast, dismiss, dismissAll }),
+    [toast, dismiss, dismissAll]
+  );
 
   return (
     <ToastContext.Provider value={contextValue}>

@@ -493,44 +493,35 @@ export function SkeletonContainer({
 }: SkeletonContainerProps): React.ReactElement {
   const [showSkeleton, setShowSkeleton] = React.useState(false);
   const [canHide, setCanHide] = React.useState(true);
-  const showTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hideTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   React.useEffect(() => {
-    if (loading) {
-      // Start delay timer before showing skeleton
-      showTimerRef.current = setTimeout(() => {
-        setShowSkeleton(true);
-        setCanHide(false);
-        // Start minimum duration timer
-        hideTimerRef.current = setTimeout(() => {
-          setCanHide(true);
-        }, minDuration);
-      }, delay);
-    } else {
-      // Clear show timer if still pending
-      if (showTimerRef.current) {
-        clearTimeout(showTimerRef.current);
-        showTimerRef.current = null;
-      }
-      // Only hide if minimum duration has passed
+    if (!loading) {
       if (canHide) {
         setShowSkeleton(false);
       }
+      return;
     }
+
+    const showTimer = setTimeout(() => {
+      setShowSkeleton(true);
+      setCanHide(false);
+    }, delay);
 
     return () => {
-      if (showTimerRef.current) clearTimeout(showTimerRef.current);
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      clearTimeout(showTimer);
     };
-  }, [loading, delay, minDuration, canHide]);
+  }, [loading, delay, canHide]);
 
-  // Hide skeleton when loading completes and minDuration has passed
   React.useEffect(() => {
-    if (!loading && canHide) {
-      setShowSkeleton(false);
-    }
-  }, [loading, canHide]);
+    if (!showSkeleton) return;
+    const hideTimer = setTimeout(() => {
+      setCanHide(true);
+    }, minDuration);
+
+    return () => {
+      clearTimeout(hideTimer);
+    };
+  }, [showSkeleton, minDuration]);
 
   if (showSkeleton && loading) {
     return <>{skeleton}</>;

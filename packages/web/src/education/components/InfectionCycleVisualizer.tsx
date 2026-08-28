@@ -140,7 +140,6 @@ export function InfectionCycleVisualizer({
   const advance = useCallback(() => {
     setStageIndex((prev) => {
       if (prev >= stages.length - 1) {
-        setIsPlaying(false);
         return prev;
       }
       return prev + 1;
@@ -163,11 +162,18 @@ export function InfectionCycleVisualizer({
   }, []);
 
   useEffect(() => {
+    if (stageIndex >= stages.length - 1 && isPlaying) {
+      setIsPlaying(false);
+    }
+  }, [stageIndex, stages.length, isPlaying]);
+
+  useEffect(() => {
     if (!isPlaying) return;
+    if (stageIndex >= stages.length - 1) return;
     const duration = (currentStage?.duration ?? 1) * speedMs;
     const timer = setTimeout(advance, duration);
     return () => clearTimeout(timer);
-  }, [advance, currentStage?.duration, isPlaying, speedMs]);
+  }, [advance, currentStage?.duration, isPlaying, speedMs, stageIndex, stages.length]);
 
   // Reset stage index when pathway changes
   useEffect(() => {

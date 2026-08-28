@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ScatterPoint, ColorScale, ScatterHover } from './types';
 
 export interface ScatterCanvasProps {
@@ -60,15 +60,18 @@ export function ScatterCanvas({
     return { minX, maxX, minY, maxY, dx, dy };
   }, [points]);
 
-  const toCanvas = (p: ScatterPoint) => {
-    const innerW = width - padding * 2;
-    const innerH = height - padding * 2;
-    const normX = (p.x - bounds.minX) / bounds.dx;
-    const normY = (p.y - bounds.minY) / bounds.dy;
-    const cx = padding + normX * innerW;
-    const cy = padding + (1 - normY) * innerH;
-    return { cx, cy };
-  };
+  const toCanvas = useCallback(
+    (p: ScatterPoint) => {
+      const innerW = width - padding * 2;
+      const innerH = height - padding * 2;
+      const normX = (p.x - bounds.minX) / bounds.dx;
+      const normY = (p.y - bounds.minY) / bounds.dy;
+      const cx = padding + normX * innerW;
+      const cy = padding + (1 - normY) * innerH;
+      return { cx, cy };
+    },
+    [bounds.dx, bounds.dy, bounds.minX, bounds.minY, height, padding, width]
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;

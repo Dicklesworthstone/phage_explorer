@@ -89,8 +89,6 @@ export function GpuWasmBenchmarkOverlay({
   repository,
   currentPhage,
 }: GpuWasmBenchmarkOverlayProps): React.ReactElement | null {
-  if (!import.meta.env.DEV) return null;
-
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle, isMobile } = useOverlay();
@@ -548,7 +546,7 @@ export function GpuWasmBenchmarkOverlay({
     }
   }
 
-  if (!isOpen('gpuWasmBenchmark')) return null;
+  if (!import.meta.env.DEV || !isOpen('gpuWasmBenchmark')) return null;
 
   const rowBg = colors.backgroundAlt;
   const tableBorder = colors.borderLight;

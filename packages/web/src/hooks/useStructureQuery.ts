@@ -43,11 +43,9 @@ export function useStructureQuery(options: UseStructureQueryOptions): StructureQ
 
   const [progress, setProgress] = useState(0);
   const [loadingStage, setLoadingStage] = useState<LoadingStage | null>(null);
-  const progressCallbackRef = useRef<((info: ProgressInfo) => void) | null>(null);
   const lastIdRef = useRef<string | null>(null);
-
   // Create a stable progress callback
-  progressCallbackRef.current = useCallback((info: ProgressInfo) => {
+  const onProgress = useCallback((info: ProgressInfo) => {
     setProgress(info.percent);
     setLoadingStage(info.stage);
   }, []);
@@ -66,7 +64,7 @@ export function useStructureQuery(options: UseStructureQueryOptions): StructureQ
       setProgress(0);
       setLoadingStage(null);
 
-      return loadStructure(idOrUrl, signal, progressCallbackRef.current ?? undefined, {
+      return loadStructure(idOrUrl, signal, onProgress, {
         includeBonds,
         includeFunctionalGroups,
       });

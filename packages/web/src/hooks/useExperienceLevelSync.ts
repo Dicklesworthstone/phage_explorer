@@ -47,42 +47,36 @@ export function useBlockedHotkeyNotification(): {
     setBlockedHotkey(null);
   }, []);
 
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
     const manager = getKeyboardManager();
 
     const handleEvent = (event: KeyboardEvent) => {
       if (event.type === 'hotkey_blocked') {
-        // Clear any existing timeout before setting a new one
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-        }
-
         setBlockedHotkey({
           description: event.description,
           keyDisplay: formatKeyCombo(event.combo),
           requiredLevel: event.requiredLevel,
           currentLevel: event.currentLevel,
         });
-
-        // Auto-dismiss after 4 seconds
-        timeoutRef.current = setTimeout(() => {
-          setBlockedHotkey(null);
-          timeoutRef.current = null;
-        }, 4000);
       }
     };
 
-    const unsubscribe = manager.addEventListener(handleEvent);
+    const unsubscribe = manager.subscribe(handleEvent);
     return () => {
       unsubscribe();
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!blockedHotkey) return;
+    const timer = setTimeout(() => {
+      setBlockedHotkey(null);
+    }, 4000);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [blockedHotkey]);
 
   return { blockedHotkey, dismiss };
 }

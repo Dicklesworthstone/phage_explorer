@@ -985,24 +985,12 @@ export class CanvasSequenceGridRenderer {
       return;
     }
 
-    // General case: evicting multiple entries - collect k oldest in O(n*k)
-    // For small k (typically 1-3), this is effectively O(n)
-    const toRemove: number[] = [];
-    for (let i = 0; i < toEvict; i++) {
-      let oldestKey: number | null = null;
-      let oldestTime = Infinity;
-      for (const [key, tile] of this.rowTileCache) {
-        if (tile.timestamp < oldestTime && !toRemove.includes(key)) {
-          oldestTime = tile.timestamp;
-          oldestKey = key;
-        }
-      }
-      if (oldestKey !== null) {
-        toRemove.push(oldestKey);
-      }
-    }
-    for (const key of toRemove) {
-      this.rowTileCache.delete(key);
+    // General case: evicting multiple entries - sort by timestamp and delete oldest
+    const entries = Array.from(this.rowTileCache.entries());
+    entries.sort((a, b) => a[1].timestamp - b[1].timestamp);
+    const count = Math.min(toEvict, entries.length);
+    for (let i = 0; i < count; i++) {
+      this.rowTileCache.delete(entries[i][0]);
     }
   }
 

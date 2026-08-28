@@ -358,18 +358,7 @@ export default function App(): React.ReactElement {
 
 
   useLayoutEffect(() => {
-    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
-
-    const subscribeMediaQuery = (mql: MediaQueryList, listener: () => void) => {
-      // Safari < 14 doesn't support addEventListener/removeEventListener on MediaQueryList.
-      if (typeof mql.addEventListener === 'function') {
-        mql.addEventListener('change', listener);
-        return () => mql.removeEventListener('change', listener);
-      }
-
-      mql.addListener(listener);
-      return () => mql.removeListener(listener);
-    };
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
 
     const mobileMql = window.matchMedia(`(max-width: ${BREAKPOINT_PHONE_PX}px)`);
     const touchUiMql = window.matchMedia(`(max-width: ${BREAKPOINT_TOUCH_UI_PX}px)`);
@@ -392,19 +381,23 @@ export default function App(): React.ReactElement {
 
     updateLayout();
 
-    const unsubscribers = [
-      subscribeMediaQuery(mobileMql, updateLayout),
-      subscribeMediaQuery(touchUiMql, updateLayout),
-      subscribeMediaQuery(narrowMql, updateLayout),
-      subscribeMediaQuery(wideMql, updateLayout),
-      subscribeMediaQuery(landscapeMql, updateLayout),
-      subscribeMediaQuery(coarsePointerMql, updateLayout),
-      subscribeMediaQuery(hoverNoneMql, updateLayout),
-    ];
+    mobileMql.addEventListener('change', updateLayout);
+    touchUiMql.addEventListener('change', updateLayout);
+    narrowMql.addEventListener('change', updateLayout);
+    wideMql.addEventListener('change', updateLayout);
+    landscapeMql.addEventListener('change', updateLayout);
+    coarsePointerMql.addEventListener('change', updateLayout);
+    hoverNoneMql.addEventListener('change', updateLayout);
     window.addEventListener('resize', updateLayout);
 
     return () => {
-      for (const unsubscribe of unsubscribers) unsubscribe();
+      mobileMql.removeEventListener('change', updateLayout);
+      touchUiMql.removeEventListener('change', updateLayout);
+      narrowMql.removeEventListener('change', updateLayout);
+      wideMql.removeEventListener('change', updateLayout);
+      landscapeMql.removeEventListener('change', updateLayout);
+      coarsePointerMql.removeEventListener('change', updateLayout);
+      hoverNoneMql.removeEventListener('change', updateLayout);
       window.removeEventListener('resize', updateLayout);
     };
   }, []);

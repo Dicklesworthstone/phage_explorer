@@ -160,7 +160,6 @@ export function Overlay({
   // - overlay actually closing (restore focus)
   // - overlay swapping mounts (e.g. Suspense fallback -> loaded overlay) while still open
   const overlayIsOpenLatestRef = useRef(overlayIsOpen);
-  overlayIsOpenLatestRef.current = overlayIsOpen;
   const overlayStackItem = stack.find((item) => item.id === id);
   const closeOnBackdrop = overlayStackItem?.config.closeOnBackdrop ?? true;
   // Use context-provided mobile detection for consistency
@@ -168,6 +167,7 @@ export function Overlay({
   const shouldUseBottomSheet = isMobile && effectivePosition === 'bottom';
 
   useEffect(() => {
+    overlayIsOpenLatestRef.current = overlayIsOpen;
     if (wasOpenRef.current && !overlayIsOpen && !shouldUseBottomSheet) {
       setIsExiting(true);
       const duration = reducedMotion ? 0 : 200;

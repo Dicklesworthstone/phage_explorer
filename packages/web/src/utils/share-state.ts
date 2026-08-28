@@ -92,30 +92,31 @@ function toUrl(input: string | URL): URL {
   return new URL(input, 'https://phage-explorer.org/');
 }
 
-function normalizeKey(value: string | null | undefined): string {
-  return value?.trim().toLowerCase() ?? '';
+function normalizeKey(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
-function parseBoundedKey(value: string | null, maxLength: number): string | null {
-  const trimmed = value?.trim() ?? '';
+function parseBoundedKey(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, maxLength) : null;
 }
 
-function parsePosition(value: string | null): number | null {
-  if (!value || !/^\d+$/.test(value)) return null;
+function parsePosition(value: unknown): number | null {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) return null;
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) return null;
   return parsed;
 }
 
-function parseReadingFrame(value: string | null): ReadingFrame | null {
-  if (value === null || !/^-?\d+$/.test(value)) return null;
+function parseReadingFrame(value: unknown): ReadingFrame | null {
+  if (typeof value !== 'string' || !/^-?\d+$/.test(value)) return null;
   const parsed = Number(value) as ReadingFrame;
   return VALID_READING_FRAMES.has(parsed) ? parsed : null;
 }
 
-function parseModelVisibility(value: string | null): boolean | null {
-  if (value === null) return null;
+function parseModelVisibility(value: unknown): boolean | null {
+  if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
   if (normalized === '1' || normalized === 'true' || normalized === 'on') return true;
   if (normalized === '0' || normalized === 'false' || normalized === 'off') return false;
@@ -127,8 +128,8 @@ export function isShareableOverlayId(value: unknown): value is ShareableOverlayI
   return SHAREABLE_OVERLAY_BY_NORMALIZED.has(value.trim().toLowerCase());
 }
 
-export function normalizeShareableOverlayId(value: string | null | undefined): ShareableOverlayId | null {
-  if (!value) return null;
+export function normalizeShareableOverlayId(value: unknown): ShareableOverlayId | null {
+  if (typeof value !== 'string') return null;
   return SHAREABLE_OVERLAY_BY_NORMALIZED.get(value.trim().toLowerCase()) ?? null;
 }
 

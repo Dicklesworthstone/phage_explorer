@@ -22,6 +22,12 @@ export default defineConfig({
     video: 'retain-on-failure',
     trace: 'retain-on-failure',
   },
+  webServer: {
+    command: 'bunx vite preview --port 5173',
+    port: 5173,
+    reuseExistingServer: !process.env.CI,
+    timeout: 30000,
+  },
   outputDir: 'test-results',
   projects: [
     // Desktop browsers

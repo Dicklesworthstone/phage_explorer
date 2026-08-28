@@ -237,11 +237,27 @@ export class KeyboardManager {
   }
 
   /**
-   * Add event listener
+   * Subscribe to keyboard events. Returns an unsubscribe function.
+   */
+  subscribe(listener: KeyboardEventListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * Add event listener (alias for subscribe)
    */
   addEventListener(listener: KeyboardEventListener): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    return this.subscribe(listener);
+  }
+
+  /**
+   * Remove event listener
+   */
+  removeEventListener(listener: KeyboardEventListener): void {
+    this.listeners.delete(listener);
   }
 
   /**

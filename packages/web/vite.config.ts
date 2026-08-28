@@ -128,7 +128,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ['react', 'react-dom', 'sql.js/dist/sql-wasm-browser.js'],
+    include: ['react', 'react-dom', 'sql.js/dist/sql-wasm.js'],
     esbuildOptions: {
       define: {
         global: 'globalThis',

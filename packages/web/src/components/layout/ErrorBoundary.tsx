@@ -30,9 +30,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
-    if (import.meta.env.DEV) {
-      console.error('Uncaught error:', error, errorInfo);
-    }
+    console.error('Uncaught error:', error, errorInfo);
     this.setState({ errorInfo });
     // Here we could log to telemetry service
   }

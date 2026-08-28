@@ -82,8 +82,10 @@ async function computeEmbeddingsForPhage(args: {
   const { repository, phageId, model } = args;
 
   const length = await repository.getFullGenomeLength(phageId);
-  const genome = await repository.getSequenceWindow(phageId, 0, length);
-  const genes = await repository.getGenes(phageId);
+  const [genome, genes] = await Promise.all([
+    repository.getSequenceWindow(phageId, 0, length),
+    repository.getGenes(phageId),
+  ]);
 
   const embeddings: FoldEmbedding[] = [];
   for (const gene of genes) {

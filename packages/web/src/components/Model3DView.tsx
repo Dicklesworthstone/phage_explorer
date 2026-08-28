@@ -206,6 +206,10 @@ function formatAtomEstimate(n: number): string {
   return n.toLocaleString();
 }
 
+const DEFAULT_VIEW_DIR = new Vector3(1, 0.7, 1).normalize();
+const HIGHLIGHT_VIEW_DIR = new Vector3(1, 0.8, 1).normalize();
+const TEMP_NDC = new Vector2();
+
 /**
  * Generate tooltip content explaining asymmetric unit vs full virion.
  * Shows estimated full virion atom counts based on common icosahedral symmetries.
@@ -771,13 +775,13 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
 
       const rect = renderer.domElement.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
-      const ndc = new Vector2(
+      TEMP_NDC.set(
         ((event.clientX - rect.left) / rect.width) * 2 - 1,
         -(((event.clientY - rect.top) / rect.height) * 2 - 1)
       );
 
       const raycaster = raycasterRef.current;
-      raycaster.setFromCamera(ndc, camera);
+      raycaster.setFromCamera(TEMP_NDC, camera);
       const hits = raycaster.intersectObject(group, true);
       const hit = hits.find((h) => typeof (h as any).instanceId === 'number' && (h.object as any)?.userData?.pickKind === 'atom');
       if (!hit) return;
@@ -1095,8 +1099,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
         // Structure is centered at origin by rebuildStructure, so camera targets origin
         // Position camera at slight angle for better 3D perception
         // IMPORTANT: Normalize the direction vector then scale to exact distance
-        const viewDirection = new Vector3(1, 0.7, 1).normalize();
-        camera.position.copy(viewDirection.multiplyScalar(dist));
+        camera.position.copy(DEFAULT_VIEW_DIR).multiplyScalar(dist);
         camera.near = Math.max(0.1, structureData.radius * 0.01);
         camera.far = Math.max(5000, structureData.radius * 10);
         camera.updateProjectionMatrix();
@@ -1215,8 +1218,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     const effectiveFov = Math.min(vFovRad, hFovRad);
     const optimalDist = (data.radius / Math.tan(effectiveFov / 2)) * 1.08;
     const dist = Math.max(optimalDist, data.radius * 1.8);
-    const viewDirection = new Vector3(1, 0.8, 1).normalize();
-    camera.position.copy(viewDirection.multiplyScalar(dist));
+    camera.position.copy(HIGHLIGHT_VIEW_DIR).multiplyScalar(dist);
     camera.near = Math.max(0.1, data.radius * 0.01);
     camera.far = Math.max(5000, data.radius * 10);
     camera.updateProjectionMatrix();
@@ -1380,7 +1382,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
 
   // Show empty state if phage has no structure
   const hasNoStructure = !pdbId && loadState !== 'loading';
-  const rcsbEntryUrl = useMemo(() => (pdbId ? getRcsbEntryUrl(pdbId) : null), [pdbId]);
+  const rcsbEntryUrl = pdbId ? getRcsbEntryUrl(pdbId) : null;
 
   return (
     <div className="panel" aria-label="3D structure viewer">
