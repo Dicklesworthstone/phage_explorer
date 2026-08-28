@@ -152,6 +152,9 @@ export function BiasDecompositionOverlay({
       setAnalysisError(null);
       return;
     }
+    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
+      return;
+    }
 
     let cancelled = false;
     setAnalysisLoading(true);

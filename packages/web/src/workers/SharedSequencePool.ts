@@ -32,6 +32,8 @@ export interface SequenceBuffer {
 
 interface PoolEntry {
   buffer: SequenceBuffer;
+  /** FNV-1a of the stored sequence; used to refuse a stale genome under the same phageId. */
+  fingerprint: number;
   /**
    * Pin count for eviction avoidance.
    *
@@ -44,6 +46,15 @@ interface PoolEntry {
    */
   refCount: number;
   lastAccess: number;
+}
+
+function sequenceFingerprint(sequence: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < sequence.length; i++) {
+    hash ^= sequence.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
 }
 
 /**
@@ -200,17 +211,23 @@ export class SharedSequencePool {
 
   /**
    * Get or create a shared buffer for a sequence.
-   * If the phageId already has a buffer, returns the existing one.
+   * If the phageId already has a buffer for the *same* sequence, returns it.
+   * A different sequence for the same id replaces the stale entry (overlays can
+   * briefly call this with the previous genome while a fetch is in flight).
    *
    * @param phageId - Unique identifier for the phage
-   * @param sequence - DNA sequence string (only used if buffer doesn't exist)
+   * @param sequence - DNA sequence string
    * @returns SequenceBuffer with the encoded sequence
    */
   getOrCreate(phageId: number, sequence: string): SequenceBuffer {
+    const fingerprint = sequenceFingerprint(sequence);
     const existing = this.pool.get(phageId);
     if (existing) {
-      existing.lastAccess = Date.now();
-      return existing.buffer;
+      if (existing.buffer.length === sequence.length && existing.fingerprint === fingerprint) {
+        existing.lastAccess = Date.now();
+        return existing.buffer;
+      }
+      this.pool.delete(phageId);
     }
 
     // Evict oldest entries if at capacity
@@ -240,6 +257,7 @@ export class SharedSequencePool {
 
     this.pool.set(phageId, {
       buffer,
+      fingerprint,
       // New entries start unpinned; eviction is guided by lastAccess unless a caller pins.
       refCount: 0,
       lastAccess: Date.now(),

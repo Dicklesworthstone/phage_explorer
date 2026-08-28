@@ -172,15 +172,20 @@ export function DotPlotOverlay({
       return;
     }
 
+    const phageId = currentPhage?.id;
+    if (phageId !== undefined && sequenceCache.current.get(phageId) !== sequence) {
+      return;
+    }
+
     const worker = workerRef.current;
     if (!worker) {
       setComputeLoading(false);
       return;
     }
 
-    const phageId = currentPhage?.id;
-
     let cancelled = false;
+    setDirectValues(null);
+    setInvertedValues(null);
     setComputeLoading(true);
     setError(null);
 
@@ -190,6 +195,8 @@ export function DotPlotOverlay({
       setComputeLoading(false);
 
       if (!response.ok) {
+        setDirectValues(null);
+        setInvertedValues(null);
         setError(response.error ?? 'Dot plot computation failed');
         return;
       }

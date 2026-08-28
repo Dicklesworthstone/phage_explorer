@@ -152,6 +152,9 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
       setAnalysisError(null);
       return;
     }
+    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
+      return;
+    }
 
     let cancelled = false;
     setAnalysisLoading(true);

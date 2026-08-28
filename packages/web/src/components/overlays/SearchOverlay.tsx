@@ -367,8 +367,8 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
       }
     }
 
-    void workerRef.current.setFuzzyIndex({ index: geneIndex, entries: geneEntries });
-    void workerRef.current.setFuzzyIndex({ index: featureIndex, entries: featureEntries });
+    void workerRef.current.setFuzzyIndex({ index: geneIndex, entries: geneEntries }).catch(() => {});
+    void workerRef.current.setFuzzyIndex({ index: featureIndex, entries: featureEntries }).catch(() => {});
   }, [currentPhage?.id, features, isOpen, workerReady]);
 
   const runSearch = useCallback(

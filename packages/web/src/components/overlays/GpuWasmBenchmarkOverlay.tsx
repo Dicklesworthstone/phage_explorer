@@ -123,6 +123,7 @@ export function GpuWasmBenchmarkOverlay({
   // Reset state when closing
   useEffect(() => {
     if (isOpen('gpuWasmBenchmark')) return;
+    runIdRef.current += 1;
     setRunning(false);
     setRows([]);
     setError(null);
@@ -172,6 +173,7 @@ export function GpuWasmBenchmarkOverlay({
       const genomeBp = await repository.getFullGenomeLength(currentPhage.id);
       const usedSampleBp = Math.max(1, Math.min(genomeBp, sampleBp));
       const sequence = await repository.getSequenceWindow(currentPhage.id, 0, usedSampleBp);
+      if (runIdRef.current !== runId) return;
       const seq = sequence.toUpperCase();
       const seqBytes = textEncoder ? textEncoder.encode(seq) : null;
 

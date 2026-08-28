@@ -139,6 +139,8 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         repository.getSequenceWindow(phageB.id, 0, lengthB),
       ]);
 
+      if (activeJobIdRef.current !== jobId) return;
+
       setSequenceA(seqA);
       setSequenceB(seqB);
 

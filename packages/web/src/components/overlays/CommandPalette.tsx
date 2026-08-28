@@ -571,7 +571,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       });
     }
 
-    void workerRef.current.setFuzzyIndex({ index: 'command-palette', entries });
+    void workerRef.current.setFuzzyIndex({ index: 'command-palette', entries }).catch(() => {});
   }, [allCommands, appContext, currentPhage?.genes, currentPhage?.id, experienceLevel, phageSummaries, workerReady]);
 
   // Filter commands by experience level and context

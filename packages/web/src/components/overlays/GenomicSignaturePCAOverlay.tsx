@@ -204,10 +204,12 @@ export function GenomicSignaturePCAOverlay({
               genomeLength: length,
             };
 
+            if (cancelled) return;
             vectorCache.current.set(cacheKey, vector);
             vectors.push(vector);
           }
 
+          if (cancelled) return;
           setProgress(Math.round(((i + 1) / total) * 100));
         }
 

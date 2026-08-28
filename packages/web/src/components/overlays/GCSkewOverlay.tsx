@@ -111,6 +111,9 @@ export function GCSkewOverlay({
       setAnalysisLoading(false);
       return;
     }
+    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
+      return;
+    }
 
     let cancelled = false;
     setAnalysisLoading(true);
