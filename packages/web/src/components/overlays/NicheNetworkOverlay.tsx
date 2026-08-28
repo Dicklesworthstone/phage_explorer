@@ -190,11 +190,13 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   useEffect(() => {
     if (!overlayIsOpen) return;
 
+    let cancelled = false;
     setLoading(true);
     setError(null);
 
     // Use setTimeout to avoid blocking UI
     const timeoutId = setTimeout(() => {
+      if (cancelled) return;
       try {
         // Generate demo data (in production, this would come from user upload)
         const abundanceTable = generateDemoAbundanceTable(25, 60, numNiches);
@@ -206,16 +208,21 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
           bootstrapIterations: 50, // Fewer for faster demo
         });
 
+        if (cancelled) return;
         setAnalysisResult(result);
       } catch (error) {
+        if (cancelled) return;
         setAnalysisResult(null);
         setError(error instanceof Error ? error.message : 'Niche analysis failed.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }, 50);
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
   }, [overlayIsOpen, numNiches, correlationThreshold, showNegative]);
 
   // Build layout when network changes

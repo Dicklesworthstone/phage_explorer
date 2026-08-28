@@ -26,6 +26,7 @@ interface CRISPROverlayProps {
 
 interface WorkerResultMessage {
   ok: boolean;
+  jobId?: string;
   result?: CRISPRAnalysisResult;
   error?: string;
 }
@@ -63,6 +64,7 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
   const loading = sequenceLoading || analysisLoading;
 
   const workerRef = useRef<Worker | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
   const sequenceCache = useRef<Map<number, string>>(new Map());
 
   useHotkey(
@@ -156,14 +158,18 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
     }
 
     let cancelled = false;
+    const jobId = `${phage.id}-${sequence.length}-${Date.now()}`;
+    activeJobIdRef.current = jobId;
     setAnalysisLoading(true);
     setError(null);
     setAnalysis(null);
     const worker = workerRef.current;
 
     const handleMessage = (event: MessageEvent<WorkerResultMessage>) => {
-      if (cancelled) return;
       const message = event.data;
+      if (cancelled) return;
+      if (message.jobId && message.jobId !== jobId) return;
+      if (activeJobIdRef.current !== jobId) return;
       if (message.ok && message.result) {
         setAnalysis(message.result);
       } else {
@@ -173,10 +179,13 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
     };
 
     worker.addEventListener('message', handleMessage);
-    worker.postMessage({ sequence, genes: phage.genes });
+    worker.postMessage({ jobId, sequence, genes: phage.genes });
 
     return () => {
       cancelled = true;
+      if (activeJobIdRef.current === jobId) {
+        activeJobIdRef.current = null;
+      }
       worker.removeEventListener('message', handleMessage);
       setAnalysisLoading(false);
     };
