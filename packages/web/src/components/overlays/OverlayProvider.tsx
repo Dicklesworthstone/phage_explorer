@@ -8,11 +8,17 @@
 import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActionRegistryList } from '../../keyboard/actionRegistry';
 
-const OVERLAY_TITLE_BY_ID = new Map<string, string>();
-for (const action of ActionRegistryList) {
-  if (action.overlayId && action.overlayAction) {
-    OVERLAY_TITLE_BY_ID.set(action.overlayId, action.title);
+let overlayTitleById: Map<string, string> | null = null;
+function getOverlayTitleMap(): Map<string, string> {
+  if (!overlayTitleById) {
+    overlayTitleById = new Map<string, string>();
+    for (const action of ActionRegistryList) {
+      if (action.overlayId && action.overlayAction) {
+        overlayTitleById.set(action.overlayId, action.title);
+      }
+    }
   }
+  return overlayTitleById;
 }
 
 // =============================================================================
@@ -118,7 +124,7 @@ export type OverlayId =
   | 'environmentalProvenance';
 
 function formatOverlayTitle(id: OverlayId): string {
-  return OVERLAY_TITLE_BY_ID.get(id) ?? id;
+  return getOverlayTitleMap().get(id) ?? id;
 }
 
 export interface OverlayConfig {

@@ -16,15 +16,21 @@ import { ActionRegistryList } from '../../keyboard/actionRegistry';
 import { Overlay } from './Overlay';
 import ErrorBoundary from '../layout/ErrorBoundary';
 
-const OVERLAY_TITLE_BY_ID = new Map<string, string>();
-for (const action of ActionRegistryList) {
-  if (action.overlayId && action.overlayAction) {
-    OVERLAY_TITLE_BY_ID.set(action.overlayId, action.title);
+let overlayTitleById: Map<string, string> | null = null;
+function getOverlayTitleMap(): Map<string, string> {
+  if (!overlayTitleById) {
+    overlayTitleById = new Map<string, string>();
+    for (const action of ActionRegistryList) {
+      if (action.overlayId && action.overlayAction) {
+        overlayTitleById.set(action.overlayId, action.title);
+      }
+    }
   }
+  return overlayTitleById;
 }
 
 function formatOverlayTitle(id: OverlayId): string {
-  return OVERLAY_TITLE_BY_ID.get(id) ?? id;
+  return getOverlayTitleMap().get(id) ?? id;
 }
 
 // ============================================================================

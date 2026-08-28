@@ -15,11 +15,12 @@ import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
 import {
   ActionIds,
+  ActionRegistry,
   ActionRegistryList,
-  formatKeyCombo,
   type KeyCombo,
   type ExperienceLevel as KbExperienceLevel,
-} from '../../keyboard';
+} from '../../keyboard/actionRegistry';
+import { formatKeyCombo } from '../../keyboard/types';
 import { detectShortcutPlatform, formatPrimaryActionShortcut } from '../../keyboard/actionSurfaces';
 import { Overlay } from './Overlay';
 import { useOverlay, type OverlayId } from './OverlayProvider';
@@ -37,7 +38,7 @@ import {
   IconLearn,
   IconTrendingUp,
   IconZap,
-} from '../ui';
+} from '../ui/icons';
 
 // Experience levels for progressive disclosure
 type ExperienceLevel = 'novice' | 'intermediate' | 'power';

@@ -32,9 +32,20 @@ test.describe('Command Palette Drift', () => {
       await page.goto('/');
       await expect(page.locator('header.app-header')).toBeVisible();
 
-      // Open Command Palette
-      await page.keyboard.press(':');
-      const palette = page.locator('.overlay-commandPalette');
+      // Dismiss Welcome modal if visible
+      const skip = page.locator('.welcome-footer__skip');
+      if (await skip.isVisible().catch(() => false)) {
+        await skip.click().catch(() => {});
+        await page.locator('.overlay-welcome').waitFor({ state: 'hidden' }).catch(() => {});
+      }
+
+      // Wait for app ready
+      await page.waitForSelector('#root > div', { timeout: 30000 });
+      await page.waitForTimeout(300);
+
+      // Open Command Palette (Control+k)
+      await page.keyboard.press('Control+k');
+      const palette = page.locator('[data-testid="overlay-commandPalette"]');
 
       // If the app crashed, attach details for debugging.
       await captureErrorBoundaryDetails(page, testInfo);
