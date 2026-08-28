@@ -151,4 +151,58 @@ describe('CanvasSequenceGridRenderer', () => {
 
     renderer.dispose();
   });
+
+  it('fills the canvas with the theme background on resize even while paused', () => {
+    const OffscreenCanvasCtor = (globalThis as any).OffscreenCanvas as new (w: number, h: number) => any;
+    const canvas = new OffscreenCanvasCtor(480, 240);
+    const renderer = new CanvasSequenceGridRenderer({
+      canvas,
+      theme: DEFAULT_THEME,
+      viewportWidth: 480,
+      viewportHeight: 240,
+      devicePixelRatio: 1,
+      reducedMotion: true,
+    });
+
+    const ctx = contexts.get(canvas as object);
+    const calls = (ctx as any).__calls as Calls;
+    const fillsBefore = calls.fillRect;
+
+    renderer.pause();
+    renderer.resize(320, 160);
+
+    // Resize must paint immediately. Waiting for rAF would flash black on iOS URL-bar resizes.
+    expect(calls.fillRect).toBeGreaterThan(fillsBefore);
+
+    renderer.dispose();
+  });
+
+  it('redraws after resume from pause', async () => {
+    const OffscreenCanvasCtor = (globalThis as any).OffscreenCanvas as new (w: number, h: number) => any;
+    const canvas = new OffscreenCanvasCtor(480, 240);
+    const renderer = new CanvasSequenceGridRenderer({
+      canvas,
+      theme: DEFAULT_THEME,
+      viewportWidth: 480,
+      viewportHeight: 240,
+      devicePixelRatio: 1,
+      reducedMotion: true,
+    });
+    renderer.setSequence('ACGTACGTACGTACGTACGTACGT', 'dna', 0, null);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const ctx = contexts.get(canvas as object);
+    const calls = (ctx as any).__calls as Calls;
+    const drawsBefore = calls.drawImage + calls.fillRect + calls.fillText;
+
+    renderer.pause();
+    expect(renderer.isPaused()).toBe(true);
+    renderer.resume();
+    expect(renderer.isPaused()).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls.drawImage + calls.fillRect + calls.fillText).toBeGreaterThan(drawsBefore);
+
+    renderer.dispose();
+  });
 });

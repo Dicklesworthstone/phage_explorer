@@ -113,6 +113,11 @@ export interface UseSequenceGridResult {
   zoomOut: (factor?: number) => void;
   /** Set zoom to a preset level */
   setZoomLevel: (level: ZoomLevel) => void;
+  /**
+   * Active renderer family. A canvas can only ever have one context type, so
+   * SequenceView must remount the <canvas> (via `key`) when this changes.
+   */
+  rendererBackend: 'webgl' | 'canvas2d';
 }
 
 // Type for unified renderer interface (Canvas or WebGL)
@@ -702,7 +707,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
 
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, []);
+  }, [webglSupport.supported]);
 
   // Avoid background GPU/CPU work when the tab is hidden
   useEffect(() => {
@@ -948,6 +953,7 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     zoomIn,
     zoomOut,
     setZoomLevel,
+    rendererBackend: webglSupport.supported ? 'webgl' : 'canvas2d',
   };
 }
 

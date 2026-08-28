@@ -355,6 +355,7 @@ function SequenceViewBase({
     setZoomScale: setRendererZoomScale,
     zoomIn,
     zoomOut,
+    rendererBackend,
   } = useSequenceGrid({
     theme,
     sequence,
@@ -840,6 +841,7 @@ function SequenceViewBase({
       {/* Canvas */}
       <div ref={canvasWrapperRef} style={{ flex: 1, minHeight: resolvedHeight, position: 'relative' }}>
         <canvas
+          key={rendererBackend}
           ref={canvasRef}
           onClick={handleCanvasClick}
           onTouchStart={handleTouchStart}

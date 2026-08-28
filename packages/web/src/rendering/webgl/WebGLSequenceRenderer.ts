@@ -136,6 +136,23 @@ export class WebGLSequenceRenderer {
   private isRendering = false;
   private needsRedraw = true;
   private paused = false;
+  private contextLost = false;
+  private readonly onContextLost = (event: Event): void => {
+    // Without preventDefault(), Safari never restores the context and the canvas stays black.
+    event.preventDefault();
+    this.contextLost = true;
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+  };
+  private readonly onContextRestored = (): void => {
+    this.contextLost = false;
+    this.paused = false;
+    this.rebuildGpuResources();
+    this.needsRedraw = true;
+    this.scheduleRender();
+  };
 
   // Scroll state
   private isScrolling = false;
@@ -206,6 +223,51 @@ export class WebGLSequenceRenderer {
     this.initBuffers();
     this.initGlyphAtlas();
     this.resize(this.viewportWidth, this.viewportHeight);
+    this.bindContextLossHandlers();
+  }
+
+  private bindContextLossHandlers(): void {
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost, false);
+    this.canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
+  }
+
+  private rebuildGpuResources(): void {
+    const gl = this.gl;
+    if (!gl || this.contextLost) return;
+
+    this.program = null;
+    this.locations = {};
+    this.quadVAO = null;
+    this.quadBuffer = null;
+    this.instanceBuffer = null;
+    this.glyphAtlasTexture = null;
+    this.sequenceTexture = null;
+
+    this.initShaders();
+    this.initBuffers();
+    if (this.glyphAtlas) {
+      this.uploadAtlasTexture();
+    } else {
+      this.initGlyphAtlas();
+    }
+
+    if (this.currentState?.sequence) {
+      this.sequenceTexture = createSequenceTexture(gl, this.currentState.sequence, {
+        readingFrame: this.currentState.readingFrame,
+        diffMask: this.currentState.diffMask,
+      });
+    }
+
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    this.clearToBackground();
+  }
+
+  private clearToBackground(): void {
+    const gl = this.gl;
+    if (!gl || this.contextLost) return;
+    const bgColor = this.hexToRgb(this.theme.colors.background);
+    gl.clearColor(bgColor.r, bgColor.g, bgColor.b, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
   private initWebGL(): boolean {
@@ -406,14 +468,24 @@ export class WebGLSequenceRenderer {
     this.viewportWidth = width;
     this.viewportHeight = height;
 
-    const pixelWidth = Math.round(width * this.dpr);
-    const pixelHeight = Math.round(height * this.dpr);
+    // Never smash the drawing buffer to 0×0 — Safari URL-bar resizes can
+    // momentarily report 0 and a 0×0 buffer stays black until the next valid size.
+    if (!(width > 0) || !(height > 0)) {
+      this.needsRedraw = true;
+      return;
+    }
+
+    const pixelWidth = Math.max(1, Math.round(width * this.dpr));
+    const pixelHeight = Math.max(1, Math.round(height * this.dpr));
 
     this.canvas.width = pixelWidth;
     this.canvas.height = pixelHeight;
 
-    if (this.gl) {
+    if (this.gl && !this.contextLost) {
       this.gl.viewport(0, 0, pixelWidth, pixelHeight);
+      // Setting canvas.width clears the buffer to opaque black (alpha:false).
+      // Fill immediately so iOS URL-bar resizes don't flash black while rAF is delayed.
+      this.clearToBackground();
     }
 
     const viewMode = this.currentState?.viewMode ?? 'dna';
@@ -461,17 +533,19 @@ export class WebGLSequenceRenderer {
   }
 
   private scheduleRender(): void {
-    if (this.animationFrameId !== null || this.paused) return;
+    if (this.animationFrameId !== null || this.paused || this.contextLost) return;
 
     this.animationFrameId = requestAnimationFrame(() => {
       this.animationFrameId = null;
-      this.render();
+      if (!this.paused && !this.contextLost) {
+        this.render();
+      }
     });
   }
 
   private render(): void {
     const gl = this.gl;
-    if (!gl || !this.program || this.isRendering || this.paused) return;
+    if (!gl || !this.program || this.isRendering || this.paused || this.contextLost) return;
 
     this.isRendering = true;
 
@@ -749,9 +823,8 @@ export class WebGLSequenceRenderer {
 
   resume(): void {
     this.paused = false;
-    if (this.needsRedraw) {
-      this.scheduleRender();
-    }
+    this.needsRedraw = true;
+    this.scheduleRender();
   }
 
   isPaused(): boolean {
@@ -779,6 +852,9 @@ export class WebGLSequenceRenderer {
   }
 
   dispose(): void {
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
+
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
