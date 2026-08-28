@@ -78,9 +78,9 @@ function levenshteinDistanceJS(
   if (m === 0) return { distance: n, isApproximate: false };
   if (n === 0) return { distance: m, isApproximate: false };
 
-  // Two-row DP array
-  let prev = new Array<number>(m + 1);
-  let curr = new Array<number>(m + 1);
+  // Two-row DP array using typed arrays for speed and minimal GC overhead
+  let prev = new Int32Array(m + 1);
+  let curr = new Int32Array(m + 1);
 
   // Initialize first row
   for (let i = 0; i <= m; i++) {
@@ -101,7 +101,9 @@ function levenshteinDistanceJS(
     }
 
     // Swap rows
-    [prev, curr] = [curr, prev];
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
   }
 
   return { distance: prev[m], isApproximate: false };
@@ -202,24 +204,25 @@ export function levenshteinWithOperations(
 
   const m = a.length;
   const n = b.length;
+  const stride = n + 1;
 
-  // Full DP matrix for traceback
-  const dp: number[][] = Array.from({ length: m + 1 }, () =>
-    new Array<number>(n + 1).fill(0)
-  );
+  // Flat Int32Array for high-speed cache-coherent DP matrix
+  const dp = new Int32Array((m + 1) * stride);
 
   // Initialize
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 0; i <= m; i++) dp[i * stride] = i;
+  for (let j = 0; j <= n; j++) dp[j] = j;
 
   // Fill matrix
   for (let i = 1; i <= m; i++) {
+    const rowOffset = i * stride;
+    const prevRowOffset = (i - 1) * stride;
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[i][j] = Math.min(
-        dp[i - 1][j] + 1,     // deletion
-        dp[i][j - 1] + 1,     // insertion
-        dp[i - 1][j - 1] + cost // substitution
+      dp[rowOffset + j] = Math.min(
+        dp[prevRowOffset + j] + 1,       // deletion
+        dp[rowOffset + (j - 1)] + 1,     // insertion
+        dp[prevRowOffset + (j - 1)] + cost // substitution
       );
     }
   }
@@ -233,20 +236,21 @@ export function levenshteinWithOperations(
   let j = n;
 
   while (i > 0 || j > 0) {
+    const currentCost = dp[i * stride + j];
     if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
       // Match - no operation
       i--;
       j--;
-    } else if (i > 0 && j > 0 && dp[i][j] === dp[i - 1][j - 1] + 1) {
+    } else if (i > 0 && j > 0 && currentCost === dp[(i - 1) * stride + (j - 1)] + 1) {
       // Substitution
       substitutions++;
       i--;
       j--;
-    } else if (j > 0 && dp[i][j] === dp[i][j - 1] + 1) {
+    } else if (j > 0 && currentCost === dp[i * stride + (j - 1)] + 1) {
       // Insertion
       insertions++;
       j--;
-    } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
+    } else if (i > 0 && currentCost === dp[(i - 1) * stride + j] + 1) {
       // Deletion
       deletions++;
       i--;
@@ -258,7 +262,7 @@ export function levenshteinWithOperations(
   }
 
   return {
-    distance: dp[m][n],
+    distance: dp[m * stride + n],
     insertions,
     deletions,
     substitutions,
@@ -346,9 +350,9 @@ export function longestCommonSubsequence(
   const m = a.length;
   const n = b.length;
 
-  // Two-row DP
-  let prev = new Array<number>(n + 1).fill(0);
-  let curr = new Array<number>(n + 1).fill(0);
+  // Two-row DP using typed Int32Array
+  let prev = new Int32Array(n + 1);
+  let curr = new Int32Array(n + 1);
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
@@ -358,7 +362,9 @@ export function longestCommonSubsequence(
         curr[j] = Math.max(prev[j], curr[j - 1]);
       }
     }
-    [prev, curr] = [curr, prev];
+    const tmp = prev;
+    prev = curr;
+    curr = tmp;
   }
 
   return prev[n];

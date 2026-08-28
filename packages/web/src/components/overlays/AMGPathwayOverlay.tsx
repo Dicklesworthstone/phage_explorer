@@ -88,12 +88,23 @@ export function AMGPathwayOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     repository
       .getAmgAnnotations(currentPhage.id)
-      .then(setAmgs)
-      .catch(() => setAmgs([]))
-      .finally(() => setLoading(false));
+      .then((annotations) => {
+        if (!cancelled) setAmgs(annotations);
+      })
+      .catch(() => {
+        if (!cancelled) setAmgs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Get unique AMG types

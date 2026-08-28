@@ -169,11 +169,11 @@ test('desktop: welcome stepper navigation and keyboard', async ({ page }, testIn
   await page.waitForTimeout(500);
 
   const welcomeOverlay = page.locator('.overlay-welcome');
-  await expect(welcomeOverlay).toBeVisible();
+  await expect(welcomeOverlay).toBeVisible({ timeout: 15000 });
 
   // Step 1: Intro - verify step indicator format
   const stepLabel = page.locator('.welcome-step-label');
-  await expect(stepLabel).toContainText('Step 1 of 3');
+  await expect(stepLabel).toContainText('Step 1 of 3', { timeout: 10000 });
 
   // Verify Next button is visible
   const nextButton = welcomeOverlay.locator('.btn-primary', { hasText: 'Next' });

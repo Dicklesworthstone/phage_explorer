@@ -329,16 +329,27 @@ export function NonBDNAOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
       .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => setSequence(''))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setSequence('');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Detect non-B-DNA structures.

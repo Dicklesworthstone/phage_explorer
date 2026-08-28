@@ -258,12 +258,23 @@ export function ProteinDomainOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     repository
       .getProteinDomains(currentPhage.id)
-      .then(setDomains)
-      .catch(() => setDomains([]))
-      .finally(() => setLoading(false));
+      .then((nextDomains) => {
+        if (!cancelled) setDomains(nextDomains);
+      })
+      .catch(() => {
+        if (!cancelled) setDomains([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Fetch all domains across phages when chord view is opened

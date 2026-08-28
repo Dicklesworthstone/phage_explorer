@@ -603,16 +603,27 @@ export function EpistasisOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
       .then((length) => repository.getSequenceWindow(phageId, 0, length))
       .then((seq) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => setSequence(''))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setSequence('');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Identify protein candidates (capsid, tail fiber, portal, polymerase)
