@@ -113,3 +113,4 @@ screenshots/
 # Backup files
 *.bak
 api/*.bak
+.env*
