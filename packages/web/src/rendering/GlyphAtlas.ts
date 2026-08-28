@@ -347,6 +347,24 @@ export class GlyphAtlas {
   }
 
   /**
+   * Draw a nucleotide by numeric code (0=A, 1=C, 2=G, 3=T, 4=N)
+   * Zero allocation & zero string lookup hot path.
+   */
+  drawNucleotideByCode(
+    destCtx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    code: number,
+    destX: number,
+    destY: number,
+    destWidth?: number,
+    destHeight?: number
+  ): void {
+    const glyph = this.nucleotideGlyphs[code] ?? this.nucleotideGlyphs[4];
+    if (glyph) {
+      this.drawGlyph(destCtx, glyph, destX, destY, destWidth, destHeight);
+    }
+  }
+
+  /**
    * Draw an amino acid to the destination canvas
    * OPTIMIZATION: O(1) array index lookup instead of Map.get()
    */

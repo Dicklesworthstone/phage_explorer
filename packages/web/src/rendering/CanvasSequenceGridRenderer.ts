@@ -828,18 +828,20 @@ export class CanvasSequenceGridRenderer {
     const validDiffMask = diffMask && diffMask.length === sequence.length ? diffMask : null;
     const validDiffSequence = diffSequence && diffSequence.length === sequence.length ? diffSequence : null;
 
+    const encoded = this.encodedSequence;
+
     for (let i = rowStart; i < rowEnd; i++) {
       const col = i - rowStart;
       const x = col * cellWidth;
-      const char = drawAmino
-        ? sequence[i]
-        : (this.encodedSequence ? CODE_TO_CHAR[this.encodedSequence[i] ?? 4] : sequence[i]);
 
       let diffCode = 0;
       if (diffEnabled) {
         if (validDiffMask) {
           diffCode = validDiffMask[i] ?? 0;
         } else if (validDiffSequence) {
+          const char = drawAmino
+            ? sequence[i]
+            : (encoded ? CODE_TO_CHAR[encoded[i] ?? 4] : sequence[i]);
           diffCode = validDiffSequence[i] && validDiffSequence[i] !== char ? 1 : 0;
         }
       }
@@ -847,8 +849,13 @@ export class CanvasSequenceGridRenderer {
       if (diffCode > 0) {
         this.drawDiffRect(ctx, x, 0, cellWidth, cellHeight, diffCode);
       } else {
-        if (drawAmino) this.glyphAtlas.drawAminoAcid(ctx, char, x, 0, cellWidth, cellHeight);
-        else this.glyphAtlas.drawNucleotide(ctx, char, x, 0, cellWidth, cellHeight);
+        if (drawAmino) {
+          this.glyphAtlas.drawAminoAcid(ctx, sequence[i] ?? 'X', x, 0, cellWidth, cellHeight);
+        } else if (encoded) {
+          this.glyphAtlas.drawNucleotideByCode(ctx, encoded[i] ?? 4, x, 0, cellWidth, cellHeight);
+        } else {
+          this.glyphAtlas.drawNucleotide(ctx, sequence[i] ?? 'N', x, 0, cellWidth, cellHeight);
+        }
       }
     }
   }
@@ -879,24 +886,27 @@ export class CanvasSequenceGridRenderer {
     const seqLength = sequence.length;
 
     // DNA row (top)
+    const encoded = this.encodedSequence;
     for (let i = rowStart; i < rowEnd; i++) {
       const col = i - rowStart;
       const x = col * cellWidth;
-      const char = this.encodedSequence ? CODE_TO_CHAR[this.encodedSequence[i]] : sequence[i];
 
       let diffCode = 0;
       if (diffEnabled) {
         if (validDiffMask) {
           diffCode = validDiffMask[i] ?? 0;
         } else if (validDiffSequence) {
+          const char = encoded ? CODE_TO_CHAR[encoded[i] ?? 4] : sequence[i];
           diffCode = validDiffSequence[i] && validDiffSequence[i] !== char ? 1 : 0;
         }
       }
 
       if (diffCode > 0) {
         this.drawDiffRect(ctx, x, 0, cellWidth, cellHeight * 2, diffCode);
+      } else if (encoded) {
+        this.glyphAtlas.drawNucleotideByCode(ctx, encoded[i] ?? 4, x, 0, cellWidth, cellHeight);
       } else {
-        this.glyphAtlas.drawNucleotide(ctx, char, x, 0, cellWidth, cellHeight);
+        this.glyphAtlas.drawNucleotide(ctx, sequence[i] ?? 'N', x, 0, cellWidth, cellHeight);
       }
     }
 
