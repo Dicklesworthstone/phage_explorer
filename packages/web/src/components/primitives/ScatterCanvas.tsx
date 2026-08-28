@@ -120,7 +120,7 @@ export function ScatterCanvas({
       ctx.stroke();
 
       ctx.fillStyle = '#cbd5e1';
-      ctx.font = '12px Inter, sans-serif';
+      ctx.font = '12px JetBrains Mono, ui-monospace, monospace';
       if (xLabel) {
         ctx.fillText(xLabel, width - padding - 48, height - padding + 18);
       }

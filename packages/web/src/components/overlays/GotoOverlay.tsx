@@ -119,10 +119,11 @@ export function GotoOverlay(): React.ReactElement | null {
     <Overlay id="goto" title="GO TO POSITION" hotkey="Ctrl+G" size="sm" onClose={handleClose}>
       <OverlayStack>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          <label style={{ color: 'var(--color-text-dim)', fontSize: 'var(--text-sm)' }}>
+          <label htmlFor="goto-coordinate" style={{ color: 'var(--color-text-dim)', fontSize: 'var(--text-sm)' }}>
             Coordinate
           </label>
           <input
+            id="goto-coordinate"
             data-overlay-autofocus="true"
             type="text"
             value={input}
@@ -132,7 +133,6 @@ export function GotoOverlay(): React.ReactElement | null {
             }}
             onKeyDown={handleKeyDown}
             placeholder={viewMode === 'aa' ? 'e.g. 4000 or 25%' : 'e.g. 12000 or 25%'}
-            aria-label="Go to position"
             style={{
               padding: '0.75rem',
               minHeight: '48px',

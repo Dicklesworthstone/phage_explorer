@@ -92,7 +92,7 @@ export function GenomeTrack({
       }
       if (track.label) {
         ctx.fillStyle = '#94a3b8';
-        ctx.font = '12px Inter, sans-serif';
+        ctx.font = '12px JetBrains Mono, ui-monospace, monospace';
         ctx.fillText(track.label, padding, y - laneHeight / 2 + 10);
       }
     });
@@ -113,7 +113,7 @@ export function GenomeTrack({
       const ticks = 4;
       ctx.strokeStyle = '#475569';
       ctx.fillStyle = '#94a3b8';
-      ctx.font = '12px Inter, sans-serif';
+      ctx.font = '12px JetBrains Mono, ui-monospace, monospace';
       for (let i = 0; i <= ticks; i++) {
         const frac = i / ticks;
         const x = padding + frac * (width - padding * 2);

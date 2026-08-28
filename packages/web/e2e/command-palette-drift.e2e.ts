@@ -32,20 +32,21 @@ test.describe('Command Palette Drift', () => {
       await page.goto('/');
       await expect(page.locator('header.app-header')).toBeVisible();
 
-      // Dismiss Welcome modal if visible
+      // Welcome modal intercepts shortcuts; dismiss it if the first-run sheet is up.
       const skip = page.locator('.welcome-footer__skip');
       if (await skip.isVisible().catch(() => false)) {
         await skip.click().catch(() => {});
         await page.locator('.overlay-welcome').waitFor({ state: 'hidden' }).catch(() => {});
       }
 
-      // Wait for app ready
       await page.waitForSelector('#root > div', { timeout: 30000 });
-      await page.waitForTimeout(300);
 
-      // Open Command Palette (Control+k)
+      // Ctrl+K is the platform shortcut; ':' is the vim-style alias.
       await page.keyboard.press('Control+k');
       const palette = page.locator('[data-testid="overlay-commandPalette"]');
+      if (!(await palette.isVisible().catch(() => false))) {
+        await page.keyboard.press(':');
+      }
 
       // If the app crashed, attach details for debugging.
       await captureErrorBoundaryDetails(page, testInfo);

@@ -85,7 +85,7 @@ export function ArcDiagram({
       ctx.fill();
       if (showLabels && node.label) {
         ctx.fillStyle = '#cbd5e1';
-        ctx.font = '12px Inter, sans-serif';
+        ctx.font = '12px JetBrains Mono, ui-monospace, monospace';
         ctx.fillText(node.label, x - ctx.measureText(node.label).width / 2, baselineY - 10);
       }
     }

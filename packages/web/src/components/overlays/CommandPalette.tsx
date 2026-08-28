@@ -15,12 +15,13 @@ import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
 import {
   ActionIds,
-  ActionRegistry,
   ActionRegistryList,
+} from '../../keyboard/actionRegistry';
+import {
+  formatKeyCombo,
   type KeyCombo,
   type ExperienceLevel as KbExperienceLevel,
-} from '../../keyboard/actionRegistry';
-import { formatKeyCombo } from '../../keyboard/types';
+} from '../../keyboard/types';
 import { detectShortcutPlatform, formatPrimaryActionShortcut } from '../../keyboard/actionSurfaces';
 import { Overlay } from './Overlay';
 import { useOverlay, type OverlayId } from './OverlayProvider';

@@ -57,7 +57,7 @@ export function ColorLegend({
     ctx.fillRect(0, 0, width, height - 10);
 
     ctx.fillStyle = '#cbd5e1';
-    ctx.font = '11px Inter, sans-serif';
+    ctx.font = '11px JetBrains Mono, ui-monospace, monospace';
     ctx.textBaseline = 'top';
 
     ctx.fillText(minLabel, 0, height - 10);

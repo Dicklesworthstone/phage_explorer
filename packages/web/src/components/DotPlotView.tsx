@@ -66,6 +66,7 @@ function DotPlotViewBase({
     posA: 0,
     posB: 0,
   });
+  const [initError, setInitError] = useState<string | null>(null);
 
   // Pan/zoom state for gestures
   const dragState = useRef<{
@@ -114,8 +115,9 @@ function DotPlotViewBase({
 
       // Initial resize
       rendererRef.current.resize();
+      setInitError(null);
     } catch (err) {
-      console.error('Failed to initialize WebGL DotPlot:', err);
+      setInitError(err instanceof Error ? err.message : 'WebGL2 is required for the dot plot');
     }
 
     return () => {
@@ -387,11 +389,25 @@ function DotPlotViewBase({
         {labelB} →
       </div>
 
+      {initError && (
+        <div
+          role="status"
+          style={{
+            padding: '0.75rem 1rem',
+            color: colors.textMuted,
+            fontSize: '0.85rem',
+          }}
+        >
+          Dot plot unavailable: {initError}
+        </div>
+      )}
+
       {/* Canvas */}
       <canvas
         ref={canvasRef}
         role="img"
         aria-label="Dot plot showing sequence self-similarity patterns"
+        hidden={Boolean(initError)}
         style={{
           width: '100%',
           height,
@@ -449,6 +465,7 @@ function DotPlotViewBase({
         }}
       >
         <button
+          type="button"
           onClick={handleResetView}
           style={{
             backgroundColor: colors.backgroundAlt,
@@ -459,6 +476,7 @@ function DotPlotViewBase({
             color: colors.text,
             cursor: 'pointer',
           }}
+          aria-label="Reset pan and zoom"
           title="Reset view"
         >
           Reset

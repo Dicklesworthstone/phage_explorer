@@ -180,10 +180,24 @@ export function encodeSequenceToTexture(sequence: string): {
   return { data, width, height };
 }
 
+/** Pixel drawing-buffer size, or null when CSS size is 0 (Safari URL-bar collapse). */
+export function drawingBufferSize(
+  clientWidth: number,
+  clientHeight: number,
+  dpr: number,
+): { width: number; height: number } | null {
+  if (!(clientWidth > 0) || !(clientHeight > 0) || !(dpr > 0)) return null;
+  return {
+    width: Math.max(1, Math.round(clientWidth * dpr)),
+    height: Math.max(1, Math.round(clientHeight * dpr)),
+  };
+}
+
 export class WebGLDotPlotRenderer {
+  private readonly canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext;
-  private program: WebGLProgram;
-  private vao: WebGLVertexArrayObject;
+  private program!: WebGLProgram;
+  private vao!: WebGLVertexArrayObject;
 
   private textureA: WebGLTexture | null = null;
   private textureB: WebGLTexture | null = null;
@@ -202,11 +216,30 @@ export class WebGLDotPlotRenderer {
 
   private animationFrameId: number | null = null;
   private needsRender = true;
+  private contextLost = false;
+  private sequenceA = '';
+  private sequenceB = '';
+
+  private readonly onContextLost = (event: Event): void => {
+    // Without preventDefault(), Safari never restores the context and the canvas stays black.
+    event.preventDefault();
+    this.contextLost = true;
+  };
+
+  private readonly onContextRestored = (): void => {
+    this.contextLost = false;
+    try {
+      this.rebuildGpuResources();
+    } catch {
+      this.contextLost = true;
+    }
+    this.needsRender = true;
+  };
 
   constructor(options: DotPlotOptions) {
     const { canvas, windowSize = 11, threshold = 0.7, matchColor = [0.2, 0.8, 0.4], bgColor = [0.05, 0.05, 0.1] } = options;
 
-    // Get WebGL2 context
+    this.canvas = canvas;
     const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
     if (!gl) throw new Error('WebGL2 not supported');
     this.gl = gl;
@@ -216,24 +249,36 @@ export class WebGLDotPlotRenderer {
     this.matchColor = matchColor;
     this.bgColor = bgColor;
 
-    // Compile shaders
+    this.initGpu();
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost, false);
+    this.canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
+    this.startRenderLoop();
+  }
+
+  private initGpu(): void {
+    const { gl } = this;
     const vertexShader = this.compileShader(gl.VERTEX_SHADER, VERTEX_SHADER);
     const fragmentShader = this.compileShader(gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
 
-    // Create program
-    this.program = gl.createProgram()!;
-    gl.attachShader(this.program, vertexShader);
-    gl.attachShader(this.program, fragmentShader);
-    gl.linkProgram(this.program);
+    const program = gl.createProgram();
+    if (!program) throw new Error('Failed to create WebGL program');
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
 
-    if (!gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
-      const error = gl.getProgramInfoLog(this.program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      const error = gl.getProgramInfoLog(program);
+      gl.deleteProgram(program);
       throw new Error(`Program link failed: ${error}`);
     }
 
-    // Create fullscreen quad VAO
-    this.vao = gl.createVertexArray()!;
-    gl.bindVertexArray(this.vao);
+    gl.deleteShader(vertexShader);
+    gl.deleteShader(fragmentShader);
+    this.program = program;
+
+    const vao = gl.createVertexArray();
+    if (!vao) throw new Error('Failed to create VAO');
+    gl.bindVertexArray(vao);
 
     const positions = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
     const positionBuffer = gl.createBuffer();
@@ -245,9 +290,26 @@ export class WebGLDotPlotRenderer {
     gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
 
     gl.bindVertexArray(null);
+    this.vao = vao;
+  }
 
-    // Start render loop
-    this.startRenderLoop();
+  private rebuildGpuResources(): void {
+    if (this.contextLost) return;
+    this.textureA = null;
+    this.textureB = null;
+    this.initGpu();
+    if (this.sequenceA && this.sequenceB) {
+      this.setSequences(this.sequenceA, this.sequenceB);
+    }
+    this.clearToBackground();
+  }
+
+  private clearToBackground(): void {
+    if (this.contextLost) return;
+    const { gl } = this;
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.clearColor(this.bgColor[0], this.bgColor[1], this.bgColor[2], 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
   }
 
   private compileShader(type: number, source: string): WebGLShader {
@@ -286,6 +348,15 @@ export class WebGLDotPlotRenderer {
    * Set the sequences to compare
    */
   setSequences(sequenceA: string, sequenceB: string): void {
+    this.sequenceA = sequenceA;
+    this.sequenceB = sequenceB;
+    this.lengthA = sequenceA.length;
+    this.lengthB = sequenceB.length;
+    if (this.contextLost) {
+      this.needsRender = true;
+      return;
+    }
+
     const { gl } = this;
 
     // Clean up old textures
@@ -298,9 +369,6 @@ export class WebGLDotPlotRenderer {
 
     this.textureA = this.createSequenceTexture(encodedA);
     this.textureB = this.createSequenceTexture(encodedB);
-
-    this.lengthA = sequenceA.length;
-    this.lengthB = sequenceB.length;
     this.texSizeA = [encodedA.width, encodedA.height];
     this.texSizeB = [encodedB.width, encodedB.height];
 
@@ -371,6 +439,7 @@ export class WebGLDotPlotRenderer {
     const { gl } = this;
     const width = gl.canvas.width;
     const height = gl.canvas.height;
+    if (!(width > 0) || !(height > 0)) return null;
 
     // Normalize to 0-1
     const normX = canvasX / width;
@@ -392,7 +461,7 @@ export class WebGLDotPlotRenderer {
 
   private startRenderLoop(): void {
     const render = () => {
-      if (this.needsRender) {
+      if (this.needsRender && !this.contextLost) {
         this.render();
         this.needsRender = false;
       }
@@ -402,6 +471,7 @@ export class WebGLDotPlotRenderer {
   }
 
   private render(): void {
+    if (this.contextLost) return;
     const { gl } = this;
 
     if (!this.textureA || !this.textureB) {
@@ -445,17 +515,22 @@ export class WebGLDotPlotRenderer {
    * Resize canvas and trigger re-render
    */
   resize(): void {
-    const { gl } = this;
-    const canvas = gl.canvas as HTMLCanvasElement;
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth * dpr;
-    const height = canvas.clientHeight * dpr;
-
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width;
-      canvas.height = height;
+    const canvas = this.canvas;
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    const size = drawingBufferSize(canvas.clientWidth, canvas.clientHeight, dpr);
+    if (!size) {
       this.needsRender = true;
+      return;
     }
+
+    if (canvas.width !== size.width || canvas.height !== size.height) {
+      canvas.width = size.width;
+      canvas.height = size.height;
+      // Setting canvas.width with alpha:false clears to opaque black. Paint the
+      // theme immediately so a delayed rAF (iOS URL-bar resize) cannot flash.
+      this.clearToBackground();
+    }
+    this.needsRender = true;
   }
 
   /**
@@ -469,9 +544,13 @@ export class WebGLDotPlotRenderer {
    * Clean up resources
    */
   dispose(): void {
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
     }
+    if (this.contextLost) return;
     const { gl } = this;
     if (this.textureA) gl.deleteTexture(this.textureA);
     if (this.textureB) gl.deleteTexture(this.textureB);

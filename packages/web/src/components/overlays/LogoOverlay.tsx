@@ -575,10 +575,18 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
               </button>
             </div>
 
+            <label
+              htmlFor="logo-custom-alignment"
+              style={{ color: colors.textMuted, fontSize: '0.9rem', fontWeight: 700 }}
+            >
+              Alignment
+            </label>
             <textarea
+              id="logo-custom-alignment"
               value={customDraft}
               onChange={(e) => setCustomDraft(e.target.value)}
               placeholder={'>seq1\nACGT...\n>seq2\nACGT...\n\n(or CLUSTAL format)'}
+              aria-describedby={!customError && customAlignment.length === 0 ? 'logo-custom-alignment-hint' : undefined}
               rows={6}
               style={{
                 width: '100%',
@@ -606,7 +614,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
             )}
 
             {!customError && customAlignment.length === 0 && (
-              <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
+              <div id="logo-custom-alignment-hint" style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
                 Paste/upload an aligned FASTA (or CLUSTAL). All sequences must be the same length; gaps (e.g. '-' or '.') are OK.
               </div>
             )}
