@@ -9,8 +9,10 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useState, useRef,
 import { usePhageStore } from '@phage-explorer/state';
 import { translateCodon, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
-import { useSequenceGrid, useReducedMotion, useHotkeys } from '../hooks';
-import { ActionIds } from '../keyboard';
+import { useSequenceGrid } from '../hooks/useSequenceGrid';
+import { useReducedMotion } from '../hooks/useReducedMotion';
+import { useHotkeys } from '../hooks/useHotkey';
+import { ActionIds } from '../keyboard/actionRegistry';
 import {
   allowHeavyFx,
   detectCoarsePointerDevice,
@@ -18,10 +20,10 @@ import {
   getEffectiveScanlines,
   useWebPreferences,
 } from '../store/createWebStore';
-import { PostProcessPipeline } from '../rendering';
+import { PostProcessPipeline } from '../rendering/PostProcessPipeline';
 import { AminoAcidHUD } from './AminoAcidHUD';
 import { SequenceViewSkeleton } from './ui/Skeleton';
-import { IconDna, IconFlask, IconLayers } from './ui';
+import { IconDna, IconFlask, IconLayers } from './ui/icons';
 
 type ViewModeOption = {
   id: ViewMode;

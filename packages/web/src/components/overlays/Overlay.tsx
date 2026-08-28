@@ -12,7 +12,7 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState, type ReactNode, type CSSProperties } from 'react';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
 import { BottomSheet } from '../mobile/BottomSheet';
-import { useReducedMotion } from '../../hooks';
+import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { detectCoarsePointerDevice, getEffectiveScanlines, useWebPreferences } from '../../store/createWebStore';
 import {
   IconAlertTriangle,
@@ -36,7 +36,7 @@ import {
   IconTrendingUp,
   IconUsers,
   IconX,
-} from '../ui';
+} from '../ui/icons';
 
 export type OverlaySize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 export type OverlayPosition = 'center' | 'top' | 'bottom' | 'left' | 'right';

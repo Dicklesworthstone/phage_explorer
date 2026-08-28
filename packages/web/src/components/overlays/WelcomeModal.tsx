@@ -14,7 +14,7 @@ import { useOverlay } from './OverlayProvider';
 import { useWebPreferences } from '../../store/createWebStore';
 import { usePhageStore, type ExperienceLevel } from '@phage-explorer/state';
 import { KeyboardPrimer } from './KeyboardPrimer';
-import { IconKeyboard, IconFlask, IconLearn, IconSearch, IconZap } from '../ui';
+import { IconKeyboard, IconFlask, IconLearn, IconSearch, IconZap } from '../ui/icons';
 
 import './WelcomeModal.css';
 
