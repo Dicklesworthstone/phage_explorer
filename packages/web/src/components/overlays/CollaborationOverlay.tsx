@@ -54,13 +54,15 @@ export function CollaborationOverlay(): React.ReactElement | null {
         {!connected ? (
           <>
             <div>
-              <label style={{ display: 'block', color: colors.textDim, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
+              <label htmlFor="collab-display-name" style={{ display: 'block', color: colors.textDim, marginBottom: '0.5rem', fontSize: '0.9rem' }}>
                 Your Name
               </label>
               <input
+                id="collab-display-name"
                 type="text"
                 value={name}
                 onChange={e => setName(e.target.value)}
+                autoComplete="nickname"
                 style={{
                   width: '100%',
                   padding: '0.75rem',
@@ -82,6 +84,7 @@ export function CollaborationOverlay(): React.ReactElement | null {
                 <h3 style={{ color: colors.primary, marginTop: 0 }}>New Session</h3>
                 <p style={{ fontSize: '0.85rem', color: colors.textMuted }}>Start a new collaborative room</p>
                 <button
+                  type="button"
                   onClick={() => createSession(name)}
                   style={{
                     marginTop: '1rem',
@@ -106,7 +109,9 @@ export function CollaborationOverlay(): React.ReactElement | null {
                 textAlign: 'center' 
               }}>
                 <h3 style={{ color: colors.secondary, marginTop: 0 }}>Join Session</h3>
+                <label htmlFor="collab-join-id" className="sr-only">Session ID</label>
                 <input
+                  id="collab-join-id"
                   type="text"
                   placeholder="Session ID"
                   value={joinId}
@@ -123,6 +128,7 @@ export function CollaborationOverlay(): React.ReactElement | null {
                   }}
                 />
                 <button
+                  type="button"
                   onClick={() => joinSession(joinId, name)}
                   disabled={!joinId}
                   style={{
@@ -154,7 +160,9 @@ export function CollaborationOverlay(): React.ReactElement | null {
               <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 {sessionId}
                 <button
+                  type="button"
                   onClick={() => navigator.clipboard.writeText(sessionId)}
+                  aria-label="Copy session ID"
                   style={{
                     background: 'none',
                     border: 'none',
@@ -264,7 +272,9 @@ export function CollaborationOverlay(): React.ReactElement | null {
                 }}
                 style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem' }}
               >
+                <label htmlFor="collab-chat-message" className="sr-only">Chat message</label>
                 <input
+                  id="collab-chat-message"
                   type="text"
                   value={messageDraft}
                   onChange={(e) => setMessageDraft(e.target.value)}
@@ -298,6 +308,7 @@ export function CollaborationOverlay(): React.ReactElement | null {
             </div>
 
             <button
+              type="button"
               onClick={leaveSession}
               style={{
                 marginTop: '2rem',
