@@ -785,9 +785,11 @@ function SequenceViewBase({
           {/* Zoom controls */}
           <div className="sequence-view__zoom">
             <button
+              type="button"
               onClick={() => zoomOut()}
               className="btn compact sequence-view__zoom-btn"
               title="Zoom out (-)"
+              aria-label="Zoom out"
             >
               -
             </button>
@@ -795,16 +797,21 @@ function SequenceViewBase({
               {zoomLabel}
             </span>
             <button
+              type="button"
               onClick={() => zoomIn()}
               className="btn compact sequence-view__zoom-btn"
               title="Zoom in (+)"
+              aria-label="Zoom in"
             >
               +
             </button>
             <button
+              type="button"
               onClick={() => setSnapToCodon((prev) => !prev)}
               className={`btn compact sequence-view__snap-btn ${snapToCodon ? 'is-active' : ''}`}
               title="Toggle codon snapping"
+              aria-label="Toggle codon snapping"
+              aria-pressed={snapToCodon}
             >
               Snap 3bp
             </button>
@@ -822,9 +829,11 @@ function SequenceViewBase({
           {/* Reading frame badge */}
           {viewMode !== 'dna' && (
             <button
+              type="button"
               onClick={cycleReadingFrame}
               className="btn compact sequence-view__frame-btn"
               title="Cycle reading frame (f)"
+              aria-label={`Cycle reading frame, currently ${frameLabel}`}
             >
               Frame {frameLabel}
             </button>

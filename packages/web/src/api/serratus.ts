@@ -234,6 +234,7 @@ export async function getSRARunsForFamily(
       };
     }
 
+    const data = (await response.json()) as { value?: Array<Record<string, unknown>> };
     const rawRows: Array<Record<string, unknown>> = data.value || [];
     const runIds: string[] = [];
     for (let i = 0; i < rawRows.length; i++) {

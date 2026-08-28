@@ -57,6 +57,10 @@ interface PreparsedGene {
   terms: Set<string>;
 }
 
+export function toLabel(gene: GeneInfo | undefined): string {
+  return (gene?.product || gene?.name || gene?.locusTag || '').toLowerCase();
+}
+
 function preparseGene(gene: GeneInfo | undefined): PreparsedGene {
   const name = toLabel(gene);
   const terms = new Set<string>();
@@ -80,7 +84,7 @@ function fastGeneSimilarity(a: PreparsedGene, b: PreparsedGene): number {
   return 0;
 }
 
-function buildHeatmap(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyHeatmap {
+export function buildHeatmap(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyHeatmap {
   const rows = genesA.length;
   const cols = genesB.length;
   const values = new Float32Array(rows * cols);
