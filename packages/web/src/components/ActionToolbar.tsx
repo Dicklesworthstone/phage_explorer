@@ -32,7 +32,7 @@ import {
   IconZoomOut,
   IconHelp,
   IconCommand,
-} from './ui';
+} from './ui/icons';
 
 interface ActionToolbarProps {
   onOpenSearch: () => void;
