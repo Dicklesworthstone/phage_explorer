@@ -67,16 +67,27 @@ export function RepeatsOverlay({
       return;
     }
 
+    let cancelled = false;
     setSequenceLoading(true);
     repository
       .getFullGenomeLength(phageId)
       .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => setSequence(''))
-      .finally(() => setSequenceLoading(false));
+      .catch(() => {
+        if (cancelled) return;
+        setSequence('');
+      })
+      .finally(() => {
+        if (!cancelled) setSequenceLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Compute repeats in the analysis worker to avoid main-thread jank.

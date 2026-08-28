@@ -8,6 +8,7 @@ interface PhageDescriptor {
 }
 
 interface SyntenyJob {
+  jobId?: string;
   query: PhageDescriptor;
   reference: PhageDescriptor;
   genesQuery: GeneInfo[];
@@ -45,6 +46,7 @@ interface SyntenyStats {
 
 interface WorkerResponse {
   ok: boolean;
+  jobId?: string;
   analysis?: SyntenyAnalysis;
   blocksBp?: SyntenyBlockBp[];
   heatmap?: SyntenyHeatmap;
@@ -176,7 +178,7 @@ function sumCoverage(segments: Array<{ start: number; end: number }>): number {
 
 self.onmessage = (event: MessageEvent<SyntenyJob>) => {
   const job = event.data;
-  const message: WorkerResponse = { ok: false };
+  const message: WorkerResponse = { ok: false, jobId: job?.jobId };
 
   try {
     if (!job || !job.genesQuery?.length || !job.genesReference?.length) {

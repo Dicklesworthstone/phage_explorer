@@ -89,16 +89,27 @@ export function PeriodicityOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoadingSequence(true);
     repository
       .getFullGenomeLength(phageId)
       .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => setSequence(''))
-      .finally(() => setLoadingSequence(false));
+      .catch(() => {
+        if (cancelled) return;
+        setSequence('');
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingSequence(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Compute spectrogram + candidates

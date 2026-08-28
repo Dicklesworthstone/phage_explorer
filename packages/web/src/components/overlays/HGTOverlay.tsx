@@ -288,22 +288,31 @@ export function HGTOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     Promise.all([
       repository.getFullGenomeLength(phageId).then((length: number) => repository.getSequenceWindow(phageId, 0, length)),
       repository.getGenes(phageId),
     ])
       .then(([seq, geneList]) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         genesCache.current.set(phageId, geneList);
         setSequence(seq);
         setGenes(geneList);
       })
       .catch(() => {
+        if (cancelled) return;
         setSequence('');
         setGenes([]);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Run enhanced HGT provenance analysis

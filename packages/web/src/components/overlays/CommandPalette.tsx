@@ -310,7 +310,12 @@ export function CommandPalette({ commands: customCommands, context: propContext 
           }
         })();
       }
-      return;
+      return () => {
+        cancelled = true;
+        workerInstanceRef.current = null;
+        workerRef.current = null;
+        setWorkerReady(false);
+      };
     }
 
     usingPreloadedRef.current = false;

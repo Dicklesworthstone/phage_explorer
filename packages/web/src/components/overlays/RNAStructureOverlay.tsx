@@ -381,7 +381,7 @@ export function RNAStructureOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const sequenceCache = useRef<Map<number, { sequence: string; genes: GeneInfo[] }>>(new Map());
   const [sequence, setSequence] = useState<string>('');
   const [genes, setGenes] = useState<GeneInfo[]>([]);
   const [loading, setLoading] = useState(false);
@@ -408,29 +408,38 @@ export function RNAStructureOverlay({
     }
 
     const phageId = currentPhage.id;
-
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
+    const cached = sequenceCache.current.get(phageId);
+    if (cached) {
+      setSequence(cached.sequence);
+      setGenes(cached.genes.length > 0 ? cached.genes : (currentPhage.genes ?? []));
       setLoading(false);
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     Promise.all([
       repository.getFullGenomeLength(phageId).then(length => repository.getSequenceWindow(phageId, 0, length)),
       repository.getGenes(phageId),
     ])
       .then(([seq, geneList]) => {
-        sequenceCache.current.set(phageId, seq);
+        if (cancelled) return;
+        sequenceCache.current.set(phageId, { sequence: seq, genes: geneList });
         setSequence(seq);
         setGenes(geneList);
       })
       .catch(() => {
+        if (cancelled) return;
         setSequence('');
         setGenes([]);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Compute RNA structure analysis

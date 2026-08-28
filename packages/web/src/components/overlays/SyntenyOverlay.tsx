@@ -59,6 +59,7 @@ interface SyntenyStats {
 
 interface WorkerResponse {
   ok: boolean;
+  jobId?: string;
   blocksBp?: SyntenyBlockBp[];
   heatmap?: SyntenyHeatmap;
   stats?: SyntenyStats;
@@ -103,6 +104,7 @@ export function SyntenyOverlay({
   const overlayHelp = getOverlayContext('synteny');
   const referenceSelectId = 'synteny-reference-phage';
   const workerRef = useRef<Worker | null>(null);
+  const activeJobIdRef = useRef<string | null>(null);
 
   // State
   const [loading, setLoading] = useState(false);
@@ -146,9 +148,19 @@ export function SyntenyOverlay({
   // Load phage list when overlay opens
   useEffect(() => {
     if (!isOpen('synteny') || !repository) return;
-    repository.listPhages().then((list) => {
-      setPhages(list.map((p) => ({ id: p.id, name: p.name, length: p.genomeLength })));
-    });
+    let cancelled = false;
+    repository.listPhages()
+      .then((list) => {
+        if (cancelled) return;
+        setPhages(list.map((p) => ({ id: p.id, name: p.name, length: p.genomeLength })));
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Failed to list phages');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository]);
 
   // Load reference phage when selected
@@ -157,9 +169,20 @@ export function SyntenyOverlay({
       setReferencePhage(null);
       return;
     }
-    repository.getPhageById(referencePhageId).then((phage) => {
-      setReferencePhage(phage ?? null);
-    });
+    let cancelled = false;
+    repository.getPhageById(referencePhageId)
+      .then((phage) => {
+        if (cancelled) return;
+        setReferencePhage(phage ?? null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setReferencePhage(null);
+        setError(err instanceof Error ? err.message : 'Failed to load reference phage');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [referencePhageId, repository]);
 
   // Run synteny analysis when both phages are loaded
@@ -187,8 +210,12 @@ export function SyntenyOverlay({
     setLoading(true);
     setError(null);
 
+    const jobId = `${currentPhage.id}-${referencePhage.id}-${Date.now()}`;
+    activeJobIdRef.current = jobId;
+
     // Prepare job for worker
     const job = {
+      jobId,
       query: {
         id: currentPhage.id,
         name: currentPhage.name,
@@ -205,6 +232,8 @@ export function SyntenyOverlay({
 
     const handleMessage = (event: MessageEvent<WorkerResponse>) => {
       const response = event.data;
+      if (response.jobId && response.jobId !== jobId) return;
+      if (activeJobIdRef.current !== jobId) return;
       setLoading(false);
 
       if (!response.ok) {
@@ -227,7 +256,12 @@ export function SyntenyOverlay({
     worker.postMessage(job);
 
     return () => {
-      worker.onmessage = null;
+      if (activeJobIdRef.current === jobId) {
+        activeJobIdRef.current = null;
+      }
+      if (worker.onmessage === handleMessage) {
+        worker.onmessage = null;
+      }
     };
   }, [isOpen, currentPhage, referencePhage]);
 

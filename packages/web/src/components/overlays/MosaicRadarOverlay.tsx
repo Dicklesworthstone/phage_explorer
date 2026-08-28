@@ -255,6 +255,7 @@ export function MosaicRadarOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
 
     Promise.all([
@@ -264,16 +265,24 @@ export function MosaicRadarOverlay({
       buildReferenceList(repository, phageId),
     ])
       .then(([seq, refs]) => {
+        if (cancelled) return;
         sequenceCache.current.set(phageId, seq);
         referencesCache.current.set(phageId, refs);
         setSequence(seq);
         setReferences(refs);
       })
       .catch(() => {
+        if (cancelled) return;
         setSequence('');
         setReferences([]);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Run mosaic analysis

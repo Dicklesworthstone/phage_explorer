@@ -107,12 +107,23 @@ export function DefenseArmsRaceOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     repository
       .getDefenseSystems(currentPhage.id)
-      .then(setDefenseSystems)
-      .catch(() => setDefenseSystems([]))
-      .finally(() => setLoading(false));
+      .then((systems) => {
+        if (!cancelled) setDefenseSystems(systems);
+      })
+      .catch(() => {
+        if (!cancelled) setDefenseSystems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Reset selection/filter when the active phage changes while the overlay is open.

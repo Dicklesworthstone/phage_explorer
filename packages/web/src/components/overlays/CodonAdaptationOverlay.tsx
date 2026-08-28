@@ -77,20 +77,29 @@ export function CodonAdaptationOverlay({
       return;
     }
 
+    let cancelled = false;
     setLoading(true);
     Promise.all([
       repository.getCodonAdaptation(currentPhage.id),
       repository.getHostTrnaPools(),
     ])
       .then(([adapt, pools]) => {
+        if (cancelled) return;
         setAdaptations(adapt);
         setHostPools(pools);
       })
       .catch(() => {
+        if (cancelled) return;
         setAdaptations([]);
         setHostPools([]);
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, repository, currentPhage]);
 
   // Compute per-host summaries
