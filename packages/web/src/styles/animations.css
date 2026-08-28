@@ -20,10 +20,6 @@
   transition: none;
 }
 
-.transition-all {
-  transition: all var(--duration-normal) var(--ease-in-out);
-}
-
 .transition-colors {
   transition: color var(--duration-normal) var(--ease-in-out),
     background-color var(--duration-normal) var(--ease-in-out),

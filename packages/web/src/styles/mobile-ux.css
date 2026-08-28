@@ -298,7 +298,8 @@ html {
 .bottom-sheet {
   position: fixed;
   inset: 0;
-  z-index: var(--z-modal);
+  /* Sit above the mobile tab bar (z-modal + 50) so sheet footers remain tappable. */
+  z-index: calc(var(--z-modal) + 80);
   pointer-events: none;
   display: flex;
   flex-direction: column;
@@ -478,6 +479,14 @@ html {
   border-top: 1px solid var(--color-border-subtle);
   display: flex;
   gap: var(--space-3);
+}
+
+@media (max-width: 640px) {
+  .bottom-sheet__footer {
+    padding-bottom: calc(
+      var(--space-3) + var(--mobile-tab-bar-height, 56px) + env(safe-area-inset-bottom, 0px)
+    );
+  }
 }
 
 .bottom-sheet__footer .btn {

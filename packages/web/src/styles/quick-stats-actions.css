@@ -5,6 +5,18 @@
   padding-right: 0;
 }
 
+@media (max-width: 640px) {
+  .quick-stat--actions {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .quick-stat__actions {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+}
+
 .quick-stat__actions {
   display: flex;
   align-items: center;

@@ -1510,10 +1510,8 @@ textarea:focus-visible,
   justify-content: flex-end;
 }
 
-/* Mobile: keep controls usable without stealing vertical space.
-   - Stack header content
-   - Make controls horizontally scrollable (no multi-line wrap)
-   - Hide redundant range (mobile already shows sticky progress badge) */
+/* Mobile: stack header, wrap controls, full-width view-mode toggle.
+   Hide redundant range (mobile already shows sticky progress badge). */
 @media (max-width: 640px) {
   .sequence-view__header {
     flex-direction: column;
@@ -1522,37 +1520,34 @@ textarea:focus-visible,
 
   .sequence-view__controls {
     justify-content: flex-start;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 2px 0;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-    /* Let content reach the edges while keeping the scroll affordance */
-    margin: 0 calc(-1 * var(--space-2));
-    padding-left: var(--space-2);
-    padding-right: var(--space-2);
-    /* Hint that the row scrolls horizontally (discoverability on mobile). */
-    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
-    -webkit-mask-repeat: no-repeat;
-    mask-repeat: no-repeat;
-    -webkit-mask-size: 100% 100%;
-    mask-size: 100% 100%;
+    flex-wrap: wrap;
+    overflow: visible;
+    margin: 0;
+    padding: 0;
+    max-width: 100%;
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 
-  /* Critical: prevent flex items from shrinking to fit. We want real overflow so
-     the row can scroll horizontally instead of clipping controls (esp. view-mode toggle). */
   .sequence-view__controls > * {
-    flex: 0 0 auto;
-  }
-
-  .sequence-view__controls::-webkit-scrollbar {
-    display: none;
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .sequence-view__zoom {
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
+  }
+
+  .view-mode-toggle {
+    flex: 1 1 100%;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .view-mode-segment {
+    flex: 1 1 0;
+    justify-content: center;
+    min-width: 0;
   }
 
   .sequence-view__range {

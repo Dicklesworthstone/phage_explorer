@@ -228,14 +228,13 @@
     height: 44px;
   }
 
-  /* View mode toggle - Compact but usable on mobile */
+  /* View mode toggle - full-width segmented control, not a hidden-scroll carousel. */
   .view-mode-toggle {
     padding: 3px;
     gap: 2px;
-    width: fit-content;
-    /* Let it size to its content; the surrounding controls row is horizontally scrollable. */
-    max-width: none;
-    flex: 0 0 auto;
+    width: 100%;
+    max-width: 100%;
+    flex: 1 1 100%;
   }
 
   .view-mode-segment {
