@@ -690,8 +690,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
 
             {/* Query input */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <label style={{ color: colors.textDim, fontSize: '0.9rem' }}>Query</label>
+              <label htmlFor="phage-search-query" style={{ color: colors.textDim, fontSize: '0.9rem' }}>Query</label>
               <input
+                id="phage-search-query"
                 ref={inputRef}
                 data-overlay-autofocus="true"
                 type="text"
