@@ -220,8 +220,17 @@ function computeStats(entries: TimingEntry[]): OperationStats {
     return { count: 0, mean: 0, median: 0, p95: 0, cancellations: 0, cancellationRate: 0 };
   }
 
-  const durations = entries.filter(e => !e.cancelled).map(e => e.duration).sort((a, b) => a - b);
-  const cancellations = entries.filter(e => e.cancelled).length;
+  const durations: number[] = [];
+  let cancellations = 0;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    if (e.cancelled) {
+      cancellations++;
+    } else {
+      durations.push(e.duration);
+    }
+  }
+  durations.sort((a, b) => a - b);
 
   if (durations.length === 0) {
     return {

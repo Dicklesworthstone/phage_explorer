@@ -52,21 +52,30 @@ interface WorkerResponse {
   error?: string;
 }
 
-function toLabel(gene: GeneInfo | undefined): string {
-  return (gene?.product || gene?.name || gene?.locusTag || '').toLowerCase();
+interface PreparsedGene {
+  name: string;
+  terms: Set<string>;
 }
 
-function geneSimilarity(a: GeneInfo, b: GeneInfo): number {
-  const nameA = toLabel(a);
-  const nameB = toLabel(b);
-  if (!nameA || !nameB) return 0;
-  if (nameA === nameB) return 1;
-  if (nameA.includes(nameB) || nameB.includes(nameA)) return 0.8;
+function preparseGene(gene: GeneInfo | undefined): PreparsedGene {
+  const name = toLabel(gene);
+  const terms = new Set<string>();
+  if (name) {
+    for (const term of name.split(/[\s-]+/)) {
+      if (term.length > 3) terms.add(term);
+    }
+  }
+  return { name, terms };
+}
 
-  const termsA = nameA.split(/[\s-]+/).filter((t) => t.length > 3);
-  const termsB = nameB.split(/[\s-]+/).filter((t) => t.length > 3);
-  const common = termsA.filter((t) => termsB.includes(t));
-  if (common.length > 0) return 0.5;
+function fastGeneSimilarity(a: PreparsedGene, b: PreparsedGene): number {
+  if (!a.name || !b.name) return 0;
+  if (a.name === b.name) return 1;
+  if (a.name.includes(b.name) || b.name.includes(a.name)) return 0.8;
+
+  for (const term of a.terms) {
+    if (b.terms.has(term)) return 0.5;
+  }
 
   return 0;
 }
@@ -78,11 +87,15 @@ function buildHeatmap(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyHeatmap {
   let min = Number.POSITIVE_INFINITY;
   let max = Number.NEGATIVE_INFINITY;
 
+  const prepA = genesA.map(preparseGene);
+  const prepB = genesB.map(preparseGene);
+
   for (let r = 0; r < rows; r++) {
+    const a = prepA[r];
+    const rowOffset = r * cols;
     for (let c = 0; c < cols; c++) {
-      const sim = geneSimilarity(genesA[r], genesB[c]);
-      const idx = r * cols + c;
-      values[idx] = sim;
+      const sim = fastGeneSimilarity(a, prepB[c]);
+      values[rowOffset + c] = sim;
       if (sim < min) min = sim;
       if (sim > max) max = sim;
     }

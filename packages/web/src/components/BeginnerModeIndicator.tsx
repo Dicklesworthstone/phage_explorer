@@ -1,22 +1,22 @@
 import React from 'react';
 import { Tooltip } from './ui/Tooltip';
-import { useBeginnerMode } from '../education';
+import { useBeginnerMode } from '../education/hooks/useBeginnerMode';
+
+const BEGINNER_TOOLTIP = (
+  <>
+    Beginner Mode is on.
+    <br />
+    Click to open the glossary. Manage in Settings.
+  </>
+);
 
 export const BeginnerModeIndicator: React.FC = () => {
   const { isEnabled, openGlossary } = useBeginnerMode();
 
   if (!isEnabled) return null;
 
-  const tooltip = (
-    <>
-      Beginner Mode is on.
-      <br />
-      Click to open the glossary. Manage in Settings.
-    </>
-  );
-
   return (
-    <Tooltip content={tooltip} position="top" className="beginner-indicator__tooltip">
+    <Tooltip content={BEGINNER_TOOLTIP} position="top" className="beginner-indicator__tooltip">
       <div className="beginner-indicator" role="status" aria-live="polite">
         <button
           type="button"

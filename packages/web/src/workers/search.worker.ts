@@ -518,14 +518,21 @@ const workerAPI: SearchWorkerAPI = {
     const name = request.index?.trim();
     if (!name) return;
 
-    const normalizedEntries: Array<FuzzyIndexEntry<TMeta>> = (request.entries ?? [])
-      .filter((e): e is FuzzySearchEntry<TMeta> => Boolean(e && typeof e.id === 'string' && typeof e.text === 'string'))
-      .map((e) => ({
-        ...e,
-        text: e.text,
-        textLower: normalizeForSearch(e.text),
-      }))
-      .filter((e) => e.textLower.length > 0);
+    const entries = request.entries ?? [];
+    const normalizedEntries: Array<FuzzyIndexEntry<TMeta>> = [];
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      if (e && typeof e.id === 'string' && typeof e.text === 'string') {
+        const textLower = normalizeForSearch(e.text);
+        if (textLower.length > 0) {
+          normalizedEntries.push({
+            ...e,
+            text: e.text,
+            textLower,
+          });
+        }
+      }
+    }
 
     fuzzyIndices.set(name, {
       entries: normalizedEntries,

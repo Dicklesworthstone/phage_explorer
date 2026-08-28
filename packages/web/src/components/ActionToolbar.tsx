@@ -15,7 +15,7 @@
 import React from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import type { ViewMode } from '@phage-explorer/core';
-import { ActionIds } from '../keyboard';
+import { ActionIds } from '../keyboard/actionRegistry';
 import { detectShortcutPlatform, formatActionShortcutForSurface } from '../keyboard/actionSurfaces';
 import {
   IconDna,

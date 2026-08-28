@@ -350,26 +350,25 @@ export async function fetchDatedPhageSequences(
   }
 
   // Step 3: Process into phylodynamics data
-  const sequences = allRecords
-    .filter((record) => record.collection_date)
-    .map((record): PhylodynamicsData['sequences'][number] | null => {
-      const date = parseCollectionDate(record.collection_date!);
-      if (!date) return null;
+  const sequences: PhylodynamicsData['sequences'] = [];
+  for (let i = 0; i < allRecords.length; i++) {
+    const record = allRecords[i];
+    if (!record.collection_date) continue;
+    const date = parseCollectionDate(record.collection_date);
+    if (!date) continue;
 
-      const sequence: PhylodynamicsData['sequences'][number] = {
-        accession: record.accession,
-        organism: record.organism,
-        collectionDate: date,
-        sequenceLength: record.sequence_length,
-      };
+    const sequence: PhylodynamicsData['sequences'][number] = {
+      accession: record.accession,
+      organism: record.organism,
+      collectionDate: date,
+      sequenceLength: record.sequence_length,
+    };
+    if (record.country) sequence.country = record.country;
+    if (record.host) sequence.host = record.host;
 
-      if (record.country) sequence.country = record.country;
-      if (record.host) sequence.host = record.host;
-
-      return sequence;
-    })
-    .filter((seq): seq is PhylodynamicsData['sequences'][number] => seq !== null)
-    .sort((a, b) => a.collectionDate.getTime() - b.collectionDate.getTime());
+    sequences.push(sequence);
+  }
+  sequences.sort((a, b) => a.collectionDate.getTime() - b.collectionDate.getTime());
 
   if (sequences.length === 0) {
     return {

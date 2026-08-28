@@ -1,7 +1,9 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { SequenceView } from './SequenceView';
-import { useHotkeys } from '../hooks';
+import { useHotkeys } from '../hooks/useHotkey';
 import { ActionIds } from '../keyboard';
+
+const EMPTY_POSITIONS: number[] = [];
 
 export interface DiffStats {
   insertions: number;
@@ -26,7 +28,7 @@ export function DiffHighlighter({
   sequence,
   diffSequence,
   diffMask = null,
-  diffPositions = [],
+  diffPositions = EMPTY_POSITIONS,
   stats,
   height = 320,
 }: DiffHighlighterProps): React.ReactElement {

@@ -38,8 +38,8 @@ test.describe('Hotkeys and Overlay Stack', () => {
     });
 
     await test.step('Open 4th overlay (Command Palette) - expect replacement', async () => {
-      // 4. Open Command Palette (:)
-      await page.keyboard.press(':');
+      // 4. Open Command Palette (Control+k)
+      await page.keyboard.press('Control+k');
 
       // Expect Command Palette to appear
       await expect(page.locator('[data-testid="overlay-commandPalette"]')).toBeVisible();

@@ -9,7 +9,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useTheme } from '../hooks/useTheme';
 import type { DatabaseLoadProgress } from '../db';
 import { Skeleton } from './ui/Skeleton';
-import { IconAlertTriangle } from './ui';
+import { IconAlertTriangle } from './ui/icons';
 
 interface DataLoadingOverlayProps {
   progress: DatabaseLoadProgress | null;
@@ -37,6 +37,18 @@ function deleteIndexedDatabase(name: string): Promise<void> {
       finish();
     }
   });
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) {
+    return remainingSeconds ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
 }
 
 export function DataLoadingOverlay({
@@ -403,18 +415,6 @@ export function DataLoadingOverlay({
     stage: 'initializing',
     percent: 0,
     message: 'Initializing...',
-  };
-
-  const formatDuration = (seconds: number): string => {
-    if (seconds < 60) return `${seconds}s`;
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    if (minutes < 60) {
-      return remainingSeconds ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
-    }
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    return remainingMinutes ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
   };
 
   return (

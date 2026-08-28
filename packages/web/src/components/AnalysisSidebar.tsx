@@ -26,7 +26,7 @@ import {
   IconShield,
   IconBeaker,
   IconZap,
-} from './ui';
+} from './ui/icons';
 
 const CATEGORY_ICON: Record<string, React.ReactNode> = {
   sequence: <IconDna size={16} />,

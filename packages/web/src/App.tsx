@@ -16,14 +16,9 @@ import { useOverlay } from './components/overlays/OverlayProvider';
 import type { OverlayId } from './components/overlays/OverlayProvider';
 import { DataLoadingOverlay } from './components/DataLoadingOverlay';
 import { useDatabase } from './hooks/useDatabase';
-import {
-  useHotkeys,
-  useKeyboardMode,
-  usePendingSequence,
-  useExperienceLevelSync,
-  useBlockedHotkeyNotification,
-} from './hooks';
-import { ActionIds, getOverlayHotkeyActions } from './keyboard';
+import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotkey';
+import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
+import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
 import {
   APP_SHELL_FOOTER_HINTS,
   detectShortcutPlatform,
@@ -31,7 +26,7 @@ import {
   formatHintKeys,
 } from './keyboard/actionSurfaces';
 import { useTheme } from './hooks/useTheme';
-import { useReducedMotion } from './hooks';
+import { useReducedMotion } from './hooks/useReducedMotion';
 import { BlockedHotkeyToast } from './components/BlockedHotkeyToast';
 import { useToast } from './components/ui/Toast';
 import type { PhageRepository } from './db';

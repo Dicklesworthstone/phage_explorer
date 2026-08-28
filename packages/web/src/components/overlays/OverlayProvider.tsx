@@ -225,7 +225,7 @@ export function OverlayProvider({ children }: OverlayProviderProps): React.React
         return { ...current, stackLimitToast: null };
       });
       stackLimitToastTimerRef.current = null;
-    }, 4500);
+    }, 8000);
 
     return clearStackLimitToastTimer;
   }, [clearStackLimitToastTimer, stackLimitToast]);

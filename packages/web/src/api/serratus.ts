@@ -11,15 +11,12 @@
 import type { SerratusSequenceMatch, SerratusSearchResponse, APIResult } from './types';
 
 const SERRATUS_API_BASE = 'https://api.serratus.io';
-const RAW_SERRATUS_AUTH = import.meta.env.VITE_SERRATUS_AUTH ?? '';
-const SERRATUS_AUTH = typeof btoa === 'function' && RAW_SERRATUS_AUTH
-  ? btoa(RAW_SERRATUS_AUTH)
-  : '';
 
 function buildSerratusHeaders(): HeadersInit {
-  const headers: HeadersInit = { 'Accept': 'application/json' };
-  if (SERRATUS_AUTH) {
-    headers['Authorization'] = `Basic ${SERRATUS_AUTH}`;
+  const headers: HeadersInit = { Accept: 'application/json' };
+  const envVal: string = (import.meta.env.VITE_SERRATUS_AUTH as string) || '';
+  if (envVal.length > 0 && typeof globalThis.btoa === 'function') {
+    headers.Authorization = 'Basic ' + globalThis.btoa(envVal);
   }
   return headers;
 }
@@ -237,10 +234,12 @@ export async function getSRARunsForFamily(
       };
     }
 
-    const data = await response.json();
-    const runIds: string[] = (data.value || [])
-      .map((row: Record<string, unknown>) => String(row.run_id || ''))
-      .filter((id: string) => id.length > 0);
+    const rawRows: Array<Record<string, unknown>> = data.value || [];
+    const runIds: string[] = [];
+    for (let i = 0; i < rawRows.length; i++) {
+      const id = String(rawRows[i]?.run_id || '');
+      if (id.length > 0) runIds.push(id);
+    }
 
     return { success: true, data: runIds };
   } catch (error) {
