@@ -860,6 +860,7 @@ function SequenceViewBase({
           onContextMenu={handleContextMenu}
           role="img"
           aria-label="Genome sequence canvas"
+          aria-describedby={descriptionId}
           className="sequence-grid-canvas"
           style={{
             width: '100%',
@@ -981,7 +982,11 @@ function SequenceViewBase({
             }}
             className="sequence-view__jump-form"
           >
+            <label htmlFor="sequence-view-jump" className="sr-only">
+              Jump to sequence position (index or percent)
+            </label>
             <input
+              id="sequence-view-jump"
               value={jumpInput}
               onChange={(e) => setJumpInput(e.target.value)}
               placeholder="Jump (idx or %)"
@@ -990,6 +995,7 @@ function SequenceViewBase({
             <button
               type="submit"
               className="btn compact sequence-view__jump-btn"
+              aria-label="Go to jumped position"
             >
               Go
             </button>
