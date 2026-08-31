@@ -16,6 +16,7 @@ import {
   defenseSystems,
   models,
   codonAdaptation,
+  hostTrnaPools,
 } from '@phage-explorer/db-schema';
 import {
   countCodonUsage,
@@ -96,6 +97,173 @@ function calculateNc(codonCounts: Record<string, number>): number {
   }
 
   return Math.max(1, Math.min(61, nc));
+}
+
+/**
+ * Default host tRNA gene pools used for tAI approximation.
+ * Values are approximate copy numbers (literature-derived) for common lab hosts.
+ */
+const DEFAULT_TRNA_POOLS: Record<string, Array<{ anticodon: string; aminoAcid: string; codon: string; copyNumber: number }>> = {
+  // E. coli K-12 MG1655 approximate tRNA gene copy numbers, grouped by codon
+  // recognized (allowing canonical wobble U at anticodon position 1).
+  'escherichia coli': [
+    { anticodon: 'GAA', aminoAcid: 'Phe', codon: 'TTT', copyNumber: 2 },
+    { anticodon: 'GAA', aminoAcid: 'Phe', codon: 'TTC', copyNumber: 2 },
+    { anticodon: 'CAG', aminoAcid: 'Leu', codon: 'CTT', copyNumber: 4 },
+    { anticodon: 'CAG', aminoAcid: 'Leu', codon: 'CTC', copyNumber: 4 },
+    { anticodon: 'CAG', aminoAcid: 'Leu', codon: 'CTA', copyNumber: 4 },
+    { anticodon: 'CAG', aminoAcid: 'Leu', codon: 'CTG', copyNumber: 4 },
+    { anticodon: 'GAG', aminoAcid: 'Leu', codon: 'TTA', copyNumber: 2 },
+    { anticodon: 'GAG', aminoAcid: 'Leu', codon: 'TTG', copyNumber: 2 },
+    { anticodon: 'GAU', aminoAcid: 'Ile', codon: 'ATT', copyNumber: 3 },
+    { anticodon: 'GAU', aminoAcid: 'Ile', codon: 'ATC', copyNumber: 3 },
+    { anticodon: 'CAU', aminoAcid: 'Ile', codon: 'ATA', copyNumber: 1 },
+    { anticodon: 'CAU', aminoAcid: 'Met', codon: 'ATG', copyNumber: 6 },
+    { anticodon: 'GAC', aminoAcid: 'Val', codon: 'GTT', copyNumber: 4 },
+    { anticodon: 'GAC', aminoAcid: 'Val', codon: 'GTC', copyNumber: 4 },
+    { anticodon: 'GAC', aminoAcid: 'Val', codon: 'GTA', copyNumber: 4 },
+    { anticodon: 'GAC', aminoAcid: 'Val', codon: 'GTG', copyNumber: 4 },
+    { anticodon: 'UGA', aminoAcid: 'Ser', codon: 'TCT', copyNumber: 3 },
+    { anticodon: 'UGA', aminoAcid: 'Ser', codon: 'TCC', copyNumber: 3 },
+    { anticodon: 'UGA', aminoAcid: 'Ser', codon: 'TCA', copyNumber: 3 },
+    { anticodon: 'UGA', aminoAcid: 'Ser', codon: 'TCG', copyNumber: 3 },
+    { anticodon: 'CGA', aminoAcid: 'Ser', codon: 'AGT', copyNumber: 2 },
+    { anticodon: 'CGA', aminoAcid: 'Ser', codon: 'AGC', copyNumber: 2 },
+    { anticodon: 'GGG', aminoAcid: 'Pro', codon: 'CCT', copyNumber: 3 },
+    { anticodon: 'GGG', aminoAcid: 'Pro', codon: 'CCC', copyNumber: 3 },
+    { anticodon: 'GGG', aminoAcid: 'Pro', codon: 'CCA', copyNumber: 3 },
+    { anticodon: 'GGG', aminoAcid: 'Pro', codon: 'CCG', copyNumber: 3 },
+    { anticodon: 'GGU', aminoAcid: 'Thr', codon: 'ACT', copyNumber: 4 },
+    { anticodon: 'GGU', aminoAcid: 'Thr', codon: 'ACC', copyNumber: 4 },
+    { anticodon: 'GGU', aminoAcid: 'Thr', codon: 'ACA', copyNumber: 4 },
+    { anticodon: 'GGU', aminoAcid: 'Thr', codon: 'ACG', copyNumber: 4 },
+    { anticodon: 'GGC', aminoAcid: 'Ala', codon: 'GCT', copyNumber: 4 },
+    { anticodon: 'GGC', aminoAcid: 'Ala', codon: 'GCC', copyNumber: 4 },
+    { anticodon: 'GGC', aminoAcid: 'Ala', codon: 'GCA', copyNumber: 4 },
+    { anticodon: 'GGC', aminoAcid: 'Ala', codon: 'GCG', copyNumber: 4 },
+    { anticodon: 'GUA', aminoAcid: 'Tyr', codon: 'TAT', copyNumber: 2 },
+    { anticodon: 'GUA', aminoAcid: 'Tyr', codon: 'TAC', copyNumber: 2 },
+    { anticodon: 'CUG', aminoAcid: 'His', codon: 'CAT', copyNumber: 2 },
+    { anticodon: 'CUG', aminoAcid: 'His', codon: 'CAC', copyNumber: 2 },
+    { anticodon: 'CUG', aminoAcid: 'Gln', codon: 'CAA', copyNumber: 3 },
+    { anticodon: 'CUG', aminoAcid: 'Gln', codon: 'CAG', copyNumber: 3 },
+    { anticodon: 'UUG', aminoAcid: 'Asn', codon: 'AAT', copyNumber: 3 },
+    { anticodon: 'UUG', aminoAcid: 'Asn', codon: 'AAC', copyNumber: 3 },
+    { anticodon: 'UUG', aminoAcid: 'Lys', codon: 'AAA', copyNumber: 5 },
+    { anticodon: 'UUG', aminoAcid: 'Lys', codon: 'AAG', copyNumber: 5 },
+    { anticodon: 'GUC', aminoAcid: 'Asp', codon: 'GAT', copyNumber: 4 },
+    { anticodon: 'GUC', aminoAcid: 'Asp', codon: 'GAC', copyNumber: 4 },
+    { anticodon: 'GUC', aminoAcid: 'Glu', codon: 'GAA', copyNumber: 5 },
+    { anticodon: 'GUC', aminoAcid: 'Glu', codon: 'GAG', copyNumber: 5 },
+    { anticodon: 'GCA', aminoAcid: 'Cys', codon: 'TGT', copyNumber: 1 },
+    { anticodon: 'GCA', aminoAcid: 'Cys', codon: 'TGC', copyNumber: 1 },
+    { anticodon: 'CCA', aminoAcid: 'Trp', codon: 'TGG', copyNumber: 6 },
+    { anticodon: 'ACG', aminoAcid: 'Arg', codon: 'CGT', copyNumber: 5 },
+    { anticodon: 'ACG', aminoAcid: 'Arg', codon: 'CGC', copyNumber: 5 },
+    { anticodon: 'ACG', aminoAcid: 'Arg', codon: 'CGA', copyNumber: 5 },
+    { anticodon: 'ACG', aminoAcid: 'Arg', codon: 'CGG', copyNumber: 5 },
+    { anticodon: 'UCG', aminoAcid: 'Arg', codon: 'AGA', copyNumber: 2 },
+    { anticodon: 'UCG', aminoAcid: 'Arg', codon: 'AGG', copyNumber: 2 },
+    { anticodon: 'UCC', aminoAcid: 'Gly', codon: 'GGT', copyNumber: 5 },
+    { anticodon: 'UCC', aminoAcid: 'Gly', codon: 'GGC', copyNumber: 5 },
+    { anticodon: 'UCC', aminoAcid: 'Gly', codon: 'GGA', copyNumber: 5 },
+    { anticodon: 'UCC', aminoAcid: 'Gly', codon: 'GGG', copyNumber: 5 },
+  ],
+};
+
+/**
+ * Find the closest host tRNA pool for a phage host string.
+ */
+function findTrnaPool(host: string): typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS] | undefined {
+  const normalized = host.toLowerCase();
+  for (const key of Object.keys(DEFAULT_TRNA_POOLS)) {
+    if (normalized.includes(key)) return DEFAULT_TRNA_POOLS[key];
+  }
+  return undefined;
+}
+
+/**
+ * Compute intrinsic CAI for a gene using the phage's own codon usage as the
+ * reference. For each amino acid, the most-used synonymous codon gets weight 1;
+ * others are weighted by relative frequency.
+ */
+function calculateIntrinsicCai(
+  geneCodonCounts: Record<string, number>,
+  phageCodonCounts: Record<string, number>
+): number {
+  const codonToAa: Record<string, string> = {
+    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
+    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
+    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
+    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
+    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
+    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
+    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
+    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
+    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
+    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
+    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
+    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
+    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
+    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
+    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
+    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
+  };
+
+  // Determine the most-used codon per amino acid from phage counts.
+  const maxByAa: Record<string, number> = {};
+  for (const [codon, count] of Object.entries(phageCodonCounts)) {
+    const aa = codonToAa[codon];
+    if (!aa || aa === '*') continue;
+    maxByAa[aa] = Math.max(maxByAa[aa] ?? 0, count);
+  }
+
+  let logSum = 0;
+  let totalCodons = 0;
+  for (const [codon, count] of Object.entries(geneCodonCounts)) {
+    const aa = codonToAa[codon];
+    if (!aa || aa === '*') continue;
+    const max = maxByAa[aa];
+    if (!max || count <= 0) continue;
+    const weight = phageCodonCounts[codon] / max;
+    if (weight <= 0) continue;
+    logSum += count * Math.log(weight);
+    totalCodons += count;
+  }
+
+  if (totalCodons === 0) return 0;
+  return Math.exp(logSum / totalCodons);
+}
+
+/**
+ * Compute a simplified tAI for a gene using a host tRNA copy-number pool.
+ * For each codon, we sum copy numbers of tRNAs recognizing it via canonical
+ * wobble, then take the geometric mean across all codons in the gene.
+ */
+function calculateTai(
+  geneCodonCounts: Record<string, number>,
+  pool: typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS]
+): number {
+  const weightByCodon: Record<string, number> = {};
+  for (const entry of pool) {
+    weightByCodon[entry.codon] = (weightByCodon[entry.codon] ?? 0) + entry.copyNumber;
+  }
+
+  // Normalize by the maximum weight across all codons.
+  const maxWeight = Math.max(1, ...Object.values(weightByCodon));
+
+  let logSum = 0;
+  let totalCodons = 0;
+  for (const [codon, count] of Object.entries(geneCodonCounts)) {
+    if (count <= 0) continue;
+    const weight = (weightByCodon[codon] ?? 0.1) / maxWeight;
+    if (weight <= 0) continue;
+    logSum += count * Math.log(Math.max(weight, 0.001));
+    totalCodons += count;
+  }
+
+  if (totalCodons === 0) return 0;
+  return Math.exp(logSum / totalCodons);
 }
 
 function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: number }): number[] {
@@ -409,6 +577,22 @@ async function main() {
 
   console.log('Tables created.\n');
 
+  // Insert default host tRNA pools (used for tAI approximation).
+  for (const [hostKey, pool] of Object.entries(DEFAULT_TRNA_POOLS)) {
+    await db.insert(hostTrnaPools).values(
+      pool.map((entry) => ({
+        hostName: hostKey,
+        hostTaxId: null,
+        anticodon: entry.anticodon,
+        aminoAcid: entry.aminoAcid,
+        codon: entry.codon,
+        copyNumber: entry.copyNumber,
+        relativeAbundance: null,
+      }))
+    );
+    console.log(`  Inserted ${pool.length} default tRNA pool entries for ${hostKey}`);
+  }
+
   // Process each phage in the catalog
   for (const entry of PHAGE_CATALOG) {
     console.log(`\nProcessing ${entry.name} (${entry.accession})...`);
@@ -673,6 +857,44 @@ async function main() {
         encPrime: nc,
       });
       console.log(`  Computed intrinsic Nc (enc_prime): ${nc.toFixed(2)}`);
+
+      // Per-gene intrinsic CAI and host-specific tAI (where a default pool exists).
+      const trnaPool = findTrnaPool(entry.host);
+      const caiValues: Array<{
+        phageId: number;
+        hostName: string;
+        geneId: number;
+        locusTag: string | null;
+        cai: number | null;
+        tai: number | null;
+        cpb: number | null;
+        encPrime: number | null;
+      }> = [];
+
+      for (const g of insertedGenes) {
+        if (g.type !== 'CDS') continue;
+        const window = seq.substring(g.startPos, g.endPos);
+        const dna = g.strand === '-' ? reverseComplement(window) : window;
+        const geneCodonCounts = countCodonUsage(dna, 0);
+        const cai = calculateIntrinsicCai(geneCodonCounts, totalCodonCounts);
+        const tai = trnaPool ? calculateTai(geneCodonCounts, trnaPool) : null;
+        caiValues.push({
+          phageId,
+          hostName: trnaPool ? entry.host : 'self-reference',
+          geneId: g.id,
+          locusTag: g.locusTag,
+          cai,
+          tai,
+          cpb: null,
+          encPrime: null,
+        });
+      }
+
+      for (let i = 0; i < caiValues.length; i += BATCH_INSERT_SIZE) {
+        const batch = caiValues.slice(i, i + BATCH_INSERT_SIZE);
+        await db.insert(codonAdaptation).values(batch);
+      }
+      console.log(`  Computed per-gene CAI${trnaPool ? ' and tAI' : ''} for ${caiValues.length} CDS genes`);
 
       sqlite.exec('COMMIT');
     } catch (txError) {

@@ -55,6 +55,7 @@ test('defense systems overlay renders heuristic annotations', async ({ page }, t
   await input.fill('defense arms race');
 
   const item = palette.locator('[role="option"]', { hasText: /Defense arms race/i }).first();
+  await expect(item).toBeVisible();
   await item.click();
 
   // Wait for the overlay title and check for the anti-defense system labels.
