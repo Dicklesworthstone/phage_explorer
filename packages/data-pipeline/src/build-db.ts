@@ -13,6 +13,7 @@ import {
   preferences,
   tropismPredictions,
   foldEmbeddings,
+  defenseSystems,
 } from '@phage-explorer/db-schema';
 import {
   countCodonUsage,
@@ -58,6 +59,81 @@ function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: num
   norm = Math.sqrt(norm) || 1;
   for (let i = 0; i < vec.length; i++) vec[i] /= norm;
   return vec;
+}
+
+interface HeuristicDefenseHit {
+  geneId: number;
+  locusTag: string | null;
+  systemType: string;
+  systemFamily: string | null;
+  targetSystem: string | null;
+  mechanism: string;
+  confidence: number;
+}
+
+/**
+ * Lightweight heuristic scan for phage-encoded anti-defense systems.
+ *
+ * This is intentionally simple: it looks for known gene names / product keywords
+ * so the `defense_systems` table is populated during a local `bun run build:db`.
+ * A full annotation pipeline (InterPro/Pfam, AcrDB, DefenseFinder) can replace
+ * these heuristics later.
+ */
+function detectDefenseSystems(
+  geneRows: Array<{ id: number; name: string | null; locusTag: string | null; product: string | null; type: string | null }>
+): HeuristicDefenseHit[] {
+  const hits: HeuristicDefenseHit[] = [];
+  const haystackFor = (g: typeof geneRows[0]) =>
+    `${g.name ?? ''} ${g.locusTag ?? ''} ${g.product ?? ''}`.toLowerCase();
+
+  for (const g of geneRows) {
+    if (g.type !== 'CDS') continue;
+    const hay = haystackFor(g);
+
+    // Anti-CRISPR proteins (Acr family) and Ocr anti-restriction
+    const antiCrisprPattern = /(?:\b|_)acr[0-9]?[a-z]{0,4}\b|\banti.crispr\b|\bocr\b|\banti.cas\b/;
+    if (antiCrisprPattern.test(hay)) {
+      const family = /\bacr([iv]?[a-z]*\d+[a-z]*)\b/.exec(hay)?.[1]?.toUpperCase() ??
+        (hay.includes('ocr') ? 'Ocr' : null);
+      hits.push({
+        geneId: g.id,
+        locusTag: g.locusTag,
+        systemType: 'anti-CRISPR',
+        systemFamily: family,
+        targetSystem: family ? `Type ${family.replace(/\d+$/, '')} CRISPR-Cas` : 'CRISPR-Cas',
+        mechanism: 'Inhibits CRISPR-Cas surveillance via direct protein interaction or DNA mimicry',
+        confidence: 0.6,
+      });
+    }
+
+    // Anti-restriction / anti-modification
+    if (/\banti.restriction\b|\banti.modification\b|\bdar[a-z]?\b/.test(hay)) {
+      hits.push({
+        geneId: g.id,
+        locusTag: g.locusTag,
+        systemType: 'anti-RM',
+        systemFamily: hay.includes('dar') ? 'Dar' : null,
+        targetSystem: 'Type I/II/III restriction-modification',
+        mechanism: 'Blocks host restriction enzyme cleavage or modification',
+        confidence: 0.55,
+      });
+    }
+
+    // Abortive infection (anti-Abi)
+    if (/\banti.abi\b|\babortive infection\b|\babi[a-z]?\b/.test(hay)) {
+      hits.push({
+        geneId: g.id,
+        locusTag: g.locusTag,
+        systemType: 'anti-Abi',
+        systemFamily: null,
+        targetSystem: 'Abortive infection systems',
+        mechanism: 'Protects against host abortive infection defense',
+        confidence: 0.5,
+      });
+    }
+  }
+
+  return hits;
 }
 
 async function main() {
@@ -396,6 +472,7 @@ async function main() {
           endPos: genes.endPos,
           strand: genes.strand,
           name: genes.name,
+          locusTag: genes.locusTag,
           product: genes.product,
           type: genes.type,
         })
@@ -437,6 +514,24 @@ async function main() {
         await db.insert(foldEmbeddings).values(batch);
       }
       console.log(`  Inserted ${embeddingValues.length} fold embeddings (${embeddingModel})`);
+
+      // Heuristic scan for phage-encoded anti-defense systems
+      const defenseHits = detectDefenseSystems(insertedGenes);
+      if (defenseHits.length > 0) {
+        const defenseValues = defenseHits.map((hit) => ({
+          phageId,
+          geneId: hit.geneId,
+          locusTag: hit.locusTag,
+          systemType: hit.systemType,
+          systemFamily: hit.systemFamily,
+          targetSystem: hit.targetSystem,
+          mechanism: hit.mechanism,
+          confidence: hit.confidence,
+          source: 'heuristic-keyword',
+        }));
+        await db.insert(defenseSystems).values(defenseValues);
+        console.log(`  Inserted ${defenseValues.length} heuristic defense-system predictions`);
+      }
 
       // Calculate and insert codon usage
       // We must calculate this from the CDS features, not the raw genome frame 0
