@@ -71,10 +71,20 @@ test.describe('Overlay Lazy Loading', () => {
     const { state, finalize, consoleErrors, pageErrors } = setupTestHarness(page, testInfo);
     const chunkRequests: ChunkRequest[] = [];
     let coldLoadEndMs = 0;
-    let openedHelpAtMs = 0;
+    let openedOverlayAtMs = 0;
+
+    // Seed intermediate level so a lazy-loaded analysis overlay is reachable
+    // from the keyboard (core overlays like Help/Settings are eagerly bundled).
+    await page.goto('/');
+    await page.evaluate(() => {
+      localStorage.setItem(
+        'phage-explorer-main-prefs',
+        JSON.stringify({ experienceLevel: 'intermediate' })
+      );
+    });
 
     await test.step('Cold load', async () => {
-      await page.goto('/');
+      await page.reload();
       await expect(page.locator('header.app-header')).toBeVisible();
       // Wait for app to stabilize
       await page.waitForTimeout(1000);
@@ -110,13 +120,13 @@ test.describe('Overlay Lazy Loading', () => {
       expect(eagerOverlays, 'No overlay chunks should load on cold start').toHaveLength(0);
     });
 
-    await test.step('Open Help overlay via keyboard', async () => {
-      openedHelpAtMs = Date.now() - state.startTs;
-      await page.keyboard.press('?');
+    await test.step('Open GC skew overlay via keyboard', async () => {
+      openedOverlayAtMs = Date.now() - state.startTs;
+      await page.keyboard.press('g');
 
-      // Use data-testid for stable selector
-      const helpOverlay = page.locator('[data-testid="overlay-help"]');
-      await expect(helpOverlay).toBeVisible({ timeout: 5000 });
+      // GC skew is lazy-loaded; wait for it to render.
+      const gcSkewOverlay = page.locator('[data-testid="overlay-gcSkew"]');
+      await expect(gcSkewOverlay).toBeVisible({ timeout: 5000 });
     });
 
     await test.step('Wait for chunk to load', async () => {
@@ -145,18 +155,18 @@ test.describe('Overlay Lazy Loading', () => {
 
       // We expect at least one new JS request after opening the overlay
       // In dev mode, Vite serves the module directly; in prod, it's a chunk
-      const helpChunk = postOpenChunks.find(c =>
-        c.matchedPattern?.includes('HelpOverlay') ||
-        c.url.includes('HelpOverlay') ||
+      const gcSkewChunk = postOpenChunks.find(c =>
+        c.matchedPattern?.includes('GCSkewOverlay') ||
+        c.url.includes('GCSkewOverlay') ||
         c.url.includes('/overlays/')
       );
 
-      // If no specific help chunk found, check for any new JS request
+      // If no specific GC skew chunk found, check for any new JS request
       const anyNewChunk = postOpenChunks.length > 0;
 
       expect(
-        helpChunk || anyNewChunk,
-        'Expected at least one chunk request after opening Help overlay'
+        gcSkewChunk || anyNewChunk,
+        'Expected at least one chunk request after opening GC skew overlay'
       ).toBeTruthy();
     });
 
@@ -188,7 +198,7 @@ test.describe('Overlay Lazy Loading', () => {
         testName: 'overlay-lazy-loading',
         timestamp: new Date().toISOString(),
         coldLoadEndMs,
-        openedHelpAtMs,
+        openedOverlayAtMs,
         summary: {
           totalChunks: chunkRequests.length,
           coldLoadChunks: chunkRequests.filter(c => c.phase === 'cold-load').length,
