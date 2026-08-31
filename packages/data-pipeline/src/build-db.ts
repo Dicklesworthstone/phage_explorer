@@ -15,6 +15,7 @@ import {
   foldEmbeddings,
   defenseSystems,
   models,
+  codonAdaptation,
 } from '@phage-explorer/db-schema';
 import {
   countCodonUsage,
@@ -31,6 +32,71 @@ const DB_PATH = './phage.db';
 const CHUNK_SIZE = 10000; // 10kb chunks
 const TROPISM_PATH = './data/tropism-embeddings.json';
 const BATCH_INSERT_SIZE = 100; // Batch inserts for 5-10x faster writes
+
+/**
+ * Compute Wright's effective number of codons (Nc) from a codon-count map.
+ * A lower value means stronger codon bias; the maximum is 61 (no bias,
+ * assuming all synonymous codons are used equally).
+ */
+function calculateNc(codonCounts: Record<string, number>): number {
+  // Standard genetic code: amino acid -> codons
+  const codonToAa: Record<string, string> = {
+    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
+    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
+    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
+    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
+    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
+    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
+    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
+    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
+    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
+    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
+    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
+    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
+    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
+    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
+    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
+    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
+  };
+
+  // Group counts by amino acid (skip stop codons)
+  const aaGroups: Record<string, string[]> = {};
+  for (const [codon, aa] of Object.entries(codonToAa)) {
+    if (aa === '*') continue;
+    (aaGroups[aa] ??= []).push(codon);
+  }
+
+  let nc = 0;
+  for (const [, codons] of Object.entries(aaGroups)) {
+    const k = codons.length;
+    if (k <= 1) {
+      nc += 1;
+      continue;
+    }
+
+    let total = 0;
+    for (const c of codons) total += codonCounts[c] ?? 0;
+    if (total < 2) {
+      nc += k;
+      continue;
+    }
+
+    const sumSquares = codons.reduce((sum, c) => {
+      const n = codonCounts[c] ?? 0;
+      return sum + (n * n);
+    }, 0);
+
+    // Wright's F for this amino acid: F = (n * sum(p_i^2) - 1) / (n - 1)
+    const fk = (sumSquares - total) / (total * (total - 1));
+    if (fk <= 0 || !Number.isFinite(fk)) {
+      nc += k;
+    } else {
+      nc += 1 / fk;
+    }
+  }
+
+  return Math.max(1, Math.min(61, nc));
+}
 
 function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: number }): number[] {
   const k = options?.k ?? 3;
@@ -593,6 +659,20 @@ async function main() {
         codonCounts: JSON.stringify(totalCodonCounts),
       });
       console.log(`  Calculated codon usage from CDS features`);
+
+      // Compute intrinsic codon-adaptation metrics from the phage's own codon usage.
+      const nc = calculateNc(totalCodonCounts);
+      await db.insert(codonAdaptation).values({
+        phageId,
+        hostName: 'intrinsic',
+        geneId: null,
+        locusTag: null,
+        cai: null,
+        tai: null,
+        cpb: null,
+        encPrime: nc,
+      });
+      console.log(`  Computed intrinsic Nc (enc_prime): ${nc.toFixed(2)}`);
 
       sqlite.exec('COMMIT');
     } catch (txError) {
