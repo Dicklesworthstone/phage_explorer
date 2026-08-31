@@ -1,3 +1,6 @@
+diff --git a/node_modules/ink/.bun-tag-e765869a132e6e95 b/.bun-tag-e765869a132e6e95
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/build/components/ErrorOverview.js b/build/components/ErrorOverview.js
 index f48ee003380baf450ca5c79370047bcc9571e19b..0394d9021255b8ad8b3c9c955981313c4e7fb5a7 100644
 --- a/build/components/ErrorOverview.js
