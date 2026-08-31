@@ -60,9 +60,9 @@ Thumbs.db
 *.swo
 *~
 
-# Lock files
+# Lock files - only bun.lock is tracked
 *.lock
-!bun.lockb
+!bun.lock
 
 # Test artifacts
 test-output/

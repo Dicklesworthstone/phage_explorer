@@ -366,37 +366,70 @@ log_step 5 "Database setup..."
 DATA_DIR="$HOME/.phage-explorer"
 DB_PATH="$DATA_DIR/phage.db"
 
+install_db_from_source() {
+  # When building from source we already have a complete, shipped database in the repo.
+  local src_db="$TMP_DIR/packages/web/public/phage.db"
+  if [[ -f "$src_db" ]]; then
+    cp "$src_db" "$DB_PATH"
+    log_success "Database installed from source tree: $DB_PATH"
+    return 0
+  fi
+
+  # Last resort: build it locally (requires network access to NCBI).
+  if command -v bun &>/dev/null; then
+    log "Building database from NCBI (this may take a minute)..."
+    if (cd "$TMP_DIR" && bun run build:db); then
+      cp "$TMP_DIR/phage.db" "$DB_PATH"
+      log_success "Database built and installed: $DB_PATH"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 if [[ $WITH_DATABASE -eq 1 ]]; then
   mkdir -p "$DATA_DIR"
 
-  # Try to download pre-built database from release
-  if [[ -n "$VERSION" ]]; then
+  # Source builds: the repo already ships the complete web database.
+  if [[ $FROM_SOURCE -eq 1 ]]; then
+    install_db_from_source || log_warn "Could not install database from source build"
+  # Prebuilt installs: try the compressed release asset first, then the plain DB.
+  elif [[ -n "$VERSION" ]]; then
+    DB_GZ_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db.gz"
     DB_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db"
-    log "Downloading database..."
+    TMP_DB=$(mktemp)
 
-    if curl -fsSL "$DB_URL" -o "$DB_PATH" 2>/dev/null; then
-      log_success "Database installed: $DB_PATH"
+    if curl -fsSL "$DB_GZ_URL" -o "$TMP_DB" 2>/dev/null; then
+      if command -v gunzip &>/dev/null; then
+        gunzip -c "$TMP_DB" > "$DB_PATH"
+        rm -f "$TMP_DB"
+        log_success "Database installed (compressed): $DB_PATH"
+      else
+        log_warn "gunzip not available; falling back to uncompressed database"
+        curl -fsSL "$DB_URL" -o "$DB_PATH" 2>/dev/null || log_warn "Could not download database"
+      fi
     else
-      log_warn "Pre-built database not available"
-      log "Build it from source (requires bun) and copy it into place:"
-      log "  git clone https://github.com/$OWNER/$REPO.git"
-      log "  cd $REPO && bun install && bun run build:db"
-      log "  mkdir -p \"$DATA_DIR\" && cp phage.db \"$DB_PATH\""
+      log "Compressed database not available, trying uncompressed..."
+      if curl -fsSL "$DB_URL" -o "$DB_PATH" 2>/dev/null; then
+        log_success "Database installed: $DB_PATH"
+      else
+        log_warn "Could not download database from release"
+      fi
     fi
   else
-    log_warn "No version specified, cannot download database"
-    log "Build it from source (requires bun) and copy it into place:"
+    log_warn "No version resolved, cannot download database"
+  fi
+
+  if [[ ! -f "$DB_PATH" ]]; then
+    log_warn "Database was not installed. Build it manually:"
     log "  git clone https://github.com/$OWNER/$REPO.git"
     log "  cd $REPO && bun install && bun run build:db"
-    log "  mkdir -p \"$DATA_DIR\" && cp phage.db \"$DB_PATH\""
+    log "  mkdir -p \"$DATA_DIR\" && cp packages/web/public/phage.db \"$DB_PATH\""
   fi
 else
   log "Skipping database download (use --with-database to include)"
-  log "You can download it later by re-running this installer with --with-database."
-  log "Or build it from source and copy it into place:"
-  log "  git clone https://github.com/$OWNER/$REPO.git"
-  log "  cd $REPO && bun install && bun run build:db"
-  log "  mkdir -p \"$DATA_DIR\" && cp phage.db \"$DB_PATH\""
+  log "You can install it later by re-running with --with-database."
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

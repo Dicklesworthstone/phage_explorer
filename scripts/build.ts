@@ -26,15 +26,33 @@ const outfile = values.target
 
 console.log(`Building${target ? ` for ${target}` : ""}...`);
 
-console.log("Building wasm-compute (canonical wasm module)...");
+// The repo ships prebuilt wasm-compute artifacts. Only rebuild when asked
+// or when the artifacts are missing, so local builds don't require wasm-pack
+// and a Rust toolchain unless the developer is actively changing the WASM code.
+const wasmArtifact = "./packages/wasm-compute/pkg/wasm_compute_bg.wasm";
+const forceWasmBuild = process.env.PHAGE_FORCE_WASM_BUILD === "1";
+
+if (forceWasmBuild) {
+  console.log("Building wasm-compute (canonical wasm module)...");
+  try {
+    await $`cd packages/wasm-compute && RUSTFLAGS="-C target-feature=-simd128" wasm-pack build --target bundler --out-dir pkg`;
+  } catch (e) {
+    console.error("Failed to build wasm-compute:", e);
+    process.exit(1);
+  }
+} else if (await Bun.file(wasmArtifact).exists()) {
+  console.log("Using prebuilt wasm-compute artifacts (set PHAGE_FORCE_WASM_BUILD=1 to rebuild)...");
+} else {
+  console.error("Prebuilt wasm-compute artifacts not found. Either:");
+  console.error("  - run with PHAGE_FORCE_WASM_BUILD=1 to build from Rust source (requires wasm-pack), or");
+  console.error("  - restore packages/wasm-compute/pkg/ from the repo.");
+  process.exit(1);
+}
+
 try {
-  // Build as a bundler-targeted package so the JS glue lives in `wasm_compute_bg.js`.
-  // We then inline the `.wasm` bytes to avoid relying on bundler `.wasm` module support
-  // and to keep Bun `--compile` single-binary builds working.
-  await $`cd packages/wasm-compute && RUSTFLAGS="-C target-feature=-simd128" wasm-pack build --target bundler --out-dir pkg`;
   await $`bun run ./scripts/inline-wasm-compute.ts`;
 } catch (e) {
-  console.error("Failed to build wasm-compute:", e);
+  console.error("Failed to inline wasm-compute:", e);
   process.exit(1);
 }
 

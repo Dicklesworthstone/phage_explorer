@@ -5,7 +5,7 @@
  * and handles blocked hotkey notifications.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import { getKeyboardManager } from '../keyboard/KeyboardManager';
 import type { ExperienceLevel, KeyboardEvent } from '../keyboard/types';
