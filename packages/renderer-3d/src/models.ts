@@ -358,22 +358,61 @@ export function createGenericPhage(): Model3D {
   return createLambdaPhage(); // Default to lambda shape
 }
 
-// Get model by phage slug
+/**
+ * Return a morphology-appropriate ASCII model for a phage slug.
+ *
+ * The 24 catalog phages are mapped to one of a few canonical shapes
+ * (siphovirus, myovirus, podovirus, tailless icosahedral, filamentous,
+ * ssRNA levivirus, etc.) so every phage gets a distinct *visual identity*
+ * rather than falling back to the same generic Lambda shape.
+ */
 export function getPhageModel(slug: string): Model3D {
-  switch (slug) {
-    case 'lambda':
-      return createLambdaPhage();
-    case 't4':
-      return createT4Phage();
-    case 't7':
-    case 'p22':
-    case 'phi29':
-      return createT7Phage();
-    case 'phix174':
-      return createPhiX174();
-    case 'm13':
-      return createM13Phage();
-    default:
-      return createGenericPhage();
-  }
+  const model = ((): Model3D => {
+    switch (slug) {
+      // Long non-contractile tail (siphoviruses)
+      case 'lambda':
+      case 't1':
+      case 't5':
+      case 'p2':
+      case 'n4':
+      case 'spbeta':
+      case 'phic31':
+      case 'l5':
+      case 'felixo1':
+        return createLambdaPhage();
+
+      // Contractile tail (myoviruses)
+      case 't4':
+      case 'p1':
+      case 'mu':
+      case 'phikz':
+        return createT4Phage();
+
+      // Short tail (podoviruses)
+      case 't7':
+      case 'p22':
+      case 'phi29':
+      case 'd29':
+        return createT7Phage();
+
+      // Small tailless icosahedral
+      case 'phix174':
+      case 'ms2':
+      case 'qbeta':
+      case 'prd1':
+      case 'pm2':
+      case 'phi6':
+        return createPhiX174();
+
+      // Filamentous
+      case 'm13':
+        return createM13Phage();
+
+      default:
+        return createGenericPhage();
+    }
+  })();
+
+  // Normalize the model name to the selected phage for a polished feel.
+  return { ...model, name: slug };
 }
