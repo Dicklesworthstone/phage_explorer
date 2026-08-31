@@ -14,6 +14,7 @@ import {
   tropismPredictions,
   foldEmbeddings,
   defenseSystems,
+  models,
 } from '@phage-explorer/db-schema';
 import {
   countCodonUsage,
@@ -385,6 +386,23 @@ async function main() {
 
       const phageId = phageRecord.id;
       console.log(`  Inserted phage record (id: ${phageId})`);
+
+      // Insert PDB structure references from the catalog so the 3D viewer knows
+      // which structures are available without fetching metadata first.
+      if (entry.pdbIds && entry.pdbIds.length > 0) {
+        const modelValues = entry.pdbIds.map((pdbId) => ({
+          phageId,
+          role: 'structure',
+          pdbId,
+          source: 'pdb',
+          meta: JSON.stringify({
+            url: `https://www.rcsb.org/structure/${pdbId}`,
+            fetched: false,
+          }),
+        }));
+        await db.insert(models).values(modelValues);
+        console.log(`  Inserted ${modelValues.length} PDB references`);
+      }
 
       // Insert sequence chunks (batched for performance)
       const seq = sequenceData.sequence;
