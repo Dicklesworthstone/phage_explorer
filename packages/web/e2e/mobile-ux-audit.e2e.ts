@@ -81,7 +81,20 @@ async function getOverflowingElements(page: Page): Promise<string[]> {
 }
 
 async function gotoApp(page: Page, options: { dismissWelcome?: boolean } = {}): Promise<void> {
+  // Start from a clean browser state so prior tests cannot pollute localStorage,
+  // IndexedDB, or the sql.js database cache.
   await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+  await page.evaluate(() => {
+    localStorage.clear();
+    return new Promise<void>((resolve) => {
+      const req = indexedDB.deleteDatabase('phage-explorer-db');
+      req.onsuccess = () => resolve();
+      req.onerror = () => resolve();
+    });
+  });
+
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForSelector('#root > div', { timeout: 30000 });
   await page.waitForTimeout(250);
 
