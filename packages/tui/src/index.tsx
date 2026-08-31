@@ -31,6 +31,9 @@ function getCandidateDbPaths(): string[] {
   // Development default (repo root)
   add(path.join(process.cwd(), 'phage.db'));
 
+  // Development fallback: the repo ships the complete web database
+  add(path.join(process.cwd(), 'packages', 'web', 'public', 'phage.db'));
+
   // Installer default
   add(getDefaultDbPath());
 

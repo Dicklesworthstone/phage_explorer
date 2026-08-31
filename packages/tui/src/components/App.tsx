@@ -58,6 +58,10 @@ import { analyzeHGTProvenance, analyzeTailFiberTropism } from '@phage-explorer/c
 import type { FoldEmbedding, StructuralConstraintReport } from '@phage-explorer/core';
 import { analyzeStructuralConstraints, reverseComplement, translateSequence } from '@phage-explorer/core';
 import { initializeCommands } from '../commands/definitions';
+import {
+  findNextGenePosition,
+  findPreviousGenePosition,
+} from './gene-navigation';
 
 const ANALYSIS_MENU_ID: OverlayId = 'analysisMenu';
 const SIMULATION_MENU_ID: OverlayId = 'simulationHub';
@@ -177,6 +181,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const setCurrentPhage = usePhageStore(s => s.setCurrentPhage);
   const setLoadingPhage = usePhageStore(s => s.setLoadingPhage);
   const viewMode = usePhageStore(s => s.viewMode);
+  const scrollPosition = usePhageStore(s => s.scrollPosition);
   const theme = usePhageStore(s => s.currentTheme);
   const overlayStack = useOverlayStack();
   const activeOverlay = overlayStack.at(-1) ?? null;
@@ -198,6 +203,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const scrollBy = usePhageStore(s => s.scrollBy);
   const scrollToStart = usePhageStore(s => s.scrollToStart);
   const scrollToEnd = usePhageStore(s => s.scrollToEnd);
+  const setScrollPosition = usePhageStore(s => s.setScrollPosition);
   const toggleViewMode = usePhageStore(s => s.toggleViewMode);
   const cycleReadingFrame = usePhageStore(s => s.cycleReadingFrame);
   const cycleTheme = usePhageStore(s => s.cycleTheme);
@@ -696,11 +702,19 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     } else if (key.pageUp) {
       scrollBy(-100);
     }
-    // Home/End keys - check escape sequences
+    // Home/End keys - handled via common terminal escape sequences
     else if (input === '\x1b[H' || input === '\x1b[1~' || input === '\x1bOH') {
       scrollToStart();
     } else if (input === '\x1b[F' || input === '\x1b[4~' || input === '\x1bOF') {
       scrollToEnd();
+    }
+    // Jump to previous/next gene start
+    else if (input === '[') {
+      const pos = findPreviousGenePosition(currentPhage?.genes ?? [], scrollPosition, viewMode);
+      if (pos !== null) setScrollPosition(pos);
+    } else if (input === ']') {
+      const pos = findNextGenePosition(currentPhage?.genes ?? [], scrollPosition, viewMode);
+      if (pos !== null) setScrollPosition(pos);
     }
 
     // View controls
