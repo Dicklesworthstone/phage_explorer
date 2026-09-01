@@ -132,15 +132,19 @@ export function SyntenyOverlay({
 
   // Initialize worker
   useEffect(() => {
-    let worker: Worker;
+    let worker: Worker | null = null;
     try {
       worker = new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url), { type: 'module' });
     } catch {
-      worker = new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url));
+      try {
+        worker = new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url));
+      } catch {
+        // Both worker variants failed; leave worker null.
+      }
     }
-    workerRef.current = worker;
+    if (worker) workerRef.current = worker;
     return () => {
-      worker.terminate();
+      worker?.terminate();
       workerRef.current = null;
     };
   }, []);

@@ -29,6 +29,7 @@ CHAR_MAP['A'.charCodeAt(0)] = 0; CHAR_MAP['a'.charCodeAt(0)] = 0;
 CHAR_MAP['C'.charCodeAt(0)] = 1; CHAR_MAP['c'.charCodeAt(0)] = 1;
 CHAR_MAP['G'.charCodeAt(0)] = 2; CHAR_MAP['g'.charCodeAt(0)] = 2;
 CHAR_MAP['T'.charCodeAt(0)] = 3; CHAR_MAP['t'.charCodeAt(0)] = 3;
+CHAR_MAP['U'.charCodeAt(0)] = 3; CHAR_MAP['u'.charCodeAt(0)] = 3;
 
 /**
  * Generate all k-mers of length k

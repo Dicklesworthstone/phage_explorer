@@ -205,6 +205,7 @@ export class WebGLDotPlotRenderer {
   private lengthB = 0;
   private texSizeA: [number, number] = [1, 1];
   private texSizeB: [number, number] = [1, 1];
+  private uniformLocations: Record<string, WebGLUniformLocation | null> = {};
 
   private windowSize: number;
   private threshold: number;
@@ -275,6 +276,22 @@ export class WebGLDotPlotRenderer {
     gl.deleteShader(vertexShader);
     gl.deleteShader(fragmentShader);
     this.program = program;
+
+    // Cache uniform locations once; WebGL does not require re-looking them up.
+    this.uniformLocations = {
+      u_sequenceA: gl.getUniformLocation(program, 'u_sequenceA'),
+      u_sequenceB: gl.getUniformLocation(program, 'u_sequenceB'),
+      u_sizeA: gl.getUniformLocation(program, 'u_sizeA'),
+      u_sizeB: gl.getUniformLocation(program, 'u_sizeB'),
+      u_lengthA: gl.getUniformLocation(program, 'u_lengthA'),
+      u_lengthB: gl.getUniformLocation(program, 'u_lengthB'),
+      u_windowSize: gl.getUniformLocation(program, 'u_windowSize'),
+      u_threshold: gl.getUniformLocation(program, 'u_threshold'),
+      u_pan: gl.getUniformLocation(program, 'u_pan'),
+      u_zoom: gl.getUniformLocation(program, 'u_zoom'),
+      u_matchColor: gl.getUniformLocation(program, 'u_matchColor'),
+      u_bgColor: gl.getUniformLocation(program, 'u_bgColor'),
+    };
 
     const vao = gl.createVertexArray();
     if (!vao) throw new Error('Failed to create VAO');
@@ -486,26 +503,28 @@ export class WebGLDotPlotRenderer {
     gl.useProgram(this.program);
     gl.bindVertexArray(this.vao);
 
+    const locs = this.uniformLocations;
+
     // Bind textures
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.textureA);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_sequenceA'), 0);
+    if (locs.u_sequenceA) gl.uniform1i(locs.u_sequenceA, 0);
 
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, this.textureB);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_sequenceB'), 1);
+    if (locs.u_sequenceB) gl.uniform1i(locs.u_sequenceB, 1);
 
     // Set uniforms
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_sizeA'), this.texSizeA[0], this.texSizeA[1]);
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_sizeB'), this.texSizeB[0], this.texSizeB[1]);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_lengthA'), this.lengthA);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_lengthB'), this.lengthB);
-    gl.uniform1i(gl.getUniformLocation(this.program, 'u_windowSize'), this.windowSize);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_threshold'), this.threshold);
-    gl.uniform2f(gl.getUniformLocation(this.program, 'u_pan'), this.pan[0], this.pan[1]);
-    gl.uniform1f(gl.getUniformLocation(this.program, 'u_zoom'), this.zoom);
-    gl.uniform3f(gl.getUniformLocation(this.program, 'u_matchColor'), this.matchColor[0], this.matchColor[1], this.matchColor[2]);
-    gl.uniform3f(gl.getUniformLocation(this.program, 'u_bgColor'), this.bgColor[0], this.bgColor[1], this.bgColor[2]);
+    if (locs.u_sizeA) gl.uniform2f(locs.u_sizeA, this.texSizeA[0], this.texSizeA[1]);
+    if (locs.u_sizeB) gl.uniform2f(locs.u_sizeB, this.texSizeB[0], this.texSizeB[1]);
+    if (locs.u_lengthA) gl.uniform1i(locs.u_lengthA, this.lengthA);
+    if (locs.u_lengthB) gl.uniform1i(locs.u_lengthB, this.lengthB);
+    if (locs.u_windowSize) gl.uniform1i(locs.u_windowSize, this.windowSize);
+    if (locs.u_threshold) gl.uniform1f(locs.u_threshold, this.threshold);
+    if (locs.u_pan) gl.uniform2f(locs.u_pan, this.pan[0], this.pan[1]);
+    if (locs.u_zoom) gl.uniform1f(locs.u_zoom, this.zoom);
+    if (locs.u_matchColor) gl.uniform3f(locs.u_matchColor, this.matchColor[0], this.matchColor[1], this.matchColor[2]);
+    if (locs.u_bgColor) gl.uniform3f(locs.u_bgColor, this.bgColor[0], this.bgColor[1], this.bgColor[2]);
 
     // Draw fullscreen quad
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -550,7 +569,7 @@ export class WebGLDotPlotRenderer {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
-    if (this.contextLost) return;
+    // WebGL delete* calls are safe no-ops on a lost context, so always release.
     const { gl } = this;
     if (this.textureA) gl.deleteTexture(this.textureA);
     if (this.textureB) gl.deleteTexture(this.textureB);

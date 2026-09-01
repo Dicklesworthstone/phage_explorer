@@ -304,10 +304,21 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const worker = new Worker(
-      new URL('../workers/sequence-render.worker.ts', import.meta.url),
-      { type: 'module' }
-    );
+    let worker: Worker | null = null;
+    try {
+      worker = new Worker(
+        new URL('../workers/sequence-render.worker.ts', import.meta.url),
+        { type: 'module' }
+      );
+    } catch {
+      try {
+        worker = new Worker(new URL('../workers/sequence-render.worker.ts', import.meta.url));
+      } catch {
+        // Module and classic worker creation both failed; fall back to main-thread rendering.
+        setUseWorkerRenderer(false);
+        return;
+      }
+    }
     workerRef.current = worker;
 
     const offscreen = canvas.transferControlToOffscreen();

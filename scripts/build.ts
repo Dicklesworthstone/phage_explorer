@@ -19,6 +19,10 @@ const targetMap: Record<string, string> = {
   "windows-x64": "bun-windows-x64",
 };
 
+if (values.target && !(values.target in targetMap)) {
+  console.error(`Unknown target "${values.target}". Supported: ${Object.keys(targetMap).join(", ")}`);
+  process.exit(1);
+}
 const target = values.target ? targetMap[values.target] : undefined;
 const outfile = values.target
   ? `dist/phage-explorer-${values.target.replace("mac-", "macos-")}${values.target.includes("windows") ? ".exe" : ""}`

@@ -35,6 +35,45 @@ const CHUNK_SIZE = 10000; // 10kb chunks
 const TROPISM_PATH = './data/tropism-embeddings.json';
 const BATCH_INSERT_SIZE = 100; // Batch inserts for 5-10x faster writes
 
+interface CodingRegion {
+  startPos: number;
+  endPos: number;
+  strand: string | null;
+  qualifiers: string | null;
+}
+
+/**
+ * Reconstruct the spliced coding sequence for a gene row.
+ * Multi-segment features store the exon structure in the `_segments` qualifier.
+ */
+function getSplicedCodingSequence(seq: string, region: CodingRegion): string {
+  let segments: Array<{ start: number; end: number }> | undefined;
+  if (region.qualifiers) {
+    try {
+      const parsed = JSON.parse(region.qualifiers) as Record<string, unknown>;
+      if (Array.isArray(parsed._segments)) {
+        segments = parsed._segments as Array<{ start: number; end: number }>;
+      }
+    } catch {
+      // Fall through to single-segment reconstruction
+    }
+  }
+
+  let cds = '';
+  if (segments && segments.length > 1) {
+    for (const segment of segments) {
+      cds += seq.substring(segment.start, segment.end);
+    }
+  } else {
+    cds = seq.substring(region.startPos, region.endPos);
+  }
+
+  if (region.strand === '-') {
+    cds = reverseComplement(cds);
+  }
+  return cds;
+}
+
 /**
  * Compute Wright's effective number of codons (Nc) from a codon-count map.
  * A lower value means stronger codon bias; the maximum is 61 (no bias,
@@ -299,17 +338,18 @@ function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: num
 
   for (let i = 0; i <= seq.length - k; i++) {
     let hash = 2166136261; // FNV-1a
+    let hasInvalid = false;
     for (let j = 0; j < k; j++) {
       const code = seq.charCodeAt(i + j);
       // Skip kmers that contain stop/unknowns (common in partial translations)
       if (code < 65 || code > 90 || code === 42) {
-        hash = 0;
+        hasInvalid = true;
         break;
       }
       hash ^= code;
       hash = Math.imul(hash, 16777619);
     }
-    if (hash === 0) continue;
+    if (hasInvalid) continue;
     vec[(hash >>> 0) % dims] += 1;
   }
 
@@ -831,6 +871,7 @@ async function main() {
           locusTag: genes.locusTag,
           product: genes.product,
           type: genes.type,
+          qualifiers: genes.qualifiers,
         })
         .from(genes)
         .where(eq(genes.phageId, phageId));
@@ -850,8 +891,7 @@ async function main() {
 
       for (const g of insertedGenes) {
         if (g.type !== 'CDS') continue;
-        const window = seq.substring(g.startPos, g.endPos);
-        const dna = g.strand === '-' ? reverseComplement(window) : window;
+        const dna = getSplicedCodingSequence(seq, g);
         const aa = translateSequence(dna, 0);
         const vector = proteinKmerHashEmbedding(aa, { k: 3, dims: embeddingDims });
         embeddingValues.push({
@@ -978,8 +1018,7 @@ async function main() {
 
       for (const g of insertedGenes) {
         if (g.type !== 'CDS') continue;
-        const window = seq.substring(g.startPos, g.endPos);
-        const dna = g.strand === '-' ? reverseComplement(window) : window;
+        const dna = getSplicedCodingSequence(seq, g);
         const geneCodonCounts = countCodonUsage(dna, 0);
         const cai = calculateIntrinsicCai(geneCodonCounts, totalCodonCounts);
         const tai = trnaPool ? calculateTai(geneCodonCounts, trnaPool) : null;

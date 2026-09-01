@@ -387,7 +387,7 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 ## Security & Privacy
 
 - **Network calls**: Only to NCBI during database build
-- **No telemetry**: Zero analytics or tracking
+- **Minimal telemetry**: Vercel Analytics and Speed Insights only; no user data collection
 - **Local data**: All data stored in local SQLite database
 - **Open source**: Full source code available for audit
 
@@ -459,7 +459,7 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 | Feature | Method |
 |---------|--------|
 | **CRISPR Pressure** | Spacer matching against mock host CRISPR arrays; rates evolutionary pressure 0-10 scale |
-| **Anti-CRISPR (ACR)** | Heuristic scoring for defense-suppressing genes; flags known families (AcrIIA4, Ocr, etc.) |
+| **Anti-CRISPR (ACR)** | Heuristic scoring for defense-suppressing genes; flags known families (e.g., AcrIIA4). Ocr-like proteins are classified as anti-RM. |
 | **Tail Fiber Tropism** | Precomputed lightweight trigram-embedding predictions loaded from `data/tropism-embeddings.json`; not ESM2/HDBSCAN inference at build time |
 | **Prophage Excision** | Detects integrase genes; searches for attL/attR direct repeats; models excision products |
 
@@ -469,7 +469,7 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 |---------|-------------|
 | **Protein Domains** | Schema ready for Pfam/InterPro/SMART annotations; not currently populated (requires external domain scan) |
 | **Fold Embeddings** | Lightweight deterministic k-mer hash vectors stored as Float32 blobs; not ESM2-derived embeddings |
-| **AMG Detection** | Schema ready for KEGG-linked Auxiliary Metabolic Genes; not currently populated (requires external annotation) |
+| **AMG Detection** | Heuristic KEGG-linked Auxiliary Metabolic Gene predictions from gene names/products; external Pfam/KEGG pipelines are also schema-ready |
 
 ---
 
@@ -575,7 +575,7 @@ The SQLite database includes extensive precomputed annotations, enabling instant
 | `codonUsage` | Per-phage amino acid and codon frequency counts |
 | `proteinDomains` | Schema ready for Pfam/SMART/CDD domains (not currently populated) |
 | `foldEmbeddings` | Lightweight deterministic k-mer hash vectors as Float32 blobs (not ESM2-derived) |
-| `amgAnnotations` | Schema ready for KEGG-linked AMGs (not currently populated) |
+| `amgAnnotations` | Heuristic KEGG-linked AMG predictions; external KEGG annotation pipeline is also schema-ready |
 | `defenseSystems` | Heuristic anti-CRISPR/anti-RM/anti-Abi predictions with confidence |
 | `tropismPredictions` | Precomputed tail-fiber receptor predictions from `data/tropism-embeddings.json` |
 | `codonAdaptation` | Intrinsic Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI (for available hosts such as *E. coli*) |
@@ -897,7 +897,7 @@ For temporal analysis, the pipeline:
 | Feature | Phage Explorer | NCBI Viewer | Geneious | SnapGene |
 |---------|---------------|-------------|----------|----------|
 | **Startup time** | <100ms | 5-10s | 30s+ | 10s |
-| **3D structures** | Real PDB | None | Plugin | None |
+| **3D structures** | Catalog PDB IDs (live fetch not yet implemented) | None | Plugin | None |
 | **Analysis tools** | 30+ built-in | 3-5 | 20+ (paid) | 10+ |
 | **Offline** | Full | No | Yes | Yes |
 | **Mobile** | Full touch UI | Limited | No | No |

@@ -17,14 +17,26 @@ import { CHUNK_SIZE } from './types';
 import { LRUCache } from './lru-cache';
 import { readFileSync, existsSync } from 'fs';
 
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string');
+
+const isNumberRecord = (value: unknown): value is Record<string, number> =>
+  typeof value === 'object' && value !== null &&
+  Object.values(value).every((item) => typeof item === 'number');
+
 /**
  * Safely parse JSON with fallback default value
  * Prevents crashes from corrupted database JSON fields
  */
-function safeJsonParse<T>(json: string | null | undefined, fallback: T): T {
+function safeJsonParse<T>(json: string | null | undefined, fallback: T, validate?: (value: unknown) => value is T): T {
   if (!json) return fallback;
   try {
-    return JSON.parse(json) as T;
+    const parsed = JSON.parse(json);
+    if (validate && !validate(parsed)) {
+      console.warn('Unexpected JSON shape from database:', json.substring(0, 100));
+      return fallback;
+    }
+    return parsed as T;
   } catch {
     console.warn('Failed to parse JSON from database:', json.substring(0, 100));
     return fallback;
@@ -182,7 +194,7 @@ export class BunSqliteRepository implements PhageRepository {
       description: phage.description,
       baltimoreGroup: phage.baltimoreGroup,
       genomeType: phage.genomeType,
-      pdbIds: safeJsonParse<string[]>(phage.pdbIds, []),
+      pdbIds: safeJsonParse<string[]>(phage.pdbIds, [], isStringArray),
       genes: geneList,
       codonUsage: usage,
       hasModel,
@@ -208,6 +220,9 @@ export class BunSqliteRepository implements PhageRepository {
   }
 
   async getSequenceWindow(phageId: number, start: number, end: number): Promise<string> {
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
+      return '';
+    }
     // Calculate which chunks we need
     const startChunk = Math.floor(start / CHUNK_SIZE);
     const endChunk = Math.floor(end / CHUNK_SIZE);
@@ -289,8 +304,8 @@ export class BunSqliteRepository implements PhageRepository {
     }
 
     return {
-      aaCounts: safeJsonParse<Record<string, number>>(result[0].aaCounts, {}),
-      codonCounts: safeJsonParse<Record<string, number>>(result[0].codonCounts, {}),
+      aaCounts: safeJsonParse<Record<string, number>>(result[0].aaCounts, {}, isNumberRecord),
+      codonCounts: safeJsonParse<Record<string, number>>(result[0].codonCounts, {}, isNumberRecord),
     };
   }
 
@@ -344,7 +359,7 @@ export class BunSqliteRepository implements PhageRepository {
 
     const parsed = rows.map(r => ({
       ...r,
-      evidence: safeJsonParse<string[]>(r.evidence, []),
+      evidence: safeJsonParse<string[]>(r.evidence, [], isStringArray),
     }));
 
     this.cache.set(cacheKey, { data: parsed, timestamp: Date.now() });
@@ -413,7 +428,7 @@ export class BunSqliteRepository implements PhageRepository {
       return null;
     }
 
-    return safeJsonParse<string[]>(result[0].asciiFrames, []);
+    return safeJsonParse<string[]>(result[0].asciiFrames, [], isStringArray);
   }
 
   async prefetchAround(index: number, radius: number): Promise<void> {

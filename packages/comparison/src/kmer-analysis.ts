@@ -14,6 +14,15 @@
 
 import type { KmerAnalysis } from './types';
 
+const VALID_DNA_BASES = new Set(['A', 'C', 'G', 'T']);
+
+function hasInvalidDnaBase(kmer: string): boolean {
+  for (const base of kmer) {
+    if (!VALID_DNA_BASES.has(base)) return true;
+  }
+  return false;
+}
+
 // WASM types and function references - loaded dynamically
 interface WasmKmerAnalysisResult {
   k: number;
@@ -74,8 +83,8 @@ export function extractKmerSet(sequence: string, k: number): Set<string> {
 
   for (let i = 0; i <= seq.length - k; i++) {
     const kmer = seq.substring(i, i + k);
-    // Skip k-mers containing N (ambiguous base)
-    if (!kmer.includes('N')) {
+    // Skip k-mers containing any ambiguous base (not A/C/G/T)
+    if (!hasInvalidDnaBase(kmer)) {
       kmers.add(kmer);
     }
   }
@@ -96,7 +105,7 @@ export function extractKmerFrequencies(sequence: string, k: number): Map<string,
 
   for (let i = 0; i <= seq.length - k; i++) {
     const kmer = seq.substring(i, i + k);
-    if (!kmer.includes('N')) {
+    if (!hasInvalidDnaBase(kmer)) {
       freqs.set(kmer, (freqs.get(kmer) ?? 0) + 1);
     }
   }
@@ -329,6 +338,7 @@ export function multiResolutionKmerAnalysis(
  * and its reverse complement.
  */
 export function extractCanonicalKmerSet(sequence: string, k: number): Set<string> {
+  if (k < 1 || sequence.length < k) return new Set<string>();
   const kmers = new Set<string>();
   const seq = sequence.toUpperCase();
 
@@ -336,7 +346,7 @@ export function extractCanonicalKmerSet(sequence: string, k: number): Set<string
 
   for (let i = 0; i <= seq.length - k; i++) {
     const kmer = seq.substring(i, i + k);
-    if (kmer.includes('N')) continue;
+    if (hasInvalidDnaBase(kmer)) continue;
 
     // Compute reverse complement
     let revComp = '';
@@ -356,13 +366,14 @@ export function extractCanonicalKmerSet(sequence: string, k: number): Set<string
  * Extract canonical k-mer frequencies (abundance-aware).
  */
 export function extractCanonicalKmerFrequencies(sequence: string, k: number): Map<string, number> {
+  if (k < 1 || sequence.length < k) return new Map<string, number>();
   const freqs = new Map<string, number>();
   const seq = sequence.toUpperCase();
   const complement: Record<string, string> = { A: 'T', T: 'A', G: 'C', C: 'G' };
 
   for (let i = 0; i <= seq.length - k; i++) {
     const kmer = seq.substring(i, i + k);
-    if (kmer.includes('N')) continue;
+    if (hasInvalidDnaBase(kmer)) continue;
 
     let revComp = '';
     for (let j = k - 1; j >= 0; j--) {

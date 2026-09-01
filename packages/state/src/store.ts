@@ -564,9 +564,13 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
       const lambdaIndex = state.phages.findIndex(p =>
         p.slug === 'lambda' || p.name.toLowerCase().includes('lambda')
       );
-      const defaultB = lambdaIndex >= 0 && lambdaIndex !== state.currentPhageIndex
+      let defaultB = lambdaIndex >= 0 && lambdaIndex !== state.currentPhageIndex
         ? lambdaIndex
         : state.currentPhageIndex === 0 ? 1 : 0;
+      // Avoid comparing a phage with itself when there is more than one phage.
+      if (defaultB === state.currentPhageIndex && state.phages.length > 1) {
+        defaultB = state.currentPhageIndex === 0 ? 1 : 0;
+      }
 
       return {
         overlays: [...state.overlays.filter(o => o !== 'comparison'), 'comparison'],
@@ -620,16 +624,19 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
   startSelectingPhage: (which) => set({ comparisonSelectingPhage: which }),
 
   confirmPhageSelection: (index) => {
-    const { comparisonSelectingPhage } = get();
+    const { comparisonSelectingPhage, comparisonPhageAIndex, comparisonPhageBIndex } = get();
     if (comparisonSelectingPhage === 'A') {
+      // Prevent selecting the same phage for both sides.
+      const safeIndex = index === comparisonPhageBIndex && index > 0 ? index - 1 : index;
       set({
-        comparisonPhageAIndex: index,
+        comparisonPhageAIndex: safeIndex,
         comparisonSelectingPhage: null,
         comparisonResult: null,
       });
     } else if (comparisonSelectingPhage === 'B') {
+      const safeIndex = index === comparisonPhageAIndex && index > 0 ? index - 1 : index;
       set({
-        comparisonPhageBIndex: index,
+        comparisonPhageBIndex: safeIndex,
         comparisonSelectingPhage: null,
         comparisonResult: null,
       });

@@ -162,6 +162,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   >(new Map());
   const referenceSketchesRef = React.useRef<Record<string, string>>({});
   const referenceVersionRef = React.useRef(0);
+  const [referenceVersion, setReferenceVersion] = useState(0);
 
   const hashSeq = React.useCallback((seq: string): number => {
     let h = 0;
@@ -362,6 +363,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         if (!cancelled) {
           referenceSketchesRef.current = sketches;
           referenceVersionRef.current += 1;
+          setReferenceVersion(v => v + 1);
         }
       } catch (err) {
         if (!cancelled && !currentError) {
@@ -482,6 +484,40 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     loadPhage();
   }, [repository, phages, currentPhageIndex, setCurrentPhage, setLoadingPhage, setError, setOverlayData])
 
+  // Recompute donor-contextual overlays once reference sketches have loaded
+  // (or if the current phage was analyzed before sketches were available).
+  useEffect(() => {
+    if (!currentPhage || !sequence) return;
+    if (Object.keys(referenceSketchesRef.current).length === 0) return;
+
+    const hgtResult = analyzeHGTProvenance(sequence, currentPhage.genes ?? [], referenceSketchesRef.current);
+    const predictions =
+      currentPhage.tropismPredictions?.map(p => ({
+        geneId: p.geneId ?? null,
+        locusTag: p.locusTag ?? null,
+        receptor: p.receptor,
+        confidence: p.confidence,
+        evidence: p.evidence,
+        startPos: currentPhage.genes.find(g => g.id === p.geneId)?.startPos,
+        endPos: currentPhage.genes.find(g => g.id === p.geneId)?.endPos,
+        strand: currentPhage.genes.find(g => g.id === p.geneId)?.strand ?? null,
+        product: currentPhage.genes.find(g => g.id === p.geneId)?.product ?? null,
+      })) ?? [];
+    const tropismResult = analyzeTailFiberTropism(currentPhage, sequence, predictions);
+
+    setOverlayData({
+      hgt: hgtResult,
+      tropism: tropismResult,
+    });
+
+    // Keep the LRU cache consistent so returning to this phage does not
+    // show the pre-sketch result.
+    const cached = overlayCacheRef.current.get(currentPhage.id);
+    if (cached) {
+      cached.data = { ...cached.data, hgt: hgtResult, tropism: tropismResult };
+    }
+  }, [currentPhage, sequence, referenceVersion, setOverlayData]);
+
   // Load diff reference sequence when needed
   useEffect(() => {
     if (!diffEnabled || !diffReferencePhageId) {
@@ -549,43 +585,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   useInput((input, key) => {
     // Check for F-key escape sequences or Ink key flags
     const fKey = F_KEYS[input];
-
-    // When an overlay is open, only allow Escape and overlay-specific close keys.
-    // This prevents global shortcuts such as 'q' from quitting while an overlay is
-    // focused; overlays own their own input while visible.
-    if (activeOverlay) {
-      if (key.escape) {
-        if (quitConfirmPending) {
-          exit();
-          return;
-        }
-        if (model3DFullscreen) {
-          toggle3DModelFullscreen();
-        } else {
-          closeOverlay();
-        }
-        return;
-      }
-
-      if (activeOverlay === 'help') {
-        if (input === '?') {
-          setHelpDetail(helpDetail === 'essential' ? 'detailed' : 'essential');
-        }
-        return;
-      }
-
-      if (activeOverlay !== 'search' && activeOverlay !== 'comparison') {
-        if (input === '?' || input === 'k' || input === 'K') {
-          closeOverlay(activeOverlay);
-          return;
-        }
-        if (activeOverlay === 'complexity' && (input === 'x' || input === 'X')) {
-          closeOverlay(activeOverlay);
-          return;
-        }
-      }
-      return;
-    }
 
     // Clear quit confirm if user presses anything other than Esc
     if (!key.escape && quitConfirmPending) {
@@ -888,7 +887,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       openOverlay('commandPalette');
     }
-  });
+  }, { isActive: !activeOverlay });
 
   const colors = theme.colors;
 

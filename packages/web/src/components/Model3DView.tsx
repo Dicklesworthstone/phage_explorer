@@ -169,6 +169,30 @@ const chainPalette = [
   '#eab308',
 ];
 
+const TEXTURE_PROPERTIES = [
+  'map',
+  'normalMap',
+  'roughnessMap',
+  'metalnessMap',
+  'aoMap',
+  'emissiveMap',
+  'displacementMap',
+  'alphaMap',
+  'bumpMap',
+  'lightMap',
+] as const;
+
+function disposeMaterial(material: unknown): void {
+  if (!material) return;
+  for (const key of TEXTURE_PROPERTIES) {
+    const texture = (material as Record<string, unknown>)[key];
+    if (texture && typeof (texture as { dispose?: () => void }).dispose === 'function') {
+      (texture as { dispose: () => void }).dispose();
+    }
+  }
+  (material as { dispose?: () => void }).dispose?.();
+}
+
 function disposeGroup(group: Group | null): void {
   if (!group) return;
   group.traverse(obj => {
@@ -178,9 +202,9 @@ function disposeGroup(group: Group | null): void {
     if ('material' in obj) {
       const material = (obj as { material?: unknown }).material;
       if (Array.isArray(material)) {
-        material.forEach(m => (m as { dispose?: () => void })?.dispose?.());
+        material.forEach(disposeMaterial);
       } else {
-        (material as { dispose?: () => void })?.dispose?.();
+        disposeMaterial(material);
       }
     }
   });

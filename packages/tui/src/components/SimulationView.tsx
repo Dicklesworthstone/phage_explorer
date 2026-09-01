@@ -117,8 +117,9 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
   }, [simState]);
 
   // Runner loop
+  // Keep simState out of dependencies so the interval is not recreated on every tick.
   useEffect(() => {
-    if (!simulation || !simState) return;
+    if (!simulation || !latestStateRef.current) return;
     if (paused) return;
     const interval = setInterval(() => {
       const current = latestStateRef.current;
@@ -128,7 +129,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       updateState(next);
     }, 120);
     return () => clearInterval(interval);
-  }, [simulation, simState, paused, speed, updateState]);
+  }, [simulation, paused, speed, updateState]);
 
   useInput((input, key) => {
     if (key.escape) {

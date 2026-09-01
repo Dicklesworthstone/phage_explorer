@@ -60,21 +60,25 @@ interface CacheEntry {
 // ============================================================================
 
 /**
- * FNV-1a hash for fast string hashing.
- * Used to create a stable, compact key from sequence content.
+ * FNV-1a 64-bit hash for fast string hashing.
+ * Uses a larger output than 32-bit FNV to avoid collisions on long sequences.
  */
-function fnv1aHash(str: string): number {
-  let hash = 2166136261;
+function fnv1a64(str: string): string {
+  const FNV_OFFSET = 14695981039346656037n;
+  const FNV_PRIME = 1099511628211n;
+  const MASK = (1n << 64n) - 1n;
+  let hash = FNV_OFFSET;
   for (let i = 0; i < str.length; i++) {
-    hash ^= str.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
+    hash ^= BigInt(str.charCodeAt(i));
+    hash = (hash * FNV_PRIME) & MASK;
   }
-  return hash >>> 0;
+  return hash.toString(16);
 }
 
 /**
  * Generate a cache key from sequence and parameters.
- * Uses FNV-1a hash of sequence to avoid storing large strings as keys.
+ * Uses a 64-bit FNV-1a hash of sequence to avoid storing large strings as keys
+ * while keeping collision risk negligible for MinHash signature caching.
  */
 function makeCacheKey(
   sequence: string,
@@ -82,8 +86,7 @@ function makeCacheKey(
   numHashes: number,
   canonical: boolean
 ): string {
-  // Hash the sequence content for a compact key
-  const seqHash = fnv1aHash(sequence);
+  const seqHash = fnv1a64(sequence);
   return `${seqHash}:${sequence.length}:${k}:${numHashes}:${canonical ? 'c' : 'n'}`;
 }
 

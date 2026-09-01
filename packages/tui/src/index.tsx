@@ -7,9 +7,14 @@ import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import path from 'path';
 import { homedir } from 'os';
 
-function getDefaultDbPath(): string {
+function getDefaultDbPath(): string | null {
   // Matches install.sh (DATA_DIR="$HOME/.phage-explorer")
-  return path.join(homedir(), '.phage-explorer', 'phage.db');
+  // Guard against environments where os.homedir() throws (e.g., HOME unset).
+  try {
+    return path.join(homedir(), '.phage-explorer', 'phage.db');
+  } catch {
+    return null;
+  }
 }
 
 function getCandidateDbPaths(): string[] {

@@ -331,7 +331,7 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
 
   # Clone and build
   TMP_DIR=$(mktemp -d)
-  trap "rm -rf $TMP_DIR" EXIT
+  trap 'rm -rf "$TMP_DIR"' EXIT
 
   log "Cloning repository..."
   git clone --depth 1 ${VERSION:+--branch "$VERSION"} \
@@ -369,20 +369,25 @@ DB_PATH="$DATA_DIR/phage.db"
 install_db_from_source() {
   # When building from source we already have a complete, shipped database in the repo.
   local src_db="$TMP_DIR/packages/web/public/phage.db"
+  local tmp_db
+  tmp_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
   if [[ -f "$src_db" ]]; then
-    cp "$src_db" "$DB_PATH"
-    log_success "Database installed from source tree: $DB_PATH"
-    return 0
+    if cp "$src_db" "$tmp_db" && chmod 644 "$tmp_db" && mv -f "$tmp_db" "$DB_PATH"; then
+      log_success "Database installed from source tree: $DB_PATH"
+      return 0
+    fi
+    rm -f "$tmp_db"
   fi
 
   # Last resort: build it locally (requires network access to NCBI).
   if command -v bun &>/dev/null; then
     log "Building database from NCBI (this may take a minute)..."
-    if (cd "$TMP_DIR" && bun run build:db); then
-      cp "$TMP_DIR/phage.db" "$DB_PATH"
+    tmp_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
+    if (cd "$TMP_DIR" && bun run build:db) && cp "$TMP_DIR/phage.db" "$tmp_db" && chmod 644 "$tmp_db" && mv -f "$tmp_db" "$DB_PATH"; then
       log_success "Database built and installed: $DB_PATH"
       return 0
     fi
+    rm -f "$tmp_db"
   fi
 
   return 1
@@ -398,22 +403,34 @@ if [[ $WITH_DATABASE -eq 1 ]]; then
   elif [[ -n "$VERSION" ]]; then
     DB_GZ_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db.gz"
     DB_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db"
-    TMP_DB=$(mktemp)
+    TMP_DB=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
 
     if curl -fsSL "$DB_GZ_URL" -o "$TMP_DB" 2>/dev/null; then
       if command -v gunzip &>/dev/null; then
-        gunzip -c "$TMP_DB" > "$DB_PATH"
-        rm -f "$TMP_DB"
-        log_success "Database installed (compressed): $DB_PATH"
+        local decompressed_db
+        decompressed_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
+        if gunzip -c "$TMP_DB" > "$decompressed_db" && chmod 644 "$decompressed_db" && mv -f "$decompressed_db" "$DB_PATH"; then
+          rm -f "$TMP_DB"
+          log_success "Database installed (compressed): $DB_PATH"
+        else
+          rm -f "$decompressed_db" "$TMP_DB"
+          log_warn "Could not decompress database"
+        fi
       else
         log_warn "gunzip not available; falling back to uncompressed database"
-        curl -fsSL "$DB_URL" -o "$DB_PATH" 2>/dev/null || log_warn "Could not download database"
+        if curl -fsSL "$DB_URL" -o "$TMP_DB" 2>/dev/null && chmod 644 "$TMP_DB" && mv -f "$TMP_DB" "$DB_PATH"; then
+          log_success "Database installed: $DB_PATH"
+        else
+          rm -f "$TMP_DB"
+          log_warn "Could not download database"
+        fi
       fi
     else
       log "Compressed database not available, trying uncompressed..."
-      if curl -fsSL "$DB_URL" -o "$DB_PATH" 2>/dev/null; then
+      if curl -fsSL "$DB_URL" -o "$TMP_DB" 2>/dev/null && chmod 644 "$TMP_DB" && mv -f "$TMP_DB" "$DB_PATH"; then
         log_success "Database installed: $DB_PATH"
       else
+        rm -f "$TMP_DB"
         log_warn "Could not download database from release"
       fi
     fi

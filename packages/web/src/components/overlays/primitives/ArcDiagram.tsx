@@ -28,31 +28,58 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { theme } = useTheme();
   const [hover, setHover] = useState<ArcInteraction | null>(null);
+  const hoverRef = useRef(hover);
+  const [canvasSize, setCanvasSize] = useState({ width, height });
+  const sizeRef = useRef({ width, height });
+
+  useEffect(() => {
+    hoverRef.current = hover;
+  }, [hover]);
+
+  useEffect(() => {
+    sizeRef.current = canvasSize;
+  }, [canvasSize]);
 
   const nodePositions = useMemo(() => {
-    const gap = nodes.length > 1 ? width / (nodes.length - 1) : width / 2;
+    const renderWidth = canvasSize.width || width;
+    const gap = nodes.length > 1 ? renderWidth / (nodes.length - 1) : renderWidth / 2;
     return nodes.reduce<Record<string, number>>((acc, n, idx) => {
       acc[n.id] = idx * gap;
       return acc;
     }, {});
-  }, [nodes, width]);
+  }, [canvasSize.width, nodes, width]);
+
+  // Re-render when the canvas CSS size changes.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => {
+      if (canvas.clientWidth > 0) {
+        setCanvasSize({ width: canvas.clientWidth, height: canvas.clientHeight });
+      }
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   // Render arcs
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    canvas.width = width;
-    canvas.height = height;
+    canvas.width = canvas.clientWidth || width;
+    canvas.height = canvas.clientHeight || height;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    ctx.clearRect(0, 0, width, height);
+    const renderWidth = canvas.width;
+    const renderHeight = canvas.height;
+    ctx.clearRect(0, 0, renderWidth, renderHeight);
     ctx.fillStyle = theme.colors.background;
-    ctx.fillRect(0, 0, width, height);
+    ctx.fillRect(0, 0, renderWidth, renderHeight);
     ctx.strokeStyle = theme.colors.border;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, height - 1);
-    ctx.lineTo(width, height - 1);
+    ctx.moveTo(0, renderHeight - 1);
+    ctx.lineTo(renderWidth, renderHeight - 1);
     ctx.stroke();
 
     for (let i = 0; i < links.length; i++) {
@@ -60,7 +87,7 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       const x1 = nodePositions[link.source] ?? 0;
       const x2 = nodePositions[link.target] ?? 0;
       const arcHeight = Math.max(10, Math.abs(x2 - x1) / 2);
-      const yBase = height - 2;
+      const yBase = renderHeight - 2;
       ctx.beginPath();
       const color = link.color ?? theme.colors.accent;
       ctx.strokeStyle = color;
@@ -69,7 +96,7 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       ctx.quadraticCurveTo((x1 + x2) / 2, yBase - arcHeight, x2, yBase);
       ctx.stroke();
     }
-  }, [height, links, nodePositions, theme.colors.accent, theme.colors.background, theme.colors.border, thickness, width]);
+  }, [canvasSize, height, links, nodePositions, theme.colors.accent, theme.colors.background, theme.colors.border, thickness, width]);
 
   // Hover / click
   useEffect(() => {
@@ -79,7 +106,7 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
-      const yBase = height - 2;
+      const yBase = sizeRef.current.height - 2;
 
       let closest: ArcInteraction | null = null;
       let minDist = Infinity;
@@ -108,7 +135,8 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       onHover?.(null);
     };
     const handleClick = () => {
-      if (hover) onClick?.(hover);
+      const currentHover = hoverRef.current;
+      if (currentHover) onClick?.(currentHover);
     };
     canvas.addEventListener('mousemove', handleMove);
     canvas.addEventListener('mouseleave', handleLeave);
@@ -118,7 +146,7 @@ export const ArcDiagram: React.FC<ArcDiagramProps> = ({
       canvas.removeEventListener('mouseleave', handleLeave);
       canvas.removeEventListener('click', handleClick);
     };
-  }, [height, hover, links, nodePositions, onClick, onHover]);
+  }, [links, nodePositions, onClick, onHover]);
 
   return (
     <div

@@ -32,7 +32,7 @@ function sleep(ms: number): Promise<void> {
 
 // Fetch sequence in FASTA format
 export async function fetchFasta(accession: string): Promise<string> {
-  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${accession}&rettype=fasta&retmode=text`;
+  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${encodeURIComponent(accession)}&rettype=fasta&retmode=text`;
 
   const response = await fetch(url);
   if (!response.ok) {
@@ -47,7 +47,7 @@ export async function fetchFasta(accession: string): Promise<string> {
 
 // Fetch sequence in GenBank format (includes features)
 export async function fetchGenBank(accession: string): Promise<string> {
-  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${accession}&rettype=gbwithparts&retmode=text`;
+  const url = `${NCBI_BASE_URL}/efetch.fcgi?db=nuccore&id=${encodeURIComponent(accession)}&rettype=gbwithparts&retmode=text`;
 
   const response = await fetch(url);
   if (!response.ok) {
@@ -175,8 +175,8 @@ export function parseGenBank(genbank: string): NCBISequenceResult {
         // Parse location (simplified - handles most common cases)
         parseLocation(locationPart, currentFeature);
       }
-      // Qualifier line (starts with /)
-      else if (line.includes('/') && currentFeature) {
+      // Qualifier line (starts with / after the standard qualifier indentation)
+      else if (line.match(/^\s{20,}\/\w+/) && currentFeature) {
         // Save previous qualifier
         if (currentQualifierKey && currentQualifierValue) {
           currentFeature.qualifiers![currentQualifierKey] = currentQualifierValue.replace(/^"|"$/g, '');
@@ -239,48 +239,91 @@ export function parseGenBank(genbank: string): NCBISequenceResult {
   };
 }
 
+/**
+ * Split a location expression on a delimiter, but only at the top nesting level
+ * of parentheses. Used to separate the sub-locations inside join(...).
+ */
+function splitTopLevel(input: string, delimiter: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of input) {
+    if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      depth--;
+    }
+    if (depth === 0 && ch === delimiter) {
+      parts.push(current);
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) parts.push(current);
+  return parts;
+}
+
+/**
+ * Parse a single GenBank location segment of the forms:
+ *   start..end, complement(start..end), start, or complement(start)
+ * Returns null for unsupported syntax.
+ */
+function parseSegment(segment: string): { start: number; end: number } | null {
+  const trimmed = segment.trim();
+  const rangeMatch = trimmed.match(/^complement\((\d+)\.\.(\d+)\)$/) || trimmed.match(/^(\d+)\.\.(\d+)$/);
+  if (rangeMatch) {
+    const start = parseInt(rangeMatch[1], 10);
+    const end = parseInt(rangeMatch[2], 10);
+    // GenBank is 1-based inclusive. Convert to 0-based half-open [start, end).
+    return { start: Math.max(0, start - 1), end };
+  }
+  const pointMatch = trimmed.match(/^complement\((\d+)\)$/) || trimmed.match(/^(\d+)$/);
+  if (pointMatch) {
+    const p = parseInt(pointMatch[1], 10);
+    return { start: Math.max(0, p - 1), end: p };
+  }
+  return null;
+}
+
 // Parse feature location string to find total extent (min start, max end)
 function parseLocation(location: string, feature: Partial<NCBIFeature>): void {
   // Remove accession references (e.g., "NC_001234.1:")
-  // Strict regex to avoid matching 'complement:' or 'join:'
-  let localLocation = location.replace(/[A-Z][A-Z0-9_]*\.[0-9]+:/g, '');
+  const localLocation = location.replace(/[A-Z][A-Z0-9_]*\.[0-9]+:/g, '').replace(/\s+/g, '');
 
-  // Check for complement strand
-  if (location.includes('complement(')) {
-    feature.strand = '-';
-  } else {
-    feature.strand = '+';
+  // Detect top-level complement and join wrappers
+  const isComplement = localLocation.startsWith('complement(');
+  const isJoin = localLocation.includes('join(');
+
+  feature.strand = isComplement ? '-' : '+';
+
+  // Strip the outer wrapper(s) to get the inner expression
+  let body = localLocation;
+  if (isComplement && body.endsWith(')')) {
+    body = body.slice('complement('.length, -1);
+  }
+  if (body.startsWith('join(') && body.endsWith(')')) {
+    body = body.slice('join('.length, -1);
   }
 
-  const segments: Array<{start: number, end: number}> = [];
-
-  // 1. Extract explicit ranges (A..B)
-  // We use a replacement strategy to avoid double-counting numbers in step 2
-  localLocation = localLocation.replace(/(\d+)\.\.(\d+)/g, (match, sStr, eStr) => {
-    const s = parseInt(sStr, 10);
-    const e = parseInt(eStr, 10);
-    const segMin = Math.min(s, e);
-    const segMax = Math.max(s, e);
-    // GenBank is 1-based inclusive. Convert to 0-based half-open [start, end)
-    segments.push({ start: Math.max(0, segMin - 1), end: segMax });
-    return ' '; // Replace with space
-  });
-
-  // 2. Extract remaining single points (points are 1-based inclusive)
-  const pointMatches = localLocation.match(/\d+/g);
-  if (pointMatches) {
-    for (const pStr of pointMatches) {
-      const p = parseInt(pStr, 10);
-      segments.push({ start: Math.max(0, p - 1), end: p });
-    }
+  const segments: Array<{ start: number; end: number }> = [];
+  for (const part of splitTopLevel(body, ',')) {
+    const seg = parseSegment(part);
+    if (seg) segments.push(seg);
   }
 
   if (segments.length === 0) return;
 
-  // 3. Compute bounding box
+  // For a complement(join(...)), the coding order is the reverse of the
+  // genomic order. The strand '-' flag triggers reverse-complementing later,
+  // so here we only need to list exons in transcript order.
+  if (isComplement && isJoin) {
+    segments.reverse();
+  }
+
+  // Compute bounding box
   let min = Infinity;
   let max = -Infinity;
-
   for (const seg of segments) {
     if (seg.start < min) min = seg.start;
     if (seg.end > max) max = seg.end;
@@ -289,7 +332,7 @@ function parseLocation(location: string, feature: Partial<NCBIFeature>): void {
   feature.start = min;
   feature.end = max;
 
-  // Only set segments if there are multiple (e.g. join or distinct regions)
+  // Only store segments if there are multiple (e.g. join or distinct regions)
   if (segments.length > 1) {
     feature.segments = segments;
   }

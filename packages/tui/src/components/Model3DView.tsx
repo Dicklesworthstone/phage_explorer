@@ -48,6 +48,18 @@ const Model3DViewInner = memo(function Model3DViewInner({
   const renderWidth = Math.max(1, width - 2); // Account for border on both sides
   const renderHeight = Math.max(1, fullscreen ? height - 2 : height - 3); // Fullscreen has title only, PiP has title + footer
 
+  // Bound render buffer dimensions so an enormous terminal cannot allocate
+  // an unbounded Float32Array (each pixel uses two Float32 values).
+  const boundedWidth = Math.min(renderWidth, 500);
+  const boundedHeight = Math.min(renderHeight, 300);
+
+  // Release the off-screen buffer when the component unmounts or 3D is hidden.
+  useEffect(() => {
+    return () => {
+      renderContextRef.current = null;
+    };
+  }, []);
+
   // Animation loop - uses ref to avoid re-creating interval on state changes
   useEffect(() => {
     if (!show3DModel || !model || paused) return;
@@ -61,8 +73,8 @@ const Model3DViewInner = memo(function Model3DViewInner({
       animStateRef.current = updateAnimation(animStateRef.current, 1, speed);
 
       // Ensure context exists and matches dimensions
-      if (!renderContextRef.current || renderContextRef.current.width !== renderWidth || renderContextRef.current.height !== renderHeight) {
-        renderContextRef.current = createRenderContext(renderWidth, renderHeight);
+      if (!renderContextRef.current || renderContextRef.current.width !== boundedWidth || renderContextRef.current.height !== boundedHeight) {
+        renderContextRef.current = createRenderContext(boundedWidth, boundedHeight);
       }
 
       // Render the new frame with quality settings
@@ -70,8 +82,8 @@ const Model3DViewInner = memo(function Model3DViewInner({
         model,
         { rx: animStateRef.current.rx, ry: animStateRef.current.ry, rz: animStateRef.current.rz },
         {
-          width: renderWidth,
-          height: renderHeight,
+          width: boundedWidth,
+          height: boundedHeight,
           quality,
           useBlocks: fullscreen && quality === 'ultra',
         },
@@ -83,25 +95,25 @@ const Model3DViewInner = memo(function Model3DViewInner({
     }, frameInterval);
 
     return () => clearInterval(interval);
-  }, [show3DModel, model, paused, speed, renderWidth, renderHeight, quality, fullscreen]);
+  }, [show3DModel, model, paused, speed, boundedWidth, boundedHeight, quality, fullscreen]);
 
   // Initial render when model changes
   useEffect(() => {
-    if (!model) {
+    if (!show3DModel || !model) {
       setFrameLines([]);
       return;
     }
 
-    if (!renderContextRef.current || renderContextRef.current.width !== renderWidth || renderContextRef.current.height !== renderHeight) {
-      renderContextRef.current = createRenderContext(renderWidth, renderHeight);
+    if (!renderContextRef.current || renderContextRef.current.width !== boundedWidth || renderContextRef.current.height !== boundedHeight) {
+      renderContextRef.current = createRenderContext(boundedWidth, boundedHeight);
     }
 
     const frame = renderModel(
       model,
       { rx: animStateRef.current.rx, ry: animStateRef.current.ry, rz: animStateRef.current.rz },
       {
-        width: renderWidth,
-        height: renderHeight,
+        width: boundedWidth,
+        height: boundedHeight,
         quality,
         useBlocks: fullscreen && quality === 'ultra',
       },
@@ -109,7 +121,7 @@ const Model3DViewInner = memo(function Model3DViewInner({
     );
 
     setFrameLines(frame.lines);
-  }, [model, renderWidth, renderHeight, quality, fullscreen]);
+  }, [show3DModel, model, boundedWidth, boundedHeight, quality, fullscreen]);
 
   if (!show3DModel) {
     return <></>;
