@@ -2,6 +2,10 @@
 node_modules/
 .bun/
 
+# Python caches
+__pycache__/
+*.pyc
+
 # Build outputs
 dist/
 build/
