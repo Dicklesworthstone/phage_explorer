@@ -174,7 +174,7 @@ const DEFAULT_TRNA_POOLS: Record<string, Array<{ anticodon: string; aminoAcid: s
 /**
  * Find the closest host tRNA pool for a phage host string.
  */
-function findTrnaPool(host: string): typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS] | undefined {
+export function findTrnaPool(host: string): typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS] | undefined {
   const normalized = host.toLowerCase();
   for (const key of Object.keys(DEFAULT_TRNA_POOLS)) {
     if (normalized.includes(key)) return DEFAULT_TRNA_POOLS[key];
@@ -187,7 +187,7 @@ function findTrnaPool(host: string): typeof DEFAULT_TRNA_POOLS[keyof typeof DEFA
  * reference. For each amino acid, the most-used synonymous codon gets weight 1;
  * others are weighted by relative frequency.
  */
-function calculateIntrinsicCai(
+export function calculateIntrinsicCai(
   geneCodonCounts: Record<string, number>,
   phageCodonCounts: Record<string, number>
 ): number {
@@ -225,7 +225,8 @@ function calculateIntrinsicCai(
     if (!aa || aa === '*') continue;
     const max = maxByAa[aa];
     if (!max || count <= 0) continue;
-    const weight = phageCodonCounts[codon] / max;
+    const phageCount = phageCodonCounts[codon] ?? 0;
+    const weight = phageCount / max;
     if (weight <= 0) continue;
     logSum += count * Math.log(weight);
     totalCodons += count;
@@ -240,7 +241,7 @@ function calculateIntrinsicCai(
  * For each codon, we sum copy numbers of tRNAs recognizing it via canonical
  * wobble, then take the geometric mean across all codons in the gene.
  */
-function calculateTai(
+export function calculateTai(
   geneCodonCounts: Record<string, number>,
   pool: typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS]
 ): number {
@@ -729,7 +730,7 @@ async function main() {
         const batch = geneValues.slice(i, i + BATCH_INSERT_SIZE);
         await db.insert(genes).values(batch);
       }
-      console.log(`  Inserted ${sequenceData.features.length} gene annotations`);
+      console.log(`  Inserted ${geneValues.length} gene annotations`);
 
       // Insert simple protein embeddings for CDS genes (used by FoldQuickview)
       // Note: This is a lightweight, deterministic hash embedding (not a true structure model).
@@ -996,4 +997,4 @@ async function main() {
   console.log('========================================\n');
 }
 
-main().catch(console.error);
+if (import.meta.main) main().catch(console.error);
