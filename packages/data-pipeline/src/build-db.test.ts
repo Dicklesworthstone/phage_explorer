@@ -3,6 +3,7 @@ import {
   findTrnaPool,
   calculateIntrinsicCai,
   calculateTai,
+  detectAuxiliaryMetabolicGenes,
 } from './build-db';
 
 describe('findTrnaPool', () => {
@@ -49,6 +50,26 @@ describe('calculateIntrinsicCai', () => {
   test('returns 0 for an empty gene', () => {
     const phageCounts = { ATG: 10 };
     expect(calculateIntrinsicCai({}, phageCounts)).toBe(0);
+  });
+});
+
+describe('detectAuxiliaryMetabolicGenes', () => {
+  test('maps known AMG markers to KEGG orthologs', () => {
+    const hits = detectAuxiliaryMetabolicGenes([
+      { id: 1, name: 'psbA', locusTag: 'gp1', product: 'photosystem II D1 protein', type: 'CDS' },
+      { id: 2, name: 'nrdB', locusTag: 'gp2', product: 'ribonucleotide reductase beta subunit', type: 'CDS' },
+    ]);
+    expect(hits).toHaveLength(2);
+    expect(hits[0]?.keggOrtholog).toBe('K02703');
+    expect(hits[1]?.keggOrtholog).toBe('K00526');
+  });
+
+  test('does not classify generic genes or non-CDS features', () => {
+    const hits = detectAuxiliaryMetabolicGenes([
+      { id: 1, name: 'capsid', locusTag: null, product: 'major capsid protein', type: 'CDS' },
+      { id: 2, name: 'psbA', locusTag: null, product: null, type: 'gene' },
+    ]);
+    expect(hits).toEqual([]);
   });
 });
 

@@ -14,6 +14,7 @@ import {
   tropismPredictions,
   foldEmbeddings,
   defenseSystems,
+  amgAnnotations,
   models,
   codonAdaptation,
   hostTrnaPools,
@@ -886,6 +887,23 @@ async function main() {
         }));
         await db.insert(defenseSystems).values(defenseValues);
         console.log(`  Inserted ${defenseValues.length} heuristic defense-system predictions`);
+      }
+
+      const amgHits = detectAuxiliaryMetabolicGenes(insertedGenes);
+      if (amgHits.length > 0) {
+        await db.insert(amgAnnotations).values(amgHits.map((hit) => ({
+          phageId,
+          geneId: hit.geneId,
+          locusTag: hit.locusTag,
+          amgType: hit.amgType,
+          keggOrtholog: hit.keggOrtholog,
+          keggReaction: null,
+          keggPathway: null,
+          pathwayName: hit.pathwayName,
+          confidence: hit.confidence,
+          evidence: hit.evidence,
+        })));
+        console.log(`  Inserted ${amgHits.length} heuristic AMG predictions`);
       }
 
       // Calculate and insert codon usage

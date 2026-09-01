@@ -86,7 +86,7 @@ const MOSAIC_ID: OverlayId = 'mosaicRadar';
 const ANOMALY_ID: OverlayId = 'anomaly';
 const DOTPLOT_ID: OverlayId = 'dotPlot';
 const NONB_ID: OverlayId = 'non-b-dna';
-const FOLD_EMBEDDING_MODEL = 'protein-k3-hash-v1';
+const FOLD_EMBEDDING_MODEL = 'facebook/esm2_t6_8M_UR50D';
 
 function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: number }): number[] {
   const k = options?.k ?? 3;

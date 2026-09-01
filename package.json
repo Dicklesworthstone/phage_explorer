@@ -13,6 +13,8 @@
   "scripts": {
     "dev": "bun run packages/tui/src/index.tsx",
     "build:db": "bun run packages/data-pipeline/src/build-db.ts",
+    "build:esm2": "uv run --python 3.12 --with 'torch>=2.7,<2.9' --with 'transformers>=4.50,<5' python packages/data-pipeline/src/generate-esm2-embeddings.py",
+    "build:pfam": "uv run --python 3.12 --with 'pyhmmer>=0.11,<0.12' python packages/data-pipeline/src/generate-pfam-domains.py",
     "build:tropism": "bun run packages/data-pipeline/src/tropism-build.ts",
     "build": "bun run ./scripts/build.ts",
     "build:mac-arm64": "bun run ./scripts/build.ts --target=mac-arm64",
@@ -31,6 +33,7 @@
     "test:integration": "PHAGE_INTEGRATION=1 bun test --test-name-pattern integration packages/core packages/comparison packages/db-runtime packages/db-schema packages/renderer-3d packages/state packages/data-pipeline packages/tui packages/web/src"
   },
   "devDependencies": {
+    "@huggingface/transformers": "4.2.0",
     "@types/bun": "^1.3.6",
     "@types/pako": "^2.0.4",
     "@types/react": "^19.2.8",

@@ -24,7 +24,8 @@ import { ActionIds, getKeyboardManager, type HotkeyDefinition } from '../../keyb
 import { Overlay } from './Overlay';
 import { useIsTopOverlay, useOverlay } from './OverlayProvider';
 
-const EMBEDDING_MODEL = 'protein-k3-hash-v1';
+const EMBEDDING_MODEL = 'facebook/esm2_t6_8M_UR50D';
+const FALLBACK_EMBEDDING_MODEL = 'protein-k3-hash-v1';
 
 function heatmap(matrix: Float32Array, bins: number, gradient = ' .:-=+*#%@'): string {
   if (bins <= 0) return '';
@@ -342,7 +343,7 @@ export function FoldQuickviewOverlay({
 
         {corpusSource === 'computed' && (
           <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
-            Using lightweight on-the-fly embeddings ({EMBEDDING_MODEL}). If the database includes fold_embeddings, this will auto-upgrade.
+            Using lightweight on-the-fly embeddings ({FALLBACK_EMBEDDING_MODEL}). Run `bun run build:esm2` to add ESM2 embeddings to the database.
           </div>
         )}
 
