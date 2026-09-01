@@ -245,6 +245,25 @@ export function calculateTai(
   geneCodonCounts: Record<string, number>,
   pool: typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS]
 ): number {
+  const codonToAa: Record<string, string> = {
+    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
+    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
+    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
+    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
+    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
+    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
+    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
+    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
+    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
+    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
+    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
+    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
+    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
+    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
+    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
+    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
+  };
+
   const weightByCodon: Record<string, number> = {};
   for (const entry of pool) {
     weightByCodon[entry.codon] = (weightByCodon[entry.codon] ?? 0) + entry.copyNumber;
@@ -257,6 +276,9 @@ export function calculateTai(
   let totalCodons = 0;
   for (const [codon, count] of Object.entries(geneCodonCounts)) {
     if (count <= 0) continue;
+    const aa = codonToAa[codon];
+    // Skip stop codons and any unrecognized/ambiguous codons.
+    if (!aa || aa === '*') continue;
     const weight = (weightByCodon[codon] ?? 0.1) / maxWeight;
     if (weight <= 0) continue;
     logSum += count * Math.log(Math.max(weight, 0.001));
@@ -315,6 +337,63 @@ interface HeuristicDefenseHit {
  * A full annotation pipeline (InterPro/Pfam, AcrDB, DefenseFinder) can replace
  * these heuristics later.
  */
+interface HeuristicAmgHit {
+  geneId: number;
+  locusTag: string | null;
+  amgType: string;
+  keggOrtholog: string | null;
+  pathwayName: string;
+  confidence: number;
+  evidence: string;
+}
+
+export function detectAuxiliaryMetabolicGenes(
+  geneRows: Array<{
+    id: number;
+    name: string | null;
+    locusTag: string | null;
+    product: string | null;
+    type: string | null;
+  }>
+): HeuristicAmgHit[] {
+  const rules: Array<{
+    pattern: RegExp;
+    amgType: string;
+    keggOrtholog: string | null;
+    pathwayName: string;
+    confidence: number;
+  }> = [
+    { pattern: /\bpsba\b|photosystem ii.*d1 protein/i, amgType: 'photosynthesis', keggOrtholog: 'K02703', pathwayName: 'Photosynthesis', confidence: 0.9 },
+    { pattern: /\bpsbd\b|photosystem ii.*d2 protein/i, amgType: 'photosynthesis', keggOrtholog: 'K02706', pathwayName: 'Photosynthesis', confidence: 0.9 },
+    { pattern: /\bphoh\b|phosphate starvation.*phoh/i, amgType: 'phosphorus-metabolism', keggOrtholog: 'K06217', pathwayName: 'Phosphonate and phosphinate metabolism', confidence: 0.8 },
+    { pattern: /\bmazg\b|nucleoside triphosphate pyrophosphohydrolase/i, amgType: 'nucleotide-metabolism', keggOrtholog: 'K02428', pathwayName: 'Purine metabolism', confidence: 0.8 },
+    { pattern: /\bnrda\b|ribonucleoside.diphosphate reductase.*alpha/i, amgType: 'nucleotide-metabolism', keggOrtholog: 'K00525', pathwayName: 'Purine and pyrimidine metabolism', confidence: 0.85 },
+    { pattern: /\bnrdb\b|ribonucleoside.diphosphate reductase.*beta/i, amgType: 'nucleotide-metabolism', keggOrtholog: 'K00526', pathwayName: 'Purine and pyrimidine metabolism', confidence: 0.85 },
+    { pattern: /\bthya\b|thymidylate synthase/i, amgType: 'nucleotide-metabolism', keggOrtholog: 'K00560', pathwayName: 'Pyrimidine metabolism', confidence: 0.85 },
+    { pattern: /\bdut\b|dutp diphosphatase|dutpase/i, amgType: 'nucleotide-metabolism', keggOrtholog: 'K01520', pathwayName: 'Pyrimidine metabolism', confidence: 0.85 },
+  ];
+
+  const hits: HeuristicAmgHit[] = [];
+  for (const gene of geneRows) {
+    if (gene.type !== 'CDS') continue;
+    const annotation = `${gene.name ?? ''} ${gene.product ?? ''}`.trim();
+    for (const rule of rules) {
+      if (!rule.pattern.test(annotation)) continue;
+      hits.push({
+        geneId: gene.id,
+        locusTag: gene.locusTag,
+        amgType: rule.amgType,
+        keggOrtholog: rule.keggOrtholog,
+        pathwayName: rule.pathwayName,
+        confidence: rule.confidence,
+        evidence: JSON.stringify({ source: 'heuristic-keyword', annotation }),
+      });
+      break;
+    }
+  }
+  return hits;
+}
+
 function detectDefenseSystems(
   geneRows: Array<{ id: number; name: string | null; locusTag: string | null; product: string | null; type: string | null }>
 ): HeuristicDefenseHit[] {
@@ -326,29 +405,36 @@ function detectDefenseSystems(
     if (g.type !== 'CDS') continue;
     const hay = haystackFor(g);
 
-    // Anti-CRISPR proteins (Acr family) and Ocr anti-restriction
-    const antiCrisprPattern = /(?:\b|_)acr[0-9]?[a-z]{0,4}\b|\banti.crispr\b|\bocr\b|\banti.cas\b/;
+    // Anti-CRISPR proteins (Acr family). Note: Ocr is an anti-restriction
+    // protein, so it is handled in the anti-RM block, not here.
+    const antiCrisprPattern = /(?:\b|_)acr[0-9]?[a-z]{0,4}\b|\banti.crispr\b|\banti.cas\b/;
     if (antiCrisprPattern.test(hay)) {
-      const family = /\bacr([iv]?[a-z]*\d+[a-z]*)\b/.exec(hay)?.[1]?.toUpperCase() ??
-        (hay.includes('ocr') ? 'Ocr' : null);
+      const family = /\bacr([iv]?[a-z]*\d+[a-z]*)\b/.exec(hay)?.[1]?.toUpperCase() ?? null;
+      const targetSystem = family
+        ? `Type ${family.replace(/\d+$/, '')} CRISPR-Cas`
+        : 'CRISPR-Cas';
       hits.push({
         geneId: g.id,
         locusTag: g.locusTag,
         systemType: 'anti-CRISPR',
         systemFamily: family,
-        targetSystem: family ? `Type ${family.replace(/\d+$/, '')} CRISPR-Cas` : 'CRISPR-Cas',
+        targetSystem,
         mechanism: 'Inhibits CRISPR-Cas surveillance via direct protein interaction or DNA mimicry',
         confidence: 0.6,
       });
     }
 
-    // Anti-restriction / anti-modification
-    if (/\banti.restriction\b|\banti.modification\b|\bdar[a-z]?\b/.test(hay)) {
+    // Anti-restriction / anti-modification (including Ocr, a classic anti-RM
+    // protein found e.g. in T7-like phages).
+    if (/\banti.restriction\b|\banti.modification\b|\bdar[a-z]?\b|\bocr\b/.test(hay)) {
+      let systemFamily: string | null = null;
+      if (hay.includes('dar')) systemFamily = 'Dar';
+      else if (hay.includes('ocr')) systemFamily = 'Ocr';
       hits.push({
         geneId: g.id,
         locusTag: g.locusTag,
         systemType: 'anti-RM',
-        systemFamily: hay.includes('dar') ? 'Dar' : null,
+        systemFamily,
         targetSystem: 'Type I/II/III restriction-modification',
         mechanism: 'Blocks host restriction enzyme cleavage or modification',
         confidence: 0.55,
@@ -796,7 +882,7 @@ async function main() {
           targetSystem: hit.targetSystem,
           mechanism: hit.mechanism,
           confidence: hit.confidence,
-          source: 'heuristic-keyword',
+          source: 'heuristic',
         }));
         await db.insert(defenseSystems).values(defenseValues);
         console.log(`  Inserted ${defenseValues.length} heuristic defense-system predictions`);

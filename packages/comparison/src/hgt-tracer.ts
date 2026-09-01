@@ -35,6 +35,11 @@ export async function initMinHashWasm(): Promise<void> {
   if (wasmMinHashAvailable) return;
   try {
     const wasm = await import('@phage/wasm-compute');
+    // wasm-compute may require explicit async init (depending on build target).
+    const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
+    if (typeof maybeInit === 'function') {
+      await maybeInit();
+    }
     wasmMinHashSignature = wasm.minhash_signature;
     wasmMinHashSignatureCanonical = wasm.minhash_signature_canonical;
     wasmMinHashJaccardFromSignatures = wasm.minhash_jaccard_from_signatures;

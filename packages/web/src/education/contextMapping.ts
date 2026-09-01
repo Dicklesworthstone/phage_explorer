@@ -247,6 +247,16 @@ const overlayContext: Record<string, ContextHelpEntry> = {
       'Large gene-content differences often concentrate around host-range or replication modules.',
     ],
   },
+  defensearmsrace: {
+    heading: 'Defense Arms Race',
+    summary: 'Anti-defense genes help phages evade bacterial immune systems such as CRISPR-Cas, restriction-modification, and abortive infection.',
+    glossary: ['phage-genome', 'gene', 'dna-sequence'],
+    modules: ['phage-lifecycle', 'genomics-basics'],
+    tips: [
+      'Anti-CRISPR genes often cluster near structural modules that face host surveillance.',
+      'Anti-restriction proteins are common in phages that infect hosts with active RM systems.',
+    ],
+  },
 };
 
 const geneProductContext: Record<string, ContextHelpEntry> = {

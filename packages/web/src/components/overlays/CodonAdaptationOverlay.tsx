@@ -102,11 +102,13 @@ export function CodonAdaptationOverlay({
     };
   }, [isOpen, repository, currentPhage]);
 
-  // Compute per-host summaries
+  // Compute per-host summaries (skip the synthetic 'intrinsic' row that only
+  // stores the genome-wide effective number of codons).
   const hostSummaries = useMemo((): HostAdaptationSummary[] => {
     const byHost = new Map<string, CodonAdaptation[]>();
 
     for (const a of adaptations) {
+      if (a.hostName === 'intrinsic') continue;
       const existing = byHost.get(a.hostName) ?? [];
       existing.push(a);
       byHost.set(a.hostName, existing);
@@ -135,9 +137,10 @@ export function CodonAdaptationOverlay({
       .sort((a, b) => (b.cai ?? 0) - (a.cai ?? 0));
   }, [adaptations, selectedHost]);
 
-  // Get available hosts from tRNA pools
+  // Get available hosts from tRNA pools (exclude synthetic intrinsic marker).
   const availableHosts = useMemo(() => {
     const hostNames = new Set(hostPools.map((p) => p.hostName));
+    hostNames.delete('intrinsic');
     return Array.from(hostNames);
   }, [hostPools]);
 

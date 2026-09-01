@@ -98,7 +98,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 
 - **Full-Screen HUD Interface** — Navigate between phages instantly with arrow keys
 - **Color-Coded Sequences** — DNA (ACTG) and amino acid views with distinct, beautiful colors
-- **5 Color Themes** — Classic, Ocean, Matrix, Sunset, Forest (cycle with `T`)
+- **8 Color Themes** — Holographic, Cyberpunk, Classic, Ocean, Matrix, Sunset, Forest, Monochrome (cycle with `T`)
 - **3D Structure Viewer** — PDB structure references from RCSB rendered as ASCII wireframe (TUI); web viewer uses catalog PDB IDs and canonical morphology models (no live PDB fetch yet)
 - **Gene Map Navigation** — Visual gene bar with position tracking and snap-to-gene
 - **Layer-1 Quick Overlays** — `G` GC skew, `X` complexity, `B` bendability, `P` promoter/RBS motifs, `R` repeats/palindromes
@@ -149,10 +149,10 @@ The full web experience is live at **https://phage-explorer.org**. It includes:
 
 Deployment details:
 - Hosting: Vercel (prod alias: `phage-explorer.org`)
-- Build command: `bun run build:web`
+- Build command: `cd packages/web && bun run ../../scripts/build-web-db.ts --source public/phage.db --output public && bun run build`
 - Output: `packages/web/dist`
 - SQLite database bundled as static asset, queried via sql.js in-browser
-- Zero telemetry, works offline after initial load
+- Minimal telemetry (Vercel Analytics and Speed Insights only), works offline after initial load
 
 The **TUI** remains available for terminal enthusiasts:
 - Local SQLite DB with instant queries
@@ -731,7 +731,7 @@ Phage Explorer is fully touch-optimized with gesture navigation and haptic feedb
 
 ### Haptic Feedback Patterns
 
-9 distinct vibration patterns for tactile feedback:
+8 distinct vibration patterns for tactile feedback:
 
 | Pattern | Duration | Use |
 |---------|----------|-----|
@@ -741,7 +741,8 @@ Phage Explorer is fully touch-optimized with gesture navigation and haptic feedb
 | `success` | 15-50-25ms | Task completion |
 | `warning` | 30-80-30ms | Destructive action alert |
 | `error` | 50-100-50-100-50ms | Triple buzz for errors |
-| `tick` | 3ms | Slider/picker scrubbing |
+| `selection` | 5ms | Slider/picker scrubbing |
+| `impact` | 35ms | Drag/drop or physical feedback |
 
 Haptics respect `prefers-reduced-motion` and gracefully degrade on unsupported devices.
 
@@ -868,7 +869,7 @@ For temporal analysis, the pipeline:
 **Gene function prediction:**
 1. Navigate to gene of interest with `[`/`]`
 2. Inspect gene product and qualifiers from the NCBI GenBank record
-3. Use the Fold Viewer overlay to see k-mer hash-based fold quickview data
+3. Use the Fold Viewer overlay to compare lightweight k-mer hash protein embeddings
 4. Protein Domains and AMG Pathway overlays are schema-ready once external Pfam/InterPro and KEGG annotations are integrated
 
 **Phage therapy candidate screening:**

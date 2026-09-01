@@ -29,7 +29,8 @@ import {
 const DEFENSE_COLORS: Record<string, string> = {
   'anti-CRISPR': '#ef4444',      // Red
   'anti-RM': '#f59e0b',          // Orange (anti-restriction modification)
-  'anti-toxin': '#8b5cf6',       // Purple
+  'anti-Abi': '#a855f7',         // Purple
+  'anti-toxin': '#8b5cf6',       // Violet
   'DNA-mimicry': '#3b82f6',      // Blue
   'methyltransferase': '#22c55e', // Green
   'nuclease-inhibitor': '#ec4899', // Pink
@@ -58,6 +59,8 @@ const DEFENSE_DESCRIPTIONS: Record<string, string> = {
     'Inhibits CRISPR-Cas adaptive immunity, allowing phages to evade sequence-specific targeting',
   'anti-RM':
     'Counteracts restriction-modification systems that cleave unmethylated foreign DNA',
+  'anti-Abi':
+    'Protects against abortive infection systems that sacrifice infected cells',
   'anti-toxin':
     'Neutralizes toxin-antitoxin systems that trigger programmed cell death during infection',
   'DNA-mimicry':
@@ -254,33 +257,45 @@ export function DefenseArmsRaceOverlay({
                 fontSize: '0.8rem',
               }}
             >
-              {Object.entries(typeCounts).map(([type, count]) => (
-                <div
-                  key={type}
-                  onClick={() => setFilterType(type === filterType ? 'all' : type)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.25rem',
-                    padding: '0.25rem 0.5rem',
-                    backgroundColor: filterType === type ? colors.accent : colors.backgroundAlt,
-                    borderRadius: '4px',
-                    border: `1px solid ${getDefenseColor(type)}`,
-                    cursor: 'pointer',
-                    color: filterType === type ? '#fff' : colors.text,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: '8px',
-                      height: '8px',
-                      backgroundColor: filterType === type ? '#fff' : getDefenseColor(type),
-                      borderRadius: '50%',
+              {Object.entries(typeCounts).map(([type, count]) => {
+                const isPressed = filterType === type;
+                return (
+                  <div
+                    key={type}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isPressed}
+                    onClick={() => setFilterType(isPressed ? 'all' : type)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setFilterType(isPressed ? 'all' : type);
+                      }
                     }}
-                  />
-                  <span>{type}: {count}</span>
-                </div>
-              ))}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.25rem',
+                      padding: '0.25rem 0.5rem',
+                      backgroundColor: isPressed ? colors.accent : colors.backgroundAlt,
+                      borderRadius: '4px',
+                      border: `1px solid ${getDefenseColor(type)}`,
+                      cursor: 'pointer',
+                      color: isPressed ? '#fff' : colors.text,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: '8px',
+                        height: '8px',
+                        backgroundColor: isPressed ? '#fff' : getDefenseColor(type),
+                        borderRadius: '50%',
+                      }}
+                    />
+                    <span>{type}: {count}</span>
+                  </div>
+                );
+              })}
             </div>
 
             {/* Genome track */}
@@ -320,6 +335,8 @@ export function DefenseArmsRaceOverlay({
                     }}
                   >
                     <button
+                      type="button"
+                      aria-expanded={isSelected}
                       onClick={() => handleSystemClick(sys)}
                       style={{
                         width: '100%',
@@ -347,8 +364,9 @@ export function DefenseArmsRaceOverlay({
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        {sys.confidence !== null && (
+                        {typeof sys.confidence === 'number' && (
                           <span
+                            aria-label={`Confidence ${(sys.confidence * 100).toFixed(0)} percent`}
                             style={{
                               fontSize: '0.7rem',
                               padding: '0.125rem 0.375rem',

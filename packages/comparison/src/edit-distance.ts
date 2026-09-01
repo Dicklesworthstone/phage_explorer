@@ -23,6 +23,11 @@ async function initWasm(): Promise<void> {
   if (wasmAvailable) return;
   try {
     const wasm = await import('@phage/wasm-compute');
+    // wasm-compute may require explicit async init (depending on build target).
+    const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
+    if (typeof maybeInit === 'function') {
+      await maybeInit();
+    }
     wasmLevenshtein = wasm.levenshtein_distance;
     // Test the WASM function with a trivial case
     wasmAvailable = typeof wasmLevenshtein === 'function' && wasmLevenshtein('a', 'b') === 1;

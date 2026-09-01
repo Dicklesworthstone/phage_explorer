@@ -38,7 +38,7 @@ export const GelCanvas: React.FC<GelCanvasProps> = ({
   const { theme } = useTheme();
   const [hover, setHover] = useState<GelInteraction | null>(null);
 
-  const laneWidth = useMemo(() => (lanes.length > 0 ? width / lanes.length : width), [lanes.length, width]);
+  const laneWidth = useMemo(() => (lanes.length > 0 ? width / lanes.length : width), [lanes, width]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -95,7 +95,13 @@ export const GelCanvas: React.FC<GelCanvasProps> = ({
     });
   }, [height, laneWidth, lanes, theme.colors.background, theme.colors.border, width]);
 
-  // Hover / click
+  // Hover / click. Use a ref for the current hover value inside the click
+  // handler so we don't re-attach listeners on every mousemove.
+  const hoverRef = useRef<GelInteraction | null>(null);
+  useEffect(() => {
+    hoverRef.current = hover;
+  }, [hover]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -136,7 +142,8 @@ export const GelCanvas: React.FC<GelCanvasProps> = ({
       onHover?.(null);
     };
     const handleClick = () => {
-      if (hover) onClick?.(hover);
+      const current = hoverRef.current;
+      if (current) onClick?.(current);
     };
 
     canvas.addEventListener('mousemove', handleMove);
@@ -147,7 +154,7 @@ export const GelCanvas: React.FC<GelCanvasProps> = ({
       canvas.removeEventListener('mouseleave', handleLeave);
       canvas.removeEventListener('click', handleClick);
     };
-  }, [height, hover, laneWidth, lanes, onClick, onHover]);
+  }, [height, laneWidth, lanes, onClick, onHover]);
 
   return (
     <div

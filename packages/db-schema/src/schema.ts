@@ -60,7 +60,7 @@ export const codonUsage = sqliteTable('codon_usage', {
 export const models = sqliteTable('models', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   phageId: integer('phage_id').notNull().references(() => phages.id),
-  role: text('role').notNull(), // capsid, tail, full_virion
+  role: text('role').notNull(), // capsid, tail, full_virion, structure
   pdbId: text('pdb_id'),
   source: text('source').notNull(), // pdb, sketchfab, custom
   objData: blob('obj_data'), // simplified OBJ/STL data

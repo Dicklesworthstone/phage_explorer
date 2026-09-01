@@ -37,6 +37,11 @@ export async function initKmerAnalysisWasm(): Promise<void> {
   if (wasmAvailable) return;
   try {
     const wasm = await import('@phage/wasm-compute');
+    // wasm-compute may require explicit async init (depending on build target).
+    const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
+    if (typeof maybeInit === 'function') {
+      await maybeInit();
+    }
     wasmAnalyzeKmers = wasm.analyze_kmers;
     wasmMinHashJaccard = wasm.min_hash_jaccard;
     // Test WASM function with trivial case

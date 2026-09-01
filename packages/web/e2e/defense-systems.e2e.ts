@@ -65,10 +65,11 @@ test('defense systems overlay renders heuristic annotations', async ({ page }, t
   const bodyText = await overlay.textContent();
   expect(bodyText).toMatch(/DEFENSE ARMS RACE/i);
 
-  // Wait for the async defense-system data to load.
-  await overlay.locator('text=/No defense system annotations|anti-RM|Anti-CRISPR/i')
-    .first()
-    .waitFor({ timeout: 10000 });
+  // Wait for the async defense-system data to load (an actual annotation, not
+  // just the empty-state message).
+  await expect(
+    overlay.locator('text=/anti-RM|Anti-CRISPR|anti-Abi/i').first()
+  ).toBeVisible({ timeout: 10000 });
 
   // For T7 we expect at least one of the heuristic hits to appear.
   const hasAntiCrispr = await overlay.locator('text=/Anti-CRISPR/i').first().isVisible().catch(() => false);

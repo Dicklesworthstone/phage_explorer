@@ -82,4 +82,11 @@ describe('calculateTai', () => {
     const pool = [{ anticodon: 'CAU', aminoAcid: 'Met', codon: 'ATG', copyNumber: 10 }];
     expect(calculateTai({}, pool)).toBe(0);
   });
+
+  test('ignores stop codons instead of penalizing the score', () => {
+    const pool = [{ anticodon: 'CAU', aminoAcid: 'Met', codon: 'ATG', copyNumber: 10 }];
+    const withStops = calculateTai({ ATG: 1, TAA: 1, TAG: 1, TGA: 1 }, pool);
+    const withoutStops = calculateTai({ ATG: 1 }, pool);
+    expect(withStops).toBeCloseTo(withoutStops);
+  });
 });

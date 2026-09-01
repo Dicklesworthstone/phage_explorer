@@ -65,8 +65,8 @@ export function TropismOverlay(): React.ReactElement {
           </Box>
 
           <Box flexDirection="column" gap={1}>
-            {data.hits.map(hit => (
-              <Box key={hit.gene.id} flexDirection="column" borderStyle="classic" borderColor={colors.borderLight} padding={1}>
+            {data.hits.map((hit, hitIndex) => (
+              <Box key={`${hit.gene.id}-${hit.gene.startPos}-${hitIndex}`} flexDirection="column" borderStyle="classic" borderColor={colors.borderLight} padding={1}>
                 <Box justifyContent="space-between">
                   <Text color={colors.primary} bold>
                     {hit.gene.name ?? hit.gene.locusTag ?? 'Tail fiber'}
@@ -84,8 +84,8 @@ export function TropismOverlay(): React.ReactElement {
                 {hit.receptorCandidates.length === 0 ? (
                   <Text color={colors.textMuted}>No receptor hints in annotation.</Text>
                 ) : (
-                  hit.receptorCandidates.map((rc: ReceptorCandidate) => (
-                    <Box key={rc.receptor} gap={2}>
+                  hit.receptorCandidates.map((rc: ReceptorCandidate, rcIndex: number) => (
+                    <Box key={`${rc.receptor}-${rcIndex}`} gap={2}>
                       <Text color={colors.success} bold>
                         {rc.receptor}
                       </Text>
