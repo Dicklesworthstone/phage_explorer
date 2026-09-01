@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 import argparse
+import gzip
 import json
+import shutil
 import sqlite3
 import time
+import urllib.request
+from pathlib import Path
 
 import pyhmmer
 
@@ -54,6 +58,20 @@ def decode(value):
     return value.decode() if value else None
 
 
+def ensure_pfam(path: Path):
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    archive = path.with_suffix(path.suffix + ".gz")
+    if not archive.exists():
+        urllib.request.urlretrieve(
+            "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz",
+            archive,
+        )
+    with gzip.open(archive, "rb") as source, path.open("wb") as target:
+        shutil.copyfileobj(source, target)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--database", default="phage.db")
@@ -63,7 +81,8 @@ def main():
     parser.add_argument("--limit", type=int)
     args = parser.parse_args()
 
-    from os.path import expanduser
+    pfam_path = Path(args.pfam).expanduser()
+    ensure_pfam(pfam_path)
     connection = sqlite3.connect(args.database)
     proteins, metadata = load_proteins(connection)
     if args.limit:
@@ -73,7 +92,7 @@ def main():
 
     rows = []
     now = int(time.time() * 1000)
-    with pyhmmer.plan7.HMMFile(expanduser(args.pfam)) as hmm_file:
+    with pyhmmer.plan7.HMMFile(pfam_path) as hmm_file:
         for index, hits in enumerate(pyhmmer.hmmer.hmmscan(proteins, hmm_file, cpus=args.cpus, E=args.e_value), 1):
             gene_id = int(hits.query.name.decode())
             phage_id, locus_tag = metadata[gene_id]

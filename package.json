@@ -15,6 +15,7 @@
     "build:db": "bun run packages/data-pipeline/src/build-db.ts",
     "build:esm2": "uv run --python 3.12 --with 'torch>=2.7,<2.9' --with 'transformers>=4.50,<5' python packages/data-pipeline/src/generate-esm2-embeddings.py",
     "build:pfam": "uv run --python 3.12 --with 'pyhmmer>=0.11,<0.12' python packages/data-pipeline/src/generate-pfam-domains.py",
+    "build:db:annotated": "bun run build:db && bun run build:esm2 && bun run build:pfam && bun run scripts/build-web-db.ts --source phage.db --output packages/web/public",
     "build:tropism": "bun run packages/data-pipeline/src/tropism-build.ts",
     "build": "bun run ./scripts/build.ts",
     "build:mac-arm64": "bun run ./scripts/build.ts --target=mac-arm64",

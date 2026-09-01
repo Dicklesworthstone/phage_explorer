@@ -467,9 +467,9 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 
 | Feature | Description |
 |---------|-------------|
-| **Protein Domains** | Schema ready for Pfam/InterPro/SMART annotations; not currently populated (requires external domain scan) |
-| **Fold Embeddings** | Lightweight deterministic k-mer hash vectors stored as Float32 blobs; not ESM2-derived embeddings |
-| **AMG Detection** | Heuristic KEGG-linked Auxiliary Metabolic Gene predictions from gene names/products; external Pfam/KEGG pipelines are also schema-ready |
+| **Protein Domains** | 1,695 Pfam domain hits generated locally with PyHMMER and Pfam-A; E-values and protein boundaries included |
+| **Fold Embeddings** | ESM2 `esm2_t6_8M_UR50D` mean-pooled 320-dimensional vectors for all CDS genes; deterministic k-mer hash fallback |
+| **AMG Detection** | 25 conservative keyword-supported AMG predictions mapped to known KEGG orthologs; evidence and confidence retained |
 
 ---
 
@@ -573,23 +573,24 @@ The SQLite database includes extensive precomputed annotations, enabling instant
 | `sequences` | Chunked 10kb segments for virtualized streaming |
 | `genes` | Full annotations (position, strand, type, qualifiers as JSON) |
 | `codonUsage` | Per-phage amino acid and codon frequency counts |
-| `proteinDomains` | Schema ready for Pfam/SMART/CDD domains (not currently populated) |
-| `foldEmbeddings` | Lightweight deterministic k-mer hash vectors as Float32 blobs (not ESM2-derived) |
-| `amgAnnotations` | Heuristic KEGG-linked AMG predictions; external KEGG annotation pipeline is also schema-ready |
+| `proteinDomains` | 1,695 Pfam-A hits generated locally with PyHMMER, including E-values and boundaries |
+| `foldEmbeddings` | 2,039 ESM2 320-dimensional vectors plus deterministic k-mer hash fallback vectors |
+| `amgAnnotations` | 25 conservative heuristic predictions mapped to known KEGG orthologs |
 | `defenseSystems` | Heuristic anti-CRISPR/anti-RM/anti-Abi predictions with confidence |
 | `tropismPredictions` | Precomputed tail-fiber receptor predictions from `data/tropism-embeddings.json` |
 | `codonAdaptation` | Intrinsic Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI (for available hosts such as *E. coli*) |
 
 ### Annotation Pipeline
 
-Annotations are precomputed at build time by `bun run build:db` (DSR can also drive release builds):
+Core annotations are built by `bun run build:db`; run `bun run build:db:annotated` for the complete ESM2 + Pfam database (DSR can also drive release builds):
 1. **NCBI fetch** → Raw sequences and gene annotations
 2. **Heuristic scans** → Anti-CRISPR / anti-RM / anti-Abi defense-system predictions
 3. **Intrinsic codon metrics** → Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI for available host tRNA pools
-4. **Lightweight embeddings** → Deterministic k-mer hash vectors for protein fold quickview
-5. **SQLite build** → Indexed, compressed database (~6 MB)
+4. **Protein embeddings** → `bun run build:esm2` downloads the public 8M-parameter ESM2 checkpoint and stores mean-pooled 320-dimensional vectors
+5. **Pfam domains** → `bun run build:pfam` scans all proteins locally with PyHMMER and Pfam-A
+6. **SQLite build** → Indexed, compressed database (~10 MB with both embedding sets and domain hits)
 
-External annotation pipelines (Pfam/InterPro, KEGG, ESM2 inference) are schema-ready but not run automatically because they require credentials, model weights, or API access.
+InterPro/SMART and broader KEGG pipelines remain optional enhancements; the shipped database includes Pfam-A hits and conservative AMG-to-KEGG ortholog mappings without requiring credentials.
 
 ---
 
@@ -774,8 +775,8 @@ This keeps initial bundle small (~200KB) while supporting 30+ feature-rich overl
 | **Sequence** | GC Skew, Complexity, Bendability, Promoter, Repeats, K-mer Anomaly |
 | **Visualization** | CGR Fractal, Hilbert Curve, Dot Plot, Phase Portrait, Logo Plot |
 | **Genomic** | HGT Detection, CRISPR Systems, Non-B DNA, Prophage Excision |
-| **Protein** | Codon Bias, RNA Structure, Fold Viewer (k-mer hash), Domains (schema-ready) |
-| **Ecology** | Host Tropism (precomputed trigram), Defense Arms Race, Cocktail Compatibility, AMG Pathways (schema-ready) |
+| **Protein** | Codon Bias, RNA Structure, Fold Viewer (ESM2 with k-mer fallback), Pfam Domains |
+| **Ecology** | Host Tropism (precomputed trigram), Defense Arms Race, Cocktail Compatibility, AMG Pathways (conservative KEGG mappings) |
 | **Simulation** | All 7 interactive simulations |
 
 ### Composable UI Primitives
@@ -843,8 +844,8 @@ The data pipeline fetches sequences from NCBI's Entrez API:
 | **Chunking** | Full sequence | 10kb segments |
 | **Translation** | DNA chunks | 6-frame amino acids |
 | **Annotation** | GenBank features | Structured gene records |
-| **Domain scan** | Protein sequences | Pfam/InterPro hits (schema-ready, external scan required) |
-| **Embedding** | Protein sequences | ESM2 fold vectors (schema-ready; current build uses k-mer hash vectors) |
+| **Domain scan** | Protein sequences | Pfam-A hits via local PyHMMER scan; InterPro/SMART remain optional |
+| **Embedding** | Protein sequences | ESM2 320-dimensional vectors plus k-mer hash fallback |
 
 ### Phylodynamics Support
 
@@ -869,8 +870,8 @@ For temporal analysis, the pipeline:
 **Gene function prediction:**
 1. Navigate to gene of interest with `[`/`]`
 2. Inspect gene product and qualifiers from the NCBI GenBank record
-3. Use the Fold Viewer overlay to compare lightweight k-mer hash protein embeddings
-4. Protein Domains and AMG Pathway overlays are schema-ready once external Pfam/InterPro and KEGG annotations are integrated
+3. Use the Fold Viewer overlay to compare ESM2 protein embeddings
+4. Cross-reference local Pfam-A domain hits and conservative AMG-to-KEGG ortholog predictions
 
 **Phage therapy candidate screening:**
 1. Use Host Tropism overlay to verify target range
