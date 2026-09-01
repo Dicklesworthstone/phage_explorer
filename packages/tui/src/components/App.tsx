@@ -545,17 +545,54 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     '\x1b[24~': 'F12',
   };
 
-  // Handle keyboard input
+  // Handle keyboard input (global layer is disabled while an overlay is open)
   useInput((input, key) => {
     // Check for F-key escape sequences or Ink key flags
     const fKey = F_KEYS[input];
+
+    // When an overlay is open, only allow Escape and overlay-specific close keys.
+    // This prevents global shortcuts such as 'q' from quitting while an overlay is
+    // focused; overlays own their own input while visible.
+    if (activeOverlay) {
+      if (key.escape) {
+        if (quitConfirmPending) {
+          exit();
+          return;
+        }
+        if (model3DFullscreen) {
+          toggle3DModelFullscreen();
+        } else {
+          closeOverlay();
+        }
+        return;
+      }
+
+      if (activeOverlay === 'help') {
+        if (input === '?') {
+          setHelpDetail(helpDetail === 'essential' ? 'detailed' : 'essential');
+        }
+        return;
+      }
+
+      if (activeOverlay !== 'search' && activeOverlay !== 'comparison') {
+        if (input === '?' || input === 'k' || input === 'K') {
+          closeOverlay(activeOverlay);
+          return;
+        }
+        if (activeOverlay === 'complexity' && (input === 'x' || input === 'X')) {
+          closeOverlay(activeOverlay);
+          return;
+        }
+      }
+      return;
+    }
 
     // Clear quit confirm if user presses anything other than Esc
     if (!key.escape && quitConfirmPending) {
       setQuitConfirmPending(false);
     }
 
-    // Global keys (work everywhere)
+    // Global quit (only when no overlay is open)
     if (input === 'q' || input === 'Q') {
       if (quitConfirmPending) {
         exit();
@@ -565,7 +602,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       return;
     }
 
-    // Escape: multi-purpose with quit confirmation
+    // Escape: fullscreen exit or quit confirmation (overlay handling is above)
     if (key.escape) {
       if (quitConfirmPending) {
         // Second Esc = quit
@@ -574,8 +611,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       if (model3DFullscreen) {
         toggle3DModelFullscreen();
-      } else if (activeOverlay) {
-        closeOverlay();
       } else {
         // No overlay, no fullscreen → start quit confirmation
         setQuitConfirmPending(true);
@@ -583,7 +618,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       return;
     }
 
-    // F1: Help (always available)
+    // F1: Help
     if (fKey === 'F1') {
       toggleOverlay('help');
       return;
@@ -666,27 +701,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     const promote = (level: ExperienceLevel) => promoteExperienceLevel(level);
     const isIntermediate = experienceLevel !== 'novice';
     const isPower = experienceLevel === 'power';
-
-    // If overlay is active, don't process other keys (comparison/search/menus handle their own input)
-    if (activeOverlay) {
-      if (activeOverlay === 'help') {
-        if (input === '?') {
-          setHelpDetail(helpDetail === 'essential' ? 'detailed' : 'essential');
-        }
-        return;
-      }
-
-      if (activeOverlay !== 'search' && activeOverlay !== 'comparison') {
-        if (
-          input === '?' || input === 'k' || input === 'K'
-        ) {
-          closeOverlay(activeOverlay);
-        } else if (activeOverlay === 'complexity' && (input === 'x' || input === 'X')) {
-          closeOverlay(activeOverlay);
-        }
-      }
-      return;
-    }
 
     // Navigation
     if (key.downArrow) {
