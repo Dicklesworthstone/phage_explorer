@@ -31,6 +31,7 @@ const OVERLAY_CHUNK_PATTERNS = [
   /HilbertOverlay/i,
   /PhasePortraitOverlay/i,
   /GenomicSignaturePCAOverlay/i,
+  /DefenseArmsRaceOverlay/i,
   /\/overlays\//i,  // Any path containing /overlays/
 ];
 
