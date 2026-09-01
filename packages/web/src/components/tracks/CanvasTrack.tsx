@@ -245,6 +245,17 @@ function CanvasTrackBase({
     render();
   }, [render]);
 
+  // Re-render on container resize (e.g. window resize or sidebar collapse)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const observer = new ResizeObserver(() => {
+      if (canvas.clientWidth > 0) render();
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [render]);
+
   // Handle click
   const handleClick = useCallback(
     (event: React.MouseEvent<HTMLCanvasElement>) => {
