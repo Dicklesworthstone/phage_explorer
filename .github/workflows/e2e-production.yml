@@ -19,7 +19,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BUN_VERSION: "1.2.4"
+  BUN_VERSION: "1.4.0"
   PLAYWRIGHT_BASE_URL: ${{ github.event.inputs.site_url || 'https://phage-explorer.org' }}
 
 jobs:
