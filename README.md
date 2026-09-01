@@ -24,7 +24,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 <p align="center">
   <img src="docs/images/t5_phage_3d_structure.webp" alt="Sequence grid with 3D structure" width="100%">
   <br>
-  <em>Sequence + Structure view — Color-coded amino acid grid with gene map, alongside WebGL 3D protein structure (8ZVI, 28,618 atoms) fetched from RCSB PDB</em>
+  <em>Sequence + Structure view — Color-coded amino acid grid with gene map, alongside WebGL 3D protein structure view (catalog PDB ID 8ZVI; live RCSB fetch not yet implemented)</em>
 </p>
 
 <p align="center">
@@ -99,13 +99,13 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 - **Full-Screen HUD Interface** — Navigate between phages instantly with arrow keys
 - **Color-Coded Sequences** — DNA (ACTG) and amino acid views with distinct, beautiful colors
 - **5 Color Themes** — Classic, Ocean, Matrix, Sunset, Forest (cycle with `T`)
-- **3D Structure Viewer** — Real PDB structures from RCSB with cartoon/ball-and-stick/surface modes (web), ASCII wireframe (TUI)
+- **3D Structure Viewer** — PDB structure references from RCSB rendered as ASCII wireframe (TUI); web viewer uses catalog PDB IDs and canonical morphology models (no live PDB fetch yet)
 - **Gene Map Navigation** — Visual gene bar with position tracking and snap-to-gene
 - **Layer-1 Quick Overlays** — `G` GC skew, `X` complexity, `B` bendability, `P` promoter/RBS motifs, `R` repeats/palindromes
 - **Diff Mode** — Compare sequences between phages visually
 - **Search** — Fuzzy search by name, host, family, or accession
 - **24 Real Phages** — Lambda, T4, T7, PhiX174, MS2, M13, P22, Phi29, Mu, Phi6, SPbeta, T5, P1, P2, N4, Felix O1, D29, L5, PhiC31, PhiKZ, PRD1, PM2, Qβ, T1
-- **WASM-Accelerated** — Rust-compiled spatial algorithms for instant analysis of large structures
+- **WASM-Accelerated** — Rust-compiled sequence routines for fast in-browser analysis
 - **Zero Dependencies at Runtime** — Single binary, no Bun/Node required
 
 ---
@@ -141,10 +141,10 @@ bun run dev
 
 The full web experience is live at **https://phage-explorer.org**. It includes:
 
-- **3D Structure Viewer** — Real PDB structures from RCSB with cartoon, ball-and-stick, and surface rendering modes
+- **3D Structure Viewer** — Catalog PDB IDs linked to RCSB with canonical morphology models and Three.js rendering (live PDB fetch not yet implemented)
 - **Interactive Sequence Grid** — Color-coded DNA/amino acid display with smooth scrolling
 - **30+ Analysis Overlays** — GC skew, dot plots, Hilbert curves, HGT detection, synteny, and more
-- **WASM-Accelerated** — Rust-compiled spatial algorithms for instant loading of large structures (50K+ atoms)
+- **WASM-Accelerated** — Rust-compiled sequence operations (translation, k-mer counting, MinHash) for fast in-browser analysis
 - **Mobile-Friendly** — Touch gestures, bottom sheets, haptic feedback
 
 Deployment details:
@@ -364,11 +364,11 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 - **Sequence Storage**: Chunked in 10kb segments for efficient virtualized rendering
 - **Virtualized Rendering**: Only visible sequence portion rendered, smooth 60fps scrolling
-- **3D Engine**: Custom ASCII renderer (TUI) and WebGL/Three.js viewer (web) with real PDB structures
-- **WASM Acceleration**: Rust-compiled WebAssembly for compute-intensive operations (spatial-hash bond detection, dot plots, k-mer analysis) with automatic JS fallback
-- **3D Structure Loading**: Fetches PDB/mmCIF from RCSB, parses in Web Worker, O(N) spatial-hash bond detection for structures with 50,000+ atoms
+- **3D Engine**: Custom ASCII renderer (TUI) and WebGL/Three.js viewer (web); PDB IDs from the catalog link to RCSB, live fetch not yet implemented
+- **WASM Acceleration**: Rust-compiled WebAssembly for sequence operations (translation, k-mer counting, MinHash) with automatic JS fallback
+- **3D Structure Loading**: Displays canonical morphology models; live PDB/mmCIF fetch and parsing is a planned enhancement
 - **State Management**: Zustand for reactive UI updates
-- **Database**: SQLite with Drizzle ORM, ~6MB for 24 phages with PDB structure references
+- **Database**: SQLite with Drizzle ORM, ~6 MB for 24 phages with PDB structure references
 
 ---
 
@@ -400,7 +400,7 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 - Virtualized sequence rendering for genomes up to 500kb+
 - Chunked fetching avoids loading entire genomes into memory
 - 3D model rendering at ~20fps with minimal CPU usage
-- **WASM spatial-hash**: O(N) bond detection vs O(N²) naive—1000x faster for large structures (50K atoms: <1s vs 60s+)
+- **WASM acceleration**: Rust routines for translation, k-mer counting, and MinHash reduce CPU time on large genomes
 - Web Worker isolation keeps UI responsive during heavy computation
 - Automatic fallback to pure JS when WASM unavailable
 
@@ -409,8 +409,8 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 ## CI/CD
 
 - **Lint + Typecheck**: Every push and PR
-- **Cross-platform builds**: macOS (arm64, x64), Linux (x64, arm64), Windows (x64)
-- **Automated releases**: Tagged versions trigger binary builds and GitHub release
+- **Cross-platform builds**: macOS (arm64, x64), Linux (x64, arm64), Windows (x64) via `bun run build:<target>`
+- **Release infrastructure**: DSR (Doodlestein Self-Releaser) is the release path; GitHub Actions is not used
 - **Database artifacts**: Pre-built `phage.db` included in releases
 
 ---
@@ -460,16 +460,16 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 |---------|--------|
 | **CRISPR Pressure** | Spacer matching against mock host CRISPR arrays; rates evolutionary pressure 0-10 scale |
 | **Anti-CRISPR (ACR)** | Heuristic scoring for defense-suppressing genes; flags known families (AcrIIA4, Ocr, etc.) |
-| **Tail Fiber Tropism** | ESM2 protein embeddings + HDBSCAN clustering; confidence scores for receptor binding predictions |
+| **Tail Fiber Tropism** | Precomputed lightweight trigram-embedding predictions loaded from `data/tropism-embeddings.json`; not ESM2/HDBSCAN inference at build time |
 | **Prophage Excision** | Detects integrase genes; searches for attL/attR direct repeats; models excision products |
 
 ### Protein Structure & Function
 
 | Feature | Description |
 |---------|-------------|
-| **Protein Domains** | Pfam/InterPro/SMART domain annotations with E-values and boundaries |
-| **Fold Embeddings** | ESM2-derived vectors stored as Float32 blobs; enables novelty/neighbor queries via cosine distance |
-| **AMG Detection** | Auxiliary Metabolic Genes linked to KEGG pathways (photosynthesis, carbon, nucleotide metabolism) |
+| **Protein Domains** | Schema ready for Pfam/InterPro/SMART annotations; not currently populated (requires external domain scan) |
+| **Fold Embeddings** | Lightweight deterministic k-mer hash vectors stored as Float32 blobs; not ESM2-derived embeddings |
+| **AMG Detection** | Schema ready for KEGG-linked Auxiliary Metabolic Genes; not currently populated (requires external annotation) |
 
 ---
 
@@ -541,20 +541,19 @@ Performance-critical algorithms are implemented in Rust and compiled to WebAssem
 
 | Algorithm | Threshold | Speedup | Fallback |
 |-----------|-----------|---------|----------|
-| **PCA (Power Iteration)** | 20K+ elements | ~10-50x | Pure JS eigendecomposition |
-| **Spatial Hash Bond Detection** | Always | 1000x vs O(N²) | — |
-| **K-mer Counting** | Large genomes | ~5x | TypedArray JS |
+| **Sequence translation & reverse complement** | Always | ~5-20x over naive JS | Pure JS translation |
+| **K-mer counting** | Large genomes | ~2-10x | TypedArray JS |
+| **MinHash similarity** | Pairwise comparisons | ~5-20x | Pure JS hash comparison |
 
-### Spatial Hash: Why It Matters
+### Why Rust/WASM for Sequence Work
 
-Traditional bond detection is O(N²)—checking every atom pair. For a 50,000-atom structure, that's 2.5 billion comparisons.
+Genomic sequence operations can dominate CPU time on large phage genomes. The `wasm-compute` package handles hot paths that are otherwise pure JavaScript loops over hundreds of thousands of bases or amino acids:
 
-The WASM spatial hash:
-1. Divides 3D space into grid cells (cell size = max bond length)
-2. Each atom only checks neighbors in adjacent cells
-3. Reduces to O(N) on average
+1. Six-frame translation and codon counting for every CDS
+2. K-mer extraction and counting for dot plots, Hilbert curves, and phylogenetic signatures
+3. MinHash signature comparison for recombination and similarity overlays
 
-**Result:** 50K atoms in <1s vs 60s+ naive. This enables real-time structure exploration.
+The WASM module falls back to pure JavaScript implementations if WASM loading fails.
 
 ### Automatic Fallback
 
@@ -574,23 +573,23 @@ The SQLite database includes extensive precomputed annotations, enabling instant
 | `sequences` | Chunked 10kb segments for virtualized streaming |
 | `genes` | Full annotations (position, strand, type, qualifiers as JSON) |
 | `codonUsage` | Per-phage amino acid and codon frequency counts |
-| `proteinDomains` | Pfam/SMART/CDD domains with E-values and boundaries |
-| `foldEmbeddings` | ESM2 protein embeddings as Float32 blobs |
-| `amgAnnotations` | Auxiliary metabolic genes linked to KEGG pathways |
-| `defenseSystems` | Anti-CRISPR/anti-RM/anti-Abi predictions with confidence |
-| `tropismPredictions` | Tail fiber receptor binding (ML-derived) |
-| `codonAdaptation` | CAI, tAI, CPB, Nc' per phage-host pair |
+| `proteinDomains` | Schema ready for Pfam/SMART/CDD domains (not currently populated) |
+| `foldEmbeddings` | Lightweight deterministic k-mer hash vectors as Float32 blobs (not ESM2-derived) |
+| `amgAnnotations` | Schema ready for KEGG-linked AMGs (not currently populated) |
+| `defenseSystems` | Heuristic anti-CRISPR/anti-RM/anti-Abi predictions with confidence |
+| `tropismPredictions` | Precomputed tail-fiber receptor predictions from `data/tropism-embeddings.json` |
+| `codonAdaptation` | Intrinsic Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI (for available hosts such as *E. coli*) |
 
 ### Annotation Pipeline
 
-Annotations are precomputed via GitHub Actions:
+Annotations are precomputed at build time by `bun run build:db` (DSR can also drive release builds):
 1. **NCBI fetch** → Raw sequences and gene annotations
-2. **Pfam/InterPro scan** → Protein domain identification
-3. **KEGG mapping** → Metabolic pathway linkage
-4. **ESM2 inference** → Protein fold embeddings
-5. **SQLite build** → Indexed, compressed database (~6MB)
+2. **Heuristic scans** → Anti-CRISPR / anti-RM / anti-Abi defense-system predictions
+3. **Intrinsic codon metrics** → Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI for available host tRNA pools
+4. **Lightweight embeddings** → Deterministic k-mer hash vectors for protein fold quickview
+5. **SQLite build** → Indexed, compressed database (~6 MB)
 
-Users get instant results because all heavy computation happens at build time.
+External annotation pipelines (Pfam/InterPro, KEGG, ESM2 inference) are schema-ready but not run automatically because they require credentials, model weights, or API access.
 
 ---
 
@@ -681,10 +680,9 @@ Phage Explorer handles genomes up to 500kb+ without loading the entire sequence 
 - Brightness mapping: depth → 0.2-1.0 intensity range
 
 **WebGL Renderer (Web):**
-- Real PDB structures fetched from RCSB
 - Three render modes: cartoon ribbons, ball-and-stick, surface mesh
+- Displays canonical morphology models; PDB IDs from the catalog link to RCSB (live fetch not yet implemented)
 - CRT post-processing: chromatic aberration, scanlines, bloom, vignette, film grain
-- O(N) spatial-hash bond detection for 50K+ atom structures
 
 ---
 
@@ -775,8 +773,8 @@ This keeps initial bundle small (~200KB) while supporting 30+ feature-rich overl
 | **Sequence** | GC Skew, Complexity, Bendability, Promoter, Repeats, K-mer Anomaly |
 | **Visualization** | CGR Fractal, Hilbert Curve, Dot Plot, Phase Portrait, Logo Plot |
 | **Genomic** | HGT Detection, CRISPR Systems, Non-B DNA, Prophage Excision |
-| **Protein** | Codon Bias, Domains, Fold Viewer, RNA Structure |
-| **Ecology** | Host Tropism, Defense Arms Race, AMG Pathways, Cocktail Compatibility |
+| **Protein** | Codon Bias, RNA Structure, Fold Viewer (k-mer hash), Domains (schema-ready) |
+| **Ecology** | Host Tropism (precomputed trigram), Defense Arms Race, Cocktail Compatibility, AMG Pathways (schema-ready) |
 | **Simulation** | All 7 interactive simulations |
 
 ### Composable UI Primitives
@@ -844,8 +842,8 @@ The data pipeline fetches sequences from NCBI's Entrez API:
 | **Chunking** | Full sequence | 10kb segments |
 | **Translation** | DNA chunks | 6-frame amino acids |
 | **Annotation** | GenBank features | Structured gene records |
-| **Domain scan** | Protein sequences | Pfam/InterPro hits |
-| **Embedding** | Protein sequences | ESM2 fold vectors |
+| **Domain scan** | Protein sequences | Pfam/InterPro hits (schema-ready, external scan required) |
+| **Embedding** | Protein sequences | ESM2 fold vectors (schema-ready; current build uses k-mer hash vectors) |
 
 ### Phylodynamics Support
 
@@ -869,9 +867,9 @@ For temporal analysis, the pipeline:
 
 **Gene function prediction:**
 1. Navigate to gene of interest with `[`/`]`
-2. Open Protein Domains overlay
-3. Check fold embedding neighbors for structural homologs
-4. Cross-reference with AMG Pathway overlay
+2. Inspect gene product and qualifiers from the NCBI GenBank record
+3. Use the Fold Viewer overlay to see k-mer hash-based fold quickview data
+4. Protein Domains and AMG Pathway overlays are schema-ready once external Pfam/InterPro and KEGG annotations are integrated
 
 **Phage therapy candidate screening:**
 1. Use Host Tropism overlay to verify target range
