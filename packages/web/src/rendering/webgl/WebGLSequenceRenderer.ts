@@ -260,6 +260,10 @@ export class WebGLSequenceRenderer {
 
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     this.clearToBackground();
+
+    // Restore the canvas backing store to the current viewport dimensions in
+    // case the CSS size changed while the context was lost.
+    this.resize(this.viewportWidth, this.viewportHeight);
   }
 
   private clearToBackground(): void {

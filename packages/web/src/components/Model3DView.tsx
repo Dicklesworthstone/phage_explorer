@@ -697,11 +697,19 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     scene.background = new Color('#0f1529');
     scene.fog = new Fog(0x0f1529, 120, 2600);
     const camera = new PerspectiveCamera(50, 1, 0.1, 5000);
-    const renderer = new WebGLRenderer({
-      antialias: !coarsePointer && quality !== 'low',
-      alpha: false,
-      powerPreference: 'high-performance',
-    });
+
+    let renderer: WebGLRenderer;
+    try {
+      renderer = new WebGLRenderer({
+        antialias: !coarsePointer && quality !== 'low',
+        alpha: false,
+        powerPreference: 'high-performance',
+      });
+    } catch (err) {
+      setLoadState('error');
+      setError(err instanceof Error ? err.message : 'Unable to create WebGL renderer');
+      return;
+    }
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.25;
@@ -709,6 +717,13 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     rendererRef.current = renderer;
     sceneRef.current = scene;
     cameraRef.current = camera;
+
+    // Surface context-loss to the user (recovery would require rebuilding the scene)
+    const handleContextLost = () => {
+      setLoadState('error');
+      setError('3D rendering context was lost. WebGL may have been reclaimed by the browser.');
+    };
+    renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
 
     // Enhanced lighting setup for better 3D perception
     const ambient = new AmbientLight(0xffffff, 0.9);
@@ -856,6 +871,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
       observer.disconnect();
       controls.removeEventListener('start', requestRender);
       controls.removeEventListener('change', syncHeadlamp);
+      renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
       renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
       renderer.domElement.removeEventListener('pointerup', handlePointerUp);
       controls.dispose();

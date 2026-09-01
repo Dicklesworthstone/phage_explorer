@@ -140,14 +140,23 @@ export async function preloadWorkers(): Promise<void> {
       if (!searchWorkerReady && import.meta.env.DEV) {
         console.warn('Search worker ping timed out; continuing without preload readiness');
       }
+      if (searchWorkerReady) {
+        preloadComplete = true;
+      } else if (searchWorker) {
+        // Failed ping: drop the worker so callers fall back cleanly.
+        searchWorker.terminate();
+        searchWorker = null;
+        searchWorkerAPI = null;
+      }
     } catch (error) {
       if (import.meta.env.DEV) {
         console.warn('Worker preload failed:', error);
       }
     }
 
-    if (generation === preloadGeneration) {
-      preloadComplete = true;
+    if (generation === preloadGeneration && !preloadComplete) {
+      // Allow a future caller to retry if we never reached a ready worker.
+      preloadStarted = false;
     }
   }).finally(() => {
     if (generation === preloadGeneration) {
