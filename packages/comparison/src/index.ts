@@ -102,12 +102,17 @@ export {
   SketchCache,
   buildSketch,
   kmerSet,
+  kmerCodes,
   exactJaccard,
   exactContainment,
   estimateJaccard,
   estimateContainment,
   estimateCardinality,
+  containmentOf,
+  containmentUncertainty,
   type GenomeSketch,
+  type ContainmentResult,
+  type ContainmentMethod,
 } from './sketch-cache';
 export {
   buildReferencePanel,

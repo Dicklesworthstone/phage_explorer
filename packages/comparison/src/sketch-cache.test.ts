@@ -8,6 +8,9 @@ import {
   estimateJaccard,
   estimateContainment,
   estimateCardinality,
+  containmentOf,
+  containmentUncertainty,
+  kmerCodes,
 } from './sketch-cache';
 import { initMinHashWasm, isMinHashWasmAvailable, MINHASH_DEFAULT_K } from './hgt-tracer';
 import { existsSync } from 'node:fs';
@@ -129,8 +132,12 @@ describe('MinHash estimates track the exact values', () => {
       expect(sketch).not.toBeNull();
       const exact = kmerSet(seq).size;
       const estimated = estimateCardinality(sketch!.signature);
-      // 128 hashes gives a relative standard error around 1/sqrt(128) ~ 9%.
-      // Allow 3x that as a stable bound rather than a tight one that flakes.
+      // Derived, not picked. Each slot holds the minimum of n uniform draws
+      // with E[min] = M/(n+1); averaging 128 of them gives a relative standard
+      // error of about 1/sqrt(128) = 8.8%. Calibrated over 40 independent
+      // genomes the signed SD came out at 8.4% and the worst single case at
+      // 23.5%, so 30% is roughly 3.5 sigma and the observed maximum sits
+      // comfortably inside it.
       expect(Math.abs(estimated - exact) / exact).toBeLessThan(0.3);
     }
   });
@@ -146,10 +153,23 @@ describe('MinHash estimates track the exact values', () => {
     const estimated = estimateJaccard(sa.signature, sb.signature);
 
     expect(exact).toBeGreaterThan(0.2); // the case is meaningful, not degenerate
+    // Slot i matches with probability exactly J and slots are independent, so
+    // 128*jhat is Binomial(128, J) and SD(jhat) = sqrt(J(1-J)/128), which is
+    // 0.042 at J = 0.33. Calibration measured 0.035 with bias under 0.011.
+    // 0.1 is therefore about 2.4 sigma.
     expect(Math.abs(estimated - exact)).toBeLessThan(0.1);
   });
 
-  it('estimates containment close to the exact containment', () => {
+  it('estimated containment lands inside its own reported interval', () => {
+    // This assertion used to read `toBeLessThan(0.25)`, a number chosen because
+    // the test passed with it. Calibration showed the estimator's error at this
+    // size ratio reaches 0.61, so that bound was a coin flip away from flaking
+    // and, worse, it was presenting a guess as a measured tolerance.
+    //
+    // The bound is now the estimator's OWN propagated uncertainty, so the test
+    // checks a real relationship: does the error bar the code reports actually
+    // contain the truth. A tolerance that moves with the input cannot be tuned
+    // until it passes.
     const smallSeq = biasedSequence(4000, 0.5, 7);
     const largeSeq = biasedSequence(30000, 0.5, 8) + smallSeq + biasedSequence(30000, 0.5, 9);
 
@@ -158,9 +178,11 @@ describe('MinHash estimates track the exact values', () => {
 
     const exact = exactContainment(kmerSet(smallSeq), kmerSet(largeSeq));
     const estimated = estimateContainment(small, large);
+    const sigma = containmentUncertainty(small, large);
 
     expect(exact).toBeGreaterThan(0.9);
-    expect(Math.abs(estimated - exact)).toBeLessThan(0.25);
+    expect(sigma).toBeGreaterThan(0); // the interval is real, not a stub zero
+    expect(Math.abs(estimated - exact)).toBeLessThan(3 * sigma);
   });
 
   it('estimated containment stays asymmetric', () => {
@@ -342,5 +364,164 @@ realDescribe('against the shipped catalogue', () => {
     const a = buildSketch('lambda', lambda)!;
     const b = buildSketch('p22', p22)!;
     expect(estimateContainment(a, b)).toBeGreaterThan(estimateJaccard(a.signature, b.signature));
+  });
+});
+
+/**
+ * Containment is exact at catalogue scale, and this is why.
+ *
+ * The estimator was calibrated rather than assumed, and it failed. Containment
+ * is recovered from Jaccard as C = j(|A|+|B|)/((1+j)|A|), whose leading factor
+ * is 1 + |B|/|A|, so the error in j is multiplied by the size ratio. That makes
+ * the estimator least accurate in exactly the case it exists for: a small
+ * genome inside a much larger one. Measured with a 4 kb insert at true C = 1.0:
+ *
+ *     ratio    1     2     4     8    16    32
+ *     mean|e|  .000  .025  .051  .071  .114  .123
+ *     max|e|   .000  .097  .237  .596  .609  .743
+ *
+ * The exact path is close to free because the k-mers were already being built
+ * for the cardinality and then thrown away. Retaining them costs a sort at
+ * build time (97 ms against 64 ms at 280 kb) and 0.67 ms per comparison against
+ * the estimate's 0.14 ms, plus about 8 MB held for the whole catalogue. An
+ * earlier note in this file claimed the exact path was outright faster; that
+ * came from a measurement that charged each path for shared work, and it is
+ * withdrawn.
+ *
+ * So the default is exact, and the tests below are the ones that would notice a
+ * revert to the estimator.
+ */
+describe('containment is counted, not estimated, at catalogue scale', () => {
+  const smallSeq = biasedSequence(4000, 0.5, 71);
+  const largeSeq = biasedSequence(30000, 0.5, 72) + smallSeq + biasedSequence(30000, 0.5, 73);
+
+  it('retains the real k-mers for a catalogue-sized genome', () => {
+    const sketch = buildSketch('small', smallSeq)!;
+    expect(sketch.codes).not.toBeNull();
+    expect(sketch.codes!.length).toBe(kmerSet(smallSeq).size);
+    expect(sketch.cardinality).toBe(sketch.codes!.length);
+  });
+
+  it('returns the counted answer, matching brute force to the last digit', () => {
+    const small = buildSketch('small', smallSeq)!;
+    const large = buildSketch('large', largeSeq)!;
+    const result = containmentOf(small, large);
+
+    expect(result.method).toBe('exact');
+    expect(result.uncertainty).toBe(0);
+    // Not toBeCloseTo. A counted value has no tolerance to spend.
+    expect(result.containment).toBe(exactContainment(kmerSet(smallSeq), kmerSet(largeSeq)));
+  });
+
+  it('is decisively better here than the estimate it replaced', () => {
+    // The planted negative. If someone routes containment back through the
+    // estimator, the exact and estimated numbers stop agreeing and this fails.
+    // Without it, a revert would be invisible: both paths return a plausible
+    // number in [0,1] and nothing else in the suite compares them.
+    const small = buildSketch('small', smallSeq)!;
+    const large = buildSketch('large', largeSeq)!;
+
+    const counted = containmentOf(small, large).containment;
+    const estimated = estimateContainment(small, large);
+
+    expect(counted).toBeGreaterThan(0.99); // the insert really is fully present
+    // The estimator's error at this ratio is large enough to be visible, which
+    // is the whole finding. If this ever came out at ~0 the exact path would be
+    // buying nothing and the extra memory would not be justified.
+    expect(Math.abs(counted - estimated)).toBeGreaterThan(0.01);
+  });
+
+  it('falls back to the estimate only above the retention threshold', () => {
+    // 400 kb is the cutoff; 420 kb is past it. Bun handles this size fine and
+    // the test is what proves the fallback is wired rather than dead code.
+    const huge = biasedSequence(420_000, 0.5, 74);
+    const sketch = buildSketch('huge', huge)!;
+    expect(sketch.codes).toBeNull();
+
+    const small = buildSketch('small', smallSeq)!;
+    const result = containmentOf(small, sketch);
+    expect(result.method).toBe('estimated');
+    expect(result.uncertainty).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('never reports containment outside [0, 1]', () => {
+    const small = buildSketch('small', smallSeq)!;
+    const large = buildSketch('large', largeSeq)!;
+    for (const r of [containmentOf(small, large), containmentOf(large, small)]) {
+      expect(r.containment).toBeGreaterThanOrEqual(0);
+      expect(r.containment).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('reports zero for a genome sharing nothing, not a small positive', () => {
+    // The negative control. An apparatus that has never returned "nothing" has
+    // not been shown capable of returning anything.
+    const a = buildSketch('a', biasedSequence(8000, 0.2, 75))!;
+    const b = buildSketch('b', biasedSequence(8000, 0.8, 76))!;
+    const r = containmentOf(a, b);
+    expect(r.method).toBe('exact');
+    expect(r.containment).toBe(0);
+  });
+});
+
+describe('the reported uncertainty describes the estimator honestly', () => {
+  it('grows with the size ratio, which is the mechanism of the error', () => {
+    // If the interval were a constant dressed up as a calculation, this fails.
+    const insert = biasedSequence(3000, 0.5, 81);
+    const sigmas = [2, 8, 24].map(ratio => {
+      const flank = Math.floor((3000 * ratio - 3000) / 2);
+      const host =
+        biasedSequence(flank, 0.5, 82 + ratio) + insert + biasedSequence(flank, 0.5, 92 + ratio);
+      return containmentUncertainty(buildSketch('i', insert)!, buildSketch('h', host)!);
+    });
+
+    expect(sigmas[1]).toBeGreaterThan(sigmas[0]);
+    expect(sigmas[2]).toBeGreaterThan(sigmas[1]);
+  }, 30_000);
+
+  it('actually covers the truth over repeated trials', () => {
+    // Empirical coverage, not a claim about coverage. A 2-sigma interval should
+    // contain the true value in the large majority of trials; anything much
+    // below that means the interval is decorative.
+    let covered = 0;
+    const trials = 12;
+    for (let t = 0; t < trials; t++) {
+      const insert = biasedSequence(3000, 0.5, 200 + t);
+      const host =
+        biasedSequence(15000, 0.5, 300 + t) + insert + biasedSequence(15000, 0.5, 400 + t);
+      const a = buildSketch('i', insert)!;
+      const b = buildSketch('h', host)!;
+      const exact = exactContainment(kmerSet(insert), kmerSet(host));
+      const err = Math.abs(estimateContainment(a, b) - exact);
+      if (err <= 2 * containmentUncertainty(a, b)) covered++;
+    }
+    expect(covered).toBeGreaterThanOrEqual(Math.ceil(trials * 0.75));
+  }, 60_000);
+
+  it('is zero only when the answer was counted', () => {
+    const a = buildSketch('a', biasedSequence(5000, 0.5, 91))!;
+    const b = buildSketch('b', biasedSequence(5000, 0.5, 92))!;
+    expect(containmentOf(a, b).uncertainty).toBe(0);
+    expect(containmentUncertainty(a, b)).toBeGreaterThan(0);
+  });
+});
+
+describe('packed k-mer codes agree with the readable set', () => {
+  it('holds the same distinct k-mers, sorted and deduplicated', () => {
+    const seq = biasedSequence(3000, 0.4, 61);
+    const codes = kmerCodes(seq);
+    const set = kmerSet(seq);
+
+    expect(codes.length).toBe(set.size);
+    for (const c of codes) expect(set.has(c)).toBe(true);
+    for (let i = 1; i < codes.length; i++) expect(codes[i]).toBeGreaterThan(codes[i - 1]);
+  });
+
+  it('skips ambiguous windows exactly as the set does', () => {
+    expect(Array.from(kmerCodes('ACGTNGGCC', 4)).sort((x, y) => x - y)).toEqual(
+      Array.from(kmerSet('ACGTNGGCC', 4)).sort((x, y) => x - y)
+    );
+    expect(kmerCodes('NNNN', 4).length).toBe(0);
+    expect(kmerCodes('ACG', 4).length).toBe(0);
   });
 });

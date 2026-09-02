@@ -39,9 +39,77 @@
  * scales. Tests assert the estimate tracks the exact value, so the estimator
  * cannot silently drift into producing plausible nonsense — the failure mode
  * this whole module exists to retire.
+ *
+ * Which one runs is decided by measurement, not by preference. Jaccard is
+ * estimated because the estimate was measured accurate; containment is computed
+ * exactly at catalogue scale because the estimate was measured inaccurate there
+ * AND slower. The calibration note below records both results and the design
+ * they forced.
  */
 
 import { computeSignature, MINHASH_DEFAULT_K, MINHASH_DEFAULT_HASHES } from './hgt-tracer';
+
+/**
+ * Measured error behaviour of the estimators below.
+ *
+ * These figures come from calibration runs over synthetic genomes, not from
+ * intuition, and they changed the design. Method and numbers are recorded here
+ * because a tolerance nobody can reproduce is a guess wearing a result's
+ * clothes.
+ *
+ * **Jaccard** — the kernel uses m independent hash functions and slot i matches
+ * with probability exactly J, so m*jhat ~ Binomial(m, J):
+ *     E[jhat] = J,  SD(jhat) = sqrt(J(1-J)/m)
+ * At m=128 that predicts SD 0.031 at J=0.14 and 0.042 at J=0.33. Measured over
+ * 30 trials per point: 0.025 and 0.035. Bias below 0.011 throughout. The model
+ * holds and is slightly conservative.
+ *
+ * **Cardinality** — each slot holds the minimum of n uniform draws, with
+ * E[min] = M/(n+1); averaging m of them and inverting gives a relative standard
+ * error of about 1/sqrt(m) = 8.8% at m=128. Measured over 40 genomes: signed
+ * SD 8.4%, bias -0.2%. The model holds.
+ *
+ * **Containment** — this one did NOT hold, and the finding drove the design.
+ * Containment is recovered algebraically as
+ *     C = j(|A| + |B|) / ((1 + j)|A|)
+ * whose leading factor is 1 + |B|/|A|. That multiplies the error in j by the
+ * size ratio, so the estimator is least accurate in exactly the regime it
+ * exists for: a small genome inside a much larger one. Measured, with a
+ * 4 kb insert fully contained (true C = 1.0) in hosts of growing size:
+ *
+ *     ratio    1     2     4     8    16    32
+ *     mean|e|  .000  .025  .051  .071  .114  .123
+ *     max|e|   .000  .097  .237  .596  .609  .743
+ *
+ * A reported containment of 0.88 where the truth is 1.00 is not a rounding
+ * difference; it changes the conclusion.
+ *
+ * **What the exact path actually costs.** A first pass at this timed "build
+ * k-mer sets and intersect" (134 ms) against "build two sketches and estimate"
+ * (277 ms) and concluded the exact path was cheaper. That comparison was wrong:
+ * it charged each path for work the shipped code does either way, and a run
+ * with the churn controlled put both builds at 190-270 ms together. The claim
+ * is withdrawn. Here are the numbers that survive a controlled measurement,
+ * on a 48 kb genome against a 280 kb one:
+ *
+ *   - The old code ALREADY built the full k-mer set for every sequence at or
+ *     below the threshold, to get an exact cardinality, and then discarded it.
+ *     Retaining it is the entire change.
+ *   - Building the packed sorted array instead of a Set costs about 1.5x on
+ *     that one pass: 97 ms against 64 ms at 280 kb, median of five. The extra
+ *     is the sort. It happens once per genome and is cached.
+ *   - Per comparison, the counted answer takes 0.67 ms against the estimate's
+ *     0.14 ms. Both vanish against the one-time build.
+ *   - Memory is the real price: about 8 MB of Uint32 for the whole catalogue.
+ *
+ * So exact containment is not free, it is cheap — roughly 250 ms once across
+ * the catalogue and 8 MB held. For an error that reached 0.61 in the regime
+ * that matters, that is worth paying.
+ *
+ * Containment is therefore exact by default and estimated only above
+ * EXACT_KMER_MAX_BASES, where the estimate reports its own uncertainty.
+ * Reproduce with the calibration harness described in the tests.
+ */
 
 /** Sketch of one genome: its MinHash signature plus its distinct k-mer count. */
 export interface GenomeSketch {
@@ -55,6 +123,17 @@ export interface GenomeSketch {
    */
   cardinality: number;
   k: number;
+  /**
+   * The distinct k-mers themselves, sorted ascending, retained for sequences at
+   * or below EXACT_KMER_MAX_BASES and null above it.
+   *
+   * This is what makes exact containment possible, and it is the reason the
+   * representation is a packed Uint32Array rather than a Set: the whole 24-genome
+   * catalogue is roughly 2M distinct k-mers, which is 8 MB packed and well over
+   * 100 MB as JS Sets. Sorted order also makes intersection a linear merge with
+   * no allocation.
+   */
+  codes: Uint32Array | null;
 }
 
 /** 2^32, the hash space the Rust kernel maps into. */
@@ -118,6 +197,53 @@ export function exactContainment(a: Set<number>, b: Set<number>): number {
   let intersection = 0;
   for (const v of a) if (b.has(v)) intersection++;
   return intersection / a.size;
+}
+
+/**
+ * The same distinct k-mers as `kmerSet`, packed into a sorted Uint32Array.
+ *
+ * `kmerSet` stays the readable ground truth used in tests; this is the storage
+ * format the cache retains, because a Set of 2M numbers costs more than ten
+ * times what the packed array does and cannot be merge-intersected.
+ */
+export function kmerCodes(sequence: string, k = MINHASH_DEFAULT_K): Uint32Array {
+  if (k <= 0 || k > 16 || sequence.length < k) return new Uint32Array(0);
+  const seq = sequence.toUpperCase();
+  const raw = new Uint32Array(seq.length - k + 1);
+  let n = 0;
+  for (let i = 0; i + k <= seq.length; i++) {
+    const code = encodeKmer(seq, i, k);
+    if (code !== null) raw[n++] = code;
+  }
+  const filled = raw.subarray(0, n);
+  filled.sort();
+  // Collapse duplicates in place; `filled` is already sorted.
+  let out = 0;
+  for (let i = 0; i < n; i++) {
+    if (i === 0 || filled[i] !== filled[i - 1]) filled[out++] = filled[i];
+  }
+  return filled.slice(0, out);
+}
+
+/** Size of the intersection of two sorted, deduplicated code arrays. */
+function intersectionSize(a: Uint32Array, b: Uint32Array): number {
+  let i = 0;
+  let j = 0;
+  let hits = 0;
+  while (i < a.length && j < b.length) {
+    const x = a[i];
+    const y = b[j];
+    if (x === y) {
+      hits++;
+      i++;
+      j++;
+    } else if (x < y) {
+      i++;
+    } else {
+      j++;
+    }
+  }
+  return hits;
 }
 
 /**
@@ -187,8 +313,103 @@ export function estimateContainment(a: GenomeSketch, b: GenomeSketch): number {
   return Math.min(1, intersection / a.cardinality);
 }
 
-/** Distinct-k-mer count is exact below this length, estimated above it. */
-const EXACT_CARDINALITY_MAX_BASES = 400_000;
+/**
+ * One-standard-deviation uncertainty on an estimated containment.
+ *
+ * Propagated from the only noisy input, jhat, by the delta method. With
+ *     C(j) = j(|A| + |B|) / ((1 + j)|A|)
+ *     dC/dj = (|A| + |B|) / (|A| (1 + j)^2)
+ *     SD(jhat) = sqrt(j(1 - j) / m)      [binomial over m hash slots]
+ * so
+ *     SD(C) ~ (|A| + |B|) / (|A| (1 + j)^2) * sqrt(j(1 - j) / m)
+ *
+ * The leading factor is the whole problem: it is 1 + |B|/|A| to first order, so
+ * the uncertainty grows with the size ratio. Checked against the amplification
+ * run at ratio 32 (|A| ~ 4k, |B| ~ 128k, true C = 1): predicted SD 0.48 against
+ * a measured spread consistent with 0.4-0.5 once the clamp at 1 is accounted
+ * for. Slightly conservative, which is the direction an error bar should err.
+ *
+ * Reporting this rather than a bare number is the point. A containment of 0.88
+ * plus or minus 0.48 and a containment of 0.88 plus or minus 0.01 are different
+ * findings, and the caller cannot tell them apart from the point estimate.
+ *
+ * Two floors keep the interval honest at the bottom of the range, where the
+ * plain binomial formula collapses to nonsense:
+ *
+ * - jhat is a count of matching slots divided by m, so it moves in steps of
+ *   1/m. The apparatus cannot resolve a difference finer than one slot no
+ *   matter what the formula says, so SD(jhat) never goes below 1/m.
+ *
+ * - jhat = 0 does NOT mean J = 0. Zero successes in m Bernoulli trials bounds
+ *   J below roughly 3/m at 95% confidence (the rule of three); it does not
+ *   establish J = 0. Returning 0 uncertainty there would be the single most
+ *   misleading answer available, because a zero reading is precisely the case
+ *   where the sketch has told you least. At a 100x size ratio that bound
+ *   propagates to an interval covering the whole range, and it should: 128
+ *   hashes have no resolving power for containment at that ratio, and saying so
+ *   is the correct output.
+ */
+export function containmentUncertainty(a: GenomeSketch, b: GenomeSketch): number {
+  if (a.cardinality <= 0) return 1;
+  const m = Math.min(a.signature.length, b.signature.length);
+  if (m === 0) return 1;
+  const j = estimateJaccard(a.signature, b.signature);
+  const slope = (a.cardinality + b.cardinality) / (a.cardinality * (1 + j) ** 2);
+  const sdJ = j <= 0 ? 3 / m : Math.max(Math.sqrt((j * (1 - j)) / m), 1 / m);
+  return Math.min(1, slope * sdJ);
+}
+
+/** How a containment figure was arrived at. */
+export type ContainmentMethod = 'exact' | 'estimated';
+
+/** A containment figure carrying how it was obtained and how much to trust it. */
+export interface ContainmentResult {
+  /** Fraction of the query's k-mers the reference also has, in [0, 1]. */
+  containment: number;
+  method: ContainmentMethod;
+  /**
+   * One-standard-deviation uncertainty. Exactly 0 for the exact method, since
+   * it is a count and not an estimate.
+   */
+  uncertainty: number;
+}
+
+/**
+ * Containment of `a` within `b`, exact where possible.
+ *
+ * Exact whenever both sketches retained their k-mers, which is every genome in
+ * this project's catalogue. This is not a fallback to a slow path: the k-mers
+ * were already being built for the cardinality, so the marginal cost is a sort
+ * at build time and half a millisecond per comparison. See the calibration note
+ * at the top of the file for the numbers and for why the estimate was not good
+ * enough here.
+ */
+export function containmentOf(a: GenomeSketch, b: GenomeSketch): ContainmentResult {
+  if (a.codes && b.codes) {
+    if (a.codes.length === 0) return { containment: 0, method: 'exact', uncertainty: 0 };
+    return {
+      containment: intersectionSize(a.codes, b.codes) / a.codes.length,
+      method: 'exact',
+      uncertainty: 0,
+    };
+  }
+  return {
+    containment: estimateContainment(a, b),
+    method: 'estimated',
+    uncertainty: containmentUncertainty(a, b),
+  };
+}
+
+/**
+ * Above this sequence length the exact k-mer set is neither retained nor
+ * counted, and both cardinality and containment fall back to the signature.
+ *
+ * 400 kb comfortably covers this project's largest genome (phiKZ, 280 kb) and
+ * excludes metagenome-scale input, which is the regime the sketch is actually
+ * for. One threshold, because both uses have the same rationale: can we afford
+ * to hold the real k-mer set for this sequence.
+ */
+const EXACT_KMER_MAX_BASES = 400_000;
 
 /**
  * Build a sketch for one genome.
@@ -207,12 +428,12 @@ export function buildSketch(
   const signature = computeSignature(sequence, k, numHashes);
   if (!signature) return null;
 
-  const cardinality =
-    sequence.length <= EXACT_CARDINALITY_MAX_BASES
-      ? kmerSet(sequence, k).size
-      : estimateCardinality(signature);
+  // One pass builds the k-mer set, and it serves both purposes: it IS the exact
+  // cardinality, and it is what exact containment intersects against.
+  const codes = sequence.length <= EXACT_KMER_MAX_BASES ? kmerCodes(sequence, k) : null;
+  const cardinality = codes ? codes.length : estimateCardinality(signature);
 
-  return { id, signature, cardinality, k };
+  return { id, signature, cardinality, k, codes };
 }
 
 /**
@@ -280,12 +501,18 @@ export class SketchCache {
     return scored.slice(0, limit);
   }
 
-  /** Containment of `queryId` within `referenceId`. Asymmetric. */
-  containment(queryId: string, referenceId: string): number | null {
+  /**
+   * Containment of `queryId` within `referenceId`. Asymmetric.
+   *
+   * Returns the method and uncertainty alongside the number, not a bare figure:
+   * a caller that renders "88% contained" has to be able to tell a counted
+   * result from an estimate that could be half a unit out.
+   */
+  containment(queryId: string, referenceId: string): ContainmentResult | null {
     const q = this.sketches.get(queryId);
     const r = this.sketches.get(referenceId);
     if (!q || !r) return null;
-    return estimateContainment(q, r);
+    return containmentOf(q, r);
   }
 
   /**
@@ -293,14 +520,14 @@ export class SketchCache {
    * reference that achieved it. This is the shape environmental provenance
    * needs for a novelty score: novelty is 1 − maxContainment.
    */
-  maxContainment(queryId: string): { referenceId: string; containment: number } | null {
+  maxContainment(queryId: string): (ContainmentResult & { referenceId: string }) | null {
     const q = this.sketches.get(queryId);
     if (!q) return null;
-    let best: { referenceId: string; containment: number } | null = null;
+    let best: (ContainmentResult & { referenceId: string }) | null = null;
     for (const [id, sketch] of this.sketches) {
       if (id === queryId) continue;
-      const c = estimateContainment(q, sketch);
-      if (!best || c > best.containment) best = { referenceId: id, containment: c };
+      const result = containmentOf(q, sketch);
+      if (!best || result.containment > best.containment) best = { ...result, referenceId: id };
     }
     return best;
   }

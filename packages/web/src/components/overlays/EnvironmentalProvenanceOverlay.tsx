@@ -18,7 +18,11 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useHotkey } from '../../hooks/useHotkey';
 import { usePhageStore } from '@phage-explorer/state';
-import { SketchCache, initMinHashWasm } from '@phage-explorer/comparison';
+import {
+  SketchCache,
+  initMinHashWasm,
+  type ContainmentMethod,
+} from '@phage-explorer/comparison';
 import { OverlayProvenance } from './primitives';
 import { ActionIds } from '../../keyboard';
 import {
@@ -114,6 +118,15 @@ export function EnvironmentalProvenanceOverlay({
     score: number;
     nearestId: string;
     containment: number;
+    /**
+     * Whether the containment was counted or estimated, and how far the
+     * estimate could be out. Carried into the UI rather than dropped: the
+     * MinHash estimate was measured to be off by as much as 0.6 when a small
+     * genome sits inside a much larger one, so a bare percentage would be
+     * overstating what is known.
+     */
+    method: ContainmentMethod;
+    uncertainty: number;
   } | null>(null);
   const [distinctivenessState, setDistinctivenessState] =
     useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
@@ -156,6 +169,8 @@ export function EnvironmentalProvenanceOverlay({
           score: 1 - best.containment,
           nearestId: nearest?.name ?? best.referenceId,
           containment: best.containment,
+          method: best.method,
+          uncertainty: best.uncertainty,
         });
         setDistinctivenessState('ready');
       } catch {
@@ -581,7 +596,14 @@ export function EnvironmentalProvenanceOverlay({
           >
             <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
               Catalogue distinctiveness{' '}
-              <OverlayProvenance level="measured" source="MinHash containment, k=16" />
+              <OverlayProvenance
+                level="measured"
+                source={
+                  distinctiveness?.method === 'estimated'
+                    ? 'MinHash containment estimate, k=16'
+                    : 'Exact 16-mer containment'
+                }
+              />
             </div>
             {distinctivenessState === 'loading' && (
               <span style={{ color: colors.textMuted }}>Sketching the catalogue…</span>
@@ -600,11 +622,21 @@ export function EnvironmentalProvenanceOverlay({
                 of this genome&rsquo;s 16-mers are absent from every other catalogue
                 genome. Closest relative:{' '}
                 <span style={{ color: colors.accent }}>{distinctiveness.nearestId}</span>{' '}
-                (contains {(distinctiveness.containment * 100).toFixed(1)}% of them).
+                (contains {(distinctiveness.containment * 100).toFixed(1)}%
+                {distinctiveness.method === 'estimated' &&
+                  ` \u00b1 ${(distinctiveness.uncertainty * 100).toFixed(1)}`}{' '}
+                of them).
                 <div style={{ color: colors.textMuted, marginTop: '0.35rem' }}>
                   Measured against the 24 reference genomes shipped with the app, not
                   against metagenomes. A phage can be distinctive here and still be
                   common in the environment.
+                  {distinctiveness.method === 'estimated' && (
+                    <>
+                      {' '}
+                      This genome is too large to count k-mers directly, so the figure
+                      is a MinHash estimate and carries the interval shown.
+                    </>
+                  )}
                 </div>
               </div>
             )}
