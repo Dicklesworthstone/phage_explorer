@@ -266,7 +266,7 @@ export function computeBiomeDistribution(hits: MetagenomeHit[]): BiomeDistributi
  */
 export function computeGeoHeatmap(
   hits: MetagenomeHit[]
-): Array<{ lat: number; lon: number; intensity: number }> {
+): Array<{ lat: number; lon: number; intensity: number | null }> {
   // Group hits by approximate location (1 degree grid)
   const grid = new Map<string, { lat: number; lon: number; containments: Array<number | null> }>();
 

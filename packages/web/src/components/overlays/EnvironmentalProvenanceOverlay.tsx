@@ -784,7 +784,15 @@ export function EnvironmentalProvenanceOverlay({
                     NOVELTY INTERPRETATION
                   </div>
                   <p style={{ color: colors.text, margin: 0, lineHeight: 1.5 }}>
-                    {result.novelty.interpretation}
+                    {/* Without a containment there is no novelty and therefore
+                        nothing to interpret. This paragraph used to print "shows
+                        minimal similarity to known metagenomes, suggesting it
+                        represents a novel lineage" for every phage, which is a
+                        strong scientific claim generated from a hardcoded 0. */}
+                    {result.novelty
+                      ? result.novelty.interpretation
+                      : 'Not available. Novelty needs containment against metagenome sketches, ' +
+                        'and the SRA records behind this view carry no sequence to compare against.'}
                   </p>
                 </div>
 
@@ -822,7 +830,10 @@ export function EnvironmentalProvenanceOverlay({
                             backgroundColor: BIOME_COLORS[b.biome],
                           }}
                         />
-                        {BIOME_NAMES[b.biome]}: {Math.round(b.maxContainment * 100)}%
+                        {BIOME_NAMES[b.biome]}:{' '}
+                        {b.maxContainment === null
+                          ? `${b.hitCount} loc`
+                          : `${Math.round(b.maxContainment * 100)}%`}
                       </span>
                     ))}
                   </div>
@@ -890,8 +901,18 @@ export function EnvironmentalProvenanceOverlay({
                       </div>
                     </div>
                     <div style={{ textAlign: 'right' }}>
-                      <div style={{ color: colors.accent, fontWeight: 'bold' }}>
-                        {Math.round(hit.containment * 100)}%
+                      <div
+                        style={{
+                          color: hit.containment === null ? colors.textMuted : colors.accent,
+                          fontWeight: 'bold',
+                        }}
+                      >
+                        {/* Every row printed "0%" when containment was set to
+                            zero, which reads as a measured absence. An em dash
+                            reads as what it is: no measurement. */}
+                        {hit.containment === null
+                          ? '\u2014'
+                          : `${Math.round(hit.containment * 100)}%`}
                       </div>
                       <div style={{ color: colors.textDim, fontSize: '0.8rem' }}>
                         {hit.location.country}
