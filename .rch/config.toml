@@ -1,0 +1,19 @@
+# Build locally for this repo.
+#
+# Phage Explorer's suites are Bun, not cargo: `bun test` across the nine
+# packages finishes in ~4 s, while an rch round trip spends ~2-6 s on rsync
+# before anything runs. Offloading is pure overhead here.
+#
+# There is also an active routing bug worth knowing about. `rch admit`
+# correctly reports `Required capabilities: bun` for this repo's test command,
+# but the scheduler was repeatedly observed dispatching it to workers whose
+# tags lack `bun` (e.g. vmi1167313, tags go/rust/ts), where it fails with:
+#
+#     env: 'bun': No such file or directory
+#     exit=127
+#
+# If the Rust/WASM crate in packages/wasm-compute ever needs offloading, do it
+# explicitly with `rch exec` against a bun/rust-capable worker (ovh-a, hz1, hz3)
+# rather than turning this back on for the whole repo.
+[general]
+force_local = true

@@ -28,9 +28,11 @@ import {
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
 import {
   analyzeHGTProvenance,
+  buildReferencePanel,
   type HGTAnalysis,
   type PassportStamp,
 } from '@phage-explorer/comparison';
+import { usePhageStore } from '@phage-explorer/state';
 
 // Amelioration-based colors (time since transfer)
 type Amelioration = 'recent' | 'intermediate' | 'ancient' | 'unknown';
@@ -242,6 +244,8 @@ export function HGTOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
+  // The catalogue doubles as the donor reference panel.
+  const phages = usePhageStore(s => s.phages);
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('hgt');
   const windowSelectId = 'hgt-window-size';
@@ -251,6 +255,10 @@ export function HGTOverlay({
   const [sequence, setSequence] = useState<string>('');
   const [genes, setGenes] = useState<GeneInfo[]>([]);
   const [loading, setLoading] = useState(false);
+  // Donor reference panel: the rest of the catalogue, keyed by a readable label.
+  const [references, setReferences] = useState<Record<string, string>>({});
+  const [referencesLoading, setReferencesLoading] = useState(false);
+  const referencePanelPhageId = useRef<number | null>(null);
 
   // Analysis parameters
   const [windowSize, setWindowSize] = useState(2000);
@@ -315,11 +323,53 @@ export function HGTOverlay({
     };
   }, [isOpen, repository, currentPhage]);
 
+  // Build the donor reference panel from the rest of the catalogue.
+  //
+  // Without this the analyzer was called with `{}`, so no island could ever be
+  // attributed to a donor and the donor-lineage panel this overlay advertises
+  // never rendered. The panel is cached across phages and excludes the phage
+  // under analysis so it cannot be reported as its own donor.
+  useEffect(() => {
+    if (!isOpen('hgt')) return;
+    if (!repository || !currentPhage || phages.length === 0) return;
+
+    const excludeId = currentPhage.id;
+    if (referencePanelPhageId.current === excludeId && Object.keys(references).length > 0) {
+      return;
+    }
+
+    const signal = { aborted: false };
+    setReferencesLoading(true);
+    buildReferencePanel(repository, phages, excludeId, { signal })
+      .then(panel => {
+        if (signal.aborted) return;
+        referencePanelPhageId.current = excludeId;
+        setReferences(panel);
+      })
+      .catch(() => {
+        // A missing panel degrades donor inference; it must not break the
+        // island/GC analysis, which needs no references.
+        if (!signal.aborted) setReferences({});
+      })
+      .finally(() => {
+        if (!signal.aborted) setReferencesLoading(false);
+      });
+
+    return () => {
+      signal.aborted = true;
+    };
+  }, [isOpen, repository, currentPhage, phages, references]);
+
+  const referenceCount = Object.keys(references).length;
+
   // Run enhanced HGT provenance analysis
   const provenanceAnalysis = useMemo((): HGTAnalysis | null => {
     if (!sequence || sequence.length < windowSize * 2) return null;
-    return analyzeHGTProvenance(sequence, genes, {}, { window: windowSize, step: windowSize / 2 });
-  }, [sequence, genes, windowSize]);
+    return analyzeHGTProvenance(sequence, genes, references, {
+      window: windowSize,
+      step: windowSize / 2,
+    });
+  }, [sequence, genes, windowSize, references]);
 
   // Convert stamps to track segments (colored by amelioration)
   const islandSegments = useMemo((): GenomeTrackSegment[] => {
@@ -406,6 +456,19 @@ export function HGTOverlay({
           <div>
             Detects genomic islands and creates &quot;passport stamps&quot; showing donor lineage, hallmark genes,
             and amelioration timing (how long ago the transfer occurred).
+          </div>
+          {/*
+            Donor attribution is only as good as the reference panel, so say
+            plainly what it is being compared against. An empty panel means no
+            donor can be named, and the user should know that rather than read
+            a blank Putative Donors section as "no transfer detected".
+          */}
+          <div style={{ marginTop: '0.35rem', fontSize: '0.8rem', color: colors.textMuted }}>
+            {referencesLoading
+              ? 'Loading donor reference panel from the catalogue...'
+              : referenceCount > 0
+                ? `Donor panel: ${referenceCount} catalogue genome${referenceCount === 1 ? '' : 's'} (excludes the phage under analysis).`
+                : 'Donor panel unavailable - islands and GC deviation are still computed, but no donor can be named.'}
           </div>
         </div>
 

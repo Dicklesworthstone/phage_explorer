@@ -90,6 +90,15 @@ export {
 
 // HGT provenance tracer
 export { analyzeHGTProvenance, type HGTOptions } from './hgt-tracer';
+export {
+  buildReferencePanel,
+  referenceLabel,
+  DEFAULT_MAX_BASES_PER_REFERENCE,
+  DEFAULT_MAX_REFERENCES,
+  type ReferencePanelSource,
+  type ReferencePanelPhage,
+  type ReferencePanelOptions,
+} from './reference-panel';
 
 // MinHash signature cache
 export {
