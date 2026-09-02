@@ -105,6 +105,10 @@ jobs:
       # rather than per-PR to keep this job fast.
       # --timeout is raised well above the 60s default in playwright.config.ts.
       #
+      # provenance-banner.e2e.ts sets its own budget with test.setTimeout,
+      # because it boots the app and runs three network scenarios and the flag
+      # above is tuned for the other files. Measured at ~5.6 min locally.
+      #
       # The accessibility specs walk 20+ overlays serially in a single test, and
       # the database load alone takes several seconds. That fits comfortably on
       # an idle machine (4-6s per test) but not on a contended one: under
@@ -129,6 +133,7 @@ jobs:
             e2e/search-keyboard-ux.e2e.ts \
             e2e/share-state.e2e.ts \
             e2e/command-palette-drift.e2e.ts \
+            e2e/provenance-banner.e2e.ts \
             e2e/sequence-scroll-repaint.e2e.ts
 
       - name: Upload report on failure
