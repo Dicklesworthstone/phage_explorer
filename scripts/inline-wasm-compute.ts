@@ -202,6 +202,9 @@ try {
   process.exit(1);
 }
 
+// The inlining stage keeps its own error handling: a failure here also means the
+// artifact must not be shipped.
+try {
   const wasmBuffer = readFileSync(wasmPath);
   const wasmBase64 = wasmBuffer.toString("base64");
 
