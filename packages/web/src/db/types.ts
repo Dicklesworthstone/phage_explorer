@@ -110,6 +110,16 @@ export interface PhageRepository {
   setCodonVector?(phageId: number, vector: number[]): Promise<void>;
 
   // Annotation queries
+  /**
+   * Read a row from `annotation_meta`, the table that records which tool and
+   * which database release produced an annotation set.
+   *
+   * Exists because the protein-domain overlay credited "InterProScan" while the
+   * rows were PyHMMER scans against Pfam-A. Domain calls are the kind of result
+   * a user cites, and the tool determines how they should be read, so the
+   * provenance has to come from the data rather than from a hardcoded string.
+   */
+  getAnnotationMeta?(key: string): Promise<Record<string, unknown> | null>;
   getProteinDomains?(phageId: number): Promise<ProteinDomain[]>;
   getAmgAnnotations?(phageId: number): Promise<AmgAnnotation[]>;
   getDefenseSystems?(phageId: number): Promise<DefenseSystem[]>;

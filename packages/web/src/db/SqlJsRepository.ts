@@ -595,6 +595,46 @@ export class SqlJsRepository implements PhageRepository {
   }
 
   /**
+   * Read one row of `annotation_meta` and parse its JSON value.
+   *
+   * Returns null when the table or key is absent, which is the case for a
+   * database built before an annotation set existed. Callers must handle that
+   * rather than falling back to a hardcoded tool name -- doing exactly that is
+   * how the protein-domain overlay ended up crediting InterProScan for PyHMMER
+   * scans against Pfam-A.
+   */
+  async getAnnotationMeta(key: string): Promise<Record<string, unknown> | null> {
+    const cacheKey = `annmeta:${key}`;
+    const cached = this.cache.get(cacheKey) as
+      | CacheEntry<Record<string, unknown> | null>
+      | undefined;
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const stmt = this.db.prepare(
+        'SELECT value FROM annotation_meta WHERE key = ? LIMIT 1'
+      );
+      stmt.bind([key]);
+      if (stmt.step()) {
+        const row = stmt.getAsObject() as { value?: string };
+        if (typeof row.value === 'string') {
+          parsed = JSON.parse(row.value) as Record<string, unknown>;
+        }
+      }
+      stmt.free();
+    } catch {
+      // Missing table on an older database, or a value that is not JSON.
+      parsed = null;
+    }
+
+    this.cache.set(cacheKey, { data: parsed, timestamp: Date.now() });
+    return parsed;
+  }
+
+  /**
    * Get protein domain annotations for a phage
    */
   async getProteinDomains(phageId: number): Promise<ProteinDomain[]> {

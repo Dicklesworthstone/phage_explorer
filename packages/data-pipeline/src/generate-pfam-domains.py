@@ -4,6 +4,7 @@ import gzip
 import json
 import shutil
 import sqlite3
+import sys
 import time
 import urllib.request
 from pathlib import Path
@@ -58,16 +59,38 @@ def decode(value):
     return value.decode() if value else None
 
 
+PFAM_BASE = "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release"
+
+
+def fetch_pfam_release() -> str:
+    """Return the Pfam release actually being downloaded, e.g. "38.2".
+
+    The pipeline pulls from `current_release`, which is a moving target. Recording
+    the literal string "current" in annotation_meta -- which is what it used to do
+    -- tells a later reader nothing: domain calls depend on the release's
+    gathering thresholds, and "current" in August is not "current" in January.
+
+    Falls back to "unknown" rather than guessing if the version file cannot be
+    read, because a wrong version recorded as fact is worse than an absent one.
+    """
+    try:
+        with urllib.request.urlopen(f"{PFAM_BASE}/Pfam.version.gz", timeout=60) as response:
+            text = gzip.decompress(response.read()).decode("utf-8", "replace")
+        for line in text.splitlines():
+            if line.lower().startswith("pfam release"):
+                return line.split(":", 1)[1].strip()
+    except Exception as exc:  # noqa: BLE001 - version is metadata, not the job
+        print(f"warning: could not read Pfam release version: {exc}", file=sys.stderr)
+    return "unknown"
+
+
 def ensure_pfam(path: Path):
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     archive = path.with_suffix(path.suffix + ".gz")
     if not archive.exists():
-        urllib.request.urlretrieve(
-            "https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz",
-            archive,
-        )
+        urllib.request.urlretrieve(f"{PFAM_BASE}/Pfam-A.hmm.gz", archive)
     with gzip.open(archive, "rb") as source, path.open("wb") as target:
         shutil.copyfileobj(source, target)
 
@@ -127,7 +150,24 @@ def main():
     count = connection.execute("SELECT COUNT(*) FROM protein_domains WHERE domain_type = 'Pfam'").fetchone()[0]
     connection.execute(
         "INSERT OR REPLACE INTO annotation_meta (key, value, updated_at) VALUES (?, ?, ?)",
-        ("pfam_domains", json.dumps({"release": "current", "hits": count, "eValue": args.e_value}), now),
+        (
+            "pfam_domains",
+            json.dumps(
+                {
+                    "release": fetch_pfam_release(),
+                    "hits": count,
+                    "eValue": args.e_value,
+                    # Named so the UI can credit the right tool. The overlay
+                    # credited "InterProScan", which was never involved; Pfam-A
+                    # gathering thresholds and InterPro's integrated signatures
+                    # are different things and a user citing a domain call needs
+                    # to know which they have.
+                    "tool": "pyhmmer.hmmer.hmmscan",
+                    "database": "Pfam-A",
+                }
+            ),
+            now,
+        ),
     )
     connection.commit()
     connection.close()

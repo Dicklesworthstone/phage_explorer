@@ -1,8 +1,12 @@
 /**
  * ProteinDomainOverlay - Protein Domain Annotations
  *
- * Visualizes InterPro/Pfam domain annotations for genes in the current phage.
- * Shows domain architecture and functional predictions.
+ * Visualizes Pfam-A domain annotations for genes in the current phage, scanned
+ * with PyHMMER by packages/data-pipeline/src/generate-pfam-domains.py. Shows
+ * domain architecture and functional predictions.
+ *
+ * The tool and release are read from `annotation_meta` rather than hardcoded.
+ * This overlay used to credit InterProScan, which was never involved.
  */
 
 import React, { useMemo, useState, useEffect, useCallback } from 'react';
@@ -225,6 +229,33 @@ export function ProteinDomainOverlay({
   const overlayHelp = getOverlayContext('proteinDomains');
 
   const [viewMode, setViewMode] = useState<ProteinDomainViewMode>('phage');
+
+  /**
+   * Which tool and which database release produced these rows.
+   *
+   * Read from `annotation_meta` rather than hardcoded. The previous text
+   * credited "InterProScan", which was never involved: the rows come from
+   * pyhmmer.hmmer.hmmscan against Pfam-A. Pfam-A gathering thresholds and
+   * InterPro's integrated signatures are different things, and a user citing a
+   * domain call needs to know which they have.
+   */
+  const [pfamRelease, setPfamRelease] = useState<string | null>(null);
+  const [pfamEValue, setPfamEValue] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const meta = await repository?.getAnnotationMeta?.('pfam_domains');
+      if (cancelled || !meta) return;
+      if (typeof meta.release === 'string' && meta.release !== 'unknown') {
+        setPfamRelease(meta.release);
+      }
+      if (typeof meta.eValue === 'number') setPfamEValue(meta.eValue);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repository]);
   const [domains, setDomains] = useState<ProteinDomain[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
@@ -585,8 +616,18 @@ export function ProteinDomainOverlay({
             )}
           </div>
           <div>
-            Conserved protein domains identified via InterProScan. Domains provide
-            functional predictions and evolutionary insights for phage proteins.
+            {/* Credited "InterProScan", which was never involved. The rows come
+                from `generate-pfam-domains.py`, which downloads Pfam-A from EBI
+                and scans with pyhmmer.hmmer.hmmscan. This matters more than a
+                typical attribution slip: domain calls are the kind of result a
+                user cites, and Pfam-A gathering thresholds and InterPro's
+                integrated signatures are different things. */}
+            Conserved protein domains from <strong>Pfam-A</strong>
+            {pfamRelease ? ` release ${pfamRelease}` : ''}, scanned with{' '}
+            <strong>PyHMMER</strong> (hmmscan)
+            {pfamEValue !== null ? ` at E &le; ${pfamEValue.toExponential(0)}` : ''}. Per-hit
+            E-values are shown with each domain. Domains provide functional predictions and
+            evolutionary insights for phage proteins.
           </div>
           <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <button
@@ -628,7 +669,11 @@ export function ProteinDomainOverlay({
           ) : domains.length === 0 ? (
             <OverlayEmptyState
               message={!currentPhage ? 'No phage selected' : 'No protein domain annotations available'}
-              hint={!currentPhage ? 'Select a phage to analyze.' : 'Domain annotations are computed via InterProScan.'}
+              hint={
+                !currentPhage
+                  ? 'Select a phage to analyze.'
+                  : 'Domain annotations come from Pfam-A, scanned with PyHMMER.'
+              }
             />
           ) : (
             <>

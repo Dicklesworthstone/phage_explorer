@@ -489,7 +489,7 @@ export function RNAStructureOverlay({
       constrainedPercent,
       highStressRegions: analysis.highStressRegions.length,
       regulatoryHypotheses: analysis.regulatoryHypotheses.length,
-      globalMFE: analysis.globalMFE,
+      globalPairingScore: analysis.globalPairingScore,
       avgStress: analysis.avgSynonymousStress * 100,
     };
   }, [analysis]);

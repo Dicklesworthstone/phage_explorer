@@ -130,3 +130,88 @@ dbDescribe('README genome lengths match the shipped database', () => {
     expect(actual).toBe(41489);
   });
 });
+
+/**
+ * Annotation provenance must come from the data, not from a hardcoded string.
+ *
+ * The protein-domain overlay credited "InterProScan". The rows in
+ * `protein_domains` were produced by `generate-pfam-domains.py`, which
+ * downloads Pfam-A from EBI and scans with `pyhmmer.hmmer.hmmscan`. InterProScan
+ * was never involved. This matters more than a typical attribution slip: domain
+ * calls are the kind of result a user cites, and Pfam-A gathering thresholds and
+ * InterPro's integrated signatures are different things.
+ */
+const provenanceDescribe = existsSync(DB_PATH) ? describe : describe.skip;
+
+provenanceDescribe('protein domain provenance', () => {
+  const db = new Database(DB_PATH, { readonly: true });
+
+  it('records the tool and the database that actually produced the rows', () => {
+    const row = db
+      .query<{ value: string }, []>(
+        "select value from annotation_meta where key = 'pfam_domains'"
+      )
+      .get();
+    expect(row).not.toBeNull();
+    const meta = JSON.parse(row!.value) as Record<string, unknown>;
+    expect(meta.tool).toBe('pyhmmer.hmmer.hmmscan');
+    expect(meta.database).toBe('Pfam-A');
+  });
+
+  it('records a real Pfam release rather than the string "current"', () => {
+    // "current" is a moving target: it is not the same release in August as in
+    // January, and domain calls depend on the release's gathering thresholds.
+    const row = db
+      .query<{ value: string }, []>(
+        "select value from annotation_meta where key = 'pfam_domains'"
+      )
+      .get();
+    const meta = JSON.parse(row!.value) as Record<string, unknown>;
+    expect(meta.release).not.toBe('current');
+    expect(meta.release).not.toBe('unknown');
+    expect(String(meta.release)).toMatch(/^\d+(\.\d+)?$/);
+  });
+
+  it('the overlay credits Pfam and PyHMMER, not InterProScan', () => {
+    const src = readFileSync(
+      join(
+        import.meta.dir,
+        '../../web/src/components/overlays/ProteinDomainOverlay.tsx'
+      ),
+      'utf8'
+    );
+    // Strip comments, including the JSX ones that record what was removed and
+    // why. Those must be allowed to name the old attribution.
+    const code = src
+      .replace(/\{\/\*[\s\S]*?\*\/\}/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter(l => !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code).not.toContain('InterProScan');
+    expect(code).toContain('Pfam-A');
+    expect(code).toContain('PyHMMER');
+  });
+
+  it('reads the release from the database rather than hardcoding it', () => {
+    // The discrimination check. Printing a literal "38.2" would satisfy the
+    // test above and go stale the next time the pipeline runs.
+    const src = readFileSync(
+      join(
+        import.meta.dir,
+        '../../web/src/components/overlays/ProteinDomainOverlay.tsx'
+      ),
+      'utf8'
+    );
+    expect(src).toContain("getAnnotationMeta?.('pfam_domains')");
+  });
+
+  it('every stored domain row is a Pfam hit with an E-value', () => {
+    const bad = db
+      .query<{ n: number }, []>(
+        "select count(*) as n from protein_domains where domain_type != 'Pfam' or e_value is null"
+      )
+      .get();
+    expect(bad!.n).toBe(0);
+  });
+});
