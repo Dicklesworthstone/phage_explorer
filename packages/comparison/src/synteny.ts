@@ -71,8 +71,14 @@ function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
   return 1.0;
 }
 
-// Dynamic Time Warping for gene lists
-export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAnalysis {
+// Dynamic Time Warping for gene lists.
+//
+// DTW is monotonic: its traceback can only move forward through both
+// sequences, so it structurally cannot represent an inversion. Every block it
+// returns is therefore `orientation: 'forward'`, which is why the exported
+// `alignSynteny` below runs it twice -- once against B, once against B
+// reversed -- rather than calling this directly.
+function alignSyntenyForward(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAnalysis {
   const n = genesA.length;
   const m = genesB.length;
   
@@ -128,6 +134,8 @@ export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
   // A block is a sequence of diagonal moves (matches/mismatches) in the traceback
   const blocks: SyntenyBlock[] = [];
   let currentBlock: Partial<SyntenyBlock> | null = null;
+  let scoreSum = 0;
+  let pairCount = 0;
 
   for (const [idxA, idxB] of path) {
     if (idxA < 0 || idxB < 0) continue; // Skip boundary pads if any
@@ -137,13 +145,15 @@ export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
 
     if (isMatch) {
       if (!currentBlock) {
+        scoreSum = 1.0 - dist;
+        pairCount = 1;
         currentBlock = {
           startIdxA: idxA,
           endIdxA: idxA,
           startIdxB: idxB,
           endIdxB: idxB,
           score: 1.0 - dist,
-          orientation: 'forward' // Simplified: DTW typically assumes monotonic, need Smith-Waterman for inversions
+          orientation: 'forward'
         };
       } else {
         // Extend block
@@ -154,10 +164,17 @@ export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
         if (isContiguousA && isContiguousB) {
             currentBlock.endIdxA = idxA;
             currentBlock.endIdxB = idxB;
-            // Update average score? Keep simple for now
+            // Average the score across every pair in the block. It used to keep
+            // the first pair's score for the whole run, so a 50-gene block was
+            // scored by one gene.
+            pairCount++;
+            scoreSum += 1.0 - dist;
+            currentBlock.score = scoreSum / pairCount;
         } else {
             // End current block, start new
             blocks.push(currentBlock as SyntenyBlock);
+            scoreSum = 1.0 - dist;
+            pairCount = 1;
             currentBlock = {
                 startIdxA: idxA,
                 endIdxA: idxA,
@@ -192,5 +209,90 @@ export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
     breakpoints,
     globalScore: coverageA / n,
     dtwDistance: dtw[n][m]
+  };
+}
+
+/**
+ * Align two gene orders, detecting both conserved and INVERTED blocks.
+ *
+ * ## Why two passes
+ *
+ * The DTW pass above is monotonic, so every block it can produce is
+ * forward-oriented. `orientation` was therefore hardcoded to `'forward'` and
+ * `'reverse'` was unreachable -- while the web overlay rendered an "Inverted
+ * orientation" legend entry and told the user that "inverted blocks (red)
+ * suggest genome rearrangements". The UI documented and colour-coded an
+ * outcome the algorithm could not return, so a genuine inversion showed as
+ * nothing at all.
+ *
+ * Inversions are among the most interesting signals in phage comparative
+ * genomics, so the fix detects them rather than removing the legend.
+ *
+ * The method is the standard one for gene-order synteny: run the same
+ * monotonic alignment a second time against B's gene order reversed. A run of
+ * genes that aligns well in that pass is, in the original coordinates, a block
+ * whose order runs backwards -- an inversion. Coordinates are mapped back to
+ * the original indices so callers never see reversed ones.
+ *
+ * Where a forward and a reverse block claim overlapping genes in A, the
+ * higher-scoring one wins. Both cannot be true, and preferring the better
+ * explanation is what an aligner does.
+ */
+export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAnalysis {
+  const forward = alignSyntenyForward(genesA, genesB);
+
+  const m = genesB.length;
+  if (m === 0 || genesA.length === 0) return forward;
+
+  // Second pass against reversed B.
+  const reversedB = [...genesB].reverse();
+  const reverse = alignSyntenyForward(genesA, reversedB);
+
+  // Map reversed indices back to the original coordinate space and mark the
+  // orientation. Reversing swaps which end is the start, so the endpoints
+  // exchange roles.
+  const reverseBlocks: SyntenyBlock[] = reverse.blocks.map(b => ({
+    ...b,
+    startIdxB: m - 1 - b.endIdxB,
+    endIdxB: m - 1 - b.startIdxB,
+    orientation: 'reverse' as const,
+  }));
+
+  // A single-gene "block" carries no order information, so it cannot evidence
+  // an inversion; it would match equally well either way round.
+  const meaningfulReverse = reverseBlocks.filter(b => b.endIdxA > b.startIdxA);
+
+  const overlapsInA = (x: SyntenyBlock, y: SyntenyBlock): boolean =>
+    x.startIdxA <= y.endIdxA && y.startIdxA <= x.endIdxA;
+
+  const merged: SyntenyBlock[] = [...forward.blocks];
+  for (const candidate of meaningfulReverse) {
+    const conflicts = merged.filter(b => overlapsInA(b, candidate));
+    if (conflicts.length === 0) {
+      merged.push(candidate);
+      continue;
+    }
+    // Only displace the forward interpretation when the inversion explains
+    // those genes better than every forward block it would replace.
+    if (conflicts.every(c => candidate.score > c.score)) {
+      for (const c of conflicts) {
+        const idx = merged.indexOf(c);
+        if (idx >= 0) merged.splice(idx, 1);
+      }
+      merged.push(candidate);
+    }
+  }
+
+  merged.sort((a, b) => a.startIdxA - b.startIdxA);
+
+  const coverageA = merged.reduce((sum, b) => sum + (b.endIdxA - b.startIdxA + 1), 0);
+
+  return {
+    blocks: merged,
+    breakpoints: merged.slice(1).map(b => b.startIdxA),
+    globalScore: Math.min(1, coverageA / genesA.length),
+    // The forward pass's DTW cost remains the comparable global figure; the
+    // reverse pass is a search for local rearrangements, not a rival alignment.
+    dtwDistance: forward.dtwDistance,
   };
 }

@@ -765,6 +765,14 @@ export function SyntenyOverlay({
               between phages. Forward blocks (blue) indicate genes in the same relative order.
               Inverted blocks (red) suggest genome rearrangements. High global scores indicate
               close evolutionary relationships and conserved functional modules.
+              {' '}
+              <span style={{ opacity: 0.85 }}>
+                Blocks are matched on gene product names, and roughly two thirds of genes in
+                this catalogue are annotated only as &ldquo;hypothetical protein&rdquo;. An
+                inversion is therefore only detectable where several consecutive genes on both
+                sides carry informative names, which is uncommon here. Absence of red blocks is
+                not evidence that no rearrangement exists.
+              </span>
             </div>
           </>
         )}
