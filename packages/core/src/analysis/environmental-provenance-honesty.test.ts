@@ -98,3 +98,68 @@ describe('demo identifiers cannot be mistaken for real accessions', () => {
     expect(/^(IMG\/VR|MGnify|VIROME)_\d+$/.test('DEMO-IMG/VR_20230001')).toBe(false);
   });
 });
+
+/**
+ * Every figure carries its own provenance, not just the banner at the top.
+ *
+ * The banner was the first fix and it was not enough. Every number beneath it
+ * is rendered by the same code on both the real and the demo path, so a seeded
+ * random value looked identical to a measured one to anyone who scrolled past
+ * the banner or screenshotted a panel. That is the same defect this file exists
+ * for, one layer down.
+ *
+ * These are source-level assertions for the same reason as the ones above: what
+ * is being checked is the presence of the label, which no unit test can observe
+ * once the component is not rendered.
+ */
+describe('provenance travels with each figure, not only the banner', () => {
+  const code = OVERLAY.split('\n')
+    .filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
+    .join('\n');
+
+  it('defines a single provenance element reused across figures', () => {
+    // One helper rather than five hand-placed badges: a figure added later
+    // should be able to call the same thing, and a reader should not have to
+    // check whether five copies still agree.
+    expect(code).toContain('resultProvenance');
+    expect(code).toContain("level=\"demo\"");
+    expect(code).toContain("level=\"external\"");
+  });
+
+  it('labels every figure region that renders analysis numbers', () => {
+    // The four view panels plus the novelty badge. If a fifth panel is added
+    // without a badge, this count stops matching and the test fails, which is
+    // the point: the omission has to be deliberate rather than accidental.
+    const uses = code.split('resultProvenance()').length - 1;
+    expect(uses).toBeGreaterThanOrEqual(5);
+  });
+
+  it('marks demo data as demo rather than as heuristic or estimated', () => {
+    // "Heuristic" is not a euphemism for "fake". A seeded random abundance
+    // table is demo data, and calling it anything softer is how the original
+    // defect was tolerated for so long.
+    expect(code).toContain('synthetic sample set');
+    expect(code).not.toContain('level="heuristic"');
+  });
+
+  it('stamps the canvases, which are the figures that can leave their context', () => {
+    // A badge in the DOM is lost the moment someone crops a screenshot or
+    // copies the canvas image. The stamp is drawn into the pixels.
+    expect(code).toContain('stampDemo');
+    expect(code).toContain('DEMO DATA');
+  });
+
+  it('draws the stamp on both canvases and on the empty state', () => {
+    // Three call sites: biome chart, geography map, and the "no biome data"
+    // early return, which is still a canvas a user can screenshot.
+    const stamps = code.split('stampDemo(ctx').length - 1;
+    expect(stamps).toBeGreaterThanOrEqual(3);
+  });
+
+  it('only stamps when the data really is synthetic', () => {
+    // The discrimination check. A stamp drawn unconditionally would label real
+    // results as demo, which destroys the signal exactly as thoroughly as
+    // labelling nothing.
+    expect(code).toContain("dataSource !== 'demo'");
+  });
+});

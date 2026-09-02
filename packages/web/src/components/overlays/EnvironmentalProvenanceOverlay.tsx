@@ -106,6 +106,55 @@ export function EnvironmentalProvenanceOverlay({
   const overlayIsOpen = isOpen('environmentalProvenance');
 
   /**
+   * Stamp "DEMO DATA" into a canvas that is drawing synthetic figures.
+   *
+   * The surrounding badge is enough on screen, but a canvas is the one part of
+   * this overlay a user can lift out of its context: right-click and copy, or
+   * crop a screenshot, and the label is gone while the chart still looks like a
+   * result. The stamp travels with the pixels.
+   *
+   * Drawn last so nothing paints over it, and kept out of the plot area's
+   * centre so it does not obscure the very figure it is qualifying.
+   */
+  const stampDemo = useCallback(
+    (ctx: CanvasRenderingContext2D, width: number, _height: number): void => {
+      if (dataSource !== 'demo' && dataSource !== 'error') return;
+      ctx.save();
+      ctx.font = 'bold 13px monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      const text = 'DEMO DATA — NOT THIS PHAGE';
+      const pad = 6;
+      const w = ctx.measureText(text).width;
+      ctx.fillStyle = 'rgba(220, 38, 38, 0.9)';
+      ctx.fillRect(width - w - pad * 3, 6, w + pad * 2, 22);
+      ctx.fillStyle = '#fff';
+      ctx.fillText(text, width - pad * 2, 10);
+      ctx.restore();
+    },
+    [dataSource]
+  );
+
+  /**
+   * Provenance of the numbers in the analysis result, rendered beside each
+   * figure rather than only in the banner at the top.
+   *
+   * Returns null while loading, when there is nothing to label yet.
+   */
+  const resultProvenance = useCallback(
+    (): React.ReactElement | null => {
+      if (dataSource === 'demo' || dataSource === 'error') {
+        return <OverlayProvenance level="demo" source="synthetic sample set" />;
+      }
+      if (dataSource === 'real') {
+        return <OverlayProvenance level="external" source="NCBI SRA sample metadata" />;
+      }
+      return null;
+    },
+    [dataSource]
+  );
+
+  /**
    * Catalogue-relative distinctiveness: 1 - (max containment of this genome
    * within any OTHER catalogue genome), computed with real MinHash sketches.
    *
@@ -371,6 +420,7 @@ export function EnvironmentalProvenanceOverlay({
         ctx.textAlign = 'center';
         ctx.font = '14px monospace';
         ctx.fillText('No biome data available', width / 2, height / 2);
+        stampDemo(ctx, width, height);
         return;
       }
 
@@ -432,6 +482,8 @@ export function EnvironmentalProvenanceOverlay({
         padding,
         padding + Math.min(8, biomeDistribution.length) * (barHeight + barGap) + 4
       );
+
+      stampDemo(ctx, width, height);
     };
 
     draw();
@@ -439,7 +491,7 @@ export function EnvironmentalProvenanceOverlay({
     const resizeObserver = new ResizeObserver(draw);
     resizeObserver.observe(canvas);
     return () => resizeObserver.disconnect();
-  }, [overlayIsOpen, viewMode, result, colors]);
+  }, [overlayIsOpen, viewMode, result, colors, stampDemo]);
 
   // Draw geographic map
   useEffect(() => {
@@ -522,6 +574,8 @@ export function EnvironmentalProvenanceOverlay({
         10,
         height - 10
       );
+
+      stampDemo(ctx, width, height);
     };
 
     draw();
@@ -529,7 +583,7 @@ export function EnvironmentalProvenanceOverlay({
     const resizeObserver = new ResizeObserver(draw);
     resizeObserver.observe(canvas);
     return () => resizeObserver.disconnect();
-  }, [overlayIsOpen, viewMode, result, colors]);
+  }, [overlayIsOpen, viewMode, result, colors, stampDemo]);
 
   if (!overlayIsOpen) return null;
 
@@ -643,6 +697,13 @@ export function EnvironmentalProvenanceOverlay({
           </div>
         )}
 
+        {/* Provenance badge for the analysis result, reused at every figure.
+
+            The banner at the top of the overlay was not enough. Every number
+            below it is rendered by the same code on both paths, so a seeded
+            random value looked identical to a measured one, and a screenshot of
+            a panel carried no trace of which it was. This badge travels with
+            each figure instead. */}
         {/* Novelty badge.
 
             Rendered only when a novelty score exists. It is absent whenever no
@@ -682,8 +743,17 @@ export function EnvironmentalProvenanceOverlay({
                 {result.novelty.classification.replace('_', ' ')}
               </span>
             </div>
-            <span style={{ color: colors.textDim, fontSize: '0.85rem' }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.6rem',
+                color: colors.textDim,
+                fontSize: '0.85rem',
+              }}
+            >
               {result.novelty.totalHits} metagenome hits
+              {resultProvenance()}
             </span>
           </div>
         )}
@@ -764,8 +834,18 @@ export function EnvironmentalProvenanceOverlay({
                     borderRadius: '4px',
                   }}
                 >
-                  <div style={{ color: colors.textDim, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.6rem',
+                      color: colors.textDim,
+                      fontSize: '0.85rem',
+                      marginBottom: '0.5rem',
+                    }}
+                  >
                     PRIMARY HABITAT
+                    {resultProvenance()}
                   </div>
                   <div
                     style={{
@@ -874,33 +954,73 @@ export function EnvironmentalProvenanceOverlay({
             )}
 
             {viewMode === 'biomes' && (
-              <div
-                style={{
-                  height: '350px',
-                  border: `1px solid ${colors.borderLight}`,
-                  borderRadius: '4px',
-                  overflow: 'hidden',
-                }}
-              >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    color: colors.textDim,
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  BIOME DISTRIBUTION
+                  {resultProvenance()}
+                </div>
+                <div
+                  style={{
+                    height: '350px',
+                    border: `1px solid ${colors.borderLight}`,
+                    borderRadius: '4px',
+                    overflow: 'hidden',
+                  }}
+                >
                 <canvas ref={biomeCanvasRef} role="img" aria-label="Biome distribution chart showing environmental source predictions" style={{ width: '100%', height: '100%', display: 'block' }} />
+                </div>
               </div>
             )}
 
             {viewMode === 'geography' && (
-              <div
-                style={{
-                  height: '350px',
-                  border: `1px solid ${colors.borderLight}`,
-                  borderRadius: '4px',
-                  overflow: 'hidden',
-                }}
-              >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    color: colors.textDim,
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  SAMPLE GEOGRAPHY
+                  {resultProvenance()}
+                </div>
+                <div
+                  style={{
+                    height: '350px',
+                    border: `1px solid ${colors.borderLight}`,
+                    borderRadius: '4px',
+                    overflow: 'hidden',
+                  }}
+                >
                 <canvas ref={geoCanvasRef} role="img" aria-label="Geographic distribution map showing sample locations" style={{ width: '100%', height: '100%', display: 'block' }} />
+                </div>
               </div>
             )}
 
             {viewMode === 'hits' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.6rem',
+                    color: colors.textDim,
+                    fontSize: '0.85rem',
+                  }}
+                >
+                  TOP HITS
+                  {resultProvenance()}
+                </div>
                 {result.topHits.map((hit, i) => (
                   <div
                     key={hit.metagenomeId}
