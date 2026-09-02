@@ -63,9 +63,22 @@ jobs:
         with:
           bun-version: latest
 
+      # Read the channel from packages/wasm-compute/rust-toolchain.toml rather
+      # than hardcoding `stable` here. The two must agree or the artifacts this
+      # job builds will not match the ones `bun run wasm:verify` accepts, which
+      # is the drift the pin exists to prevent.
+      - name: Read pinned Rust channel
+        id: rust-pin
+        shell: bash
+        run: |
+          channel=$(grep -oP 'channel\s*=\s*"\K[^"]+' packages/wasm-compute/rust-toolchain.toml)
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "Pinned Rust channel: $channel"
+
       - name: Install Rust toolchain (for wasm-pack)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: ${{ steps.rust-pin.outputs.channel }}
           targets: wasm32-unknown-unknown
 
       - name: Install wasm-pack
@@ -75,6 +88,14 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The committed .wasm files must have been produced by the pinned
+      # toolchain. When they were not, the inline-patch script silently no-ops
+      # against unfamiliar bindgen output and ships glue that does not match the
+      # binary, with no signal anywhere.
+      - name: Verify committed WASM matches the pinned toolchain
+        shell: bash
+        run: bun run wasm:verify
 
       - name: Typecheck (advisory)
         run: bun run typecheck

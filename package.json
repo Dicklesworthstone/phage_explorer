@@ -35,7 +35,8 @@
     "typecheck:web": "bunx tsc --noEmit -p packages/web/tsconfig.json",
     "typecheck:all": "bun run typecheck && bun run typecheck:web",
     "docs:keys": "bun scripts/generate-keyboard-tables.ts",
-    "check:keys": "bun scripts/generate-keyboard-tables.ts --check"
+    "check:keys": "bun scripts/generate-keyboard-tables.ts --check",
+    "wasm:verify": "bun scripts/verify-wasm-toolchain.ts"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.2.0",

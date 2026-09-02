@@ -1,0 +1,21 @@
+# Pinned toolchain for the WASM compute crate.
+#
+# The two shipped variants were once built with different compilers -- pkg with
+# rustc 1.95.0-nightly and pkg-simd with 1.94.0-nightly -- and both embedded a
+# wasm-bindgen older than the one Cargo.lock pinned. Anyone running the rebuild
+# path produced glue from a different bindgen than the one that generated the
+# committed, tested artifacts. That is the exact circumstance in which the
+# inline-patch script's silent no-op behaviour becomes dangerous: new bindgen
+# output, old patch regexes, no signal.
+#
+# Stable rather than a dated nightly. The crate uses no nightly features (there
+# is not a single `#![feature(...)]` in src/), and a nightly pin rots: the exact
+# nightly stops being downloadable, and nightly codegen changes under you. A
+# stable version is reproducible for as long as the release exists.
+#
+# When bumping this, rebuild both variants in the same commit and run
+# `bun run wasm:verify`, which fails if the committed artifacts were not built
+# by the toolchain named here.
+[toolchain]
+channel = "1.98.0"
+targets = ["wasm32-unknown-unknown"]

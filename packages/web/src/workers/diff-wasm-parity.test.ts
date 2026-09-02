@@ -9,11 +9,14 @@
 
 import { describe, expect, it } from 'bun:test';
 
-const wasm = await import('@phage/wasm-compute');
-const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
-if (typeof maybeInit === 'function') {
-  await maybeInit();
-}
+import { loadWasmVariants } from './wasm-variants';
+
+/**
+ * Runs against BOTH builds. The suite used to import '@phage/wasm-compute',
+ * which resolves to the baseline `pkg/`, while the loader prefers `pkg-simd/`.
+ * The variant that runs in production was never tested.
+ */
+const variants = await loadWasmVariants();
 
 function encodeAscii(sequence: string): Uint8Array {
   if (typeof TextEncoder !== 'undefined') {
@@ -56,7 +59,8 @@ function jsEqualLenDiff(
   return { mask, matches, mismatches };
 }
 
-describe('equal_len_diff (WASM) parity', () => {
+for (const { name, wasm } of variants) {
+describe(`equal_len_diff (WASM) parity [${name}]`, () => {
   it('matches JS for identical sequences', () => {
     const seq = 'ACGTACGT';
     const bytesA = encodeAscii(seq);
@@ -110,8 +114,10 @@ describe('equal_len_diff (WASM) parity', () => {
     }
   });
 });
+}
 
-describe('myers_diff (WASM) correctness', () => {
+for (const { name, wasm } of variants) {
+describe(`myers_diff (WASM) correctness [${name}]`, () => {
   it('handles identical sequences', () => {
     const seq = 'ACGTACGT';
     const bytes = encodeAscii(seq);
@@ -237,8 +243,10 @@ describe('myers_diff (WASM) correctness', () => {
     }
   });
 });
+}
 
-describe('myers_diff (WASM) guardrails', () => {
+for (const { name, wasm } of variants) {
+describe(`myers_diff (WASM) guardrails [${name}]`, () => {
   it('truncates when edit distance exceeds limit', () => {
     // Create sequences that differ significantly
     const seqA = 'A'.repeat(100);
@@ -281,8 +289,10 @@ describe('myers_diff (WASM) guardrails', () => {
     }
   });
 });
+}
 
-describe('myers_diff (WASM) identity calculation', () => {
+for (const { name, wasm } of variants) {
+describe(`myers_diff (WASM) identity calculation [${name}]`, () => {
   it('returns 1.0 for identical sequences', () => {
     const seq = 'ACGTACGT';
     const bytes = encodeAscii(seq);
@@ -314,3 +324,4 @@ describe('myers_diff (WASM) identity calculation', () => {
     }
   });
 });
+}

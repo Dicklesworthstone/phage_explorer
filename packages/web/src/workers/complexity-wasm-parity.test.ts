@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'bun:test';
+import { loadWasmVariants } from './wasm-variants';
 
-const wasm = await import('@phage/wasm-compute');
-if (typeof (wasm as unknown as { default?: () => Promise<void> }).default === 'function') {
-  await (wasm as unknown as { default: () => Promise<void> }).default();
-}
+/**
+ * Runs against BOTH builds. The suite used to import '@phage/wasm-compute',
+ * which resolves to the baseline `pkg/`, while the loader prefers `pkg-simd/`.
+ * The variant that runs in production was never tested.
+ */
+const variants = await loadWasmVariants();
 
 function windowedEntropyJs(sequence: string, windowSize: number, stepSize: number): number[] {
   const seq = sequence.toUpperCase();
@@ -50,7 +53,8 @@ function expectFloat64ArrayClose(actual: Float64Array, expected: number[], tol =
   }
 }
 
-describe('compute_windowed_entropy_acgt (WASM) parity', () => {
+for (const { name, wasm } of variants) {
+describe(`compute_windowed_entropy_acgt (${name}) parity`, () => {
   it('matches JS reference (ACGTACGT, window=4)', () => {
     const seq = 'ACGTACGT';
     const windowSize = 4;
@@ -80,3 +84,4 @@ describe('compute_windowed_entropy_acgt (WASM) parity', () => {
     expect(actual.length).toBe(0);
   });
 });
+}

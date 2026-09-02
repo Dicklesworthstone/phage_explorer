@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { computeCGR } from '@phage-explorer/core';
 
-const wasm = await import('@phage/wasm-compute');
-const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
-if (typeof maybeInit === 'function') {
-  await maybeInit();
-}
+import { loadWasmVariants } from './wasm-variants';
+
+/**
+ * Runs against BOTH builds. The suite used to import '@phage/wasm-compute',
+ * which resolves to the baseline `pkg/`, while the loader prefers `pkg-simd/`.
+ * The variant that runs in production was never tested.
+ */
+const variants = await loadWasmVariants();
 
 function encodeAscii(sequence: string): Uint8Array {
   if (typeof TextEncoder !== 'undefined') {
@@ -106,7 +109,8 @@ function expectCountsMatch(actual: Uint32Array, expected: Float32Array): void {
   }
 }
 
-describe('hilbert_rgba (WASM) parity', () => {
+for (const { name, wasm } of variants) {
+describe(`hilbert_rgba (WASM) parity [${name}]`, () => {
   it('matches JS reference (ACGT, order=4)', () => {
     const sequence = 'ACGT';
     const order = 4;
@@ -141,8 +145,10 @@ describe('hilbert_rgba (WASM) parity', () => {
     expectUint8ArrayEqual(actual, expected);
   });
 });
+}
 
-describe('cgr_counts (WASM) parity', () => {
+for (const { name, wasm } of variants) {
+describe(`cgr_counts (WASM) parity [${name}]`, () => {
   it('matches core computeCGR for empty sequence (k=2)', () => {
     const expected = computeCGR('', 2);
 
@@ -194,3 +200,4 @@ describe('cgr_counts (WASM) parity', () => {
     }
   });
 });
+}

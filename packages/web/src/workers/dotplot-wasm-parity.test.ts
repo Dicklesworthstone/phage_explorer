@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import { computeDotPlot } from '@phage-explorer/core';
 
-const wasm = await import('@phage/wasm-compute');
-const maybeInit = (wasm as unknown as { default?: () => Promise<void> }).default;
-if (typeof maybeInit === 'function') {
-  await maybeInit();
-}
+import { loadWasmVariants } from './wasm-variants';
+
+/**
+ * Runs against BOTH builds. The suite used to import '@phage/wasm-compute',
+ * which resolves to the baseline `pkg/`, while the loader prefers `pkg-simd/`.
+ * The variant that runs in production was never tested.
+ */
+const variants = await loadWasmVariants();
 
 function encodeAscii(sequence: string): Uint8Array {
   if (typeof TextEncoder !== 'undefined') {
@@ -49,7 +52,8 @@ function expectFloat32ArrayClose(actual: Float32Array, expected: Float32Array, t
   }
 }
 
-describe('dotplot_self_buffers (WASM) parity', () => {
+for (const { name, wasm } of variants) {
+describe(`dotplot_self_buffers (WASM) parity [${name}]`, () => {
   it('matches core computeDotPlot (ACGT, bins=2, window=2)', () => {
     const sequence = 'ACGT';
     const bins = 2;
@@ -106,3 +110,4 @@ describe('dotplot_self_buffers (WASM) parity', () => {
     }
   });
 });
+}
