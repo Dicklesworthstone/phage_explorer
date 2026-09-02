@@ -13,7 +13,7 @@ describe('getSRARunsForFamily', () => {
       new Response(JSON.stringify({ value: [{ run_id: 'SRR1' }, { run_id: '' }, { run_id: 'SRR2' }] }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
-      })) as typeof fetch;
+      })) as unknown as typeof fetch;
 
     const result = await getSRARunsForFamily('Siphoviridae');
     expect(result.success).toBe(true);
@@ -24,7 +24,7 @@ describe('getSRARunsForFamily', () => {
 
   it('returns an HTTP error without reading a missing JSON body', async () => {
     globalThis.fetch = (async () =>
-      new Response('nope', { status: 503 })) as typeof fetch;
+      new Response('nope', { status: 503 })) as unknown as typeof fetch;
 
     const result = await getSRARunsForFamily('Siphoviridae');
     expect(result.success).toBe(false);
