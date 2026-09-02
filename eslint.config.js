@@ -7,7 +7,11 @@ export default [
       'dist/**',
       'node_modules/**',
       'packages/**/dist/**',
+      // Both wasm-pack outputs are generated. Only `pkg` was listed, so a
+      // rebuild of the SIMD variant (which production actually prefers) failed
+      // lint on wasm-bindgen's own generated headers.
       'packages/wasm-compute/pkg/**',
+      'packages/wasm-compute/pkg-simd/**',
       'packages/tui/**',
       '**/packages/tui/**',
       '.cache/**',

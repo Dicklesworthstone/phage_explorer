@@ -34,12 +34,20 @@ console.log(`Building${target ? ` for ${target}` : ""}...`);
 // or when the artifacts are missing, so local builds don't require wasm-pack
 // and a Rust toolchain unless the developer is actively changing the WASM code.
 const wasmArtifact = "./packages/wasm-compute/pkg/wasm_compute_bg.wasm";
+const wasmSimdArtifact = "./packages/wasm-compute/pkg-simd/wasm_compute_bg.wasm";
 const forceWasmBuild = process.env.PHAGE_FORCE_WASM_BUILD === "1";
 
 if (forceWasmBuild) {
-  console.log("Building wasm-compute (canonical wasm module)...");
+  // Build BOTH variants. The web loader prefers the SIMD build wherever the
+  // browser supports it, which is effectively everywhere, so rebuilding only
+  // `pkg` leaves production running whatever `pkg-simd` last happened to
+  // contain. That is exactly how pkg-simd fell eight months behind and lost
+  // two exports; the consumers guard on `typeof fn === "function"` and
+  // silently fall back to JS, so nothing surfaced the drift.
+  console.log("Building wasm-compute (baseline + SIMD)...");
   try {
     await $`cd packages/wasm-compute && RUSTFLAGS="-C target-feature=-simd128" wasm-pack build --target bundler --out-dir pkg`;
+    await $`cd packages/wasm-compute && RUSTFLAGS="-C target-feature=+simd128" wasm-pack build --target bundler --out-dir pkg-simd`;
   } catch (e) {
     console.error("Failed to build wasm-compute:", e);
     process.exit(1);
@@ -51,6 +59,28 @@ if (forceWasmBuild) {
   console.error("  - run with PHAGE_FORCE_WASM_BUILD=1 to build from Rust source (requires wasm-pack), or");
   console.error("  - restore packages/wasm-compute/pkg/ from the repo.");
   process.exit(1);
+}
+
+// Guard against the variants drifting apart again: the loader picks SIMD when
+// available, so a SIMD build missing an export means that feature silently
+// degrades to JS for nearly every user.
+if (await Bun.file(wasmSimdArtifact).exists()) {
+  const exportsOf = async (dts: string): Promise<string[]> =>
+    [...(await Bun.file(dts).text()).matchAll(/^export function ([a-z_0-9]+)/gm)]
+      .map((m) => m[1])
+      .sort();
+  const baseExports = await exportsOf("./packages/wasm-compute/pkg/wasm_compute.d.ts");
+  const simdExports = await exportsOf("./packages/wasm-compute/pkg-simd/wasm_compute.d.ts");
+  const missing = baseExports.filter((name) => !simdExports.includes(name));
+  if (missing.length > 0) {
+    console.error(
+      `wasm-compute variant drift: pkg-simd is missing ${missing.length} export(s) present in pkg:`,
+    );
+    console.error(`  ${missing.join(", ")}`);
+    console.error("Rebuild both with: cd packages/wasm-compute && bun run build");
+    process.exit(1);
+  }
+  console.log(`✓ wasm-compute variants agree (${baseExports.length} exports).`);
 }
 
 try {

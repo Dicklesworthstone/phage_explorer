@@ -1,462 +1,549 @@
 /* tslint:disable */
 /* eslint-disable */
 
+/**
+ * Result of bond detection
+ */
 export class BondDetectionResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Get the number of bonds
-   */
-  readonly bond_count: number;
-  /**
-   * Get bonds as flat array [a0, b0, a1, b1, ...]
-   */
-  readonly bonds: Uint32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Get the number of bonds
+     */
+    readonly bond_count: number;
+    /**
+     * Get bonds as flat array [a0, b0, a1, b1, ...]
+     */
+    readonly bonds: Uint32Array;
 }
 
 export class CgrCountsResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly resolution: number;
-  readonly total_points: number;
-  readonly k: number;
-  readonly counts: Uint32Array;
-  readonly entropy: number;
-  readonly max_count: number;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly counts: Uint32Array;
+    readonly entropy: number;
+    readonly k: number;
+    readonly max_count: number;
+    readonly resolution: number;
+    readonly total_points: number;
 }
 
+/**
+ * Result of codon usage analysis.
+ */
 export class CodonUsageResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Get the codon counts as a JSON string.
-   */
-  readonly json: string;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Get the codon counts as a JSON string.
+     */
+    readonly json: string;
 }
 
 /**
  * Error codes for dense k-mer counting.
  */
 export enum DenseKmerError {
-  /**
-   * K value exceeds safe maximum (currently 10)
-   */
-  KTooLarge = 1,
-  /**
-   * K value is zero
-   */
-  KZero = 2,
-  /**
-   * Sequence is shorter than k
-   */
-  SequenceTooShort = 3,
+    /**
+     * K value exceeds safe maximum (currently 10)
+     */
+    KTooLarge = 1,
+    /**
+     * K value is zero
+     */
+    KZero = 2,
+    /**
+     * Sequence is shorter than k
+     */
+    SequenceTooShort = 3,
 }
 
+/**
+ * Result of dense k-mer counting.
+ *
+ * # Ownership
+ * The caller must call `.free()` to release WASM memory.
+ */
 export class DenseKmerResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Total number of valid k-mers counted (windows without N/ambiguous bases).
-   */
-  readonly total_valid: bigint;
-  /**
-   * Get the number of unique k-mers (non-zero counts).
-   */
-  readonly unique_count: number;
-  /**
-   * K value used for counting.
-   */
-  readonly k: number;
-  /**
-   * Get the k-mer counts as a Uint32Array.
-   * Length is 4^k where each index represents a k-mer in base-4 encoding:
-   * - A=0, C=1, G=2, T=3
-   * - Index = sum(base[i] * 4^(k-1-i)) for i in 0..k
-   *
-   * Example for k=2: index 0=AA, 1=AC, 2=AG, 3=AT, 4=CA, ... 15=TT
-   */
-  readonly counts: Uint32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Get the k-mer counts as a Uint32Array.
+     * Length is 4^k where each index represents a k-mer in base-4 encoding:
+     * - A=0, C=1, G=2, T=3
+     * - Index = sum(base[i] * 4^(k-1-i)) for i in 0..k
+     *
+     * Example for k=2: index 0=AA, 1=AC, 2=AG, 3=AT, 4=CA, ... 15=TT
+     */
+    readonly counts: Uint32Array;
+    /**
+     * K value used for counting.
+     */
+    readonly k: number;
+    /**
+     * Total number of valid k-mers counted (windows without N/ambiguous bases).
+     */
+    readonly total_valid: bigint;
+    /**
+     * Get the number of unique k-mers (non-zero counts).
+     */
+    readonly unique_count: number;
 }
 
+/**
+ * Result buffers for dotplot computation.
+ *
+ * # Ownership
+ * The caller must call `.free()` to release WASM memory.
+ */
 export class DotPlotBuffers {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly bins: number;
-  /**
-   * Flattened direct identity values (row-major, bins*bins).
-   */
-  readonly direct: Float32Array;
-  readonly window: number;
-  /**
-   * Flattened inverted identity values (row-major, bins*bins).
-   */
-  readonly inverted: Float32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly bins: number;
+    /**
+     * Flattened direct identity values (row-major, bins*bins).
+     */
+    readonly direct: Float32Array;
+    /**
+     * Flattened inverted identity values (row-major, bins*bins).
+     */
+    readonly inverted: Float32Array;
+    readonly window: number;
 }
 
+/**
+ * Result of functional group detection.
+ * Contains flat arrays of atom indices for each functional group type.
+ */
 export class FunctionalGroupResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Get sizes of each aromatic ring.
-   */
-  readonly ring_sizes: Uint32Array;
-  /**
-   * Number of aromatic rings.
-   */
-  readonly aromatic_count: number;
-  /**
-   * Get phosphate group data.
-   */
-  readonly phosphate_data: Uint32Array;
-  /**
-   * Number of disulfide bonds.
-   */
-  readonly disulfide_count: number;
-  /**
-   * Get disulfide bond pairs as flat array [s1, s2, s1, s2, ...].
-   */
-  readonly disulfide_pairs: Uint32Array;
-  /**
-   * Number of phosphate groups.
-   */
-  readonly phosphate_count: number;
-  /**
-   * Get aromatic ring atom indices as flat array.
-   */
-  readonly aromatic_indices: Uint32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Number of aromatic rings.
+     */
+    readonly aromatic_count: number;
+    /**
+     * Get aromatic ring atom indices as flat array.
+     */
+    readonly aromatic_indices: Uint32Array;
+    /**
+     * Number of disulfide bonds.
+     */
+    readonly disulfide_count: number;
+    /**
+     * Get disulfide bond pairs as flat array [s1, s2, s1, s2, ...].
+     */
+    readonly disulfide_pairs: Uint32Array;
+    /**
+     * Number of phosphate groups.
+     */
+    readonly phosphate_count: number;
+    /**
+     * Get phosphate group data.
+     */
+    readonly phosphate_data: Uint32Array;
+    /**
+     * Get sizes of each aromatic ring.
+     */
+    readonly ring_sizes: Uint32Array;
 }
 
+/**
+ * Result of grid building for sequence viewport
+ */
 export class GridResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly json: string;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly json: string;
 }
 
+/**
+ * Result of Hoeffding's D computation
+ */
 export class HoeffdingResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Hoeffding's D statistic. Range: approximately [-0.5, 1]
-   * Values near 0 indicate independence, larger values indicate dependence.
-   * Unlike correlation, captures non-linear relationships.
-   */
-  d: number;
-  /**
-   * Number of observations used
-   */
-  n: number;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Hoeffding's D statistic. Range: approximately [-0.5, 1]
+     * Values near 0 indicate independence, larger values indicate dependence.
+     * Unlike correlation, captures non-linear relationships.
+     */
+    d: number;
+    /**
+     * Number of observations used
+     */
+    n: number;
 }
 
+/**
+ * Result of KL divergence window scan.
+ */
 export class KLScanResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Get the number of windows
-   */
-  readonly window_count: number;
-  /**
-   * Get the k-mer size used
-   */
-  readonly k: number;
-  /**
-   * Get the KL divergence values as Float32Array
-   */
-  readonly kl_values: Float32Array;
-  /**
-   * Get the window start positions as Uint32Array
-   */
-  readonly positions: Uint32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Get the k-mer size used
+     */
+    readonly k: number;
+    /**
+     * Get the KL divergence values as Float32Array
+     */
+    readonly kl_values: Float32Array;
+    /**
+     * Get the window start positions as Uint32Array
+     */
+    readonly positions: Uint32Array;
+    /**
+     * Get the number of windows
+     */
+    readonly window_count: number;
 }
 
 export class KmerAnalysisResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  k: number;
-  unique_kmers_a: number;
-  unique_kmers_b: number;
-  shared_kmers: number;
-  jaccard_index: number;
-  containment_a_in_b: number;
-  containment_b_in_a: number;
-  cosine_similarity: number;
-  bray_curtis_dissimilarity: number;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    bray_curtis_dissimilarity: number;
+    containment_a_in_b: number;
+    containment_b_in_a: number;
+    cosine_similarity: number;
+    jaccard_index: number;
+    k: number;
+    shared_kmers: number;
+    unique_kmers_a: number;
+    unique_kmers_b: number;
 }
 
+/**
+ * Result of MinHash signature computation.
+ *
+ * # Ownership
+ * The caller must call `.free()` to release WASM memory.
+ */
 export class MinHashSignature {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Number of hash functions (signature length).
-   */
-  readonly num_hashes: number;
-  /**
-   * Total number of valid k-mers hashed.
-   */
-  readonly total_kmers: bigint;
-  /**
-   * K value used for hashing.
-   */
-  readonly k: number;
-  /**
-   * Get the signature as a Uint32Array.
-   * Length equals num_hashes parameter.
-   * Each element is the minimum hash value for that seed.
-   */
-  readonly signature: Uint32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * K value used for hashing.
+     */
+    readonly k: number;
+    /**
+     * Number of hash functions (signature length).
+     */
+    readonly num_hashes: number;
+    /**
+     * Get the signature as a Uint32Array.
+     * Length equals num_hashes parameter.
+     * Each element is the minimum hash value for that seed.
+     */
+    readonly signature: Uint32Array;
+    /**
+     * Total number of valid k-mers hashed.
+     */
+    readonly total_kmers: bigint;
 }
 
 export class Model3D {
-  free(): void;
-  [Symbol.dispose](): void;
-  constructor(vertices: Float64Array, edges: Uint32Array);
+    free(): void;
+    [Symbol.dispose](): void;
+    constructor(vertices: Float64Array, edges: Uint32Array);
 }
 
+/**
+ * Result of Myers diff computation.
+ *
+ * # Ownership
+ * The caller must call `.free()` to release WASM memory.
+ */
 export class MyersDiffResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Number of insertions.
-   */
-  readonly insertions: number;
-  /**
-   * Number of mismatches (substitutions).
-   */
-  readonly mismatches: number;
-  /**
-   * Edit distance (total number of edits).
-   */
-  readonly edit_distance: number;
-  /**
-   * Error message if any.
-   */
-  readonly error: string | undefined;
-  /**
-   * Length of sequence A.
-   */
-  readonly len_a: number;
-  /**
-   * Length of sequence B.
-   */
-  readonly len_b: number;
-  /**
-   * Get mask for sequence A as Uint8Array.
-   * Values: 0=MATCH, 1=MISMATCH, 3=DELETE
-   */
-  readonly mask_a: Uint8Array;
-  /**
-   * Get mask for sequence B as Uint8Array.
-   * Values: 0=MATCH, 1=MISMATCH, 2=INSERT
-   */
-  readonly mask_b: Uint8Array;
-  /**
-   * Number of matching positions.
-   */
-  readonly matches: number;
-  /**
-   * Sequence identity as fraction (0.0 - 1.0).
-   */
-  readonly identity: number;
-  /**
-   * Number of deletions.
-   */
-  readonly deletions: number;
-  /**
-   * Whether the computation was truncated.
-   */
-  readonly truncated: boolean;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Number of deletions.
+     */
+    readonly deletions: number;
+    /**
+     * Edit distance (total number of edits).
+     */
+    readonly edit_distance: number;
+    /**
+     * Error message if any.
+     */
+    readonly error: string | undefined;
+    /**
+     * Sequence identity as fraction (0.0 - 1.0).
+     */
+    readonly identity: number;
+    /**
+     * Number of insertions.
+     */
+    readonly insertions: number;
+    /**
+     * Length of sequence A.
+     */
+    readonly len_a: number;
+    /**
+     * Length of sequence B.
+     */
+    readonly len_b: number;
+    /**
+     * Get mask for sequence A as Uint8Array.
+     * Values: 0=MATCH, 1=MISMATCH, 3=DELETE
+     */
+    readonly mask_a: Uint8Array;
+    /**
+     * Get mask for sequence B as Uint8Array.
+     * Values: 0=MATCH, 1=MISMATCH, 2=INSERT
+     */
+    readonly mask_b: Uint8Array;
+    /**
+     * Number of matching positions.
+     */
+    readonly matches: number;
+    /**
+     * Number of mismatches (substitutions).
+     */
+    readonly mismatches: number;
+    /**
+     * Whether the computation was truncated.
+     */
+    readonly truncated: boolean;
 }
 
+/**
+ * Result of PCA computation
+ */
 export class PCAResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Number of features
-   */
-  readonly n_features: number;
-  /**
-   * Get eigenvalues
-   */
-  readonly eigenvalues: Float64Array;
-  /**
-   * Get eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...])
-   */
-  readonly eigenvectors: Float64Array;
-  /**
-   * Number of components
-   */
-  readonly n_components: number;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Get eigenvalues
+     */
+    readonly eigenvalues: Float64Array;
+    /**
+     * Get eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...])
+     */
+    readonly eigenvectors: Float64Array;
+    /**
+     * Number of components
+     */
+    readonly n_components: number;
+    /**
+     * Number of features
+     */
+    readonly n_features: number;
 }
 
+/**
+ * PCA result buffers in f32.
+ *
+ * # Ownership
+ * The caller must call `.free()` to release WASM memory.
+ */
 export class PCAResultF32 {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly n_features: number;
-  /**
-   * Eigenvalues (sample-covariance scale, i.e. divided by (n_samples - 1) when n_samples > 1).
-   */
-  readonly eigenvalues: Float32Array;
-  /**
-   * Eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...]).
-   */
-  readonly eigenvectors: Float32Array;
-  readonly n_components: number;
-  /**
-   * Total variance of centered data (sample-covariance scale).
-   */
-  readonly total_variance: number;
-  /**
-   * Mean vector used for centering.
-   */
-  readonly mean: Float32Array;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Eigenvalues (sample-covariance scale, i.e. divided by (n_samples - 1) when n_samples > 1).
+     */
+    readonly eigenvalues: Float32Array;
+    /**
+     * Eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...]).
+     */
+    readonly eigenvectors: Float32Array;
+    /**
+     * Mean vector used for centering.
+     */
+    readonly mean: Float32Array;
+    readonly n_components: number;
+    readonly n_features: number;
+    /**
+     * Total variance of centered data (sample-covariance scale).
+     */
+    readonly total_variance: number;
 }
 
+/**
+ * Result of PDB parsing containing atom data.
+ *
+ * Returns flat arrays suitable for direct use with detect_bonds_spatial.
+ * This parser is intentionally minimal (no external crates) to keep WASM size small.
+ */
 export class PDBParseResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly atom_count: number;
-  readonly atom_names: string;
-  readonly error: string;
-  readonly elements: string;
-  readonly res_seqs: Int32Array;
-  readonly chain_ids: string;
-  readonly positions: Float32Array;
-  readonly res_names: string;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly atom_count: number;
+    readonly atom_names: string;
+    readonly chain_ids: string;
+    readonly elements: string;
+    readonly error: string;
+    readonly positions: Float32Array;
+    readonly res_names: string;
+    readonly res_seqs: Int32Array;
 }
 
+/**
+ * Result of repeat detection
+ */
 export class RepeatResult {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  readonly json: string;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly json: string;
 }
 
+/**
+ * A handle to a sequence stored in WASM memory.
+ *
+ * This struct stores an encoded DNA sequence once and exposes fast methods
+ * for various analyses without re-copying the sequence each call.
+ *
+ * # Usage
+ *
+ * ```js
+ * const handle = SequenceHandle.new(sequenceBytes);
+ * try {
+ *   const gcSkew = handle.gc_skew(100, 10);
+ *   const kmerCounts = handle.count_kmers(4);
+ *   // ... use results
+ * } finally {
+ *   handle.free(); // MUST call to release WASM memory
+ * }
+ * ```
+ *
+ * # Memory Management
+ *
+ * The caller MUST call `.free()` when done to release WASM memory.
+ * Failing to do so will leak memory.
+ *
+ * @see phage_explorer-8qk2.5
+ */
 export class SequenceHandle {
-  free(): void;
-  [Symbol.dispose](): void;
-  /**
-   * Count k-mers using dense array (for k <= 10).
-   *
-   * Returns a DenseKmerResult with counts for all 4^k possible k-mers.
-   * K-mers containing N are skipped.
-   *
-   * # Arguments
-   * * `k` - K-mer size (1-10)
-   *
-   * # Returns
-   * DenseKmerResult with counts, or empty result if k is invalid.
-   */
-  count_kmers(k: number): DenseKmerResult;
-  /**
-   * Compute self-similarity dot plot using pre-encoded sequence.
-   *
-   * This is more efficient than `dotplot_self_buffers` when running multiple
-   * analyses on the same sequence (e.g., progressive refinement with preview
-   * then full resolution).
-   *
-   * # Arguments
-   * * `bins` - Number of bins for the grid (bins × bins output)
-   * * `window` - Window size in bases. If 0, derives a conservative default.
-   *
-   * # Returns
-   * DotPlotBuffers containing direct and inverted similarity matrices.
-   *
-   * @see phage_explorer-8qk2.6
-   */
-  dotplot_self(bins: number, window: number): DotPlotBuffers;
-  /**
-   * Compute cumulative GC skew.
-   *
-   * Running sum of (G - C) / (G + C) contribution per base.
-   * The cumulative skew typically shows the origin (minimum) and terminus (maximum)
-   * of replication for circular genomes.
-   *
-   * # Returns
-   * Float64Array with cumulative skew at each position.
-   */
-  cumulative_gc_skew(): Float64Array;
-  /**
-   * Create a new SequenceHandle from raw sequence bytes.
-   *
-   * The sequence is encoded into a compact representation stored in WASM memory.
-   * Case-insensitive: a/A, c/C, g/G, t/T are all valid.
-   * U is treated as T. Ambiguous/invalid bases are stored as N (code 4).
-   *
-   * # Arguments
-   * * `seq_bytes` - ASCII bytes of the DNA/RNA sequence
-   *
-   * # Returns
-   * A new SequenceHandle that must be freed with `.free()` when done.
-   */
-  constructor(seq_bytes: Uint8Array);
-  /**
-   * Compute GC skew values for sliding windows.
-   *
-   * GC skew = (G - C) / (G + C) for each window.
-   * Returns an empty array if window_size or step_size is 0, or if
-   * the sequence is shorter than window_size.
-   *
-   * # Arguments
-   * * `window_size` - Size of the sliding window
-   * * `step_size` - Step between windows
-   *
-   * # Returns
-   * Float64Array of GC skew values, one per window position.
-   */
-  gc_skew(window_size: number, step_size: number): Float64Array;
-  /**
-   * Compute MinHash signature for similarity estimation.
-   *
-   * Uses canonical k-mers (lexicographically smaller of forward/reverse complement)
-   * for strand-independent comparison.
-   *
-   * # Arguments
-   * * `num_hashes` - Number of hash functions (signature size)
-   * * `k` - K-mer size
-   *
-   * # Returns
-   * MinHashSignature containing the signature.
-   */
-  minhash(num_hashes: number, k: number): MinHashSignature;
-  /**
-   * Get the count of valid (non-N) bases.
-   */
-  readonly valid_count: number;
-  /**
-   * Get the encoded sequence as a Uint8Array.
-   *
-   * Values: A=0, C=1, G=2, T=3, N=4
-   *
-   * This is useful for passing to other WASM functions or for debugging.
-   */
-  readonly encoded_bytes: Uint8Array;
-  /**
-   * Get the original sequence length.
-   */
-  readonly length: number;
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Count k-mers using dense array (for k <= 10).
+     *
+     * Returns a DenseKmerResult with counts for all 4^k possible k-mers.
+     * K-mers containing N are skipped.
+     *
+     * # Arguments
+     * * `k` - K-mer size (1-10)
+     *
+     * # Returns
+     * DenseKmerResult with counts, or empty result if k is invalid.
+     */
+    count_kmers(k: number): DenseKmerResult;
+    /**
+     * Compute cumulative GC skew.
+     *
+     * Running sum of (G - C) / (G + C) contribution per base.
+     * The cumulative skew typically shows the origin (minimum) and terminus (maximum)
+     * of replication for circular genomes.
+     *
+     * # Returns
+     * Float64Array with cumulative skew at each position.
+     */
+    cumulative_gc_skew(): Float64Array;
+    /**
+     * Compute self-similarity dot plot using pre-encoded sequence.
+     *
+     * This is more efficient than `dotplot_self_buffers` when running multiple
+     * analyses on the same sequence (e.g., progressive refinement with preview
+     * then full resolution).
+     *
+     * # Arguments
+     * * `bins` - Number of bins for the grid (bins × bins output)
+     * * `window` - Window size in bases. If 0, derives a conservative default.
+     *
+     * # Returns
+     * DotPlotBuffers containing direct and inverted similarity matrices.
+     *
+     * @see phage_explorer-8qk2.6
+     */
+    dotplot_self(bins: number, window: number): DotPlotBuffers;
+    /**
+     * Compute GC skew values for sliding windows.
+     *
+     * GC skew = (G - C) / (G + C) for each window.
+     * Returns an empty array if window_size or step_size is 0, or if
+     * the sequence is shorter than window_size.
+     *
+     * # Arguments
+     * * `window_size` - Size of the sliding window
+     * * `step_size` - Step between windows
+     *
+     * # Returns
+     * Float64Array of GC skew values, one per window position.
+     */
+    gc_skew(window_size: number, step_size: number): Float64Array;
+    /**
+     * Compute MinHash signature for similarity estimation.
+     *
+     * Uses canonical k-mers (lexicographically smaller of forward/reverse complement)
+     * for strand-independent comparison.
+     *
+     * # Arguments
+     * * `num_hashes` - Number of hash functions (signature size)
+     * * `k` - K-mer size
+     *
+     * # Returns
+     * MinHashSignature containing the signature.
+     */
+    minhash(num_hashes: number, k: number): MinHashSignature;
+    /**
+     * Create a new SequenceHandle from raw sequence bytes.
+     *
+     * The sequence is encoded into a compact representation stored in WASM memory.
+     * Case-insensitive: a/A, c/C, g/G, t/T are all valid.
+     * U is treated as T. Ambiguous/invalid bases are stored as N (code 4).
+     *
+     * # Arguments
+     * * `seq_bytes` - ASCII bytes of the DNA/RNA sequence
+     *
+     * # Returns
+     * A new SequenceHandle that must be freed with `.free()` when done.
+     */
+    constructor(seq_bytes: Uint8Array);
+    /**
+     * Get the encoded sequence as a Uint8Array.
+     *
+     * Values: A=0, C=1, G=2, T=3, N=4
+     *
+     * This is useful for passing to other WASM functions or for debugging.
+     */
+    readonly encoded_bytes: Uint8Array;
+    /**
+     * Get the original sequence length.
+     */
+    readonly length: number;
+    /**
+     * Get the count of valid (non-N) bases.
+     */
+    readonly valid_count: number;
 }
 
 export class Vector3 {
-  private constructor();
-  free(): void;
-  [Symbol.dispose](): void;
-  x: number;
-  y: number;
-  z: number;
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    x: number;
+    y: number;
+    z: number;
 }
 
 export function analyze_kmers(sequence_a: string, sequence_b: string, k: number): KmerAnalysisResult;
