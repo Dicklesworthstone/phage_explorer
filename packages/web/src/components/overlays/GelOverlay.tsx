@@ -18,6 +18,7 @@ import { GelCanvas } from './primitives/GelCanvas';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
 } from './primitives';
 import type { GelLane, GelBand, GelInteraction } from './primitives/types';
 
@@ -166,6 +167,7 @@ export function GelOverlay({
   const { isOpen, toggle } = useOverlay();
   const sequenceCache = useRef<Map<number, string>>(new Map());
   const [sequence, setSequence] = useState<string>('');
+  const [sequenceError, setSequenceError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Selected enzymes for digest
@@ -202,6 +204,7 @@ export function GelOverlay({
 
     let cancelled = false;
     setLoading(true);
+    setSequenceError(null);
     repository
       .getFullGenomeLength(phageId)
       .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
@@ -210,9 +213,15 @@ export function GelOverlay({
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
+        // A failed database read used to render as "No sequence loaded", which
+        // tells the user this phage has no data rather than that something
+        // broke. Surface the real cause.
         setSequence('');
+        setSequenceError(
+          `Could not load sequence: ${err instanceof Error ? err.message : String(err)}`
+        );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -330,6 +339,8 @@ export function GelOverlay({
           <OverlayLoadingState message="Loading sequence data...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
+        ) : sequenceError ? (
+          <OverlayErrorState message="Could not load sequence" details={sequenceError} />
         ) : !sequence ? (
           <OverlayEmptyState
             message="No sequence loaded"

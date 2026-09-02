@@ -149,9 +149,15 @@ export function DotPlotOverlay({
         sequenceCache.current.set(phageId, seq);
         setSequence(seq);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (cancelled) return;
+        // Do not swallow this. Setting an empty sequence rendered "No sequence
+        // loaded", which tells the user this phage has no data when in fact the
+        // database read failed. The overlay already renders OverlayErrorState.
         setSequence('');
+        setError(
+          `Could not load sequence: ${err instanceof Error ? err.message : String(err)}`
+        );
       })
       .finally(() => {
         if (!cancelled) setSequenceLoading(false);
