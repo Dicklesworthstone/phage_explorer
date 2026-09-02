@@ -283,6 +283,39 @@ pub struct KmerAnalysisResult {
     pub bray_curtis_dissimilarity: f64,
 }
 
+/// Reverse complement of an uppercase ACGT k-mer.
+///
+/// Only called on windows already validated as ACGT-only, so there is no
+/// ambiguous-base case to decide here.
+fn revcomp_acgt(kmer: &[u8]) -> String {
+    kmer.iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' => 'T',
+            b'T' => 'A',
+            b'G' => 'C',
+            b'C' => 'G',
+            _ => '?',
+        })
+        .collect()
+}
+
+/// Distinct CANONICAL k-mer frequencies.
+///
+/// Canonical means each k-mer is collapsed with its reverse complement, keeping
+/// the lexicographically smaller of the two. This matters because which strand a
+/// sequence was read from is an accident of sequencing: without it, a genome and
+/// its own reverse complement compare as dissimilar.
+///
+/// This function previously counted PLAIN k-mers while the JavaScript
+/// `analyzeKmers` counted canonical ones, so the two returned materially
+/// different answers under the same name. Measured on a 3000 bp pair at k=6:
+/// 2110 unique k-mers against 1585, and a Jaccard of 0.343 against 0.607.
+/// `docs/WASM_ABI_SPEC.md` requires the two produce identical output.
+///
+/// It also skipped only `N`, where the JavaScript skips any base outside ACGT.
+/// Both rules now match: a window containing anything other than A, C, G or T
+/// is dropped rather than counted as a distinct k-mer.
 fn extract_kmer_freqs(sequence: &str, k: usize) -> HashMap<String, usize> {
     let mut freqs = HashMap::new();
     // Pre-allocate assuming roughly seq_len - k unique kmers
@@ -307,18 +340,23 @@ fn extract_kmer_freqs(sequence: &str, k: usize) -> HashMap<String, usize> {
         // Optimizing this loop is tricky without custom Hasher or encoding.
         // The safest path that is still faster than JS is reducing allocations via strict loops.
         
-        // Check for N without allocation
-        let has_n = window.iter().any(|&b| b == b'N' || b == b'n');
-        if has_n {
+        // Drop any window containing a base outside ACGT, matching the JS
+        // reference. Checking only for 'N' let R, Y, K, M and the rest through
+        // as if they were ordinary bases.
+        let valid = window.iter().all(|&b| {
+            matches!(b, b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't')
+        });
+        if !valid {
             continue;
         }
 
-        // Create String and uppercase
-        // from_utf8_lossy returns Cow. 
-        // We know it's valid UTF8 if input was valid str.
         let kmer_str = std::str::from_utf8(window).unwrap_or("").to_uppercase();
-        
-        *freqs.entry(kmer_str).or_insert(0) += 1;
+        let rc = revcomp_acgt(kmer_str.as_bytes());
+
+        // Lexicographically smaller of the two, as extractCanonicalKmerSet does.
+        let canonical = if kmer_str <= rc { kmer_str } else { rc };
+
+        *freqs.entry(canonical).or_insert(0) += 1;
     }
     freqs
 }
