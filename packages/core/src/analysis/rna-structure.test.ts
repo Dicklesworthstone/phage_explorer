@@ -6,6 +6,8 @@
  */
 
 import { describe, it, expect } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   analyzeRNAWindows,
   computeSynonymousStress,
@@ -47,9 +49,11 @@ describe('analyzeRNAWindows', () => {
     const seq = 'ACGT'.repeat(15); // 60bp
     const result = analyzeRNAWindows(seq, 40, 20);
 
-    expect(result[0]).toHaveProperty('mfe');
+    expect(result[0]).toHaveProperty('pairingScore');
     expect(result[0]).toHaveProperty('pairingDensity');
-    expect(typeof result[0].mfe).toBe('number');
+    // null is a valid value: it means no stem was found, which is different
+    // from a structure that scored zero.
+    expect(['number', 'object']).toContain(typeof result[0].pairingScore);
     expect(result[0].pairingDensity).toBeGreaterThanOrEqual(0);
     expect(result[0].pairingDensity).toBeLessThanOrEqual(1);
   });
@@ -181,8 +185,15 @@ describe('detectRegulatoryElements', () => {
     const seq = 'TTTAAAC' + 'GGCGU'; // Multiple hits
     const result = detectRegulatoryElements(seq, []);
 
-    for (let i = 1; i < result.length; i++) {
-      expect(result[i - 1].confidence).toBeGreaterThanOrEqual(result[i].confidence);
+    // Scored hypotheses come first in descending confidence; unscored ones
+    // (exact motif matches, which carry no computable confidence) follow.
+    const scored = result.filter(r => r.confidence !== null);
+    for (let i = 1; i < scored.length; i++) {
+      expect(scored[i - 1].confidence!).toBeGreaterThanOrEqual(scored[i].confidence!);
+    }
+    const firstUnscored = result.findIndex(r => r.confidence === null);
+    if (firstUnscored !== -1) {
+      expect(result.slice(firstUnscored).every(r => r.confidence === null)).toBe(true);
     }
   });
 });
@@ -194,7 +205,9 @@ describe('analyzeRNAStructure', () => {
     expect(result.windows).toEqual([]);
     expect(result.codonStress).toEqual([]);
     expect(result.highStressRegions).toEqual([]);
-    expect(result.globalMFE).toBe(0);
+    // Null, not 0: an empty sequence forms no stems, and reporting 0 made
+    // "nothing found" indistinguishable from "a perfectly neutral structure".
+    expect(result.globalPairingScore).toBeNull();
   });
 
   it('returns complete analysis structure for small sequence', () => {
@@ -205,7 +218,7 @@ describe('analyzeRNAStructure', () => {
     expect(result).toHaveProperty('codonStress');
     expect(result).toHaveProperty('highStressRegions');
     expect(result).toHaveProperty('regulatoryHypotheses');
-    expect(result).toHaveProperty('globalMFE');
+    expect(result).toHaveProperty('globalPairingScore');
     expect(result).toHaveProperty('avgSynonymousStress');
   });
 });
@@ -231,5 +244,81 @@ describe('edge cases', () => {
     const result = computeSynonymousStress(seq);
     // Should handle gracefully (no valid amino acids)
     expect(Array.isArray(result)).toBe(true);
+  });
+});
+
+/**
+ * The metric is a score, not a free energy.
+ *
+ * The overlay reported this as "Global MFE ... kcal/mol". A minimum free energy
+ * cannot be positive, and this number could be, which is the tell that no
+ * energy model was involved: the implementation is a greedy stem scan with toy
+ * constants. It was also exactly 0 when no stem was found, so "nothing
+ * detected" and "perfectly neutral structure" rendered identically.
+ */
+describe('pairing score is not presented as an energy', () => {
+  it('reports null rather than zero when no stem is found', () => {
+    // A homopolymer cannot pair with itself under the pairing rules.
+    const result = analyzeRNAWindows('A'.repeat(80), 40, 20);
+    expect(result.length).toBeGreaterThan(0);
+    for (const w of result) expect(w.pairingScore).toBeNull();
+  });
+
+  it('reports a number when a stem really is present', () => {
+    // The discrimination check. If pairingScore were always null the test above
+    // would pass and the metric would be useless.
+    const stem = 'GGGGGCCCCC';
+    const seq = (stem + 'AAAAA').repeat(8);
+    const result = analyzeRNAWindows(seq, 40, 20);
+    expect(result.some(w => w.pairingScore !== null)).toBe(true);
+  });
+
+  it('carries no kcal/mol unit anywhere in the module', () => {
+    // Source-level, because the defect was a unit on a label rather than a
+    // value a test can observe.
+    const src = readFileSync(join(import.meta.dir, 'rna-structure.ts'), 'utf8');
+    const code = src
+      .split('\n')
+      .filter(l => !l.trimStart().startsWith('*') && !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code).not.toContain('kcal/mol');
+  });
+
+  it('averages the global score over windows that formed a stem', () => {
+    // Including unstructured windows as zeroes dragged the mean toward zero in
+    // proportion to how much UNSTRUCTURED sequence there was, which inverts the
+    // meaning of the number.
+    const stem = 'GGGGGCCCCC';
+    const structured = analyzeRNAStructure((stem + 'AAAAA').repeat(12), {
+      windowSize: 30,
+      stepSize: 15,
+    });
+    if (structured.globalPairingScore !== null) {
+      expect(structured.globalPairingScore).toBeLessThan(0);
+    }
+    const flat = analyzeRNAStructure('A'.repeat(200), { windowSize: 30, stepSize: 15 });
+    expect(flat.globalPairingScore).toBeNull();
+  });
+});
+
+describe('no constant is presented as a per-site confidence', () => {
+  it('gives exact motif matches no confidence at all', () => {
+    // Slippery sites carried 0.7 and riboswitch motifs 0.3, on every hit. Those
+    // read as per-site probabilities and were nothing of the kind: the scan
+    // cannot tell a functional signal from the same bases occurring by chance.
+    const seq = ('UUUAAAC' + 'GCGCGCGCGC').repeat(6);
+    const hits = detectRegulatoryElements(seq, []);
+    const motifHits = hits.filter(
+      h => h.type === 'slippery-site' || h.type === 'riboswitch'
+    );
+    expect(motifHits.length).toBeGreaterThan(0);
+    for (const h of motifHits) expect(h.confidence).toBeNull();
+  });
+
+  it('still scores the hypotheses that can be scored', () => {
+    // The discrimination check. Nulling every confidence would satisfy the test
+    // above and remove real information.
+    const src = readFileSync(join(import.meta.dir, 'rna-structure.ts'), 'utf8');
+    expect(src).toContain('confidence: Math.min(0.9,');
   });
 });

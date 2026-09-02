@@ -1,9 +1,31 @@
 /**
  * RNA Structure & Packaging Signal Explorer
  *
- * Analyzes how synonymous changes affect mRNA folding/ΔG along coding regions
- * to identify structure-constrained segments. Uses simplified folding heuristics
- * (no ViennaRNA dependency) for estimating MFE and synonymous stress.
+ * Finds structure-constrained segments of coding regions by scoring how much
+ * base pairing a window can form, and how much that changes under synonymous
+ * substitution.
+ *
+ * ## What this is not
+ *
+ * It is not a free-energy calculation. It is a greedy stem scan with toy pair
+ * and stacking constants, not a nearest-neighbour thermodynamic model and not a
+ * dynamic program over all structures.
+ *
+ * That distinction used to be confined to this comment. The overlay reported
+ * the output as "Global MFE ... kcal/mol", which is a physical quantity with a
+ * defined sign convention, and the number it printed could be POSITIVE -- which
+ * is meaningless for a minimum free energy and is the tell that no energy model
+ * was involved. It was also exactly `0` when no stem was found, so "nothing
+ * detected" and "perfectly neutral structure" rendered identically.
+ *
+ * The metric is therefore named `pairingScore` and carries no unit. It is
+ * negative-is-more-paired on the same convention as an energy, because that is
+ * what the internal constants encode and flipping it would gain nothing, but it
+ * is a score. `null` means no stem was found.
+ *
+ * Restoring kcal/mol would mean implementing a real Zuker fold with published
+ * nearest-neighbour parameters. That is a well-bounded piece of work and is
+ * tracked separately; until it exists, the unit does not belong on screen.
  */
 
 import { CODON_TABLE, reverseComplement } from '../codons';
@@ -17,7 +39,11 @@ export interface RNAWindow {
   start: number;
   end: number;
   sequence: string;
-  mfe: number;           // Minimum Free Energy (kcal/mol estimate)
+  /**
+   * Base-pairing score: negative is more paired, null when no stem was found.
+   * NOT a free energy and carries no unit -- see this file's header.
+   */
+  pairingScore: number | null;
   gcContent: number;
   pairingDensity: number; // Fraction of bases in predicted pairs
 }
@@ -25,13 +51,19 @@ export interface RNAWindow {
 export interface SynonymousVariant {
   codon: string;
   aminoAcid: string;
-  deltaG: number;        // Estimated ΔG change from wild-type
+  /**
+   * Change in pairing score from the wild-type codon. Unitless, on the same
+   * scale as `pairingScore`; NOT a ΔΔG, though the field kept its name where
+   * the concept is "difference from wild type".
+   */
+  deltaG: number;
 }
 
 export interface CodonStress {
   position: number;       // Codon position (0-indexed)
   codon: string;
   aminoAcid: string;
+  /** Wild-type local pairing score. Unitless -- see this file's header. */
   wildTypeDeltaG: number;
   variants: SynonymousVariant[];
   stress: number;         // Variance of ΔΔG across synonymous variants (0-1 normalized)
@@ -43,7 +75,16 @@ export interface RegulatoryHypothesis {
   start: number;
   end: number;
   type: 'stem-loop' | 'riboswitch' | 'attenuator' | 'packaging-signal' | 'slippery-site' | 'rbs' | 'terminator';
-  confidence: number;    // 0-1
+  /**
+   * 0-1 confidence, or null where none can be computed.
+   *
+   * Null is not "low confidence". Slippery sites and riboswitch motifs are
+   * exact string matches: the site either matches a known heptamer or it does
+   * not, and this scan cannot tell a functional signal from the same bases
+   * occurring by chance. They carried the constants 0.7 and 0.3, which read as
+   * per-site probabilities and were nothing of the kind.
+   */
+  confidence: number | null;
   description: string;
   sequence: string;
   structure?: string;    // Dot-bracket notation if available
@@ -54,7 +95,11 @@ export interface RNAStructureAnalysis {
   codonStress: CodonStress[];
   highStressRegions: Array<{ start: number; end: number; avgStress: number }>;
   regulatoryHypotheses: RegulatoryHypothesis[];
-  globalMFE: number;
+  /**
+   * Mean pairing score across windows that formed a stem, or null when none
+   * did. Not a free energy and carries no unit -- see this file's header.
+   */
+  globalPairingScore: number | null;
   avgSynonymousStress: number;
 }
 
@@ -62,7 +107,10 @@ export interface RNAStructureAnalysis {
 // Constants
 // ============================================================================
 
-// Base-pairing energies (simplified, kcal/mol at 37°C)
+// Pair weights. The magnitudes are loosely inspired by 37°C stacking energies
+// in kcal/mol, but they are used here as ordinal weights in a greedy scan with
+// no loop model and no partition function, so the sum they produce is NOT a
+// free energy and is not reported as one.
 const BASE_PAIR_ENERGIES: Record<string, number> = {
   'AU': -0.9,
   'UA': -0.9,
@@ -177,14 +225,19 @@ function findStemLoops(rna: string, minStemLength = 4): Array<[number, number]> 
 }
 
 /**
- * Estimate Minimum Free Energy (MFE) for an RNA sequence
- * Uses simplified Nussinov-like scoring without full dynamic programming
+ * Score how much base pairing a window can form.
+ *
+ * Greedy stem scan with toy constants, not a dynamic program and not an energy
+ * model. Returns null when no stem is found, which is a different statement
+ * from a score of zero.
  */
-function estimateMFE(rna: string): { mfe: number; pairingDensity: number } {
+function estimatePairing(rna: string): { pairingScore: number | null; pairingDensity: number } {
   const pairs = findStemLoops(rna);
 
+  // null, not 0. "No stem found" and "a structure that scores zero" are
+  // different findings and used to render identically.
   if (pairs.length === 0) {
-    return { mfe: 0, pairingDensity: 0 };
+    return { pairingScore: null, pairingDensity: 0 };
   }
 
   let energy = 0;
@@ -213,7 +266,7 @@ function estimateMFE(rna: string): { mfe: number; pairingDensity: number } {
 
   const pairingDensity = pairedPositions.size / rna.length;
 
-  return { mfe: energy, pairingDensity };
+  return { pairingScore: energy, pairingDensity };
 }
 
 /**
@@ -249,9 +302,9 @@ function computeLocalDeltaG(
   const context = prefix + codon + suffix;
 
   const rna = dnaToRna(context);
-  const { mfe } = estimateMFE(rna);
+  const { pairingScore } = estimatePairing(rna);
 
-  return mfe;
+  return pairingScore ?? 0;
 }
 
 // ============================================================================
@@ -272,13 +325,13 @@ export function analyzeRNAWindows(
   for (let start = 0; start + windowSize <= seq.length; start += stepSize) {
     const windowSeq = seq.slice(start, start + windowSize);
     const rna = dnaToRna(windowSeq);
-    const { mfe, pairingDensity } = estimateMFE(rna);
+    const { pairingScore, pairingDensity } = estimatePairing(rna);
 
     windows.push({
       start,
       end: start + windowSize,
       sequence: windowSeq,
-      mfe,
+      pairingScore,
       gcContent: gcContent(rna),
       pairingDensity,
     });
@@ -429,7 +482,13 @@ export function detectRegulatoryElements(
         start: pos,
         end: pos + motif.length,
         type: 'slippery-site',
-        confidence: 0.7,
+        // No confidence. This was the constant 0.7 on every hit, which reads as
+        // a per-site probability and is not one: the site either matches a
+        // known heptamer or it does not, and this scan cannot distinguish a
+        // functional frameshift signal from the same seven bases occurring by
+        // chance. A match is reported; how much to believe it is not something
+        // this code knows.
+        confidence: null,
         description: `Potential programmed frameshift: ${motif}`,
         sequence: rna.slice(pos, pos + motif.length),
       });
@@ -445,7 +504,10 @@ export function detectRegulatoryElements(
         start: pos,
         end: pos + motif.length + 20,
         type: 'riboswitch',
-        confidence: 0.3, // Low confidence without full aptamer check
+        // Was the constant 0.3 with the comment "Low confidence without full
+        // aptamer check". The comment was right and the number was still a
+        // fabrication; a real confidence needs the aptamer check.
+        confidence: null,
         description: `Potential riboswitch motif fragment`,
         sequence: rna.slice(pos, Math.min(pos + motif.length + 20, rna.length)),
       });
@@ -488,11 +550,11 @@ export function detectRegulatoryElements(
   for (const { start, end, label } of terminalRegions) {
     const region = rna.slice(start, end);
     const gc = gcContent(region);
-    const { mfe, pairingDensity } = estimateMFE(region);
+    const { pairingScore, pairingDensity } = estimatePairing(region);
 
     if (gc > 0.5 && pairingDensity > 0.3) {
-      // Use mfe to boost confidence for very stable structures
-      const stabilityBonus = mfe < -5 ? 0.1 : 0;
+      // A strongly paired window raises confidence in the hypothesis.
+      const stabilityBonus = pairingScore !== null && pairingScore < -5 ? 0.1 : 0;
       hypotheses.push({
         start,
         end,
@@ -504,7 +566,15 @@ export function detectRegulatoryElements(
     }
   }
 
-  return hypotheses.sort((a, b) => b.confidence - a.confidence);
+  // Scored hypotheses first, ordered by confidence; unscored ones after, in
+  // discovery order. Sorting nulls as zero would bury exact motif matches
+  // beneath weakly-scored guesses.
+  return hypotheses.sort((a, b) => {
+    if (a.confidence !== null && b.confidence !== null) return b.confidence - a.confidence;
+    if (a.confidence !== null) return -1;
+    if (b.confidence !== null) return 1;
+    return 0;
+  });
 }
 
 /**
@@ -599,7 +669,14 @@ function findTerminators(rna: string): RegulatoryHypothesis[] {
 }
 
 function deduplicateHypotheses(items: RegulatoryHypothesis[]): RegulatoryHypothesis[] {
-  const sorted = [...items].sort((a, b) => b.confidence - a.confidence);
+  // Same ordering rule as above: scored first, unscored kept rather than
+  // treated as zero-confidence and dropped by the overlap filter.
+  const sorted = [...items].sort((a, b) => {
+    if (a.confidence !== null && b.confidence !== null) return b.confidence - a.confidence;
+    if (a.confidence !== null) return -1;
+    if (b.confidence !== null) return 1;
+    return 0;
+  });
   const filtered: RegulatoryHypothesis[] = [];
   
   for (const item of sorted) {
@@ -627,7 +704,7 @@ export function analyzeRNAStructure(
   const { windowSize = 120, stepSize = 30, frame = 0 } = options;
   const rna = dnaToRna(sequence);
 
-  // Sliding window MFE analysis
+  // Sliding window pairing analysis
   const windows = analyzeRNAWindows(sequence, windowSize, stepSize);
 
   // Synonymous stress analysis
@@ -648,7 +725,12 @@ export function analyzeRNAStructure(
   ]);
 
   // Global metrics
-  const globalMFE = windows.reduce((sum, w) => sum + w.mfe, 0) / Math.max(windows.length, 1);
+  // Average over the windows that actually formed a stem. Including the ones
+  // that did not, as zeroes, dragged the mean toward zero in proportion to how
+  // much UNSTRUCTURED sequence there was, which inverts the meaning.
+  const scored = windows.map(w => w.pairingScore).filter((v): v is number => v !== null);
+  const globalPairingScore =
+    scored.length > 0 ? scored.reduce((sum, v) => sum + v, 0) / scored.length : null;
   const avgSynonymousStress = codonStress.reduce((sum, c) => sum + c.stress, 0) / Math.max(codonStress.length, 1);
 
   return {
@@ -656,7 +738,7 @@ export function analyzeRNAStructure(
     codonStress,
     highStressRegions,
     regulatoryHypotheses: allRegulatory,
-    globalMFE,
+    globalPairingScore,
     avgSynonymousStress,
   };
 }

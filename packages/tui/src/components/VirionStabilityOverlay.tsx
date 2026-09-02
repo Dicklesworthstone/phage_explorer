@@ -120,9 +120,19 @@ export function VirionStabilityOverlay(): React.ReactElement {
 
       <Box marginTop={1} flexDirection="column">
         <Text color={colors.text}>
-          Melting onset ~ {estimate.meltingTempC.toFixed(1)}°C · Recommended ≤
-          {estimate.recommendedStorage.temperatureC}°C, {estimate.recommendedStorage.saltMilliMolar} mM
+          Melting onset ~ {estimate.meltingTempC.toFixed(1)}°C
         </Text>
+        {estimate.recommendedStorage ? (
+          <Text color={colors.text}>
+            Storage: ≤{estimate.recommendedStorage.temperatureC}°C,{' '}
+            {estimate.recommendedStorage.saltMilliMolar} mM — {estimate.recommendedStorage.rationale}
+          </Text>
+        ) : (
+          <Text color={colors.textDim}>
+            No storage recommendation: buffer, titre and isolate determine this and none
+            are known here. The constant 4°C/100 mM shown before was not computed.
+          </Text>
+        )}
       </Box>
 
       {estimate.warnings.length > 0 && (

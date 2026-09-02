@@ -224,7 +224,11 @@ export function StructureConstraintOverlay({
         type,
         start,
         end,
-        score: h.confidence * 100,
+        // Motif matches carry no confidence; they are scored 0 here only
+        // because this view's score is a display weight, and the hypothesis
+        // types it selects (rbs, terminator, stem-loop) are all computed ones
+        // that do carry a confidence.
+        score: (h.confidence ?? 0) * 100,
         sequence: h.sequence,
         details: h.description,
       };
@@ -244,7 +248,10 @@ export function StructureConstraintOverlay({
 
     const energyLandscape = result.windows.map(w => ({
       position: strand === '+' ? (w.start + w.end) / 2 : len - (w.start + w.end) / 2,
-      energy: w.mfe,
+      // Windows with no stem contribute 0 to the landscape, which is the right
+      // display choice here: the axis is "how much pairing", and none is zero.
+      // It is NOT presented as an energy any more; see rna-structure.ts.
+      energy: w.pairingScore ?? 0,
     }));
 
     return {
@@ -691,7 +698,10 @@ export function StructureConstraintOverlay({
                       checked={showEnergy}
                       onChange={(e) => setShowEnergy(e.target.checked)}
                     />
-                    <span style={{ color: '#3b82f6' }}>Energy Landscape</span>
+                    {/* Not "Energy": the underlying value is a greedy
+                        stem-pairing score with toy constants, not a free
+                        energy. See rna-structure.ts. */}
+                    <span style={{ color: '#3b82f6' }}>Pairing Landscape</span>
                   </label>
                 </div>
 
@@ -767,7 +777,7 @@ export function StructureConstraintOverlay({
                         width={520}
                         height={35}
                         onHover={handleHover}
-                        ariaLabel="RNA folding energy landscape"
+                        ariaLabel="RNA base-pairing landscape"
                       />
                     </div>
                   )}

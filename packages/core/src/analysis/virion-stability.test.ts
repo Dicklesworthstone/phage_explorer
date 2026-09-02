@@ -47,3 +47,49 @@ describe('Virion stability', () => {
     expect(estimate.integrity).toBeLessThanOrEqual(1);
   });
 });
+
+/**
+ * Storage advice must not be a constant wearing a recommendation's clothes.
+ *
+ * `recommendedStorage` returned `{ 4 °C, 100 mM }` for every phage in the
+ * catalogue and both overlays presented it as a per-phage recommendation. This
+ * overlay sits inside the phage-therapy screening story the README tells, so it
+ * is exactly the kind of output a wet-lab user might act on, and a constant is
+ * indistinguishable from a computed one.
+ */
+describe('storage advice is derived or absent, never constant', () => {
+  const env = { temperatureC: 20, saltMilliMolar: 100 };
+  const base = { genomeLength: 48000, gcContent: 50, morphology: '' };
+
+  it('gives no recommendation for a phage with nothing to base one on', () => {
+    const r = predictVirionStability({ ...base, family: 'Siphoviridae' }, env);
+    expect(r.recommendedStorage).toBeNull();
+  });
+
+  it('gives a recommendation for lipid-containing virions, with a reason', () => {
+    // PRD1, PM2 and phi6 are in this catalogue and genuinely differ in
+    // handling: they lose infectivity on freezing and on solvent contact.
+    for (const family of ['Tectiviridae', 'Corticoviridae', 'Cystoviridae']) {
+      const r = predictVirionStability({ ...base, family }, env);
+      expect(r.recommendedStorage).not.toBeNull();
+      expect(r.recommendedStorage!.rationale).toContain('Lipid-containing');
+    }
+  });
+
+  it('does not give every phage the same answer', () => {
+    // The discrimination check, and the exact defect being fixed. If this ever
+    // passes for all families again, the constant is back.
+    const lipid = predictVirionStability({ ...base, family: 'Tectiviridae' }, env);
+    const other = predictVirionStability({ ...base, family: 'Myoviridae' }, env);
+    expect(lipid.recommendedStorage).not.toEqual(other.recommendedStorage);
+  });
+
+  it('still varies its composition-derived metrics with the genome', () => {
+    // Guards against over-correction: removing the constant must not flatten
+    // the metrics that were always real.
+    const lowGc = predictVirionStability({ ...base, gcContent: 38 }, env);
+    const highGc = predictVirionStability({ ...base, gcContent: 66 }, env);
+    expect(highGc.meltingTempC).toBeGreaterThan(lowGc.meltingTempC);
+    expect(highGc.baseIndex).toBeGreaterThan(lowGc.baseIndex);
+  });
+});

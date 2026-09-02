@@ -226,8 +226,24 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
               <div style={{ color: colors.text, fontFamily: 'monospace' }}>{saltMilliMolar.toFixed(0)} mM</div>
             </label>
             <div style={{ color: colors.textMuted, fontSize: '0.9rem', lineHeight: 1.4 }}>
-              Recommended storage: {estimate.recommendedStorage.temperatureC}°C,{' '}
-              {estimate.recommendedStorage.saltMilliMolar} mM. Melting onset ~{estimate.meltingTempC.toFixed(1)}°C.
+              Melting onset ~{estimate.meltingTempC.toFixed(1)}&deg;C.
+              {/* Storage advice used to read "4 °C, 100 mM" for every phage in
+                  the catalogue, presented as a per-phage recommendation inside
+                  the therapy-screening story the README tells. It is now shown
+                  only where the catalogue supports it. */}
+              {estimate.recommendedStorage ? (
+                <>
+                  {' '}Recommended storage: {estimate.recommendedStorage.temperatureC}&deg;C,{' '}
+                  {estimate.recommendedStorage.saltMilliMolar} mM.{' '}
+                  {estimate.recommendedStorage.rationale}
+                </>
+              ) : (
+                <>
+                  {' '}No storage recommendation is given: it depends on buffer, titre and
+                  isolate, none of which this app knows. A constant was shown here
+                  previously and was not computed from anything.
+                </>
+              )}
             </div>
           </div>
 

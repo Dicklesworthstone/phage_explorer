@@ -147,8 +147,12 @@ function MFEPlot({ windows, width, height, colors }: MFEPlotProps): React.ReactE
     return <div style={{ color: colors.textMuted }}>No windows</div>;
   }
 
-  const minMFE = Math.min(...windows.map(w => w.mfe));
-  const maxMFE = Math.max(...windows.map(w => w.mfe));
+  // Windows with no stem carry null and are excluded from the scale rather
+  // than plotted at zero, which would put "nothing found" in the middle of the
+  // axis alongside genuinely unstructured-but-scored windows.
+  const scored = windows.map(w => w.pairingScore).filter((v): v is number => v !== null);
+  const minMFE = scored.length > 0 ? Math.min(...scored) : 0;
+  const maxMFE = scored.length > 0 ? Math.max(...scored) : 0;
   const range = maxMFE - minMFE || 1;
 
   const cellWidth = width / windows.length;
@@ -156,7 +160,7 @@ function MFEPlot({ windows, width, height, colors }: MFEPlotProps): React.ReactE
   // Create path for MFE line
   const points = windows.map((w, i) => {
     const x = i * cellWidth + cellWidth / 2;
-    const y = height - ((w.mfe - minMFE) / range) * height;
+    const y = height - (((w.pairingScore ?? minMFE) - minMFE) / range) * height;
     return `${x},${y}`;
   });
 
@@ -171,7 +175,7 @@ function MFEPlot({ windows, width, height, colors }: MFEPlotProps): React.ReactE
             y={0}
             width={cellWidth}
             height={height}
-            fill={mfeColor(w.mfe)}
+            fill={w.pairingScore === null ? colors.textDim : mfeColor(w.pairingScore)}
             opacity={w.pairingDensity * 0.6 + 0.2}
           />
         ))}
@@ -226,7 +230,10 @@ interface RegulatoryCardProps {
 }
 
 function RegulatoryCard({ hypothesis, colors }: RegulatoryCardProps): React.ReactElement {
-  const confidencePercent = (hypothesis.confidence * 100).toFixed(0);
+  // null means no confidence can be computed, which is not the same as low
+  // confidence. Exact motif matches carried the constants 0.7 and 0.3.
+  const confidencePercent =
+    hypothesis.confidence === null ? null : (hypothesis.confidence * 100).toFixed(0);
 
   return (
     <div
@@ -247,13 +254,23 @@ function RegulatoryCard({ hypothesis, colors }: RegulatoryCardProps): React.Reac
           style={{
             marginLeft: 'auto',
             padding: '0.1rem 0.4rem',
-            backgroundColor: hypothesis.confidence > 0.6 ? '#22c55e33' : '#f5970033',
+            backgroundColor:
+              hypothesis.confidence === null
+                ? 'transparent'
+                : hypothesis.confidence > 0.6
+                  ? '#22c55e33'
+                  : '#f5970033',
             borderRadius: '10px',
             fontSize: '0.7rem',
-            color: hypothesis.confidence > 0.6 ? '#22c55e' : '#f59700',
+            color:
+              hypothesis.confidence === null
+                ? colors.textDim
+                : hypothesis.confidence > 0.6
+                  ? '#22c55e'
+                  : '#f59700',
           }}
         >
-          {confidencePercent}% conf
+          {confidencePercent === null ? 'motif match' : `${confidencePercent}% conf`}
         </span>
       </div>
       <div style={{ color: colors.textDim, marginBottom: '0.25rem' }}>
@@ -330,7 +347,10 @@ function CodonDetail({ codon, colors }: CodonDetailProps): React.ReactElement {
       </div>
 
       <div style={{ fontSize: '0.8rem', color: colors.textDim, marginBottom: '0.5rem' }}>
-        Position: codon {codon.position} | ΔG (wild-type context): {codon.wildTypeDeltaG.toFixed(2)} kcal/mol
+        {/* No kcal/mol: this is the same greedy pairing score as everywhere
+            else in this overlay, not a free energy. */}
+        Position: codon {codon.position} | wild-type pairing score:{' '}
+        {codon.wildTypeDeltaG.toFixed(2)}
       </div>
 
       {codon.variants.length > 0 && (
@@ -589,7 +609,18 @@ export function RNAStructureOverlay({
                 { label: 'Total Codons', value: summary.totalCodons.toLocaleString() },
                 { label: 'Constrained', value: `${summary.constrainedCount} (${summary.constrainedPercent.toFixed(1)}%)`, highlight: summary.constrainedPercent > 20 },
                 { label: 'Avg Stress', value: `${summary.avgStress.toFixed(1)}%` },
-                { label: 'Global MFE', value: `${summary.globalMFE.toFixed(1)} kcal/mol` },
+                {
+                  // Was "Global MFE ... kcal/mol". The underlying value is a
+                  // greedy stem-pairing score with toy constants, not a free
+                  // energy: it could be positive, which is impossible for an
+                  // MFE, and it was 0 when nothing was found. No unit, and an
+                  // em dash where no stem formed.
+                  label: 'Pairing score',
+                  value:
+                    summary.globalPairingScore === null
+                      ? '\u2014 no stems found'
+                      : summary.globalPairingScore.toFixed(1),
+                },
                 { label: 'High-Stress Regions', value: summary.highStressRegions.toString() },
                 { label: 'Regulatory Hits', value: summary.regulatoryHypotheses.toString() },
               ].map(({ label, value, highlight }) => (
@@ -643,7 +674,7 @@ export function RNAStructureOverlay({
             {/* MFE plot */}
             <div>
               <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
-                Sliding Window MFE (ΔG kcal/mol) - Lower = More Stable Structure
+                Sliding window pairing score (unitless) &mdash; lower = more base pairing
               </div>
               <div
                 style={{

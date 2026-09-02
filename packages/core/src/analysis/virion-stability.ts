@@ -5,6 +5,8 @@ export interface StabilityInputs {
   /** GC percentage (0–100), consistent with DB storage */
   gcContent?: number | null;
   morphology?: string | null;
+  /** Taxonomic family, used to identify lipid-containing virions. */
+  family?: string | null;
   baltimoreGroup?: string | null;
   pdbIds?: string[];
 }
@@ -23,10 +25,26 @@ export interface StabilityEstimate {
   saltFactor: number;
   integrity: number; // 0–1 combined estimate under current env
   meltingTempC: number;
+  /**
+   * Storage advice, or null when none can be derived.
+   *
+   * This used to be the constant `{ 4 °C, 100 mM }` for every phage in the
+   * catalogue, presented in the UI as a per-phage recommendation. It sits
+   * inside the phage-therapy screening story the README tells, so it is exactly
+   * the kind of output a wet-lab user might act on, and a constant is
+   * indistinguishable from a computed one.
+   *
+   * It is now derived only where the catalogue carries something that actually
+   * bears on it -- a lipid-containing envelope, which genuinely changes handling
+   * -- and is null otherwise. Null means "we have nothing to base this on",
+   * which is the honest answer for most of the catalogue.
+   */
   recommendedStorage: {
     temperatureC: number;
     saltMilliMolar: number;
-  };
+    /** Why these conditions, so the user can judge the advice. */
+    rationale: string;
+  } | null;
   status: StabilityStatus;
   warnings: string[];
   notes: string[];
@@ -35,6 +53,26 @@ export interface StabilityEstimate {
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 const normalize = (v: number, min: number, max: number) => clamp01((v - min) / (max - min));
 
+/**
+ * Where the coefficients below come from, and what they are not.
+ *
+ * They are NOT fitted to data and they are not from a published model. They are
+ * ordinal encodings of qualitative statements that are uncontroversial in the
+ * phage literature, chosen so the ranking they produce is defensible even
+ * though the magnitudes are not:
+ *
+ * - Contractile- and short-tailed virions (myo-, podo-) tolerate handling
+ *   better than long flexible-tailed (sipho-), and filamentous virions
+ *   (ino-) are the most fragile to shear.
+ * - dsDNA genomes are more robust to handling than ssDNA or ssRNA.
+ * - Higher GC raises duplex melting temperature; this one has a real
+ *   quantitative basis and is used through `estimateMeltingTemp`.
+ *
+ * So the OUTPUT of this model is an ordering, not a measurement, and the
+ * overlay is badged `heuristic` for that reason. Anyone replacing these with a
+ * fitted model should treat the numbers here as placeholders with the right
+ * sign, not as parameters worth preserving.
+ */
 function morphologyBoost(morphology?: string | null): number {
   const m = morphology?.toLowerCase() ?? '';
   if (!m) return 0;
@@ -94,6 +132,37 @@ function statusFromIntegrity(integrity: number): StabilityStatus {
   return 'fragile';
 }
 
+/**
+ * Storage conditions, derived where the catalogue supports it.
+ *
+ * Only one distinction in the shipped data bears on storage strongly enough to
+ * state: lipid-containing virions (PRD1 and PM2 in this catalogue) lose
+ * infectivity on freezing and on contact with organic solvents, which is a
+ * well-established handling difference and not a modelling choice. Everything
+ * else -- exact temperature, exact ionic strength -- depends on buffer, titre
+ * and the specific isolate, none of which this app knows.
+ *
+ * So this returns advice for the case it can justify and null for the rest,
+ * rather than a plausible number for everyone.
+ */
+function deriveStorage(inputs: StabilityInputs): StabilityEstimate['recommendedStorage'] {
+  const family = `${inputs.morphology ?? ''} ${inputs.family ?? ''}`.toLowerCase();
+  const lipidContaining =
+    family.includes('tectivir') || family.includes('corticovir') || family.includes('cystovir');
+
+  if (lipidContaining) {
+    return {
+      temperatureC: 4,
+      saltMilliMolar: 100,
+      rationale:
+        'Lipid-containing virion: refrigerate rather than freeze, and keep away from ' +
+        'organic solvents such as chloroform, which strip the lipid envelope.',
+    };
+  }
+
+  return null;
+}
+
 export function predictVirionStability(
   inputs: StabilityInputs,
   env: StabilityEnvironment
@@ -126,10 +195,7 @@ export function predictVirionStability(
     notes.push('No PDB models linked; stability estimate uses heuristics only.');
   }
 
-  const recommendedStorage = {
-    temperatureC: 4,
-    saltMilliMolar: 100,
-  };
+  const recommendedStorage = deriveStorage(inputs);
 
   return {
     baseIndex: intrinsicClamped,
@@ -154,6 +220,7 @@ export function predictVirionStabilityFromPhage(
       genomeLength: phage?.genomeLength,
       gcContent: phage?.gcContent,
       morphology: phage?.morphology,
+      family: phage?.family,
       baltimoreGroup: phage?.baltimoreGroup,
       pdbIds: phage?.pdbIds,
     },
