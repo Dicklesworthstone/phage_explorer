@@ -290,14 +290,16 @@ const api: HilbertWorkerAPI = {
       // Fallback: return without transfer if buffer is problematic
       return result;
     } catch (error) {
+      // Do NOT return a success-shaped constant here. Returning
+      // { order: 4, size: 16, coverage: 0 } made a failed computation render as
+      // a real result: the overlay displayed "Curve order 4" and a blank image
+      // with no indication that anything had gone wrong, and the caller's own
+      // error handling could never fire. Propagate instead; Comlink forwards
+      // the rejection to the caller, which already renders an error state.
       console.error('Hilbert render error:', error);
-      // Return empty result on error rather than crashing
-      return {
-        order: 4,
-        size: 16,
-        buffer: new Uint8ClampedArray(16 * 16 * 4),
-        coverage: 0,
-      };
+      throw new Error(
+        `Hilbert curve render failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   },
   async renderCgr(sequence, k) {
@@ -309,15 +311,14 @@ const api: HilbertWorkerAPI = {
       }
       return result;
     } catch (error) {
+      // Same reasoning as renderHilbert: a zeroed result rendered as
+      // "Shannon entropy 0.000" over an empty plot, which reads as a real
+      // measurement rather than a failure. The CGR overlay already catches and
+      // shows an error state (CGROverlay.tsx), so let the rejection reach it.
       console.error('CGR render error:', error);
-      return {
-        grid: new Uint32Array(0),
-        resolution: 0,
-        k: 0,
-        maxCount: 0,
-        totalPoints: 0,
-        entropy: 0,
-      };
+      throw new Error(
+        `CGR render failed: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   },
 };
