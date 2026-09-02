@@ -286,11 +286,19 @@ Dramatic performance improvements through WebGPU compute shaders, expanded WASM 
 
 | Area | Improvement |
 |------|-------------|
-| GPU Analysis | 10-100x faster |
-| WASM Computation | 5-20x faster |
-| Initial Load | 40-60% faster |
-| Sequence Scroll | 2-3x smoother |
-| Memory Usage | 50% reduction |
+| GPU Analysis | claimed 10-100x faster |
+| WASM Computation | claimed 5-20x faster |
+| Initial Load | claimed 40-60% faster |
+| Sequence Scroll | claimed 2-3x smoother |
+| Memory Usage | claimed 50% reduction |
+
+> **Note added 2026-09-02.** None of the figures in this table is backed by a
+> committed measurement, and the in-repo comments they were drawn from disagree
+> with each other by more than an order of magnitude. They are recorded here as
+> claims made at the time, not as results. The WASM row was additionally wrong
+> in substance: two of the three accelerations it described (translation and
+> MinHash) were not executing at all. See the README's "What's Accelerated"
+> table for the current, verified list of kernels.
 
 ---
 

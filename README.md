@@ -539,19 +539,43 @@ Performance-critical algorithms are implemented in Rust and compiled to WebAssem
 
 ### What's Accelerated
 
-| Algorithm | Threshold | Speedup | Fallback |
-|-----------|-----------|---------|----------|
-| **Sequence translation & reverse complement** | Always | ~5-20x over naive JS | Pure JS translation |
-| **K-mer counting** | Large genomes | ~2-10x | TypedArray JS |
-| **MinHash similarity** | Pairwise comparisons | ~5-20x | Pure JS hash comparison |
+Every kernel below runs in Rust/WASM at runtime and has a pure-JavaScript
+fallback that produces the same result. No speedup figures are quoted here,
+because none is currently measured; see the note under the table.
+
+| Kernel | Used by | Fallback |
+|--------|---------|----------|
+| Dense k-mer counting (plain and canonical) | Anomaly scanning, k-mer signatures | TypedArray JS counter |
+| Dot plot buffers | Self-homology dot plot, progressive refinement | Core `computeDotPlot` |
+| GC skew, cumulative GC skew | GC skew overlay | JS sliding window |
+| Windowed Shannon entropy | Sequence complexity overlay | Inline JS loop |
+| KL-divergence window scan | K-mer anomaly cartography | Per-window JS KL |
+| Myers diff, equal-length diff | Genome comparison (≥1 kb) | `computeDiff` |
+| PCA by power iteration (f32) | Genomic signature PCA (≥20k elements) | JS power iteration |
+| Hilbert curve raster, CGR counts | Hilbert atlas, chaos game fractal | `renderHilbert`, `computeCGR` |
+| Codon usage counting | Codon bias, tRNA adaptation | Inline codon loop |
+| Palindrome and tandem-repeat detection | Repeats overlay (≤120 kb) | JS scanner |
+| MinHash signatures and Jaccard | HGT donor inference | Exact k=15 set Jaccard |
+| Levenshtein distance | Edit-distance comparison | JS dynamic programming |
+| Spatial-hash bond detection, functional groups | 3D structure loading (≥2000 atoms) | JS neighbour search |
+
+**On speedups.** Earlier revisions of this table quoted ratios such as "5-20x".
+Those numbers were not backed by any committed measurement, and two of the three
+rows described code paths that never executed: translation and reverse complement
+have no WASM caller at all, and MinHash was wired but never initialized. The dead
+claims are gone and MinHash now genuinely runs. Ratios will return here when a
+benchmark produces them on a fixed runner.
 
 ### Why Rust/WASM for Sequence Work
 
 Genomic sequence operations can dominate CPU time on large phage genomes. The `wasm-compute` package handles hot paths that are otherwise pure JavaScript loops over hundreds of thousands of bases or amino acids:
 
-1. Six-frame translation and codon counting for every CDS
+1. Codon counting across every CDS, feeding codon bias and tRNA adaptation
 2. K-mer extraction and counting for dot plots, Hilbert curves, and phylogenetic signatures
-3. MinHash signature comparison for recombination and similarity overlays
+3. MinHash signature comparison for HGT donor inference against the reference panel
+
+Translation itself runs in TypeScript (`packages/core/src/codons.ts`); the Rust
+translation entry points are not called.
 
 The WASM module falls back to pure JavaScript implementations if WASM loading fails.
 
@@ -674,6 +698,7 @@ Phage Explorer handles genomes up to 500kb+ without loading the entire sequence 
 ### 3D Rendering
 
 **ASCII Renderer (TUI):**
+- Renders procedural morphology models (icosahedral head, tail, fibers) generated per morphotype, not deposited structures; all 24 catalog phages are mapped to a morphology-appropriate model
 - 70-character gradient for smooth shading: `.'-",:;Il!i><~+_-?][}{1)(|\/tfjrxnuvczXYUJCLQ0OZmwqpdbkhao*#MW&8%B@$`
 - Float32 Z-buffer for proper occlusion
 - Cohen-Sutherland line clipping with z-interpolation
