@@ -44,6 +44,7 @@ export {
   fetchSequenceSummaries,
   fetchGenBankRecord,
   fetchDatedPhageSequences,
+  fetchSequencesFasta,
   getPhageSearchTerms,
 } from './ncbi-entrez';
 

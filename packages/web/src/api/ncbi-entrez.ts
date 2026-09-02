@@ -190,6 +190,81 @@ export async function fetchSequenceSummaries(
 }
 
 /**
+ * Fetch nucleotide sequences in FASTA form for a batch of accessions.
+ *
+ * Phylodynamics needs real sequence to compute genetic distance. Without this
+ * it was building its tree from `generatePseudoSequence`, a hash of the
+ * accession string, under a banner claiming real data.
+ *
+ * Batched into one EFetch call because NCBI rate-limits per request, not per
+ * accession, and 30 separate calls would be both slow and impolite.
+ *
+ * @param accessions - GenBank accessions to retrieve
+ * @param maxBasesEach - Truncate each sequence to bound memory and parse cost.
+ *   Alignment-free distance does not need the whole genome, and phage genomes
+ *   here run to 280 kb.
+ */
+export async function fetchSequencesFasta(
+  accessions: string[],
+  maxBasesEach = 30000
+): Promise<APIResult<Map<string, string>>> {
+  if (accessions.length === 0) {
+    return { success: true, data: new Map() };
+  }
+  try {
+    const url = `${EFETCH}?db=nucleotide&id=${accessions.join(',')}&rettype=fasta&retmode=text`;
+    const response = await throttledNCBIFetch(url);
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: {
+          code: `HTTP_${response.status}`,
+          message: `NCBI EFetch returned ${response.status}`,
+        },
+      };
+    }
+
+    const text = await response.text();
+    const sequences = new Map<string, string>();
+
+    // FASTA: a `>` header line, then sequence lines until the next header.
+    let currentId: string | null = null;
+    let buffer: string[] = [];
+    const flush = (): void => {
+      if (!currentId) return;
+      const seq = buffer.join('').slice(0, maxBasesEach);
+      if (seq.length > 0) sequences.set(currentId, seq);
+    };
+
+    for (const line of text.split('\n')) {
+      if (line.startsWith('>')) {
+        flush();
+        // Header looks like `>NC_001416.1 Escherichia phage lambda ...`.
+        // Key on the bare accession so callers can match what they asked for.
+        const header = line.slice(1).trim();
+        const first = header.split(/\s+/)[0] ?? '';
+        currentId = first.split('.')[0] || first;
+        buffer = [];
+      } else if (currentId) {
+        buffer.push(line.trim().toUpperCase());
+      }
+    }
+    flush();
+
+    return { success: true, data: sequences };
+  } catch (error) {
+    return {
+      success: false,
+      error: {
+        code: 'NETWORK_ERROR',
+        message: error instanceof Error ? error.message : 'Failed to fetch sequences',
+      },
+    };
+  }
+}
+
+/**
  * Fetch GenBank flat file for detailed metadata parsing
  *
  * @param accession - GenBank accession number
