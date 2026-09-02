@@ -88,6 +88,23 @@ const DOTPLOT_ID: OverlayId = 'dotPlot';
 const NONB_ID: OverlayId = 'non-b-dna';
 const FOLD_EMBEDDING_MODEL = 'facebook/esm2_t6_8M_UR50D';
 
+/** Fallback terminal geometry when the host reports nothing usable. */
+export const DEFAULT_TERMINAL_COLS = 80;
+export const DEFAULT_TERMINAL_ROWS = 24;
+
+/**
+ * Accept a reported terminal dimension only if it is a positive finite number.
+ *
+ * Guards against 0 (pty with no controlling terminal), negatives, NaN and
+ * Infinity, any of which propagate into layout arithmetic and produce negative
+ * widths downstream.
+ */
+export function sanitizeTerminalDimension(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : fallback;
+}
+
 function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: number }): number[] {
   const k = options?.k ?? 3;
   const dims = options?.dims ?? 256;
@@ -310,7 +327,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Update terminal size
   useEffect(() => {
     const updateSize = () => {
-      setTerminalSize(stdout.columns ?? 80, stdout.rows ?? 24);
+      // `??` only substitutes for null/undefined, so a pty reporting 0 columns
+      // (no controlling terminal, some CI harnesses) used to pass 0 straight
+      // through and take the layout negative. Validate instead of coalescing.
+      setTerminalSize(
+        sanitizeTerminalDimension(stdout.columns, DEFAULT_TERMINAL_COLS),
+        sanitizeTerminalDimension(stdout.rows, DEFAULT_TERMINAL_ROWS),
+      );
     };
 
     updateSize();
