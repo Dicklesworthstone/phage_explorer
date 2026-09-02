@@ -2,7 +2,6 @@ import { usePhageStore } from '@phage-explorer/state';
 import { registerCommand } from './registry';
 
 export function initializeCommands(): void {
-  const store = usePhageStore.getState();
 
   // Navigation
   registerCommand({

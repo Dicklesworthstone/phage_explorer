@@ -4,8 +4,7 @@ import { usePhageStore } from '@phage-explorer/state';
 import { 
   RESTRICTION_ENZYMES, 
   digestGenome, 
-  calculateMigration, 
-  type DigestResult 
+  calculateMigration 
 } from '@phage-explorer/core';
 
 // Ladder markers (bp)
@@ -39,7 +38,7 @@ export function GelView({ sequence }: { sequence: string }): React.ReactElement 
   const gelHeight = 20;
   const laneWidth = 12;
   
-  const renderLane = (bands: number[], color: string) => {
+  const renderLane = (bands: number[], _color: string) => {
     const grid = Array(gelHeight).fill(' ');
     
     bands.forEach(len => {

@@ -236,8 +236,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const closeOverlay = usePhageStore(s => s.closeOverlay);
   const toggleOverlay = usePhageStore(s => s.toggleOverlay);
   const openComparison = usePhageStore(s => s.openComparison);
-  const helpDetail = usePhageStore(s => s.helpDetail);
-  const setHelpDetail = usePhageStore(s => s.setHelpDetail);
   const experienceLevel = usePhageStore(s => s.experienceLevel);
   const promoteExperienceLevel = usePhageStore(s => s.promoteExperienceLevel);
   const currentPhage = usePhageStore(s => s.currentPhage);

@@ -99,20 +99,6 @@ export const Header = memo(function Header(): React.ReactElement {
     return `${ICONS.star}${ICONS.starEmpty}${ICONS.starEmpty}`;
   }, [experienceLevel]);
 
-  // Memoize formatted genome length
-  const formattedGenomeLength = useMemo(
-    () => formatNumber(phage?.genomeLength ?? 0),
-    [phage?.genomeLength]
-  );
-
-  // Memoize GC colors for GCBar
-  const gcBarColors = useMemo(() => ({
-    info: colors.info,
-    warning: colors.warning,
-    success: colors.success,
-    textMuted: colors.textMuted,
-  }), [colors.info, colors.warning, colors.success, colors.textMuted]);
-
   return (
     <Box
       flexDirection="column"

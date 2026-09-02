@@ -12,8 +12,12 @@ export default [
       // lint on wasm-bindgen's own generated headers.
       'packages/wasm-compute/pkg/**',
       'packages/wasm-compute/pkg-simd/**',
-      'packages/tui/**',
-      '**/packages/tui/**',
+      // NOTE: packages/tui is deliberately NOT ignored any more.
+      //
+      // Ignoring it meant 59 files and ~11k lines of the terminal app were
+      // never linted. That is how an unused `AnomalyOverlay` import survived --
+      // the same import whose missing render branch soft-locked the app on
+      // Shift+A. Lint runs at --max-warnings=0 and still could not see it.
       '.cache/**',
       // Vercel build artifacts (generated; may contain minified bundles)
       '.vercel/**',

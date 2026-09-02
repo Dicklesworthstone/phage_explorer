@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import { analyzeNonBDNA, type NonBStructure } from '@phage-explorer/core';
+import { analyzeNonBDNA } from '@phage-explorer/core';
 
 export function NonBDNAView({ sequence }: { sequence: string }): React.ReactElement {
   const closeOverlay = usePhageStore(s => s.closeOverlay);

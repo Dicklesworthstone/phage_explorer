@@ -3,18 +3,12 @@ import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import { computeHilbertGC } from '@phage-explorer/core';
 
-// Gradient for GC content (Blue -> White -> Red)
-// 0.0 (AT-rich) -> 0.5 (Balanced) -> 1.0 (GC-rich)
-const GRADIENT = ['🟦', '🔵', '⬜', '🟠', '🟥']; // Simplified emojis for terminal
-// Or block characters with colors
-const BLOCKS = ['░', '▒', '▓', '█'];
-
 export function HilbertView({ sequence }: { sequence: string }): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const colors = theme.colors;
   const [order, setOrder] = useState(6); // Start with 64x64 grid
 
-  useInput((input, key) => {
+  useInput((input) => {
     if (input === '+' || input === '=') setOrder(o => Math.min(o + 1, 8));
     if (input === '-') setOrder(o => Math.max(o - 1, 4));
   });
