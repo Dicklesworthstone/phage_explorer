@@ -45,13 +45,99 @@ jobs:
         run: bun run lint
 
       - name: Typecheck
-        run: bun run typecheck
+        # Both projects. The root tsconfig excludes packages/web, so for a long
+        # time 107k lines of the deployed app were never type-checked at all.
+        run: bun run typecheck:all
 
       - name: Run tests
         run: bun run test
 
       - name: Verify web production build
         run: bun run build:web
+
+  e2e:
+    name: E2E (chromium)
+    runs-on: ubuntu-latest
+    # Only on PRs and main pushes; a tag build does not need to re-run these.
+    if: "!startsWith(github.ref, 'refs/tags/v')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'bun.lockb', 'package.json', 'packages/*/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Build web app
+        run: bun run build:web
+
+      # The 22 e2e specs cover accessibility (axe-core), hotkeys and the overlay
+      # stack, lazy loading, deep links, the database load and mobile UX. Until
+      # now none of them ran on a pull request: the only workflow that invoked
+      # Playwright triggered on deployment_status, i.e. after a deploy, against
+      # the live site. So a regression was caught in production or not at all.
+      #
+      # Excluded here, deliberately: live-site-*.e2e.ts and
+      # production-health.e2e.ts require a deployed URL and belong to
+      # e2e-production.yml. visual-regression and mobile-* run on a schedule
+      # rather than per-PR to keep this job fast.
+      # --timeout is raised well above the 60s default in playwright.config.ts.
+      #
+      # The accessibility specs walk 20+ overlays serially in a single test, and
+      # the database load alone takes several seconds. That fits comfortably on
+      # an idle machine (4-6s per test) but not on a contended one: under
+      # concurrent load these specs were measured timing out at 60s while the
+      # same tests passed in 3-5s when the machine was free. GitHub runners are
+      # 2-core and shared, so the default budget would make this job fail for
+      # reasons unrelated to the change under test -- the fastest way to teach
+      # everyone to ignore CI.
+      #
+      # Raising the ceiling keeps the coverage and removes the false-failure
+      # mode. It does not hide a slow app: real performance budgets belong in
+      # the Lighthouse job and the benchmark harness, not in a correctness gate.
+      - name: Run e2e suite
+        working-directory: packages/web
+        run: |
+          bunx playwright test --project=chromium --workers=2 --timeout=180000 \
+            e2e/accessibility.e2e.ts \
+            e2e/database.e2e.ts \
+            e2e/defense-systems.e2e.ts \
+            e2e/hotkeys-stack.e2e.ts \
+            e2e/overlay-lazy-loading.e2e.ts \
+            e2e/search-keyboard-ux.e2e.ts \
+            e2e/share-state.e2e.ts \
+            e2e/command-palette-drift.e2e.ts \
+            e2e/sequence-scroll-repaint.e2e.ts
+
+      - name: Upload report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: packages/web/playwright-report/
+          retention-days: 7
 
   build-release:
     name: Build (${{ matrix.os }})
