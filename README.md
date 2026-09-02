@@ -287,11 +287,18 @@ Use these conventions for any new component: pick colors from the palette above,
 
 Phage Explorer serves both newcomers and power users by stacking features in “depth layers”:
 
-- **Layer 0 – Sacred Surface (always available, never changed)**  
+- **Layer 0 – Always available**  
   Navigation: `↑` `↓` `←` `→` `PgUp` `PgDn` `Home` `End`  
   View: `N`/`C`/`Space` (DNA/AA), `F` (frame), `T` (theme), `D` (diff), `M` (3D model)  
   Meta: `?` (help), `S` or `/` (search), `Q` (quit)  
-  These keys are stable forever; everything else builds on top.
+  These are the terminal bindings. **The web app differs on several of them**, and
+  the differences are listed with their reasons in
+  [docs/keyboard-shortcuts.md](docs/keyboard-shortcuts.md), which is generated
+  from both registries. `c`, `v`, `j`, `k` and `[`/`]` do genuinely different
+  things on the two surfaces, so learning one does not transfer cleanly to the
+  other. This section previously described Layer 0 as "never changed" and
+  "stable forever"; it was not, and saying so was worse than the divergence
+  itself.
 
 - **Layer 1 – Quick Overlays (single-key toggles; max 3 active)**  
   Reserved keys: `G` (GC skew), `X` (complexity), `B` (bendability), `P` (promoter/RBS), `R` (repeats).  
@@ -306,7 +313,15 @@ Phage Explorer serves both newcomers and power users by stacking features in “
 - **Layer 4 – Command Palette (`:` or `Ctrl+P`)**  
   Fuzzy-search every action; shows the shortcut path (e.g., “GC skew [G] Overlay” or “Dot plot [A→4] Analysis”).
 
-Keystroke budget rule: Layer 0 keys are immutable; new features must live in higher layers. This keeps discoverability for beginners and speed for experts.
+Keystroke budget rule: new features live in higher layers rather than taking a
+Layer 0 key. This keeps discoverability for beginners and speed for experts.
+
+Layer 0 is **not** immutable and never was — the two surfaces already disagree on
+`c`, `v`, `j`, `k` and `[`/`]`. Some of that is forced (a browser reserves
+combinations a terminal does not), and some was a local decision taken without
+revising this section. Either way the honest statement is that the surfaces
+differ for recorded reasons, and `bun run check` fails if the generated shortcut
+document drifts from either registry.
 
 ---
 

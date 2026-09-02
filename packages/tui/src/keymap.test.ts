@@ -200,3 +200,54 @@ describe('the help overlay agrees with the keymap', () => {
     expect(HELP).not.toContain('Ctrl+K');
   });
 });
+
+/**
+ * Layer 0 is not immutable, and the README must not say it is.
+ *
+ * The README described Layer 0 as the "Sacred Surface (always available, never
+ * changed)", said "These keys are stable forever", and stated a "Keystroke
+ * budget rule: Layer 0 keys are immutable". None of that was true: `c`, `v`,
+ * `j`, `k` and `[`/`]` already did different things on the two surfaces.
+ *
+ * Those are worse than a key being unbound on one surface. A user who learns one
+ * surface and presses the same key on the other gets a DIFFERENT action, not
+ * nothing. Claiming they were stable made it likelier that a user would trust
+ * their muscle memory into a wrong action.
+ */
+describe('the README does not claim a stability the surfaces do not have', () => {
+  const README = readFileSync(join(import.meta.dir, '../../../README.md'), 'utf8');
+
+  it('reads the README', () => {
+    expect(README).toContain('Depth Layers');
+  });
+
+  it('no longer promises Layer 0 keys are immutable or stable forever', () => {
+    // Comment-style mentions that explain the removal are fine; the claim
+    // itself, as a promise, is not. Both original phrasings are checked.
+    expect(README).not.toContain('These keys are stable forever');
+    expect(README).not.toContain('Layer 0 keys are immutable;');
+    expect(README).not.toContain('never changed)');
+  });
+
+  it('points the reader at the generated document instead', () => {
+    expect(README).toContain('docs/keyboard-shortcuts.md');
+  });
+
+  it('records every key that means something different on each surface', () => {
+    // The five the audit called dangerous. Each must appear in the divergence
+    // table, because that table is what the README now points at.
+    const table = TUI_WEB_DIVERGENCES.map(d => `${d.tui} ${d.web} ${d.action} ${d.reason}`).join(' | ');
+    for (const key of ['c', 'v', 'j', 'k']) {
+      expect(table).toContain(key);
+    }
+    // Bracket keys are recorded under their own entry rather than as a literal.
+    expect(TUI_WEB_DIVERGENCES.some(d => /bracket/i.test(d.action))).toBe(true);
+  });
+
+  it('gives each collision a reason long enough to be a reason', () => {
+    // A one-word "differs" would satisfy the check above and explain nothing.
+    for (const d of TUI_WEB_DIVERGENCES) {
+      expect(d.reason.split(/\s+/).length).toBeGreaterThan(12);
+    }
+  });
+});

@@ -180,6 +180,48 @@ export const TUI_WEB_DIVERGENCES: readonly KeyDivergence[] = [
       'and with any focused input. The terminal does not, so the TUI can spend ' +
       'plain letters where the web app has to reach for a modifier.',
   },
+  // --- The collisions that actively mislead --------------------------------
+  // These are worse than a key being unbound on one surface: a user who learns
+  // one surface and presses the same key on the other gets a DIFFERENT action,
+  // not nothing. The README described Layer 0 as "stable forever" while these
+  // held; the claim has been removed rather than the divergence hidden.
+  {
+    action: 'Toggle DNA / amino-acid view',
+    tui: 'c or n or Space',
+    web: 'v or Space',
+    reason:
+      'The web app spends c on the comparison overlay, so its view cycle moved ' +
+      'to v. Pressing c in the web app opens comparison rather than switching ' +
+      'view, which is the collision most likely to surprise a TUI user.',
+  },
+  {
+    action: 'Packaging pressure gauge',
+    tui: 'v',
+    web: 'Shift+V',
+    reason:
+      'v is the view-mode cycle in the web app, so the pressure gauge took the ' +
+      'shifted key. In the terminal the view cycle is on c/n/Space and v was free.',
+  },
+  {
+    action: 'Next / previous phage',
+    tui: 'arrow keys',
+    web: 'j / k as well as the arrows',
+    reason:
+      'The web app follows the vim convention of j and k for down and up. The ' +
+      'terminal spends both on overlays (j k-mer anomaly, k amino-acid key) and ' +
+      'navigates with the arrows only. Pressing j or k in the terminal opens an ' +
+      'overlay rather than changing phage.',
+  },
+  {
+    action: 'Bracket keys',
+    tui: 'previous / next gene',
+    web: 'previous / next diff segment',
+    reason:
+      'Both are "step through the interesting things", but the interesting ' +
+      'things differ: the terminal has no diff navigation and the web app has ' +
+      'no gene-jump binding. This is the collision least visible to the user, ' +
+      'because both surfaces do something plausible.',
+  },
   {
     action: 'Function keys',
     tui: 'F1-F10 bound',
