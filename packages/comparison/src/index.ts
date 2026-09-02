@@ -89,7 +89,12 @@ export {
 } from './comparison-engine';
 
 // HGT provenance tracer
-export { analyzeHGTProvenance, type HGTOptions } from './hgt-tracer';
+export {
+  analyzeHGTProvenance,
+  initMinHashWasm,
+  isMinHashWasmAvailable,
+  type HGTOptions,
+} from './hgt-tracer';
 export {
   buildReferencePanel,
   referenceLabel,

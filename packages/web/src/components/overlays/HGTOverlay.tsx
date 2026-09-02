@@ -29,6 +29,7 @@ import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/ty
 import {
   analyzeHGTProvenance,
   buildReferencePanel,
+  initMinHashWasm,
   type HGTAnalysis,
   type PassportStamp,
 } from '@phage-explorer/comparison';
@@ -340,7 +341,14 @@ export function HGTOverlay({
 
     const signal = { aborted: false };
     setReferencesLoading(true);
-    buildReferencePanel(repository, phages, excludeId, { signal })
+    // Bring up the WASM MinHash path before analysis. Comparing an island
+    // against ~23 reference genomes is exactly the workload the Rust kernels
+    // were written for; without this the analyzer falls back to exact k=15 set
+    // Jaccard. Initialization is idempotent, self-verifying, and swallows its
+    // own failures, so a failure here just means the JS path is used.
+    initMinHashWasm()
+      .catch(() => { /* JS fallback is correct, just slower */ })
+      .then(() => buildReferencePanel(repository, phages, excludeId, { signal }))
       .then(panel => {
         if (signal.aborted) return;
         referencePanelPhageId.current = excludeId;

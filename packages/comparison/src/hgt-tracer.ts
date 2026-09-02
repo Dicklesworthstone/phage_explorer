@@ -57,8 +57,26 @@ export async function initMinHashWasm(): Promise<void> {
   }
 }
 
-// Initialize on module load (non-blocking) - REMOVED to prevent side effects/crashes
-// initMinHashWasm().catch(() => { /* WASM unavailable */ });
+// Deliberately NOT initialized at module load.
+//
+// This module is imported by both the browser app and the Bun-based TUI, and
+// a top-level async WASM import fires in environments that cannot service it,
+// which is why the module-load call was removed. The cost of removing it was
+// that nothing else ever called `initMinHashWasm`, so `wasmMinHashAvailable`
+// stayed false forever and every MinHash path silently fell back to the exact
+// k=15 Set-Jaccard implementation.
+//
+// Callers that know they are in a context where WASM can load -- a browser
+// worker or effect, not module scope -- should await `initMinHashWasm()` once
+// before analysis. It is idempotent, self-testing (it verifies a known
+// signature round-trips to a Jaccard of exactly 1.0 before declaring WASM
+// usable), and swallows its own failures, so a caller that awaits it can never
+// be made worse off than one that does not.
+
+/** Whether the WASM MinHash path is active. Exposed for diagnostics and tests. */
+export function isMinHashWasmAvailable(): boolean {
+  return wasmMinHashAvailable;
+}
 
 /**
  * Internal helper to compute signature from a normalized sequence.

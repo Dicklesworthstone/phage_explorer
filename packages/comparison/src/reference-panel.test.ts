@@ -41,6 +41,41 @@ function makeSource(sequences: Map<number, string>): ReferencePanelSource {
   };
 }
 
+/**
+ * Deterministic sequence over all four bases with a target GC fraction.
+ *
+ * Realistic composition matters here. A degenerate two-letter sequence
+ * (pure AT) collapses k-mer diversity and makes Jaccard similarity behave
+ * pathologically -- an artifact of the test construct, not of the analyzer.
+ */
+function biasedSequence(length: number, gcFraction: number, seed: number): string {
+  let state = seed >>> 0;
+  const next = (): number => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0xffffffff;
+  };
+  const out: string[] = [];
+  for (let i = 0; i < length; i++) {
+    const r = next();
+    if (r < gcFraction / 2) out.push('G');
+    else if (r < gcFraction) out.push('C');
+    else if (r < gcFraction + (1 - gcFraction) / 2) out.push('A');
+    else out.push('T');
+  }
+  return out.join('');
+}
+
+/**
+ * A query genome carrying a real 2.5 kb chunk OF the donor genome, spliced into
+ * a compositionally different backbone. The island and the donor therefore share
+ * actual k-mers, which is exactly the signal donor inference exists to find.
+ */
+const DONOR_GENOME = biasedSequence(20000, 0.28, 7);
+const HOST_BACKBONE = biasedSequence(30000, 0.62, 5);
+const TRANSFERRED_ISLAND = DONOR_GENOME.slice(3000, 5500);
+const QUERY_GENOME =
+  HOST_BACKBONE.slice(0, 12000) + TRANSFERRED_ISLAND + HOST_BACKBONE.slice(12000);
+
 const PHAGES: ReferencePanelPhage[] = [
   { id: 1, name: 'Enterobacteria phage lambda', host: 'Escherichia coli K-12' },
   { id: 2, name: 'Enterobacteria phage T4', host: 'Escherichia coli B' },
@@ -113,41 +148,47 @@ describe('buildReferencePanel', () => {
 });
 
 describe('donor inference depends on a populated panel', () => {
-  // A GC-rich host backbone with a small, distinctly AT-rich island spliced
-  // in. The island has to be a genuine compositional outlier -- a few percent
-  // of the genome, not a third of it -- or it shifts the mean it is measured
-  // against and no anomaly is detected.
-  const donorFragment = makeSequence(1500, 'ATATATATAT', 7);
-  const hostBackbone = makeSequence(30000, 'GCGCGCGCAT', 5);
-  const query = hostBackbone.slice(0, 12000) + donorFragment + hostBackbone.slice(12000);
-
-  // The donor reference shares the island's composition, so it is the genome
-  // the island's k-mers should match.
   const donorPhage: ReferencePanelPhage = { id: 42, name: 'Donor phage', host: 'donor host' };
-  const sequences = new Map<number, string>([[42, makeSequence(20000, 'ATATATATAT', 7)]]);
+  const sequences = new Map<number, string>([[42, DONOR_GENOME]]);
   const source = makeSource(sequences);
 
   it('names no donor when the panel is empty', () => {
-    const analysis = analyzeHGTProvenance(query, [], {}, { window: 1000, step: 500 });
-    // Islands can still be detected from composition alone...
+    const analysis = analyzeHGTProvenance(QUERY_GENOME, [], {}, { window: 1000, step: 500 });
+    // Islands are still detected from composition alone...
     expect(analysis.stamps.length).toBeGreaterThan(0);
-    // ...but with nothing to compare against, no donor is ever named.
+    // ...but with nothing to compare against, no donor is ever named. This is
+    // exactly what the web overlay showed before it was given a panel.
     for (const stamp of analysis.stamps) {
       expect(stamp.donorDistribution).toHaveLength(0);
       expect(stamp.donor).toBeNull();
     }
   });
 
-  it('names a donor once the catalogue panel is supplied', async () => {
+  it('names the correct donor once the catalogue panel is supplied', async () => {
     const panel = await buildReferencePanel(source, [donorPhage], null);
     expect(Object.keys(panel)).toHaveLength(1);
 
-    const analysis = analyzeHGTProvenance(query, [], panel, { window: 1000, step: 500 });
+    const analysis = analyzeHGTProvenance(QUERY_GENOME, [], panel, {
+      window: 1000,
+      step: 500,
+    });
     expect(analysis.stamps.length).toBeGreaterThan(0);
 
     const attributed = analysis.stamps.filter(s => s.donorDistribution.length > 0);
     expect(attributed.length).toBeGreaterThan(0);
     expect(attributed[0].donor).not.toBeNull();
     expect(attributed[0].donorDistribution[0].taxon).toContain('Donor phage');
+  });
+
+  it('locates the island where the transfer actually was', async () => {
+    const panel = await buildReferencePanel(source, [donorPhage], null);
+    const analysis = analyzeHGTProvenance(QUERY_GENOME, [], panel, {
+      window: 1000,
+      step: 500,
+    });
+    const island = analysis.stamps[0].island;
+    // The island was spliced in at 12,000 and is 2,500 bp long.
+    expect(island.start).toBeLessThanOrEqual(12000);
+    expect(island.end).toBeGreaterThanOrEqual(14500);
   });
 });
