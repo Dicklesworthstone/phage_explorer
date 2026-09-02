@@ -205,11 +205,11 @@ The **TUI** remains available for terminal enthusiasts:
 | **Felix O1** | 86,155 bp | dsDNA | Salmonella | Classic Salmonella-typing phage |
 | **D29** | 49,136 bp | dsDNA | Mycobacterium | SEA-PHAGES workhorse, TB research |
 | **L5** | 52,297 bp | dsDNA | Mycobacterium | First sequenced mycobacteriophage |
-| **PhiC31** | 41,491 bp | dsDNA | Streptomyces | Serine integrase for gene therapy |
+| **PhiC31** | 41,489 bp | dsDNA | Streptomyces | Serine integrase for gene therapy |
 | **PhiKZ** | 280,334 bp | dsDNA | Pseudomonas | Jumbo phage, forms nucleus-like shell |
 | **PRD1** | 14,927 bp | dsDNA | E. coli | Tailless, internal lipid membrane |
 | **PM2** | 10,079 bp | dsDNA | Pseudoalteromonas | Marine, first lipid-containing phage |
-| **Qβ** | 4,217 bp | ssRNA | E. coli | RNA replicase, isothermal amplification |
+| **Qβ** | 4,215 bp | ssRNA | E. coli | RNA replicase, isothermal amplification |
 | **T1** | 48,836 bp | dsDNA | E. coli | Notorious lab contaminant |
 
 ---
