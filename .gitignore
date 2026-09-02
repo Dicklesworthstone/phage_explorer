@@ -118,3 +118,6 @@ screenshots/
 *.bak
 api/*.bak
 .env*
+
+# Lighthouse CI run output (reports, traces). Regenerated on every run.
+.lighthouseci/

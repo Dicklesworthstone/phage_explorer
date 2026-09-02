@@ -42,6 +42,14 @@ jobs:
       - name: Build Web App
         run: bun run build:web
 
+      # This step is a gate. lighthouserc.cjs asserts every category score and
+      # every metric budget at `error`, set just below what the app measures
+      # today, so a regression fails the job. It previously asserted three
+      # performance budgets at `warn` and no category scores at all, which meant
+      # nothing here could fail.
+      #
+      # Verified locally in both directions: exit 0 as configured, exit 1 when
+      # the performance floor is tightened to the deploy plan's target of 0.9.
       - name: Run Lighthouse CI
         working-directory: packages/web
         run: bunx @lhci/cli@0.14.x autorun --config=./lighthouserc.cjs

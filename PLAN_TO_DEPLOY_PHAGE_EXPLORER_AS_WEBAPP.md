@@ -2508,11 +2508,17 @@ export default defineConfig({
 - [ ] Documentation
 
 **Verification**:
-- Lighthouse score >90 all categories
-- Screen reader navigable
+- Lighthouse score >90 all categories — **NOT MET.** Measured 2026-09-02, median of three
+  runs on the built `dist`: performance **36**, accessibility **95**, best-practices **82**,
+  SEO **100** for the main app (`offline.html` scores 100 / 89 / 96 / 90). The dominant
+  cost is the 10 MB SQLite database the app loads before it is interactive: LCP and TTI
+  are both around **27 s**. `packages/web/lighthouserc.cjs` now asserts these as `error`
+  at a ratchet just below today's values, so the numbers cannot get worse while the gap
+  is closed. Tracked by `phage_explorer-5t4r.4` and `phage_explorer-5t4r.5`.
+- Screen reader navigable — unverified; needs a manual run (`phage_explorer-k4ep.5`)
 - Keyboard-only usable
 - Error states graceful
-- Cold start <2s on broadband
+- Cold start <2s on broadband — **NOT MET**, see the LCP/TTI figures above
 
 ---
 
