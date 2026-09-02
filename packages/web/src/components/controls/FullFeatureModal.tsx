@@ -609,11 +609,6 @@ export function FullFeatureModal(): React.ReactElement | null {
                         </span>
                       )}
                     </div>
-                    {feature.shortcuts && feature.shortcuts.length > 0 && (
-                      <span className="ffm-feature-shortcut">
-                        {feature.shortcuts[0]}
-                      </span>
-                    )}
                     {isActive && <span className="ffm-feature-active-badge">ON</span>}
                   </div>
                 );
@@ -678,11 +673,6 @@ export function FullFeatureModal(): React.ReactElement | null {
                           </span>
                         )}
                       </div>
-                      {feature.shortcuts && feature.shortcuts.length > 0 && (
-                        <span className="ffm-feature-shortcut">
-                          {feature.shortcuts[0]}
-                        </span>
-                      )}
                       {isActive && (
                         <span className="ffm-feature-active-badge">ON</span>
                       )}

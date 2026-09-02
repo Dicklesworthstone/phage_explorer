@@ -397,3 +397,48 @@ describe('the keyboard primer teaches only real shortcuts', () => {
     expect(boundKeys().has('this-is-not-a-key')).toBe(false);
   });
 });
+
+/**
+ * There is one key map, and featureRegistry is not it.
+ *
+ * `packages/web/src/lib/featureRegistry.ts` carried a `shortcuts?: string[]` on
+ * every entry -- a second, hand-maintained copy of the key map. Roughly
+ * eighteen of the fifty-two were wrong: k-mer anomaly listed `V` against the
+ * real Alt+J, HGT listed `Y` against Alt+H, dot plot listed `.` against Alt+O,
+ * and diff listed `d` when nothing registered it at all.
+ *
+ * The file is also dead: its only importer is `FullFeatureModal`, which is
+ * exported from the controls barrel and rendered nowhere. That is worth stating
+ * plainly rather than leaving for the next reader to discover.
+ */
+describe('featureRegistry does not carry a second key map', () => {
+  const registry = readFileSync(
+    join(import.meta.dir, '../lib/featureRegistry.ts'),
+    'utf8'
+  );
+
+  it('reads the file', () => {
+    expect(registry).toContain('FeatureCategory');
+    expect(registry.length).toBeGreaterThan(5000);
+  });
+
+  it('declares no shortcuts on feature entries', () => {
+    // Comments explaining the removal are allowed to mention the field; a live
+    // declaration is not.
+    const code = registry
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter(l => !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code).not.toMatch(/shortcuts\s*[?]?:/);
+    expect(code).not.toMatch(/shortcuts:\s*\[/);
+  });
+
+  it('that check can fail', () => {
+    // Guards the guard: the stripped source must still contain the entries, or
+    // the assertion above is testing an empty string.
+    const code = registry.replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(code).toContain('analysis:kmer-anomaly');
+    expect(code).toContain("category: 'analysis'");
+  });
+});

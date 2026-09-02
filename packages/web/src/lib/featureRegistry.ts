@@ -32,8 +32,20 @@ export interface Feature {
   category: FeatureCategory;
   /** SVG icon name from IconRegistry */
   icon?: string;
-  /** Keyboard shortcuts that trigger this feature */
-  shortcuts?: string[];
+  /**
+   * Keyboard shortcuts are NOT stored here.
+   *
+   * They used to be, as a `shortcuts?: string[]` on every entry, and roughly
+   * eighteen of the fifty-two were wrong: k-mer anomaly listed `V` against the
+   * real Alt+J, HGT listed `Y` against Alt+H, dot plot listed `.` against
+   * Alt+O, diff listed `d` when nothing registered it at all. That is what a
+   * second copy of the key map becomes.
+   *
+   * `packages/web/src/keyboard/actionRegistry.ts` is the one the app dispatches
+   * from, so it cannot be wrong about the web app, and
+   * `docs/keyboard-shortcuts.md` is generated from it. Anything that wants to
+   * show a shortcut should read it from there.
+   */
   /** Action to execute when the feature is activated */
   action: (ctx: FeatureContext) => void;
   /** Check if feature is currently active/toggled on */
@@ -164,7 +176,6 @@ export const FEATURES: Feature[] = [
     description: 'Navigate to the next phage in the list',
     category: 'navigation',
     icon: 'arrow-down',
-    shortcuts: ['ArrowDown', 'j'],
     action: (ctx) => ctx.nextPhage(),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['navigate', 'phage', 'next', 'forward'],
@@ -176,7 +187,6 @@ export const FEATURES: Feature[] = [
     description: 'Navigate to the previous phage in the list',
     category: 'navigation',
     icon: 'arrow-up',
-    shortcuts: ['ArrowUp', 'k'],
     action: (ctx) => ctx.prevPhage(),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['navigate', 'phage', 'previous', 'back'],
@@ -188,7 +198,6 @@ export const FEATURES: Feature[] = [
     description: 'Jump to the beginning of the sequence',
     category: 'navigation',
     icon: 'arrow-left',
-    shortcuts: ['Home', 'gg'],
     action: (ctx) => ctx.scrollToStart(),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['navigate', 'start', 'beginning', 'home'],
@@ -200,7 +209,6 @@ export const FEATURES: Feature[] = [
     description: 'Jump to the end of the sequence',
     category: 'navigation',
     icon: 'arrow-right',
-    shortcuts: ['End', 'G'],
     action: (ctx) => ctx.scrollToEnd(),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['navigate', 'end', 'last'],
@@ -212,7 +220,6 @@ export const FEATURES: Feature[] = [
     description: 'Jump to a specific nucleotide position',
     category: 'navigation',
     icon: 'target',
-    shortcuts: ['Ctrl+g'],
     action: (ctx) => ctx.openOverlay('goto'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['navigate', 'position', 'jump', 'goto'],
@@ -224,7 +231,6 @@ export const FEATURES: Feature[] = [
     description: 'Search for phages by name or accession',
     category: 'navigation',
     icon: 'search',
-    shortcuts: ['s', '/'],
     action: (ctx) => ctx.openOverlay('search'),
     tags: ['search', 'find', 'phage', 'query'],
     minLevel: 'novice',
@@ -239,7 +245,6 @@ export const FEATURES: Feature[] = [
     description: 'Switch between DNA and amino acid view modes',
     category: 'view',
     icon: 'layers',
-    shortcuts: ['Space', 'v'],
     action: (ctx) => ctx.toggleViewMode(),
     isActive: (ctx) => ctx.viewMode === 'aa',
     isEnabled: (ctx) => ctx.hasPhage,
@@ -252,7 +257,6 @@ export const FEATURES: Feature[] = [
     description: 'Cycle through reading frames (+1, +2, +3, -1, -2, -3)',
     category: 'view',
     icon: 'layers',
-    shortcuts: ['f'],
     action: (ctx) => ctx.cycleReadingFrame(),
     isEnabled: (ctx) => ctx.hasPhage && ctx.viewMode === 'aa',
     tags: ['frame', 'reading', 'codon', 'translate'],
@@ -264,7 +268,6 @@ export const FEATURES: Feature[] = [
     description: 'Highlight differences from reference sequence',
     category: 'view',
     icon: 'git-compare',
-    shortcuts: ['d'],
     action: (ctx) => ctx.toggleDiff(),
     isActive: (ctx) => ctx.diffEnabled,
     isEnabled: (ctx) => ctx.hasPhage,
@@ -277,7 +280,6 @@ export const FEATURES: Feature[] = [
     description: 'Switch to the next color theme',
     category: 'view',
     icon: 'contrast',
-    shortcuts: ['t'],
     action: (ctx) => ctx.cycleTheme(),
     tags: ['theme', 'color', 'dark', 'light', 'appearance'],
     minLevel: 'novice',
@@ -288,7 +290,6 @@ export const FEATURES: Feature[] = [
     description: 'Show amino acid properties reference card',
     category: 'view',
     icon: 'bookmark',
-    shortcuts: ['k'],
     action: (ctx) => ctx.openOverlay('aaKey'),
     tags: ['amino', 'acid', 'key', 'legend', 'reference'],
     minLevel: 'novice',
@@ -299,7 +300,6 @@ export const FEATURES: Feature[] = [
     description: 'Show compact amino acid color legend',
     category: 'view',
     icon: 'bookmark',
-    shortcuts: ['l'],
     action: (ctx) => ctx.openOverlay('aaLegend'),
     tags: ['amino', 'acid', 'legend', 'colors'],
     minLevel: 'novice',
@@ -314,7 +314,6 @@ export const FEATURES: Feature[] = [
     description: 'Show or hide the 3D phage model',
     category: '3d',
     icon: 'cube',
-    shortcuts: ['m'],
     action: (ctx) => ctx.toggle3DModel(),
     isActive: (ctx) => ctx.show3DModel,
     isEnabled: (ctx) => ctx.hasPhage,
@@ -327,7 +326,6 @@ export const FEATURES: Feature[] = [
     description: 'Toggle fullscreen 3D model view',
     category: '3d',
     icon: 'maximize',
-    shortcuts: ['z'],
     action: (ctx) => ctx.toggle3DModelFullscreen(),
     isEnabled: (ctx) => ctx.hasPhage && ctx.show3DModel,
     tags: ['3d', 'fullscreen', 'expand', 'maximize'],
@@ -339,7 +337,6 @@ export const FEATURES: Feature[] = [
     description: 'Toggle 3D model animation',
     category: '3d',
     icon: 'play',
-    shortcuts: ['p'],
     action: (ctx) => ctx.toggle3DModelPause(),
     isEnabled: (ctx) => ctx.hasPhage && ctx.show3DModel,
     tags: ['3d', 'pause', 'play', 'animation', 'rotate'],
@@ -355,7 +352,6 @@ export const FEATURES: Feature[] = [
     description: 'Open the full analysis menu',
     category: 'analysis',
     icon: 'flask',
-    shortcuts: ['a'],
     action: (ctx) => ctx.openOverlay('analysisMenu'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['analysis', 'menu', 'tools', 'all'],
@@ -367,7 +363,6 @@ export const FEATURES: Feature[] = [
     description: 'Visualize GC skew across the genome',
     category: 'analysis',
     icon: 'dna',
-    shortcuts: ['g'],
     action: (ctx) => ctx.openOverlay('gcSkew'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['gc', 'skew', 'content', 'nucleotide', 'composition'],
@@ -379,7 +374,6 @@ export const FEATURES: Feature[] = [
     description: 'Analyze sequence complexity and entropy',
     category: 'analysis',
     icon: 'chart-bar',
-    shortcuts: ['x'],
     action: (ctx) => ctx.openOverlay('complexity'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['complexity', 'entropy', 'information', 'sequence'],
@@ -391,7 +385,6 @@ export const FEATURES: Feature[] = [
     description: 'Predict DNA structural flexibility',
     category: 'analysis',
     icon: 'trending-up',
-    shortcuts: ['b'],
     action: (ctx) => ctx.openOverlay('bendability'),
     isEnabled: (ctx) => ctx.hasPhage && ctx.viewMode === 'dna',
     tags: ['bendability', 'flexibility', 'structure', 'dna'],
@@ -403,7 +396,6 @@ export const FEATURES: Feature[] = [
     description: 'Identify potential promoters and ribosome binding sites',
     category: 'analysis',
     icon: 'target',
-    shortcuts: ['P'],
     action: (ctx) => ctx.openOverlay('promoter'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['promoter', 'rbs', 'ribosome', 'binding', 'transcription'],
@@ -415,7 +407,6 @@ export const FEATURES: Feature[] = [
     description: 'Find direct and inverted repeats',
     category: 'analysis',
     icon: 'repeat',
-    shortcuts: ['r'],
     action: (ctx) => ctx.openOverlay('repeats'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['repeats', 'tandem', 'inverted', 'direct'],
@@ -427,7 +418,6 @@ export const FEATURES: Feature[] = [
     description: 'Detect unusual k-mer frequencies',
     category: 'analysis',
     icon: 'alert-triangle',
-    shortcuts: ['V'],
     action: (ctx) => ctx.openOverlay('kmerAnomaly'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['kmer', 'anomaly', 'unusual', 'frequency'],
@@ -439,7 +429,6 @@ export const FEATURES: Feature[] = [
     description: 'Horizontal gene transfer analysis',
     category: 'analysis',
     icon: 'magnet',
-    shortcuts: ['Y'],
     action: (ctx) => ctx.openOverlay('hgt'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['hgt', 'horizontal', 'gene', 'transfer', 'provenance'],
@@ -451,7 +440,6 @@ export const FEATURES: Feature[] = [
     description: 'Detect CRISPR-Cas systems',
     category: 'analysis',
     icon: 'target',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('crispr'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['crispr', 'cas', 'spacer', 'repeat'],
@@ -463,7 +451,6 @@ export const FEATURES: Feature[] = [
     description: 'Visualize sequence as CGR fractal',
     category: 'analysis',
     icon: 'aperture',
-    shortcuts: ['Alt+Shift+C'],
     action: (ctx) => ctx.openOverlay('cgr'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['cgr', 'chaos', 'game', 'fractal', 'visualization'],
@@ -475,7 +462,6 @@ export const FEATURES: Feature[] = [
     description: 'Visualize sequence on a Hilbert curve',
     category: 'analysis',
     icon: 'aperture',
-    shortcuts: ['H'],
     action: (ctx) => ctx.openOverlay('hilbert'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['hilbert', 'curve', 'visualization', 'space-filling'],
@@ -487,7 +473,6 @@ export const FEATURES: Feature[] = [
     description: 'Simulate restriction enzyme digestion',
     category: 'analysis',
     icon: 'bar-chart',
-    shortcuts: ['G'],
     action: (ctx) => ctx.openOverlay('gel'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['gel', 'electrophoresis', 'restriction', 'enzyme'],
@@ -499,7 +484,6 @@ export const FEATURES: Feature[] = [
     description: 'Self vs self dotplot for repeat detection',
     category: 'analysis',
     icon: 'grid',
-    shortcuts: ['.'],
     action: (ctx) => ctx.openOverlay('dotPlot'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['dotplot', 'synteny', 'alignment', 'self'],
@@ -511,7 +495,6 @@ export const FEATURES: Feature[] = [
     description: 'Dinucleotide frequency phase space',
     category: 'analysis',
     icon: 'trending-up',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('phasePortrait'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['phase', 'portrait', 'dinucleotide', 'frequency'],
@@ -523,7 +506,6 @@ export const FEATURES: Feature[] = [
     description: 'Analyze codon usage bias',
     category: 'analysis',
     icon: 'bar-chart',
-    shortcuts: ['J'],
     action: (ctx) => ctx.openOverlay('biasDecomposition'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['codon', 'bias', 'usage', 'decomposition'],
@@ -535,7 +517,6 @@ export const FEATURES: Feature[] = [
     description: 'Predict G-quadruplexes, Z-DNA, etc.',
     category: 'analysis',
     icon: 'dna',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('nonBDNA'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['non-b', 'quadruplex', 'z-dna', 'structure'],
@@ -547,7 +528,6 @@ export const FEATURES: Feature[] = [
     description: 'Structural constraint analysis',
     category: 'analysis',
     icon: 'lock',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('structureConstraint'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['structure', 'constraints', 'folding'],
@@ -559,7 +539,6 @@ export const FEATURES: Feature[] = [
     description: 'Detect genomic anomalies',
     category: 'analysis',
     icon: 'alert-triangle',
-    shortcuts: ['A'],
     action: (ctx) => ctx.openOverlay('anomaly'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['anomaly', 'detection', 'unusual', 'outlier'],
@@ -571,7 +550,6 @@ export const FEATURES: Feature[] = [
     description: 'Predict host tropism and receptors',
     category: 'analysis',
     icon: 'target',
-    shortcuts: ['0'],
     action: (ctx) => ctx.openOverlay('tropism'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['tropism', 'receptor', 'host', 'binding'],
@@ -583,7 +561,6 @@ export const FEATURES: Feature[] = [
     description: 'Analyze dN/dS ratios',
     category: 'analysis',
     icon: 'trending-up',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('selectionPressure'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['selection', 'pressure', 'dn', 'ds', 'ratio'],
@@ -595,7 +572,6 @@ export const FEATURES: Feature[] = [
     description: 'Predict virion stability',
     category: 'analysis',
     icon: 'shield',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('stability'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['virion', 'stability', 'capsid'],
@@ -607,7 +583,6 @@ export const FEATURES: Feature[] = [
     description: 'Phage-host defense system analysis',
     category: 'analysis',
     icon: 'shield',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('defenseArmsRace'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['defense', 'arms', 'race', 'anti-crispr'],
@@ -619,7 +594,6 @@ export const FEATURES: Feature[] = [
     description: 'Detailed codon usage statistics',
     category: 'analysis',
     icon: 'bar-chart',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('codonBias'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['codon', 'bias', 'usage', 'statistics'],
@@ -631,7 +605,6 @@ export const FEATURES: Feature[] = [
     description: 'Calculate CAI for gene expression',
     category: 'analysis',
     icon: 'bar-chart',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('codonAdaptation'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['cai', 'codon', 'adaptation', 'expression'],
@@ -643,7 +616,6 @@ export const FEATURES: Feature[] = [
     description: 'Identify protein domain architecture',
     category: 'analysis',
     icon: 'layers',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('proteinDomains'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['protein', 'domain', 'architecture', 'pfam'],
@@ -655,7 +627,6 @@ export const FEATURES: Feature[] = [
     description: 'Auxiliary metabolic gene pathway analysis',
     category: 'analysis',
     icon: 'git-branch',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('amgPathway'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['amg', 'metabolic', 'pathway', 'auxiliary'],
@@ -667,7 +638,6 @@ export const FEATURES: Feature[] = [
     description: 'Principal component analysis of genomic signatures',
     category: 'analysis',
     icon: 'trending-up',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('genomicSignaturePCA'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['pca', 'genomic', 'signature', 'principal', 'component'],
@@ -683,7 +653,6 @@ export const FEATURES: Feature[] = [
     description: 'Compare two phage genomes',
     category: 'comparison',
     icon: 'git-compare',
-    shortcuts: ['c', 'w'],
     action: (ctx) => ctx.openOverlay('comparison'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['compare', 'genome', 'alignment', 'diff'],
@@ -695,7 +664,6 @@ export const FEATURES: Feature[] = [
     description: 'Analyze gene order conservation',
     category: 'comparison',
     icon: 'git-merge',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('synteny'),
     isEnabled: (ctx) => ctx.hasPhage,
     tags: ['synteny', 'gene', 'order', 'conservation'],
@@ -711,7 +679,6 @@ export const FEATURES: Feature[] = [
     description: 'Launch biological simulations',
     category: 'simulation',
     icon: 'zap',
-    shortcuts: ['S'],
     action: (ctx) => ctx.openOverlay('simulationHub'),
     tags: ['simulation', 'model', 'dynamics', 'run'],
     minLevel: 'intermediate',
@@ -726,7 +693,6 @@ export const FEATURES: Feature[] = [
     description: 'Show/hide educational tooltips and explanations',
     category: 'education',
     icon: 'learn',
-    shortcuts: ['Ctrl+b'],
     action: (ctx) => ctx.toggleBeginnerMode(),
     isActive: (ctx) => ctx.beginnerModeEnabled,
     tags: ['beginner', 'education', 'learn', 'tooltips', 'help'],
@@ -738,7 +704,6 @@ export const FEATURES: Feature[] = [
     description: 'View biology terms glossary',
     category: 'education',
     icon: 'book',
-    shortcuts: [],
     action: (ctx) => ctx.openGlossary(),
     tags: ['glossary', 'terms', 'definitions', 'learn'],
     minLevel: 'novice',
@@ -749,7 +714,6 @@ export const FEATURES: Feature[] = [
     description: 'Take a guided tour of the application',
     category: 'education',
     icon: 'compass',
-    shortcuts: [],
     action: (ctx) => ctx.startTour('welcome'),
     tags: ['tour', 'guide', 'welcome', 'intro', 'tutorial'],
     minLevel: 'novice',
@@ -760,7 +724,6 @@ export const FEATURES: Feature[] = [
     description: 'View annotated phage diagram',
     category: 'education',
     icon: 'image',
-    shortcuts: [],
     action: (ctx) => ctx.openOverlay('illustration'),
     tags: ['illustration', 'diagram', 'anatomy', 'structure'],
     minLevel: 'novice',
@@ -775,7 +738,6 @@ export const FEATURES: Feature[] = [
     description: 'Configure application settings',
     category: 'settings',
     icon: 'settings',
-    shortcuts: ['Ctrl+,'],
     action: (ctx) => ctx.openOverlay('settings'),
     tags: ['settings', 'preferences', 'configure', 'options'],
     minLevel: 'novice',
@@ -786,7 +748,6 @@ export const FEATURES: Feature[] = [
     description: 'View keyboard shortcuts and help',
     category: 'settings',
     icon: 'help',
-    shortcuts: ['?', 'F1'],
     action: (ctx) => ctx.openOverlay('help'),
     tags: ['help', 'shortcuts', 'keyboard', 'documentation'],
     minLevel: 'novice',
@@ -797,7 +758,6 @@ export const FEATURES: Feature[] = [
     description: 'Open quick command search',
     category: 'settings',
     icon: 'command',
-    shortcuts: [':'],
     action: (ctx) => ctx.openOverlay('commandPalette'),
     tags: ['command', 'palette', 'quick', 'search'],
     minLevel: 'intermediate',
@@ -849,18 +809,10 @@ export function getFeatureById(id: string): Feature | undefined {
 }
 
 /**
- * Get all unique shortcuts
+ * `getAllShortcuts` lived here and had no callers.
+ *
+ * It built a map from this file's hardcoded shortcut strings, roughly eighteen
+ * of which were wrong. Anything wanting the real key map should read
+ * `packages/web/src/keyboard/actionRegistry.ts`, which the app dispatches from,
+ * or the document generated from it.
  */
-export function getAllShortcuts(): Map<string, Feature> {
-  const shortcuts = new Map<string, Feature>();
-
-  for (const feature of FEATURES) {
-    if (feature.shortcuts) {
-      for (const shortcut of feature.shortcuts) {
-        shortcuts.set(shortcut, feature);
-      }
-    }
-  }
-
-  return shortcuts;
-}
