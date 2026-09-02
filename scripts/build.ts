@@ -74,6 +74,11 @@ const result = await Bun.build({
   external: [],
   define: {
     "process.env.DEV": "'false'",
+    // React switches on NODE_ENV, not DEV. Without this the compiled binary
+    // ships React's development build: every render pays for the dev-only
+    // fiber instrumentation, and a crash prints a full internal stack trace
+    // instead of an error message.
+    "process.env.NODE_ENV": '"production"',
   },
   plugins: [
     {
