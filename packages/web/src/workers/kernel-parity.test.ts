@@ -285,78 +285,75 @@ for (const { name, wasm } of variants) {
   });
 
   /**
-   * `analyze_kmers` does NOT agree with `analyzeKmers`, and the difference is
-   * not rounding. This test records the real behaviour rather than asserting
-   * an agreement that does not exist.
+   * `analyze_kmers` agrees with `analyzeKmers`.
    *
-   * Measured on a 3000 bp pair at k=6:
+   * It did not, until phage_explorer-wbil. The kernel counted PLAIN k-mers while
+   * the JS counted CANONICAL ones -- each k-mer collapsed with its reverse
+   * complement -- so the two returned materially different answers under one
+   * name. Measured on a 3000 bp pair at k=6 before the fix:
    *
    *                          WASM      JS
    *     unique k-mers in A   2110      1585
    *     jaccard              0.343     0.607
-   *     containment A in B   0.505     0.743
-   *     cosine               0.433     0.592
    *
-   * The cause, confirmed directly: the WASM kernel counts PLAIN k-mers and the
-   * JS counts CANONICAL ones -- each k-mer collapsed with its reverse
-   * complement. 2110 is exactly `extractKmerSet(A, 6).size` and 1585 is exactly
-   * `extractCanonicalKmerSet(A, 6).size`.
+   * Canonical is the biologically correct choice: which strand a sequence was
+   * read from is an accident of sequencing, so a genome must not look
+   * dissimilar to its own reverse complement.
    *
-   * Canonical is the biologically right choice for comparing genomes, since
-   * which strand a sequence was read from is an accident of sequencing. So the
-   * JS is right and the kernel is measuring something else under the same name.
+   * A second, subtler divergence went with it. The kernel skipped only `N`
+   * where the JS skips any base outside ACGT, so R, Y, K, M and the rest were
+   * being counted as ordinary bases on one side only.
    *
-   * It is latent today: `analyze_kmers` has no production caller, only the JS
-   * function is exported from the comparison package. It is a trap rather than
-   * a live bug -- the moment someone wires the kernel in for speed, every
-   * similarity figure changes by roughly a factor of two, silently. Tracked
-   * separately; changing the kernel is a Rust change and a decision about
-   * intent, not something to slip into a test file.
+   * The block that used to live here asserted the DIFFERENCE, so that unifying
+   * the implementations would fail the suite and someone would have to come
+   * back and change it deliberately. This is that deliberate change.
    */
-  describe(`k-mer analysis divergence [${name}]`, () => {
+  describe(`k-mer analysis parity [${name}]`, () => {
     const k = 6;
 
-    it('the kernel counts plain k-mers', () => {
+    it('agrees on every field', () => {
+      const w = wasm.analyze_kmers(SEQ, SEQ_B, k);
+      const js = analyzeKmers(SEQ, SEQ_B, k);
+
+      expect(w.unique_kmers_a).toBe(js.uniqueKmersA);
+      expect(w.unique_kmers_b).toBe(js.uniqueKmersB);
+      expect(w.shared_kmers).toBe(js.sharedKmers);
+      expect(w.jaccard_index).toBeCloseTo(js.jaccardIndex, 12);
+      expect(w.containment_a_in_b).toBeCloseTo(js.containmentAinB, 12);
+      expect(w.containment_b_in_a).toBeCloseTo(js.containmentBinA, 12);
+      expect(w.cosine_similarity).toBeCloseTo(js.cosineSimilarity, 12);
+      expect(w.bray_curtis_dissimilarity).toBeCloseTo(js.brayCurtisDissimilarity, 12);
+    });
+
+    it('counts canonical k-mers, which is what made them disagree', () => {
+      // Pins the specific cause. 1585 canonical against 2110 plain for this
+      // sequence: if the kernel reverted to plain counting this fails with the
+      // exact number that identifies the regression.
       expect(wasm.analyze_kmers(SEQ, SEQ_B, k).unique_kmers_a).toBe(
+        extractCanonicalKmerSet(SEQ, k).size
+      );
+      expect(extractCanonicalKmerSet(SEQ, k).size).toBeLessThan(
         extractKmerSet(SEQ, k).size
       );
     });
 
-    it('the JS counts canonical k-mers', () => {
-      expect(analyzeKmers(SEQ, SEQ_B, k).uniqueKmersA).toBe(
-        extractCanonicalKmerSet(SEQ, k).size
-      );
+    it('sees a sequence and its reverse complement as identical', () => {
+      // The property canonical k-mers exist for, and the one plain counting got
+      // wrong. Under plain counting these two share almost nothing.
+      const rc = SEQ.split('').reverse()
+        .map(c => ({ A: 'T', C: 'G', G: 'C', T: 'A' }[c] ?? c)).join('');
+      const self = wasm.analyze_kmers(SEQ, rc, k);
+      expect(self.jaccard_index).toBeCloseTo(1, 6);
+      expect(self.containment_a_in_b).toBeCloseTo(1, 6);
     });
 
-    it('so the two disagree materially, and this records by how much', () => {
-      const w = wasm.analyze_kmers(SEQ, SEQ_B, k);
-      const js = analyzeKmers(SEQ, SEQ_B, k);
-      // Not a tolerance that has been widened until it passes: the assertion is
-      // that they DIFFER, so unifying them fails this test and someone deletes
-      // it deliberately.
-      expect(Math.abs(w.jaccard_index - js.jaccardIndex)).toBeGreaterThan(0.1);
-      expect(w.unique_kmers_a).toBeGreaterThan(js.uniqueKmersA);
-    });
-
-    it('each is internally consistent on its own terms', () => {
-      // Neither is broken; they answer different questions. Jaccard must sit in
-      // [0,1] and be symmetric in both.
-      const w = wasm.analyze_kmers(SEQ, SEQ_B, k);
-      const wSwapped = wasm.analyze_kmers(SEQ_B, SEQ, k);
-      expect(w.jaccard_index).toBeGreaterThanOrEqual(0);
-      expect(w.jaccard_index).toBeLessThanOrEqual(1);
-      expect(wSwapped.jaccard_index).toBeCloseTo(w.jaccard_index, 12);
-    });
-
-    it('has no production caller today, so the divergence is latent', () => {
-      // Recorded as an assertion rather than a comment, so that wiring the
-      // kernel in without addressing the divergence trips this test.
-      const src = readFileSync(
-        join(import.meta.dir, '../../../comparison/src/index.ts'),
-        'utf8'
-      );
-      expect(src).toContain('analyzeKmers');
-      expect(src).not.toContain('analyze_kmers');
+    it('drops k-mers containing any base outside ACGT, as the JS does', () => {
+      // The second divergence: the kernel skipped only N, so R/Y/K/M were
+      // counted as ordinary bases on one side.
+      const withAmbiguous = `${SEQ.slice(0, 100)}RYKM${SEQ.slice(104, 600)}`;
+      const w = wasm.analyze_kmers(withAmbiguous, SEQ_B, k);
+      const js = analyzeKmers(withAmbiguous, SEQ_B, k);
+      expect(w.unique_kmers_a).toBe(js.uniqueKmersA);
     });
   });
 

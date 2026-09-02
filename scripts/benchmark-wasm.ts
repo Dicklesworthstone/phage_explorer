@@ -266,9 +266,9 @@ const CASES: Case[] = [
       return {
         wasm: () => wasm.analyze_kmers(a, b, 6).jaccard_index,
         js: () => analyzeKmers(a, b, 6).jaccardIndex,
-        incomparable:
-          'the kernel counts plain k-mers and the JS counts canonical ones ' +
-          '(phage_explorer-wbil)',
+        // Compared again since phage_explorer-wbil: the kernel used to count
+        // plain k-mers where the JS counted canonical ones.
+        agree: (x, y) => Math.abs((x as number) - (y as number)) < 1e-12,
       };
     },
   },

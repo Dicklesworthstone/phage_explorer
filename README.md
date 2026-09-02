@@ -622,12 +622,16 @@ Three things this table says that the old figures did not:
 Levenshtein is measured only to 5 kb: it is O(n·m), so larger inputs dominate
 the sweep without adding signal.
 
-Two rows are timed but their outputs are *not* compared, because the two
-implementations do not currently agree: MinHash does not share a hash family
-with its JS counterpart (`phage_explorer-i1cm`), and `analyze_kmers` counts
-plain k-mers where the JS counts canonical ones (`phage_explorer-wbil`). Both
-are tracked; the benchmark labels them rather than quietly reporting a ratio
-between two different computations.
+One row is timed but its output is *not* compared: MinHash does not share a
+hash family with its JS counterpart, so the two sample different k-mers and
+return different estimates of the same quantity (`phage_explorer-i1cm`). The
+benchmark labels it rather than quietly reporting a ratio between two different
+computations.
+
+`analyze_kmers` was in that category too and no longer is: the kernel counted
+plain k-mers where the JS counted canonical ones, giving a Jaccard of 0.343
+against 0.607 for the same input. It now counts canonical k-mers and agrees to
+twelve decimal places (`phage_explorer-wbil`).
 
 ### Why Rust/WASM for Sequence Work
 
