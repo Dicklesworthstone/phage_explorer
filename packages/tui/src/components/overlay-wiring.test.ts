@@ -35,33 +35,33 @@ function overlayIdConstants(source: string): Map<string, string> {
   return constants;
 }
 
-const CONSTANTS = overlayIdConstants(APP_SOURCE);
-
-function resolve(token: string): string | null {
+function resolve(token: string, constants: Map<string, string>): string | null {
   const quoted = token.match(/^'([^']+)'$/);
   if (quoted) return quoted[1];
-  return CONSTANTS.get(token) ?? null;
+  return constants.get(token) ?? null;
 }
 
 /** Overlay ids the key handlers and menus can open. */
-function openedOverlayIds(source: string): Set<string> {
+export function openedOverlayIds(source: string): Set<string> {
   const ids = new Set<string>();
+  const constants = overlayIdConstants(source);
   const re = /(?:openOverlay|toggleOverlay)\(\s*((?:'[^']+')|(?:[A-Z0-9_]+))/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(source)) !== null) {
-    const id = resolve(match[1]);
+    const id = resolve(match[1], constants);
     if (id) ids.add(id);
   }
   return ids;
 }
 
 /** Overlay ids that have an `activeOverlay === X` render branch. */
-function renderedOverlayIds(source: string): Set<string> {
+export function renderedOverlayIds(source: string): Set<string> {
   const ids = new Set<string>();
+  const constants = overlayIdConstants(source);
   const re = /activeOverlay\s*===\s*((?:'[^']+')|(?:[A-Z0-9_]+))/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(source)) !== null) {
-    const id = resolve(match[1]);
+    const id = resolve(match[1], constants);
     if (id) ids.add(id);
   }
   return ids;
@@ -74,7 +74,7 @@ describe('TUI overlay wiring', () => {
   it('parses a meaningful number of overlays from App.tsx', () => {
     // Guards the guard: if the regexes ever stop matching, the parity test
     // below would pass vacuously over two empty sets.
-    expect(CONSTANTS.size).toBeGreaterThan(10);
+    expect(overlayIdConstants(APP_SOURCE).size).toBeGreaterThan(10);
     expect(opened.size).toBeGreaterThan(10);
     expect(rendered.size).toBeGreaterThan(10);
   });
@@ -94,5 +94,34 @@ describe('TUI overlay wiring', () => {
     // If this gate is ever removed the lock class disappears, and this whole
     // test file can go with it. While it stands, the parity test is load-bearing.
     expect(APP_SOURCE).toContain('{ isActive: !activeOverlay }');
+  });
+});
+
+describe('overlay wiring guard catches the defect it exists for', () => {
+  // The pre-fix shape of App.tsx, reduced to the parts that matter: a bound
+  // overlay with no render branch, alongside one that is wired correctly.
+  const BROKEN_SOURCE = `
+    const ANOMALY_ID: OverlayId = 'anomaly';
+    const KMER_ID: OverlayId = 'kmerAnomaly';
+    if (key.shift) { openOverlay(ANOMALY_ID); }
+    toggleOverlay(KMER_ID);
+    return <>{activeOverlay === KMER_ID && <KmerAnomalyOverlay />}</>;
+  `;
+
+  it('flags an overlay that is opened but never rendered', () => {
+    const opened = openedOverlayIds(BROKEN_SOURCE);
+    const rendered = renderedOverlayIds(BROKEN_SOURCE);
+    const missing = [...opened].filter(id => !rendered.has(id));
+    expect(missing).toEqual(['anomaly']);
+  });
+
+  it('passes once the missing render branch is added', () => {
+    const fixed = BROKEN_SOURCE.replace(
+      '{activeOverlay === KMER_ID && <KmerAnomalyOverlay />}',
+      '{activeOverlay === KMER_ID && <KmerAnomalyOverlay />}{activeOverlay === ANOMALY_ID && <AnomalyOverlay />}'
+    );
+    const opened = openedOverlayIds(fixed);
+    const rendered = renderedOverlayIds(fixed);
+    expect([...opened].filter(id => !rendered.has(id))).toEqual([]);
   });
 });
