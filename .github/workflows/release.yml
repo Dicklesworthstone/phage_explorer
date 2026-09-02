@@ -161,6 +161,41 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The database is an ASSET of the release, and nothing staged it.
+      #
+      # The upload step publishes `dist/*`, and no step ever put phage.db there,
+      # so a release cut from this workflow would ship with no database at all.
+      # install.sh --with-database would then 404 on both phage.db.gz and
+      # phage.db and only warn, leaving the user a TUI with no data. The
+      # v1.4.1 release has a 3.1 MB phage.db that predates this workflow.
+      #
+      # The .gz is what install.sh tries first (3.9 MB against 10.4 MB); the
+      # plain file is published too because the installer falls back to it when
+      # gunzip is unavailable.
+      - name: Stage the phage database
+        run: |
+          set -euo pipefail
+          db="packages/web/public/phage.db"
+          gz="packages/web/public/phage.db.gz"
+
+          # Fail rather than ship a release without data. A missing database is
+          # not a degraded release, it is a broken install path.
+          [[ -f "$db" ]] || { echo "::error::$db is missing; refusing to publish a release without it"; exit 1; }
+          [[ -f "$gz" ]] || { echo "::error::$gz is missing; install.sh prefers it"; exit 1; }
+
+          mkdir -p dist
+          cp "$db" "$gz" dist/
+          ls -la dist/phage.db dist/phage.db.gz
+
+          # Guard against publishing the stale 3.1 MB database that v1.4.1
+          # shipped, from before Pfam domains, ESM2 embeddings and codon
+          # adaptation were added.
+          size=$(stat -c%s dist/phage.db 2>/dev/null || stat -f%z dist/phage.db)
+          if [[ "$size" -lt 5000000 ]]; then
+            echo "::error::dist/phage.db is only $size bytes; the current database is ~10 MB. Refusing to publish a stale one."
+            exit 1
+          fi
+
       - name: Generate aggregate sha256.txt
         # install.sh expects this filename verbatim:
         #   https://github.com/$OWNER/$REPO/releases/download/$VERSION/sha256.txt
@@ -171,13 +206,18 @@ jobs:
           shopt -s nullglob
           cd dist
           rm -f sha256.txt
-          for f in phage-explorer-*; do
+          for f in phage-explorer-* phage.db phage.db.gz; do
             case "$f" in
               *.sha256|*.sigstore.json|sha256.txt) ;;
-              *) shasum -a 256 "$f" >> sha256.txt ;;
+              *) [[ -f "$f" ]] && shasum -a 256 "$f" >> sha256.txt ;;
             esac
           done
           cat sha256.txt
+
+          # The database is the asset most worth checksumming: it is the one a
+          # user is told to download separately, and a truncated download of a
+          # SQLite file fails in confusing ways rather than obviously.
+          grep -q ' phage.db$' sha256.txt || { echo "::error::phage.db missing from sha256.txt"; exit 1; }
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v4.1.1

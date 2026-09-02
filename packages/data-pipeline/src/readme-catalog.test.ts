@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { PHAGE_CATALOG } from './phage-catalog';
@@ -213,5 +213,83 @@ provenanceDescribe('protein domain provenance', () => {
       )
       .get();
     expect(bad!.n).toBe(0);
+  });
+});
+
+/**
+ * The release must actually ship the database.
+ *
+ * `.github/workflows/release.yml` uploads `dist/*`, and no step ever put
+ * `phage.db` there. Its own header comment claimed the release includes the
+ * database. A release cut from that workflow would publish binaries and no data,
+ * and `install.sh --with-database` would 404 on both `phage.db.gz` and
+ * `phage.db` and merely warn -- leaving the user a TUI with nothing in it.
+ *
+ * The v1.4.1 release does carry a 3.1 MB phage.db, from before the workflow
+ * looked like this; the current database is 10.4 MB and holds Pfam domains,
+ * ESM2 embeddings and codon adaptation that did not exist then.
+ *
+ * These are source-level assertions on the workflow because that is where the
+ * defect lives; no unit test of the app can observe a missing release asset.
+ */
+describe('the release workflow ships the database', () => {
+  const workflow = readFileSync(
+    join(import.meta.dir, '../../../.github/workflows/release.yml'),
+    'utf8'
+  );
+
+  it('reads the workflow', () => {
+    expect(workflow).toContain('softprops/action-gh-release');
+  });
+
+  it('stages both the plain and compressed database into dist', () => {
+    expect(workflow).toContain('packages/web/public/phage.db');
+    expect(workflow).toContain('packages/web/public/phage.db.gz');
+    // install.sh tries the .gz first (3.9 MB against 10.4 MB) and falls back to
+    // the plain file when gunzip is unavailable, so both must be published.
+    expect(workflow).toMatch(/cp "\$db" "\$gz" dist\//);
+  });
+
+  it('refuses to publish without a database rather than degrading quietly', () => {
+    expect(workflow).toContain('refusing to publish a release without it');
+  });
+
+  it('refuses to publish a stale database', () => {
+    // Guards specifically against re-shipping the 3.1 MB December file.
+    expect(workflow).toContain('Refusing to publish a stale one');
+    expect(workflow).toMatch(/-lt 5000000/);
+  });
+
+  it('includes the database in sha256.txt', () => {
+    // A truncated SQLite download fails confusingly rather than obviously, so
+    // this is the asset most worth checksumming.
+    expect(workflow).toMatch(/phage-explorer-\* phage\.db phage\.db\.gz/);
+    expect(workflow).toContain('phage.db missing from sha256.txt');
+  });
+});
+
+describe('the shipped database is the current one', () => {
+  const dbPath = join(import.meta.dir, '../../web/public/phage.db');
+  const gzPath = `${dbPath}.gz`;
+
+  it('is present in both forms the installer looks for', () => {
+    expect(existsSync(dbPath)).toBe(true);
+    expect(existsSync(gzPath)).toBe(true);
+  });
+
+  it('is far larger than the 3.1 MB database v1.4.1 shipped', () => {
+    // The size check in the workflow uses 5 MB as its floor; assert the real
+    // file clears it with room, so the guard is not sitting on the boundary.
+    expect(statSync(dbPath).size).toBeGreaterThan(8_000_000);
+  });
+
+  it('carries the annotations the README describes', () => {
+    // The concrete reason the December database is not good enough.
+    const db = new Database(dbPath, { readonly: true });
+    const count = (table: string) =>
+      db.query<{ n: number }, []>(`select count(*) as n from ${table}`).get()!.n;
+    expect(count('protein_domains')).toBeGreaterThan(1000);
+    expect(count('fold_embeddings')).toBeGreaterThan(1000);
+    expect(count('codon_adaptation')).toBeGreaterThan(1000);
   });
 });
