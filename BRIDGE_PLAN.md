@@ -1,6 +1,34 @@
 # Bridge Plan: Phage Explorer
 
-**Reality check:** 2026-09-01 · **Plan written:** 2026-09-02 · **Revision:** 3 (ambition rounds applied in place)
+**Reality check:** 2026-09-01 · **Plan written:** 2026-09-02 · **Revision:** 4
+
+## Status: the four starters are done
+
+The plan's own recommended opening sequence has been executed. Recorded here
+rather than in a separate document, because this plan is the thing that should
+stay current.
+
+| Item | State | Evidence |
+|---|---|---|
+| **T1.5** wall-clock assertion removed | done | Full suite passes 1393/1393 under six concurrent test processes; previously failed 2 |
+| **T1.3** summarize job fails on a failed matrix | done | Reports first, then fails on `needs.e2e-production.result != 'success'` |
+| **T2.1** release pipeline unjammed | done, **not pushed** | Version 1.5.0; auto-tag now fails on a stale version. Pushing publishes a public release, which is the operator's call |
+| **T1.1** e2e runs on every PR | done | 21 tests, 9 specs; verified passing under deliberate CPU contention in 56s |
+
+Two gate exclusions were found and closed while doing the above, both instances
+of the plan's own structural finding:
+
+- `packages/web/**` was excluded from the root tsconfig. 107k lines of the
+  deployed app had never been type-checked. Enabling it surfaced three real
+  defects, including a graceful-degradation path calling a non-existent setter.
+- `packages/tui/**` was excluded from ESLint. 11k lines never linted. That is
+  how the unused `AnomalyOverlay` import survived — the same import whose
+  missing render branch soft-locked the app.
+
+Both gates are now on and clean, and `check` runs both TypeScript projects.
+
+**Next, per the ordering below:** T0 in bulk, starting with the shared MinHash
+sketch cache (`qf8k.1`), which three fabrications depend on.
 
 **Where this came from.** An end-to-end audit read AGENTS.md, README.md, both
 PLAN documents and NEW_IDEAS, traced every claim to the code that implements it,
@@ -37,8 +65,8 @@ them stay true, then extend them.**
 | Tier | Class | Why here | Remaining |
 |---|---|---|---|
 | **T0** | Fabricated results presented as analysis | Actively misinforms a researcher | 6 |
-| **T1** | Gates that cannot fail | Every other fix regresses without them | 5 |
-| **T2** | Shipped reality ≠ repo reality | Users run code no one has verified | 4 |
+| **T1** | Gates that cannot fail | Every other fix regresses without them | 2 (was 5) |
+| **T2** | Shipped reality ≠ repo reality | Users run code no one has verified | 3 (was 4) |
 | **T3** | Real code that is unreachable | Capability already paid for, not delivered | 6 |
 | **T4** | Claims with no measurement | Cannot be defended or refuted | 4 |
 | **T5** | Coverage thin enough to mislead | Empty panel reads as a negative result | 3 |
