@@ -24,7 +24,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 <p align="center">
   <img src="docs/images/t5_phage_3d_structure.webp" alt="Sequence grid with 3D structure" width="100%">
   <br>
-  <em>Sequence + Structure view — Color-coded amino acid grid with gene map, alongside WebGL 3D protein structure view (catalog PDB ID 8ZVI; live RCSB fetch not yet implemented)</em>
+  <em>Sequence + Structure view — Color-coded amino acid grid with gene map, alongside the WebGL 3D structure viewer showing PDB 8ZVI, fetched live from RCSB and parsed in a worker</em>
 </p>
 
 <p align="center">
@@ -99,7 +99,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 - **Full-Screen HUD Interface** — Navigate between phages instantly with arrow keys
 - **Color-Coded Sequences** — DNA (ACTG) and amino acid views with distinct, beautiful colors
 - **8 Color Themes** — Holographic, Cyberpunk, Classic, Ocean, Matrix, Sunset, Forest, Monochrome (cycle with `T`)
-- **3D Structure Viewer** — PDB structure references from RCSB rendered as ASCII wireframe (TUI); web viewer uses catalog PDB IDs and canonical morphology models (no live PDB fetch yet)
+- **3D Structure Viewer** — Web: real structures fetched live from RCSB by catalog PDB ID, parsed (PDB and mmCIF) and rendered with Three.js, cached in IndexedDB and the service worker. TUI: procedural morphology models rendered as ASCII wireframe with a Z-buffer, one per phage morphotype
 - **Gene Map Navigation** — Visual gene bar with position tracking and snap-to-gene
 - **Layer-1 Quick Overlays** — `G` GC skew, `X` complexity, `B` bendability, `P` promoter/RBS motifs, `R` repeats/palindromes
 - **Diff Mode** — Compare sequences between phages visually
@@ -141,7 +141,7 @@ bun run dev
 
 The full web experience is live at **https://phage-explorer.org**. It includes:
 
-- **3D Structure Viewer** — Catalog PDB IDs linked to RCSB with canonical morphology models and Three.js rendering (live PDB fetch not yet implemented)
+- **3D Structure Viewer** — Real PDB/mmCIF structures fetched live from RCSB and rendered with Three.js; 23 of 24 phages have catalog PDB IDs, the rest show an empty state
 - **Interactive Sequence Grid** — Color-coded DNA/amino acid display with smooth scrolling
 - **30+ Analysis Overlays** — GC skew, dot plots, Hilbert curves, HGT detection, synteny, and more
 - **WASM-Accelerated** — Rust-compiled sequence operations (translation, k-mer counting, MinHash) for fast in-browser analysis
@@ -364,9 +364,9 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 - **Sequence Storage**: Chunked in 10kb segments for efficient virtualized rendering
 - **Virtualized Rendering**: Only visible sequence portion rendered, smooth 60fps scrolling
-- **3D Engine**: Custom ASCII renderer (TUI) and WebGL/Three.js viewer (web); PDB IDs from the catalog link to RCSB, live fetch not yet implemented
+- **3D Engine**: Custom ASCII renderer over procedural morphology models (TUI); WebGL/Three.js viewer over real RCSB structures (web)
 - **WASM Acceleration**: Rust-compiled WebAssembly for sequence operations (translation, k-mer counting, MinHash) with automatic JS fallback
-- **3D Structure Loading**: Displays canonical morphology models; live PDB/mmCIF fetch and parsing is a planned enhancement
+- **3D Structure Loading**: Web fetches `files.rcsb.org` by catalog PDB ID and parses PDB or mmCIF in a worker, with spatial-hash bond detection; two cache tiers (IndexedDB and the service worker) make repeat views instant
 - **State Management**: Zustand for reactive UI updates
 - **Database**: SQLite with Drizzle ORM, ~6 MB for 24 phages with PDB structure references
 
@@ -682,7 +682,7 @@ Phage Explorer handles genomes up to 500kb+ without loading the entire sequence 
 
 **WebGL Renderer (Web):**
 - Three render modes: cartoon ribbons, ball-and-stick, surface mesh
-- Displays canonical morphology models; PDB IDs from the catalog link to RCSB (live fetch not yet implemented)
+- Fetches and parses real structures from RCSB by catalog PDB ID; falls back to an explicit empty state for the one phage with no deposited structure
 - CRT post-processing: chromatic aberration, scanlines, bloom, vignette, film grain
 
 ---
@@ -898,7 +898,7 @@ For temporal analysis, the pipeline:
 | Feature | Phage Explorer | NCBI Viewer | Geneious | SnapGene |
 |---------|---------------|-------------|----------|----------|
 | **Startup time** | <100ms | 5-10s | 30s+ | 10s |
-| **3D structures** | Catalog PDB IDs (live fetch not yet implemented) | None | Plugin | None |
+| **3D structures** | Live from RCSB (web); procedural models (TUI) | None | Plugin | None |
 | **Analysis tools** | 30+ built-in | 3-5 | 20+ (paid) | 10+ |
 | **Offline** | Full | No | Yes | Yes |
 | **Mobile** | Full touch UI | Limited | No | No |
