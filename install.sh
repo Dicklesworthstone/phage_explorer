@@ -407,13 +407,16 @@ if [[ $WITH_DATABASE -eq 1 ]]; then
 
     if curl -fsSL "$DB_GZ_URL" -o "$TMP_DB" 2>/dev/null; then
       if command -v gunzip &>/dev/null; then
-        local decompressed_db
-        decompressed_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
-        if gunzip -c "$TMP_DB" > "$decompressed_db" && chmod 644 "$decompressed_db" && mv -f "$decompressed_db" "$DB_PATH"; then
+        # NB: no `local` here. This block is at top level, not inside a
+        # function, and bash rejects `local` outside a function body with a
+        # non-zero status -- which `set -euo pipefail` turns into an immediate
+        # abort, after the binary has already been installed.
+        DECOMPRESSED_DB=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
+        if gunzip -c "$TMP_DB" > "$DECOMPRESSED_DB" && chmod 644 "$DECOMPRESSED_DB" && mv -f "$DECOMPRESSED_DB" "$DB_PATH"; then
           rm -f "$TMP_DB"
           log_success "Database installed (compressed): $DB_PATH"
         else
-          rm -f "$decompressed_db" "$TMP_DB"
+          rm -f "$DECOMPRESSED_DB" "$TMP_DB"
           log_warn "Could not decompress database"
         fi
       else
