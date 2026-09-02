@@ -39,7 +39,23 @@ jobs:
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
 
           if git show-ref --tags --verify --quiet "refs/tags/$desired"; then
-            echo "status=exists" >> "$GITHUB_OUTPUT"
+            # A tag that already exists is only benign when it points at the
+            # commit we are building. Otherwise the version was not bumped for
+            # changes that have since landed, and silently exiting 0 here means
+            # no tag, no release build, and a green check on every push.
+            #
+            # That is exactly what happened: package.json sat at 1.3.2 while a
+            # v1.3.2 tag existed on an April 2026 commit that descends from
+            # v1.4.1. This job reported success on every push from April to
+            # September while shipping nothing, and 565 commits never reached
+            # anyone installing the binary.
+            tagged_sha=$(git rev-list -n 1 "refs/tags/$desired")
+            head_sha=$(git rev-parse HEAD)
+            if [ "$tagged_sha" = "$head_sha" ]; then
+              echo "status=exists" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "status=stale" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -52,6 +68,14 @@ jobs:
           fi
 
           echo "status=create" >> "$GITHUB_OUTPUT"
+
+      - name: Reject a stale version whose tag points elsewhere
+        if: steps.tag.outputs.status == 'stale'
+        run: |
+          echo "::error::package.json is at ${{ steps.tag.outputs.desired }}, but that tag already"
+          echo "::error::exists on a different commit. Bump the version in package.json so this"
+          echo "::error::push produces a release, or nothing will ship."
+          exit 1
 
       - name: Reject a version behind the latest release
         if: steps.tag.outputs.status == 'behind'

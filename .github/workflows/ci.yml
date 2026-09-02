@@ -151,20 +151,43 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build database
-        run: bun run build:db
-
-      - name: Verify database
+      # Ship the database that is committed to the repository, not a fresh
+      # `bun run build:db`.
+      #
+      # `build:db` fetches from NCBI and produces the CORE database only. The
+      # committed packages/web/public/phage.db is the output of
+      # `build:db:annotated` and additionally carries 1,695 Pfam-A domain hits
+      # and 2,039 ESM2 embeddings. Rebuilding here would ship a release whose
+      # annotations are a regression against the repository, and would make the
+      # release depend on NCBI being up and unthrottled at tag time.
+      - name: Verify committed database
         run: |
-          test -s phage.db
-          ls -la phage.db
-          sqlite3 phage.db "SELECT COUNT(*) FROM phages;"
+          DB=packages/web/public/phage.db
+          test -s "$DB"
+          ls -la "$DB"
+          phages=$(sqlite3 "$DB" "SELECT COUNT(*) FROM phages;")
+          domains=$(sqlite3 "$DB" "SELECT COUNT(*) FROM protein_domains;")
+          embeddings=$(sqlite3 "$DB" "SELECT COUNT(*) FROM fold_embeddings;")
+          echo "phages=$phages protein_domains=$domains fold_embeddings=$embeddings"
+          # Guard against shipping a stub or a core-only build by accident.
+          test "$phages" -eq 24
+          test "$domains" -gt 1000
+          test "$embeddings" -gt 2000
+
+      - name: Prepare database assets
+        run: |
+          mkdir -p db-out
+          cp packages/web/public/phage.db db-out/phage.db
+          # install.sh prefers the compressed asset and falls back to the plain
+          # one, so publish both.
+          gzip -9 -c db-out/phage.db > db-out/phage.db.gz
+          ls -la db-out/
 
       - name: Upload database artifact
         uses: actions/upload-artifact@v4
         with:
           name: database
-          path: phage.db
+          path: db-out/
           retention-days: 7
 
   release:
@@ -187,6 +210,7 @@ jobs:
           mkdir -p release
           find artifacts -name "phage-explorer-*" -type f -exec cp {} release/ \;
           cp artifacts/database/phage.db release/
+          cp artifacts/database/phage.db.gz release/
           chmod +x release/phage-explorer-* 2>/dev/null || true
           ls -la release/
 

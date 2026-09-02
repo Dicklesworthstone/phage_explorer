@@ -10,11 +10,23 @@ name: Release
 #   phage-explorer-macos-arm64
 #   phage-explorer-windows-x64.exe
 
+# NOTE: the tag trigger is intentionally disabled.
+#
+# Both this workflow and ci.yml fired on `v*` and both called
+# action-gh-release, so a single tag started two workflows racing to create the
+# same release. ci.yml is the proven path -- it produced the v1.4.1 assets
+# (binaries, phage.db, sha256.txt, and notably no cosign signatures, which are
+# this workflow's fingerprint). This workflow has never run on a real tag: it
+# was added in de580ce in April 2026, and the release pipeline has been jammed
+# ever since, so it has no successful run to its name.
+#
+# It is kept on workflow_dispatch because it has capabilities ci.yml lacks
+# (cosign signing, homebrew tap dispatch) that are worth adopting. Adopt them by
+# moving those steps into ci.yml, or by proving this workflow with a manual
+# dispatch and then swapping which one owns the tag trigger -- not by having
+# both listen at once.
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
