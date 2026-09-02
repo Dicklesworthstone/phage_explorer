@@ -232,3 +232,72 @@ describe('demo-driven overlays are not filed under plain Analysis', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * The badge reaches every overlay without any overlay opting in.
+ *
+ * Applying it by editing forty-six overlay components would have labelled the
+ * forty-six that exist today and done nothing for the forty-seventh. The shared
+ * `Overlay` chrome reads the level from the registry instead, so a new overlay
+ * is labelled the moment it is registered -- and the registry already refuses
+ * an entry without a level.
+ *
+ * These are source-level assertions because what is being checked is that the
+ * wiring exists in one place, which no rendering test of a single overlay can
+ * establish.
+ */
+describe('the badge is wired once, in shared chrome', () => {
+  const read = (rel: string) => readFileSync(join(import.meta.dir, '..', rel), 'utf8');
+
+  it('renders the badge from the shared Overlay component', () => {
+    const src = read('components/overlays/Overlay.tsx');
+    expect(src).toContain('OverlayProvenance');
+    expect(src).toContain('provenanceForOverlay');
+    // Reads the registry rather than taking a prop, so no caller can forget.
+    expect(src).toContain('ActionRegistryList');
+  });
+
+  it('does not badge measured overlays', () => {
+    // A badge on every panel is a badge nobody reads. The signal has to be
+    // reserved for levels that need it.
+    const src = read('components/overlays/Overlay.tsx');
+    expect(src).toContain("provenance !== 'measured'");
+  });
+
+  it('shows the level in the Command Palette as well as the Analysis Menu', () => {
+    // Two entry points reach the same overlay. Labelling one and not the other
+    // means half the users see the warning.
+    for (const rel of [
+      'components/overlays/CommandPalette.tsx',
+      'components/overlays/AnalysisMenu.tsx',
+    ]) {
+      const src = read(rel);
+      expect(src).toContain('OverlayProvenance');
+      expect(src).toContain("!== 'measured'");
+    }
+  });
+
+  it('has a TUI equivalent using the same level names', () => {
+    // Two surfaces disagreeing about what a level means would be worse than
+    // neither having one.
+    const src = readFileSync(
+      join(import.meta.dir, '../../../tui/src/components/OverlayProvenance.tsx'),
+      'utf8'
+    );
+    for (const level of PROVENANCE_LEVELS) {
+      expect(src).toContain(level);
+    }
+  });
+
+  it('documents the system for whoever adds overlay 47', () => {
+    const doc = readFileSync(
+      join(import.meta.dir, '../../../../docs/overlay-design-system.md'),
+      'utf8'
+    );
+    expect(doc).toContain('Provenance');
+    expect(doc).toContain('provenanceFallback');
+    // The load-bearing instruction: declare it in the registry, do not add the
+    // badge yourself.
+    expect(doc).toContain('You do not add the badge to your overlay');
+  });
+});

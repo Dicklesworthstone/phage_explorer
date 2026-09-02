@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 import { analyzeCRISPRPressure } from '@phage-explorer/core';
 import type { CRISPRAnalysisResult, GeneInfo } from '@phage-explorer/core';
@@ -69,6 +70,10 @@ export function CRISPROverlay({ sequence, genes, host }: CRISPROverlayProps): Re
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>CRISPR PRESSURE & ANTI-CRISPR (I KEY)</Text>
         <Text color={colors.textDim}>ESC to close</Text>
+      </Box>
+
+      <Box marginBottom={1}>
+        <OverlayProvenance level="heuristic" source="Acr prediction from gene size and net charge" />
       </Box>
 
       {/* Pressure Map */}

@@ -18,6 +18,11 @@ import {
   ActionRegistryList,
 } from '../../keyboard/actionRegistry';
 import {
+  OverlayProvenance,
+  provenanceLabel,
+  type ProvenanceLevel,
+} from './primitives/OverlayProvenance';
+import {
   formatKeyCombo,
   type KeyCombo,
   type ExperienceLevel as KbExperienceLevel,
@@ -64,6 +69,17 @@ interface Command {
   // New fields for filtering
   minLevel?: ExperienceLevel;        // Minimum experience level to show
   contexts?: CommandContext[];       // Show only in these contexts (empty = always)
+  /**
+   * Where this command's overlay gets its numbers, when it opens one.
+   *
+   * Shown in the result row so a demo-driven or heuristic overlay is
+   * identifiable BEFORE it is opened. The Analysis Menu already did this; the
+   * palette is the other way in and was missing it, so the same overlay was
+   * labelled by one entry point and not the other.
+   */
+  provenance?: ProvenanceLevel;
+  /** The weaker level it degrades to, for overlays that can fall back. */
+  provenanceFallback?: ProvenanceLevel;
 }
 
 type CommandPaletteFuzzyMeta =
@@ -496,6 +512,8 @@ export function CommandPalette({ commands: customCommands, context: propContext 
         action,
         minLevel: mapExperienceLevel(def.minLevel),
         contexts,
+        provenance: def.provenance,
+        provenanceFallback: def.provenanceFallback,
       });
     }
 
@@ -941,11 +959,26 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                     <span className={isSelected ? 'text-text' : 'text-dim'}>
                       {cmd.label}
                     </span>
-                    {cmd.shortcut && (
-                      <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
-                        {cmd.shortcut}
-                      </span>
-                    )}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {/* Measured is the majority and needs no badge; anything
+                          weaker does, and it has to be visible here rather than
+                          only after the overlay opens. */}
+                      {cmd.provenance && cmd.provenance !== 'measured' && (
+                        <OverlayProvenance
+                          level={cmd.provenance}
+                          source={
+                            cmd.provenanceFallback
+                              ? `falls back to ${provenanceLabel(cmd.provenanceFallback).toLowerCase()}`
+                              : undefined
+                          }
+                        />
+                      )}
+                      {cmd.shortcut && (
+                        <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
+                          {cmd.shortcut}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 );
               })}

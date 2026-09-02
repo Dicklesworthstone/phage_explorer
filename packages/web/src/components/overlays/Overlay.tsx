@@ -12,6 +12,8 @@
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState, type ReactNode, type CSSProperties } from 'react';
 import { useOverlay, useOverlayZIndex, type OverlayId } from './OverlayProvider';
 import { BottomSheet } from '../mobile/BottomSheet';
+import { OverlayProvenance, type ProvenanceLevel } from './primitives/OverlayProvenance';
+import { ActionRegistryList } from '../../keyboard/actionRegistry';
 import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { detectCoarsePointerDevice, getEffectiveScanlines, useWebPreferences } from '../../store/createWebStore';
 import {
@@ -40,6 +42,16 @@ import {
 
 export type OverlaySize = 'sm' | 'md' | 'lg' | 'xl' | 'full';
 export type OverlayPosition = 'center' | 'top' | 'bottom' | 'left' | 'right';
+
+/**
+ * Where an overlay's numbers come from, looked up from the action registry.
+ *
+ * Returns undefined for overlays with no registry entry (chrome such as help,
+ * search and settings, which display no analysis results and so make no claim).
+ */
+function provenanceForOverlay(id: OverlayId): ProvenanceLevel | undefined {
+  return ActionRegistryList.find(a => a.overlayId === id)?.provenance;
+}
 
 interface OverlayProps {
   id: OverlayId;
@@ -185,6 +197,8 @@ export function Overlay({
     };
   }, [overlayIsOpen, reducedMotion, shouldUseBottomSheet]);
   const overlayBorderRadius = shouldUseBottomSheet ? 'var(--overlay-border-radius-mobile)' : 'var(--overlay-border-radius)';
+  const provenance = useMemo(() => provenanceForOverlay(id), [id]);
+
   const resolvedIcon = typeof icon === 'string' ? OVERLAY_HEADER_ICONS[id] ?? icon : icon;
 
   // Handle close - use useCallback to avoid stale closures
@@ -477,6 +491,21 @@ export function Overlay({
               >
                 [{hotkey}]
               </span>
+            )}
+            {/* Provenance badge, rendered here for EVERY overlay.
+
+                The alternative was editing forty-six overlay components, which
+                would have labelled the forty-six that exist today and done
+                nothing for the forty-seventh. Reading the level from the action
+                registry means a new overlay is labelled the moment it is
+                registered, and the registry already refuses an entry without a
+                level (overlay-provenance.test.ts).
+
+                'measured' is deliberately not badged. It is the overwhelming
+                majority, and a badge on every panel is a badge nobody reads;
+                the signal has to be reserved for the cases that need it. */}
+            {provenance && provenance !== 'measured' && (
+              <OverlayProvenance level={provenance} />
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--chrome-gap-lg)' }}>

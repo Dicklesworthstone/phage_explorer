@@ -70,6 +70,89 @@ Within overlays, use the standardized primitives (from `packages/web/src/compone
 
 Avoid custom spinners and ad-hoc error boxes unless the overlay truly needs a specialized state.
 
+## Provenance: saying where the numbers came from
+
+An audit of the 46 analysis overlays found that 36 compute from the loaded
+genome, gene table or shipped annotations, and 10 do not — while looking exactly
+the same. Same menu, same category, same chrome. Two displayed a green
+"REAL DATA" banner over inputs that were a hash of the phage name.
+
+For a tool meant for research and teaching this is worse than a missing feature:
+a fabricated number is indistinguishable from a measured one, so discovering a
+single fake panel costs the user their trust in the 36 real ones.
+
+### The five levels
+
+| Level | Means |
+|---|---|
+| `measured` | Computed from this phage's sequence, genes or annotations |
+| `external` | Fetched live from a named third-party service |
+| `heuristic` | A rule-based estimate over real data, not a measurement |
+| `simulated` | A model the user parameterised; its inputs are real |
+| `demo` | Synthetic input, not derived from the user's phage at all |
+
+`heuristic` is not a euphemism for "fake" and `demo` is not a euphemism for
+`heuristic`. A keyword scan over real gene products is heuristic. A random
+abundance table is demo. Collapsing those two is how the original situation
+arose.
+
+### You do not add the badge to your overlay
+
+Declare the level once, on the overlay's entry in
+`packages/web/src/keyboard/actionRegistry.ts`:
+
+```ts
+[ActionIds.OverlayMyThing]: {
+  // ...
+  overlayId: 'myThing',
+  provenance: 'heuristic',
+  // Only for overlays that degrade when a live source is unavailable:
+  provenanceFallback: 'demo',
+},
+```
+
+Everything else follows from that:
+
+- The shared `Overlay` component renders `OverlayProvenance` in the header for
+  every overlay, reading the level from the registry. Editing 46 components
+  would have labelled the 46 that exist and done nothing for the 47th.
+- The Analysis Menu and the Command Palette both show it in the list, so the
+  level is visible **before** the overlay is opened. The niche network carried
+  an honest disclaimer inside its body and sat in the plain "Analysis" category,
+  which meant the user only learned what it was after choosing it.
+- `overlay-provenance.test.ts` fails if any registry entry with an `overlayId`
+  omits a level, so a new overlay cannot reach the menu unlabelled.
+
+`measured` is deliberately not badged. It is the overwhelming majority, and a
+badge on every panel is a badge nobody reads.
+
+### When the overlay can degrade
+
+An overlay that fetches live data and falls back to synthetic data declares
+`provenanceFallback`. The menu is drawn before the overlay opens, so the
+achieved provenance is genuinely unknown at that moment; the honest statement is
+the range, not the optimistic endpoint.
+
+### Per-figure labels
+
+The header badge covers the overlay. Where one panel is measured and another is
+not — environmental provenance measures catalogue distinctiveness locally while
+its map comes from SRA metadata — label each figure as well, and stamp canvases
+in the pixels: a badge in the DOM is lost the moment someone crops a screenshot.
+
+### Category placement
+
+An overlay whose input is synthetic does not belong in `Analysis`. Use
+`Education`. A test enforces that no overlay with `provenance: 'demo'` sits in
+`Analysis`.
+
+### The TUI
+
+`packages/tui/src/components/OverlayProvenance.tsx` is the terminal equivalent:
+one line rather than a badge, with identical level names and meanings. Two
+surfaces disagreeing about what a level means would be worse than neither having
+one. Applied to the TUI overlays whose level is not `measured`.
+
 ## Mobile vs desktop guidelines
 
 ### Mobile (≤ 640px / coarse pointer)

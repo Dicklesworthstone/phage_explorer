@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text, useInput } from 'ink';
+import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 import type { TropismAnalysis, ReceptorCandidate } from '@phage-explorer/comparison';
 
@@ -43,6 +44,10 @@ export function TropismOverlay(): React.ReactElement {
           ◉ Tail Fiber Tropism & Receptor Atlas
         </Text>
         <Text color={colors.textMuted}>E / ESC to close</Text>
+      </Box>
+
+      <Box marginBottom={1}>
+        <OverlayProvenance level="heuristic" source="keyword scan over gene products" />
       </Box>
 
       {!data || data.hits.length === 0 ? (

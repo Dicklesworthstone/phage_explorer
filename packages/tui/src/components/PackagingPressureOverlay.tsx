@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 
 function clamp01(v: number): number {
@@ -61,6 +62,10 @@ export function PackagingPressureOverlay(): React.ReactElement {
           PACKAGING PRESSURE GAUGE (V KEY)
         </Text>
         <Text color={colors.textDim}>Esc/V to close</Text>
+      </Box>
+
+      <Box marginBottom={1}>
+        <OverlayProvenance level="heuristic" source="closed-form estimate from genome length" />
       </Box>
 
       {!genomeLength ? (

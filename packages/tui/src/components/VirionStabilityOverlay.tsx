@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 import { predictVirionStabilityFromPhage } from '@phage-explorer/core';
 
@@ -87,6 +88,10 @@ export function VirionStabilityOverlay(): React.ReactElement {
         <Text color={colors.textDim}>
           ↑↓ temp · ←→ salt · Shift = ×5
         </Text>
+      </Box>
+
+      <Box marginBottom={1}>
+        <OverlayProvenance level="heuristic" source="rule-based stability model" />
       </Box>
 
       <Text color={colors.text}>
