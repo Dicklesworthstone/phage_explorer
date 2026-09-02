@@ -354,8 +354,10 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 | `bun run build` | Compile to single binary |
 | `bun run build:all` | Build for all platforms |
 | `bun run lint` | ESLint (zero warnings) |
-| `bun run typecheck` | TypeScript checks |
-| `bun run check` | Lint + typecheck |
+| `bun run typecheck` | TypeScript checks, root project |
+| `bun run typecheck:web` | TypeScript checks, web app (separate tsconfig: DOM lib + path aliases) |
+| `bun run typecheck:all` | Both projects |
+| `bun run check` | Lint + typecheck:all |
 | `bun run test` | Run unit tests |
 
 ---
@@ -408,7 +410,14 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 ## CI/CD
 
-- **Lint + Typecheck**: Every push and PR
+- **Lint, typecheck and unit tests**: every push and PR. Typecheck covers both
+  the root project and the web app; the web package has its own tsconfig and was
+  excluded from the root project until 2026-09-02
+- **End-to-end (Playwright, chromium)**: every push and PR, against a locally
+  built production bundle. Covers accessibility (axe-core), hotkeys and the
+  overlay stack, lazy loading, deep links, database load, command palette and
+  scroll repaint. Live-site specs run separately in `e2e-production.yml` after a
+  deploy
 - **Cross-platform builds**: macOS (arm64, x64), Linux (x64, arm64), Windows (x64) via `bun run build:<target>`
 - **Release infrastructure**: GitHub Actions. Six workflows run against this repository: `ci.yml` (lint, typecheck, unit tests, web build, plus release build jobs), `lighthouse.yml`, `release.yml`, `release-automation.yml` (auto-tags on a `package.json` version bump), `e2e-production.yml` (post-deploy, against the live site), and `annotate-phages.yml` (weekly). There is no DSR configuration in the repository despite earlier references to it here
 - **Database artifacts**: Pre-built `phage.db` included in releases
