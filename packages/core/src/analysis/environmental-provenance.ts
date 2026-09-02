@@ -396,8 +396,12 @@ export function generateDemoProvenanceData(
     const month = 1 + Math.floor(seededRng() * 12);
     const sampleDate = `${year}-${String(month).padStart(2, '0')}`;
 
+    // The DEMO- prefix is not cosmetic. These identifiers previously read as
+    // `IMG/VR_20230001`, i.e. indistinguishable from a real IMG/VR accession.
+    // A user copying one into notes and searching for it would find nothing,
+    // or worse, find an unrelated real record.
     hits.push({
-      metagenomeId: `${source}_${year}${String(i).padStart(4, '0')}`,
+      metagenomeId: `DEMO-${source}_${year}${String(i).padStart(4, '0')}`,
       source,
       containment: Math.round(containment * 100) / 100,
       jaccard: Math.round(containment * 0.7 * 100) / 100,

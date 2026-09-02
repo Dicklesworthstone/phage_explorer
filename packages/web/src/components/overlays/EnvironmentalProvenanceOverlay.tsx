@@ -17,6 +17,9 @@ import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useHotkey } from '../../hooks/useHotkey';
+import { usePhageStore } from '@phage-explorer/state';
+import { SketchCache, initMinHashWasm } from '@phage-explorer/comparison';
+import { OverlayProvenance } from './primitives';
 import { ActionIds } from '../../keyboard';
 import {
   analyzeProvenance,
@@ -57,23 +60,17 @@ const NOVELTY_COLORS: Record<string, string> = {
   well_characterized: '#27ae60',
 };
 
-function hashString(input: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function seededUnit(seed: number): number {
-  let t = seed + 0x6d2b79f5;
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-}
+// NOTE: hashString and seededUnit used to live here. They existed for exactly
+// one purpose -- turning a phage name into a number that looked like a
+// containment score -- and became dead the moment that number was replaced with
+// a measured one. Removed rather than left available for the next person who
+// needs a plausible-looking value.
 
 export function EnvironmentalProvenanceOverlay({
+  // `repository` was declared on the props interface and never destructured,
+  // so the overlay had a live database handle available and ignored it while
+  // synthesising the number it most needed. It is used now.
+  repository,
   currentPhage,
 }: EnvironmentalProvenanceOverlayProps): React.ReactElement | null {
   const { theme } = useTheme();
@@ -100,7 +97,76 @@ export function EnvironmentalProvenanceOverlay({
     { modes: ['NORMAL'] }
   );
 
+  const phages = usePhageStore(s => s.phages);
+
   const overlayIsOpen = isOpen('environmentalProvenance');
+
+  /**
+   * Catalogue-relative distinctiveness: 1 - (max containment of this genome
+   * within any OTHER catalogue genome), computed with real MinHash sketches.
+   *
+   * This is deliberately a different quantity from the metagenomic novelty the
+   * overlay used to claim, and it is labelled as such. It answers "how much of
+   * this genome appears elsewhere in the 24 reference phages", which is a
+   * question the shipped data can actually answer.
+   */
+  const [distinctiveness, setDistinctiveness] = useState<{
+    score: number;
+    nearestId: string;
+    containment: number;
+  } | null>(null);
+  const [distinctivenessState, setDistinctivenessState] =
+    useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
+
+  // Compute catalogue-relative distinctiveness from real sketches.
+  //
+  // Separate from the SRA fetch above because it needs no network and answers
+  // a different question. It replaces the hashed "containment" that used to
+  // drive the headline novelty score.
+  useEffect(() => {
+    if (!overlayIsOpen || !repository || !currentPhage || phages.length === 0) return;
+
+    let cancelled = false;
+    setDistinctivenessState('loading');
+
+    void (async () => {
+      try {
+        await initMinHashWasm();
+        const cache = new SketchCache();
+
+        for (const p of phages) {
+          if (cancelled) return;
+          const length = await repository.getFullGenomeLength(p.id);
+          if (!Number.isFinite(length) || length <= 0) continue;
+          const seq = await repository.getSequenceWindow(p.id, 0, length);
+          if (!seq) continue;
+          cache.getOrBuild(String(p.id), seq);
+        }
+        if (cancelled) return;
+
+        const best = cache.maxContainment(String(currentPhage.id));
+        if (!best) {
+          // No comparable sketch. Report unavailable rather than 0, which
+          // would render as "maximally distinctive" -- a confident wrong answer.
+          setDistinctivenessState('unavailable');
+          return;
+        }
+        const nearest = phages.find(p => String(p.id) === best.referenceId);
+        setDistinctiveness({
+          score: 1 - best.containment,
+          nearestId: nearest?.name ?? best.referenceId,
+          containment: best.containment,
+        });
+        setDistinctivenessState('ready');
+      } catch {
+        if (!cancelled) setDistinctivenessState('unavailable');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [overlayIsOpen, repository, currentPhage, phages]);
 
   // Run analysis when overlay opens or phage changes
   useEffect(() => {
@@ -161,11 +227,27 @@ export function EnvironmentalProvenanceOverlay({
                 // Process into provenance format
                 const provenanceData = processProvenanceData(metadataResult.data);
 
-                // Convert to hits format for analyzeProvenance
+                // Convert to hits format for analyzeProvenance.
+                //
+                // `containment` used to be
+                //   0.3 + seededUnit(hashString(`${phageKey}:${loc.name}:...`)) * 0.5
+                // i.e. a hash of the phage name and the location string, shown
+                // under a green "REAL DATA" banner and driving the headline
+                // novelty score (1 - maxContainment). It was the single most
+                // misleading number in the app.
+                //
+                // It cannot be computed here honestly. SRA metadata gives
+                // locations, isolation sources and sample counts -- it does not
+                // give sequences, and containment is by definition a
+                // sequence-to-sequence measure. There is nothing to compare
+                // against, so no value is reported per location.
+                //
+                // Real, correctly-scoped distinctiveness is computed separately
+                // below against the catalogue, where sequences do exist.
                 const realHits = provenanceData.locations.map((loc, i) => ({
                   metagenomeId: `SRA-${i + 1}`,
                   source: 'other' as const, // SRA data doesn't fit other source categories
-                  containment: Math.min(0.95, 0.3 + seededUnit(hashString(`${phageKey}:${loc.name}:${loc.isolationSources[0] ?? 'unknown'}:${i}`)) * 0.5),
+                  containment: 0,
                   biome: mapIsolationSourceToBiome(loc.isolationSources[0]),
                   location: {
                     latitude: loc.latitude,
@@ -415,7 +497,20 @@ export function EnvironmentalProvenanceOverlay({
           )}
           {dataSource === 'real' && (
             <>
-              <strong style={{ color: colors.success }}>REAL DATA</strong>: {apiMessage || 'Data from Serratus metagenome search and NCBI SRA metadata.'}
+              {/*
+                The banner now says exactly which parts are real, because the
+                previous unqualified "REAL DATA" sat above a containment score
+                that was a hash of the phage name. Geography and sample counts
+                come from SRA; per-sample containment does not exist, because
+                SRA metadata carries no sequence to compare against.
+              */}
+              <strong style={{ color: colors.success }}>REAL DATA</strong>:{' '}
+              {apiMessage || 'Locations, isolation sources and sample counts from NCBI SRA.'}{' '}
+              <span style={{ color: colors.textMuted }}>
+                Per-sample containment is not shown: SRA metadata carries no sequence to
+                compare against. Sequence-level distinctiveness is measured against the
+                24-genome catalogue below.
+              </span>
             </>
           )}
           {dataSource === 'demo' && (
@@ -429,6 +524,50 @@ export function EnvironmentalProvenanceOverlay({
             </>
           )}
         </div>
+
+        {/* Catalogue-relative distinctiveness: real, and labelled for what it is. */}
+        {(distinctivenessState === 'ready' || distinctivenessState === 'loading' ||
+          distinctivenessState === 'unavailable') && (
+          <div
+            style={{
+              border: `1px solid ${colors.borderLight}`,
+              borderRadius: '4px',
+              padding: '0.75rem 1rem',
+              marginBottom: '0.75rem',
+              fontSize: '0.85rem',
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
+              Catalogue distinctiveness{' '}
+              <OverlayProvenance level="measured" source="MinHash containment, k=16" />
+            </div>
+            {distinctivenessState === 'loading' && (
+              <span style={{ color: colors.textMuted }}>Sketching the catalogue…</span>
+            )}
+            {distinctivenessState === 'unavailable' && (
+              <span style={{ color: colors.textMuted }}>
+                Not available for this phage. No score is shown rather than a default,
+                because 0 would read as &ldquo;maximally distinctive&rdquo;.
+              </span>
+            )}
+            {distinctivenessState === 'ready' && distinctiveness && (
+              <div>
+                <span style={{ color: colors.text, fontWeight: 600 }}>
+                  {(distinctiveness.score * 100).toFixed(1)}%
+                </span>{' '}
+                of this genome&rsquo;s 16-mers are absent from every other catalogue
+                genome. Closest relative:{' '}
+                <span style={{ color: colors.accent }}>{distinctiveness.nearestId}</span>{' '}
+                (contains {(distinctiveness.containment * 100).toFixed(1)}% of them).
+                <div style={{ color: colors.textMuted, marginTop: '0.35rem' }}>
+                  Measured against the 24 reference genomes shipped with the app, not
+                  against metagenomes. A phage can be distinctive here and still be
+                  common in the environment.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Novelty badge */}
         {result && (
