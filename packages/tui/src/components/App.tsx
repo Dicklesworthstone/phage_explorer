@@ -171,6 +171,47 @@ interface AppProps {
   foldEmbeddings?: FoldEmbedding[]; // Optional preloaded embeddings
 }
 
+/**
+ * One modifier-bearing key binding.
+ *
+ * Exported with `matchModifierBinding` so the dispatch rule can be tested. The
+ * bindings themselves live inside the input handler because they close over
+ * component state, but the rule that decides which one fires does not, and it
+ * is the rule that was wrong.
+ */
+export interface ModifierBinding {
+  ctrl?: boolean;
+  shift?: boolean;
+  keys: readonly string[];
+  run: () => void;
+}
+
+/**
+ * Find the binding for a key press, or undefined.
+ *
+ * Matching is EXACT on both modifiers. That is the whole point: a binding that
+ * wants ctrl must see ctrl and not shift, so plain 'p' cannot fall into the
+ * Ctrl+P entry and Ctrl+P cannot fall into a plain-letter branch.
+ *
+ * Ink reports Ctrl+F as input 'f' with ctrl set, and Shift+Y as input 'Y' with
+ * shift set, so a handler that tests `input` alone cannot tell them apart from
+ * the unmodified letters. Three documented shortcuts were unreachable for
+ * exactly that reason.
+ */
+export function matchModifierBinding(
+  bindings: ReadonlyArray<ModifierBinding>,
+  input: string,
+  key: { ctrl?: boolean; shift?: boolean }
+): ModifierBinding | undefined {
+  return bindings.find(
+    b =>
+      (b.ctrl ?? false) === (key.ctrl ?? false) &&
+      (b.shift ?? false) === (key.shift ?? false) &&
+      b.keys.includes(input)
+  );
+}
+
+
 export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
@@ -598,8 +639,11 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     '\x1b[19~': 'F8',
     '\x1b[20~': 'F9',
     '\x1b[21~': 'F10',
-    // F11 intentionally omitted (reserved for terminal fullscreen)
-    '\x1b[24~': 'F12',
+    // F11 intentionally omitted (reserved for terminal fullscreen).
+    // F12 was listed here with no handler, so pressing it did nothing while the
+    // table implied it was bound. Removed rather than given an action: nothing
+    // needed it, and a table entry that resolves to no behaviour is the same
+    // class of defect as a documented shortcut that does not fire.
   };
 
   // Handle keyboard input (global layer is disabled while an overlay is open)
@@ -722,6 +766,110 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     const isIntermediate = experienceLevel !== 'novice';
     const isPower = experienceLevel === 'power';
 
+    // ---------------------------------------------------------------------
+    // Modifier-bearing bindings, dispatched BEFORE the plain-letter chain.
+    //
+    // Ink reports Ctrl+F as input 'f' with key.ctrl set, and Shift+Y as input
+    // 'Y' with key.shift set. The chain below tests `input` without first
+    // checking modifiers, so whichever branch came earlier won:
+    //
+    //   Ctrl+F  documented as fold quickview   -> cycled the reading frame
+    //   Ctrl+P  documented as command palette  -> opened the promoter overlay
+    //   Shift+Y documented as synteny          -> opened transcription flow
+    //
+    // All three were documented and unreachable. Shift+A, Shift+G, Shift+P and
+    // Shift+S happened to sit before their plain-letter branches and so worked,
+    // which is why the bug looked partial: the behaviour depended on the order
+    // two unrelated branches happened to be written in.
+    //
+    // A table rather than more `if`s, for two reasons. It removes the ordering
+    // dependency entirely, and it can be enumerated -- which is the precondition
+    // for generating the TUI's key documentation from its bindings instead of
+    // maintaining a second list by hand.
+    //
+    // Matching is exact on both modifiers: a binding that wants ctrl must see
+    // ctrl and no shift, so plain 'p' cannot fall into the Ctrl+P entry.
+    // ---------------------------------------------------------------------
+    const modifierBindings: ReadonlyArray<ModifierBinding> = [
+      {
+        shift: true,
+        keys: ['a', 'A'],
+        run: () => {
+          promote('power');
+          openOverlay(ANOMALY_ID);
+        },
+      },
+      {
+        shift: true,
+        keys: ['g', 'G'],
+        run: () => {
+          promote('intermediate');
+          toggleOverlay(NONB_ID);
+        },
+      },
+      {
+        shift: true,
+        keys: ['p', 'P'],
+        run: () => {
+          if (!isIntermediate) {
+            setError('Phase portraits unlock after ~5 minutes or once promoted.');
+            return;
+          }
+          promote('intermediate');
+          toggleOverlay('phasePortrait');
+        },
+      },
+      {
+        shift: true,
+        keys: ['s', 'S'],
+        run: () => {
+          if (!isPower) {
+            setError('Simulation hub unlocks at power tier (≈60 min or manual promotion).');
+            return;
+          }
+          promote('power');
+          openOverlay(SIMULATION_MENU_ID);
+        },
+      },
+      {
+        shift: true,
+        keys: ['y', 'Y'],
+        run: () => {
+          if (!isIntermediate) {
+            setError('Synteny alignment unlocks after ~5 minutes or once promoted.');
+            return;
+          }
+          promote('intermediate');
+          toggleOverlay(SYNTENY_ID);
+        },
+      },
+      {
+        ctrl: true,
+        keys: ['f', 'F'],
+        run: () => {
+          promote('power');
+          openOverlay('foldQuickview');
+        },
+      },
+      {
+        ctrl: true,
+        keys: ['p', 'P'],
+        run: () => {
+          if (!isPower) {
+            setError('Command palette unlocks at power tier.');
+            return;
+          }
+          openOverlay('commandPalette');
+        },
+      },
+    ];
+
+    const modifierMatch = matchModifierBinding(modifierBindings, input, key);
+    if (modifierMatch) {
+      modifierMatch.run();
+      return;
+    }
+
     // Navigation
     if (key.downArrow) {
       nextPhage();
@@ -760,21 +908,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       cycleTheme();
     } else if (input === 'd' || input === 'D') {
       toggleDiff();
-    } else if (key.shift && (input === 'a' || input === 'A')) {
-      promote('power');
-      openOverlay(ANOMALY_ID);
     } else if (input === 'g' || input === 'G') {
-      if (key.shift) {
-        promote('intermediate');
-        toggleOverlay(NONB_ID);
-      } else {
-        if (!isIntermediate) {
-          setError('Advanced overlays unlock after ~5 minutes or once promoted.');
-          return;
-        }
-        promote('intermediate');
-        toggleOverlay(GC_SKEW_ID);
+      if (!isIntermediate) {
+        setError('Advanced overlays unlock after ~5 minutes or once promoted.');
+        return;
       }
+      promote('intermediate');
+      toggleOverlay(GC_SKEW_ID);
     } else if (input === 'y' || input === 'Y') {
       if (!isIntermediate) {
         setError('Transcription flow unlocks after ~5 minutes or once promoted.');
@@ -824,13 +964,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       promote('intermediate');
       toggleOverlay(BENDABILITY_ID);
-    } else if (key.shift && (input === 'P')) {
-      if (!isIntermediate) {
-        setError('Phase portraits unlock after ~5 minutes or once promoted.');
-        return;
-      }
-      promote('intermediate');
-      toggleOverlay('phasePortrait');
     } else if (input === 'p' || input === 'P') {
       if (!isIntermediate) {
         setError('Promoter overlay unlocks after ~5 minutes or once promoted.');
@@ -838,9 +971,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       promote('intermediate');
       toggleOverlay(PROMOTER_ID);
-    } else if (key.ctrl && (input === 'f' || input === 'F')) {
-      promote('power');
-      openOverlay('foldQuickview');
     } else if (input === 'r' || input === 'R') {
       if (!isIntermediate) {
         setError('Repeat overlay unlocks after ~5 minutes or once promoted.');
@@ -862,13 +992,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       promote('intermediate');
       toggleOverlay(TROPISM_ID);
-    } else if (key.shift && (input === 'y' || input === 'Y')) {
-      if (!isIntermediate) {
-        setError('Synteny alignment unlocks after ~5 minutes or once promoted.');
-        return;
-      }
-      promote('intermediate');
-      toggleOverlay(SYNTENY_ID);
     }
 
     // Overlays (we already returned early if overlay is active, so just open)
@@ -876,13 +999,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       toggleOverlay('help');
     } else if (input === 'k' || input === 'K') {
       toggleOverlay('aaKey');
-    } else if (key.shift && input === 'S') {
-      if (!isPower) {
-        setError('Simulation hub unlocks at power tier (≈60 min or manual promotion).');
-        return;
-      }
-      promote('power');
-      openOverlay(SIMULATION_MENU_ID);
     } else if (input === 'a' || input === 'A') {
       if (!isIntermediate) {
         setError('Analysis menu unlocks after ~5 minutes or once promoted.');
@@ -901,7 +1017,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       openOverlay('search');
     } else if (input === 'w' || input === 'W') {
       openComparison();
-    } else if (input === ':' || (key.ctrl && (input === 'p' || input === 'P'))) {
+    } else if (input === ':') {
       if (!isPower) {
         setError('Command palette unlocks at power tier.');
         return;

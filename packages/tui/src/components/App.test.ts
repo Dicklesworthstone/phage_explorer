@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import type { GeneInfo } from '@phage-explorer/core';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   findNextGenePosition,
   findPreviousGenePosition,
   genePositionToScroll,
 } from './gene-navigation';
+import { matchModifierBinding, type ModifierBinding } from './App';
 
 // The App component is tightly coupled to Ink and the database, so we test
 // the navigation helpers directly. These are the same functions used by the
@@ -64,5 +67,128 @@ describe('gene jump helpers', () => {
       expect(genePositionToScroll(3, 'aa')).toBe(1);
       expect(genePositionToScroll(299, 'aa')).toBe(99);
     });
+  });
+});
+
+/**
+ * Modifier-bearing keys must not be shadowed by plain letters.
+ *
+ * Ink reports Ctrl+F as input 'f' with ctrl set, and Shift+Y as input 'Y' with
+ * shift set. The input handler was one long if/else-if chain that tested
+ * `input` without checking modifiers first, so whichever branch was written
+ * earlier won:
+ *
+ *   Ctrl+F   documented as fold quickview   -> cycled the reading frame
+ *   Ctrl+P   documented as command palette   -> opened the promoter overlay
+ *   Shift+Y  documented as synteny           -> opened transcription flow
+ *
+ * Shift+A, Shift+G, Shift+P and Shift+S happened to sit before their
+ * plain-letter branches and so worked. That is the tell that this was an
+ * ordering accident rather than a design: the behaviour depended on the order
+ * two unrelated branches were written in.
+ */
+describe('modifier key dispatch', () => {
+  const fired: string[] = [];
+  const bindings: ModifierBinding[] = [
+    { ctrl: true, keys: ['f', 'F'], run: () => fired.push('ctrl+f') },
+    { ctrl: true, keys: ['p', 'P'], run: () => fired.push('ctrl+p') },
+    { shift: true, keys: ['y', 'Y'], run: () => fired.push('shift+y') },
+    { shift: true, keys: ['a', 'A'], run: () => fired.push('shift+a') },
+  ];
+
+  const press = (input: string, key: { ctrl?: boolean; shift?: boolean }) =>
+    matchModifierBinding(bindings, input, key)?.keys.join('');
+
+  it('matches Ctrl+F, which Ink reports as lowercase f with ctrl', () => {
+    expect(press('f', { ctrl: true })).toBe('fF');
+  });
+
+  it('matches Shift+Y, which Ink reports as uppercase Y with shift', () => {
+    expect(press('Y', { shift: true })).toBe('yY');
+  });
+
+  it('does not match a plain letter against a ctrl binding', () => {
+    // The half of the bug that mattered in the other direction: if matching
+    // were loose, pressing 'f' would open the fold quickview instead of
+    // cycling the reading frame.
+    expect(press('f', {})).toBeUndefined();
+    expect(press('p', {})).toBeUndefined();
+  });
+
+  it('does not match a shift binding when ctrl is also held', () => {
+    // Exact matching on BOTH modifiers. Ctrl+Shift+Y is not Shift+Y.
+    expect(press('Y', { shift: true, ctrl: true })).toBeUndefined();
+  });
+
+  it('does not match a ctrl binding when shift is also held', () => {
+    expect(press('f', { ctrl: true, shift: true })).toBeUndefined();
+  });
+
+  it('distinguishes two bindings that share a letter', () => {
+    // Ctrl+P is the command palette; Shift+P is phase portraits. A matcher that
+    // ignored which modifier was held would fire the wrong one.
+    expect(press('p', { ctrl: true })).toBe('pP');
+    expect(press('P', { shift: true })).toBeUndefined(); // no shift+p in this fixture
+  });
+
+  it('runs the bound action', () => {
+    fired.length = 0;
+    matchModifierBinding(bindings, 'f', { ctrl: true })?.run();
+    expect(fired).toEqual(['ctrl+f']);
+  });
+});
+
+/**
+ * The structural half. The matcher above can be correct while the handler still
+ * consults it too late, which is precisely the bug that existed: the modifier
+ * branches were present and unreachable.
+ */
+describe('the modifier table is consulted before the plain-letter chain', () => {
+  const src = readFileSync(join(import.meta.dir, 'App.tsx'), 'utf8');
+
+  it('dispatches modifiers before any plain-letter comparison in the handler', () => {
+    const handlerStart = src.indexOf('useInput((input, key) => {');
+    expect(handlerStart).toBeGreaterThan(0);
+    const handler = src.slice(handlerStart);
+
+    const dispatchAt = handler.indexOf('matchModifierBinding(modifierBindings');
+    expect(dispatchAt).toBeGreaterThan(0);
+
+    // The first plain-letter branch of the main chain. Anything matching
+    // `input === '<single char>'` after the dispatch is fine; before it is the
+    // bug. The fullscreen-3D block runs earlier and returns, so search from the
+    // point where the shared handler proper begins.
+    const chainStart = handler.indexOf("const promote = (level: ExperienceLevel)");
+    expect(chainStart).toBeGreaterThan(0);
+    expect(dispatchAt).toBeGreaterThan(chainStart);
+
+    const between = handler.slice(chainStart, dispatchAt);
+    expect(between).not.toMatch(/input === '[a-zA-Z]'/);
+  });
+
+  it('leaves no modifier test in the plain-letter chain', () => {
+    // Every key.ctrl / key.shift test should now live in the table. A stray one
+    // in the chain means a binding is back to depending on branch order.
+    const handlerStart = src.indexOf('useInput((input, key) => {');
+    const dispatchEnd =
+      src.indexOf('matchModifierBinding(modifierBindings', handlerStart);
+    const chain = src.slice(dispatchEnd);
+    const code = chain
+      .split('\n')
+      .filter(l => !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code).not.toMatch(/key\.ctrl/);
+    expect(code).not.toMatch(/key\.shift/);
+  });
+
+  it('has no F-key in the escape table without a handler', () => {
+    // F12 sat in the table with no handler, so pressing it did nothing while
+    // the table implied it was bound.
+    const table = src.slice(src.indexOf('const F_KEYS'), src.indexOf('};', src.indexOf('const F_KEYS')));
+    const declared = [...table.matchAll(/'(F\d+)'/g)].map(m => m[1]);
+    expect(declared.length).toBeGreaterThan(0);
+    for (const f of new Set(declared)) {
+      expect(src).toContain(`fKey === '${f}'`);
+    }
   });
 });
