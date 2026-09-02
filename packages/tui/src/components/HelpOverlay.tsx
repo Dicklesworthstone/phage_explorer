@@ -136,7 +136,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'A → Phase portraits / Shift+P', desc: 'AA property PCA / domain map' },
             { key: 'A → Bias', desc: 'Bias PCA (1=di, 2=codon)' },
             { key: 'Shift+S', desc: 'Simulation hub' },
-            { key: ': / Ctrl+K', desc: 'Command palette' },
+            { key: ': / Ctrl+P', desc: 'Command palette' },
           ],
         },
         {
@@ -190,7 +190,7 @@ export function HelpOverlay(): React.ReactElement {
           rows: [
             { key: 'L', desc: 'Module coherence' },
             { key: 'Y', desc: 'Transcription flow' },
-            { key: 'Alt+R', desc: 'Repeats/palindromes' },
+            { key: 'r', desc: 'Repeats/palindromes' },
             { key: 'Ctrl+F', desc: 'Fold quickview' },
           ],
         },

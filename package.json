@@ -29,11 +29,13 @@
     "preview:web": "bun run --cwd packages/web preview",
     "lint": "bunx eslint packages --max-warnings=0 --no-warn-ignored",
     "typecheck": "tsc --noEmit",
-    "check": "bun run lint && bun run typecheck:all",
+    "check": "bun run lint && bun run typecheck:all && bun run check:keys",
     "test": "bun test --timeout 30000 packages/core packages/comparison packages/db-runtime packages/db-schema packages/renderer-3d packages/state packages/data-pipeline packages/tui packages/web/src",
     "test:integration": "PHAGE_INTEGRATION=1 bun test --timeout 30000 --test-name-pattern integration packages/core packages/comparison packages/db-runtime packages/db-schema packages/renderer-3d packages/state packages/data-pipeline packages/tui packages/web/src",
     "typecheck:web": "bunx tsc --noEmit -p packages/web/tsconfig.json",
-    "typecheck:all": "bun run typecheck && bun run typecheck:web"
+    "typecheck:all": "bun run typecheck && bun run typecheck:web",
+    "docs:keys": "bun scripts/generate-keyboard-tables.ts",
+    "check:keys": "bun scripts/generate-keyboard-tables.ts --check"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.2.0",
