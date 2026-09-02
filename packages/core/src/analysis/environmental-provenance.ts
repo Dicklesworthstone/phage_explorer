@@ -39,8 +39,20 @@ export interface MetagenomeHit {
   metagenomeId: string;
   /** Source database (e.g., IMG/VR, MGnify) */
   source: 'IMG/VR' | 'MGnify' | 'VIROME' | 'other';
-  /** Containment score (0-1): fraction of query k-mers in metagenome */
-  containment: number;
+  /**
+   * Containment (0-1): fraction of query k-mers present in the metagenome.
+   *
+   * `null` when no containment could be computed, which is the case for every
+   * hit derived from SRA metadata: that API returns locations, isolation
+   * sources and sample counts, never sequences, and containment is by
+   * definition a sequence-to-sequence measure.
+   *
+   * It is null and not 0 because those mean opposite things. 0 says "this
+   * genome shares nothing with that sample", a strong measured claim that
+   * drives novelty to 100%. null says "not measured". The overlay reported
+   * every phage as 100% novel for exactly this reason.
+   */
+  containment: number | null;
   /** Jaccard similarity (0-1) */
   jaccard?: number;
   /** Biome classification */
@@ -56,12 +68,12 @@ export interface MetagenomeHit {
 /** Biome distribution summary */
 export interface BiomeDistribution {
   biome: BiomeType;
-  /** Maximum containment in this biome */
-  maxContainment: number;
+  /** Maximum containment in this biome, or null when none was measured. */
+  maxContainment: number | null;
   /** Number of hits in this biome */
   hitCount: number;
-  /** Average containment across hits */
-  avgContainment: number;
+  /** Average containment across measured hits, or null when none was measured. */
+  avgContainment: number | null;
 }
 
 /** Novelty assessment */
@@ -80,14 +92,24 @@ export interface NoveltyScore {
 
 /** Complete provenance analysis result */
 export interface ProvenanceResult {
-  /** Novelty assessment */
-  novelty: NoveltyScore;
+  /**
+   * Novelty assessment, or null when no hit carried a containment.
+   *
+   * Novelty is 1 - maxContainment. With nothing to take a maximum over there is
+   * no novelty score, and the honest output is its absence. Callers must render
+   * "not available" rather than substituting a number.
+   */
+  novelty: NoveltyScore | null;
   /** Biome distribution */
   biomeDistribution: BiomeDistribution[];
   /** Top metagenome hits */
   topHits: MetagenomeHit[];
-  /** Geographic heat map data (lat, lon, intensity) */
-  geoHeatmap: Array<{ lat: number; lon: number; intensity: number }>;
+  /**
+   * Geographic heat map data. `intensity` is the containment at that point and
+   * is null wherever containment was not measured, so a renderer can show the
+   * point without implying a magnitude.
+   */
+  geoHeatmap: Array<{ lat: number; lon: number; intensity: number | null }>;
   /** Primary habitat inference */
   primaryHabitat: BiomeType;
   /** Ecological interpretation */
@@ -169,27 +191,28 @@ function getNoveltyInterpretation(
 /**
  * Compute novelty score from metagenome hits
  */
-export function computeNoveltyScore(hits: MetagenomeHit[]): NoveltyScore {
-  if (hits.length === 0) {
-    return {
-      score: 1.0,
-      classification: 'novel',
-      totalHits: 0,
-      maxContainment: 0,
-      interpretation: 'No metagenomic matches found. This phage appears to be entirely novel.',
-    };
-  }
+export function computeNoveltyScore(hits: MetagenomeHit[]): NoveltyScore | null {
+  // No hits at all used to return score 1.0 / 'novel' / "appears to be entirely
+  // novel". That is a conclusion drawn from an empty search, and an empty
+  // search supports no conclusion: it is equally consistent with a novel phage
+  // and with an API that returned nothing. Absence is now reported as absence.
+  if (hits.length === 0) return null;
 
-  const maxContainment = Math.max(...hits.map(h => h.containment));
+  const measured = hits.filter(
+    (h): h is MetagenomeHit & { containment: number } => h.containment !== null
+  );
+  if (measured.length === 0) return null;
+
+  const maxContainment = Math.max(...measured.map(h => h.containment));
   const classification = classifyNovelty(maxContainment);
-  const primaryBiome = hits.reduce((best, h) =>
+  const primaryBiome = measured.reduce((best, h) =>
     h.containment > best.containment ? h : best
   ).biome;
 
   return {
     score: 1 - maxContainment,
     classification,
-    totalHits: hits.length,
+    totalHits: measured.length,
     maxContainment,
     interpretation: getNoveltyInterpretation(classification, primaryBiome),
   };
@@ -210,17 +233,30 @@ export function computeBiomeDistribution(hits: MetagenomeHit[]): BiomeDistributi
   const distribution: BiomeDistribution[] = [];
 
   for (const [biome, biomeHits] of biomes) {
-    const containments = biomeHits.map(h => h.containment);
+    const containments = biomeHits
+      .map(h => h.containment)
+      .filter((c): c is number => c !== null);
     distribution.push({
       biome,
-      maxContainment: Math.max(...containments),
+      maxContainment: containments.length > 0 ? Math.max(...containments) : null,
       hitCount: biomeHits.length,
-      avgContainment: containments.reduce((a, b) => a + b, 0) / containments.length,
+      avgContainment:
+        containments.length > 0
+          ? containments.reduce((a, b) => a + b, 0) / containments.length
+          : null,
     });
   }
 
-  // Sort by max containment descending
-  distribution.sort((a, b) => b.maxContainment - a.maxContainment);
+  // Sort by max containment descending, then by hit count so the order is still
+  // meaningful when nothing was measured.
+  distribution.sort((a, b) => {
+    if (a.maxContainment !== null && b.maxContainment !== null) {
+      return b.maxContainment - a.maxContainment;
+    }
+    if (a.maxContainment !== null) return -1;
+    if (b.maxContainment !== null) return 1;
+    return b.hitCount - a.hitCount;
+  });
 
   return distribution;
 }
@@ -232,7 +268,7 @@ export function computeGeoHeatmap(
   hits: MetagenomeHit[]
 ): Array<{ lat: number; lon: number; intensity: number }> {
   // Group hits by approximate location (1 degree grid)
-  const grid = new Map<string, { lat: number; lon: number; containments: number[] }>();
+  const grid = new Map<string, { lat: number; lon: number; containments: Array<number | null> }>();
 
   for (const hit of hits) {
     const { latitude, longitude } = hit.location;
@@ -250,11 +286,14 @@ export function computeGeoHeatmap(
     }
   }
 
-  return Array.from(grid.values()).map(({ lat, lon, containments }) => ({
-    lat,
-    lon,
-    intensity: Math.max(...containments),
-  }));
+  // Intensity encodes containment, so it is null wherever containment is. A
+  // renderer that sizes a marker by intensity must show unmeasured points at a
+  // fixed neutral size rather than the smallest one, which would read as
+  // "measured, and absent here".
+  return Array.from(grid.values()).map(({ lat, lon, containments }) => {
+    const measured = containments.filter((c): c is number => c !== null);
+    return { lat, lon, intensity: measured.length > 0 ? Math.max(...measured) : null };
+  });
 }
 
 /**
@@ -262,7 +301,7 @@ export function computeGeoHeatmap(
  */
 function inferEcologicalContext(
   biomeDistribution: BiomeDistribution[],
-  novelty: NoveltyScore
+  novelty: NoveltyScore | null
 ): string {
   if (biomeDistribution.length === 0) {
     return 'Ecological context unknown due to lack of metagenomic matches.';
@@ -273,7 +312,7 @@ function inferEcologicalContext(
 
   if (biomeDistribution.length === 1) {
     let context = `This phage appears specialized for ${biomeName.toLowerCase()} environments with no significant presence in other habitats.`;
-    if (novelty.classification === 'novel' || novelty.classification === 'rare') {
+    if (novelty?.classification === 'novel' || novelty?.classification === 'rare') {
       context += ' However, metagenomic matches are limited, so this ecological inference should be treated as tentative.';
     }
     return context;
@@ -282,19 +321,37 @@ function inferEcologicalContext(
   const secondary = biomeDistribution[1];
   const secondaryName = BIOME_NAMES[secondary.biome];
 
-  if (primary.maxContainment - secondary.maxContainment < 0.1) {
-    let context = `This phage shows broad ecological distribution, with similar prevalence in ${biomeName.toLowerCase()} and ${secondaryName.toLowerCase()} environments.`;
-    if (novelty.classification === 'novel' || novelty.classification === 'rare') {
-      context += ' However, metagenomic matches are limited, so this ecological inference should be treated as tentative.';
-    }
-    return context;
+  const tentative =
+    novelty?.classification === 'novel' || novelty?.classification === 'rare'
+      ? ' However, metagenomic matches are limited, so this ecological inference should be treated as tentative.'
+      : '';
+
+  // With no containment measured there is no prevalence to compare, so the
+  // sentence describes what IS known -- where samples came from -- and says
+  // plainly that abundance was not measured.
+  if (primary.maxContainment === null || secondary.maxContainment === null) {
+    return (
+      `Samples matching this phage's search come mainly from ${biomeName.toLowerCase()} ` +
+      `(${primary.hitCount} locations) and ${secondaryName.toLowerCase()} ` +
+      `(${secondary.hitCount} locations). Relative abundance was not measured, ` +
+      `so this reflects where sequencing was done as much as where the phage lives.` +
+      tentative
+    );
   }
 
-  let context = `This phage is primarily associated with ${biomeName.toLowerCase()} (${(primary.maxContainment * 100).toFixed(0)}% containment) with secondary presence in ${secondaryName.toLowerCase()} (${(secondary.maxContainment * 100).toFixed(0)}% containment).`;
-  if (novelty.classification === 'novel' || novelty.classification === 'rare') {
-    context += ' However, metagenomic matches are limited, so this ecological inference should be treated as tentative.';
+  if (primary.maxContainment - secondary.maxContainment < 0.1) {
+    return (
+      `This phage shows broad ecological distribution, with similar prevalence in ` +
+      `${biomeName.toLowerCase()} and ${secondaryName.toLowerCase()} environments.` + tentative
+    );
   }
-  return context;
+
+  return (
+    `This phage is primarily associated with ${biomeName.toLowerCase()} ` +
+    `(${(primary.maxContainment * 100).toFixed(0)}% containment) with secondary presence in ` +
+    `${secondaryName.toLowerCase()} (${(secondary.maxContainment * 100).toFixed(0)}% containment).` +
+    tentative
+  );
 }
 
 /**
@@ -305,8 +362,14 @@ export function analyzeProvenance(hits: MetagenomeHit[]): ProvenanceResult {
   const biomeDistribution = computeBiomeDistribution(hits);
   const geoHeatmap = computeGeoHeatmap(hits);
 
-  // Sort hits by containment
-  const sortedHits = [...hits].sort((a, b) => b.containment - a.containment);
+  // Sort hits by containment where it exists; unmeasured hits keep input order
+  // behind the measured ones rather than being treated as containment 0.
+  const sortedHits = [...hits].sort((a, b) => {
+    if (a.containment !== null && b.containment !== null) return b.containment - a.containment;
+    if (a.containment !== null) return -1;
+    if (b.containment !== null) return 1;
+    return 0;
+  });
   const topHits = sortedHits.slice(0, 10);
 
   const primaryHabitat = biomeDistribution.length > 0
@@ -412,8 +475,9 @@ export function generateDemoProvenanceData(
     });
   }
 
-  // Sort by containment descending
-  hits.sort((a, b) => b.containment - a.containment);
+  // Sort by containment descending. Demo hits always carry one; the coalesce
+  // exists only because the field is nullable in general.
+  hits.sort((a, b) => (b.containment ?? 0) - (a.containment ?? 0));
 
   return hits;
 }
@@ -472,6 +536,10 @@ export function generateAsciiWorldMap(
   const hitsByLocation = new Map<string, { containment: number; biome: BiomeType }>();
 
   for (const hit of hits) {
+    // Marker radius encodes containment, so a hit without one has nothing to
+    // draw at this scale. Skipping it is correct: drawing it at radius 0 would
+    // claim the phage is absent there.
+    if (hit.containment === null) continue;
     const y = latToY(hit.location.latitude);
     const x = lonToX(hit.location.longitude);
     const key = `${x},${y}`;

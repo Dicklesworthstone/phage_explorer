@@ -317,6 +317,7 @@ export function processProvenanceData(
       longitude: data.lon,
       sampleCount: data.samples.length,
       isolationSources: [...new Set(sources)],
+      runIds: data.samples.map(s => s.run_id).filter((r): r is string => !!r),
       dateRange: dates.length > 0
         ? { earliest: dates[0], latest: dates[dates.length - 1] }
         : undefined,

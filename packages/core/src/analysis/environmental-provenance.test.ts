@@ -33,42 +33,70 @@ const createMockHit = (overrides: Partial<MetagenomeHit> = {}): MetagenomeHit =>
 });
 
 describe('computeNoveltyScore', () => {
-  it('returns novelty 1.0 for no hits', () => {
-    const result = computeNoveltyScore([]);
-    expect(result.score).toBe(1.0);
-    expect(result.classification).toBe('novel');
-    expect(result.totalHits).toBe(0);
+  it('returns no score for no hits, rather than calling the phage novel', () => {
+    // This test previously asserted score 1.0 / 'novel' for an empty hit list,
+    // locking in the defect. An empty search supports no conclusion: it is
+    // equally consistent with a genuinely novel phage and with an API that
+    // returned nothing. Reporting "entirely novel" from zero evidence is the
+    // strongest possible claim made on the weakest possible basis.
+    expect(computeNoveltyScore([])).toBeNull();
+  });
+
+  it('returns no score when hits exist but none carry a containment', () => {
+    // The live failure this fixes. SRA metadata yields locations and sample
+    // counts but never sequences, so the overlay built hits with containment 0
+    // and every phage in the catalogue rendered as "100% NOVEL" beneath a green
+    // REAL DATA banner. Null means not measured; 0 means measured and absent.
+    const hits = [
+      createMockHit({ containment: null }),
+      createMockHit({ containment: null, biome: 'marine' }),
+    ];
+    expect(computeNoveltyScore(hits)).toBeNull();
+  });
+
+  it('still scores when only some hits carry a containment', () => {
+    // The discrimination check. If the guard above were implemented as "any
+    // null anywhere means null", a single unmeasured hit would suppress a real
+    // result, which is the opposite failure.
+    const hits = [
+      createMockHit({ containment: null }),
+      createMockHit({ containment: 0.6, biome: 'marine' }),
+    ];
+    const result = computeNoveltyScore(hits);
+    expect(result).not.toBeNull();
+    expect(result!.maxContainment).toBeCloseTo(0.6, 5);
+    expect(result!.totalHits).toBe(1); // counts measured hits, not all hits
   });
 
   it('classifies as novel for low containment', () => {
     const hits = [createMockHit({ containment: 0.05 })];
     const result = computeNoveltyScore(hits);
-    expect(result.classification).toBe('novel');
-    expect(result.score).toBeCloseTo(0.95, 2);
+    expect(result!.classification).toBe('novel');
+    expect(result!.score).toBeCloseTo(0.95, 2);
   });
 
   it('classifies as rare for containment 0.1-0.3', () => {
     const hits = [createMockHit({ containment: 0.2 })];
     const result = computeNoveltyScore(hits);
-    expect(result.classification).toBe('rare');
+    expect(result!.classification).toBe('rare');
   });
 
   it('classifies as uncommon for containment 0.3-0.5', () => {
     const hits = [createMockHit({ containment: 0.4 })];
     const result = computeNoveltyScore(hits);
-    expect(result.classification).toBe('uncommon');
+    expect(result!.classification).toBe('uncommon');
   });
 
   it('classifies as known for containment 0.5-0.7', () => {
     const hits = [createMockHit({ containment: 0.6 })];
     const result = computeNoveltyScore(hits);
-    expect(result.classification).toBe('known');
+    expect(result!.classification).toBe('known');
   });
 
   it('classifies as well_characterized for containment >= 0.7', () => {
     const hits = [createMockHit({ containment: 0.85 })];
     const result = computeNoveltyScore(hits);
-    expect(result.classification).toBe('well_characterized');
+    expect(result!.classification).toBe('well_characterized');
   });
 
   it('uses max containment across multiple hits', () => {
@@ -78,15 +106,15 @@ describe('computeNoveltyScore', () => {
       createMockHit({ containment: 0.5 }),
     ];
     const result = computeNoveltyScore(hits);
-    expect(result.maxContainment).toBe(0.8);
-    expect(result.classification).toBe('well_characterized');
+    expect(result!.maxContainment).toBe(0.8);
+    expect(result!.classification).toBe('well_characterized');
   });
 
   it('provides interpretation text', () => {
     const hits = [createMockHit({ containment: 0.75, biome: 'marine' })];
     const result = computeNoveltyScore(hits);
-    expect(result.interpretation).toContain('marine');
-    expect(result.interpretation.length).toBeGreaterThan(20);
+    expect(result!.interpretation).toContain('marine');
+    expect(result!.interpretation.length).toBeGreaterThan(20);
   });
 });
 
@@ -104,7 +132,7 @@ describe('computeBiomeDistribution', () => {
     ];
     const result = computeBiomeDistribution(hits);
 
-    expect(result.length).toBe(2);
+    expect(result!.length).toBe(2);
     const gutBiome = result.find(b => b.biome === 'gut');
     const marineBiome = result.find(b => b.biome === 'marine');
 
@@ -261,7 +289,7 @@ describe('generateDemoProvenanceData', () => {
   it('generates hits sorted by containment', () => {
     const data = generateDemoProvenanceData('phage-123');
     for (let i = 1; i < data.length; i++) {
-      expect(data[i - 1].containment).toBeGreaterThanOrEqual(data[i].containment);
+      expect(data[i - 1].containment!).toBeGreaterThanOrEqual(data[i].containment!);
     }
   });
 

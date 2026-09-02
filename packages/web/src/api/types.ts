@@ -51,6 +51,14 @@ export interface EnvironmentalProvenanceData {
     longitude: number;
     sampleCount: number;
     isolationSources: string[];
+    /**
+     * The real SRA run accessions behind this location (SRR/ERR/DRR).
+     *
+     * Carried through so the overlay can identify a hit by something a user can
+     * actually look up. It previously minted `SRA-1`, `SRA-2` and so on, which
+     * read like accessions and resolve to nothing.
+     */
+    runIds: string[];
     dateRange?: { earliest: string; latest: string };
   }>;
   isolationSourceBreakdown: Record<string, number>;

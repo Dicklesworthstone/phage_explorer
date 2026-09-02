@@ -242,12 +242,20 @@ export function EnvironmentalProvenanceOverlay({
                 // sequence-to-sequence measure. There is nothing to compare
                 // against, so no value is reported per location.
                 //
+                // It is null, not 0. Setting it to 0 was a first attempt at the
+                // same honesty and it made things worse: 0 is a measured claim
+                // that the genome shares nothing with the sample, so the
+                // headline novelty score (1 - maxContainment) read 100% NOVEL
+                // for every phage in the catalogue, under a green REAL DATA
+                // banner. Null means not measured, and the analysis now returns
+                // no novelty score at all rather than a maximal one.
+                //
                 // Real, correctly-scoped distinctiveness is computed separately
                 // below against the catalogue, where sequences do exist.
-                const realHits = provenanceData.locations.map((loc, i) => ({
-                  metagenomeId: `SRA-${i + 1}`,
+                const realHits = provenanceData.locations.map(loc => ({
+                  metagenomeId: loc.runIds[0] ?? loc.name,
                   source: 'other' as const, // SRA data doesn't fit other source categories
-                  containment: 0,
+                  containment: null,
                   biome: mapIsolationSourceToBiome(loc.isolationSources[0]),
                   location: {
                     latitude: loc.latitude,
@@ -357,11 +365,19 @@ export function EnvironmentalProvenanceOverlay({
       const labelWidth = 120;
       const barMaxWidth = width - padding * 2 - labelWidth - 60;
 
-      const maxContainment = Math.max(...biomeDistribution.map(b => b.maxContainment));
+      // When containment was never measured -- the usual case, since SRA
+      // metadata carries no sequence -- the bars encode how many sampled
+      // locations fall in each biome instead, and the axis says so. They used
+      // to encode containment 0 for every biome, which divided by zero, drew
+      // nothing, and printed "0%" beside every label as if measured.
+      const measuredContainment = biomeDistribution.some(b => b.maxContainment !== null);
+      const valueOf = (b: (typeof biomeDistribution)[number]) =>
+        measuredContainment ? (b.maxContainment ?? 0) : b.hitCount;
+      const maxValue = Math.max(...biomeDistribution.map(valueOf), 0);
 
       biomeDistribution.slice(0, 8).forEach((biome, i) => {
         const y = padding + i * (barHeight + barGap);
-        const barWidth = (biome.maxContainment / maxContainment) * barMaxWidth;
+        const barWidth = maxValue > 0 ? (valueOf(biome) / maxValue) * barMaxWidth : 0;
 
         // Label
         ctx.fillStyle = colors.text;
@@ -378,12 +394,29 @@ export function EnvironmentalProvenanceOverlay({
         ctx.fillStyle = BIOME_COLORS[biome.biome];
         ctx.fillRect(padding + labelWidth, y, barWidth, barHeight);
 
-        // Percentage
+        // Value
         ctx.fillStyle = colors.text;
         ctx.textAlign = 'left';
-        const pct = `${Math.round(biome.maxContainment * 100)}%`;
-        ctx.fillText(pct, padding + labelWidth + barMaxWidth + 10, y + barHeight / 2);
+        const label =
+          measuredContainment && biome.maxContainment !== null
+            ? `${Math.round(biome.maxContainment * 100)}%`
+            : `${biome.hitCount} loc`;
+        ctx.fillText(label, padding + labelWidth + barMaxWidth + 10, y + barHeight / 2);
       });
+
+      // Say which quantity is on the axis, so the bars cannot be misread as
+      // containment when they are location counts.
+      ctx.fillStyle = colors.textMuted;
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(
+        measuredContainment
+          ? 'Bar length = maximum containment in biome'
+          : 'Bar length = sampled locations per biome. Containment not measured.',
+        padding,
+        padding + Math.min(8, biomeDistribution.length) * (barHeight + barGap) + 4
+      );
     };
 
     draw();
@@ -439,16 +472,19 @@ export function EnvironmentalProvenanceOverlay({
         ctx.stroke();
       }
 
-      // Draw hits
+      // Draw hits.
+      //
+      // Radius and opacity encode containment. Where containment was not
+      // measured they must not vary, or every point renders at the minimum and
+      // the map reads as "found everywhere, abundant nowhere". Unmeasured
+      // points get one fixed neutral size, and the legend below says what the
+      // markers mean in that case.
       for (const hit of geoHeatmap) {
         const x = lonToX(hit.lon);
         const y = latToY(hit.lat);
 
-        // Circle size based on intensity
-        const radius = 5 + hit.intensity * 15;
-
-        // Color based on intensity
-        const alpha = 0.3 + hit.intensity * 0.5;
+        const radius = hit.intensity === null ? 7 : 5 + hit.intensity * 15;
+        const alpha = hit.intensity === null ? 0.45 : 0.3 + hit.intensity * 0.5;
         ctx.fillStyle = `rgba(231, 76, 60, ${alpha})`;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
@@ -464,7 +500,13 @@ export function EnvironmentalProvenanceOverlay({
       ctx.fillStyle = colors.textDim;
       ctx.font = '10px monospace';
       ctx.textAlign = 'left';
-      ctx.fillText('Circle size = containment strength', 10, height - 10);
+      ctx.fillText(
+        geoHeatmap.some(h => h.intensity !== null)
+          ? 'Circle size = containment strength'
+          : 'Marker = sampled location. Containment not measured, so size carries no meaning.',
+        10,
+        height - 10
+      );
     };
 
     draw();
@@ -569,8 +611,15 @@ export function EnvironmentalProvenanceOverlay({
           </div>
         )}
 
-        {/* Novelty badge */}
-        {result && (
+        {/* Novelty badge.
+
+            Rendered only when a novelty score exists. It is absent whenever no
+            hit carried a containment, which is every result built from SRA
+            metadata -- that API returns locations and sample counts, never
+            sequences. The badge previously read "Novelty Score: 100% / NOVEL"
+            for every phage in the catalogue because containment was being set
+            to 0, and it sat directly under the green REAL DATA banner. */}
+        {result?.novelty && (
           <div
             style={{
               display: 'flex',
@@ -604,6 +653,29 @@ export function EnvironmentalProvenanceOverlay({
             <span style={{ color: colors.textDim, fontSize: '0.85rem' }}>
               {result.novelty.totalHits} metagenome hits
             </span>
+          </div>
+        )}
+
+        {/* Why the novelty score is missing, said explicitly. An absent number
+            with no explanation reads as a bug; this says it was not measured
+            and what would be needed to measure it. */}
+        {result && !result.novelty && (
+          <div
+            style={{
+              padding: '0.75rem 1rem',
+              border: `1px solid ${colors.borderLight}`,
+              borderRadius: '4px',
+              fontSize: '0.85rem',
+              color: colors.textMuted,
+            }}
+          >
+            <strong style={{ color: colors.text }}>No novelty score.</strong> Novelty is
+            1 &minus; containment against metagenomes, and containment is a
+            sequence-to-sequence measure. The SRA records behind this view carry
+            locations, isolation sources and sample counts, but no sequence, so there is
+            nothing to compare against. Computing it would need a sketch index of the
+            metagenomes themselves. Catalogue distinctiveness above is measured and is a
+            different question.
           </div>
         )}
 
