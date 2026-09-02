@@ -416,15 +416,48 @@ describe('integration: full regulatory analysis', () => {
     expect(flow.values.length).toBeGreaterThan(0);
   });
 
-  test('handles very long sequence efficiently', () => {
-    // 100kb sequence - should complete in reasonable time
-    const seq = 'ACGT'.repeat(25000);
+  // NOTE: there is deliberately no timing test here.
+  //
+  // This slot used to hold `expect(elapsed).toBeLessThan(5000)` for a 100 kb
+  // sequence. That made the suite's pass/fail depend on ambient machine load
+  // rather than on the code: measured 386 ms warm, 3.3 s cold, and 9.6 s while
+  // another suite was running.
+  //
+  // Replacing it with a scaling *ratio* between two input sizes was tried and
+  // is also flaky: under six concurrent test processes it failed on 4 of 4
+  // runs. GC and scheduler noise dominate at this scale, so no wall-clock
+  // assertion -- absolute or relative -- is stable enough for a correctness
+  // suite that is meant to gate merges.
+  //
+  // Performance belongs in a benchmark on a fixed runner with a recorded
+  // baseline. Tracked as phage_explorer-kalm.6.
+  //
+  // For the record, since it is easy to assume otherwise from the variance
+  // above: the implementation is NOT quadratic. `terminators.find()` inside the
+  // propagation loops looks like an O(bins x terminators) scan, but real
+  // genomes carry few terminators (lambda 69, T4 120, phiKZ 346), so it is
+  // cheap. Rewriting it to bucket terminators by bin was measured at 173->193,
+  // 608->591 and 1059->1108 ms on those three genomes: within noise, and
+  // sometimes slower. That change was reverted rather than committed with a
+  // speedup claim it did not earn.
 
-    const start = Date.now();
-    const result = simulateTranscriptionFlow(seq, 1000);
-    const elapsed = Date.now() - start;
-
-    expect(result.values.length).toBe(100);
-    expect(elapsed).toBeLessThan(5000); // Should complete within 5 seconds
+  test('windows the sequence at the requested resolution', () => {
+    // The other half of the original assertion, kept as its own test because
+    // it is a real behavioural guarantee and has nothing to do with timing.
+    //
+    // The original wrote `expect(result.values.length).toBe(100)` for a 100 kb
+    // input at window 1000, which reads as "always 100 windows". It is not:
+    // the count is length / window. Measured 10 kb -> 10, 25 kb -> 25,
+    // 50 kb -> 50, 100 kb -> 100. The old assertion was right by coincidence
+    // for one input size.
+    // Two sizes are enough to pin the relationship, and keep this well inside
+    // the default test timeout even on a loaded machine. The first version
+    // used four sizes totalling 185 kb and timed out at 17.8s under six
+    // concurrent test processes -- turning a correctness test back into a
+    // load-sensitive one by the back door.
+    for (const kb of [10, 25]) {
+      const result = simulateTranscriptionFlow('ACGT'.repeat(kb * 250), 1000);
+      expect(result.values.length).toBe(kb);
+    }
   });
 });
