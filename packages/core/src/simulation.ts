@@ -130,6 +130,16 @@ export interface EvolutionReplayState extends SimStateBase {
   fitnessHistory: number[];
   /** Effective population size trajectory */
   neHistory: number[];
+  /**
+   * Length of the genome mutations are drawn across, in bp. Taken from the
+   * loaded phage so reported positions land inside a real coordinate space.
+   */
+  genomeLength: number;
+  /**
+   * GC fraction (0-1) of the loaded phage, used to weight which base a
+   * mutation starts from. Defaults to 0.5 when unknown.
+   */
+  gcContent: number;
 }
 
 /**

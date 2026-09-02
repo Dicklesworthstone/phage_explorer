@@ -4,6 +4,7 @@
 
 import type {
   Simulation,
+  SimulationId,
   LysogenyCircuitState,
   PlaqueAutomataState,
   EvolutionReplayState,
@@ -14,9 +15,65 @@ import type {
 } from './simulation';
 import { getDefaultParams, STANDARD_CONTROLS } from './simulation';
 import { ribosomeTrafficSimulation } from './analysis/translation-simulation';
+import type { PhageFull } from './types';
 
 // Helper to clamp numbers
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
+
+/**
+ * Approximate capsid radius (nm) by virion morphology.
+ *
+ * These are the standard published outer radii for the morphotypes in the
+ * catalogue; they are what makes a 26 nm microvirus behave differently from a
+ * 90 nm myovirus head in the packaging model. Filamentous phages (M13) have no
+ * icosahedral capsid at all, so they fall through to the generic default and
+ * the packaging model should be read as illustrative for them.
+ */
+const CAPSID_RADIUS_NM_BY_MORPHOLOGY: Record<string, number> = {
+  microvirus: 13,
+  levivirus: 13,
+  podovirus: 30,
+  siphovirus: 29,
+  myovirus: 45,
+  tectivirus: 31,
+  corticovirus: 29,
+  cystovirus: 43,
+};
+
+const DEFAULT_CAPSID_RADIUS_NM = 30;
+
+/**
+ * Parameter defaults derived from the phage the user actually has open.
+ *
+ * The simulation parameter lists carry generic `defaultValue`s so the controls
+ * render sensibly with no genome loaded. When a phage IS loaded those generics
+ * are wrong -- a 280 kb jumbo phage and a 3.5 kb leviphage are not both 50 kb --
+ * so callers merge this over the generic defaults before initialising. A value
+ * the user has since edited by hand must still win, so callers apply this
+ * BETWEEN the generic defaults and any explicit user overrides.
+ *
+ * Returns an empty object when there is nothing real to derive, so callers can
+ * spread it unconditionally.
+ */
+export function derivePhageSimDefaults(
+  simId: SimulationId,
+  phage?: PhageFull | null
+): Record<string, number | boolean | string> {
+  if (!phage) return {};
+
+  if (simId === 'packaging-motor') {
+    const derived: Record<string, number | boolean | string> = {};
+    if (typeof phage.genomeLength === 'number' && phage.genomeLength > 0) {
+      derived.genomeKb = Math.round((phage.genomeLength / 1000) * 10) / 10;
+    }
+    const morphology = phage.morphology?.toLowerCase() ?? '';
+    derived.capsidRadius =
+      CAPSID_RADIUS_NM_BY_MORPHOLOGY[morphology] ?? DEFAULT_CAPSID_RADIUS_NM;
+    return derived;
+  }
+
+  return {};
+}
 
 // Helper for 2D grid neighbor selection (used in Plaque Sim)
 // Toroidal wrap-around to avoid edge effects
@@ -462,8 +519,10 @@ export function makePackagingSimulation(): Simulation<PackagingMotorState> {
     description: 'DNA fill → pressure/force with salt and capsid geometry.',
     controls: STANDARD_CONTROLS,
     parameters: [
-      { id: 'genomeKb', label: 'Genome length (kb)', type: 'number', min: 3, max: 200, step: 1, defaultValue: 50 },
-      { id: 'capsidRadius', label: 'Capsid radius (nm)', type: 'number', min: 20, max: 60, step: 1, defaultValue: 30 },
+      // Ranges span the catalogue: MS2 at 3.6 kb through phiKZ at 280 kb, and
+      // microvirus capsids at ~13 nm through myovirus heads at ~45 nm.
+      { id: 'genomeKb', label: 'Genome length (kb)', type: 'number', min: 3, max: 300, step: 1, defaultValue: 50 },
+      { id: 'capsidRadius', label: 'Capsid radius (nm)', type: 'number', min: 10, max: 60, step: 1, defaultValue: 30 },
       { id: 'ionic', label: 'Ionic strength (mM)', type: 'number', min: 1, max: 200, step: 5, defaultValue: 50 },
       { id: 'mode', label: 'Packaging mode', type: 'select', options: [
         { value: 'headful', label: 'Headful' },
@@ -471,9 +530,15 @@ export function makePackagingSimulation(): Simulation<PackagingMotorState> {
         { value: 'phi29', label: 'Phi29 motor' },
       ], defaultValue: 'cos' },
     ],
-    init: (_phage, params): PackagingMotorState => {
+    init: (phage, params): PackagingMotorState => {
       const base = getDefaultParams([{ id: 'stall', label: '', type: 'number', defaultValue: 0.02 }]);
-      const merged = { ...base, ...(params ?? {}) } as Record<string, number | boolean | string>;
+      // Phage-derived geometry sits under any explicit caller params so a user
+      // who drags the genome-length slider still wins.
+      const merged = {
+        ...base,
+        ...derivePhageSimDefaults('packaging-motor', phage),
+        ...(params ?? {}),
+      } as Record<string, number | boolean | string>;
       return {
         type: 'packaging-motor',
         time: 0,
