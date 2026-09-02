@@ -18,6 +18,7 @@ import { DataLoadingOverlay } from './components/DataLoadingOverlay';
 import { useDatabase } from './hooks/useDatabase';
 import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotkey';
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
+import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
 import {
   APP_SHELL_FOOTER_HINTS,
@@ -163,6 +164,11 @@ export default function App(): React.ReactElement {
   const { open: openOverlayCtx, close: closeOverlayCtx, toggle: toggleOverlayCtx, hasBlockingOverlay } = useOverlay();
   const { mode } = useKeyboardMode();
   const pendingSequence = usePendingSequence();
+
+  // Load the diff reference genome whenever diff mode is on. Without this the
+  // store's diffReferenceSequence stayed null in the browser forever, which
+  // left the selection-pressure dN/dS overlay permanently empty.
+  useDiffReferenceSequence(repository);
 
   // Sync experience level to keyboard manager and handle blocked hotkey notifications
   useExperienceLevelSync();

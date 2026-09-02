@@ -67,3 +67,5 @@ export {
   type UseLoadingChoreographyOptions,
   type UseLoadingChoreographyResult,
 } from './useLoadingChoreography';
+
+export { useDiffReferenceSequence } from './useDiffReferenceSequence';

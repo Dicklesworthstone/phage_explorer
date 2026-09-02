@@ -145,8 +145,20 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
            />
         ) : !analysis ? (
            <OverlayEmptyState
-             message={!diffEnabled ? 'Requires reference comparison' : 'Preparing analysis...'}
-             hint={!diffEnabled ? 'Enable Diff mode to compare against a reference sequence.' : 'Loading sequence data...'}
+             message={
+               !diffEnabled
+                 ? 'Requires reference comparison'
+                 : !diffReferenceSequence
+                   ? 'Loading reference genome...'
+                   : 'Preparing analysis...'
+             }
+             hint={
+               !diffEnabled
+                 ? 'Press D to enable diff mode, which selects a reference genome to compare against.'
+                 : !diffReferenceSequence
+                   ? 'Fetching the reference genome to compare against.'
+                   : 'Translating coding sequences and scoring substitutions.'
+             }
            />
         ) : (
            <>
