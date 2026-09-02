@@ -1297,6 +1297,16 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         </Box>
       )}
 
+      {activeOverlay === 'anomaly' && (
+        <Box
+          position="absolute"
+          marginLeft={Math.max(0, Math.floor((terminalCols - 80) / 2))}
+          marginTop={Math.max(0, Math.floor((terminalRows - 16) / 2))}
+        >
+          <AnomalyOverlay sequence={sequence} />
+        </Box>
+      )}
+
       {activeOverlay === 'complexity' && (
         <Box
           position="absolute"
