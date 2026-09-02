@@ -38,6 +38,12 @@ const HISTOGRAM_CHARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█']
 // K-mer gradient characters (5 levels)
 const KMER_GRADIENT = ' ░▒▓█';
 
+/**
+ * Smallest gene bar we will attempt to draw. Below this the map is unreadable
+ * anyway; the value also keeps `barWidth - 4` non-negative.
+ */
+const MIN_BAR_WIDTH = 4;
+
 export function GeneMap({
   width = 80,
   showDensityHistogram = true,
@@ -53,8 +59,14 @@ export function GeneMap({
   const genes = currentPhage?.genes ?? [];
   const genomeLength = currentPhage?.genomeLength ?? 1;
 
-  // Map width for the gene bar (minus borders and labels)
-  const barWidth = Math.max(1, width - 10);
+  // Map width for the gene bar (minus borders and labels).
+  //
+  // The strand indicator lines below draw `barWidth - 4` rule characters, so
+  // the floor has to leave room for that subtraction. A terminal reporting a
+  // width of 0 (no controlling terminal, some CI harnesses) otherwise reaches
+  // `'─'.repeat(-9)`, which throws a RangeError and kills the whole app.
+  const barWidth = Math.max(MIN_BAR_WIDTH, width - 10);
+  const strandRuleWidth = Math.max(0, barWidth - 4);
 
   // Build the gene bar visualization with strand information
   const geneBar = useMemo(() => {
@@ -298,7 +310,7 @@ export function GeneMap({
       {showStrandLabels && (
         <Box gap={1}>
           <Text color={colors.geneForward}>{STRAND_CHARS.arrow5}→</Text>
-          <Text color={colors.textMuted}>{'─'.repeat(barWidth - 4)}</Text>
+          <Text color={colors.textMuted}>{'─'.repeat(strandRuleWidth)}</Text>
           <Text color={colors.geneForward}>→{STRAND_CHARS.arrow3}</Text>
         </Box>
       )}
@@ -341,7 +353,7 @@ export function GeneMap({
       {showStrandLabels && (
         <Box gap={1}>
           <Text color={colors.geneReverse}>{STRAND_CHARS.arrow3}←</Text>
-          <Text color={colors.textMuted}>{'─'.repeat(barWidth - 4)}</Text>
+          <Text color={colors.textMuted}>{'─'.repeat(strandRuleWidth)}</Text>
           <Text color={colors.geneReverse}>←{STRAND_CHARS.arrow5}</Text>
         </Box>
       )}
