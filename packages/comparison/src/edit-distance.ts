@@ -42,7 +42,9 @@ initWasm().catch(() => { /* WASM unavailable, using JS fallback */ });
 
 /**
  * Compute Levenshtein distance using dynamic programming.
- * Uses WASM implementation when available (5-20x faster).
+ * Uses the WASM implementation when available. Measured 1.6x at 1 kb and 1.8x
+ * at 5 kb (`bun run bench:wasm`); the old "5-20x" here was never measured.
+ * Only measured to 5 kb because the algorithm is O(n*m).
  * Space-optimized: O(min(m,n)) instead of O(m*n).
  *
  * For sequences > maxLength, returns approximate result.

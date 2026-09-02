@@ -36,7 +36,8 @@
     "typecheck:all": "bun run typecheck && bun run typecheck:web",
     "docs:keys": "bun scripts/generate-keyboard-tables.ts",
     "check:keys": "bun scripts/generate-keyboard-tables.ts --check",
-    "wasm:verify": "bun scripts/verify-wasm-toolchain.ts"
+    "wasm:verify": "bun scripts/verify-wasm-toolchain.ts",
+    "bench:wasm": "bun scripts/benchmark-wasm.ts --json packages/wasm-compute/benchmark-results.json"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.2.0",

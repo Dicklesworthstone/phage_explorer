@@ -292,13 +292,22 @@ Dramatic performance improvements through WebGPU compute shaders, expanded WASM 
 | Sequence Scroll | claimed 2-3x smoother |
 | Memory Usage | claimed 50% reduction |
 
-> **Note added 2026-09-02.** None of the figures in this table is backed by a
-> committed measurement, and the in-repo comments they were drawn from disagree
+> **Note added 2026-09-02.** None of the figures in this table was backed by a
+> committed measurement, and the in-repo comments they were drawn from disagreed
 > with each other by more than an order of magnitude. They are recorded here as
 > claims made at the time, not as results. The WASM row was additionally wrong
 > in substance: two of the three accelerations it described (translation and
-> MinHash) were not executing at all. See the README's "What's Accelerated"
-> table for the current, verified list of kernels.
+> MinHash) were not executing at all.
+>
+> **The WASM row is now measured.** `scripts/benchmark-wasm.ts` sweeps every
+> kernel that has both implementations from 1 kb to 300 kb; results are committed
+> at `packages/wasm-compute/benchmark-results.json`. The honest range is 0.6x to
+> 40x depending on the kernel and the input size, not a single "5-20x": MinHash
+> reaches 40x on a 300 kb genome, while dense k-mer counting, codon usage and GC
+> content sit between 1.0x and 1.6x, and several kernels are *slower* than JS
+> below about 5 kb. See the README's "Measured speedups" table.
+>
+> The other four rows remain unmeasured claims.
 
 ---
 

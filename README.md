@@ -566,8 +566,7 @@ Performance-critical algorithms are implemented in Rust and compiled to WebAssem
 ### What's Accelerated
 
 Every kernel below runs in Rust/WASM at runtime and has a pure-JavaScript
-fallback that produces the same result. No speedup figures are quoted here,
-because none is currently measured; see the note under the table.
+fallback. Measured speedups are in the table under this one.
 
 | Kernel | Used by | Fallback |
 |--------|---------|----------|
@@ -585,12 +584,50 @@ because none is currently measured; see the note under the table.
 | Levenshtein distance | Edit-distance comparison | JS dynamic programming |
 | Spatial-hash bond detection, functional groups | 3D structure loading (≥2000 atoms) | JS neighbour search |
 
-**On speedups.** Earlier revisions of this table quoted ratios such as "5-20x".
-Those numbers were not backed by any committed measurement, and two of the three
-rows described code paths that never executed: translation and reverse complement
-have no WASM caller at all, and MinHash was wired but never initialized. The dead
-claims are gone and MinHash now genuinely runs. Ratios will return here when a
-benchmark produces them on a fixed runner.
+### Measured speedups
+
+Earlier revisions quoted "5-20x", "2-10x" and "3-5x". None was backed by a
+committed measurement and the figures disagreed with each other across four
+documents. `scripts/benchmark-wasm.ts` now measures them; run it yourself with
+`bun run bench:wasm`, and the raw numbers are committed at
+`packages/wasm-compute/benchmark-results.json`.
+
+Median of repeated runs after warm-up, on one machine under Bun. **The ratios
+are what travel; the absolute times are machine-specific.**
+
+| Kernel | 1 kb | 25 kb | 300 kb |
+|---|---|---|---|
+| MinHash Jaccard (k=12) | 3.9x | 21x | **40x** |
+| k-mer analysis (k=6) | 5.7x | 11x | 13x |
+| Reverse complement | 0.7x | 8.9x | 63x |
+| Translate sequence | 5.6x | 3.6x | 2.6x |
+| Levenshtein distance | 1.6x | — | — |
+| Dense k-mer counting (k=6) | 0.9x | 1.3x | 1.1x |
+| Codon usage counting | 0.7x | 1.2x | 1.3x |
+| GC content | 0.6x | 1.5x | 1.6x |
+
+Three things this table says that the old figures did not:
+
+- **Below about 5 kb, WASM is often slower.** The call and copy overhead
+  outweighs the work. Several kernels sit at 0.6-0.9x on a 1 kb input. That
+  matters because the catalogue's smallest genome, MS2, is 3.5 kb.
+- **Dense k-mer counting, codon usage and GC content are barely faster** --
+  1.0-1.6x, not 5-20x. They are memory-bound loops that JavaScript's JIT handles
+  well. Keeping their WASM paths is defensible; claiming an order of magnitude
+  was not.
+- **The large wins are real and larger than claimed.** MinHash reaches 40x at
+  300 kb, and reverse complement 63x, where the JS path pays for string
+  building.
+
+Levenshtein is measured only to 5 kb: it is O(n·m), so larger inputs dominate
+the sweep without adding signal.
+
+Two rows are timed but their outputs are *not* compared, because the two
+implementations do not currently agree: MinHash does not share a hash family
+with its JS counterpart (`phage_explorer-i1cm`), and `analyze_kmers` counts
+plain k-mers where the JS counts canonical ones (`phage_explorer-wbil`). Both
+are tracked; the benchmark labels them rather than quietly reporting a ratio
+between two different computations.
 
 ### Why Rust/WASM for Sequence Work
 

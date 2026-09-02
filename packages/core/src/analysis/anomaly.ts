@@ -237,7 +237,9 @@ function p95IndexForLength(length: number): number {
 /**
  * Scan sequence for anomalies
  *
- * Uses WASM-accelerated dense k-mer counting when k <= 10 for ~10x faster
+ * Uses WASM-accelerated dense k-mer counting when k <= 10. Measured 1.0-1.3x
+ * for the counting itself (`bun run bench:wasm`); the "~10x" here was never
+ * measured and is wrong for this kernel.
  * processing on large genomes. Falls back to Map-based counting for k > 10.
  */
 export function scanForAnomalies(
@@ -273,8 +275,12 @@ export function scanForAnomalies(
  * Dense k-mer path using WASM acceleration.
  *
  * Performance tiers:
- * 1. Ultra-fast: Single WASM call computes all KL values (~100x faster)
- * 2. Fast: Per-window WASM k-mer counting (~10x faster than Map-based)
+ * 1. Ultra-fast: a single WASM call computes all KL values. The "~100x" this
+ *    line claimed was never measured; scan_kl_windows has no JS counterpart to
+ *    compare against, so no ratio is quoted.
+ * 2. Fast: per-window WASM k-mer counting. Faster than the Map-based path, but
+ *    the dense counting kernel itself measures 1.0-1.3x against typed-array JS,
+ *    not the "~10x" claimed here.
  * 3. Fallback: JS dense k-mer counting
  */
 function scanForAnomaliesDense(

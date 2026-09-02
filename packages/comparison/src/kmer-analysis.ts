@@ -5,7 +5,8 @@
  * Implements Jaccard index, cosine similarity, containment index,
  * and Bray-Curtis dissimilarity.
  *
- * Uses WASM implementation when available (3-10x faster for large sequences).
+ * Uses the WASM implementation when available. Measured 5.7x at 1 kb rising to
+ * 13x at 300 kb (`bun run bench:wasm`).
  *
  * References:
  * - Zielezinski et al. (2019) "Benchmarking of alignment-free sequence comparison methods"
@@ -232,7 +233,7 @@ export function kmerIntersectionSize(setA: Set<string>, setB: Set<string>): numb
 
 /**
  * Perform complete k-mer analysis between two sequences.
- * Uses WASM implementation when available (3-10x faster).
+ * Uses the WASM implementation when available; see bench:wasm for the ratios.
  */
 export function analyzeKmers(
   sequenceA: string,
@@ -253,7 +254,7 @@ export function analyzeKmers(
     };
   }
 
-  // Use WASM implementation when available (3-10x faster)
+  // Use the WASM implementation when available; see bench:wasm for the ratios.
   if (wasmAvailable && wasmAnalyzeKmers) {
     let result: WasmKmerAnalysisResult | null = null;
     try {
@@ -390,7 +391,8 @@ export function extractCanonicalKmerFrequencies(sequence: string, k: number): Ma
 /**
  * Estimate Jaccard similarity using MinHash for very large sequences.
  * This provides O(n) space and time complexity instead of O(n^2).
- * Uses WASM implementation when available (3-5x faster).
+ * Uses the WASM implementation when available. Measured 3.9x at 1 kb rising to
+ * 40x at 300 kb (`bun run bench:wasm`) -- the old "3-5x" understated it.
  *
  * Optimized to use a single base hash and permutations.
  */
@@ -427,7 +429,7 @@ export function minHashJaccard(
   if (!hasA && !hasB) return 1;
   if (!hasA || !hasB) return 0;
 
-  // Use WASM implementation when available (3-5x faster)
+  // Use the WASM implementation when available; measured 3.9x-40x by bench:wasm.
   if (wasmAvailable && wasmMinHashJaccard) {
     try {
       return wasmMinHashJaccard(sequenceA, sequenceB, k, numHashes);
