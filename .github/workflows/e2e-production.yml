@@ -266,3 +266,21 @@ jobs:
           name: e2e-summary
           path: summary.md
           retention-days: 30
+
+      # This job runs `if: always()` so it can publish a summary and open an
+      # issue even when the matrix fails. That is the right behaviour for the
+      # reporting steps above, but it also meant the job itself reported
+      # SUCCESS when every matrix job had failed -- observed in run
+      # 33433415451, where all eight `E2E Tests (...)` jobs failed at dependency
+      # install and "Summarize Results" came back green. A workflow whose final
+      # job is green while its actual work is red is worse than no workflow: it
+      # emits a positive signal from a total failure.
+      #
+      # Reporting first, then fail. Keep this step last.
+      - name: Fail if any matrix job failed
+        if: needs.e2e-production.result != 'success'
+        run: |
+          echo "::error::e2e-production finished with result '${{ needs.e2e-production.result }}'."
+          echo "::error::The summary above was still published. Failing so this run does not"
+          echo "::error::present as successful."
+          exit 1
