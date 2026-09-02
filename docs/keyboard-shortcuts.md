@@ -27,8 +27,8 @@ command palette or a menu.
 | Shortcut | Action | Provenance | Description |
 |---|---|---|---|
 | `Ctrl+g` | Go to position... |  | Jump to a specific genome coordinate |
-| `End` | Jump to end |  | Scroll to the end of the sequence |
-| `Home` | Jump to start |  | Scroll to the beginning of the sequence |
+| `End / Shift+G` | Jump to end |  | Scroll to the end of the sequence |
+| `Home / gg` | Jump to start |  | Scroll to the beginning of the sequence |
 | `j / ↓` | Next phage |  | Move to the next phage in the list |
 | `k / ↑` | Previous phage |  | Move to the previous phage in the list |
 
@@ -38,7 +38,7 @@ command palette or a menu.
 |---|---|---|---|
 | `f` | Cycle reading frame |  | Advance to the next reading frame |
 | `t` | Cycle theme |  | Rotate the active color theme |
-| `v` | Cycle view mode |  | Cycle DNA / Amino Acid / Dual view |
+| `v / Space` | Cycle view mode |  | Cycle DNA / Amino Acid / Dual view |
 | `m` | Toggle 3D model |  | Show or hide the 3D structure viewer |
 | `+ / =` | Zoom in |  | Increase sequence zoom level |
 | `-` | Zoom out |  | Decrease sequence zoom level |

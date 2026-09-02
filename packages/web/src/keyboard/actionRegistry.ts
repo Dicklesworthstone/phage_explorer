@@ -170,7 +170,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     title: 'Cycle view mode',
     category: 'View',
     description: 'Cycle DNA / Amino Acid / Dual view',
-    defaultShortcut: { key: 'v' },
+    // Space as well as `v`. Taught by the KeyboardPrimer and previously unbound.
+    defaultShortcut: [{ key: 'v' }, { key: ' ' }],
     scope: 'global',
     surfaces: ['web'],
   },
@@ -188,7 +189,16 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     title: 'Jump to start',
     category: 'Navigation',
     description: 'Scroll to the beginning of the sequence',
-    defaultShortcut: { key: 'Home' },
+    // `gg` as well as Home. The in-app KeyboardPrimer -- the first thing a new
+    // user reads, shown from the welcome modal -- taught `g g`, `G` and `Space`,
+    // and none of the three was bound. A newcomer's first three attempts to use
+    // the app failed silently, which defeats the depth-layer system's stated
+    // goal of discoverability for beginners at step one.
+    //
+    // Bound rather than removed from the primer: the app is vim-inspired by
+    // design and these are the idiomatic vim motions, so the primer was right
+    // and the bindings were missing.
+    defaultShortcut: [{ key: 'Home' }, { sequence: ['g', 'g'] }],
     scope: 'global',
     surfaces: ['web'],
   },
@@ -197,7 +207,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     title: 'Jump to end',
     category: 'Navigation',
     description: 'Scroll to the end of the sequence',
-    defaultShortcut: { key: 'End' },
+    defaultShortcut: [{ key: 'End' }, { key: 'G', modifiers: { shift: true } }],
     scope: 'global',
     surfaces: ['web'],
   },

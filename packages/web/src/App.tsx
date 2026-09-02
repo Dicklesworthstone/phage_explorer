@@ -150,6 +150,19 @@ export default function App(): React.ReactElement {
   const phages = usePhageStore((s) => s.phages);
   const currentPhageIndex = usePhageStore((s) => s.currentPhageIndex);
   const currentPhage = usePhageStore((s) => s.currentPhage);
+  /**
+   * Diff toggle.
+   *
+   * The registry declared `d` for this and the toolbar rendered the shortcut in
+   * its button label, so the UI told the user the key worked. Nothing ever
+   * registered the handler: a search for ActionIds.DiffToggle found the registry
+   * entry and the label formatter, and no listener. Diff mode is Layer 0 of the
+   * README's "sacred surface" and one of the ten headline features.
+   *
+   * The machinery was all present -- the store action, the toolbar button, and
+   * DiffHighlighter's next/prev-diff hotkeys. Only the toggle was missing.
+   */
+  const toggleDiff = usePhageStore((s) => s.toggleDiff);
   const isLoadingPhage = usePhageStore((s) => s.isLoadingPhage);
   const setPhages = usePhageStore((s) => s.setPhages);
   const setCurrentPhageIndex = usePhageStore((s) => s.setCurrentPhageIndex);
@@ -947,6 +960,7 @@ export default function App(): React.ReactElement {
     { actionId: ActionIds.NavPrevPhage, action: handlePrevPhage, modes: ['NORMAL'] as const, priority: 2 },
     { actionId: ActionIds.ViewCycleTheme, action: nextTheme, modes: ['NORMAL'] as const, priority: 2 },
     { actionId: ActionIds.ViewToggle3DModel, action: toggle3DModel, modes: ['NORMAL'] as const, priority: 2 },
+    { actionId: ActionIds.DiffToggle, action: toggleDiff, modes: ['NORMAL'] as const, priority: 2 },
     {
       actionId: ActionIds.EducationToggleBeginnerMode,
       action: handleToggleBeginnerMode,
@@ -976,6 +990,7 @@ export default function App(): React.ReactElement {
     nextTheme,
     storeCloseOverlay,
     toggle3DModel,
+    toggleDiff,
   ]);
 
   useHotkeys(globalHotkeys);

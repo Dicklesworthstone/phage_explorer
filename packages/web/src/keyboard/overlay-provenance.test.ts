@@ -301,3 +301,99 @@ describe('the badge is wired once, in shared chrome', () => {
     expect(doc).toContain('You do not add the badge to your overlay');
   });
 });
+
+/**
+ * The in-app primer must only teach shortcuts that exist.
+ *
+ * `KeyboardPrimer.tsx` is shown to new users from the welcome modal, and it
+ * taught `g g` (go to start), `G` (go to end) and `Space` (toggle DNA/amino).
+ * None of the three was bound. That is worse than ordinary documentation drift:
+ * it is the first thing a new user reads, it is inside the product rather than
+ * in a file they might never open, and it means a newcomer's first three
+ * attempts to use the app fail silently.
+ *
+ * All three are now bound. This test is what stops them coming apart again.
+ */
+describe('the keyboard primer teaches only real shortcuts', () => {
+  const primer = readFileSync(
+    join(import.meta.dir, '../components/overlays/KeyboardPrimer.tsx'),
+    'utf8'
+  );
+
+  /** Every combo the registry binds, flattened and normalised for lookup. */
+  const boundKeys = (): Set<string> => {
+    const out = new Set<string>();
+    for (const a of ActionRegistryList) {
+      const combos = Array.isArray(a.defaultShortcut)
+        ? a.defaultShortcut
+        : a.defaultShortcut
+          ? [a.defaultShortcut]
+          : [];
+      for (const c of combos) {
+        if ('sequence' in c) out.add(c.sequence.join('').toLowerCase());
+        else out.add(String(c.key).toLowerCase());
+      }
+    }
+    return out;
+  };
+
+  it('reads the primer source', () => {
+    expect(primer).toContain('KeyboardPrimer');
+    expect(primer.length).toBeGreaterThan(500);
+  });
+
+  it('binds the vim motions the primer teaches', () => {
+    const bound = boundKeys();
+    // gg and G are the idiomatic vim motions the primer shows, and the app is
+    // vim-inspired by design, so the primer was right and the bindings missing.
+    expect(bound.has('gg')).toBe(true);
+    expect(bound.has('g')).toBe(true); // Shift+G normalises to 'g'
+  });
+
+  it('binds Space for the view-mode toggle the primer teaches', () => {
+    expect(boundKeys().has(' ')).toBe(true);
+  });
+
+  it('teaches every key it shows, and shows only keys that are bound', () => {
+    // Extract the primer's own `keys: [...]` arrays and check each against the
+    // registry. Arrow keys and modifier names are display-only and excluded.
+    // Arrow glyphs and modifier names are display-only: the registry stores
+    // them as 'ArrowUp' and as modifier flags, not as these characters.
+    const display = new Set(['↑', '↓', '←', '→', 'esc', 'shift', 'ctrl', 'alt']);
+    // Names the primer spells out that the registry stores as the character.
+    const alias: Record<string, string> = { space: ' ', enter: 'enter', tab: 'tab' };
+    const normalise = (k: string) => alias[k.toLowerCase()] ?? k.toLowerCase();
+
+    const bound = boundKeys();
+    const unbound: string[] = [];
+
+    for (const m of primer.matchAll(/keys:\s*\[([^\]]+)\]/g)) {
+      const parts = [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1]);
+      if (parts.length === 0) continue;
+
+      const meaningful = parts.filter(p => !display.has(p.toLowerCase()));
+      if (meaningful.length === 0) continue; // pure display row, e.g. ['↑','↓']
+
+      // A multi-entry array of single characters is a sequence (['g','g']);
+      // anything else is one key per entry.
+      const isSequence =
+        meaningful.length > 1 && meaningful.every(p => p.length === 1);
+
+      const candidates = isSequence
+        ? [meaningful.join('').toLowerCase()]
+        : meaningful.map(normalise);
+
+      for (const c of candidates) if (!bound.has(c)) unbound.push(c);
+    }
+
+    expect(unbound).toEqual([]);
+  });
+
+  it('that check can fail', () => {
+    // Guards the guard: the primer must actually contain key arrays, or the
+    // filter above is testing an empty list.
+    const arrays = [...primer.matchAll(/keys:\s*\[([^\]]+)\]/g)];
+    expect(arrays.length).toBeGreaterThan(5);
+    expect(boundKeys().has('this-is-not-a-key')).toBe(false);
+  });
+});
