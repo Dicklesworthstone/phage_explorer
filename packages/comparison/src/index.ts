@@ -93,8 +93,22 @@ export {
   analyzeHGTProvenance,
   initMinHashWasm,
   isMinHashWasmAvailable,
+  computeSignature,
+  MINHASH_DEFAULT_K,
+  MINHASH_DEFAULT_HASHES,
   type HGTOptions,
 } from './hgt-tracer';
+export {
+  SketchCache,
+  buildSketch,
+  kmerSet,
+  exactJaccard,
+  exactContainment,
+  estimateJaccard,
+  estimateContainment,
+  estimateCardinality,
+  type GenomeSketch,
+} from './sketch-cache';
 export {
   buildReferencePanel,
   referenceLabel,

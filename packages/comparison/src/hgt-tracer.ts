@@ -112,7 +112,7 @@ function computeSignatureInternal(
  * Uses the global cache for transparent reuse across calls.
  * Returns null if WASM unavailable or sequence too short.
  */
-function computeMinHashSignature(
+export function computeSignature(
   sequence: string,
   k: number,
   numHashes: number,
@@ -350,6 +350,14 @@ const MINHASH_K = 16;
 const MINHASH_NUM_HASHES = 128;
 
 /**
+ * Shared MinHash tuning, exported so every consumer sketches the same way.
+ * Signatures are only comparable when k and the hash count match, so these
+ * must not be chosen per-caller.
+ */
+export const MINHASH_DEFAULT_K = MINHASH_K;
+export const MINHASH_DEFAULT_HASHES = MINHASH_NUM_HASHES;
+
+/**
  * Infer potential donor taxa using MinHash signatures (fast approximate).
  *
  * This is much faster than exact Jaccard for large reference libraries:
@@ -370,7 +378,7 @@ function inferDonorsMinHash(
 ): DonorCandidate[] {
   if (!wasmMinHashJaccardFromSignatures) return [];
 
-  const islandSig = computeMinHashSignature(islandSeq, k, MINHASH_NUM_HASHES, true);
+  const islandSig = computeSignature(islandSeq, k, MINHASH_NUM_HASHES, true);
   if (!islandSig) return [];
 
   const candidates: DonorCandidate[] = [];

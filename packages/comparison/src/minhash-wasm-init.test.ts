@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   initMinHashWasm,
   isMinHashWasmAvailable,
@@ -55,11 +57,32 @@ const PANEL: Record<string, string> = {
 };
 
 describe('MinHash WASM initialization', () => {
-  it('starts unavailable, because nothing initializes it at module load', () => {
-    // This is the state every consumer saw in production. If a future change
-    // reintroduces module-load init, this assertion is the tripwire -- and the
-    // fix is to decide deliberately, not to delete the test.
-    expect(isMinHashWasmAvailable()).toBe(false);
+  it('is not initialised at module load', () => {
+    // The invariant: importing this module must not fire an async WASM import.
+    // It is imported by both the browser app and the Bun TUI, and one of those
+    // cannot service it -- which is why the original module-load call was
+    // removed. Nothing replaced it, so the WASM path was dead in production
+    // until a caller was added.
+    //
+    // Asserted structurally rather than via isMinHashWasmAvailable(). That
+    // reads a module-level flag shared across every test file in the process,
+    // so any sibling that calls initMinHashWasm() first would flip it -- as
+    // sketch-cache.test.ts does. A runtime check here tests file ordering,
+    // not the invariant.
+    const source = readFileSync(join(import.meta.dir, 'hgt-tracer.ts'), 'utf8');
+    const topLevelInit = source
+      .split('\n')
+      .filter(line => !line.trimStart().startsWith('*') && !line.trimStart().startsWith('//'))
+      .some(line => /^\s*(void\s+)?initMinHashWasm\s*\(/.test(line));
+    expect(topLevelInit).toBe(false);
+  });
+
+  it('that structural check is discriminating', () => {
+    // Guards the guard: the regex must actually match a top-level call, or the
+    // assertion above passes for any file at all.
+    const withCall = ['const x = 1;', 'initMinHashWasm().catch(() => {});'];
+    const matched = withCall.some(line => /^\s*(void\s+)?initMinHashWasm\s*\(/.test(line));
+    expect(matched).toBe(true);
   });
 
   it('becomes available after an explicit init', async () => {
