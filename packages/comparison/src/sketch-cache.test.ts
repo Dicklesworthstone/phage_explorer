@@ -294,15 +294,27 @@ realDescribe('against the shipped catalogue', () => {
       .map(c => c.sequence)
       .join('');
 
-  it('sketches every catalogue genome exactly once', async () => {
-    await initMinHashWasm();
-    const cache = new SketchCache();
-    for (const p of phages) cache.getOrBuild(p.slug, sequenceOf(p.id));
-    for (const p of phages) cache.getOrBuild(p.slug, sequenceOf(p.id));
+  // Built once and shared. Each test used to construct its own cache over all
+  // 24 genomes, which passed standalone but exceeded the default 5s timeout
+  // under full-suite load -- the same "test does too much work" failure this
+  // suite has already hit once. Sharing is also closer to how the app uses it.
+  const cache = new SketchCache();
 
+  // 60s, not the 5s default. This reads a 10 MB SQLite database and computes
+  // MinHash signatures for all 24 genomes -- about 0.8s idle, but several times
+  // that on a loaded machine. The work is legitimate, so the budget is raised
+  // rather than the coverage cut. Correctness here does not depend on speed.
+  beforeAll(async () => {
+    await initMinHashWasm();
+    for (const p of phages) cache.getOrBuild(p.slug, sequenceOf(p.id));
+  }, 60_000);
+
+  it('sketches every catalogue genome exactly once', () => {
+    // Re-request every genome; nothing should be recomputed.
+    for (const p of phages) cache.getOrBuild(p.slug, sequenceOf(p.id));
     expect(cache.size).toBe(24);
     expect(cache.computations).toBe(24);
-  });
+  }, 30_000);
 
   it('estimates lambda k-mer cardinality within MinHash error of the exact count', async () => {
     await initMinHashWasm();
@@ -311,13 +323,9 @@ realDescribe('against the shipped catalogue', () => {
     const estimated = estimateCardinality(buildSketch('lambda', lambda)!.signature);
     expect(exact).toBeGreaterThan(40000); // ~48.5 kb genome, mostly distinct
     expect(Math.abs(estimated - exact) / exact).toBeLessThan(0.3);
-  });
+  }, 30_000);
 
-  it('finds P22 as lambda\'s closest relative in the catalogue', async () => {
-    await initMinHashWasm();
-    const cache = new SketchCache();
-    for (const p of phages) cache.getOrBuild(p.slug, sequenceOf(p.id));
-
+  it('finds P22 as lambda\'s closest relative in the catalogue', () => {
     // Lambda and P22 are lambdoid phages that genuinely share mosaic segments;
     // this is a real biological relationship, not a property of the estimator.
     // If a future change to k, hash count or encoding breaks the method, this

@@ -459,5 +459,9 @@ describe('integration: full regulatory analysis', () => {
       const result = simulateTranscriptionFlow('ACGT'.repeat(kb * 250), 1000);
       expect(result.values.length).toBe(kb);
     }
-  });
+    // 30s, not the 5s default. Scanning 35 kb for promoters and terminators is
+    // real work that takes real time on a contended machine. The assertion is
+    // about windowing behaviour, not speed, so the budget is raised rather
+    // than the input shrunk to something that no longer resembles a genome.
+  }, 30_000);
 });
