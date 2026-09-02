@@ -99,6 +99,17 @@ export interface PhageExplorerState {
   currentPhageIndex: number;
   currentPhage: PhageFull | null;
   isLoadingPhage: boolean;
+  /**
+   * Gene the user has selected, by gene id, or null.
+   *
+   * Lives here rather than in a web-only store because both surfaces navigate
+   * genes and the web app needs it for shareable deep links. It was previously
+   * bolted on by `packages/web/src/store/selectedGeneStore.ts`, which declared
+   * a module augmentation and patched the fields onto the store at runtime --
+   * a pattern that type-checked only because the web package was excluded from
+   * the root tsconfig.
+   */
+  selectedGeneId: number | null;
 
   // Sequence viewing
   viewMode: ViewMode;
@@ -174,6 +185,10 @@ export interface PhageExplorerActions {
   // Phage navigation
   setPhages: (phages: PhageSummary[]) => void;
   setCurrentPhageIndex: (index: number) => void;
+  /** Select a gene by id. Ignores non-integer or negative ids. */
+  setSelectedGeneId: (geneId: number | null) => void;
+  /** Clear the gene selection. */
+  clearSelectedGene: () => void;
   nextPhage: () => void;
   prevPhage: () => void;
   setCurrentPhage: (phage: PhageFull | null) => void;
@@ -291,6 +306,7 @@ const initialState: PhageExplorerState = {
   currentPhageIndex: 0,
   currentPhage: null,
   isLoadingPhage: false,
+  selectedGeneId: null,
   viewMode: 'dna',
   readingFrame: 0,
   scrollPosition: 0,
@@ -343,6 +359,15 @@ export const usePhageStore = create<PhageExplorerStore>((set, get) => ({
 
   // Phage navigation
   setPhages: (phages) => set({ phages }),
+
+  setSelectedGeneId: (geneId) => {
+    // Reject anything that cannot be a real gene id rather than storing it and
+    // failing later at the lookup.
+    if (geneId !== null && (!Number.isSafeInteger(geneId) || geneId < 0)) return;
+    set({ selectedGeneId: geneId });
+  },
+
+  clearSelectedGene: () => set({ selectedGeneId: null }),
 
   setCurrentPhageIndex: (index) => {
     const { phages } = get();

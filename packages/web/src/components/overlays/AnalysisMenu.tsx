@@ -18,6 +18,7 @@ import {
   type KeyCombo,
 } from '../../keyboard';
 import { Overlay } from './Overlay';
+import { OverlayProvenance } from './primitives';
 import { useIsTopOverlay, useOverlay, type OverlayId } from './OverlayProvider';
 import {
   IconAlertTriangle,
@@ -379,11 +380,22 @@ export function AnalysisMenu(): React.ReactElement | null {
                         }}>
                           {item.action.title}
                         </span>
-                        {item.shortcutLabel && (
-                          <span className="key-hint">
-                            {item.shortcutLabel}
-                          </span>
-                        )}
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {/*
+                            Provenance sits in the list, not only inside the
+                            overlay, so a demo-data panel is identifiable
+                            BEFORE it is opened. Measured is the overwhelming
+                            majority and needs no badge; anything weaker does.
+                          */}
+                          {item.action.provenance && item.action.provenance !== 'measured' && (
+                            <OverlayProvenance level={item.action.provenance} />
+                          )}
+                          {item.shortcutLabel && (
+                            <span className="key-hint">
+                              {item.shortcutLabel}
+                            </span>
+                          )}
+                        </span>
                       </div>
                       <div style={{
                         color: colors.textMuted,

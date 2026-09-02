@@ -7,6 +7,8 @@
 
 import type { ExperienceLevel, KeyCombo } from './types';
 
+import type { ProvenanceLevel } from '../components/overlays/primitives/OverlayProvenance';
+
 export type ActionScope = 'global' | 'contextual';
 export type ActionSurface = 'web' | 'tui';
 
@@ -99,6 +101,18 @@ export interface ActionDefinition {
   minLevel?: ExperienceLevel;
   overlayId?: string;
   overlayAction?: 'open' | 'toggle';
+  /**
+   * Where this overlay's numbers come from. Declared here as well as rendered
+   * inside the overlay so the Analysis Menu and Command Palette can show it
+   * BEFORE the user opens anything -- the niche-network overlay carried an
+   * honest disclaimer in its body while sitting in the plain "Analysis"
+   * category, which meant the user only learned it was synthetic after
+   * choosing it.
+   *
+   * Required for every entry with an `overlayId`; enforced by
+   * overlay-provenance.test.ts.
+   */
+  provenance?: ProvenanceLevel;
 }
 
 // NOTE: This is a foundational set. Additional actions will be added as
@@ -315,6 +329,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'comparison',
     overlayAction: 'open',
+    provenance: 'measured',
   },
   [ActionIds.OverlayAAKey]: {
     id: ActionIds.OverlayAAKey,
@@ -348,6 +363,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'pressure',
     overlayAction: 'toggle',
+    provenance: 'heuristic',
   },
   [ActionIds.OverlaySelectionPressure]: {
     id: ActionIds.OverlaySelectionPressure,
@@ -359,6 +375,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'selectionPressure',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayTranscriptionFlow]: {
     id: ActionIds.OverlayTranscriptionFlow,
@@ -370,6 +387,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'transcriptionFlow',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayTropism]: {
     id: ActionIds.OverlayTropism,
@@ -381,6 +399,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'tropism',
     overlayAction: 'toggle',
+    // precomputed trigram embeddings
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayGCSkew]: {
     id: ActionIds.OverlayGCSkew,
@@ -393,6 +413,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'gcSkew',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayComplexity]: {
     id: ActionIds.OverlayComplexity,
@@ -405,6 +426,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'complexity',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayBendability]: {
     id: ActionIds.OverlayBendability,
@@ -417,6 +439,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'bendability',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayPromoter]: {
     id: ActionIds.OverlayPromoter,
@@ -429,6 +452,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'promoter',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayRepeats]: {
     id: ActionIds.OverlayRepeats,
@@ -441,6 +465,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'repeats',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayKmerAnomaly]: {
     id: ActionIds.OverlayKmerAnomaly,
@@ -453,6 +478,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'kmerAnomaly',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayCGR]: {
     id: ActionIds.OverlayCGR,
@@ -465,6 +491,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'cgr',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayHilbert]: {
     id: ActionIds.OverlayHilbert,
@@ -477,6 +504,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'hilbert',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayLogo]: {
     id: ActionIds.OverlayLogo,
@@ -489,6 +517,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'logo',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayDotPlot]: {
     id: ActionIds.OverlayDotPlot,
@@ -501,6 +530,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'dotPlot',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlaySynteny]: {
     id: ActionIds.OverlaySynteny,
@@ -512,6 +542,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'synteny',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayPhasePortrait]: {
     id: ActionIds.OverlayPhasePortrait,
@@ -524,6 +555,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'phasePortrait',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayGel]: {
     id: ActionIds.OverlayGel,
@@ -535,6 +567,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'gel',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayPeriodicity]: {
     id: ActionIds.OverlayPeriodicity,
@@ -547,6 +580,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'periodicity',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayMosaicRadar]: {
     id: ActionIds.OverlayMosaicRadar,
@@ -559,6 +593,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'mosaicRadar',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayHGT]: {
     id: ActionIds.OverlayHGT,
@@ -571,6 +606,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'hgt',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayCRISPR]: {
     id: ActionIds.OverlayCRISPR,
@@ -582,6 +618,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'crispr',
     overlayAction: 'toggle',
+    // placeholder 6-mer spacer set
+    provenance: 'demo',
   },
   [ActionIds.OverlayNonBDNA]: {
     id: ActionIds.OverlayNonBDNA,
@@ -594,6 +632,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'nonBDNA',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayAnomaly]: {
     id: ActionIds.OverlayAnomaly,
@@ -606,6 +645,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'anomaly',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayGenomicSignaturePCA]: {
     id: ActionIds.OverlayGenomicSignaturePCA,
@@ -617,6 +657,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'genomicSignaturePCA',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.AnalysisGenomicSignatureRecenter]: {
     id: ActionIds.AnalysisGenomicSignatureRecenter,
@@ -638,6 +679,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'prophageExcision',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayCodonBias]: {
     id: ActionIds.OverlayCodonBias,
@@ -649,6 +691,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'codonBias',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayCodonAdaptation]: {
     id: ActionIds.OverlayCodonAdaptation,
@@ -661,6 +704,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'codonAdaptation',
     overlayAction: 'toggle',
+    // host tRNA pools
+    provenance: 'measured',
   },
   [ActionIds.OverlayAMGPathway]: {
     id: ActionIds.OverlayAMGPathway,
@@ -673,6 +718,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'amgPathway',
     overlayAction: 'toggle',
+    // keyword scan mapped to KEGG orthologs
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayBiasDecomposition]: {
     id: ActionIds.OverlayBiasDecomposition,
@@ -685,6 +732,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'biasDecomposition',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayProteinDomains]: {
     id: ActionIds.OverlayProteinDomains,
@@ -697,6 +745,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'proteinDomains',
     overlayAction: 'toggle',
+    // Pfam-A via PyHMMER
+    provenance: 'measured',
   },
   [ActionIds.OverlayFoldQuickview]: {
     id: ActionIds.OverlayFoldQuickview,
@@ -709,6 +759,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'foldQuickview',
     overlayAction: 'toggle',
+    // ESM2 esm2_t6_8M_UR50D
+    provenance: 'measured',
   },
   [ActionIds.OverlayRNAStructure]: {
     id: ActionIds.OverlayRNAStructure,
@@ -720,6 +772,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'rnaStructure',
     overlayAction: 'toggle',
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayDefenseArmsRace]: {
     id: ActionIds.OverlayDefenseArmsRace,
@@ -732,6 +785,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'defenseArmsRace',
     overlayAction: 'toggle',
+    // gene-product keyword scan
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayEpistasis]: {
     id: ActionIds.OverlayEpistasis,
@@ -743,6 +798,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'epistasis',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayCocktailCompatibility]: {
     id: ActionIds.OverlayCocktailCompatibility,
@@ -755,6 +811,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'cocktailCompatibility',
     overlayAction: 'toggle',
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayStructureConstraint]: {
     id: ActionIds.OverlayStructureConstraint,
@@ -767,6 +824,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'structureConstraint',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayVirionStability]: {
     id: ActionIds.OverlayVirionStability,
@@ -778,6 +836,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'stability',
     overlayAction: 'toggle',
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayModules]: {
     id: ActionIds.OverlayModules,
@@ -789,6 +848,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'modules',
     overlayAction: 'toggle',
+    provenance: 'measured',
   },
   [ActionIds.OverlayResistanceEvolution]: {
     id: ActionIds.OverlayResistanceEvolution,
@@ -801,6 +861,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'resistanceEvolution',
     overlayAction: 'toggle',
+    provenance: 'simulated',
   },
   [ActionIds.OverlayNicheNetwork]: {
     id: ActionIds.OverlayNicheNetwork,
@@ -813,6 +874,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'nicheNetwork',
     overlayAction: 'toggle',
+    // randomly generated abundance table
+    provenance: 'demo',
   },
   [ActionIds.OverlayPhylodynamics]: {
     id: ActionIds.OverlayPhylodynamics,
@@ -825,6 +888,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'phylodynamics',
     overlayAction: 'toggle',
+    // sequences synthesised from accession hashes
+    provenance: 'demo',
   },
   [ActionIds.OverlayEnvironmentalProvenance]: {
     id: ActionIds.OverlayEnvironmentalProvenance,
@@ -837,6 +902,8 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'environmentalProvenance',
     overlayAction: 'toggle',
+    // SRA metadata; containment score synthesised
+    provenance: 'demo',
   },
   [ActionIds.OverlayGpuWasmBenchmark]: {
     id: ActionIds.OverlayGpuWasmBenchmark,
