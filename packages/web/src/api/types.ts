@@ -168,4 +168,11 @@ export interface CacheConfig {
   defaultTTL: number;
   maxEntries: number;
   storage: 'localStorage' | 'sessionStorage' | 'memory';
+  /**
+   * Discriminator baked into every storage key.
+   *
+   * Defaults to the build id, so a deploy cannot read back a result produced by
+   * the previous build's analysis code. Only tests pass this explicitly.
+   */
+  version: string;
 }

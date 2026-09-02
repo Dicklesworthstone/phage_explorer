@@ -3,18 +3,78 @@
  *
  * Provides localStorage-based caching for API responses to reduce
  * network requests and improve perceived performance.
+ *
+ * ## Why entries are versioned
+ *
+ * A cache entry outlives the code that produced it. That is normally harmless
+ * and here it was not: the phylodynamics and environmental provenance overlays
+ * cached an analysis under `{ source: 'real', result }` with a 24 hour TTL, and
+ * `getCached` validated only the TTL. A user who opened the previous build
+ * within that window had the new build read back the OLD analysis and render it
+ * under a green "REAL DATA" banner. The thing being replayed was precisely the
+ * fabricated output that the new build exists to remove.
+ *
+ * So every storage key carries a version, and the version defaults to the build
+ * id. This is deliberately not a per-overlay constant that someone has to
+ * remember to bump: the defect being fixed IS a discipline failure, and a fix
+ * that needs discipline to work would reproduce it. A deploy invalidates
+ * everything, automatically, because the build id changed.
+ *
+ * Entries written under a different version are unreachable by construction and
+ * are swept from storage on the next write, so they cannot accumulate.
  */
 
 import type { CacheEntry, CacheConfig } from './types';
+
+/**
+ * Build id, injected by Vite (see `define` in vite.config.ts).
+ *
+ * Falls back to 'dev' outside a Vite build, which covers `bun test` and any
+ * direct Node import. That fallback is a constant on purpose: tests that need
+ * two distinct versions pass them explicitly rather than depending on ambient
+ * build state.
+ */
+declare const __CACHE_VERSION__: string | undefined;
+
+export const BUILD_CACHE_VERSION: string =
+  typeof __CACHE_VERSION__ === 'string' && __CACHE_VERSION__.length > 0
+    ? __CACHE_VERSION__
+    : 'dev';
 
 const DEFAULT_CONFIG: CacheConfig = {
   defaultTTL: 24 * 60 * 60 * 1000, // 24 hours
   maxEntries: 100,
   storage: 'localStorage',
+  version: BUILD_CACHE_VERSION,
 };
 
-const CACHE_PREFIX = 'phage_api_cache_';
+const CACHE_ROOT = 'phage_api_cache_';
 const CACHE_INDEX_KEY = 'phage_api_cache_index';
+
+/** Storage key prefix for one version. Entries of other versions cannot collide. */
+function prefixFor(version: string): string {
+  return `${CACHE_ROOT}${version}_`;
+}
+
+/**
+ * Remove every stored entry that does not belong to the current version.
+ *
+ * Called on write rather than on read: a read must stay cheap and side-effect
+ * light, and a write is already touching the index. Without this, entries from
+ * every previous build would sit in localStorage forever, unreachable but still
+ * consuming the user's quota.
+ */
+function sweepOtherVersions(storage: Storage, version: string): void {
+  const keep = prefixFor(version);
+  const stale: string[] = [];
+  for (let i = 0; i < storage.length; i++) {
+    const k = storage.key(i);
+    if (k && k.startsWith(CACHE_ROOT) && k !== CACHE_INDEX_KEY && !k.startsWith(keep)) {
+      stale.push(k);
+    }
+  }
+  for (const k of stale) storage.removeItem(k);
+}
 
 /**
  * Get storage backend based on config
@@ -77,7 +137,8 @@ function saveCacheIndex(storage: Storage, index: Map<string, number>): void {
 function evictOldEntries(
   storage: Storage,
   index: Map<string, number>,
-  maxEntries: number
+  maxEntries: number,
+  version: string
 ): void {
   if (index.size <= maxEntries) return;
 
@@ -88,7 +149,7 @@ function evictOldEntries(
   const toRemove = sorted.slice(0, index.size - maxEntries);
 
   for (const [key] of toRemove) {
-    storage.removeItem(CACHE_PREFIX + key);
+    storage.removeItem(prefixFor(version) + key);
     index.delete(key);
   }
 }
@@ -105,7 +166,7 @@ export function getCached<T>(
   if (!storage) return null;
 
   try {
-    const entryStr = storage.getItem(CACHE_PREFIX + key);
+    const entryStr = storage.getItem(prefixFor(fullConfig.version) + key);
     if (!entryStr) return null;
 
     const entry: CacheEntry<T> = JSON.parse(entryStr);
@@ -113,7 +174,7 @@ export function getCached<T>(
 
     // Check if expired
     if (now > entry.timestamp + entry.ttl) {
-      storage.removeItem(CACHE_PREFIX + key);
+      storage.removeItem(prefixFor(fullConfig.version) + key);
       const index = getCacheIndex(storage);
       index.delete(key);
       saveCacheIndex(storage, index);
@@ -148,24 +209,25 @@ export function setCache<T>(
   };
 
   try {
-    storage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
+    sweepOtherVersions(storage, fullConfig.version);
+    storage.setItem(prefixFor(fullConfig.version) + key, JSON.stringify(entry));
 
     // Update index
     const index = getCacheIndex(storage);
     index.set(key, now);
-    evictOldEntries(storage, index, fullConfig.maxEntries);
+    evictOldEntries(storage, index, fullConfig.maxEntries, fullConfig.version);
     saveCacheIndex(storage, index);
 
     return true;
   } catch {
     // Storage full - try to make room
     const index = getCacheIndex(storage);
-    evictOldEntries(storage, index, Math.floor(fullConfig.maxEntries / 2));
+    evictOldEntries(storage, index, Math.floor(fullConfig.maxEntries / 2), fullConfig.version);
     saveCacheIndex(storage, index);
 
     // Retry
     try {
-      storage.setItem(CACHE_PREFIX + key, JSON.stringify(entry));
+      storage.setItem(prefixFor(fullConfig.version) + key, JSON.stringify(entry));
       return true;
     } catch {
       return false;
@@ -184,7 +246,7 @@ export function removeCache(
   const storage = getStorage(fullConfig);
   if (!storage) return;
 
-  storage.removeItem(CACHE_PREFIX + key);
+  storage.removeItem(prefixFor(fullConfig.version) + key);
   const index = getCacheIndex(storage);
   index.delete(key);
   saveCacheIndex(storage, index);
@@ -201,7 +263,7 @@ export function clearCache(config: Partial<CacheConfig> = {}): void {
   const index = getCacheIndex(storage);
 
   for (const key of index.keys()) {
-    storage.removeItem(CACHE_PREFIX + key);
+    storage.removeItem(prefixFor(fullConfig.version) + key);
   }
 
   storage.removeItem(CACHE_INDEX_KEY);
@@ -222,7 +284,7 @@ export function getCacheStats(
   let oldestTimestamp = Infinity;
 
   for (const [key, timestamp] of index.entries()) {
-    const item = storage.getItem(CACHE_PREFIX + key);
+    const item = storage.getItem(prefixFor(fullConfig.version) + key);
     if (item) {
       totalSize += item.length * 2; // Rough estimate (2 bytes per char)
     }

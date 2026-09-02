@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -19,6 +20,40 @@ function removeRawDbPlugin(): Plugin {
   };
 }
 
+/**
+ * Build id, baked into the client and used to version every API cache entry.
+ *
+ * A cached analysis outlives the code that produced it, and two overlays cached
+ * results under a "REAL DATA" label with a 24 hour TTL. Without this, a deploy
+ * that fixed a fabricated analysis would still serve the fabricated result back
+ * to anyone who had opened the previous build that day. Tying the cache key to
+ * the build means a deploy invalidates automatically, with nobody having to
+ * remember to bump a constant.
+ *
+ * Package version plus the commit it was built from. Falls back to the build
+ * timestamp when git is unavailable (a source tarball, a container without the
+ * .git directory), which is coarser but never collides across builds.
+ */
+function resolveBuildId(): string {
+  const pkg = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8')
+  ) as { version?: string };
+  const version = pkg.version ?? '0.0.0';
+  try {
+    const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      cwd: __dirname,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (sha) return `${version}-${sha}`;
+  } catch {
+    // git missing or not a repository; fall through to the timestamp
+  }
+  return `${version}-${Date.now().toString(36)}`;
+}
+
+const BUILD_ID = resolveBuildId();
+
 const require = createRequire(import.meta.url);
 const resolveFromRoot = (relativePath: string) =>
   path.resolve(__dirname, '..', relativePath);
@@ -27,6 +62,9 @@ const resolveInstalledPackage = (specifier: string) =>
   path.dirname(resolveInstalledEntry(specifier));
 
 export default defineConfig({
+  define: {
+    __CACHE_VERSION__: JSON.stringify(BUILD_ID),
+  },
   plugins: [
     react(),
     removeRawDbPlugin(),
