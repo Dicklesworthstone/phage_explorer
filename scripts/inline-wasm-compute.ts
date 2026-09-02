@@ -26,73 +26,119 @@ const gitignorePath = join(pkgDir, ".gitignore");
 console.log(`Inlining wasm-compute Wasm into JS... (${pkgDir})`);
 
 try {
-  // wasm-pack --target bundler produces `wasm_compute_bg.js` which contains the JS glue.
-  // We rely on that file for exports, so sanity-patch a few known wasm-bindgen glitches
-  // where getters incorrectly call the wrong WASM export.
-  try {
-    const bg = readFileSync(bgJsPath, "utf8");
-    const patches: Array<{ re: RegExp; from: string; to: string }> = [
+  // wasm-pack --target bundler produces `wasm_compute_bg.js`, the JS glue.
+  //
+  // ## What these patches are, and why they now fail loudly
+  //
+  // Eleven regex corrections for wasm-bindgen emitting a getter that calls the
+  // wrong WASM export -- `SequenceHandle.length` calling
+  // `bonddetectionresult_bond_count`, and so on.
+  //
+  // They used to be applied with a bare `String.replace` each, and the only
+  // check was whether the file changed AT ALL. A patch whose regex stopped
+  // matching silently did nothing, and the failure was swallowed by a catch
+  // whose comment claimed the only impact was `SequenceHandle.length`. So a
+  // real miscompilation could arrive and nothing would say so -- which is
+  // exactly the risk when the toolchain moves, as it just did.
+  //
+  // Every patch is now named and its match is checked individually. A patch
+  // that matches is applied. A patch that does not match is reported, and the
+  // build fails unless the patch is listed in OBSOLETE below with the reason.
+  //
+  // ## Their current status
+  //
+  // All eleven are obsolete at the pinned toolchain (see
+  // packages/wasm-compute/rust-toolchain.toml): the generated glue already has
+  // the correct getters, in both variants. Git history shows every committed
+  // revision of the glue had correct getters, including the parent of the
+  // commit that introduced these patches -- so they have been correcting a bug
+  // that was never present in a tracked artifact.
+  //
+  // They are kept rather than deleted because deleting them would also delete
+  // the detector: if a future wasm-bindgen reintroduces the defect, a patch
+  // moving from obsolete to matching is the signal, and this script prints it.
+  const bg = readFileSync(bgJsPath, "utf8");
+
+  interface GluePatch {
+    name: string;
+    re: RegExp;
+    from: string;
+    to: string;
+  }
+
+  const patches: GluePatch[] = [
       {
+        name: "SequenceHandle.length",
         // SequenceHandle.length incorrectly calls BondDetectionResult getter
         re: /export class SequenceHandle[\s\S]*?get length\(\) \{\n\s*const ret = wasm\.bonddetectionresult_bond_count\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.bonddetectionresult_bond_count(this.__wbg_ptr);",
         to: "const ret = wasm.sequencehandle_length(this.__wbg_ptr);",
       },
       {
+        name: "DenseKmerResult.k",
         // DenseKmerResult.k incorrectly calls CGR resolution getter
         re: /export class DenseKmerResult[\s\S]*?get k\(\) \{\n\s*const ret = wasm\.cgrcountsresult_resolution\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.cgrcountsresult_resolution(this.__wbg_ptr);",
         to: "const ret = wasm.densekmerresult_k(this.__wbg_ptr);",
       },
       {
+        name: "DotPlotBuffers.bins",
         // DotPlotBuffers.bins incorrectly calls CGR resolution getter
         re: /export class DotPlotBuffers[\s\S]*?get bins\(\) \{\n\s*const ret = wasm\.cgrcountsresult_resolution\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.cgrcountsresult_resolution(this.__wbg_ptr);",
         to: "const ret = wasm.dotplotbuffers_bins(this.__wbg_ptr);",
       },
       {
+        name: "KLScanResult.window_count",
         // KLScanResult.window_count incorrectly calls CGR resolution getter
         re: /export class KLScanResult[\s\S]*?get window_count\(\) \{\n\s*const ret = wasm\.cgrcountsresult_resolution\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.cgrcountsresult_resolution(this.__wbg_ptr);",
         to: "const ret = wasm.klscanresult_window_count(this.__wbg_ptr);",
       },
       {
+        name: "KLScanResult.k",
         // KLScanResult.k incorrectly calls DotPlotBuffers.window getter
         re: /export class KLScanResult[\s\S]*?get k\(\) \{\n\s*const ret = wasm\.dotplotbuffers_window\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.dotplotbuffers_window(this.__wbg_ptr);",
         to: "const ret = wasm.klscanresult_k(this.__wbg_ptr);",
       },
       {
+        name: "MinHashSignature.total_kmers",
         // MinHashSignature.total_kmers incorrectly calls DenseKmerResult.total_valid getter
         re: /export class MinHashSignature[\s\S]*?get total_kmers\(\) \{\n\s*const ret = wasm\.densekmerresult_total_valid\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.densekmerresult_total_valid(this.__wbg_ptr);",
         to: "const ret = wasm.minhashsignature_total_kmers(this.__wbg_ptr);",
       },
       {
+        name: "MinHashSignature.k",
         // MinHashSignature.k incorrectly calls CGR resolution getter
         re: /export class MinHashSignature[\s\S]*?get k\(\) \{\n\s*const ret = wasm\.cgrcountsresult_resolution\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.cgrcountsresult_resolution(this.__wbg_ptr);",
         to: "const ret = wasm.minhashsignature_k(this.__wbg_ptr);",
       },
       {
+        name: "PCAResult.n_features",
         // PCAResult.n_features incorrectly calls DotPlotBuffers.window getter
         re: /export class PCAResult[\s\S]*?get n_features\(\) \{\n\s*const ret = wasm\.dotplotbuffers_window\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.dotplotbuffers_window(this.__wbg_ptr);",
         to: "const ret = wasm.pcaresult_n_features(this.__wbg_ptr);",
       },
       {
+        name: "PCAResult.n_components",
         // PCAResult.n_components incorrectly calls CGR resolution getter
         re: /export class PCAResult[\s\S]*?get n_components\(\) \{\n\s*const ret = wasm\.cgrcountsresult_resolution\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.cgrcountsresult_resolution(this.__wbg_ptr);",
         to: "const ret = wasm.pcaresult_n_components(this.__wbg_ptr);",
       },
       {
+        name: "PCAResultF32.n_features",
         // PCAResultF32.n_features incorrectly calls MyersDiffResult.mismatches getter
         re: /export class PCAResultF32[\s\S]*?get n_features\(\) \{\n\s*const ret = wasm\.myersdiffresult_mismatches\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.myersdiffresult_mismatches(this.__wbg_ptr);",
         to: "const ret = wasm.pcaresultf32_n_features(this.__wbg_ptr);",
       },
       {
+        name: "PCAResultF32.n_components",
         // PCAResultF32.n_components incorrectly calls MyersDiffResult.matches getter
         re: /export class PCAResultF32[\s\S]*?get n_components\(\) \{\n\s*const ret = wasm\.myersdiffresult_matches\(this\.__wbg_ptr\);/,
         from: "const ret = wasm.myersdiffresult_matches(this.__wbg_ptr);",
@@ -100,18 +146,61 @@ try {
       },
     ];
 
-    let patched = bg;
-    for (const p of patches) {
-      patched = patched.replace(p.re, (match) => match.replace(p.from, p.to));
-    }
+  /**
+   * Patches known not to match at the pinned toolchain.
+   *
+   * A patch listed here that DOES match is reported loudly: it means the
+   * wasm-bindgen defect has returned and the entry should come off this list.
+   * A patch NOT listed here that fails to match fails the build.
+   */
+  const OBSOLETE = new Set(patches.map((p) => p.name));
 
-    if (patched !== bg) {
-      writeFileSync(bgJsPath, patched);
+  let patched = bg;
+  const applied: string[] = [];
+  const missed: string[] = [];
+
+  for (const p of patches) {
+    if (!p.re.test(patched)) {
+      missed.push(p.name);
+      continue;
     }
-  } catch (e) {
-    // Non-fatal: the build can still succeed, and the bug only impacts SequenceHandle.length.
-    console.warn("Warning: failed to patch wasm_compute_bg.js:", e);
+    patched = patched.replace(p.re, (match) => match.replace(p.from, p.to));
+    applied.push(p.name);
   }
+
+  // A patch that matched but is marked obsolete means the defect came back.
+  const resurrected = applied.filter((n) => OBSOLETE.has(n));
+  if (resurrected.length > 0) {
+    console.warn(
+      `  NOTE: ${resurrected.length} glue patch(es) matched that were recorded as obsolete: ` +
+        `${resurrected.join(", ")}. The wasm-bindgen defect they correct has returned; ` +
+        `remove them from OBSOLETE in scripts/inline-wasm-compute.ts.`
+    );
+  }
+
+  // A patch that did NOT match and is not recorded as obsolete is the real
+  // failure: it was expected to correct something and silently did not.
+  const unexplained = missed.filter((n) => !OBSOLETE.has(n));
+  if (unexplained.length > 0) {
+    console.error(
+      `Glue patch(es) did not match and are not recorded as obsolete: ${unexplained.join(", ")}.\n` +
+        `Either the generated glue changed shape, or the patch is stale. Do not ship this build.`
+    );
+    process.exit(1);
+  }
+
+  if (applied.length > 0) {
+    writeFileSync(bgJsPath, patched);
+    console.log(`  Applied ${applied.length} glue patch(es): ${applied.join(", ")}`);
+  } else {
+    console.log(`  All ${patches.length} glue patches obsolete at this toolchain (nothing to apply).`);
+  }
+} catch (e) {
+  // Not swallowed. A failure here means the glue is in an unknown state and the
+  // artifact must not be shipped; the previous code warned and continued.
+  console.error("Failed to patch wasm_compute_bg.js:", e);
+  process.exit(1);
+}
 
   const wasmBuffer = readFileSync(wasmPath);
   const wasmBase64 = wasmBuffer.toString("base64");
