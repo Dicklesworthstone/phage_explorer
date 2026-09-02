@@ -410,7 +410,7 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 - **Lint + Typecheck**: Every push and PR
 - **Cross-platform builds**: macOS (arm64, x64), Linux (x64, arm64), Windows (x64) via `bun run build:<target>`
-- **Release infrastructure**: DSR (Doodlestein Self-Releaser) is the release path; GitHub Actions is not used
+- **Release infrastructure**: GitHub Actions. Six workflows run against this repository: `ci.yml` (lint, typecheck, unit tests, web build, plus release build jobs), `lighthouse.yml`, `release.yml`, `release-automation.yml` (auto-tags on a `package.json` version bump), `e2e-production.yml` (post-deploy, against the live site), and `annotate-phages.yml` (weekly). There is no DSR configuration in the repository despite earlier references to it here
 - **Database artifacts**: Pre-built `phage.db` included in releases
 
 ---
@@ -606,7 +606,7 @@ The SQLite database includes extensive precomputed annotations, enabling instant
 
 ### Annotation Pipeline
 
-Core annotations are built by `bun run build:db`; run `bun run build:db:annotated` for the complete ESM2 + Pfam database (DSR can also drive release builds):
+Core annotations are built by `bun run build:db`; run `bun run build:db:annotated` for the complete ESM2 + Pfam database:
 1. **NCBI fetch** → Raw sequences and gene annotations
 2. **Heuristic scans** → Anti-CRISPR / anti-RM / anti-Abi defense-system predictions
 3. **Intrinsic codon metrics** → Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI for available host tRNA pools
@@ -791,7 +791,20 @@ Mobile overlays use iOS-style bottom sheets:
 **Eager-loaded (instant):** Search, Help, Settings, Command Palette
 **Lazy-loaded (on-demand):** All analysis overlays via React Suspense
 
-This keeps initial bundle small (~200KB) while supporting 30+ feature-rich overlays.
+Code splitting works: 83 lazy chunks are emitted and an overlay's code is not
+downloaded until it is opened. The eager payload is larger than this section
+once claimed, though. Measured on a clean production build:
+
+| Eager chunk | Raw | Gzip |
+|---|---|---|
+| `index` (entry) | 828 kB | 249 kB |
+| `phage-core` | 147 kB | 50 kB |
+| `phage-state`, `vendor-state`, `vendor-worker`, `vendor-react` | 27 kB | 10 kB |
+| `index.css` | 246 kB | 40 kB |
+
+That is roughly 1.25 MB raw / 349 kB gzip before the database loads, against a
+figure of "~200KB" claimed here previously. Reducing it is tracked; the number
+above is what a build produces today.
 
 ### Overlay Categories
 
@@ -922,7 +935,7 @@ For temporal analysis, the pipeline:
 
 | Feature | Phage Explorer | NCBI Viewer | Geneious | SnapGene |
 |---------|---------------|-------------|----------|----------|
-| **Startup time** | <100ms | 5-10s | 30s+ | 10s |
+| **Startup time** | ~0.15s to first paint, ~0.6s to sequence view | 5-10s | 30s+ | 10s |
 | **3D structures** | Live from RCSB (web); procedural models (TUI) | None | Plugin | None |
 | **Analysis tools** | 30+ built-in | 3-5 | 20+ (paid) | 10+ |
 | **Offline** | Full | No | Yes | Yes |
