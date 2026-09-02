@@ -82,12 +82,13 @@ for (const { name, wasm } of variants) {
       expect(sum).toBe(SEQ.length - k + 1);
     });
 
-    it('DotPlotBuffers.bins is derived from the requested geometry', () => {
-      // Patched because it called `cgrcountsresult_resolution`.
-      const buffers = wasm.dotplot_self_buffers(SEQ, 8, 64);
-      expect(buffers.bins).toBeGreaterThan(0);
-      // Whatever the binning rule, it cannot exceed the sequence length.
-      expect(buffers.bins).toBeLessThanOrEqual(SEQ.length);
+    it('DotPlotBuffers.bins is the bin count it was asked for', () => {
+      // Patched because it called `cgrcountsresult_resolution`. The signature is
+      // (bytes, bins, window), so the bin count is an input and the getter must
+      // return it -- a CGR resolution would be a power of two, never 24.
+      for (const bins of [8, 24]) {
+        expect(wasm.dotplot_self_buffers(encode(SEQ), bins, 16).bins).toBe(bins);
+      }
     });
 
     it('CgrCountsResult.resolution is 2^k for the k it was asked for', () => {

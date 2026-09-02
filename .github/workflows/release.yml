@@ -97,6 +97,23 @@ jobs:
         shell: bash
         run: bun run wasm:verify
 
+      # The crate has 36 Rust tests across six #[cfg(test)] modules and no
+      # workflow had ever run them. They cover the kernels' own invariants,
+      # which is the layer below the JS-parity suites.
+      - name: Run Rust kernel tests
+        shell: bash
+        run: bun run wasm:test
+
+      # Coarse net, deliberately. It gates on one thing: a kernel that was
+      # clearly faster in WASM becoming SLOWER than JavaScript, which is the
+      # signature of the WASM path no longer being taken. Absolute times on a
+      # shared runner vary too much to gate on -- MinHash measured 20.9x on a
+      # quiet machine and 1.8x under load -- and a benchmark gate that fires on
+      # load gets disabled.
+      - name: Check no kernel lost its WASM advantage
+        shell: bash
+        run: bun run bench:check
+
       - name: Typecheck (advisory)
         run: bun run typecheck
         continue-on-error: true

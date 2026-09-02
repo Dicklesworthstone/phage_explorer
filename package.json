@@ -37,7 +37,9 @@
     "docs:keys": "bun scripts/generate-keyboard-tables.ts",
     "check:keys": "bun scripts/generate-keyboard-tables.ts --check",
     "wasm:verify": "bun scripts/verify-wasm-toolchain.ts",
-    "bench:wasm": "bun scripts/benchmark-wasm.ts --json packages/wasm-compute/benchmark-results.json"
+    "bench:wasm": "bun scripts/benchmark-wasm.ts --json packages/wasm-compute/benchmark-results.json",
+    "bench:check": "bun scripts/benchmark-wasm.ts --check packages/wasm-compute/benchmark-results.json",
+    "wasm:test": "cd packages/wasm-compute && cargo test --release"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.2.0",
