@@ -6,6 +6,8 @@
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { usePhageStore } from '@phage-explorer/state';
+import { derivePhageSimDefaults } from '@phage-explorer/core';
 import { getOrchestrator } from '../workers';
 import type {
   SimulationId,
@@ -62,6 +64,12 @@ const DEFAULT_DT = 1;
 const FRAME_INTERVAL = 50; // 20 fps for simulation updates
 
 export function useSimulation(simId: SimulationId): UseSimulationResult {
+  // The simulations that model a specific genome need the phage the user has
+  // open. Held in a ref as well as read directly so `init` stays stable.
+  const currentPhage = usePhageStore(s => s.currentPhage);
+  const phageRef = useRef(currentPhage);
+  phageRef.current = currentPhage;
+
   const [state, setState] = useState<SimState | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [speed, setSpeed] = useState(1);
@@ -113,7 +121,12 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
         for (const p of meta.parameters) {
           defaults[p.id] = p.defaultValue;
         }
-        paramsRef.current = defaults;
+        // Generic defaults describe "some phage"; the loaded genome describes
+        // this one. Phage-derived values win here, user edits win later.
+        paramsRef.current = {
+          ...defaults,
+          ...derivePhageSimDefaults(simId, phageRef.current),
+        };
       })
       .catch(err => {
         if (!mountedRef.current) return;
@@ -148,6 +161,7 @@ export function useSimulation(simId: SimulationId): UseSimulationResult {
         simId,
         params: mergedParams,
         seed: Date.now(),
+        phage: phageRef.current,
       });
       // Check if component is still mounted before updating state
       if (!mountedRef.current || generationRef.current !== gen) return;

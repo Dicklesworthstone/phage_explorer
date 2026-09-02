@@ -42,6 +42,47 @@ const CAPSID_RADIUS_NM_BY_MORPHOLOGY: Record<string, number> = {
 
 const DEFAULT_CAPSID_RADIUS_NM = 30;
 
+/** Fallback genome size for evolution replay when no phage is loaded (bp). */
+const DEFAULT_EVOLUTION_GENOME_LENGTH = 50000;
+
+/**
+ * Draw a single base substitution.
+ *
+ * The starting base is sampled from the genome's own GC composition, and the
+ * replacement is drawn from the remaining three bases with transitions
+ * (A<->G, C<->T) weighted twice as heavily as transversions, which is the
+ * standard first-order approximation of observed substitution spectra. This is
+ * a model, not a read of the sequence, but every input to it is real.
+ */
+function drawSubstitution(
+  gcContent: number,
+  random: () => number
+): { from: string; to: string } {
+  const gcHalf = gcContent / 2;
+  const atHalf = (1 - gcContent) / 2;
+  const roll = random();
+  let from: string;
+  if (roll < atHalf) from = 'A';
+  else if (roll < atHalf * 2) from = 'T';
+  else if (roll < atHalf * 2 + gcHalf) from = 'G';
+  else from = 'C';
+
+  const transition: Record<string, string> = { A: 'G', G: 'A', C: 'T', T: 'C' };
+  const transversions: Record<string, string[]> = {
+    A: ['C', 'T'],
+    G: ['C', 'T'],
+    C: ['A', 'G'],
+    T: ['A', 'G'],
+  };
+
+  // 2:1 transition:transversion, i.e. transitions half the time overall.
+  if (random() < 0.5) {
+    return { from, to: transition[from] };
+  }
+  const options = transversions[from];
+  return { from, to: options[random() < 0.5 ? 0 : 1] };
+}
+
 /**
  * Parameter defaults derived from the phage the user actually has open.
  *
@@ -285,14 +326,20 @@ function runEvolutionStep(state: EvolutionReplayState, rng: () => number): Evolu
   
   let currentStepS = 0;
 
+  const genomeLength =
+    state.genomeLength > 0 ? state.genomeLength : DEFAULT_EVOLUTION_GENOME_LENGTH;
+  const gcContent = state.gcContent > 0 ? state.gcContent : 0.5;
+
   for (let i = 0; i < mutsThisGen; i++) {
     const s = selMean + selSd * (random() * 2 - 1);
     currentStepS += s;
-    
+
+    const { from, to } = drawSubstitution(gcContent, random);
     newMutations.push({
-      position: Math.floor(random() * 50000),
-      from: 'A',
-      to: 'G',
+      // 1-based, to match the coordinates the rest of the app displays.
+      position: Math.floor(random() * genomeLength) + 1,
+      from,
+      to,
       generation: state.generation + 1,
       s,
     });
@@ -397,7 +444,7 @@ export function makeEvolutionSimulation(): Simulation<EvolutionReplayState> {
       { id: 'selMean', label: 'Selection mean s', type: 'number', min: -0.1, max: 0.1, step: 0.01, defaultValue: 0.0 },
       { id: 'selSd', label: 'Selection sd', type: 'number', min: 0, max: 0.1, step: 0.01, defaultValue: 0.02 },
     ],
-    init: (_phage, params): EvolutionReplayState => {
+    init: (phage, params): EvolutionReplayState => {
       const base = getDefaultParams([
         { id: 'mutRate', label: '', type: 'number', defaultValue: 0.05 },
         { id: 'popSize', label: '', type: 'number', defaultValue: 1e5 },
@@ -405,6 +452,15 @@ export function makeEvolutionSimulation(): Simulation<EvolutionReplayState> {
         { id: 'selSd', label: '', type: 'number', defaultValue: 0.02 },
       ]);
       const merged = { ...base, ...(params ?? {}) } as Record<string, number | boolean | string>;
+      const genomeLength =
+        typeof phage?.genomeLength === 'number' && phage.genomeLength > 0
+          ? phage.genomeLength
+          : DEFAULT_EVOLUTION_GENOME_LENGTH;
+      const gcContent =
+        typeof phage?.gcContent === 'number' && phage.gcContent > 0
+          ? // The catalogue stores GC as a percentage; normalise to a fraction.
+            clamp(phage.gcContent > 1 ? phage.gcContent / 100 : phage.gcContent, 0.05, 0.95)
+          : 0.5;
       return {
         type: 'evolution-replay',
         time: 0,
@@ -415,6 +471,8 @@ export function makeEvolutionSimulation(): Simulation<EvolutionReplayState> {
         mutations: [],
         fitnessHistory: [1],
         neHistory: [Number(merged.popSize ?? 1e5)],
+        genomeLength,
+        gcContent,
       };
     },
     step: (state: EvolutionReplayState, dt: number, rng?: () => number): EvolutionReplayState => {

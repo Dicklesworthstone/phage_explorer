@@ -45,14 +45,14 @@ getAllSimulations().forEach(sim => {
 // ============================================================
 
 const workerAPI: SimulationWorkerAPI = {
-  async init({ simId, params, seed }: SimInitParams): Promise<SimState> {
+  async init({ simId, params, seed, phage }: SimInitParams): Promise<SimState> {
     if (seed !== undefined) {
       rng = new SeededRandom(seed);
     }
     const sim = SIMULATION_MAP.get(simId);
     if (!sim) throw new Error(`Unknown simulation: ${simId}`);
-    
-    return sim.init(undefined, params, () => rng.next());
+
+    return sim.init(phage ?? undefined, params, () => rng.next());
   },
 
   async step({ state, dt }: SimStepRequest): Promise<SimState> {

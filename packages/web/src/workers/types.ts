@@ -22,6 +22,7 @@ import type {
   PCAOptions,
   PCAResult,
   PhasePortraitResult,
+  PhageFull,
 } from '@phage-explorer/core';
 import type { GenomeComparisonResult } from '@phage-explorer/comparison';
 
@@ -309,6 +310,13 @@ export interface SimInitParams {
   simId: SimulationId;
   params?: Record<string, number | boolean | string>;
   seed?: number;
+  /**
+   * The phage currently open in the UI. Simulations that model a specific
+   * genome (ribosome traffic, evolution replay, packaging motor) read their
+   * genome length, gene set and codon usage from this; without it they fall
+   * back to generic synthetic defaults.
+   */
+  phage?: PhageFull | null;
 }
 
 /**
