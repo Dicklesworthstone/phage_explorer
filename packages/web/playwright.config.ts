@@ -12,7 +12,7 @@ import { defineConfig, devices } from '@playwright/test';
  * This is not a blanket rule: a spec that touches layout, hit targets, or
  * scrolling belongs on the mobile projects and must not be added here.
  */
-const DESKTOP_ONLY = /provenance-banner\.e2e\.ts/;
+const DESKTOP_ONLY = /provenance-(banner|badge)\.e2e\.ts/;
 
 export default defineConfig({
   testDir: './e2e',

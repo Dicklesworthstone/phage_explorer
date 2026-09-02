@@ -1022,11 +1022,28 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                         </span>
                       )}
                     </div>
-                    {cmd.shortcut && (
-                      <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
-                        {cmd.shortcut}
-                      </span>
-                    )}
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {/* The main results list. The recent-commands list above
+                          renders the same badge; both are needed, because the
+                          palette shows one or the other depending on whether a
+                          query has been typed, and labelling only one means half
+                          the users see no warning. */}
+                      {cmd.provenance && cmd.provenance !== 'measured' && (
+                        <OverlayProvenance
+                          level={cmd.provenance}
+                          source={
+                            cmd.provenanceFallback
+                              ? `falls back to ${provenanceLabel(cmd.provenanceFallback).toLowerCase()}`
+                              : undefined
+                          }
+                        />
+                      )}
+                      {cmd.shortcut && (
+                        <span className="key-hint" aria-label={`Shortcut: ${cmd.shortcut}`}>
+                          {cmd.shortcut}
+                        </span>
+                      )}
+                    </span>
                   </div>
                 );
               })}
