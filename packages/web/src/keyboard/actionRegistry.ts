@@ -888,8 +888,10 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'phylodynamics',
     overlayAction: 'toggle',
-    // sequences synthesised from accession hashes
-    provenance: 'demo',
+    // Real sequences fetched from NCBI; alignment-free Mash distance.
+    // Falls back to a clearly-labelled demo path when fewer than five
+    // sequences can be retrieved.
+    provenance: 'external',
   },
   [ActionIds.OverlayEnvironmentalProvenance]: {
     id: ActionIds.OverlayEnvironmentalProvenance,
@@ -902,8 +904,10 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'intermediate',
     overlayId: 'environmentalProvenance',
     overlayAction: 'toggle',
-    // SRA metadata; containment score synthesised
-    provenance: 'demo',
+    // Locations, isolation sources and sample counts from NCBI SRA.
+    // Catalogue distinctiveness is measured locally with MinHash. The
+    // synthesised containment score is gone.
+    provenance: 'external',
   },
   [ActionIds.OverlayGpuWasmBenchmark]: {
     id: ActionIds.OverlayGpuWasmBenchmark,

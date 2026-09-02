@@ -82,16 +82,25 @@ describe('the overlays the audit found fabricating data are labelled as such', (
   const levelOf = (id: string) =>
     overlayActions.find(a => a.overlayId === id)?.provenance;
 
-  it('marks the four synthetic-input overlays as demo data', () => {
-    // These do not derive their displayed values from the selected phage:
+  it('marks the remaining synthetic-input overlays as demo data', () => {
     // crispr scans a placeholder 6-mer spacer set; nicheNetwork analyses a
-    // randomly generated abundance table; phylodynamics builds sequences from
-    // accession hashes; environmentalProvenance derives its headline novelty
-    // score from a hash of the phage name.
+    // randomly generated abundance table and never receives the loaded phage.
     expect(levelOf('crispr')).toBe('demo');
     expect(levelOf('nicheNetwork')).toBe('demo');
-    expect(levelOf('phylodynamics')).toBe('demo');
-    expect(levelOf('environmentalProvenance')).toBe('demo');
+  });
+
+  it('promotes the two overlays whose fabrications were removed', () => {
+    // phylodynamics built its tree from hashes of accession strings and now
+    // fetches real sequences from NCBI; environmentalProvenance derived its
+    // headline score from a hash of the phage name and now measures
+    // catalogue distinctiveness with MinHash. Both are 'external' because
+    // their primary data comes from a third-party service.
+    //
+    // This assertion is the reason the levels cannot quietly drift back: a
+    // change that reintroduced synthesis without relabelling would leave the
+    // registry claiming external data for a hash.
+    expect(levelOf('phylodynamics')).toBe('external');
+    expect(levelOf('environmentalProvenance')).toBe('external');
   });
 
   it('does not let a rule-based estimate pass as a measurement', () => {
