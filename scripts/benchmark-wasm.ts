@@ -403,6 +403,12 @@ if (values.check) {
     if (!b) continue;
     // Only meaningful where WASM was clearly ahead to begin with.
     if (b.speedup < 2) continue;
+    // And only at sizes where the measurement is above the noise floor. At 1 kb
+    // both implementations finish in tens of microseconds, so a scheduler
+    // hiccup swamps the ratio: translate_sequence read 5.6x in a quiet run and
+    // 0.98x under load, with nothing wrong. 25 kb is the first size where both
+    // sides take long enough for the ratio to mean something.
+    if (r.sizeBp < 25_000) continue;
     if (r.speedup < 1) {
       regressions.push(
         `  ${r.kernel} at ${r.sizeBp} bp: was ${b.speedup}x, now ${r.speedup}x ` +
