@@ -525,13 +525,15 @@ The Simulation Hub (`Shift+S`) provides interactive models of phage biology with
 **Tracks:** Sensitive/resistant populations, emergence time, individual phage counts
 
 ### 6. Packaging Motor Pressure Gauge
-**Model:** Physics-informed DNA packaging
-**Factors:**
-- Intrinsic pressure from DNA bending: L/(R²) energy model
-- Ionic strength effects (Debye screening ~0.304/√I nm)
-- Morphology-specific baselines (headful/cos/phi29)
+**Model:** Inverse-spool continuum model (Riemer & Bloomfield 1978; Purohit, Kondev & Phillips, PNAS 2003)
+**Energy terms:**
+- DNA bending: `E/L = ξ_p·kT / (2R²)`, with persistence length ξ_p = 50 nm and R the volume-weighted mean radius of the DNA-occupied shell
+- Screened interstrand repulsion: `E/L = F₀·exp(−d_s/λ_D)`, with hexagonal interaxial spacing `d_s = √(2V / (√3·L))` and Debye length `λ_D = 0.304/√I nm`
+- Capsid radius per morphology (13–45 nm); ATP at the measured 2 bp per hydrolysis
 
-**Output:** Fill fraction, internal pressure (atm), motor force (pN)
+**Output:** Force = dE/dL in pN, pressure = force over the portal channel cross-section in atm, plus the interaxial spacing and Debye length the model computes on the way.
+
+**Calibration and accuracy:** one fitted constant, F₀, solved so λ at full packing gives the ~57 pN measured by optical tweezers. Everything else is a published value. Across this catalogue the model gives 12–73 pN at full packing, and the interaxial spacing comes out at 2.67 nm for λ against a measured 2.5–2.8 nm — an independent check, since spacing is not fitted. Expect the right scale and the right shape, not a per-genome figure to three digits: the capsid table carries one radius per morphology and treats every head as a sphere, which understates phi29's prolate head badly.
 
 ### 7. Evolution Replay
 **Model:** Molecular clock with mutations and genetic drift

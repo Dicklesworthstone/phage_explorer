@@ -3,6 +3,8 @@ import {
   derivePhageSimDefaults,
   makePackagingSimulation,
   makeEvolutionSimulation,
+  packagingStateAt,
+  debyeLengthNm,
 } from './simulation-implementations';
 import { ribosomeTrafficSimulation } from './analysis/translation-simulation';
 import type { PhageFull } from './types';
@@ -221,5 +223,119 @@ describe('ribosome-traffic uses the selected phage', () => {
     const state = ribosomeTrafficSimulation.init(null, {}, () => 0.5);
     expect(state.mRnaId).toBe('Synthetic');
     expect(state.codonRates).toHaveLength(200);
+  });
+});
+
+/**
+ * DNA packaging physics.
+ *
+ * The overlay computed `force = 5 + 50*phi^3` and
+ * `pressure = min(60, 5 + 55*phi)`. Nothing but genome length and cursor
+ * position entered either. Meanwhile the README described "Physics-informed DNA
+ * packaging" with "Intrinsic pressure from DNA bending: L/(R^2) energy model"
+ * and "Ionic strength effects (Debye screening ~0.304/sqrt(I) nm)", none of
+ * which existed anywhere in the code.
+ *
+ * The model now exists. These tests check it behaves like the physics it claims
+ * to be, and check the specific acceptance criterion: output must differ across
+ * morphologies at equal genome length.
+ */
+describe('packaging physics', () => {
+  const LAMBDA_BP = 48502;
+
+  it('differs across morphologies at equal genome length', () => {
+    // The acceptance criterion, and the whole point: capsid radius enters the
+    // model, so the same DNA in a bigger head is under less pressure. The old
+    // closed form could not distinguish these at all.
+    const podo = packagingStateAt(40000, 40000, 'podovirus');
+    const sipho = packagingStateAt(40000, 40000, 'siphovirus');
+    const myo = packagingStateAt(40000, 40000, 'myovirus');
+
+    expect(podo.forcePn).not.toBeCloseTo(myo.forcePn, 1);
+    expect(sipho.forcePn).not.toBeCloseTo(myo.forcePn, 1);
+    // A myovirus head is much larger, so the same genome packs loosely.
+    expect(myo.forcePn).toBeLessThan(podo.forcePn);
+    expect(myo.capsidRadiusNm).toBeGreaterThan(podo.capsidRadiusNm);
+  });
+
+  it('lands in the measured force range at full packing', () => {
+    // Optical tweezers give ~57 pN for phages of this class. One constant is
+    // fitted to that, so this is partly a self-check -- but the model must not
+    // be free to wander an order of magnitude away for other genomes, and this
+    // is what notices if it does.
+    const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
+    expect(lambda.forcePn).toBeGreaterThan(30);
+    expect(lambda.forcePn).toBeLessThan(90);
+
+    const t4 = packagingStateAt(168903, 168903, 'myovirus');
+    expect(t4.forcePn).toBeGreaterThan(10);
+    expect(t4.forcePn).toBeLessThan(150);
+  });
+
+  it('rises steeply with fill rather than linearly', () => {
+    // The measured force curve is flat early and climbs sharply past about half
+    // packing. A linear ramp -- which is what the old `5 + 55*phi` was -- gets
+    // the endpoints right and the physics wrong.
+    const q = packagingStateAt(LAMBDA_BP * 0.25, LAMBDA_BP, 'siphovirus').forcePn;
+    const h = packagingStateAt(LAMBDA_BP * 0.5, LAMBDA_BP, 'siphovirus').forcePn;
+    const f = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus').forcePn;
+
+    expect(h - q).toBeGreaterThan(0);
+    expect(f - h).toBeGreaterThan((h - q) * 1.5);
+  });
+
+  it('reproduces the measured interaxial DNA spacing', () => {
+    // An independent check: the spacing is computed on the way to the force and
+    // is not fitted to anything. Tightly packed phage heads measure 2.5-2.8 nm.
+    const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
+    expect(lambda.spacingNm).toBeGreaterThan(2.3);
+    expect(lambda.spacingNm).toBeLessThan(3.0);
+  });
+
+  it('gives a pressure consistent with the force and the portal geometry', () => {
+    // ~57 pN through the portal channel is the standard route to the ~6 MPa
+    // (~60 atm) figure quoted for phage heads.
+    const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
+    expect(lambda.pressureAtm).toBeGreaterThan(20);
+    expect(lambda.pressureAtm).toBeLessThan(120);
+  });
+
+  it('responds to ionic strength through the Debye length', () => {
+    // The README's headline claim. Lower salt means weaker screening, stronger
+    // repulsion between neighbouring duplexes, and a harder push.
+    const low = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus', 0.02);
+    const high = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus', 0.4);
+
+    expect(low.debyeNm).toBeGreaterThan(high.debyeNm);
+    expect(low.forcePn).toBeGreaterThan(high.forcePn);
+  });
+
+  it('matches the quoted Debye formula', () => {
+    // 0.304/sqrt(I) nm, exactly as the README states.
+    expect(debyeLengthNm(0.1)).toBeCloseTo(0.304 / Math.sqrt(0.1), 6);
+    expect(debyeLengthNm(1)).toBeCloseTo(0.304, 6);
+  });
+
+  it('starts at the bare bending cost and rises monotonically', () => {
+    const points = [0, 0.2, 0.4, 0.6, 0.8, 1].map(
+      f => packagingStateAt(LAMBDA_BP * f, LAMBDA_BP, 'siphovirus').forcePn
+    );
+
+    // At zero fill the first duplex is bent to the capsid wall and nothing else
+    // is inside, so the force is the pure bending term xi_p*kT/(2R^2). For
+    // R = 29 nm that is 50*4.11/(2*29^2) = 0.122 pN. This is an independent
+    // check on the bending term: nothing was fitted to produce it.
+    expect(points[0]).toBeCloseTo((50 * 4.11) / (2 * 29 * 29), 3);
+
+    for (let i = 1; i < points.length; i++) {
+      expect(points[i]).toBeGreaterThanOrEqual(points[i - 1]);
+    }
+  });
+
+  it('handles a zero-length genome without producing NaN', () => {
+    const s = packagingStateAt(0, 0, 'siphovirus');
+    expect(Number.isFinite(s.forcePn)).toBe(true);
+    expect(s.forcePn).toBe(0);
+    expect(Number.isFinite(s.pressureAtm)).toBe(true);
   });
 });
