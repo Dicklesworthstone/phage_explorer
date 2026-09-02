@@ -202,15 +202,13 @@ describe('ribosome-traffic uses the selected phage', () => {
           endPos: 1000,
           strand: '+',
           product: 'repressor protein cI',
-          geneType: 'CDS',
-          qualifiers: null,
+          type: 'CDS',
         },
-      ] as PhageFull['genes'],
+      ],
       codonUsage: {
-        phageId: 1,
-        aminoAcidCounts: {},
+        aaCounts: { K: 10, G: 90, F: 50 },
         codonCounts: { AAA: 10, GGG: 90, TTT: 50 },
-      } as PhageFull['codonUsage'],
+      },
     });
 
     const state = ribosomeTrafficSimulation.init(phage, {}, () => 0.5);
