@@ -6,6 +6,7 @@
  */
 
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { usePhageStore } from '@phage-explorer/state';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
@@ -20,6 +21,7 @@ import {
 import {
   analyzeNiches,
   generateDemoAbundanceTable,
+  createSeededRng,
   type NicheAnalysisResult,
 } from '@phage-explorer/core';
 
@@ -165,6 +167,22 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
+  /**
+   * The loaded phage, used to seed the simulation.
+   *
+   * This overlay ran `generateDemoAbundanceTable(25, 60, numNiches)` with the
+   * default `Math.random`, so its output was identical for every genome and
+   * different on every open. An educational simulation that ignores the user's
+   * selection and will not reproduce has no business in a genome browser: a
+   * user cannot compare two phages with it, and cannot return to a network they
+   * saw a minute ago.
+   *
+   * The NMF and bootstrap mathematics underneath are real and are kept. What
+   * changes is that the synthetic community is now a deterministic function of
+   * the phage and the parameters.
+   */
+  const currentPhage = usePhageStore(s => s.currentPhage);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [analysisResult, setAnalysisResult] = useState<NicheAnalysisResult | null>(null);
@@ -198,8 +216,16 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
     const timeoutId = setTimeout(() => {
       if (cancelled) return;
       try {
-        // Generate demo data (in production, this would come from user upload)
-        const abundanceTable = generateDemoAbundanceTable(25, 60, numNiches);
+        // Synthetic community, seeded from the phage and the parameters so the
+        // same inputs always produce the same network. In production this would
+        // come from a user upload or a real co-occurrence index.
+        const seed = `${currentPhage?.id ?? 'none'}:${numNiches}:${correlationThreshold}:${showNegative}`;
+        const abundanceTable = generateDemoAbundanceTable(
+          25,
+          60,
+          numNiches,
+          createSeededRng(seed)
+        );
 
         const result = analyzeNiches(abundanceTable, undefined, {
           numNiches,
@@ -223,7 +249,7 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
       cancelled = true;
       clearTimeout(timeoutId);
     };
-  }, [overlayIsOpen, numNiches, correlationThreshold, showNegative]);
+  }, [overlayIsOpen, numNiches, correlationThreshold, showNegative, currentPhage]);
 
   // Build layout when network changes
   const layoutData = useMemo(() => {

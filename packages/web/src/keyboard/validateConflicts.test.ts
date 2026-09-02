@@ -330,9 +330,15 @@ describe('Overlay-scoped hotkey behavior', () => {
     // Overlay actions should have valid category assignments
     const overlayActions = ActionRegistryList.filter(a => a.overlayId);
 
-    // Valid categories for overlay actions (based on actual registry)
+    // Valid categories for overlay actions (based on actual registry).
+    //
+    // 'Education' is where overlays whose input is synthetic live. The niche
+    // network sat in 'Analysis' beside forty overlays that really do analyse
+    // the loaded genome, so its "EDUCATIONAL SIMULATION" banner only appeared
+    // after the user had already chosen it.
     const validCategories = new Set([
       'Overlays', 'Search', 'Simulation', 'Analysis', 'Comparison', 'Navigation', 'Dev',
+      'Education',
     ]);
 
     for (const action of overlayActions) {

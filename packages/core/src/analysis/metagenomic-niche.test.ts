@@ -14,6 +14,7 @@ import {
   type AbundanceTable,
   type CorrelationMatrix,
   type NMFResult,
+  createSeededRng,
 } from './metagenomic-niche';
 
 // Seeded RNG for reproducible tests
@@ -536,5 +537,78 @@ describe('edge cases', () => {
     });
 
     expect(result.nicheProfiles.length).toBe(2);
+  });
+});
+
+/**
+ * Reproducibility of the simulated community.
+ *
+ * The niche network overlay called `generateDemoAbundanceTable` with the
+ * default `Math.random`, so it produced a different community on every open and
+ * the same one for every phage. A user could not compare two genomes with it,
+ * and could not return to a network they had just been looking at. Neither is
+ * acceptable even for an educational simulation.
+ */
+describe('createSeededRng', () => {
+  it('produces the same stream for the same seed', () => {
+    const a = Array.from({ length: 20 }, () => createSeededRng('lambda:4')());
+    const b = Array.from({ length: 20 }, () => createSeededRng('lambda:4')());
+    expect(a).toEqual(b);
+  });
+
+  it('advances rather than repeating one value', () => {
+    // A generator that returns a constant would satisfy the test above.
+    const rng = createSeededRng('lambda:4');
+    const draws = Array.from({ length: 20 }, () => rng());
+    expect(new Set(draws).size).toBeGreaterThan(10);
+  });
+
+  it('produces different streams for different seeds', () => {
+    const a = Array.from({ length: 20 }, () => createSeededRng('lambda:4')());
+    const b = Array.from({ length: 20 }, () => createSeededRng('t4:4')());
+    expect(a).not.toEqual(b);
+  });
+
+  it('stays within [0, 1)', () => {
+    const rng = createSeededRng(12345);
+    for (let i = 0; i < 500; i++) {
+      const v = rng();
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+  });
+
+  it('does not collapse on a seed that hashes to zero', () => {
+    // Guards the fixed-point defence in the implementation.
+    const rng = createSeededRng(0);
+    const draws = Array.from({ length: 20 }, () => rng());
+    expect(new Set(draws).size).toBeGreaterThan(10);
+  });
+});
+
+describe('the simulated community is reproducible per phage', () => {
+  const build = (seed: string) =>
+    generateDemoAbundanceTable(10, 12, 3, createSeededRng(seed));
+
+  it('gives the identical table for the same phage and parameters', () => {
+    expect(build('1:3').counts).toEqual(build('1:3').counts);
+  });
+
+  it('gives a different table for a different phage', () => {
+    // Without this the overlay would be reproducible and still identical for
+    // every genome, which is the other half of the original defect.
+    expect(build('1:3').counts).not.toEqual(build('2:3').counts);
+  });
+
+  it('gives a different table when the parameters change', () => {
+    expect(build('1:3').counts).not.toEqual(build('1:5').counts);
+  });
+
+  it('still defaults to Math.random when no rng is supplied', () => {
+    // The seeding is the caller's choice, not a change to the function's
+    // contract. Two unseeded calls should differ.
+    const a = generateDemoAbundanceTable(10, 12, 3);
+    const b = generateDemoAbundanceTable(10, 12, 3);
+    expect(a.counts).not.toEqual(b.counts);
   });
 });

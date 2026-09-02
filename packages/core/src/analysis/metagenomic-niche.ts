@@ -696,6 +696,41 @@ function buildNicheProfiles(
 // =============================================================================
 
 /**
+ * Deterministic random number generator, seeded from a string or number.
+ *
+ * `generateDemoAbundanceTable` has always accepted an `rng`, but every caller
+ * left it at the default `Math.random`. The niche network overlay therefore
+ * produced a different synthetic community on every open and the same one for
+ * every phage: a user could not compare two genomes with it, and could not
+ * return to a network they had just been looking at.
+ *
+ * A seeded generator fixes both. It is exported because the overlay needs it,
+ * and it lives here rather than in the web package because this is the module
+ * whose `rng` parameter it exists to satisfy.
+ *
+ * The recurrence is a plain linear congruential generator. It is not
+ * cryptographic and is not trying to be; the requirement is reproducibility,
+ * not unpredictability.
+ */
+export function createSeededRng(seed: string | number): () => number {
+  let s = typeof seed === 'number' ? seed >>> 0 : 2166136261;
+  if (typeof seed === 'string') {
+    for (let i = 0; i < seed.length; i++) {
+      s ^= seed.charCodeAt(i);
+      s = Math.imul(s, 16777619) >>> 0;
+    }
+  }
+  // Guard the degenerate fixed point: an LCG seeded at 0 with these constants
+  // still advances, but starting from a non-zero state avoids a long run of
+  // small values on short seeds.
+  if (s === 0) s = 0x9e3779b9;
+  return () => {
+    s = (Math.imul(s, 1103515245) + 12345) & 0x7fffffff;
+    return s / 0x7fffffff;
+  };
+}
+
+/**
  * Generate synthetic abundance data for testing/demo
  */
 export function generateDemoAbundanceTable(

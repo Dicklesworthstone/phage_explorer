@@ -198,3 +198,37 @@ describe('overlays that degrade declare what they degrade to', () => {
     }
   });
 });
+
+/**
+ * Provenance has to be visible BEFORE the overlay opens.
+ *
+ * The niche network carried an "EDUCATIONAL SIMULATION" banner in its body, but
+ * its menu entry sat in the plain "Analysis" category beside forty overlays
+ * that really do analyse the loaded genome. The user learned what it was only
+ * after choosing it, which is the wrong order.
+ */
+describe('demo-driven overlays are not filed under plain Analysis', () => {
+  it('keeps the simulated niche network out of the Analysis category', () => {
+    const entry = ActionRegistryList.find(a => a.overlayId === 'nicheNetwork');
+    expect(entry).toBeDefined();
+    expect(entry!.category).not.toBe('Analysis');
+    expect(entry!.category).toBe('Education');
+  });
+
+  it('leaves genuinely analytical overlays in Analysis', () => {
+    // The discrimination check. Moving everything out of Analysis would satisfy
+    // the assertion above and destroy the category's meaning.
+    for (const id of ['gcSkew', 'dotPlot', 'proteinDomains', 'codonBias']) {
+      expect(ActionRegistryList.find(a => a.overlayId === id)?.category).toBe('Analysis');
+    }
+  });
+
+  it('has no overlay left in Analysis whose provenance is demo', () => {
+    // The general form of the rule, so the next demo overlay cannot land in
+    // Analysis unnoticed.
+    const offenders = ActionRegistryList.filter(
+      a => a.overlayId && a.category === 'Analysis' && a.provenance === 'demo'
+    ).map(a => a.overlayId);
+    expect(offenders).toEqual([]);
+  });
+});

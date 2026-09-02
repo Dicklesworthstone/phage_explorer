@@ -890,15 +890,24 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
   [ActionIds.OverlayNicheNetwork]: {
     id: ActionIds.OverlayNicheNetwork,
     title: 'Niche network',
-    category: 'Analysis',
-    description: 'Open niche co-occurrence network',
+    // Education, not Analysis.
+    //
+    // The NMF and bootstrap mathematics here are real, but the community they
+    // run on is synthetic: there is no co-occurrence index in the shipped
+    // database. Sitting in "Analysis" next to forty overlays that do analyse
+    // the loaded genome, it read as one of them, and the "EDUCATIONAL
+    // SIMULATION" banner inside the overlay only appeared after the user had
+    // already chosen it.
+    category: 'Education',
+    description: 'Explore niche co-occurrence structure on a simulated community',
     defaultShortcut: { key: 'N', modifiers: { ctrl: true, shift: true } },
     scope: 'global',
     surfaces: ['web'],
     minLevel: 'power',
     overlayId: 'nicheNetwork',
     overlayAction: 'toggle',
-    // randomly generated abundance table
+    // Synthetic abundance table, now seeded from the loaded phage so the same
+    // phage and parameters always give the same network.
     provenance: 'demo',
   },
   [ActionIds.OverlayPhylodynamics]: {
