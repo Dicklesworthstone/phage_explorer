@@ -32,6 +32,7 @@ import {
 } from './primitives';
 import {
   fetchDatedPhageSequences,
+  fetchSequencesFasta,
   getPhageSearchTerms,
   getCached,
   setCache,
@@ -130,14 +131,45 @@ export function PhylodynamicsOverlay({
             if (ncbiResult.success && ncbiResult.data.sequences.length >= 5) {
               setApiMessage(`Found ${ncbiResult.data.sequences.length} dated sequences. Building phylogeny...`);
 
-              // Convert NCBI sequences to DatedSequence format
-              const datedSequences: DatedSequence[] = ncbiResult.data.sequences.map((seq, i) => ({
-                id: seq.accession,
-                date: seq.collectionDate.getFullYear() + (seq.collectionDate.getMonth() / 12),
-                // Generate pseudo-sequence from accession hash for analysis
-                // (Real sequences would need alignment which is expensive)
-                sequence: generatePseudoSequence(seq.accession, seq.sequenceLength, i),
-              }));
+              // Fetch the ACTUAL sequences.
+              //
+              // This used to be `generatePseudoSequence(seq.accession, ...)`, a
+              // hash of the accession string, with the comment "Real sequences
+              // would need alignment which is expensive". The alignment concern
+              // was real -- Jukes-Cantor needs aligned equal-length sequences,
+              // and aligning 30 phage genomes in a browser is not practical --
+              // but the resolution was to synthesise the input and keep the
+              // "REAL DATA" banner over a tree, clock rate and skyline computed
+              // entirely from hashes.
+              //
+              // Alignment-free Mash distance removes the constraint that forced
+              // the shortcut, so the real sequences can be used directly.
+              setApiMessage(`Fetching ${ncbiResult.data.sequences.length} sequences from NCBI...`);
+              const accessions = ncbiResult.data.sequences.map(seq => seq.accession);
+              const fastaResult = await fetchSequencesFasta(accessions);
+              if (cancelled) return;
+
+              if (!fastaResult.success || fastaResult.data.size < 5) {
+                // Not enough real sequence to build a tree on. Fall through to
+                // the demo path, which is clearly labelled, rather than
+                // synthesising input and calling it real.
+                break;
+              }
+
+              const datedSequences: DatedSequence[] = ncbiResult.data.sequences
+                .map(seq => {
+                  const bare = seq.accession.split('.')[0];
+                  const sequence = fastaResult.data.get(bare) ?? fastaResult.data.get(seq.accession);
+                  if (!sequence) return null;
+                  return {
+                    id: seq.accession,
+                    date: seq.collectionDate.getFullYear() + seq.collectionDate.getMonth() / 12,
+                    sequence,
+                  };
+                })
+                .filter((d): d is DatedSequence => d !== null);
+
+              if (datedSequences.length < 5) break;
 
               // Run phylodynamic analysis
               const analysisResult = analyzePhylodynamics(datedSequences, {
@@ -207,23 +239,12 @@ export function PhylodynamicsOverlay({
 
   // Generate pseudo-sequence from accession for analysis
   // This creates a deterministic sequence that can be used for tree building
-  function generatePseudoSequence(accession: string, length: number, index: number): string {
-    const bases = ['A', 'C', 'G', 'T'];
-    let hash = 0;
-    for (let i = 0; i < accession.length; i++) {
-      hash = ((hash << 5) - hash) + accession.charCodeAt(i);
-      hash = hash & hash;
-    }
-
-    const seqLength = Math.min(200, Math.max(50, Math.floor(length / 100)));
-    let seq = '';
-    for (let i = 0; i < seqLength; i++) {
-      // Add some variation based on index to ensure different sequences
-      const baseIndex = Math.abs((hash + i * 7 + index * 13) % 4);
-      seq += bases[baseIndex];
-    }
-    return seq;
-  }
+  // NOTE: generatePseudoSequence used to live here. It turned an accession
+  // string into a short run of bases by hashing, and the real-data path fed its
+  // output to the tree builder, the molecular clock, the skyline and dN/dS --
+  // under a green "REAL DATA" banner. Deleted rather than kept behind a flag:
+  // there is no circumstance in which a hash of an identifier should reach an
+  // analysis that reports substitutions per site per year.
 
   // Draw phylogenetic tree
   useEffect(() => {

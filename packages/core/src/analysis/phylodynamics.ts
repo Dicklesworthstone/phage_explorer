@@ -152,6 +152,61 @@ export function jukesCantor(seq1: string, seq2: string): number {
 }
 
 /**
+ * Mash distance between two k-mer Jaccard-similar sequences.
+ *
+ * Jukes-Cantor above requires ALIGNED sequences of equal length, which is why
+ * this overlay previously fabricated its input: aligning 30 fetched genomes in
+ * a browser is not practical, so a hash of each accession was substituted and
+ * the whole tree was built on it.
+ *
+ * Mash distance removes the alignment requirement. Given the Jaccard
+ * similarity j of two genomes' k-mer sets:
+ *
+ *     D = -(1/k) * ln( 2j / (1 + j) )
+ *
+ * which estimates the per-base substitution rate under a Poisson model of
+ * mutations breaking shared k-mers (Ondov et al. 2016). It is the standard
+ * alignment-free genome distance and is directly comparable to a
+ * Jukes-Cantor distance for tree building.
+ *
+ * @param jaccard k-mer Jaccard similarity in [0,1]
+ * @param k k-mer size the Jaccard was computed at
+ */
+export function mashDistance(jaccard: number, k: number): number {
+  if (k <= 0) return 1;
+  // No shared k-mers: saturated. Report the same ceiling Jukes-Cantor uses so
+  // the two are interchangeable in a distance matrix.
+  if (jaccard <= 0) return 1;
+  if (jaccard >= 1) return 0;
+  const d = -(1 / k) * Math.log((2 * jaccard) / (1 + jaccard));
+  return Math.max(0, Math.min(1, d));
+}
+
+/**
+ * Pairwise distance matrix from precomputed alignment-free similarities.
+ *
+ * `similarity(i, j)` returns the k-mer Jaccard of sequences i and j. Callers
+ * supply it from a sketch cache, so the matrix costs O(n^2) cheap signature
+ * comparisons rather than O(n^2) full sequence alignments.
+ */
+export function computeAlignmentFreeDistanceMatrix(
+  sequences: DatedSequence[],
+  similarity: (a: DatedSequence, b: DatedSequence) => number,
+  k: number
+): number[][] {
+  const n = sequences.length;
+  const matrix: number[][] = Array.from({ length: n }, () => Array(n).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const d = mashDistance(similarity(sequences[i], sequences[j]), k);
+      matrix[i][j] = d;
+      matrix[j][i] = d;
+    }
+  }
+  return matrix;
+}
+
+/**
  * Compute pairwise genetic distance matrix for all sequence pairs
  */
 export function computeGeneticDistanceMatrix(sequences: DatedSequence[]): number[][] {
