@@ -19,11 +19,18 @@ import { useHotkey } from '../../hooks/useHotkey';
 import { ActionIds } from '../../keyboard';
 import {
   analyzePhylodynamics,
+  computeAlignmentFreeDistanceMatrix,
   generateDemoPhylodynamicsData,
   type PhylodynamicsResult,
   type TreeNode,
   type DatedSequence,
 } from '@phage-explorer/core';
+import {
+  SketchCache,
+  estimateJaccard,
+  initMinHashWasm,
+  MINHASH_DEFAULT_K,
+} from '@phage-explorer/comparison';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import {
   OverlayLoadingState,
@@ -143,7 +150,10 @@ export function PhylodynamicsOverlay({
               // entirely from hashes.
               //
               // Alignment-free Mash distance removes the constraint that forced
-              // the shortcut, so the real sequences can be used directly.
+              // the shortcut, so the real sequences can be used directly. The
+              // matrix is built below and passed into the analysis; without
+              // that, the tree would silently fall back to Jukes-Cantor and
+              // compare non-homologous columns of unaligned genomes.
               setApiMessage(`Fetching ${ncbiResult.data.sequences.length} sequences from NCBI...`);
               const accessions = ncbiResult.data.sequences.map(seq => seq.accession);
               const fastaResult = await fetchSequencesFasta(accessions);
@@ -171,22 +181,64 @@ export function PhylodynamicsOverlay({
 
               if (datedSequences.length < 5) break;
 
+              // Alignment-free distances from MinHash sketches.
+              //
+              // This is the step that makes the real sequences usable. Every
+              // number below it -- tree, clock rate, skyline -- is derived from
+              // this matrix, so if the sketches cannot be built there is no
+              // honest analysis to show and the demo path is the correct
+              // outcome.
+              await initMinHashWasm();
+              if (cancelled) return;
+              const sketches = new SketchCache();
+              let sketchesOk = true;
+              for (const d of datedSequences) {
+                if (!sketches.getOrBuild(d.id, d.sequence)) {
+                  sketchesOk = false;
+                  break;
+                }
+              }
+              if (!sketchesOk) break;
+
+              const distances = computeAlignmentFreeDistanceMatrix(
+                datedSequences,
+                (a, b) => {
+                  const sa = sketches.get(a.id);
+                  const sb = sketches.get(b.id);
+                  if (!sa || !sb) return 0;
+                  return estimateJaccard(sa.signature, sb.signature);
+                },
+                MINHASH_DEFAULT_K
+              );
+
               // Run phylodynamic analysis
               const analysisResult = analyzePhylodynamics(datedSequences, {
                 runClock: true,
                 runSkyline: true,
                 runSelection: true,
+                distances,
               });
 
               if (cancelled) return;
               setResult(analysisResult);
               setDataSource('real');
-              setSequenceCount(ncbiResult.data.sequences.length);
-              setApiMessage(`Analysis based on ${ncbiResult.data.sequences.length} dated sequences from NCBI (${ncbiResult.data.timeRange.earliest.getFullYear()}-${ncbiResult.data.timeRange.latest.getFullYear()})`);
+              // Report what was ANALYSED, not what was found. These differ
+              // whenever a fetch returns fewer sequences than the search did,
+              // and the banner used to quote the larger number.
+              setSequenceCount(datedSequences.length);
+              const years = datedSequences.map(d => Math.floor(d.date));
+              setApiMessage(
+                `Analysis based on ${datedSequences.length} dated sequences from NCBI ` +
+                `(${Math.min(...years)}-${Math.max(...years)})`
+              );
               usedRealData = true;
 
               // Cache the result
-              setCache(cacheKey, { result: analysisResult, source: 'real' as const, count: ncbiResult.data.sequences.length }, { ttl: 24 * 60 * 60 * 1000 });
+              setCache(
+                cacheKey,
+                { result: analysisResult, source: 'real' as const, count: datedSequences.length },
+                { ttl: 24 * 60 * 60 * 1000 }
+              );
               break;
             }
           }

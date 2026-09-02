@@ -144,12 +144,23 @@ export function jukesCantor(seq1: string, seq2: string): number {
 
   const p = differences / validPositions;
 
-  // Prevent log of negative number (saturation)
-  if (p >= 0.75) return 3.0; // Maximum distance
+  // Saturation. The correction blows up as p approaches 0.75 and is undefined
+  // beyond it, so the result is capped at the same ceiling in both directions.
+  //
+  // Capping only the p >= 0.75 branch left the function discontinuous: p = 0.75
+  // returned 3.0 while p = 0.7499 returned about 6.7, so a pair one substitution
+  // short of saturation scored more than twice as distant as a pair past it.
+  // Distances above the stated maximum reached UPGMA and inverted the topology.
+  if (p >= 0.75) return JC_MAX_DISTANCE;
 
   const d = -0.75 * Math.log(1 - (4 * p) / 3);
-  return Math.max(0, d);
+  return Math.min(JC_MAX_DISTANCE, Math.max(0, d));
 }
+
+/**
+ * Ceiling for Jukes-Cantor distance, and the value reported at saturation.
+ */
+export const JC_MAX_DISTANCE = 3.0;
 
 /**
  * Mash distance between two k-mer Jaccard-similar sequences.
@@ -174,8 +185,13 @@ export function jukesCantor(seq1: string, seq2: string): number {
  */
 export function mashDistance(jaccard: number, k: number): number {
   if (k <= 0) return 1;
-  // No shared k-mers: saturated. Report the same ceiling Jukes-Cantor uses so
-  // the two are interchangeable in a distance matrix.
+  // No shared k-mers: saturated.
+  //
+  // Mash distance is a per-site substitution rate in [0, 1], NOT on the
+  // Jukes-Cantor scale, which runs to JC_MAX_DISTANCE = 3. The two are not
+  // interchangeable and an earlier comment here claimed they were. A caller
+  // must build a matrix from one or the other, never a mixture, or the tree is
+  // drawn on two scales at once.
   if (jaccard <= 0) return 1;
   if (jaccard >= 1) return 0;
   const d = -(1 / k) * Math.log((2 * jaccard) / (1 + jaccard));
@@ -238,10 +254,19 @@ interface UPGMACluster {
 /**
  * Build a phylogenetic tree using UPGMA (Unweighted Pair Group Method with Arithmetic Mean)
  *
- * @param sequences Aligned sequences with dates
+ * @param sequences Sequences with dates
+ * @param distances Optional precomputed pairwise distance matrix. Supply this
+ *   when the sequences are NOT aligned: the default path uses Jukes-Cantor,
+ *   which compares position by position and throws on unequal lengths. Records
+ *   fetched from GenBank differ in start coordinate and in completeness, so the
+ *   default path is wrong for them even when it does not throw. Build the
+ *   matrix with `computeAlignmentFreeDistanceMatrix` instead.
  * @returns Phylogenetic tree
  */
-export function buildUPGMATree(sequences: DatedSequence[]): PhylogeneticTree {
+export function buildUPGMATree(
+  sequences: DatedSequence[],
+  distances?: number[][]
+): PhylogeneticTree {
   const n = sequences.length;
   if (n === 0) {
     throw new Error('No sequences provided');
@@ -258,8 +283,13 @@ export function buildUPGMATree(sequences: DatedSequence[]): PhylogeneticTree {
     return { root: leaf, leafCount: 1, height: 0, isClockCalibrated: false };
   }
 
-  // Compute distance matrix
-  const distances = computeGeneticDistanceMatrix(sequences);
+  // Compute distance matrix, unless the caller supplied one.
+  if (distances && (distances.length !== n || distances.some(row => row.length !== n))) {
+    throw new Error(
+      `Distance matrix is ${distances.length}x${distances[0]?.length ?? 0}, expected ${n}x${n}`
+    );
+  }
+  const resolvedDistances = distances ?? computeGeneticDistanceMatrix(sequences);
 
   // Initialize clusters (each sequence is its own cluster)
   const clusters: UPGMACluster[] = sequences.map((seq, i) => ({
@@ -277,7 +307,7 @@ export function buildUPGMATree(sequences: DatedSequence[]): PhylogeneticTree {
   }));
 
   // Working distance matrix (will be modified)
-  const workDist: number[][] = distances.map(row => [...row]);
+  const workDist: number[][] = resolvedDistances.map(row => [...row]);
 
   let nodeCounter = n;
 
@@ -363,12 +393,12 @@ export function buildUPGMATree(sequences: DatedSequence[]): PhylogeneticTree {
       let sum = 0;
       for (const mi of clusterI.members) {
         for (const mk of clusters[k].members) {
-          sum += distances[mi][mk];
+          sum += resolvedDistances[mi][mk];
         }
       }
       for (const mj of clusterJ.members) {
         for (const mk of clusters[k].members) {
-          sum += distances[mj][mk];
+          sum += resolvedDistances[mj][mk];
         }
       }
       finalNewRow.push(sum / ((ni + nj) * clusters[k].members.length));
@@ -824,6 +854,16 @@ export interface PhylodynamicsOptions {
   runSkyline?: boolean;
   /** Run selection analysis */
   runSelection?: boolean;
+  /**
+   * Precomputed pairwise distances, for sequences that are not aligned.
+   *
+   * Without this the tree is built with Jukes-Cantor, which compares position
+   * by position. Real GenBank records of the same phage differ by start
+   * coordinate, so column i of one is not homologous to column i of another and
+   * the resulting distances are meaningless even when the lengths happen to
+   * match. Pass a matrix from `computeAlignmentFreeDistanceMatrix`.
+   */
+  distances?: number[][];
 }
 
 /**
@@ -841,10 +881,11 @@ export function analyzePhylodynamics(
     runClock = true,
     runSkyline = true,
     runSelection = true,
+    distances,
   } = options;
 
   // Build tree
-  let tree = buildUPGMATree(sequences);
+  let tree = buildUPGMATree(sequences, distances);
 
   // Molecular clock
   let clockResult: ClockRegressionResult | null = null;
@@ -861,9 +902,17 @@ export function analyzePhylodynamics(
     skyline = computeSkyline(tree);
   }
 
-  // Selection analysis
+  // Selection analysis.
+  //
+  // Ancestral reconstruction is a column-wise majority vote, so it is only
+  // defined for aligned sequences. Run on ragged input it takes the first
+  // sequence's length as the consensus length and silently compares
+  // non-homologous positions, producing a dN/dS that looks like a measurement
+  // and is not one. Skip it and return null instead, so the caller can say the
+  // analysis was not available rather than show a fabricated ratio.
   let selection: SelectionResult | null = null;
-  if (runSelection) {
+  const aligned = sequences.every(s => s.sequence.length === sequences[0].sequence.length);
+  if (runSelection && aligned) {
     // Reconstruct ancestral sequences for internal nodes
     reconstructAncestralSequences(tree.root);
     selection = computeSelection(tree);
