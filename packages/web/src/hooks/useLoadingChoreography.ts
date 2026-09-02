@@ -93,5 +93,22 @@ export function useLoadingChoreography(
   const showContent = phase === 'content';
   const contentClassName = showContent && !reducedMotion ? 'content-stagger' : '';
 
-  return { phase, showSkeleton, showContent, contentClassName };
+  // The interface has always documented these two, and the implementation has
+  // never returned them. Nothing consumed them, so the gap survived: the web
+  // package was excluded from the root tsconfig, so no typecheck ever compared
+  // the return value against its declared type.
+  //
+  // During the 'gap' phase the skeleton is still mounted but fading, which is
+  // the whole point of that phase, so it takes 0 while remaining rendered.
+  const skeletonOpacity = phase === 'skeleton' ? 1 : 0;
+  const contentOpacity = showContent ? 1 : 0;
+
+  return {
+    phase,
+    skeletonOpacity,
+    contentOpacity,
+    showSkeleton,
+    showContent,
+    contentClassName,
+  };
 }

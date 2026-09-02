@@ -150,16 +150,22 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
 
   // Worker renderer disabled by default - OffscreenCanvas has DPI/sizing sync issues
   // that cause blur and scroll problems. Keep main-thread rendering for now.
+  // Set when Worker construction fails at runtime, so the memo below stops
+  // choosing the worker path. Mirrors the `webglInitFailed` flag used for the
+  // WebGL backend a few lines down.
+  const [workerInitFailed, setWorkerInitFailed] = useState(false);
+
   const useWorkerRenderer = useMemo(() => {
     if (typeof window === 'undefined') return false;
     // Only enable if explicitly requested
     if (options.useWorkerRenderer !== true) return false;
+    if (workerInitFailed) return false;
     const offscreenSupported = typeof OffscreenCanvas !== 'undefined'
       && typeof (HTMLCanvasElement.prototype as unknown as { transferControlToOffscreen?: () => OffscreenCanvas }).transferControlToOffscreen === 'function';
     if (!offscreenSupported) return false;
     if ((navigator as Navigator).webdriver) return false;
     return true;
-  }, [options.useWorkerRenderer]);
+  }, [options.useWorkerRenderer, workerInitFailed]);
 
   // Once WebGL binds this canvas, Canvas 2D cannot be created on it. A constructor
   // failure after getContext('webgl') must remount a fresh canvas (via rendererBackend).
@@ -314,8 +320,15 @@ export function useSequenceGrid(options: UseSequenceGridOptions): UseSequenceGri
       try {
         worker = new Worker(new URL('../workers/sequence-render.worker.ts', import.meta.url));
       } catch {
-        // Module and classic worker creation both failed; fall back to main-thread rendering.
-        setUseWorkerRenderer(false);
+        // Module and classic worker creation both failed; fall back to
+        // main-thread rendering.
+        //
+        // This previously called setUseWorkerRenderer(false), which does not
+        // exist -- useWorkerRenderer is a useMemo, not state. So the graceful
+        // fallback threw a ReferenceError instead of degrading, on exactly the
+        // browsers that needed it. Never type-checked, because the root
+        // tsconfig excluded packages/web entirely.
+        setWorkerInitFailed(true);
         return;
       }
     }

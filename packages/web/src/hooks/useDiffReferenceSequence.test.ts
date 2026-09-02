@@ -1,6 +1,7 @@
 import { describe, expect, it, beforeEach } from 'bun:test';
 import { usePhageStore } from '@phage-explorer/state';
 import { ActionRegistryList } from '../keyboard/actionRegistry';
+import { isSequenceCombo, type KeyCombo } from '../keyboard/types';
 
 /**
  * Selection pressure was dead in the browser for two independent reasons, and
@@ -99,8 +100,11 @@ describe('selection pressure overlay reachability', () => {
     const combos = (a: (typeof actions)[number]) =>
       Array.isArray(a.defaultShortcut) ? a.defaultShortcut : [a.defaultShortcut];
 
-    const describeCombo = (c: { key: string; modifiers?: Record<string, boolean> }): string =>
-      [
+    // KeyCombo is a union: a single chord, or a vim-style sequence such as `g g`.
+    // Only single chords can collide with the shortcut under test.
+    const describeCombo = (c: KeyCombo): string | null => {
+      if (isSequenceCombo(c)) return null;
+      return [
         c.modifiers?.ctrl ? 'ctrl' : '',
         c.modifiers?.alt ? 'alt' : '',
         c.modifiers?.shift ? 'shift' : '',
@@ -109,16 +113,18 @@ describe('selection pressure overlay reachability', () => {
       ]
         .filter(Boolean)
         .join('+');
+    };
 
     const action = actions.find(a => a.overlayId === 'selectionPressure');
     expect(action).toBeDefined();
-    const mine = combos(action!).map(describeCombo);
+    const mine = combos(action!).map(describeCombo).filter((x): x is string => x !== null);
     expect(mine.length).toBeGreaterThan(0);
 
     const others = actions
       .filter(a => a.overlayId !== 'selectionPressure')
       .flatMap(combos)
-      .map(describeCombo);
+      .map(describeCombo)
+      .filter((x): x is string => x !== null);
 
     for (const combo of mine) {
       expect(others).not.toContain(combo);
@@ -130,7 +136,10 @@ describe('selection pressure overlay reachability', () => {
     // the assertion above would pass for any string at all.
     const combos = (a: (typeof actions)[number]) =>
       Array.isArray(a.defaultShortcut) ? a.defaultShortcut : [a.defaultShortcut];
-    const allKeys = actions.flatMap(combos).map(c => c.key.toLowerCase());
+    const allKeys = actions
+      .flatMap(combos)
+      .filter((c): c is Exclude<KeyCombo, { sequence: unknown }> => !isSequenceCombo(c))
+      .map(c => c.key.toLowerCase());
     expect(allKeys).toContain('s');
   });
 });

@@ -1,18 +1,20 @@
-import {
-  usePhageStore,
-  type PhageExplorerStore,
-} from '@phage-explorer/state';
+import { usePhageStore } from '@phage-explorer/state';
 
-declare module '@phage-explorer/state' {
-  interface PhageExplorerState {
-    selectedGeneId: number | null;
-  }
-
-  interface PhageExplorerActions {
-    setSelectedGeneId: (geneId: number | null) => void;
-    clearSelectedGene: () => void;
-  }
-}
+/**
+ * Selected-gene state now lives in the shared store (`@phage-explorer/state`),
+ * alongside every other piece of navigation state.
+ *
+ * It used to live here, installed by declaring a TypeScript module
+ * augmentation on `PhageExplorerState` and then patching the fields onto the
+ * running store with `usePhageStore.setState(...)`. That worked at runtime but
+ * left the shared store's own initial state object failing to satisfy its own
+ * augmented interface -- a type error that went unnoticed for as long as it
+ * existed, because the root tsconfig excluded `packages/web/**` from
+ * `bun run typecheck`.
+ *
+ * Both surfaces navigate genes, so the state was never web-specific. This file
+ * is now just the named alias the web components already import.
+ */
 
 export interface SelectedGeneState {
   selectedGeneId: number | null;
@@ -25,34 +27,9 @@ export interface SelectedGeneActions {
 
 export type SelectedGeneStore = SelectedGeneState & SelectedGeneActions;
 
-const existingState = usePhageStore.getState();
-
-if (typeof existingState.setSelectedGeneId !== 'function') {
-  const originalReset = existingState.reset;
-
-  const setSelectedGeneId = (geneId: number | null): void => {
-    if (geneId !== null && (!Number.isSafeInteger(geneId) || geneId < 0)) return;
-    usePhageStore.setState({ selectedGeneId: geneId });
-  };
-
-  const clearSelectedGene = (): void => {
-    usePhageStore.setState({ selectedGeneId: null });
-  };
-
-  usePhageStore.setState({
-    selectedGeneId: null,
-    setSelectedGeneId,
-    clearSelectedGene,
-    reset: () => {
-      originalReset();
-      clearSelectedGene();
-    },
-  } satisfies Partial<PhageExplorerStore>);
-}
-
 /**
- * Web-facing alias of the main store after installing selected-gene state.
- * Every surface subscribes to the same Zustand store and update stream.
+ * Web-facing alias of the main store. Every surface subscribes to the same
+ * Zustand store and update stream.
  */
 export const useSelectedGeneStore = usePhageStore;
 
