@@ -7,6 +7,11 @@ interface CRISPRWorkerRequest {
   jobId?: string;
   sequence: string;
   genes: GeneInfo[];
+  /**
+   * The phage's real host. Carried so the analysis can name whose spacer data
+   * is missing rather than returning an unexplained empty result.
+   */
+  host?: string;
 }
 
 interface CRISPRWorkerResponse {
@@ -19,7 +24,7 @@ interface CRISPRWorkerResponse {
 const ctx: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope;
 
 ctx.onmessage = (event: MessageEvent<CRISPRWorkerRequest>) => {
-  const { jobId, sequence, genes } = event.data;
+  const { jobId, sequence, genes, host } = event.data;
   try {
     if (!sequence || sequence.length === 0) {
       ctx.postMessage({
@@ -30,7 +35,9 @@ ctx.onmessage = (event: MessageEvent<CRISPRWorkerRequest>) => {
       return;
     }
 
-    const result = analyzeCRISPRPressure(sequence, genes);
+    // No `spacers` argument: the catalogue has no spacer data for any of its
+    // hosts. Measured, not assumed -- see the header of packages/core/src/crispr.ts.
+    const result = analyzeCRISPRPressure(sequence, genes, { host });
 
     ctx.postMessage({
       ok: true,

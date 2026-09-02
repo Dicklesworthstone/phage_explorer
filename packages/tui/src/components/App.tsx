@@ -1243,7 +1243,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginLeft={Math.max(0, Math.floor((terminalCols - 74) / 2))}
           marginTop={Math.max(0, Math.floor((terminalRows - 18) / 2))}
         >
-          <CRISPROverlay sequence={sequence} genes={currentPhage?.genes ?? []} />
+          <CRISPROverlay sequence={sequence} genes={currentPhage?.genes ?? []} host={currentPhage?.host ?? undefined} />
         </Box>
       )}
 

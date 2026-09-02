@@ -8,10 +8,38 @@
 import { describe, test, expect } from 'bun:test';
 import { analyzeCRISPRPressure } from './crispr';
 import type { GeneInfo } from './types';
+import type { SpacerRecord } from './crispr';
 
-// Test sequences containing known mock spacers (TGACGT, AACCGG, etc.)
-const SEQ_WITH_SPACERS = 'ATGCATGCTGACGTATGCATGCAACCGGATGCATGC';
+/**
+ * These sequences used to be named for the six hardcoded 6-mers the module
+ * scanned for. That table is gone; see the measurement in crispr.ts.
+ *
+ * Spacers are now real 32-mers supplied by the caller, so the fixtures below
+ * plant a known protospacer at a known position and the tests assert it is
+ * found there. A 32-mer does not occur by chance in a 36 bp sequence, which is
+ * exactly the property the 6-mer version lacked.
+ */
+const SPACER_A = 'ACGTTGCAAGGCTTACGCATTGCAAGCTTGAC'; // 32 bp
+const SPACER_B = 'TTGGCCAATTCCGGAATTCCGGTTAACCGGTA'; // 32 bp
+
+const FLANK_L = 'ATGCATGCATGCATGC';
+const FLANK_R = 'GCATGCATGCATGCAT';
+
+/** Genome carrying SPACER_A once, at a position the tests know. */
+const SEQ_WITH_SPACERS = FLANK_L + SPACER_A + FLANK_R;
+const SPACER_A_POSITION = FLANK_L.length;
+
+/** Genome carrying neither spacer. */
 const SEQ_WITHOUT_SPACERS = 'ATGCATGCATGCATGCATGCATGCATGCATGCATGC';
+
+const spacerSet = (...seqs: string[]): SpacerRecord[] =>
+  seqs.map((sequence, i) => ({
+    sequence,
+    host: 'Escherichia coli K-12',
+    accession: `TEST-SPACER-${i + 1}`,
+  }));
+
+const OPTS = { spacers: spacerSet(SPACER_A, SPACER_B), host: 'Escherichia coli K-12' };
 
 let geneId = 0;
 const makeGene = (
@@ -57,9 +85,8 @@ describe('analyzeCRISPRPressure', () => {
   });
 
   describe('spacer detection', () => {
-    test('detects known spacer in sequence', () => {
-      // TGACGT is one of the mock spacers
-      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, []);
+    test('detects a supplied spacer in the sequence', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], OPTS);
 
       expect(result.spacerHits.length).toBeGreaterThan(0);
     });
@@ -103,28 +130,124 @@ describe('analyzeCRISPRPressure', () => {
       }
     });
 
-    test('no hits for sequence without known spacers', () => {
-      const result = analyzeCRISPRPressure(SEQ_WITHOUT_SPACERS, []);
-
-      // May still have hits if the sequence contains any spacer subsequence
-      // but for a clean sequence without spacers, should be empty
+    test('no hits for a sequence carrying neither spacer', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITHOUT_SPACERS, [], OPTS);
       expect(result.spacerHits.length).toBe(0);
     });
 
     test('handles lowercase sequence', () => {
-      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS.toLowerCase(), []);
-
-      // Should still detect spacers (case-insensitive)
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS.toLowerCase(), [], OPTS);
       expect(result.spacerHits.length).toBeGreaterThan(0);
     });
 
-    test('detects multiple occurrences of same spacer', () => {
-      const doubleSpacerSeq = 'TGACGTATGCATGCTGACGTATGC';
-      const result = analyzeCRISPRPressure(doubleSpacerSeq, []);
+    test('detects multiple occurrences of the same spacer', () => {
+      const doubleSpacerSeq = SPACER_A + FLANK_L + SPACER_A + FLANK_R;
+      const result = analyzeCRISPRPressure(doubleSpacerSeq, [], OPTS);
+      const aHits = result.spacerHits.filter(h => h.sequence === SPACER_A);
+      expect(aHits.length).toBe(2);
+    });
 
-      // Should find two hits for TGACGT
-      const tgacgtHits = result.spacerHits.filter((h) => h.sequence === 'TGACGT');
-      expect(tgacgtHits.length).toBe(2);
+    test('finds the protospacer at the position it was planted', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], OPTS);
+      const hit = result.spacerHits.find(h => h.sequence === SPACER_A);
+      expect(hit).toBeDefined();
+      expect(hit!.position).toBe(SPACER_A_POSITION);
+      expect(hit!.mismatches).toBe(0);
+      expect(hit!.matchScore).toBe(1);
+    });
+
+    test('finds a protospacer on the reverse strand', () => {
+      // Real protospacers occur on either strand; searching one direction only
+      // would miss half of them.
+      const rc = SPACER_A.split('').reverse()
+        .map(c => ({ A: 'T', C: 'G', G: 'C', T: 'A' }[c] ?? 'N')).join('');
+      const result = analyzeCRISPRPressure(FLANK_L + rc + FLANK_R, [], OPTS);
+      const hit = result.spacerHits.find(h => h.strand === 'template');
+      expect(hit).toBeDefined();
+      expect(hit!.mismatches).toBe(0);
+    });
+
+    test('tolerates mismatches up to the budget and no further', () => {
+      // Six mismatches in a 32-mer is outside the default budget of five.
+      const mutate = (seq: string, n: number) => {
+        const chars = seq.split('');
+        for (let i = 0; i < n; i++) chars[i * 3] = chars[i * 3] === 'A' ? 'C' : 'A';
+        return chars.join('');
+      };
+      const within = analyzeCRISPRPressure(FLANK_L + mutate(SPACER_A, 3) + FLANK_R, [], OPTS);
+      expect(within.spacerHits.length).toBeGreaterThan(0);
+      expect(within.spacerHits[0].mismatches).toBeLessThanOrEqual(5);
+
+      const beyond = analyzeCRISPRPressure(FLANK_L + mutate(SPACER_A, 9) + FLANK_R, [], OPTS);
+      expect(beyond.spacerHits.length).toBe(0);
+    });
+
+    test('attributes each hit to the host that carried the spacer', () => {
+      // Every hit used to carry the literal 'E. coli K-12' regardless of the
+      // phage, including for the Mycobacterium, Streptomyces and marine phages.
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], {
+        spacers: [{ sequence: SPACER_A, host: 'Mycolicibacterium smegmatis' }],
+        host: 'Mycolicibacterium smegmatis',
+      });
+      expect(result.spacerHits.length).toBeGreaterThan(0);
+      for (const hit of result.spacerHits) {
+        expect(hit.host).toBe('Mycolicibacterium smegmatis');
+      }
+    });
+  });
+
+  /**
+   * The load-bearing block. With no spacer data there must be no hits, and the
+   * result must say so rather than reporting a measured pressure of zero.
+   *
+   * This is the state of every phage in the shipped catalogue: an exhaustive
+   * search of CRISPRCasdb's spacers against all 24 genomes found 0 exact
+   * matches, 0 within 2 mismatches, and 1 within 5 (P1, 4 mismatches in 32 bp,
+   * which is what chance produces in a 94 kb genome).
+   */
+  describe('no spacer data', () => {
+    test('a phage with no spacer data yields zero hits, not chance matches', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, []);
+      expect(result.spacerHits.length).toBe(0);
+      expect(result.spacersSearched).toBe(0);
+    });
+
+    test('says which host is missing data rather than showing an empty chart', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], {
+        host: 'Bacillus subtilis',
+      });
+      expect(result.noSpacerDataFor).toBe('Bacillus subtilis');
+    });
+
+    test('reports no missing-data marker once spacers were searched', () => {
+      // The discrimination check. A field that is always set carries no signal.
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], OPTS);
+      expect(result.noSpacerDataFor).toBeNull();
+      expect(result.spacersSearched).toBe(2);
+    });
+
+    test('reports zero pressure everywhere, with no dominant type invented', () => {
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS.repeat(40), []);
+      expect(result.maxPressure).toBe(0);
+      for (const w of result.pressureWindows) {
+        expect(w.pressureIndex).toBe(0);
+        expect(w.spacerCount).toBe(0);
+        // Used to be the literal 'II' with the comment "Simplified", reporting
+        // a Cas9 system for every window of every genome ever analysed.
+        expect(w.dominantType).toBe('none');
+      }
+    });
+
+    test('ignores spacers too short to be meaningful', () => {
+      // A 6-mer recurs by chance about every 4 kb. Accepting one would
+      // reintroduce the exact defect this module was rewritten to remove.
+      const result = analyzeCRISPRPressure(SEQ_WITH_SPACERS, [], {
+        spacers: [{ sequence: 'TGACGT', host: 'Escherichia coli K-12' }],
+        host: 'Escherichia coli K-12',
+      });
+      expect(result.spacersSearched).toBe(0);
+      expect(result.spacerHits.length).toBe(0);
+      expect(result.noSpacerDataFor).toBe('Escherichia coli K-12');
     });
   });
 

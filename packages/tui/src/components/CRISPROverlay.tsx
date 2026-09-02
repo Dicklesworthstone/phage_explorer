@@ -7,9 +7,14 @@ import type { CRISPRAnalysisResult, GeneInfo } from '@phage-explorer/core';
 interface CRISPROverlayProps {
   sequence: string;
   genes: GeneInfo[];
+  /**
+   * The phage's real host, so the overlay can name whose spacer data is
+   * missing instead of showing an empty list that reads as a measured absence.
+   */
+  host?: string;
 }
 
-export function CRISPROverlay({ sequence, genes }: CRISPROverlayProps): React.ReactElement {
+export function CRISPROverlay({ sequence, genes, host }: CRISPROverlayProps): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const closeOverlay = usePhageStore(s => s.closeOverlay);
   const colors = theme.colors;
@@ -17,8 +22,10 @@ export function CRISPROverlay({ sequence, genes }: CRISPROverlayProps): React.Re
   // Run analysis (memoized)
   const analysis = useMemo<CRISPRAnalysisResult | null>(() => {
     if (!sequence) return null;
-    return analyzeCRISPRPressure(sequence, genes);
-  }, [sequence, genes]);
+    // No `spacers`: the catalogue has no spacer data for any of its hosts.
+    // Measured, not assumed -- see the header of packages/core/src/crispr.ts.
+    return analyzeCRISPRPressure(sequence, genes, { host });
+  }, [sequence, genes, host]);
 
   const [hotspotIndex, setHotspotIndex] = useState(0);
 
@@ -36,7 +43,7 @@ export function CRISPROverlay({ sequence, genes }: CRISPROverlayProps): React.Re
 
   if (!analysis) return <Text>Loading analysis...</Text>;
 
-  const { pressureWindows, spacerHits, acrCandidates, maxPressure } = analysis;
+  const { pressureWindows, spacerHits, acrCandidates, maxPressure, noSpacerDataFor } = analysis;
 
   // Render Pressure Bar
   // Map 0-10 pressure to characters: ' ', '░', '▒', '▓', '█'
@@ -102,6 +109,21 @@ export function CRISPROverlay({ sequence, genes }: CRISPROverlayProps): React.Re
           </Box>
         ) : null}
       </Box>
+
+      {/* No spacer data: say so rather than showing an empty list.
+
+          The web overlay carries the full explanation; the TUI has one line of
+          room, so it states the fact and names the host. An empty list with no
+          note reads as "this phage escapes CRISPR targeting", which is a
+          finding, and there is no finding here. */}
+      {noSpacerDataFor && (
+        <Box marginTop={1}>
+          <Text color={colors.warning}>
+            No CRISPR spacer data for {noSpacerDataFor} — nothing was searched, so the
+            counts above are not a measured absence. Acr candidates are unaffected.
+          </Text>
+        </Box>
+      )}
 
       {/* Spacer Hits Preview */}
       {spacerHits.length > 0 && (

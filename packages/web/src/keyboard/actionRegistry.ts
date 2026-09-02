@@ -113,6 +113,26 @@ export interface ActionDefinition {
    * overlay-provenance.test.ts.
    */
   provenance?: ProvenanceLevel;
+  /**
+   * The weaker provenance this overlay degrades to when its data source is
+   * unavailable, if it degrades at all.
+   *
+   * Two overlays fetch live data and fall back to synthetic data when the fetch
+   * returns too little to analyse. Declaring only the successful case made the
+   * menu badge them "External data" unconditionally, including in the case that
+   * is common in practice: an offline user, a rate-limited endpoint, or a phage
+   * with too few dated records. The badge was then wrong exactly when the user
+   * most needed it to be right.
+   *
+   * The menu is rendered BEFORE the overlay opens, so the achieved provenance
+   * is genuinely unknown at that moment. The honest statement is not one level
+   * or the other, it is the range. Entries that always deliver their declared
+   * level leave this unset.
+   *
+   * Enforced by overlay-provenance.test.ts: an overlay whose source contains a
+   * demo fallback must declare one.
+   */
+  provenanceFallback?: ProvenanceLevel;
 }
 
 // NOTE: This is a foundational set. Additional actions will be added as
@@ -618,8 +638,12 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     surfaces: ['web'],
     overlayId: 'crispr',
     overlayAction: 'toggle',
-    // placeholder 6-mer spacer set
-    provenance: 'demo',
+    // The placeholder 6-mer spacer set is gone. What remains is the anti-CRISPR
+    // prediction, a rule-based estimate over this phage's own translated genes:
+    // heuristic, not demo. Spacer hits are reported only when real spacer data
+    // is supplied, and the catalogue has none for any of its hosts, which the
+    // overlay states explicitly rather than rendering as zero pressure.
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayNonBDNA]: {
     id: ActionIds.OverlayNonBDNA,
@@ -890,8 +914,9 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     overlayAction: 'toggle',
     // Real sequences fetched from NCBI; alignment-free Mash distance.
     // Falls back to a clearly-labelled demo path when fewer than five
-    // sequences can be retrieved.
+    // sequences can be retrieved, which the menu must say up front.
     provenance: 'external',
+    provenanceFallback: 'demo',
   },
   [ActionIds.OverlayEnvironmentalProvenance]: {
     id: ActionIds.OverlayEnvironmentalProvenance,
@@ -906,8 +931,10 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     overlayAction: 'toggle',
     // Locations, isolation sources and sample counts from NCBI SRA.
     // Catalogue distinctiveness is measured locally with MinHash. The
-    // synthesised containment score is gone.
+    // synthesised containment score is gone. Falls back to a stamped demo
+    // sample set when SRA returns nothing usable.
     provenance: 'external',
+    provenanceFallback: 'demo',
   },
   [ActionIds.OverlayGpuWasmBenchmark]: {
     id: ActionIds.OverlayGpuWasmBenchmark,

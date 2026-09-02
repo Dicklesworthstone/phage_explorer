@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ActionRegistryList } from './actionRegistry';
 import { PROVENANCE_LEVELS } from '../components/overlays/primitives/OverlayProvenance';
 
@@ -83,10 +85,22 @@ describe('the overlays the audit found fabricating data are labelled as such', (
     overlayActions.find(a => a.overlayId === id)?.provenance;
 
   it('marks the remaining synthetic-input overlays as demo data', () => {
-    // crispr scans a placeholder 6-mer spacer set; nicheNetwork analyses a
-    // randomly generated abundance table and never receives the loaded phage.
-    expect(levelOf('crispr')).toBe('demo');
+    // nicheNetwork analyses a randomly generated abundance table and never
+    // receives the loaded phage. It is the last one left.
     expect(levelOf('nicheNetwork')).toBe('demo');
+  });
+
+  it('demotes crispr to heuristic now that its fake spacer set is gone', () => {
+    // crispr scanned six hardcoded 6-mers and reported the chance matches as
+    // spacer hits. That table is deleted. What remains is the anti-CRISPR
+    // prediction, a rule-based estimate over this phage's own translated
+    // genes, which is heuristic and not demo: the inputs are real.
+    //
+    // Spacer hits are now reported only when real spacer data is supplied, and
+    // an exhaustive search of CRISPRCasdb against all 24 catalogue genomes
+    // found none, so the overlay says which host's data is missing instead of
+    // rendering zero pressure as a measurement.
+    expect(levelOf('crispr')).toBe('heuristic');
   });
 
   it('promotes the two overlays whose fabrications were removed', () => {
@@ -113,6 +127,74 @@ describe('the overlays the audit found fabricating data are labelled as such', (
   it('marks genuinely computed overlays as measured', () => {
     for (const id of ['gcSkew', 'dotPlot', 'proteinDomains', 'codonBias', 'comparison']) {
       expect(levelOf(id)).toBe('measured');
+    }
+  });
+});
+
+/**
+ * An overlay that can silently degrade must say so before it is opened.
+ *
+ * Two overlays fetch live data and fall back to synthetic data when the fetch
+ * returns too little to analyse. The registry declared only the successful
+ * case, so the Analysis Menu badged them "External data" unconditionally --
+ * including in the case that happens most in practice: offline, rate-limited,
+ * or a phage with too few dated records. The badge was wrong exactly when the
+ * user most needed it to be right.
+ *
+ * The menu is drawn before the overlay opens, so the achieved provenance is
+ * genuinely unknown at that point. The honest statement is the range, not
+ * either endpoint.
+ */
+describe('overlays that degrade declare what they degrade to', () => {
+  const OVERLAY_SOURCES: Record<string, string> = {
+    phylodynamics: 'PhylodynamicsOverlay.tsx',
+    environmentalProvenance: 'EnvironmentalProvenanceOverlay.tsx',
+  };
+
+  const entryFor = (overlayId: string) =>
+    ActionRegistryList.find(a => a.overlayId === overlayId);
+
+  it('declares a fallback for both overlays with a demo path', () => {
+    for (const id of Object.keys(OVERLAY_SOURCES)) {
+      expect(entryFor(id)?.provenanceFallback).toBe('demo');
+    }
+  });
+
+  it('finds a real demo path in the source of each, so the rule is not vacuous', () => {
+    // Guards the guard. If someone removed the demo fallback from an overlay,
+    // the declaration above would become a lie in the other direction, and this
+    // is what notices.
+    for (const [id, file] of Object.entries(OVERLAY_SOURCES)) {
+      const src = readFileSync(
+        join(import.meta.dir, '../components/overlays', file),
+        'utf8'
+      );
+      expect(src).toContain("setDataSource('demo')");
+      expect(entryFor(id)).toBeDefined();
+    }
+  });
+
+  it('does not declare a fallback for overlays that never degrade', () => {
+    // A fallback on an overlay that cannot fall back would train users to
+    // discount the badge, which is the same failure as not showing one.
+    for (const id of ['gcSkew', 'dotPlot', 'proteinDomains', 'codonBias']) {
+      expect(entryFor(id)?.provenanceFallback).toBeUndefined();
+    }
+  });
+
+  it('never declares a fallback stronger than the primary level', () => {
+    // A "fallback" that improves on the declared level is a contradiction and
+    // means one of the two is wrong.
+    const rank: Record<string, number> = {
+      measured: 4,
+      external: 3,
+      simulated: 2,
+      heuristic: 1,
+      demo: 0,
+    };
+    for (const a of ActionRegistryList) {
+      if (!a.provenanceFallback || !a.provenance) continue;
+      expect(rank[a.provenanceFallback]).toBeLessThan(rank[a.provenance]);
     }
   });
 });

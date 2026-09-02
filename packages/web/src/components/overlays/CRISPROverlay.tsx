@@ -183,7 +183,7 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
     };
 
     worker.addEventListener('message', handleMessage);
-    worker.postMessage({ jobId, sequence, genes: phage.genes });
+    worker.postMessage({ jobId, sequence, genes: phage.genes, host: phage.host });
 
     return () => {
       cancelled = true;
@@ -280,15 +280,60 @@ export function CRISPROverlay({ repository, phage }: CRISPROverlayProps): React.
         {/* Main Content */}
         {hasData && !loading && (
           <>
+            {/* No spacer data: say so, and say for whom.
+
+                This overlay used to scan the genome for six hardcoded 6-mers
+                and present the results as spacer hits, with the host label
+                'E. coli K-12' on every one regardless of the phage. A 6-mer
+                recurs by chance about every 4 kb, so a 48 kb genome produced
+                dozens of hits that were pure combinatorics, under a confident
+                0-10 pressure score, inside a workflow the README recommends for
+                phage-therapy candidate screening.
+
+                Real spacers were then measured against all 24 catalogue
+                genomes: 0 exact matches, 0 within 2 mismatches, 1 within 5.
+                There is no honest spacer result to show, so the overlay says
+                that rather than rendering an empty chart which reads as a
+                measured absence of CRISPR pressure. */}
+            {analysis.noSpacerDataFor && (
+              <div
+                style={{
+                  border: '1px solid var(--color-warning)',
+                  background: 'var(--color-warning-bg, rgba(183, 121, 31, 0.10))',
+                  borderRadius: '4px',
+                  padding: '0.75rem 1rem',
+                  marginBottom: '0.75rem',
+                  fontSize: '0.85rem',
+                }}
+              >
+                <strong>No CRISPR spacer data for {analysis.noSpacerDataFor}.</strong>{' '}
+                Spacer hits and the pressure track below are empty because nothing was
+                searched, not because this phage escapes CRISPR targeting. An exhaustive
+                search of CRISPRCasdb against all 24 catalogue genomes found no
+                protospacers: these are laboratory phages, and the sequenced strains on
+                record have largely not been challenged by them.{' '}
+                <em>Acr candidates below are unaffected</em> &mdash; they are predicted
+                from this phage&rsquo;s own genes and do not depend on spacer data.
+              </div>
+            )}
+
             {/* Stats */}
             <OverlayStatGrid columns={3}>
               <OverlayStatCard
                 label="Spacer hits"
-                value={analysis.spacerHits.length.toLocaleString()}
+                value={
+                  analysis.noSpacerDataFor
+                    ? '\u2014'
+                    : analysis.spacerHits.length.toLocaleString()
+                }
               />
               <OverlayStatCard
                 label="Max pressure"
-                value={<span style={{ color: 'var(--color-error)' }}>{analysis.maxPressure.toFixed(1)}</span>}
+                value={
+                  <span style={{ color: 'var(--color-error)' }}>
+                    {analysis.noSpacerDataFor ? '\u2014' : analysis.maxPressure.toFixed(1)}
+                  </span>
+                }
               />
               <OverlayStatCard
                 label="Acr candidates"

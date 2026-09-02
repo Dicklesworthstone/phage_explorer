@@ -18,7 +18,7 @@ import {
   type KeyCombo,
 } from '../../keyboard';
 import { Overlay } from './Overlay';
-import { OverlayProvenance } from './primitives';
+import { OverlayProvenance, provenanceLabel } from './primitives';
 import { useIsTopOverlay, useOverlay, type OverlayId } from './OverlayProvider';
 import {
   IconAlertTriangle,
@@ -388,7 +388,21 @@ export function AnalysisMenu(): React.ReactElement | null {
                             majority and needs no badge; anything weaker does.
                           */}
                           {item.action.provenance && item.action.provenance !== 'measured' && (
-                            <OverlayProvenance level={item.action.provenance} />
+                            <OverlayProvenance
+                              level={item.action.provenance}
+                              /*
+                                An overlay that can degrade says so here. The
+                                menu is drawn before the overlay opens, so the
+                                achieved provenance is genuinely unknown at this
+                                point; badging only the success case was wrong
+                                precisely when the fetch failed.
+                              */
+                              source={
+                                item.action.provenanceFallback
+                                  ? `falls back to ${provenanceLabel(item.action.provenanceFallback).toLowerCase()}`
+                                  : undefined
+                              }
+                            />
                           )}
                           {item.shortcutLabel && (
                             <span className="key-hint">
