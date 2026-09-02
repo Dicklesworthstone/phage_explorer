@@ -381,15 +381,17 @@ if (values.check) {
   /**
    * Compare against a committed result file.
    *
-   * Absolute times on a shared CI runner vary by more than any threshold worth
-   * setting, so this does NOT gate on them. What it gates on is a kernel losing
-   * its advantage entirely -- the signal that the WASM path stopped being taken,
-   * which is a real defect and the one this file exists to catch. A kernel that
-   * was comfortably faster and is now at parity has almost certainly fallen back
-   * to JavaScript.
+   * Absolute times on a shared runner vary by more than any threshold worth
+   * setting, so this does NOT gate on them. It gates on one thing: a kernel that
+   * was clearly faster in WASM becoming SLOWER than JavaScript. That is not a
+   * performance wobble, it is the signature of the WASM path no longer being
+   * taken, which is the defect worth catching.
    *
-   * The threshold is deliberately loose. A benchmark gate that fires on noise
-   * gets disabled, and a disabled gate is worth nothing.
+   * An earlier draft failed when a kernel dropped below 40% of its recorded
+   * speedup. That fired immediately on a loaded machine -- MinHash read 20.9x in
+   * a quiet run and 1.8x while builds were running -- without anything being
+   * wrong. A benchmark gate that fires on load gets disabled, and a disabled
+   * gate is worth nothing, so the bar is now unambiguous: below parity.
    */
   const baseline = JSON.parse(await Bun.file(values.check).text()) as { rows: Row[] };
   const key = (r: { kernel: string; sizeBp: number }) => `${r.kernel}@${r.sizeBp}`;
@@ -401,9 +403,10 @@ if (values.check) {
     if (!b) continue;
     // Only meaningful where WASM was clearly ahead to begin with.
     if (b.speedup < 2) continue;
-    if (r.speedup < Math.max(1.2, b.speedup * 0.4)) {
+    if (r.speedup < 1) {
       regressions.push(
-        `  ${r.kernel} at ${r.sizeBp} bp: was ${b.speedup}x, now ${r.speedup}x`
+        `  ${r.kernel} at ${r.sizeBp} bp: was ${b.speedup}x, now ${r.speedup}x ` +
+          '(WASM is now slower than JS)'
       );
     }
   }
