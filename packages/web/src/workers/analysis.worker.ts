@@ -271,7 +271,15 @@ async function calculateGCSkewWasm(sequence: string, windowSize = 1000): Promise
     ) {
       // Use WASM for acceleration
       const skew = Array.from(wasm.compute_gc_skew(seq, windowSize, stepSize));
-      const cumulative = Array.from(wasm.compute_cumulative_gc_skew(seq));
+
+      // Deliberately NOT Array.from: compute_cumulative_gc_skew returns one
+      // value PER BASE -- 300,000 for a 300 kb genome -- and the loop below
+      // reads only every stepSize-th one, about 1,200 of them. Boxing all
+      // 300,000 into a JS array to look at 0.4% of them cost 10 ms of an
+      // 11.8 ms call, measured; the kernel itself is 1.8 ms. Float64Array
+      // supports the .length and [i] this function needs, so keeping the typed
+      // array is both faster and semantically identical.
+      const cumulative = wasm.compute_cumulative_gc_skew(seq);
 
       // Trim cumulative to match skew length (WASM returns per-base cumulative)
       // Sample at stepSize intervals to match skew positions
