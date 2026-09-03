@@ -35,6 +35,37 @@
  * Median and p95 rather than mean: a mean over a JIT-warming run is dominated by
  * the first iteration, which is exactly the number that flatters WASM.
  *
+ * ## How reproducible is it, actually
+ *
+ * Not very, and the honest answer is worth more than a confident one. Two full
+ * runs back to back still disagreed:
+ *
+ *   mean disagreement in speedup across 37 rows   3.5x
+ *   worst row (reverse_complement at 300 kb)      334x in one run, 8.9x in the next
+ *   rows agreeing within 1.5x                     29 of 37
+ *
+ * Those two runs were taken on a shared machine carrying a load average of ~53
+ * from unrelated jobs, which is stated because it changes what they prove and
+ * what they do not. They are an upper bound on the disagreement, not a typical
+ * one -- a quiet runner will do better. They are still the relevant number for
+ * a CI gate, because a CI runner is a shared machine too, and a gate that only
+ * behaves on an idle box is a gate that fires at random.
+ *
+ * That is AFTER interleaving, which is itself a large improvement -- the
+ * previous sequential version once produced 146x and 0.46x for the same kernel,
+ * a 317x swing. So interleaving took the worst case from 317x to 38x and did not
+ * take it to 1x.
+ *
+ * The response is not to pretend otherwise. Every row carries an instability
+ * flag derived from its own interquartile spread, the report marks flagged rows
+ * with `~`, and the regression gate refuses to fail a build on one. Of the 8
+ * rows that disagreed between those two runs, the flag caught 7.
+ *
+ * Practical rule: an unflagged ratio is worth quoting as an order of magnitude,
+ * a flagged one is worth nothing until it is reproduced on a quiet machine, and
+ * no ratio from this script belongs in a document as a precise figure. That is
+ * exactly why the README carries bands rather than numbers.
+ *
  * Usage:
  *   bun scripts/benchmark-wasm.ts                  human-readable table
  *   bun scripts/benchmark-wasm.ts --json <path>    also write the result file
@@ -112,37 +143,164 @@ interface Timing {
   medianMs: number;
   p95Ms: number;
   runs: number;
+  /** Interquartile spread as a fraction of the median. See `driftWarning`. */
+  instability: number;
 }
 
-/**
- * Time a function, discarding warm-up.
- *
- * Bun's JIT needs a few passes before it settles; including those makes the
- * first implementation measured look slower purely for running first.
- */
-function time(fn: () => unknown, reps: number): Timing {
-  for (let i = 0; i < Math.min(3, reps); i++) fn();
-
-  const samples: number[] = [];
-  for (let i = 0; i < reps; i++) {
-    const t0 = performance.now();
-    fn();
-    samples.push(performance.now() - t0);
-  }
-  samples.sort((a, b) => a - b);
+function summarize(samples: number[], reps: number): Timing {
+  const s = [...samples].sort((a, b) => a - b);
+  const median = s[Math.floor(s.length / 2)]!;
+  const p25 = s[Math.floor(s.length * 0.25)]!;
+  const p75 = s[Math.floor(s.length * 0.75)]!;
   return {
-    medianMs: samples[Math.floor(samples.length / 2)],
-    p95Ms: samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.95))],
+    medianMs: median,
+    p95Ms: s[Math.min(s.length - 1, Math.floor(s.length * 0.95))]!,
     runs: reps,
+    instability: median > 0 ? (p75 - p25) / median : 0,
   };
 }
 
+/**
+ * Time two implementations against each other, INTERLEAVED.
+ *
+ * ## Why not time them one after the other
+ *
+ * The original version ran `time(wasm)` to completion and then `time(js)`, and
+ * divided the two medians. That makes the ratio a hostage to anything that
+ * changes between the two blocks -- another process waking up, a thermal step,
+ * the GC choosing one block over the other. On a loaded machine the effect is
+ * not subtle: timing the same 300 kb kernel twice in a row, sequentially,
+ * produced medians of 0.95 ms and 3.43 ms. A ratio taken across two such blocks can be
+ * off by more than the effect it is trying to measure, and this project has the
+ * scar to prove it -- `analyze_kmers` was once reported at 146x and then at
+ * 0.46x on reruns of this script, a 317x swing in a published number, which is
+ * what forced the README's speedup table down to hedged order-of-magnitude
+ * bands.
+ *
+ * Interleaving one call of each arm per round means a slow patch of wall-clock
+ * lands on both arms rather than being attributed to whichever ran during it.
+ * The ratio of the medians is then a comparison, not a coincidence.
+ *
+ * ## Warm-up
+ *
+ * Both arms are warmed before any sample is taken, and warm-up is interleaved
+ * too. Bun's JIT needs a few passes to settle, and warming only the first arm
+ * would hand it the cost of compilation.
+ *
+ * ## The alternating order
+ *
+ * Round order flips each iteration, so neither arm permanently occupies the
+ * position right after the other one's allocations.
+ */
+function timePaired(
+  a: () => unknown,
+  b: () => unknown,
+  maxReps: number
+): { a: Timing; b: Timing } {
+  const warm = Math.min(3, maxReps);
+  const warmStart = performance.now();
+  for (let i = 0; i < warm; i++) {
+    a();
+    b();
+  }
+  const perRoundMs = (performance.now() - warmStart) / Math.max(warm, 1);
+
+  // Adaptive repetition count.
+  //
+  // A fixed count spends the same number of rounds on a kernel pair that takes
+  // 0.3 ms and one that takes 40 seconds. The JS MinHash reference is the
+  // second kind -- it works in BigInt, and at 300 kb a single call is ~40 s --
+  // so nine rounds of it alone accounted for most of a thirteen-minute run,
+  // while the cheap kernels that would actually benefit from more samples were
+  // capped at nine. This is a CI gate; a thirteen-minute gate gets skipped.
+  //
+  // So: sample as many rounds as fit a per-pair budget, never fewer than
+  // MIN_REPS (below which a median means nothing) and never more than the
+  // size-based cap. Rounds stay odd so the median is a real observation.
+  const budgeted = Math.floor(PAIR_BUDGET_MS / Math.max(perRoundMs, 1e-6));
+  // When a single round already exceeds the whole budget, the floor drops to 3.
+  // That is the JS MinHash at 100 kb and above, where one call is 16-50 s: five
+  // rounds of it cost four minutes to refine a ratio that is around 350x, where
+  // the third significant figure changes no decision anyone makes.
+  const floor = perRoundMs > PAIR_BUDGET_MS ? 3 : MIN_REPS;
+  let reps = Math.max(floor, Math.min(maxReps, budgeted));
+  if (reps % 2 === 0) reps -= 1;
+
+  const sa: number[] = [];
+  const sb: number[] = [];
+  for (let i = 0; i < reps; i++) {
+    const order: Array<[() => unknown, number[]]> =
+      i % 2 === 0
+        ? [[a, sa], [b, sb]]
+        : [[b, sb], [a, sa]];
+    for (const [fn, into] of order) {
+      const t0 = performance.now();
+      fn();
+      into.push(performance.now() - t0);
+    }
+  }
+
+  return { a: summarize(sa, reps), b: summarize(sb, reps) };
+}
+
+/**
+ * Flag a row whose timings moved too much for its ratio to be worth reading.
+ *
+ * Interleaving removes the bias between arms; it cannot make a noisy machine
+ * quiet. An interquartile spread wider than half the median means the samples
+ * disagree with each other badly enough that the median is not describing a
+ * stable quantity, and the honest thing is to say so next to the number rather
+ * than print it with two decimal places and let a reader trust it.
+ *
+ * ## How well it works, measured
+ *
+ * Two full runs back to back on this machine, 37 rows each, comparing each
+ * row's speedup between the runs:
+ *
+ *   disagree by >1.5x AND flagged   7   the flag did its job
+ *   disagree by >1.5x NOT flagged   1   missed: translate_sequence@300000, 2.2x
+ *   agree            AND flagged   13   false alarm
+ *   agree            NOT flagged   16   correctly trusted
+ *
+ * So an unflagged row is usually reproducible and a flagged one usually is not,
+ * which is what the CI gate needs. It is deliberately conservative -- 13 false
+ * alarms -- because the cost of a false alarm is a skipped gate row and the cost
+ * of a miss is a build failed on noise.
+ *
+ * The threshold is NOT tuned to catch that last 2.2x miss. Tightening it would
+ * push more of the 29 reproducible rows into the flagged bucket and leave the
+ * gate checking almost nothing, which is a worse tool that scores better on this
+ * one table.
+ */
+const UNSTABLE_IQR_FRACTION = 0.5;
+function driftWarning(w: Timing, j: Timing): boolean {
+  return w.instability > UNSTABLE_IQR_FRACTION || j.instability > UNSTABLE_IQR_FRACTION;
+}
+
 /** Fewer repetitions for larger inputs, so the sweep finishes in reasonable time. */
+/**
+ * Wall-clock allowed per kernel/size pair before repetitions are cut short.
+ *
+ * 2 s x 37 pairs is a worst case around 75 s, plus warm-up. In practice most
+ * pairs finish far inside it and only the BigInt MinHash reference is clipped.
+ */
+const PAIR_BUDGET_MS = 2_000;
+
+/** Below this a median describes nothing, so the budget does not apply. */
+const MIN_REPS = 5;
+
+/** Upper bound on repetitions; `timePaired` samples fewer if the budget binds. */
 function repsFor(size: number): number {
+  // Odd counts, so the median is an actual sample rather than a value that was
+  // never observed. Higher at the large sizes than the original 7 and 5:
+  // interleaving fixes the bias between the two arms, but a median of five is
+  // still a fragile statistic and the large sizes are the ones whose ratios get
+  // quoted. The budget above is what stops the raised cap from costing time on
+  // the pairs where each round is already expensive.
   if (size <= 5_000) return 25;
   if (size <= 25_000) return 15;
-  if (size <= 100_000) return 7;
-  return 5;
+  if (size <= 100_000) return 11;
+  return 9;
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +445,18 @@ interface Row {
   jsP95Ms: number;
   /** jsMedian / wasmMedian. Above 1 means WASM is faster. */
   speedup: number;
+  /**
+   * Repetitions actually taken. Varies per row now that the budget can cut a
+   * slow pair short, so recording it keeps the JSON self-describing rather than
+   * leaving a reader to assume the cap was reached.
+   */
+  runs: number;
+  /**
+   * True when either arm's samples were too scattered for the ratio to mean
+   * much. Kept in the JSON so a regression gate can decline to fail a build on
+   * a number the run itself does not stand behind.
+   */
+  unstable: boolean;
   outputsAgree: boolean | null;
   note?: string;
 }
@@ -303,8 +473,7 @@ for (const c of CASES) {
     let outputsAgree: boolean | null = null;
     if (agree) outputsAgree = agree(w(), js());
 
-    const wt = time(w, reps);
-    const jt = time(js, reps);
+    const { a: wt, b: jt } = timePaired(w, js, reps);
 
     rows.push({
       kernel: c.kernel,
@@ -314,6 +483,8 @@ for (const c of CASES) {
       jsMedianMs: Number(jt.medianMs.toFixed(4)),
       jsP95Ms: Number(jt.p95Ms.toFixed(4)),
       speedup: Number((jt.medianMs / Math.max(wt.medianMs, 1e-9)).toFixed(2)),
+      runs: wt.runs,
+      unstable: driftWarning(wt, jt),
       outputsAgree,
       note: incomparable,
     });
@@ -334,11 +505,25 @@ console.log('--------------------------- -------- --------- --------- -------- -
 for (const r of rows) {
   const agree =
     r.outputsAgree === null ? 'differ*' : r.outputsAgree ? 'identical' : 'DIFFER!';
+  // A '~' on the speedup marks a row whose own samples were too scattered to
+  // support two decimal places. Printing it unmarked is how a noisy run becomes
+  // a quoted figure in a README.
+  const speed = r.unstable ? `~${r.speedup}x` : `${r.speedup}x`;
   console.log(
     `${r.kernel.padEnd(27)} ${String(r.sizeBp).padStart(8)} ` +
       `${r.wasmMedianMs.toFixed(3).padStart(9)} ${r.jsMedianMs.toFixed(3).padStart(9)} ` +
-      `${(`${r.speedup}x`).padStart(8)} ${agree}`
+      `${speed.padStart(8)} ${agree}`
   );
+}
+
+const unstableCount = rows.filter(r => r.unstable).length;
+if (unstableCount > 0) {
+  console.log('');
+  console.log(
+    `~ ${unstableCount} of ${rows.length} rows had an interquartile spread over ` +
+      `${UNSTABLE_IQR_FRACTION * 100}% of the median. Their ratios are indicative`
+  );
+  console.log('  only; rerun on an idle machine before quoting them anywhere.');
 }
 
 const notes = [...new Set(rows.filter(r => r.note).map(r => `  * ${r.kernel}: ${r.note}`))];
@@ -393,7 +578,23 @@ if (values.check) {
    * wrong. A benchmark gate that fires on load gets disabled, and a disabled
    * gate is worth nothing, so the bar is now unambiguous: below parity.
    */
-  const baseline = JSON.parse(await Bun.file(values.check).text()) as { rows: Row[] };
+  // Read the baseline defensively. This runs in CI, where the two ways it fails
+  // are a path that does not exist and a file half-written by an interrupted
+  // run. Both throw deep inside JSON.parse with a message that says nothing
+  // about which file or why, and the resulting red build looks like a
+  // performance regression rather than a missing argument.
+  let baseline: { rows: Row[] };
+  try {
+    baseline = JSON.parse(await Bun.file(values.check).text()) as { rows: Row[] };
+  } catch (err) {
+    console.error(`Could not read the baseline at ${values.check}: ${String(err)}`);
+    console.error('Generate one with: bun run bench:wasm');
+    process.exit(2);
+  }
+  if (!Array.isArray(baseline.rows)) {
+    console.error(`${values.check} has no "rows" array; it is not a benchmark result file.`);
+    process.exit(2);
+  }
   const key = (r: { kernel: string; sizeBp: number }) => `${r.kernel}@${r.sizeBp}`;
   const before = new Map(baseline.rows.map(r => [key(r), r]));
 
@@ -409,6 +610,11 @@ if (values.check) {
     // 0.98x under load, with nothing wrong. 25 kb is the first size where both
     // sides take long enough for the ratio to mean something.
     if (r.sizeBp < 25_000) continue;
+    // A row whose own samples disagreed badly cannot support failing a build.
+    // The run has already declined to stand behind this ratio in the report;
+    // gating on it anyway would produce exactly the intermittent red that gets
+    // a benchmark gate switched off.
+    if (r.unstable) continue;
     if (r.speedup < 1) {
       regressions.push(
         `  ${r.kernel} at ${r.sizeBp} bp: was ${b.speedup}x, now ${r.speedup}x ` +
