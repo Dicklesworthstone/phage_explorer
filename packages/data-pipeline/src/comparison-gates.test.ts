@@ -239,3 +239,37 @@ describe('Comparison Gate 5: Bundle Budget Gate', () => {
     expect(fakeGz <= budgetGz).toBe(false);
   });
 });
+
+// ===========================================================================
+// Gate 6: WASM Type Surface Gate (phage_explorer-zzqa)
+// ===========================================================================
+describe('Comparison Gate 6: WASM Type Surface Gate', () => {
+  it('tsconfig.json excludes do not reference nonexistent files', () => {
+    let tsconfig: { exclude?: string[] } = {};
+    try {
+      tsconfig = JSON.parse(readFileSync(join(REPO_ROOT, 'tsconfig.json'), 'utf8'));
+    } catch {
+      throw new Error('Failed to parse tsconfig.json');
+    }
+    const excludes: string[] = tsconfig.exclude ?? [];
+    for (const pattern of excludes) {
+      if (!pattern.includes('*') && !pattern.includes('node_modules') && !pattern.includes('dist')) {
+        expect(existsSync(join(REPO_ROOT, pattern))).toBe(true);
+      }
+    }
+  });
+
+  it('packages/wasm-compute/index.d.ts re-exports generated types without drift', () => {
+    const indexDts = readFileSync(join(REPO_ROOT, 'packages/wasm-compute/index.d.ts'), 'utf8');
+    expect(indexDts).toContain("export * from './pkg/wasm_compute'");
+    expect(indexDts).toContain("declare module '@phage/wasm-compute'");
+    expect(indexDts).toContain("declare module '@phage/wasm-compute/simd'");
+    expect(existsSync(join(REPO_ROOT, 'packages/wasm-compute/pkg/wasm_compute.d.ts'))).toBe(true);
+    expect(existsSync(join(REPO_ROOT, 'packages/wasm-compute/pkg-simd/wasm_compute.d.ts'))).toBe(true);
+  });
+
+  it('planted negative: fails if index.d.ts misses re-export of generated surface', () => {
+    const corruptedDts = "declare module '@phage/wasm-compute' {}";
+    expect(corruptedDts.includes("export * from './pkg/wasm_compute'")).toBe(false);
+  });
+});

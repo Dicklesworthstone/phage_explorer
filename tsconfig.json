@@ -38,7 +38,6 @@
     "node_modules",
     "dist",
     "**/dist",
-    "packages/wasm-compute/test-wasm.ts",
     "packages/web/**/*",
     "packages/web/**/*.ts",
     "packages/web/**/*.tsx"
