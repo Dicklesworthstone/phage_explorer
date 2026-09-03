@@ -329,12 +329,13 @@ export class KeyboardManager {
     const now = Date.now();
 
     // Check if sequence timed out
-    if (buffer.keys.length > 0 && now - buffer.timestamp > SEQUENCE_TIMEOUT) {
-      this.clearSequence();
+    const isTimeout = now - buffer.timestamp > SEQUENCE_TIMEOUT;
+    const currentKeys = isTimeout ? [] : buffer.keys;
+    if (currentKeys.length === 0) {
+      return false;
     }
 
-    // Add key to buffer
-    const newKeys = [...buffer.keys, key];
+    const newKeys = [...currentKeys, key];
     const sequenceStr = newKeys.join('');
 
     // Look for matching sequence
