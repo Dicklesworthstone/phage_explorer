@@ -442,30 +442,111 @@ export function minHashJaccard(
   return minHashJaccardJS(sequenceA, sequenceB, k, numHashes);
 }
 
-// Cache for deterministic MinHash seeds
+// Cache for deterministic MinHash seeds matching Rust wasm-compute:
+// seeds[i] = (i as u32).wrapping_mul(0x9e3779b9)
 const seedCache = new Map<number, Uint32Array>();
 
-// Generate deterministic seeds for MinHash
+// Generate deterministic seeds for MinHash matching wasm-compute
 function getDeterministicSeeds(count: number): Uint32Array {
   if (seedCache.has(count)) {
     return seedCache.get(count)!;
   }
 
   const seeds = new Uint32Array(count);
-  // Simple LCG for deterministic pseudo-random numbers
-  let state = 0xdeadbeef;
   for (let i = 0; i < count; i++) {
-    state = Math.imul(state, 1664525) + 1013904223;
-    state = state >>> 0;
-    seeds[i] = state;
+    seeds[i] = Math.imul(i, 0x9e3779b9) >>> 0;
   }
 
   seedCache.set(count, seeds);
   return seeds;
 }
 
+const M1 = 0x9e3779b97f4a7c15n;
+const M2 = 0xbf58476d1ce4e5b9n;
+const M3 = 0x94d049bb133111ebn;
+const MASK64 = 0xffffffffffffffffn;
+
+/**
+ * Fast 64-bit to 32-bit splitmix hash mixing matching wasm-compute::mix_hash.
+ */
+export function mixHash(index: bigint | number, seed: number): number {
+  let x = (BigInt(index) ^ BigInt(seed >>> 0)) & MASK64;
+  x = (x * M1) & MASK64;
+  x = ((x ^ (x >> 30n)) * M2) & MASK64;
+  x = ((x ^ (x >> 27n)) * M3) & MASK64;
+  x = (x ^ (x >> 31n)) & MASK64;
+  return Number(x & 0xffffffffn) >>> 0;
+}
+
+/**
+ * Pure JS MinHash signature computation matching WASM minhash_signature / minhash_signature_canonical.
+ */
+export function minHashSketchJS(
+  sequence: string,
+  k: number,
+  numHashes: number = 128,
+  canonical: boolean = false
+): Uint32Array {
+  const kClamped = Math.min(k, 32);
+  const signature = new Uint32Array(numHashes).fill(0xffffffff);
+  if (kClamped === 0 || numHashes === 0 || sequence.length < kClamped) {
+    return signature;
+  }
+
+  const mask = kClamped >= 32 ? MASK64 : (1n << BigInt(2 * kClamped)) - 1n;
+  const rcShift = BigInt(2 * (kClamped - 1));
+  const seeds = getDeterministicSeeds(numHashes);
+
+  let fwdIndex = 0n;
+  let rcIndex = 0n;
+  let validBases = 0;
+
+  for (let i = 0; i < sequence.length; i++) {
+    const ch = sequence.charCodeAt(i);
+    let baseCode: bigint;
+    let compCode: bigint;
+    if (ch === 65 || ch === 97) {
+      baseCode = 0n;
+      compCode = 3n;
+    } else if (ch === 67 || ch === 99) {
+      baseCode = 1n;
+      compCode = 2n;
+    } else if (ch === 71 || ch === 103) {
+      baseCode = 2n;
+      compCode = 1n;
+    } else if (ch === 84 || ch === 116 || ch === 85 || ch === 117) {
+      baseCode = 3n;
+      compCode = 0n;
+    } else {
+      fwdIndex = 0n;
+      rcIndex = 0n;
+      validBases = 0;
+      continue;
+    }
+
+    fwdIndex = ((fwdIndex << 2n) | baseCode) & mask;
+    if (canonical) {
+      rcIndex = (rcIndex >> 2n) | (compCode << rcShift);
+    }
+    validBases++;
+
+    if (validBases >= kClamped) {
+      const idx = canonical ? (fwdIndex < rcIndex ? fwdIndex : rcIndex) : fwdIndex;
+      for (let h = 0; h < numHashes; h++) {
+        const val = mixHash(idx, seeds[h]);
+        if (val < signature[h]) {
+          signature[h] = val;
+        }
+      }
+    }
+  }
+
+  return signature;
+}
+
 /**
  * Pure JS implementation of MinHash Jaccard (fallback when WASM unavailable).
+ * Produces bit-identical results to wasm-compute min_hash_jaccard.
  */
 function minHashJaccardJS(
   sequenceA: string,
@@ -478,62 +559,22 @@ function minHashJaccardJS(
     return 0;
   }
 
-  // FNV-1a hash function
-  const fnv1a = (s: string): number => {
-    let h = 0x811c9dc5;
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 0x01000193);
-    }
-    return h >>> 0;
-  };
+  const sketchA = minHashSketchJS(sequenceA, k, numHashes, false);
+  const sketchB = minHashSketchJS(sequenceB, k, numHashes, false);
 
-  // Get deterministic permutation seeds
-  const seeds = getDeterministicSeeds(numHashes);
-  const complement: Record<string, string> = { A: 'T', T: 'A', G: 'C', C: 'G' };
+  let emptyA = true;
+  let emptyB = true;
+  for (let i = 0; i < numHashes; i++) {
+    if (sketchA[i] !== 0xffffffff) emptyA = false;
+    if (sketchB[i] !== 0xffffffff) emptyB = false;
+  }
+  if (emptyA || emptyB) {
+    return 0;
+  }
 
-  // Generate min-hash signature for a sequence
-  const getSignature = (seq: string): Uint32Array => {
-    const signature = new Uint32Array(numHashes).fill(0xffffffff);
-    const s = seq.toUpperCase();
-
-    for (let i = 0; i <= s.length - k; i++) {
-      const kmer = s.substring(i, i + k);
-      if (kmer.includes('N')) continue;
-
-      let revComp = '';
-      for (let j = k - 1; j >= 0; j--) {
-        revComp += complement[kmer[j]] ?? kmer[j];
-      }
-      const canonical = kmer < revComp ? kmer : revComp;
-
-      const baseHash = fnv1a(canonical);
-
-      // Permute hash to get 'numHashes' independent values
-      // h_i(x) = (a * x + b) % prime is better, but XOR-shift is faster
-      // Here using a simple XOR permutation with precomputed seeds
-      for (let h = 0; h < numHashes; h++) {
-        // Simple distinct hash mixing: (baseHash XOR seed) * prime
-        let mixed = (baseHash ^ seeds[h]);
-        mixed = Math.imul(mixed, 0x01000193); // FNV prime
-        mixed = mixed >>> 0;
-        
-        if (mixed < signature[h]) {
-          signature[h] = mixed;
-        }
-      }
-    }
-
-    return signature;
-  };
-
-  const sigA = getSignature(sequenceA);
-  const sigB = getSignature(sequenceB);
-
-  // Count matching signatures
   let matches = 0;
   for (let i = 0; i < numHashes; i++) {
-    if (sigA[i] === sigB[i]) {
+    if (sketchA[i] === sketchB[i]) {
       matches++;
     }
   }

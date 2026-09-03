@@ -10,6 +10,7 @@ import { countKmersDenseJS } from '@phage-explorer/core';
 import { levenshteinDistance } from '@phage-explorer/comparison';
 import {
   minHashJaccard,
+  minHashSketchJS,
   analyzeKmers,
   extractKmerSet,
   extractCanonicalKmerSet,
@@ -263,16 +264,24 @@ for (const { name, wasm } of variants) {
       expect(minHashJaccard(SEQ, SEQ, 12, 128)).toBe(1);
     });
 
-    it('is NOT bit-identical to the JS implementation', () => {
-      // Recorded deliberately. The ABI spec requires identical output and this
-      // kernel does not meet it; pretending otherwise by widening a tolerance
-      // is how the requirement would quietly stop meaning anything.
-      //
-      // When the two are unified onto one hash family, this test fails. That is
-      // the intended signal: delete it then, on purpose.
+    it('is bit-identical to the JS implementation', () => {
       const w = wasm.min_hash_jaccard(SEQ, SEQ_B, 8, 128);
       const j = minHashJaccard(SEQ, SEQ_B, 8, 128);
-      expect(w).not.toBe(j);
+      expect(w).toBe(j);
+    });
+
+    it('returns bit-identical signatures across JS and WASM', () => {
+      const wasmSig = Array.from(
+        wasm.minhash_signature(encode(SEQ), 12, 128).signature
+      );
+      const jsSig = Array.from(minHashSketchJS(SEQ, 12, 128, false));
+      expect(wasmSig).toEqual(jsSig);
+
+      const wasmCanonSig = Array.from(
+        wasm.minhash_signature_canonical(encode(SEQ), 12, 128).signature
+      );
+      const jsCanonSig = Array.from(minHashSketchJS(SEQ, 12, 128, true));
+      expect(wasmCanonSig).toEqual(jsCanonSig);
     });
 
     it('the comparison is discriminating', () => {

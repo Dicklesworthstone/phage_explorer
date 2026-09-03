@@ -27,6 +27,8 @@ export {
   multiResolutionKmerAnalysis,
   extractCanonicalKmerSet,
   minHashJaccard,
+  minHashSketchJS,
+  mixHash,
 } from './kmer-analysis';
 
 // Information theory
