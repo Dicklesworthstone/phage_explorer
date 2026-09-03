@@ -16,6 +16,7 @@ import {
   type ActionDefinition,
   type HotkeyDefinition,
   type KeyCombo,
+  isVisibleToUser,
 } from '../../keyboard';
 import { Overlay } from './Overlay';
 import { OverlayProvenance, provenanceLabel } from './primitives';
@@ -177,7 +178,7 @@ export function AnalysisMenu(): React.ReactElement | null {
   const { grouped, flatItems } = useMemo(() => {
     const items: AnalysisMenuItem[] = ActionRegistryList
       .filter((action): action is ActionDefinition & { overlayId: string } => Boolean(action.overlayId))
-      .filter((action) => !action.surfaces || action.surfaces.includes('web'))
+      .filter((action) => isVisibleToUser(action))
       .map((action) => {
         const overlayId = action.overlayId as OverlayId;
         return {

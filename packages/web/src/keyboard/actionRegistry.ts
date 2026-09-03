@@ -102,6 +102,21 @@ export interface ActionDefinition {
   overlayId?: string;
   overlayAction?: 'open' | 'toggle';
   /**
+   * This action only does anything in a development build.
+   *
+   * The GPU/WASM benchmark overlay returns `null` unless `import.meta.env.DEV`,
+   * but its registry entry carried no such condition, so it appeared in the
+   * Analysis Menu and the Command Palette in production. A user could find it,
+   * select it, and get nothing at all -- no overlay, no error, no explanation.
+   *
+   * Marking it here rather than adding an id to each menu's exclusion list
+   * keeps the reason with the action: the entry is hidden BECAUSE the component
+   * does not render, so if the component ever ships this flag comes off and all
+   * three surfaces follow. `isVisibleToUser` below is the single place that
+   * reads it.
+   */
+  devOnly?: boolean;
+  /**
    * Where this overlay's numbers come from. Declared here as well as rendered
    * inside the overlay so the Analysis Menu and Command Palette can show it
    * BEFORE the user opens anything -- the niche-network overlay carried an
@@ -966,6 +981,7 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     minLevel: 'power',
     overlayId: 'gpuWasmBenchmark',
     overlayAction: 'toggle',
+    devOnly: true,
   },
   [ActionIds.HelpToggleDetail]: {
     id: ActionIds.HelpToggleDetail,
@@ -1029,6 +1045,29 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
 };
 
 export const ActionRegistryList = Object.values(ActionRegistry);
+
+/**
+ * Should this action be offered to the person using the app?
+ *
+ * Every surface that lists actions for a human -- the Analysis Menu, the
+ * Command Palette, the Help overlay -- filters through this. Keyboard dispatch
+ * deliberately does NOT: a developer who knows the shortcut can still reach a
+ * dev-only overlay in a dev build, and in production the component declines to
+ * render anyway, so the shortcut is inert rather than broken.
+ *
+ * The rule is one line, but it is a function so that the three call sites share
+ * it. The previous arrangement -- each menu keeping its own exclusion list --
+ * is how `gpuWasmBenchmark` ended up visible in two of them and hidden in
+ * neither.
+ */
+export function isVisibleToUser(
+  action: ActionDefinition,
+  surface: ActionSurface = 'web'
+): boolean {
+  if (action.surfaces && !action.surfaces.includes(surface)) return false;
+  if (action.devOnly && !import.meta.env.DEV) return false;
+  return true;
+}
 
 export interface OverlayHotkeyAction {
   actionId: ActionId;

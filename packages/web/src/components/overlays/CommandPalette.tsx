@@ -16,6 +16,7 @@ import { useTheme } from '../../hooks/useTheme';
 import {
   ActionIds,
   ActionRegistryList,
+  isVisibleToUser,
 } from '../../keyboard/actionRegistry';
 import {
   OverlayProvenance,
@@ -479,7 +480,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     const actionCommands: Command[] = [];
 
     for (const def of ActionRegistryList) {
-      if (def.surfaces && !def.surfaces.includes('web')) continue;
+      if (!isVisibleToUser(def)) continue;
       let action: (() => void) | undefined;
 
       if (def.overlayId) {

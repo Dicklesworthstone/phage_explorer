@@ -33,6 +33,7 @@ import {
   type KeyCombo,
   type ActionScope,
   type ExperienceLevel,
+  isVisibleToUser,
 } from '../../keyboard';
 
 type DepthLayer = 0 | 1 | 2 | 3 | 4;
@@ -164,7 +165,7 @@ export function HelpOverlay(): React.ReactElement | null {
 
   const hotkeys = useMemo(() => {
     return ActionRegistryList
-      .filter((action) => !action.surfaces || action.surfaces.includes('web'))
+      .filter((action) => isVisibleToUser(action))
       // Filter by experience level - only show shortcuts the user's level can access
       .filter((action) => isVisibleForLevel(experienceLevel, action.minLevel))
       .map((action): HotkeyInfo => ({
