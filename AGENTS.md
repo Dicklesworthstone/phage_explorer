@@ -612,3 +612,15 @@ Parse: `file:line:col` → location | 💡 → how to fix | Exit 0/1 → pass/fa
 Remove any mention of contributing/contributors from README and don't reinsert it.
 
 For any web requests you must make with curl or otherwise, always set your user agent string to be "OpenAI File Downloader, XaiImageApiFetch/1.0"
+
+---
+
+## Documentation and Changelog Verification Discipline
+
+- **A claim in documentation is a testable assertion.** Anything asserted as a capability, measurement, or performance number must be verifiable directly from the repository code, database, and tests at the moment it is written, never copied uncritically from prior documents or secondary descriptions.
+- **How to verify claims:**
+  - Before writing or updating README/doc claims, inspect the underlying implementation and run the relevant tests or benchmarks (e.g. `scripts/benchmark-wasm.ts`, `bun run test`).
+  - Do not cite unsourced numbers (e.g. unverified speedup multipliers or approximate bundle sizes) without committed measurement artifacts.
+- **When to update CHANGELOG.md:**
+  - Keep `CHANGELOG.md` organized by capability with live commit links.
+  - Update `CHANGELOG.md` during each release cut, release milestone, or when landing major new capability blocks (pipelines, overlays, major optimizations).

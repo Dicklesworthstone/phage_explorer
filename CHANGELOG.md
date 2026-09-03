@@ -4,9 +4,9 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## [Unreleased] — post-v1.4.1 (2025-12-16 through 2026-03-21)
+## [Unreleased] — post-v1.4.1 (2025-12-16 through 2026-09-03)
 
-Over 400 commits of active development since v1.4.1, spanning new analysis modules, WASM acceleration, rendering overhauls, design-system unification, and deep test coverage.
+Over 550 commits of active development since v1.4.1, spanning annotation pipelines, ESM2 embeddings, Pfam domain architectures, WASM acceleration, WebGL rendering, mobile discovery, and rigorous test coverage.
 
 [Compare: v1.4.1...main](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.4.1...main)
 
@@ -283,6 +283,34 @@ Dramatic performance improvements through WebGPU compute shaders, expanded WASM 
 
 - Complete mobile UI redesign with clean bottom tab bar ([`bbbd5a8`](https://github.com/Dicklesworthstone/phage_explorer/commit/bbbd5a89e8f6e99a3ffc3b3ec9e39e92bc694e4b))
 - Premium mobile UX enhancements with haptics and native feel ([`a6028eb`](https://github.com/Dicklesworthstone/phage_explorer/commit/a6028eb16be58a7db093e8c498697f97ce1fae01))
+
+### Biological Intelligence & Annotation Pipelines (2026-08 through 2026-09)
+
+- **ESM2 Embedding Index & Nearest-Neighbor Search** — offline neural embedding index using `facebook/esm2_t6_8M_UR50D` (320d vectors across all 24 phages), powering candidate retrieval and homology mapping ([`d94080b`](https://github.com/Dicklesworthstone/phage_explorer/commit/d94080b))
+- **Anti-CRISPR System Detection** — nearest-neighbor detection matching predicted folds against curated Acr reference families with continuous cosine confidence scoring, expanding anti-CRISPR coverage across 15 phages ([`d94080b`](https://github.com/Dicklesworthstone/phage_explorer/commit/d94080b))
+- **PyHMMER Pfam-A Domain Pipeline** — local, credential-free profile HMM annotation generating 1,695 high-confidence Pfam domain hits across the entire catalog ([`d5806ea`](https://github.com/Dicklesworthstone/phage_explorer/commit/d5806ea))
+- **Domain-Derived Defense Systems & AMGs** — re-derived anti-RM (Ocr, Ral, D12/C5 methylases, DndB), anti-exonuclease (Abc2), and Auxiliary Metabolic Genes (Photosynthesis PsbA/PsbD, RNR, ThyA, dUTPase, MazG, kinases, and deaminases) directly from Pfam accessions, expanding catalog defense predictions to 87 systems across 15 phages and AMG predictions to 48 hits across 10 phages ([`d5806ea`](https://github.com/Dicklesworthstone/phage_explorer/commit/d5806ea))
+- **Codon Adaptation Analytics** — per-gene intrinsic CAI, host tAI calculated from 61 real host tRNA pools, and intrinsic Nc (effective number of codons) ([`6fd638c`](https://github.com/Dicklesworthstone/phage_explorer/commit/6fd638c))
+- **Morphology Model & Structure Mapping** — mapped all 24 phage slugs to morphology-appropriate 3D/ASCII virion structures, alongside PDB references across 23 of 24 phages in the database ([`6744636`](https://github.com/Dicklesworthstone/phage_explorer/commit/6744636), [`d25ae0b`](https://github.com/Dicklesworthstone/phage_explorer/commit/d25ae0b))
+
+### Mobile Discovery & Research Workflows (2026-08 through 2026-09)
+
+- **Selected-Gene Dock & Inspector** — authoritative selected-gene dock with reproducible citation builder, primary-source NCBI/PDB links, and strand-aware geometry ([`0567ec5`](https://github.com/Dicklesworthstone/phage_explorer/commit/0567ec5), [`b21c189`](https://github.com/Dicklesworthstone/phage_explorer/commit/b21c189), [`ba81d32`](https://github.com/Dicklesworthstone/phage_explorer/commit/ba81d32))
+- **Phage Discovery Deck** — transformed mobile picker into an interactive discovery surface with lifecycle classification, saved phages, recents, and multi-factor sorting ([`f852fb9`](https://github.com/Dicklesworthstone/phage_explorer/commit/f852fb9), [`5e5d297`](https://github.com/Dicklesworthstone/phage_explorer/commit/5e5d297))
+- **Share-State URL Codecs** — bidirectional deep linking and state restoration preserving active phage, coordinates, zoom level, and selected genes ([`bb30f23`](https://github.com/Dicklesworthstone/phage_explorer/commit/bb30f23), [`09e003d`](https://github.com/Dicklesworthstone/phage_explorer/commit/09e003d), [`bb8c898`](https://github.com/Dicklesworthstone/phage_explorer/commit/bb8c898))
+- **WebGL Resilience** — self-healing sequence canvas recovering from context loss and jank-free nucleotide rendering ([`36997dd`](https://github.com/Dicklesworthstone/phage_explorer/commit/36997dd), [`ca7eb3f`](https://github.com/Dicklesworthstone/phage_explorer/commit/ca7eb3f))
+
+### Accessibility (WCAG 2.1 A/AA) & Usability (2026-09)
+
+- **Automated WCAG 2.1 A/AA Compliance** — verified 24/24 automated axe-core E2E tests across 8 mobile and desktop viewports with 0 violations ([`15ce8c8`](https://github.com/Dicklesworthstone/phage_explorer/commit/15ce8c8))
+- **Keyboard Navigation Integrity** — resolved sequence buffer conflict in `KeyboardManager` ensuring direct hotkeys dispatch immediately without being blocked by multi-key sequence prefixes ([`15ce8c8`](https://github.com/Dicklesworthstone/phage_explorer/commit/15ce8c8))
+- **Overlay Empty States** — updated Defense Arms Race, AMG Pathway, and Host Tropism overlays to explicitly distinguish 'no data annotated for this phage' from 'genome scanned, none detected' ([`d5806ea`](https://github.com/Dicklesworthstone/phage_explorer/commit/d5806ea))
+
+### Toolchain & Quality Standards (2026-08 through 2026-09)
+
+- **Bead Closure Standard** — pre-commit hook and CI verification script (`check:beads`) enforcing concrete evidence for all closed tasks ([`5a89752`](https://github.com/Dicklesworthstone/phage_explorer/commit/5a89752))
+- **TUI Terminal Runtime** — upgraded Ink and React to workspace compatibility and patched ErrorOverview composite keys ([`bac5e0f`](https://github.com/Dicklesworthstone/phage_explorer/commit/bac5e0f), [`92ff59c`](https://github.com/Dicklesworthstone/phage_explorer/commit/92ff59c))
+- **Deterministic SQLite Distribution** — automated in-place web database optimization with REINDEX, VACUUM, gzip compression, and SHA256 manifest generation ([`d94080b`](https://github.com/Dicklesworthstone/phage_explorer/commit/d94080b), [`d5806ea`](https://github.com/Dicklesworthstone/phage_explorer/commit/d5806ea))
 
 ### Performance Summary
 
