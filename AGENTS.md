@@ -185,10 +185,17 @@ Core patterns:
    - Fast reads:
      - `resource://inbox/{Agent}?project=<abs-path>&limit=20`.
      - `resource://thread/{id}?project=<abs-path>&include_bodies=true`.
-   - Optional:
-     - Set `AGENT_NAME` so the pre-commit guard can block conflicting commits.
-     - `WORKTREES_ENABLED=1` and `AGENT_MAIL_GUARD_MODE=warn` during trials.
-     - Check hooks with `mcp-agent-mail guard status .` and identity with `mcp-agent-mail mail status .`.
+    - Optional:
+      - Set `AGENT_NAME` so the pre-commit guard can block conflicting commits.
+      - `WORKTREES_ENABLED=1` and `AGENT_MAIL_GUARD_MODE=warn` during trials.
+      - Check hooks with `mcp-agent-mail guard status .` and identity with `mcp-agent-mail mail status .`.
+
+### Concurrent Agent Coordination & Worktree Rule
+
+- **Do NOT run multiple agent sessions in the same working tree concurrently.** Sharing a single working tree causes collisions: `git add -A` captures in-progress edits from other sessions, and index/branch resets overwrite uncommitted work.
+- If concurrent agents operate on this repository, each agent MUST use a separate `git worktree` so that working directories and git staging indexes remain completely isolated.
+- All agents must register with Agent Mail (`am macros start-session`) and hold advisory file reservations before modifying files.
+- The pre-commit guard hook (`am guard install <project> .`) must remain active so commits to reserved paths are blocked.
 
 2. **Multiple repos in one product**
    - Option A: Same `project_key` for all; use specific reservations (`frontend/**`, `backend/**`).

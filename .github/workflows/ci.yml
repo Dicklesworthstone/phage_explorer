@@ -49,6 +49,9 @@ jobs:
         # time 107k lines of the deployed app were never type-checked at all.
         run: bun run typecheck:all
 
+      - name: Check scripts syntax
+        run: bun run check:scripts
+
       - name: Run tests
         run: bun run test
 
