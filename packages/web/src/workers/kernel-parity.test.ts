@@ -5,6 +5,10 @@ import {
   countCodonUsage,
   translateSequence,
   reverseComplement,
+  detectPalindromesJS,
+  detectTandemRepeatsJS,
+  type PalindromeHit,
+  type TandemRepeatHit,
 } from '@phage-explorer/core';
 import { countKmersDenseJS } from '@phage-explorer/core';
 import { levenshteinDistance } from '@phage-explorer/comparison';
@@ -37,14 +41,16 @@ import {
  * reference, not against each other -- two builds from one source that are wrong
  * in the same way would pass a variant-to-variant comparison.
  *
- * NOT covered, and deliberately named rather than left implied: kernels with no
- * JS counterpart to compare against (`detect_bonds_spatial`,
- * `detect_functional_groups`, `scan_kl_windows`, `pca_power_iteration_f32`,
- * `hoeffdings_d`, `parse_pdb`, the `SequenceHandle` methods) and
- * `detect_palindromes` / `detect_tandem_repeats`, whose JS fallbacks are
- * documented in their own source as only approximating the WASM behaviour. Those
- * need a JS reference written before parity is even a meaningful question, which
- * is a larger piece of work than this file.
+ * `detect_palindromes` and `detect_tandem_repeats` have exact JS references in
+ * `@phage-explorer/core` and are verified for full output identity.
+ *
+ * Invariant tests with discrimination checks cover kernels without standalone JS
+ * twins (`scan_kl_windows`, `pca_power_iteration_f32`, `hoeffdings_d`).
+ *
+ * `SequenceHandle` methods are verified across both variants in `sequence-handle.test.ts`.
+ *
+ * NOT covered here: `detect_bonds_spatial` and `detect_functional_groups` which
+ * operate exclusively on 3D spatial coordinate buffers in the Three.js renderer.
  */
 
 const variants = await loadWasmVariants();
@@ -71,6 +77,14 @@ const SEQ = biasedSequence(3000, 0.48, 7);
 const SEQ_B = biasedSequence(3000, 0.55, 11);
 
 const encode = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function parseJson<T = unknown>(jsonStr: string): T {
+  try {
+    return JSON.parse(jsonStr) as T;
+  } catch {
+    throw new Error(`Failed to parse JSON: ${jsonStr}`);
+  }
+}
 
 for (const { name, wasm } of variants) {
   describe(`GC content parity [${name}]`, () => {
@@ -117,7 +131,7 @@ for (const { name, wasm } of variants) {
     // The kernel returns its counts as a JSON string rather than parallel
     // arrays; the JS reference returns a plain record.
     const wasmCounts = (seq: string, frame: number): Record<string, number> =>
-      JSON.parse(wasm.count_codon_usage(seq, frame).json) as Record<string, number>;
+      parseJson<Record<string, number>>(wasm.count_codon_usage(seq, frame).json);
 
     it('produces the same counts in frame 0', () => {
       const js = countCodonUsage(SEQ, 0);
@@ -416,6 +430,225 @@ for (const { name, wasm } of variants) {
       expect(cs[0]).toBeLessThan(0);
     });
   });
+
+  describe(`palindrome detection parity [${name}]`, () => {
+    it('matches exact JS reference on realistic sequences', () => {
+      const minLen = 4;
+      const maxGap = 2;
+      const wasmRes = parseJson<PalindromeHit[]>(wasm.detect_palindromes(SEQ.slice(0, 500), minLen, maxGap).json);
+      const jsRes = detectPalindromesJS(SEQ.slice(0, 500), minLen, maxGap);
+
+      expect(wasmRes.length).toBe(jsRes.length);
+      expect(wasmRes.length).toBeGreaterThan(0);
+      expect(wasmRes).toEqual(jsRes);
+    });
+
+    it('handles perfect palindromes without gap (max_gap = 0)', () => {
+      const wasmRes = parseJson<PalindromeHit[]>(wasm.detect_palindromes(SEQ.slice(0, 400), 5, 0).json);
+      const jsRes = detectPalindromesJS(SEQ.slice(0, 400), 5, 0);
+
+      expect(wasmRes.length).toBe(jsRes.length);
+      expect(wasmRes).toEqual(jsRes);
+    });
+
+    it('the comparison is discriminating: planted hairpin is detected, and random non-palindromic sequence produces zero', () => {
+      const planted = 'AAAA' + 'GCAT' + 'TT' + 'ATGC' + 'CCCC';
+      const wasmRes = parseJson<PalindromeHit[]>(wasm.detect_palindromes(planted, 4, 2).json);
+      const jsRes = detectPalindromesJS(planted, 4, 2);
+
+      expect(wasmRes.length).toBeGreaterThanOrEqual(1);
+      expect(wasmRes).toEqual(jsRes);
+      expect(wasmRes.some((h) => h.sequence === 'GCATTTATGC')).toBe(true);
+
+      const homopolymer = 'A'.repeat(50);
+      const wasmHomopolymer = parseJson<PalindromeHit[]>(wasm.detect_palindromes(homopolymer, 4, 0).json);
+      expect(wasmHomopolymer.length).toBe(0);
+    });
+  });
+
+  describe(`tandem repeat detection parity [${name}]`, () => {
+    it('matches exact JS reference on realistic sequences', () => {
+      const wasmRes = parseJson<TandemRepeatHit[]>(wasm.detect_tandem_repeats(SEQ.slice(0, 600), 2, 6, 2).json);
+      const jsRes = detectTandemRepeatsJS(SEQ.slice(0, 600), 2, 6, 2);
+
+      expect(wasmRes.length).toBe(jsRes.length);
+      expect(wasmRes).toEqual(jsRes);
+    });
+
+    it('the comparison is discriminating: planted tandem repeat is detected', () => {
+      const planted = 'ACGT' + 'CAGCAGCAGCAGCAG' + 'TGCA';
+      const wasmRes = parseJson<TandemRepeatHit[]>(wasm.detect_tandem_repeats(planted, 3, 3, 4).json);
+      const jsRes = detectTandemRepeatsJS(planted, 3, 3, 4);
+
+      expect(wasmRes.length).toBeGreaterThanOrEqual(1);
+      expect(wasmRes).toEqual(jsRes);
+      expect(wasmRes.some((h) => h.unit === 'CAG' && h.copies >= 4)).toBe(true);
+
+      const nonRepeat = 'ACGTACGT'.slice(0, 7);
+      const wasmNonRepeat = parseJson<TandemRepeatHit[]>(wasm.detect_tandem_repeats(nonRepeat, 4, 4, 2).json);
+      expect(wasmNonRepeat.length).toBe(0);
+    });
+  });
+
+  describe(`scan_kl_windows invariants & discrimination [${name}]`, () => {
+    it('computes non-negative KL divergence values at valid window intervals', () => {
+      const bytes = encode(SEQ.slice(0, 500));
+      const k = 3;
+      const windowSize = 50;
+      const stepSize = 10;
+      const res = wasm.scan_kl_windows(bytes, k, windowSize, stepSize);
+
+      try {
+        expect(res.k).toBe(k);
+        expect(res.window_count).toBeGreaterThan(0);
+        expect(res.kl_values.length).toBe(res.window_count);
+        expect(res.positions.length).toBe(res.window_count);
+
+        for (let i = 0; i < res.window_count; i++) {
+          expect(res.kl_values[i]).toBeGreaterThanOrEqual(0);
+          expect(res.positions[i]).toBe(i * stepSize);
+        }
+      } finally {
+        res.free();
+      }
+    });
+
+    it('the comparison is discriminating: diverging window shows elevated KL and invalid inputs return empty', () => {
+      const island = 'ACGT'.repeat(50) + 'G'.repeat(80) + 'ACGT'.repeat(50);
+      const bytes = encode(island);
+      const res = wasm.scan_kl_windows(bytes, 2, 40, 10);
+      try {
+        let maxKL = 0;
+        let minKL = Infinity;
+        for (let i = 0; i < res.kl_values.length; i++) {
+          const val = res.kl_values[i];
+          if (val > maxKL) maxKL = val;
+          if (val < minKL) minKL = val;
+        }
+        expect(maxKL).toBeGreaterThan(minKL);
+        expect(maxKL).toBeGreaterThan(0.5);
+
+        const invalid = wasm.scan_kl_windows(bytes, 2, island.length + 100, 10);
+        try {
+          expect(invalid.window_count).toBe(0);
+        } finally {
+          invalid.free();
+        }
+      } finally {
+        res.free();
+      }
+    });
+  });
+
+  describe(`pca_power_iteration_f32 invariants & discrimination [${name}]`, () => {
+    it('extracts orthonormal eigenvectors with ordered non-negative eigenvalues', () => {
+      const nSamples = 20;
+      const nFeatures = 5;
+      const nComponents = 3;
+      const data = new Float32Array(nSamples * nFeatures);
+      for (let i = 0; i < data.length; i++) {
+        data[i] = ((i * 17 + 5) % 100) / 10;
+      }
+
+      const res = wasm.pca_power_iteration_f32(data, nSamples, nFeatures, nComponents, 100, 1e-6);
+      try {
+        expect(res.n_components).toBe(nComponents);
+        expect(res.n_features).toBe(nFeatures);
+        expect(res.eigenvalues.length).toBe(nComponents);
+        expect(res.eigenvectors.length).toBe(nComponents * nFeatures);
+
+        for (let i = 0; i < nComponents - 1; i++) {
+          expect(res.eigenvalues[i]).toBeGreaterThanOrEqual(res.eigenvalues[i + 1]);
+          expect(res.eigenvalues[i]).toBeGreaterThanOrEqual(0);
+        }
+
+        for (let c = 0; c < nComponents; c++) {
+          let normSq = 0;
+          for (let f = 0; f < nFeatures; f++) {
+            const v = res.eigenvectors[c * nFeatures + f];
+            normSq += v * v;
+          }
+          expect(normSq).toBeCloseTo(1.0, 4);
+        }
+
+        for (let c1 = 0; c1 < nComponents; c1++) {
+          for (let c2 = c1 + 1; c2 < nComponents; c2++) {
+            let dot = 0;
+            for (let f = 0; f < nFeatures; f++) {
+              dot += res.eigenvectors[c1 * nFeatures + f] * res.eigenvectors[c2 * nFeatures + f];
+            }
+            expect(dot).toBeCloseTo(0.0, 4);
+          }
+        }
+      } finally {
+        res.free();
+      }
+    });
+
+    it('the comparison is discriminating: 1D dominant variance aligns with feature 0', () => {
+      const nSamples = 10;
+      const nFeatures = 3;
+      const data = new Float32Array(nSamples * nFeatures);
+      for (let i = 0; i < nSamples; i++) {
+        data[i * nFeatures + 0] = (i + 1) * 100;
+        data[i * nFeatures + 1] = 0.01;
+        data[i * nFeatures + 2] = 0.02;
+      }
+
+      const res = wasm.pca_power_iteration_f32(data, nSamples, nFeatures, 2, 100, 1e-6);
+      try {
+        expect(res.n_components).toBe(2);
+        expect(res.eigenvalues[0]).toBeGreaterThan(res.eigenvalues[1] * 1000);
+
+        const v0 = Math.abs(res.eigenvectors[0]);
+        expect(v0).toBeCloseTo(1.0, 3);
+      } finally {
+        res.free();
+      }
+    });
+  });
+
+  describe(`hoeffdings_d invariants & discrimination [${name}]`, () => {
+    it('produces D in valid mathematical range [-0.5, 1.0] and detects monotonic dependence', () => {
+      const n = 50;
+      const x = new Float64Array(n);
+      const y = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        y[i] = i * 2.5 + 3;
+      }
+
+      const res = wasm.hoeffdings_d(x, y);
+      expect(res.n).toBe(n);
+      expect(res.d).toBeGreaterThanOrEqual(-0.5);
+      expect(res.d).toBeLessThanOrEqual(1.0);
+      expect(res.d).toBeGreaterThan(0.25);
+    });
+
+    it('the comparison is discriminating: D(x, x) strongly exceeds D(x, random_noise)', () => {
+      const n = 60;
+      const x = new Float64Array(n);
+      const noise = new Float64Array(n);
+      let s = 1234567;
+      for (let i = 0; i < n; i++) {
+        x[i] = i;
+        s = (s * 1664525 + 1013904223) >>> 0;
+        noise[i] = (s / 0xffffffff) * 100;
+      }
+
+      const resIdentity = wasm.hoeffdings_d(x, x);
+      const resNoise = wasm.hoeffdings_d(x, noise);
+
+      expect(resIdentity.d).toBeGreaterThan(0.25);
+      expect(Math.abs(resNoise.d)).toBeLessThan(0.1);
+      expect(resIdentity.d).toBeGreaterThan(resNoise.d * 3);
+    });
+
+    it('kmer_hoeffdings_d returns high similarity for identical sequences', () => {
+      const resSame = wasm.kmer_hoeffdings_d(SEQ.slice(0, 300), SEQ.slice(0, 300), 3);
+      expect(resSame.d).toBeGreaterThan(0.2);
+    });
+  });
 }
 
 /**
@@ -469,5 +702,26 @@ describe('the two WASM variants agree with each other', () => {
     expect(simd.wasm.levenshtein_distance(a, b)).toBe(
       baseline.wasm.levenshtein_distance(a, b)
     );
+  });
+
+  it('produces identical palindromes', () => {
+    const a = baseline.wasm.detect_palindromes(SEQ.slice(0, 400), 4, 2);
+    const b = simd.wasm.detect_palindromes(SEQ.slice(0, 400), 4, 2);
+    expect(b.json).toBe(a.json);
+  });
+
+  it('produces identical tandem repeats', () => {
+    const a = baseline.wasm.detect_tandem_repeats(SEQ.slice(0, 400), 2, 5, 2);
+    const b = simd.wasm.detect_tandem_repeats(SEQ.slice(0, 400), 2, 5, 2);
+    expect(b.json).toBe(a.json);
+  });
+
+  it('produces identical Hoeffdings D', () => {
+    const x = new Float64Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    const y = new Float64Array([2, 4, 5, 8, 10, 11, 14, 16, 19, 20]);
+    const a = baseline.wasm.hoeffdings_d(x, y);
+    const b = simd.wasm.hoeffdings_d(x, y);
+    expect(b.d).toBeCloseTo(a.d, 9);
+    expect(b.n).toBe(a.n);
   });
 });

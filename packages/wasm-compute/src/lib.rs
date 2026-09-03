@@ -1653,9 +1653,8 @@ pub fn hoeffdings_d(x: &[f64], y: &[f64]) -> HoeffdingResult {
     }
 
     // Compute the three D terms
-    // D1 = sum of (Q[i] - 1) * (Q[i] - 3)
-    // Note: This is (Q-1) * ((Q-1) - 2), matching the standard Hoeffding's D formula
-    let d1: f64 = q.iter().map(|&qi| (qi - 1.0) * (qi - 3.0)).sum();
+    // D1 = sum of (Q[i] - 1) * (Q[i] - 2)
+    let d1: f64 = q.iter().map(|&qi| (qi - 1.0) * (qi - 2.0)).sum();
 
     // D2 = sum of (R[i] - 1) * (R[i] - 2) * (S[i] - 1) * (S[i] - 2)
     let d2: f64 = r.iter()
@@ -1663,11 +1662,11 @@ pub fn hoeffdings_d(x: &[f64], y: &[f64]) -> HoeffdingResult {
         .map(|(&ri, &si)| (ri - 1.0) * (ri - 2.0) * (si - 1.0) * (si - 2.0))
         .sum();
 
-    // D3 = sum of (R[i] - 1) * (S[i] - 1) * (Q[i] - 1)
+    // D3 = sum of (R[i] - 2) * (S[i] - 2) * (Q[i] - 1)
     let d3: f64 = r.iter()
         .zip(s.iter())
         .zip(q.iter())
-        .map(|((&ri, &si), &qi)| (ri - 1.0) * (si - 1.0) * (qi - 1.0))
+        .map(|((&ri, &si), &qi)| (ri - 2.0) * (si - 2.0) * (qi - 1.0))
         .sum();
 
     // Hoeffding's D formula
@@ -5201,5 +5200,14 @@ mod myers_diff_tests {
         // X and Y differ: delete X, insert Y = 2 edits
         assert_eq!(result.edit_distance, 2);
         assert_eq!(result.matches, 6); // AAA + BBB
+    }
+
+    #[test]
+    fn test_hoeffdings_d_monotonic() {
+        let x: Vec<f64> = (1..=20).map(|v| v as f64).collect();
+        let y: Vec<f64> = (1..=20).map(|v| v as f64 * 3.0 + 2.0).collect();
+        let res = hoeffdings_d(&x, &y);
+        assert_eq!(res.n, 20);
+        assert!((res.d - 1.0).abs() < 1e-6, "Expected D ~ 1.0 for monotonic data, got {}", res.d);
     }
 }
