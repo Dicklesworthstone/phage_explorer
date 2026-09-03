@@ -14,8 +14,6 @@ import {
   extractKmerSet,
   extractCanonicalKmerSet,
 } from '@phage-explorer/comparison';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 /**
  * WASM/JS parity for the kernels that had none.
