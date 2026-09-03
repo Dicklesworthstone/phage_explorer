@@ -63,47 +63,35 @@ export function updateAntiCrisprInDatabase(
       };
     });
 
-    // 2. Detect anti-CRISPR hits
+    // 2. Detect anti-CRISPR screening candidates
     const maxDist = options?.maxDistance ?? 0.025;
     const result = detectAntiCrisprCandidates(geneInputs, { maxDistance: maxDist });
 
     // 3. Clear existing esm2-nn rows from defense_systems
+    // As established in phage_explorer-98ni, unverified nearest neighbors have ~5% expected
+    // precision and contain known non-Acr proteins (e.g. methyltransferases, kinases).
+    // They are screening candidates, NOT confirmed defense system annotations.
     db.run(`DELETE FROM defense_systems WHERE source = 'esm2-nn'`);
 
-    // 4. Insert new hits in a transaction
-    const insertDefense = db.prepare(`
-      INSERT INTO defense_systems (
-        phage_id, gene_id, locus_tag, system_type, system_family,
-        target_system, mechanism, confidence, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMany = db.transaction((hits) => {
-      for (const hit of hits) {
-        insertDefense.run(
-          hit.phageId,
-          hit.geneId,
-          hit.locusTag,
-          hit.systemType,
-          hit.systemFamily,
-          hit.targetSystem,
-          hit.mechanism,
-          hit.confidence,
-          hit.source
-        );
-      }
-    });
-
-    insertMany(result.hits);
-
-    // 5. Update annotation_meta
+    // 4. Update annotation_meta with calibrated screening metadata and controls
     const metaValue = JSON.stringify({
+      status: 'screening_shortlist_only',
+      note: 'ESM2 nearest-neighbor candidate shortlist; not confirmed identifications',
       checkpoint: result.checkpoint,
       referenceVersion: result.referenceVersion,
       referenceCount: 10,
-      hits: result.totalHits,
+      candidatesCount: result.totalHits,
       phagesCovered: result.phagesCovered,
       maxDistance: maxDist,
+      topCandidates: result.hits.slice(0, 20).map((h) => ({
+        geneId: h.geneId,
+        phageId: h.phageId,
+        product: h.product,
+        nearestRef: h.nearestReference,
+        distance: h.distance,
+        backgroundPercentile: h.backgroundPercentile,
+        isKnownNonAcr: h.isKnownNonAcr,
+      })),
     });
 
     db.run(`
@@ -112,8 +100,8 @@ export function updateAntiCrisprInDatabase(
     `, ['anti_crispr_esm2', metaValue, Date.now()]);
 
     console.log(
-      `[anti-crispr] Successfully inserted ${result.totalHits} anti-CRISPR hits ` +
-      `across ${result.phagesCovered} phages into ${dbPath}`
+      `[anti-crispr] Calibrated screening recorded for ${result.totalHits} candidates ` +
+      `across ${result.phagesCovered} phages; purged unverified esm2-nn rows from defense_systems in ${dbPath}`
     );
 
     return result;

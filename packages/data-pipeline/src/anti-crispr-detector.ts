@@ -32,6 +32,8 @@ export interface AntiCrisprHit {
   phageId: number;
   geneId: number;
   locusTag: string | null;
+  name?: string | null;
+  product?: string | null;
   systemType: 'anti-CRISPR';
   systemFamily: string;
   targetSystem: string;
@@ -40,6 +42,8 @@ export interface AntiCrisprHit {
   source: 'esm2-nn';
   nearestReference: string;
   distance: number;
+  backgroundPercentile: number;
+  isKnownNonAcr: boolean;
   referenceVersion: string;
 }
 
@@ -52,9 +56,80 @@ export interface DetectionResult {
 }
 
 /**
+ * Empirical background quantiles computed over all 2,039 gene embeddings
+ * against the 10 reference Acr proteins.
+ * @see phage_explorer-98ni
+ */
+export const BACKGROUND_QUANTILES: Array<{ p: number; dist: number }> = [
+  { p: 0.001, dist: 0.01662 },
+  { p: 0.010, dist: 0.02079 },
+  { p: 0.020, dist: 0.02249 },
+  { p: 0.036, dist: 0.02496 },
+  { p: 0.050, dist: 0.02750 },
+  { p: 0.100, dist: 0.03142 },
+  { p: 0.250, dist: 0.03808 },
+  { p: 0.500, dist: 0.04977 },
+  { p: 0.750, dist: 0.06941 },
+  { p: 0.900, dist: 0.10283 },
+];
+
+/**
+ * Compute empirical background percentile for a given cosine distance.
+ * Returns estimated fraction of all phage genes with distance <= `distance`.
+ */
+export function computeBackgroundPercentile(distance: number): number {
+  if (distance <= BACKGROUND_QUANTILES[0].dist) {
+    return Math.max(0.0001, (distance / BACKGROUND_QUANTILES[0].dist) * BACKGROUND_QUANTILES[0].p);
+  }
+  for (let i = 0; i < BACKGROUND_QUANTILES.length - 1; i++) {
+    const q1 = BACKGROUND_QUANTILES[i];
+    const q2 = BACKGROUND_QUANTILES[i + 1];
+    if (distance >= q1.dist && distance <= q2.dist) {
+      const frac = (distance - q1.dist) / (q2.dist - q1.dist);
+      return q1.p + frac * (q2.p - q1.p);
+    }
+  }
+  const last = BACKGROUND_QUANTILES[BACKGROUND_QUANTILES.length - 1];
+  return Math.min(1.0, last.p + ((distance - last.dist) / 0.1) * 0.1);
+}
+
+const KNOWN_NON_ACR_KEYWORDS = [
+  'superinfection exclusion',
+  'smi1',
+  'knr4',
+  'nucleotide kinase',
+  'methyltransferase',
+  'virion structural',
+  'structural protein',
+  'capsid',
+  'tail',
+  'portal',
+  'polymerase',
+  'helicase',
+  'primase',
+  'terminase',
+  'endolysin',
+  'holin',
+  'integrase',
+  'recombinase',
+  'exonuclease',
+];
+
+export function isAnnotatedNonAcrProduct(product: string | null): boolean {
+  if (!product) return false;
+  const lower = product.toLowerCase();
+  if (lower.includes('hypothetical')) return false;
+  return KNOWN_NON_ACR_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+/**
  * Calculate confidence score as a continuous function of cosine distance.
  * Smaller distance => higher similarity => higher confidence.
  * Guaranteed to produce strictly different confidences for different distances.
+ *
+ * NOTE: This is a monotonic distance rescaling for relative ranking, NOT a true
+ * Bayesian posterior or probability of biological anti-CRISPR function.
+ * @see phage_explorer-98ni
  */
 export function computeAcrConfidence(distance: number): number {
   // Linear scaling from distance in [0, 0.05] to confidence in [0.50, 0.95]
@@ -105,13 +180,18 @@ export function detectAntiCrisprCandidates(
       const best = searchHits[0];
       const ref = best.metadata ?? references.find((r) => r.id === best.id)!;
       const confidence = computeAcrConfidence(best.distance);
+      const backgroundPercentile = computeBackgroundPercentile(best.distance);
+      const isKnownNonAcr = isAnnotatedNonAcrProduct(gene.product);
 
-      const mechanism = `Predicted anti-CRISPR via ESM2 embedding similarity to ${ref.id} (${ref.family}) [dist: ${best.distance.toFixed(4)}, ref: ${refVersion}]`;
+      const pctDisplay = (backgroundPercentile * 100).toFixed(2);
+      const mechanism = `Candidate Acr neighbor via ESM2 embedding similarity to ${ref.id} (${ref.family}) [dist: ${best.distance.toFixed(4)}, top ${pctDisplay}% of background, ref: ${refVersion}]${isKnownNonAcr ? ' [Note: carries non-Acr annotation]' : ''}`;
 
       hits.push({
         phageId: gene.phageId,
         geneId: gene.geneId,
         locusTag: gene.locusTag,
+        name: gene.name,
+        product: gene.product,
         systemType: 'anti-CRISPR',
         systemFamily: ref.family,
         targetSystem: ref.targetSystem,
@@ -120,6 +200,8 @@ export function detectAntiCrisprCandidates(
         source: 'esm2-nn',
         nearestReference: ref.id,
         distance: best.distance,
+        backgroundPercentile,
+        isKnownNonAcr,
         referenceVersion: refVersion,
       });
 
@@ -127,8 +209,8 @@ export function detectAntiCrisprCandidates(
     }
   }
 
-  // Sort by confidence descending (closest distance first)
-  hits.sort((a, b) => b.confidence - a.confidence);
+  // Sort by distance ascending (closest embedding neighbor first)
+  hits.sort((a, b) => a.distance - b.distance);
 
   return {
     hits,
