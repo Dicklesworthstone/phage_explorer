@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { gzip } from 'pako';
 import { calculateGCContent } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
@@ -174,7 +175,7 @@ export function SequenceComplexityOverlay({
       flexDirection="column"
       borderStyle="double"
       borderColor={colors.accent}
-      width={92}
+      width={useOverlayWidth(92)}
       height={26}
       paddingX={2}
       paddingY={1}

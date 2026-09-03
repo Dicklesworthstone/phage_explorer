@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
 import {
@@ -177,7 +178,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={90}
+      width={useOverlayWidth(90)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>

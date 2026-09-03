@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import {
   simulateTranscriptionFlow,
@@ -65,7 +66,7 @@ export function TranscriptionFlowOverlay({ sequence, genomeLength }: Props): Rea
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={90}
+      width={useOverlayWidth(90)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>TRANSCRIPTION FLOW (Y KEY)</Text>

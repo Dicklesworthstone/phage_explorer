@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import type { HGTAnalysis, PassportStamp } from '@phage-explorer/comparison';
 
@@ -56,7 +57,7 @@ export function HGTOverlay(): React.ReactElement {
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={84}
+      width={useOverlayWidth(84)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>HGT PASSPORT — {phage.name}</Text>

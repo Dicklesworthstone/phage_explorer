@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import { GelView } from './GelView';
 
@@ -20,7 +21,7 @@ export function GelOverlay({ sequence }: { sequence: string }): React.ReactEleme
       borderStyle="double"
       borderColor={colors.accent}
       paddingX={1}
-      width={85}
+      width={useOverlayWidth(85)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>RESTRICTION DIGEST</Text>

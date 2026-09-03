@@ -3,6 +3,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from './components/App';
+import { TerminalSizeGate } from './components/terminal-size';
 import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import path from 'path';
 import { homedir } from 'os';
@@ -131,8 +132,13 @@ async function main() {
   // Render the TUI
   // patchConsole: false prevents Ink from intercepting console output which can cause flickering
   // We don't use console.log during normal operation anyway
+  // Gate on terminal size before mounting the app. Overlays declare widths up
+  // to 92 columns, so a narrow window produced unreadable wrapping with no
+  // explanation, while the README promised graceful degradation.
   const { waitUntilExit } = render(
-    <App repository={repository} />,
+    <TerminalSizeGate>
+      <App repository={repository} />
+    </TerminalSizeGate>,
     {
       exitOnCtrlC: true,
       patchConsole: false,

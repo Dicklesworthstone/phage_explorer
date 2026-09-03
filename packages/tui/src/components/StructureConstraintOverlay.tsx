@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Text } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import type { StructuralConstraintReport } from '@phage-explorer/core';
 
@@ -22,7 +23,7 @@ export function StructureConstraintOverlay({ proteinReport }: Props): React.Reac
   const noProteins = !proteinReport || proteinReport.proteins.length === 0;
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} padding={1} width={92}>
+    <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} padding={1} width={useOverlayWidth(92)}>
       <Text color={colors.primary} bold>
         Structure-Informed Constraint Scanner
       </Text>

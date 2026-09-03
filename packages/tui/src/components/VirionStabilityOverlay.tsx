@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 import { predictVirionStabilityFromPhage } from '@phage-explorer/core';
@@ -61,7 +62,7 @@ export function VirionStabilityOverlay(): React.ReactElement {
         borderColor={colors.accent}
         paddingX={2}
         paddingY={1}
-        width={92}
+        width={useOverlayWidth(92)}
         flexDirection="column"
       >
         <Text color={colors.accent} bold>
@@ -78,7 +79,7 @@ export function VirionStabilityOverlay(): React.ReactElement {
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={92}
+      width={useOverlayWidth(92)}
       flexDirection="column"
     >
       <Box justifyContent="space-between" marginBottom={1}>

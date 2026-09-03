@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
 
@@ -55,7 +56,7 @@ export function PackagingPressureOverlay(): React.ReactElement {
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={88}
+      width={useOverlayWidth(88)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>

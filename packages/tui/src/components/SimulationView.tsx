@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import type { Simulation, SimulationId, SimState } from '@phage-explorer/core';
 import { getSimulationRegistry } from '../simulations/registry';
@@ -238,7 +239,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       borderColor="#22c55e"
       paddingX={2}
       paddingY={1}
-      width={90}
+      width={useOverlayWidth(90)}
       height={22}
     >
       <Box justifyContent="space-between" marginBottom={1}>

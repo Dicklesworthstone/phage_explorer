@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { useOverlayWidth } from './terminal-size';
 import { usePhageStore } from '@phage-explorer/state';
 import { computeModuleCoherence } from '@phage-explorer/core';
 
@@ -45,7 +46,7 @@ export function ModuleOverlay(): React.ReactElement {
       borderColor={colors.accent}
       paddingX={2}
       paddingY={1}
-      width={82}
+      width={useOverlayWidth(82)}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>
