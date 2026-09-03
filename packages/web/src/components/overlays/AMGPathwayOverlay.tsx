@@ -23,6 +23,33 @@ import {
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment } from './primitives/types';
 
+/**
+ * The marker genes the pipeline's AMG scanner actually looks for.
+ *
+ * Named here so the empty state can tell the user what was searched for rather
+ * than implying a genome-wide capability. The previous hint said "AMG detection
+ * requires KEGG pathway annotations", which is backwards: the scanner matches
+ * these eight names against gene and product strings and ASSIGNS a KEGG
+ * ortholog to whatever it finds. A user reading the old hint would conclude the
+ * database was missing KEGG data for their phage, when the truth is that none of
+ * that phage's genes was named for one of these eight.
+ *
+ * The list is duplicated from `packages/data-pipeline/src/build-db.ts`, which is
+ * a build-time module the browser cannot import. `amg-marker-parity.test.ts`
+ * asserts the two agree, so adding a ninth rule to the pipeline fails the suite
+ * rather than silently making this message wrong.
+ */
+export const AMG_MARKER_GENES = [
+  'psbA',
+  'psbD',
+  'phoH',
+  'mazG',
+  'nrdA',
+  'nrdB',
+  'thyA',
+  'dut',
+] as const;
+
 // AMG type colors matching KEGG pathway categories
 const AMG_COLORS: Record<string, string> = {
   photosynthesis: '#22c55e',  // Green - photosynthesis
@@ -212,14 +239,14 @@ export function AMGPathwayOverlay({
               !currentPhage
                 ? 'No phage selected'
                 : (currentPhage.genes?.length ?? 0) > 0
-                  ? 'No auxiliary metabolic genes detected'
+                  ? 'No auxiliary metabolic genes named in this genome’s annotations'
                   : 'No annotation data available for this phage'
             }
             hint={
               !currentPhage
                 ? 'Select a phage to analyze.'
                 : (currentPhage.genes?.length ?? 0) > 0
-                  ? `Genome scanned across ${currentPhage.genes?.length} CDS features; no host-modulating auxiliary metabolic genes (AMGs) were found.`
+                  ? `Searched ${currentPhage.genes?.length} CDS features for ${AMG_MARKER_GENES.length} marker genes (${AMG_MARKER_GENES.join(', ')}) in gene and product NAMES. Most phage genes in RefSeq are labelled “hypothetical protein”, so this is absence of evidence rather than evidence of absence.`
                   : 'This phage record has no CDS annotations available in the database.'
             }
           />

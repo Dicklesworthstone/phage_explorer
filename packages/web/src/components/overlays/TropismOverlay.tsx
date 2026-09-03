@@ -305,7 +305,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
             }}
           >
             {(phage?.genes?.length ?? 0) > 0
-              ? `No receptor-binding protein candidates detected (scanned ${phage?.genes?.length} CDS features; none matched known tail fiber or spike domains).`
+              ? 'No receptor-binding protein candidates for this phage. These predictions are precomputed by protein-embedding similarity to known tail fibre and spike proteins and shipped with the database, so an empty result means either that no protein scored above threshold or that this phage was not covered by that precomputation — the overlay cannot tell the two apart.'
               : 'No annotation data available for this phage (no CDS features found in database).'}
           </div>
         )}

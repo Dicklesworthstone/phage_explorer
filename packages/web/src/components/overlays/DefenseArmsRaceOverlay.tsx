@@ -245,14 +245,14 @@ export function DefenseArmsRaceOverlay({
               !currentPhage
                 ? 'No phage selected'
                 : (currentPhage.genes?.length ?? 0) > 0
-                  ? 'No defense systems detected'
+                  ? 'No defense systems named in this genome’s annotations'
                   : 'No annotation data available for this phage'
             }
             hint={
               !currentPhage
                 ? 'Select a phage to analyze.'
                 : (currentPhage.genes?.length ?? 0) > 0
-                  ? `Genome scanned across ${currentPhage.genes?.length} CDS features; no anti-CRISPR, anti-RM, or anti-Abi systems were detected.`
+                  ? `Searched ${currentPhage.genes?.length} CDS features for anti-CRISPR, anti-RM and anti-Abi patterns in gene and product NAMES. Most phage genes in RefSeq are labelled “hypothetical protein”, so this is absence of evidence rather than evidence of absence.`
                   : 'This phage record has no CDS annotations available in the database.'
             }
           />
