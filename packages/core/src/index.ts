@@ -32,6 +32,7 @@ export * from './module-coherence';
 
 // Fold embeddings quickview
 export * from './fold-embeddings';
+export * from './embedding-index';
 
 // CRISPR Pressure analysis
 export * from './crispr';

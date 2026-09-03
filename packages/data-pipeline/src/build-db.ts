@@ -29,6 +29,7 @@ import {
 import { PHAGE_CATALOG } from './phage-catalog';
 import { fetchPhageSequence, type NCBISequenceResult } from './ncbi-fetcher';
 import { readFileSync, existsSync } from 'fs';
+import { updateAntiCrisprInDatabase } from './update-anti-crispr';
 
 const DB_PATH = './phage.db';
 const CHUNK_SIZE = 10000; // 10kb chunks
@@ -1133,6 +1134,9 @@ async function main() {
   }
 
   sqlite.close();
+
+  // Populate or update anti-CRISPR annotations if ESM2 fold_embeddings exist
+  updateAntiCrisprInDatabase(DB_PATH);
 
   console.log('\n========================================');
   console.log(`Database created: ${DB_PATH}`);
