@@ -7,6 +7,7 @@ export { GenomeTrack } from './GenomeTrack';
 export type { GenomeTrackProps } from './GenomeTrack';
 export * from './GelCanvas';
 export * from './OverlayProvenance';
+export * from './HowDoIKnowThis';
 export * from '../../primitives/colorScales';
 export * from '../../primitives/ColorLegend';
 

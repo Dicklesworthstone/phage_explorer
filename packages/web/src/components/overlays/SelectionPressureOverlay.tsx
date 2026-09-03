@@ -11,6 +11,7 @@ import {
   OverlayLoadingState,
   OverlayEmptyState,
   OverlayErrorState,
+  HowDoIKnowThis,
 } from './primitives';
 
 interface SelectionPressureOverlayProps {
@@ -130,8 +131,32 @@ export function SelectionPressureOverlay({ repository, currentPhage }: Selection
           borderRadius: '4px',
           color: colors.textDim,
           fontSize: '0.9rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '0.5rem',
+          flexWrap: 'wrap',
         }}>
-          <strong style={{ color: colors.accent }}>Evolutionary Pressure</strong>: Blue = Purifying (Conserved), Red = Positive (Adaptive/Arms Race).
+          <div>
+            <strong style={{ color: colors.accent }}>Evolutionary Pressure</strong>: Blue = Purifying (Conserved), Red = Positive (Adaptive/Arms Race).
+          </div>
+          {currentPhage && (
+            <HowDoIKnowThis
+              title="Selection Pressure (dN/dS Ratio)"
+              computation="Gene-aware ratio of nonsynonymous substitutions per nonsynonymous site (dN) to synonymous substitutions per synonymous site (dS) calculated across aligned coding sequences using the Nei-Gojobori method with Jukes-Cantor correction for multiple substitutions."
+              inputs={[
+                { label: 'Query Genome', value: `${currentPhage.name} (${targetSequence ? `${targetSequence.length.toLocaleString()} bp` : `${currentPhage.genomeLength?.toLocaleString() ?? 'N/A'} bp`})` },
+                { label: 'Reference Genome', value: diffReferenceSequence ? `Loaded sequence (${diffReferenceSequence.length.toLocaleString()} bp)` : 'Reference phage genome' },
+                { label: 'Genes Analyzed', value: `${currentPhage.genes?.length ?? 0} CDS features` },
+                { label: 'Window Size', value: '150 bp' },
+              ]}
+              implementation={{
+                engine: 'JavaScript',
+                details: 'Pairwise Nei-Gojobori codon substitution estimator with Jukes-Cantor distance correction',
+              }}
+              citation={`Selection pressure across ${currentPhage.name} coding regions was evaluated using gene-aware windowed dN/dS ratios computed by the Nei-Gojobori method with Jukes-Cantor distance correction against the reference genome in Phage Explorer.`}
+            />
+          )}
         </div>
 
         {loading ? (

@@ -202,6 +202,7 @@ export interface GCSkewResult {
   cumulative: number[];
   originPosition?: number;
   terminusPosition?: number;
+  engine?: 'wasm-simd' | 'wasm-baseline' | 'js';
 }
 
 /**

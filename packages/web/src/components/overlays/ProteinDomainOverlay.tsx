@@ -24,6 +24,7 @@ import {
   OverlayLoadingState,
   OverlayEmptyState,
   OverlayErrorState,
+  HowDoIKnowThis,
 } from './primitives';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import type { ColorScale, HeatmapHover } from '../primitives/types';
@@ -604,14 +605,37 @@ export function ProteinDomainOverlay({
             fontSize: '0.85rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <strong style={{ color: colors.accent }}>Protein Domain Annotations</strong>
-            {beginnerModeEnabled && (
-              <InfoButton
-                size="sm"
-                label="Learn about protein domains"
-                tooltip={overlayHelp?.summary ?? 'Protein domains are conserved functional units that can be identified by sequence similarity.'}
-                onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'protein-domain')}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <strong style={{ color: colors.accent }}>Protein Domain Annotations</strong>
+              {beginnerModeEnabled && (
+                <InfoButton
+                  size="sm"
+                  label="Learn about protein domains"
+                  tooltip={overlayHelp?.summary ?? 'Protein domains are conserved functional units that can be identified by sequence similarity.'}
+                  onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'protein-domain')}
+                />
+              )}
+            </div>
+            {currentPhage && (
+              <HowDoIKnowThis
+                title="Pfam Protein Domain Annotations"
+                computation="Profile hidden Markov model (HMM) sequence search scanning translated phage CDS features against the Pfam-A profile database using PyHMMER profile hmmscan."
+                inputs={[
+                  { label: 'Phage', value: `${currentPhage.name} (${currentPhage.genomeLength?.toLocaleString() ?? 'N/A'} bp)` },
+                  { label: 'Genes Scanned', value: `${currentPhage.genes?.length ?? 0} CDS features` },
+                  { label: 'Domain Hits', value: `${domains.length} significant hits` },
+                ]}
+                implementation={{
+                  engine: 'Pipeline Database',
+                  details: 'Offline PyHMMER profile HMM scanner against Pfam-A',
+                }}
+                annotationRelease={{
+                  database: 'Pfam-A',
+                  version: pfamRelease ? `Release ${pfamRelease}` : 'Release 38.2',
+                  details: `E-value threshold ≤ ${pfamEValue !== null ? pfamEValue.toExponential(0) : '1e-5'}`,
+                }}
+                citation={`Protein domains for ${currentPhage.name} were identified by scanning annotated coding sequences against Pfam-A ${pfamRelease ? 'Release ' + pfamRelease : 'Release 38.2'} using PyHMMER profile hidden Markov models with an E-value threshold of ${pfamEValue !== null ? pfamEValue.toExponential(0) : '1e-5'} in Phage Explorer.`}
               />
             )}
           </div>

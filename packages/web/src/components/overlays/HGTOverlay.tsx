@@ -24,12 +24,14 @@ import { GenomeTrack } from './primitives/GenomeTrack';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  HowDoIKnowThis,
 } from './primitives';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
 import {
   analyzeHGTProvenance,
   buildReferencePanel,
   initMinHashWasm,
+  isMinHashWasmAvailable,
   type HGTAnalysis,
   type PassportStamp,
 } from '@phage-explorer/comparison';
@@ -450,14 +452,35 @@ export function HGTOverlay({
             fontSize: '0.85rem',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <strong style={{ color: colors.accent }}>HGT Provenance Tracer</strong>
-            {beginnerModeEnabled && (
-              <InfoButton
-                size="sm"
-                label="Learn about horizontal gene transfer"
-                tooltip={overlayHelp?.summary ?? 'HGT moves genes between organisms. This tool creates passport stamps for each island.'}
-                onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'horizontal-gene-transfer')}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <strong style={{ color: colors.accent }}>HGT Provenance Tracer</strong>
+              {beginnerModeEnabled && (
+                <InfoButton
+                  size="sm"
+                  label="Learn about horizontal gene transfer"
+                  tooltip={overlayHelp?.summary ?? 'HGT moves genes between organisms. This tool creates passport stamps for each island.'}
+                  onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'horizontal-gene-transfer')}
+                />
+              )}
+            </div>
+            {currentPhage && (
+              <HowDoIKnowThis
+                title="Horizontal Gene Transfer & Genomic Islands"
+                computation="Multi-evidence horizontal gene transfer detection combining local GC content deviation, Karlin dinucleotide signature anomalies (odds ratio distance > 0.08), mobilome hallmark gene annotation, and MinHash k-mer containment sketches (k=16) against reference genomes."
+                inputs={[
+                  { label: 'Genome', value: `${currentPhage.name} (${currentPhage.accession ?? currentPhage.id})` },
+                  { label: 'Length', value: `${(sequence.length || currentPhage.genomeLength || 0).toLocaleString()} bp` },
+                  { label: 'Genome GC', value: sequence ? `${(calculateGC(sequence) * 100).toFixed(1)}%` : 'N/A' },
+                  { label: 'Donor Panel', value: `${referenceCount} catalogue genomes` },
+                ]}
+                implementation={{
+                  engine: isMinHashWasmAvailable() ? 'WASM (SIMD)' : 'JavaScript',
+                  details: isMinHashWasmAvailable()
+                    ? 'WASM MinHash k=16 signature generator with fast Jaccard containment'
+                    : 'JavaScript exact Set-Jaccard k=15 fallback',
+                }}
+                citation={`Genomic islands and horizontal gene transfer events in ${currentPhage.name} were identified through localized GC content deviation, Karlin dinucleotide signature anomalies, and MinHash k-mer containment sketches against reference phage genomes in Phage Explorer.`}
               />
             )}
           </div>

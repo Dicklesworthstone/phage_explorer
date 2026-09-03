@@ -24,6 +24,7 @@ import {
   OverlayEmptyState,
   OverlayLegend,
   OverlayLegendItem,
+  HowDoIKnowThis,
 } from './primitives';
 import { ChartOverlaySkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
@@ -278,14 +279,42 @@ export function GCSkewOverlay({
         {!isLoading && (
           <OverlayDescription
             title="Cumulative GC Skew"
-            action={beginnerModeEnabled ? (
-              <InfoButton
-                size="sm"
-                label="Learn about GC skew"
-                tooltip={overlayHelp?.summary ?? 'GC skew compares the abundance of G vs C bases along the genome.'}
-                onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'gc-skew')}
-              />
-            ) : undefined}
+            action={
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {hasData && currentPhage && (
+                  <HowDoIKnowThis
+                    title="GC Skew & Cumulative Minimum"
+                    computation="Sliding-window nucleotide asymmetry (G - C) / (G + C) across the complete genome, tracking cumulative skew minima and maxima to determine putative replication origin and terminus inflection points."
+                    inputs={[
+                      { label: 'Genome', value: `${currentPhage.name} (${currentPhage.accession ?? currentPhage.id})` },
+                      { label: 'Length', value: `${genomeLength.toLocaleString()} bp` },
+                      { label: 'Window Size', value: `${windowSize} bp` },
+                      { label: 'Step Size', value: '125 bp' },
+                    ]}
+                    implementation={{
+                      engine:
+                        result?.engine === 'wasm-simd'
+                          ? 'WASM (SIMD)'
+                          : result?.engine === 'wasm-baseline'
+                          ? 'WASM (Baseline)'
+                          : 'JavaScript',
+                      details: result?.engine?.startsWith('wasm')
+                        ? 'Compiled Rust WebAssembly kernel compute_gc_skew'
+                        : 'TypeScript sliding-window fallback calculateGCSkewJS',
+                    }}
+                    citation={`GC skew was calculated across the ${currentPhage.name} genome using a 500 bp sliding window (125 bp step) with cumulative asymmetry tracking to determine putative replication origin and terminus inflection points in Phage Explorer.`}
+                  />
+                )}
+                {beginnerModeEnabled ? (
+                  <InfoButton
+                    size="sm"
+                    label="Learn about GC skew"
+                    tooltip={overlayHelp?.summary ?? 'GC skew compares the abundance of G vs C bases along the genome.'}
+                    onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'gc-skew')}
+                  />
+                ) : null}
+              </div>
+            }
           >
             Helps identify the origin (ori) and terminus (ter) of replication. The minimum typically
             corresponds to the origin, maximum to the terminus.

@@ -23,6 +23,7 @@ import {
   OverlayEmptyState,
   OverlayLegend,
   OverlayLegendItem,
+  HowDoIKnowThis,
 } from './primitives';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import {
@@ -265,7 +266,33 @@ export function CodonBiasOverlay({
     >
       <OverlayStack>
         {/* Description */}
-        <OverlayDescription title="Codon Usage Bias">
+        <OverlayDescription
+          title="Codon Usage Bias"
+          action={
+            hasData && currentPhage ? (
+              <HowDoIKnowThis
+                title="Codon Usage Bias & Translational Adaptation"
+                computation="Relative Synonymous Codon Usage (RSCU) and Effective Number of Codons (Nc) computed over all coding sequences, quantifying codon choice asymmetry and translational selection relative to host tRNA pools."
+                inputs={[
+                  { label: 'Genome', value: `${currentPhage.name} (${currentPhage.accession ?? currentPhage.id})` },
+                  { label: 'Total Codons', value: `${analysis.totalCodons.toLocaleString()}` },
+                  { label: 'GC3 Bias', value: `${(analysis.gc3Content * 100).toFixed(1)}%` },
+                  { label: 'Nc Value', value: `${analysis.effectiveNumberOfCodons.toFixed(1)} (61 possible)` },
+                ]}
+                implementation={{
+                  engine: 'JavaScript',
+                  details: 'Exact codon family frequency analysis and Wright effective codon number formulation',
+                }}
+                annotationRelease={{
+                  database: 'RefSeq Host tRNA Pools',
+                  version: 'Release 2026-08',
+                  details: '61 anticodon translation pools per host taxon',
+                }}
+                citation={`Codon usage bias and the effective number of codons (Nc) were calculated across all coding sequences of ${currentPhage.name} following Wright's formulation, and Relative Synonymous Codon Usage (RSCU) values were determined relative to host translational tRNA pools in Phage Explorer.`}
+              />
+            ) : undefined
+          }
+        >
           Relative Synonymous Codon Usage (RSCU) reveals translational selection.
           RSCU &gt; 1.0 indicates preferred codons; RSCU &lt; 1.0 indicates avoided codons.
           Strong bias suggests adaptation to host tRNA pools.

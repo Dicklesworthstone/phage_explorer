@@ -21,7 +21,7 @@ import {
   canUseDenseKmerCounts,
 } from '@phage-explorer/core/analysis/dense-kmer';
 import { gpuCompute } from './gpu/GPUCompute';
-import { getWasmCompute } from '../lib/wasm-loader';
+import { getWasmCompute, getWasmComputeVariant } from '../lib/wasm-loader';
 import type {
   AnalysisRequest,
   AnalysisResult,
@@ -251,6 +251,7 @@ function calculateGCSkewJS(seq: string, windowSize: number, stepSize: number): G
     cumulative,
     originPosition: minIdx * safeStep,
     terminusPosition: maxIdx * safeStep,
+    engine: 'js',
   };
 }
 
@@ -313,6 +314,7 @@ async function calculateGCSkewWasm(sequence: string, windowSize = 1000): Promise
         cumulative: cumulativeSampled,
         originPosition: minIdx * stepSize,
         terminusPosition: maxIdx * stepSize,
+        engine: getWasmComputeVariant() === 'simd' ? 'wasm-simd' : 'wasm-baseline',
       };
     }
   } catch (err) {
@@ -937,6 +939,7 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
     cumulative,
     originPosition: minIdx * stepSize,
     terminusPosition: maxIdx * stepSize,
+    engine: 'js',
   };
 }
 
