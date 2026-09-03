@@ -52,6 +52,9 @@ jobs:
       - name: Check scripts syntax
         run: bun run check:scripts
 
+      - name: Check bead closures
+        run: bun run check:beads
+
       - name: Run tests
         run: bun run test
 

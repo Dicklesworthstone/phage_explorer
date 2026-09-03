@@ -290,8 +290,23 @@ Agent workflow:
 2. Claim: `br update <id> --status in_progress`.
 3. Implement + test.
 4. If you discover new work, create a new bead with `discovered-from:<parent-id>`.
-5. Close when done.
+5. Close when done with mandatory evidence (`br close <id> --reason "<evidence>"`).
 6. Commit `.beads/` in the same commit as code changes.
+
+### Bead Closure Standard
+
+When closing an issue (`br close <id> --reason "..."`), strict verification standards apply:
+
+1. **A close reason is mandatory** and must state what was verified, not what was intended. Every closed bead must provide concrete verification details.
+2. **Evidence, not assertion.**
+   - For a code change: state the test that covers it, or the command run and its exit code / result.
+   - For a documentation change: state the claim now matched to the exact file and line that makes it true.
+   - For a descoped feature: state why it was descoped and what replaces or supersedes it.
+3. **One reason per bead.** A shared boilerplate reason across a batch is not evidence for any individual item.
+4. **Deferred work is not closed.** A bead whose remaining step cannot be performed (e.g. manual screen-reader testing) is re-scoped or handed to a human owner — never closed with "remaining: manual testing".
+5. **Closure follows the merge**, never precedes it.
+6. **Historical imported plans**: The `[WEB-P*]` family represents imported backlog plans and is marked with labels `unverified` and `imported-plan`; do not assume closed `[WEB-P*]` items without verification reasons are verified code.
+7. **Automated Enforcement**: Enforced pre-commit via `.git/hooks/hooks.d/pre-commit/60-check-bead-closures.sh` and CI pipeline via `bun run check:beads` (`scripts/check-bead-closures.ts`). Attempts to commit a newly closed bead without a reason fail immediately.
 
 Sync workflow:
 
