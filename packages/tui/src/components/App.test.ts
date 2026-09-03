@@ -192,3 +192,63 @@ describe('the modifier table is consulted before the plain-letter chain', () => 
     }
   });
 });
+
+/**
+ * The TUI must read the same database the web app does.
+ *
+ * `packages/tui/src/index.tsx` resolved `${cwd}/phage.db` BEFORE
+ * `${cwd}/packages/web/public/phage.db`. Both exist in a working tree and they
+ * are not the same file:
+ *
+ *   phage.db                      build intermediate, gitignored
+ *   packages/web/public/phage.db  committed, shipped, read by the web app
+ *
+ * `bun run build:db` writes the first; `scripts/build-web-db.ts` then VACUUMs it
+ * into the second. Critically, the plain `build:db` produces NO Pfam domains and
+ * NO ESM2 embeddings -- those come from `build:db:annotated`. So a developer who
+ * ran the plain build got a TUI missing those annotations while the web app
+ * showed them, with nothing to indicate the two were reading different files.
+ *
+ * These are source-level assertions because the resolver reads the filesystem
+ * and process.cwd(); asserting on the ORDER of the candidate list is what
+ * actually pins the behaviour.
+ */
+describe('database resolution prefers the committed database', () => {
+  const src = readFileSync(join(import.meta.dir, '../index.tsx'), 'utf8');
+
+  const indexOfCandidate = (needle: string): number => src.indexOf(needle);
+
+  it('reads the resolver source', () => {
+    expect(src).toContain('getCandidateDbPaths');
+  });
+
+  it('puts the committed database ahead of the build intermediate', () => {
+    const committed = indexOfCandidate("'packages', 'web', 'public', 'phage.db'");
+    const intermediate = indexOfCandidate("add(path.join(process.cwd(), 'phage.db'))");
+    expect(committed).toBeGreaterThan(0);
+    expect(intermediate).toBeGreaterThan(0);
+    expect(committed).toBeLessThan(intermediate);
+  });
+
+  it('still honours the explicit override ahead of both', () => {
+    // Someone iterating on the pipeline needs a way to point at their own file.
+    const override = indexOfCandidate('PHAGE_EXPLORER_DB_PATH');
+    const committed = indexOfCandidate("'packages', 'web', 'public', 'phage.db'");
+    expect(override).toBeGreaterThan(0);
+    expect(override).toBeLessThan(committed);
+  });
+
+  it('keeps the intermediate as a fallback rather than dropping it', () => {
+    // A fresh clone that has run build:db but has no committed database must
+    // still work, so the intermediate stays in the list.
+    expect(indexOfCandidate("add(path.join(process.cwd(), 'phage.db'))")).toBeGreaterThan(0);
+  });
+
+  it('says which database it chose when a different one is being shadowed', () => {
+    // Silently preferring one of two databases is how the original confusion
+    // arose. The warning names both and how to override.
+    expect(src).toContain('warnIfShadowedDatabase');
+    expect(src).toContain('being ignored');
+    expect(src).toContain('PHAGE_EXPLORER_DB_PATH to');
+  });
+});
