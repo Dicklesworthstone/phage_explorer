@@ -39,7 +39,7 @@
     "wasm:verify": "bun scripts/verify-wasm-toolchain.ts",
     "bench:wasm": "bun scripts/benchmark-wasm.ts --json packages/wasm-compute/benchmark-results.json",
     "bench:check": "bun scripts/benchmark-wasm.ts --check packages/wasm-compute/benchmark-results.json",
-    "wasm:test": "cd packages/wasm-compute && cargo test --release"
+    "wasm:test": "cd packages/wasm-compute && RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release"
   },
   "devDependencies": {
     "@huggingface/transformers": "4.2.0",

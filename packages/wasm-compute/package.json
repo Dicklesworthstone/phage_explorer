@@ -21,7 +21,8 @@
     "./simd/wasm_compute_bg.wasm": "./pkg-simd/wasm_compute_bg.wasm"
   },
   "scripts": {
-    "build": "RUSTFLAGS=\"-C target-feature=-simd128\" wasm-pack build --target bundler --out-dir pkg && bun run ../../scripts/inline-wasm-compute.ts --pkg-dir pkg && RUSTFLAGS=\"-C target-feature=+simd128\" wasm-pack build --target bundler --out-dir pkg-simd && bun run ../../scripts/inline-wasm-compute.ts --pkg-dir pkg-simd"
+    "build": "RCH_CARGO_WRAPPER_BYPASS=1 RUSTFLAGS=\"-C target-feature=-simd128\" wasm-pack build --target bundler --out-dir pkg && bun run ../../scripts/inline-wasm-compute.ts --pkg-dir pkg && RCH_CARGO_WRAPPER_BYPASS=1 RUSTFLAGS=\"-C target-feature=+simd128\" wasm-pack build --target bundler --out-dir pkg-simd && bun run ../../scripts/inline-wasm-compute.ts --pkg-dir pkg-simd",
+    "test": "RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release"
   },
   "devDependencies": {
     "wasm-pack": "^0.13.1"

@@ -78,6 +78,30 @@ The `packages/wasm-compute` package contains Rust code compiled to WASM:
 
 ---
 
+## Building the Rust/WASM package
+
+`cd packages/wasm-compute && bun run build` and `bun run wasm:test` work as
+written. Both scripts export `RCH_CARGO_WRAPPER_BYPASS=1` because they have to.
+
+If you ever see this from a cargo or wasm-pack command:
+
+    Caused by: failed to execute `cargo build`: exited with exit status: 103
+    [RCH] remote required; refusing local fallback (all workers failed preflight checks)
+
+that is the rch hook, not a broken toolchain. Exit 103 is rch's fail-closed
+code. wasm-pack shells out to `cargo build`, the hook intercepts it, and no
+worker in the fleet has a wasm32 target, so it refuses rather than building
+locally. `.rch/config.toml` already sets `force_local = true` for this repo and
+it is NOT sufficient on its own; an inline `RCH_ENABLED=0` prefix does not
+bypass the hook either. Export the wrapper bypass for the whole command:
+
+    env RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release
+
+The committed scripts already do this. You only need it for an ad-hoc cargo
+invocation of your own.
+
+---
+
 ## Code Editing Discipline
 
 - Do **not** run scripts that bulk-modify code (codemods, invented one-off scripts, giant `sed`/regex refactors).
