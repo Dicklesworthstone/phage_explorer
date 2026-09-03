@@ -241,10 +241,20 @@ export function DefenseArmsRaceOverlay({
           </OverlayLoadingState>
         ) : defenseSystems.length === 0 ? (
           <OverlayEmptyState
-            message={!currentPhage
-              ? 'No phage selected'
-              : 'No defense system annotations available for this phage'}
-            hint={!currentPhage ? 'Select a phage to analyze.' : 'Defense annotations are predicted from known anti-CRISPR and anti-RM genes.'}
+            message={
+              !currentPhage
+                ? 'No phage selected'
+                : (currentPhage.genes?.length ?? 0) > 0
+                  ? 'No defense systems detected'
+                  : 'No annotation data available for this phage'
+            }
+            hint={
+              !currentPhage
+                ? 'Select a phage to analyze.'
+                : (currentPhage.genes?.length ?? 0) > 0
+                  ? `Genome scanned across ${currentPhage.genes?.length} CDS features; no anti-CRISPR, anti-RM, or anti-Abi systems were detected.`
+                  : 'This phage record has no CDS annotations available in the database.'
+            }
           />
         ) : (
           <>

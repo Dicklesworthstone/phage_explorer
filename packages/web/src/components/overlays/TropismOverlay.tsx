@@ -304,7 +304,9 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
               color: colors.textMuted,
             }}
           >
-            No receptor-binding protein annotations found for this phage.
+            {(phage?.genes?.length ?? 0) > 0
+              ? `No receptor-binding protein candidates detected (scanned ${phage?.genes?.length} CDS features; none matched known tail fiber or spike domains).`
+              : 'No annotation data available for this phage (no CDS features found in database).'}
           </div>
         )}
 

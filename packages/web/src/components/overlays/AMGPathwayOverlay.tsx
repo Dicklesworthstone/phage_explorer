@@ -208,8 +208,20 @@ export function AMGPathwayOverlay({
           </OverlayLoadingState>
         ) : amgs.length === 0 ? (
           <OverlayEmptyState
-            message={!currentPhage ? 'No phage selected' : 'No AMG annotations available'}
-            hint={!currentPhage ? 'Select a phage to analyze.' : 'AMG detection requires KEGG pathway annotations.'}
+            message={
+              !currentPhage
+                ? 'No phage selected'
+                : (currentPhage.genes?.length ?? 0) > 0
+                  ? 'No auxiliary metabolic genes detected'
+                  : 'No annotation data available for this phage'
+            }
+            hint={
+              !currentPhage
+                ? 'Select a phage to analyze.'
+                : (currentPhage.genes?.length ?? 0) > 0
+                  ? `Genome scanned across ${currentPhage.genes?.length} CDS features; no host-modulating auxiliary metabolic genes (AMGs) were found.`
+                  : 'This phage record has no CDS annotations available in the database.'
+            }
           />
         ) : (
           <>

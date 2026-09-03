@@ -30,6 +30,7 @@ import { PHAGE_CATALOG } from './phage-catalog';
 import { fetchPhageSequence, type NCBISequenceResult } from './ncbi-fetcher';
 import { readFileSync, existsSync } from 'fs';
 import { updateAntiCrisprInDatabase } from './update-anti-crispr';
+import { updateDomainAnnotations } from './domain-annotations';
 
 const DB_PATH = './phage.db';
 const CHUNK_SIZE = 10000; // 10kb chunks
@@ -1137,6 +1138,12 @@ async function main() {
 
   // Populate or update anti-CRISPR annotations if ESM2 fold_embeddings exist
   updateAntiCrisprInDatabase(DB_PATH);
+
+  // Derive domain-based defense and AMG annotations from Pfam protein_domains
+  const domainSqlite = new Database(DB_PATH);
+  const domainStats = updateDomainAnnotations(domainSqlite);
+  domainSqlite.close();
+  console.log(`Derived domain annotations: ${domainStats.defenseCount} defense hits (${domainStats.defensePhages} phages), ${domainStats.amgCount} AMG hits (${domainStats.amgPhages} phages)`);
 
   console.log('\n========================================');
   console.log(`Database created: ${DB_PATH}`);
