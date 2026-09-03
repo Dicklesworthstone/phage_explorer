@@ -59,13 +59,14 @@ async function main() {
   const db = new Database(OUTPUT_DB);
   db.exec("VACUUM");
   db.exec("REINDEX");
+
+  // Calculate deterministic logical content digest for cache invalidation (independent of VACUUM/page layout variations)
+  console.log("Generating manifest with logical content digest...");
+  const hash = computeDatabaseContentDigest(db);
   db.close();
 
-  // Calculate hash for cache invalidation
-  console.log("Generating manifest...");
   const fileData = await Bun.file(OUTPUT_DB).arrayBuffer();
   const fileBuffer = Buffer.from(fileData);
-  const hash = createHash("sha256").update(fileBuffer).digest("hex");
 
   const stats = await stat(OUTPUT_DB);
   const manifest = {
@@ -97,7 +98,40 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-main().catch((err) => {
-  console.error("Build failed:", err);
-  process.exit(1);
-});
+/**
+ * Compute deterministic logical content digest of SQLite database.
+ * Independent of page fragmentation, balancing order, or VACUUM differences across environments.
+ */
+export function computeDatabaseContentDigest(db: Database): string {
+  const tables = db
+    .query<{ name: string }, []>(
+      'SELECT name FROM sqlite_master WHERE type="table" AND name NOT LIKE "sqlite_%" ORDER BY name'
+    )
+    .all();
+
+  const hasher = createHash('sha256');
+
+  for (const t of tables) {
+    const cols = db
+      .query<{ name: string }, []>(`PRAGMA table_info("${t.name}")`)
+      .all()
+      .map((c) => c.name)
+      .sort();
+    const colExpr = cols.map((c) => `quote("${c}")`).join(' || "," || ');
+    const rows = db.query<{ r: string }, []>(`SELECT ${colExpr} as r FROM "${t.name}" ORDER BY 1`).all();
+    hasher.update(`table:${t.name}:${rows.length}\n`);
+    for (const row of rows) {
+      hasher.update(row.r);
+      hasher.update('\n');
+    }
+  }
+
+  return hasher.digest('hex');
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("Build failed:", err);
+    process.exit(1);
+  });
+}
