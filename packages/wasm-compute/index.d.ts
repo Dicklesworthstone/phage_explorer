@@ -100,26 +100,7 @@ declare module '@phage/wasm-compute' {
     num_hashes: number
   ): number;
 
-  /**
-   * 3D Model for ASCII rendering.
-   */
-  export class Model3D {
-    constructor(vertices: Float64Array, edges: Uint32Array);
-    free(): void;
-  }
 
-  /**
-   * Render a 3D model to ASCII art.
-   */
-  export function render_ascii_model(
-    model: Model3D,
-    rx: number,
-    ry: number,
-    rz: number,
-    width: number,
-    height: number,
-    quality: string
-  ): string;
 
   /**
    * Result of Hoeffding's D computation.
@@ -153,49 +134,7 @@ declare module '@phage/wasm-compute' {
    */
   export function hoeffdings_d(x: Float64Array, y: Float64Array): HoeffdingResult;
 
-  // ============================================================================
-  // PCA (Principal Component Analysis) via Power Iteration
-  // ============================================================================
 
-  /**
-   * Result of PCA computation.
-   */
-  export class PCAResult {
-    free(): void;
-    /** Eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...]) */
-    readonly eigenvectors: Float64Array;
-    /** Eigenvalues for each component */
-    readonly eigenvalues: Float64Array;
-    /** Number of principal components */
-    readonly n_components: number;
-    /** Number of features (dimensions) */
-    readonly n_features: number;
-  }
-
-  /**
-   * Compute PCA using power iteration method.
-   *
-   * Uses power iteration to find top eigenvectors of X^T * X without forming
-   * the full covariance matrix. Memory-efficient for high-dimensional data.
-   *
-   * @param data - Flattened row-major matrix (n_samples * n_features)
-   * @param n_samples - Number of samples (rows)
-   * @param n_features - Number of features (columns)
-   * @param n_components - Number of principal components to extract
-   * @param max_iterations - Maximum iterations (default: 100)
-   * @param tolerance - Convergence tolerance (default: 1e-8)
-   * @returns PCAResult containing eigenvectors and eigenvalues
-   *
-   * 10-50x faster than JS for large matrices.
-   */
-  export function pca_power_iteration(
-    data: Float64Array,
-    n_samples: number,
-    n_features: number,
-    n_components: number,
-    max_iterations: number,
-    tolerance: number
-  ): PCAResult;
 
   /**
    * Compute Hoeffding's D between two k-mer frequency vectors derived from sequences.
@@ -368,35 +307,7 @@ declare module '@phage/wasm-compute' {
 
   /**
    * Result of grid building for sequence viewport.
-   */
-  export class GridResult {
-    free(): void;
-    /** JSON-encoded grid data */
-    readonly json: string;
-  }
 
-  /**
-   * Build a grid of sequence data for viewport rendering.
-   *
-   * This is the HOT PATH called on every scroll. Optimized for minimal
-   * allocations and fast character processing.
-   *
-   * @param seq - Full sequence string
-   * @param start_index - Starting position in sequence (0-based)
-   * @param cols - Number of columns in grid
-   * @param rows - Number of rows in grid
-   * @param mode - Display mode: "dna", "aa", or "dual"
-   * @param frame - Reading frame for AA translation (0, 1, or 2)
-   * @returns GridResult with JSON-encoded rows
-   */
-  export function build_grid(
-    seq: string,
-    start_index: number,
-    cols: number,
-    rows: number,
-    mode: string,
-    frame: number
-  ): GridResult;
 
   // ============================================================================
   // Dense K-mer Counter (WASM ABI: bytes-first, typed-array output)
@@ -929,6 +840,15 @@ declare module '@phage/wasm-compute' {
     cumulative_gc_skew(): Float64Array;
 
     /**
+     * Compute windowed Shannon entropy (normalized 0..=1) for sliding windows.
+     *
+     * @param window_size - Window size in bases
+     * @param step_size - Step between windows
+     * @returns Float64Array of normalized entropy values
+     */
+    windowed_entropy(window_size: number, step_size: number): Float64Array;
+
+    /**
      * Count k-mers using dense array (for k <= 10).
      *
      * Returns a DenseKmerResult with counts for all 4^k possible k-mers.
@@ -966,64 +886,4 @@ declare module '@phage/wasm-compute' {
     dotplot_self(bins: number, window: number): DotPlotBuffers;
   }
 
-  // ============================================================================
-  // PDB Parser - Minimal prototype for structure parsing
-  // ============================================================================
-
-  /**
-   * Result of PDB parsing containing atom data.
-   *
-   * Returns flat arrays suitable for direct use with detect_bonds_spatial.
-   *
-   * IMPORTANT: Must call `.free()` when done to release WASM memory.
-   */
-  export class PDBParseResult {
-    free(): void;
-    /** Flat positions array [x0, y0, z0, x1, y1, z1, ...] */
-    readonly positions: Float32Array;
-    /** Element symbols as single chars "CCCCNNO..." */
-    readonly elements: string;
-    /** Atom names (4 chars each, space-padded) "CA  CB  N   O   ..." */
-    readonly atom_names: string;
-    /** Chain IDs as single chars "AAABBBB..." */
-    readonly chain_ids: string;
-    /** Residue sequence numbers */
-    readonly res_seqs: Int32Array;
-    /** Residue names (3 chars each) "ALAGLYVAL..." */
-    readonly res_names: string;
-    /** Number of atoms parsed */
-    readonly atom_count: number;
-    /** Parse errors or warnings (empty if clean) */
-    readonly error: string;
-  }
-
-  /**
-   * Parse a PDB file (string content) into atom data.
-   *
-   * This is a minimal parser optimized for speed and small WASM size.
-   * It extracts only the fields needed for 3D structure visualization:
-   * - Coordinates (x, y, z)
-   * - Element symbol
-   * - Atom name
-   * - Chain ID
-   * - Residue sequence number
-   * - Residue name
-   *
-   * @param pdb_content - Raw PDB file content as string
-   * @returns PDBParseResult with flat arrays ready for bond detection and rendering.
-   *
-   * @example
-   * ```ts
-   * const pdbContent = await fetch(pdbUrl).then(r => r.text());
-   * const result = wasm.parse_pdb(pdbContent);
-   * try {
-   *   const positions = result.positions; // Float32Array
-   *   const elements = result.elements;   // "CCCCNNO..."
-   *   // Ready for detect_bonds_spatial(positions, elements)
-   * } finally {
-   *   result.free();
-   * }
-   * ```
-   */
-  export function parse_pdb(pdb_content: string): PDBParseResult;
 }

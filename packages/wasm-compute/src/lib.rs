@@ -2,9 +2,7 @@ use wasm_bindgen::prelude::*;
 use std::collections::HashMap;
 use js_sys;
 
-mod renderer;
 
-pub use renderer::{render_ascii_model, Model3D, Vector3};
 
 // ============================================================================
 // Core Genetics Functions - HOT PATH optimizations
@@ -1220,252 +1218,7 @@ mod dotplot_tests {
 // Optimized matrix operations for high-dimensional genomic data
 // ============================================================================
 
-/// Result of PCA computation
-#[wasm_bindgen]
-pub struct PCAResult {
-    /// Flattened eigenvectors (n_components * n_features), row-major
-    eigenvectors: Vec<f64>,
-    /// Eigenvalues for each component
-    eigenvalues: Vec<f64>,
-    /// Number of components computed
-    n_components: usize,
-    /// Number of features (dimensions)
-    n_features: usize,
-}
 
-#[wasm_bindgen]
-impl PCAResult {
-    /// Get eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...])
-    #[wasm_bindgen(getter)]
-    pub fn eigenvectors(&self) -> Vec<f64> {
-        self.eigenvectors.clone()
-    }
-
-    /// Get eigenvalues
-    #[wasm_bindgen(getter)]
-    pub fn eigenvalues(&self) -> Vec<f64> {
-        self.eigenvalues.clone()
-    }
-
-    /// Number of components
-    #[wasm_bindgen(getter)]
-    pub fn n_components(&self) -> usize {
-        self.n_components
-    }
-
-    /// Number of features
-    #[wasm_bindgen(getter)]
-    pub fn n_features(&self) -> usize {
-        self.n_features
-    }
-}
-
-/// Compute PCA using power iteration method.
-///
-/// # Arguments
-/// * `data` - Flattened row-major matrix (n_samples * n_features)
-/// * `n_samples` - Number of samples (rows)
-/// * `n_features` - Number of features (columns)
-/// * `n_components` - Number of principal components to extract
-/// * `max_iterations` - Maximum iterations for power iteration (default: 100)
-/// * `tolerance` - Convergence tolerance (default: 1e-8)
-///
-/// # Returns
-/// PCAResult containing eigenvectors and eigenvalues.
-///
-/// # Algorithm
-/// Uses power iteration to find top eigenvectors of X^T * X without forming
-/// the full covariance matrix. This is memory-efficient for high-dimensional
-/// data (e.g., k-mer frequencies with 4^k features).
-#[wasm_bindgen]
-pub fn pca_power_iteration(
-    data: &[f64],
-    n_samples: usize,
-    n_features: usize,
-    n_components: usize,
-    max_iterations: usize,
-    tolerance: f64,
-) -> PCAResult {
-    if data.len() != n_samples * n_features || n_samples == 0 || n_features == 0 {
-        return PCAResult {
-            eigenvectors: Vec::new(),
-            eigenvalues: Vec::new(),
-            n_components: 0,
-            n_features,
-        };
-    }
-
-    let max_iter = if max_iterations == 0 { 100 } else { max_iterations };
-    let tol = if tolerance <= 0.0 { 1e-8 } else { tolerance };
-    let n_comp = n_components.min(n_samples).min(n_features);
-
-    // Compute mean for each feature
-    let mut mean = vec![0.0; n_features];
-    for i in 0..n_samples {
-        let row_start = i * n_features;
-        for j in 0..n_features {
-            mean[j] += data[row_start + j];
-        }
-    }
-    for j in 0..n_features {
-        mean[j] /= n_samples as f64;
-    }
-
-    // Center the data (create centered copy)
-    let mut centered = vec![0.0; n_samples * n_features];
-    for i in 0..n_samples {
-        let row_start = i * n_features;
-        for j in 0..n_features {
-            centered[row_start + j] = data[row_start + j] - mean[j];
-        }
-    }
-
-    // Find principal components
-    let mut eigenvectors = Vec::with_capacity(n_comp * n_features);
-    let mut eigenvalues = Vec::with_capacity(n_comp);
-    let mut previous_components: Vec<Vec<f64>> = Vec::new();
-
-    for _ in 0..n_comp {
-        let (eigenvector, eigenvalue) = power_iteration_single(
-            &centered,
-            n_samples,
-            n_features,
-            &previous_components,
-            max_iter,
-            tol,
-        );
-
-        eigenvectors.extend(&eigenvector);
-        eigenvalues.push(eigenvalue);
-        previous_components.push(eigenvector);
-    }
-
-    PCAResult {
-        eigenvectors,
-        eigenvalues,
-        n_components: n_comp,
-        n_features,
-    }
-}
-
-/// Single power iteration to find one eigenvector
-fn power_iteration_single(
-    centered: &[f64],
-    n_samples: usize,
-    n_features: usize,
-    previous_components: &[Vec<f64>],
-    max_iterations: usize,
-    tolerance: f64,
-) -> (Vec<f64>, f64) {
-    // Initialize with pseudo-random vector (deterministic for reproducibility)
-    let mut v: Vec<f64> = (0..n_features)
-        .map(|i| ((i * 7919 + 104729) % 1000) as f64 / 1000.0 - 0.5)
-        .collect();
-
-    // Remove projections onto previous components
-    for pc in previous_components {
-        deflate_vec(&mut v, pc);
-    }
-    normalize_vec(&mut v);
-
-    let mut eigenvalue = 0.0;
-
-    for _ in 0..max_iterations {
-        // Compute X^T * X * v = X^T * (X * v)
-        // First: Xv = X * v (n_samples x 1)
-        let xv = multiply_xv(centered, &v, n_samples, n_features);
-
-        // Then: X^T * Xv (n_features x 1)
-        let mut xtxv = multiply_xt_u(centered, &xv, n_samples, n_features);
-
-        // Remove projections onto previous components
-        for pc in previous_components {
-            deflate_vec(&mut xtxv, pc);
-        }
-
-        // Compute eigenvalue (Rayleigh quotient)
-        let new_eigenvalue = dot_product_vec(&v, &xtxv);
-
-        // Normalize to get new eigenvector estimate
-        normalize_vec(&mut xtxv);
-
-        // Align sign to avoid oscillation (v and -v represent the same eigenvector).
-        if dot_product_vec(&v, &xtxv) < 0.0 {
-            for x in xtxv.iter_mut() {
-                *x = -*x;
-            }
-        }
-
-        // Check convergence
-        let diff: f64 = v.iter().zip(xtxv.iter()).map(|(a, b)| (a - b).abs()).sum();
-
-        v = xtxv;
-        eigenvalue = new_eigenvalue;
-
-        if diff < tolerance {
-            break;
-        }
-    }
-
-    // Scale eigenvalue by (n_samples - 1) for sample covariance
-    let scaled_eigenvalue = if n_samples > 1 {
-        eigenvalue / (n_samples - 1) as f64
-    } else {
-        eigenvalue
-    };
-
-    (v, scaled_eigenvalue)
-}
-
-/// Multiply X (row-major, n x d) by vector v (d x 1), returns (n x 1)
-fn multiply_xv(x: &[f64], v: &[f64], n_samples: usize, n_features: usize) -> Vec<f64> {
-    let mut result = vec![0.0; n_samples];
-    for i in 0..n_samples {
-        let row_start = i * n_features;
-        let mut sum = 0.0;
-        for j in 0..n_features {
-            sum += x[row_start + j] * v[j];
-        }
-        result[i] = sum;
-    }
-    result
-}
-
-/// Multiply X^T (d x n) by vector u (n x 1), returns (d x 1)
-fn multiply_xt_u(x: &[f64], u: &[f64], n_samples: usize, n_features: usize) -> Vec<f64> {
-    let mut result = vec![0.0; n_features];
-    for i in 0..n_samples {
-        let row_start = i * n_features;
-        let ui = u[i];
-        for j in 0..n_features {
-            result[j] += x[row_start + j] * ui;
-        }
-    }
-    result
-}
-
-/// Remove projection of v onto u: v = v - (v·u) * u
-fn deflate_vec(v: &mut [f64], u: &[f64]) {
-    let proj = dot_product_vec(v, u);
-    for i in 0..v.len() {
-        v[i] -= proj * u[i];
-    }
-}
-
-/// Normalize vector in place to unit length
-fn normalize_vec(v: &mut [f64]) {
-    let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
-    if norm > 0.0 {
-        for x in v.iter_mut() {
-            *x /= norm;
-        }
-    }
-}
-
-/// Dot product of two vectors
-fn dot_product_vec(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-}
 
 // ============================================================================
 // PCA (f32) - optimized ABI for JS Float32Array inputs
@@ -2941,20 +2694,7 @@ mod cgr_tests {
 // Grid Building - HOT PATH for viewport rendering
 // ============================================================================
 
-/// Result of grid building for sequence viewport
-#[wasm_bindgen]
-pub struct GridResult {
-    /// JSON-encoded grid data
-    json: String,
-}
 
-#[wasm_bindgen]
-impl GridResult {
-    #[wasm_bindgen(getter)]
-    pub fn json(&self) -> String {
-        self.json.clone()
-    }
-}
 
 // ============================================================================
 // Spatial-Hash Bond Detection - O(N) algorithm for molecular structure
@@ -3506,119 +3246,6 @@ pub fn detect_functional_groups(
 // ============================================================================
 // Grid Building - HOT PATH for viewport rendering
 // ============================================================================
-
-/// Build a grid of sequence data for viewport rendering.
-///
-/// This is the HOT PATH called on every scroll. Optimized for minimal
-/// allocations and fast character processing.
-///
-/// # Arguments
-/// * `seq` - Full sequence string
-/// * `start_index` - Starting position in sequence (0-based)
-/// * `cols` - Number of columns in grid
-/// * `rows` - Number of rows in grid
-/// * `mode` - Display mode: "dna", "aa", or "dual"
-/// * `frame` - Reading frame for AA translation (0, 1, or 2)
-///
-/// # Returns
-/// GridResult with JSON-encoded rows, each containing:
-/// - cells: array of {char, phase, is_stop, is_start} for DNA mode
-/// - cells: array of {char, codon, is_stop, is_start} for AA mode
-#[wasm_bindgen]
-pub fn build_grid(
-    seq: &str,
-    start_index: usize,
-    cols: usize,
-    rows: usize,
-    mode: &str,
-    frame: i8,
-) -> GridResult {
-    let bytes = seq.as_bytes();
-    let n = bytes.len();
-
-    if cols == 0 || rows == 0 || start_index >= n {
-        return GridResult { json: "[]".to_string() };
-    }
-
-    let frame = frame.rem_euclid(3) as usize;
-    let mode_is_aa = mode == "aa";
-    let _mode_is_dual = mode == "dual"; // Reserved for future dual-view support
-
-    let mut result_rows: Vec<String> = Vec::with_capacity(rows);
-
-    for row in 0..rows {
-        let row_start = start_index + row * cols;
-        if row_start >= n {
-            break;
-        }
-
-        let row_end = (row_start + cols).min(n);
-        let mut cells: Vec<String> = Vec::with_capacity(cols);
-
-        if mode_is_aa {
-            // Amino acid mode: translate codons
-            let mut i = row_start;
-            // Adjust to codon boundary
-            let offset = (i as i64 - frame as i64).rem_euclid(3) as usize;
-            if offset != 0 {
-                i += 3 - offset;
-            }
-
-            while i + 3 <= row_end && i + 3 <= n {
-                let aa = codon_to_aa(bytes[i], bytes[i + 1], bytes[i + 2]);
-                let codon: String = bytes[i..i + 3]
-                    .iter()
-                    .map(|&b| (b as char).to_ascii_uppercase())
-                    .collect();
-
-                let is_stop = aa == b'*';
-                let is_start = aa == b'M';
-
-                cells.push(format!(
-                    "{{\"char\":\"{}\",\"codon\":\"{}\",\"pos\":{},\"is_stop\":{},\"is_start\":{}}}",
-                    aa as char, codon, i, is_stop, is_start
-                ));
-
-                i += 3;
-            }
-        } else {
-            // DNA mode (or dual)
-            for i in row_start..row_end {
-                let base = bytes[i];
-                let char_upper = (base as char).to_ascii_uppercase();
-
-                // Calculate codon phase (position within codon)
-                let phase = ((i as i64 - frame as i64).rem_euclid(3)) as u8;
-
-                // Check if this position starts a stop or start codon
-                let (is_stop, is_start) = if phase == 0 && i + 3 <= n {
-                    let aa = codon_to_aa(bytes[i], bytes[i + 1], bytes[i + 2]);
-                    (aa == b'*', aa == b'M')
-                } else {
-                    (false, false)
-                };
-
-                cells.push(format!(
-                    "{{\"char\":\"{}\",\"pos\":{},\"phase\":{},\"is_stop\":{},\"is_start\":{}}}",
-                    char_upper, i, phase, is_stop, is_start
-                ));
-            }
-        }
-
-        let row_json = format!(
-            "{{\"row\":{},\"start\":{},\"end\":{},\"cells\":[{}]}}",
-            row,
-            row_start,
-            row_end,
-            cells.join(",")
-        );
-        result_rows.push(row_json);
-    }
-
-    GridResult {
-        json: format!("[{}]", result_rows.join(",")),
-    }
-}
 
 // ============================================================================
 // Sequence Rendering Optimizations (Hot Path)
@@ -5125,6 +4752,87 @@ impl SequenceHandle {
         }
     }
 
+    /// Compute windowed Shannon entropy (normalized 0..=1) for sliding windows.
+    pub fn windowed_entropy(&self, window_size: usize, step_size: usize) -> Vec<f64> {
+        let n = self.length;
+        if window_size == 0 || step_size == 0 || n <= window_size {
+            return Vec::new();
+        }
+        let max_start_exclusive = n - window_size;
+        if max_start_exclusive == 0 {
+            return Vec::new();
+        }
+        let num_windows = (max_start_exclusive - 1) / step_size + 1;
+        let mut out = Vec::with_capacity(num_windows);
+
+        #[inline(always)]
+        fn entropy_norm(counts: &[u32; 4], total: u32) -> f64 {
+            if total == 0 {
+                return 0.0;
+            }
+            let inv_total = 1.0 / (total as f64);
+            let mut ent = 0.0;
+            for &c in counts.iter() {
+                if c == 0 {
+                    continue;
+                }
+                let p = (c as f64) * inv_total;
+                ent -= p * p.log2();
+            }
+            ent / 2.0
+        }
+
+        let mut counts = [0u32; 4];
+        let mut total = 0u32;
+        for &code in &self.encoded[0..window_size] {
+            if code <= SEQ_BASE_T {
+                counts[code as usize] += 1;
+                total += 1;
+            }
+        }
+        out.push(entropy_norm(&counts, total));
+
+        if step_size >= window_size {
+            let mut start = step_size;
+            while start < max_start_exclusive {
+                let end = (start + window_size).min(n);
+                let mut c = [0u32; 4];
+                let mut tot = 0u32;
+                for &code in &self.encoded[start..end] {
+                    if code <= SEQ_BASE_T {
+                        c[code as usize] += 1;
+                        tot += 1;
+                    }
+                }
+                out.push(entropy_norm(&c, tot));
+                start += step_size;
+            }
+        } else {
+            let mut start = 0usize;
+            while start + step_size < max_start_exclusive {
+                let remove_end = start + step_size;
+                for &code in &self.encoded[start..remove_end] {
+                    if code <= SEQ_BASE_T {
+                        counts[code as usize] -= 1;
+                        total -= 1;
+                    }
+                }
+                let add_start = start + window_size;
+                let add_end = (add_start + step_size).min(n);
+                for &code in &self.encoded[add_start..add_end] {
+                    if code <= SEQ_BASE_T {
+                        counts[code as usize] += 1;
+                        total += 1;
+                    }
+                }
+                out.push(entropy_norm(&counts, total));
+                start += step_size;
+            }
+        }
+
+        out
+    }
+
     /// Get the encoded sequence as a Uint8Array.
     ///
     /// Values: A=0, C=1, G=2, T=3, N=4
@@ -5138,277 +4846,7 @@ impl SequenceHandle {
     }
 }
 
-// ============================================================================
-// PDB Parser - Minimal prototype for structure parsing
-// ============================================================================
 
-/// Result of PDB parsing containing atom data.
-///
-/// Returns flat arrays suitable for direct use with detect_bonds_spatial.
-/// This parser is intentionally minimal (no external crates) to keep WASM size small.
-#[wasm_bindgen]
-pub struct PDBParseResult {
-    /// Flat positions array [x0, y0, z0, x1, y1, z1, ...]
-    positions: Vec<f32>,
-    /// Element symbols as single chars "CCCCNNO..."
-    elements: String,
-    /// Atom names (4 chars each, space-padded) "CA  CB  N   O   ..."
-    atom_names: String,
-    /// Chain IDs as single chars "AAABBBB..."
-    chain_ids: String,
-    /// Residue sequence numbers
-    res_seqs: Vec<i32>,
-    /// Residue names (3 chars each) "ALAGLYVAL..."
-    res_names: String,
-    /// Number of atoms parsed
-    atom_count: usize,
-    /// Parse errors or warnings (empty if clean)
-    error: String,
-}
-
-#[wasm_bindgen]
-impl PDBParseResult {
-    #[wasm_bindgen(getter)]
-    pub fn positions(&self) -> js_sys::Float32Array {
-        let arr = js_sys::Float32Array::new_with_length(self.positions.len() as u32);
-        arr.copy_from(&self.positions);
-        arr
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn elements(&self) -> String {
-        self.elements.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn atom_names(&self) -> String {
-        self.atom_names.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn chain_ids(&self) -> String {
-        self.chain_ids.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn res_seqs(&self) -> js_sys::Int32Array {
-        let arr = js_sys::Int32Array::new_with_length(self.res_seqs.len() as u32);
-        arr.copy_from(&self.res_seqs);
-        arr
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn res_names(&self) -> String {
-        self.res_names.clone()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn atom_count(&self) -> usize {
-        self.atom_count
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn error(&self) -> String {
-        self.error.clone()
-    }
-}
-
-/// Parse a PDB file (string content) into atom data.
-///
-/// This is a minimal parser optimized for speed and small WASM size.
-/// It extracts only the fields needed for 3D structure visualization:
-/// - Coordinates (x, y, z)
-/// - Element symbol
-/// - Atom name
-/// - Chain ID
-/// - Residue sequence number
-/// - Residue name
-///
-/// # Arguments
-/// * `pdb_content` - Raw PDB file content as string
-///
-/// # Returns
-/// PDBParseResult with flat arrays ready for bond detection and rendering.
-///
-/// # PDB Format Reference (fixed columns):
-/// - Columns 1-6: Record type ("ATOM  " or "HETATM")
-/// - Columns 13-16: Atom name
-/// - Column 18-20: Residue name
-/// - Column 22: Chain ID
-/// - Columns 23-26: Residue sequence number
-/// - Columns 31-38: X coordinate (Angstroms)
-/// - Columns 39-46: Y coordinate
-/// - Columns 47-54: Z coordinate
-/// - Columns 77-78: Element symbol (right-justified)
-#[wasm_bindgen]
-pub fn parse_pdb(pdb_content: &str) -> PDBParseResult {
-    let mut positions: Vec<f32> = Vec::new();
-    let mut elements = String::new();
-    let mut atom_names = String::new();
-    let mut chain_ids = String::new();
-    let mut res_seqs: Vec<i32> = Vec::new();
-    let mut res_names = String::new();
-    let error = String::new();
-
-    for line in pdb_content.lines() {
-        let bytes = line.as_bytes();
-
-        // Check for ATOM or HETATM records
-        if bytes.len() < 54 {
-            continue;
-        }
-
-        let record_type = if bytes.len() >= 6 { &line[0..6] } else { continue };
-        if record_type != "ATOM  " && record_type != "HETATM" {
-            continue;
-        }
-
-        // Parse coordinates (columns 31-38, 39-46, 47-54, 1-indexed, 0-indexed: 30-38, 38-46, 46-54)
-        let x = parse_float(&line, 30, 38);
-        let y = parse_float(&line, 38, 46);
-        let z = parse_float(&line, 46, 54);
-
-        // Skip atoms with invalid coordinates
-        let (x, y, z) = match (x, y, z) {
-            (Some(x), Some(y), Some(z)) => (x, y, z),
-            _ => continue,
-        };
-
-        positions.push(x);
-        positions.push(y);
-        positions.push(z);
-
-        // Atom name (columns 13-16, 0-indexed: 12-16)
-        let atom_name = if bytes.len() >= 16 {
-            &line[12..16]
-        } else {
-            "    "
-        };
-        atom_names.push_str(atom_name);
-
-        // Residue name (columns 18-20, 0-indexed: 17-20)
-        let res_name = if bytes.len() >= 20 {
-            &line[17..20]
-        } else {
-            "   "
-        };
-        res_names.push_str(res_name);
-
-        // Chain ID (column 22, 0-indexed: 21)
-        let chain_id = if bytes.len() >= 22 {
-            bytes[21] as char
-        } else {
-            ' '
-        };
-        chain_ids.push(chain_id);
-
-        // Residue sequence number (columns 23-26, 0-indexed: 22-26)
-        let res_seq = if bytes.len() >= 26 {
-            line[22..26].trim().parse::<i32>().unwrap_or(0)
-        } else {
-            0
-        };
-        res_seqs.push(res_seq);
-
-        // Element symbol (columns 77-78, 0-indexed: 76-78)
-        // If not available, derive from atom name
-        let element = if bytes.len() >= 78 {
-            let elem_str = line[76..78].trim();
-            if elem_str.is_empty() {
-                derive_element_from_atom_name(atom_name)
-            } else {
-                elem_str.chars().next().unwrap_or('C')
-            }
-        } else {
-            derive_element_from_atom_name(atom_name)
-        };
-        elements.push(element);
-    }
-
-    let atom_count = elements.len();
-
-    PDBParseResult {
-        positions,
-        elements,
-        atom_names,
-        chain_ids,
-        res_seqs,
-        res_names,
-        atom_count,
-        error,
-    }
-}
-
-/// Helper: parse a float from a fixed-width PDB column
-fn parse_float(line: &str, start: usize, end: usize) -> Option<f32> {
-    if line.len() < end {
-        return None;
-    }
-    line[start..end].trim().parse::<f32>().ok()
-}
-
-/// Helper: derive element from atom name (fallback when element column missing)
-fn derive_element_from_atom_name(atom_name: &str) -> char {
-    let name = atom_name.trim();
-    if name.is_empty() {
-        return 'C';
-    }
-
-    // First non-digit character is usually the element
-    for c in name.chars() {
-        match c {
-            'C' | 'N' | 'O' | 'S' | 'P' | 'H' | 'F' => return c,
-            _ => continue,
-        }
-    }
-
-    // Default to carbon if we can't determine
-    'C'
-}
-
-#[cfg(test)]
-mod pdb_parser_tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_simple_atom() {
-        let pdb = "ATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C";
-        let result = parse_pdb(pdb);
-
-        assert_eq!(result.atom_count, 1);
-        assert_eq!(result.positions.len(), 3);
-        assert!((result.positions[0] - 1.0).abs() < 0.001);
-        assert!((result.positions[1] - 2.0).abs() < 0.001);
-        assert!((result.positions[2] - 3.0).abs() < 0.001);
-        assert_eq!(result.elements, "C");
-        assert_eq!(result.chain_ids, "A");
-    }
-
-    #[test]
-    fn test_parse_hetatm() {
-        let pdb = "HETATM    1  O   HOH A   1       0.000   0.000   0.000  1.00  0.00           O";
-        let result = parse_pdb(pdb);
-
-        assert_eq!(result.atom_count, 1);
-        assert_eq!(result.elements, "O");
-    }
-
-    #[test]
-    fn test_skip_invalid_lines() {
-        let pdb = "HEADER some header\nATOM      1  CA  ALA A   1       1.000   2.000   3.000  1.00  0.00           C\nREMARK 100 some remark";
-        let result = parse_pdb(pdb);
-
-        assert_eq!(result.atom_count, 1);
-    }
-
-    #[test]
-    fn test_element_derivation() {
-        assert_eq!(derive_element_from_atom_name(" CA "), 'C');
-        assert_eq!(derive_element_from_atom_name(" N  "), 'N');
-        assert_eq!(derive_element_from_atom_name(" O  "), 'O');
-        assert_eq!(derive_element_from_atom_name("1HG2"), 'H');
-    }
-}
 
 #[cfg(test)]
 mod sequence_handle_tests {
@@ -5530,6 +4968,18 @@ mod sequence_handle_tests {
                 handle_result.inverted[i],
                 buffers_result.inverted[i]
             );
+        }
+    }
+
+    #[test]
+    fn test_windowed_entropy() {
+        let seq = "ACGTACGTACGTACGTACGTACGT";
+        let handle = SequenceHandle::new(seq.as_bytes());
+        let res_handle = handle.windowed_entropy(8, 2);
+        let res_str = compute_windowed_entropy_acgt(seq, 8, 2);
+        assert_eq!(res_handle.len(), res_str.len());
+        for i in 0..res_handle.len() {
+            assert!((res_handle[i] - res_str[i]).abs() < 1e-6);
         }
     }
 }

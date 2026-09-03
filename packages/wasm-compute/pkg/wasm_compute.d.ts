@@ -155,16 +155,6 @@ export class FunctionalGroupResult {
 }
 
 /**
- * Result of grid building for sequence viewport
- */
-export class GridResult {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    readonly json: string;
-}
-
-/**
  * Result of Hoeffding's D computation
  */
 export class HoeffdingResult {
@@ -253,12 +243,6 @@ export class MinHashSignature {
     readonly total_kmers: bigint;
 }
 
-export class Model3D {
-    free(): void;
-    [Symbol.dispose](): void;
-    constructor(vertices: Float64Array, edges: Uint32Array);
-}
-
 /**
  * Result of Myers diff computation.
  *
@@ -322,31 +306,6 @@ export class MyersDiffResult {
 }
 
 /**
- * Result of PCA computation
- */
-export class PCAResult {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    /**
-     * Get eigenvalues
-     */
-    readonly eigenvalues: Float64Array;
-    /**
-     * Get eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...])
-     */
-    readonly eigenvectors: Float64Array;
-    /**
-     * Number of components
-     */
-    readonly n_components: number;
-    /**
-     * Number of features
-     */
-    readonly n_features: number;
-}
-
-/**
  * PCA result buffers in f32.
  *
  * # Ownership
@@ -374,26 +333,6 @@ export class PCAResultF32 {
      * Total variance of centered data (sample-covariance scale).
      */
     readonly total_variance: number;
-}
-
-/**
- * Result of PDB parsing containing atom data.
- *
- * Returns flat arrays suitable for direct use with detect_bonds_spatial.
- * This parser is intentionally minimal (no external crates) to keep WASM size small.
- */
-export class PDBParseResult {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    readonly atom_count: number;
-    readonly atom_names: string;
-    readonly chain_ids: string;
-    readonly elements: string;
-    readonly error: string;
-    readonly positions: Float32Array;
-    readonly res_names: string;
-    readonly res_seqs: Int32Array;
 }
 
 /**
@@ -520,6 +459,10 @@ export class SequenceHandle {
      */
     constructor(seq_bytes: Uint8Array);
     /**
+     * Compute windowed Shannon entropy (normalized 0..=1) for sliding windows.
+     */
+    windowed_entropy(window_size: number, step_size: number): Float64Array;
+    /**
      * Get the encoded sequence as a Uint8Array.
      *
      * Values: A=0, C=1, G=2, T=3, N=4
@@ -537,37 +480,7 @@ export class SequenceHandle {
     readonly valid_count: number;
 }
 
-export class Vector3 {
-    private constructor();
-    free(): void;
-    [Symbol.dispose](): void;
-    x: number;
-    y: number;
-    z: number;
-}
-
 export function analyze_kmers(sequence_a: string, sequence_b: string, k: number): KmerAnalysisResult;
-
-/**
- * Build a grid of sequence data for viewport rendering.
- *
- * This is the HOT PATH called on every scroll. Optimized for minimal
- * allocations and fast character processing.
- *
- * # Arguments
- * * `seq` - Full sequence string
- * * `start_index` - Starting position in sequence (0-based)
- * * `cols` - Number of columns in grid
- * * `rows` - Number of rows in grid
- * * `mode` - Display mode: "dna", "aa", or "dual"
- * * `frame` - Reading frame for AA translation (0, 1, or 2)
- *
- * # Returns
- * GridResult with JSON-encoded rows, each containing:
- * - cells: array of {char, phase, is_stop, is_start} for DNA mode
- * - cells: array of {char, codon, is_stop, is_start} for AA mode
- */
-export function build_grid(seq: string, start_index: number, cols: number, rows: number, mode: string, frame: number): GridResult;
 
 /**
  * Calculate GC content percentage.
@@ -1155,58 +1068,6 @@ export function myers_diff(seq_a: Uint8Array, seq_b: Uint8Array): MyersDiffResul
 export function myers_diff_with_limit(seq_a: Uint8Array, seq_b: Uint8Array, max_d: number): MyersDiffResult;
 
 /**
- * Parse a PDB file (string content) into atom data.
- *
- * This is a minimal parser optimized for speed and small WASM size.
- * It extracts only the fields needed for 3D structure visualization:
- * - Coordinates (x, y, z)
- * - Element symbol
- * - Atom name
- * - Chain ID
- * - Residue sequence number
- * - Residue name
- *
- * # Arguments
- * * `pdb_content` - Raw PDB file content as string
- *
- * # Returns
- * PDBParseResult with flat arrays ready for bond detection and rendering.
- *
- * # PDB Format Reference (fixed columns):
- * - Columns 1-6: Record type ("ATOM  " or "HETATM")
- * - Columns 13-16: Atom name
- * - Column 18-20: Residue name
- * - Column 22: Chain ID
- * - Columns 23-26: Residue sequence number
- * - Columns 31-38: X coordinate (Angstroms)
- * - Columns 39-46: Y coordinate
- * - Columns 47-54: Z coordinate
- * - Columns 77-78: Element symbol (right-justified)
- */
-export function parse_pdb(pdb_content: string): PDBParseResult;
-
-/**
- * Compute PCA using power iteration method.
- *
- * # Arguments
- * * `data` - Flattened row-major matrix (n_samples * n_features)
- * * `n_samples` - Number of samples (rows)
- * * `n_features` - Number of features (columns)
- * * `n_components` - Number of principal components to extract
- * * `max_iterations` - Maximum iterations for power iteration (default: 100)
- * * `tolerance` - Convergence tolerance (default: 1e-8)
- *
- * # Returns
- * PCAResult containing eigenvectors and eigenvalues.
- *
- * # Algorithm
- * Uses power iteration to find top eigenvectors of X^T * X without forming
- * the full covariance matrix. This is memory-efficient for high-dimensional
- * data (e.g., k-mer frequencies with 4^k features).
- */
-export function pca_power_iteration(data: Float64Array, n_samples: number, n_features: number, n_components: number, max_iterations: number, tolerance: number): PCAResult;
-
-/**
  * Compute PCA using power iteration (f32 data path).
  *
  * This entrypoint is designed to accept JS `Float32Array` inputs without the caller
@@ -1217,20 +1078,6 @@ export function pca_power_iteration(data: Float64Array, n_samples: number, n_fea
  * - Output eigenvectors are canonicalized to a stable sign (largest-magnitude element is positive).
  */
 export function pca_power_iteration_f32(data: Float32Array, n_samples: number, n_features: number, n_components: number, max_iterations: number, tolerance: number): PCAResultF32;
-
-/**
- * Renders a 3D model to an ASCII string.
- *
- * # Arguments
- * * `model` - The 3D model to render (vertices and edges).
- * * `rx` - Rotation around X axis (radians).
- * * `ry` - Rotation around Y axis (radians).
- * * `rz` - Rotation around Z axis (radians).
- * * `width` - Target width of the ASCII canvas in characters.
- * * `height` - Target height of the ASCII canvas in characters.
- * * `quality` - Rendering quality/style ("low", "medium", "high", "ultra", "blocks").
- */
-export function render_ascii_model(model: Model3D, rx: number, ry: number, rz: number, width: number, height: number, quality: string): string;
 
 /**
  * Compute reverse complement of DNA sequence.

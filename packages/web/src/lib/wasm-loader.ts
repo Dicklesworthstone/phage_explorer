@@ -64,6 +64,7 @@ import type {
   CodonUsageResult,
   DenseKmerResult,
   DotPlotBuffers,
+  HoeffdingResult,
   MinHashSignature,
   MyersDiffResult,
   RepeatResult,
@@ -133,6 +134,35 @@ export interface WasmComputeModule {
   minhash_signature?: (seq: Uint8Array, k: number, num_hashes: number) => MinHashSignature;
   minhash_signature_canonical?: (seq: Uint8Array, k: number, num_hashes: number) => MinHashSignature;
   minhash_jaccard_from_signatures?: (sig_a: Uint32Array, sig_b: Uint32Array) => number;
+
+  // --- Genetics & sequence analysis ---
+  translate_sequence?: (seq: string, frame: number) => string;
+  reverse_complement?: (seq: string) => string;
+  calculate_gc_content?: (seq: string) => number;
+  is_valid_dense_kmer_k?: (k: number) => boolean;
+  get_dense_kmer_max_k?: () => number;
+  encode_sequence_fast?: (seq: string) => Uint8Array;
+  compute_diff_mask?: (seq_a: string, seq_b: string) => Uint8Array;
+  compute_diff_mask_encoded?: (encoded_a: Uint8Array, encoded_b: Uint8Array) => Uint8Array;
+  compute_micro_runs?: (
+    encoded: Uint8Array,
+    start_row: number,
+    end_row: number,
+    cols: number,
+    cell_width: number,
+    cell_height: number,
+    offset_y: number,
+    start_row_offset: number
+  ) => Float32Array;
+  shannon_entropy?: (probs: Float64Array) => number;
+  shannon_entropy_from_counts?: (counts: Float64Array) => number;
+  jensen_shannon_divergence?: (p: Float64Array, q: Float64Array) => number;
+  jensen_shannon_divergence_from_counts?: (counts_p: Float64Array, counts_q: Float64Array) => number;
+  kl_divergence_dense?: (p_counts: Uint32Array, q_counts: Uint32Array) => number;
+  compute_linguistic_complexity?: (seq: string, k_max: number) => number;
+  compute_windowed_complexity?: (seq: string, window_size: number, step_size: number, k: number) => Float64Array;
+  hoeffdings_d?: (x: Float64Array, y: Float64Array) => HoeffdingResult;
+  kmer_hoeffdings_d?: (sequence_a: string, sequence_b: string, k: number) => HoeffdingResult;
 }
 
 export type WasmComputeVariant = 'baseline' | 'simd';

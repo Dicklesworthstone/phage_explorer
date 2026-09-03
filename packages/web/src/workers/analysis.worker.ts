@@ -524,6 +524,7 @@ function findPromoters(sequence: string): PromoterResult {
  * Find repeat sequences
  */
 async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Promise<RepeatResult> {
+  const wasm = await getWasmCompute();
   const repeats: RepeatResult['repeats'] = [];
   const seen = new Set<string>();
   const seq = sequence.toUpperCase();
@@ -531,6 +532,13 @@ async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Prom
   const step = Math.max(1, Math.floor(seq.length / 500));
 
   const reverseComplement = (s: string): string => {
+    if (wasm && typeof wasm.reverse_complement === 'function') {
+      try {
+        return wasm.reverse_complement(s);
+      } catch {
+        // fallback
+      }
+    }
     const comp: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C' };
     return s.split('').reverse().map(c => comp[c] || c).join('');
   };
@@ -943,6 +951,161 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
   };
 }
 
+async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 1000): Promise<GCSkewResult> {
+  const wasm = await getWasmCompute();
+  if (wasm?.SequenceHandle && ref.encoding === 'ascii') {
+    try {
+      const bytes = getSequenceBytesView(ref);
+      const handle = new wasm.SequenceHandle(bytes);
+      try {
+        const winSize = Math.max(1, Math.floor(windowSize));
+        const stepSize = Math.max(1, Math.floor(winSize / 4));
+        const skew = Array.from(handle.gc_skew(winSize, stepSize));
+        const cumulative = handle.cumulative_gc_skew();
+        const cumulativeSampled: number[] = [];
+        for (let i = 0; i < skew.length; i++) {
+          const pos = i * stepSize;
+          if (pos < cumulative.length) {
+            cumulativeSampled.push(cumulative[pos]);
+          } else if (cumulative.length > 0) {
+            cumulativeSampled.push(cumulative[cumulative.length - 1]);
+          }
+        }
+        let minIdx = 0;
+        let maxIdx = 0;
+        let minVal = cumulativeSampled[0] ?? 0;
+        let maxVal = cumulativeSampled[0] ?? 0;
+        for (let i = 1; i < cumulativeSampled.length; i++) {
+          const val = cumulativeSampled[i];
+          if (val < minVal) {
+            minVal = val;
+            minIdx = i;
+          }
+          if (val > maxVal) {
+            maxVal = val;
+            maxIdx = i;
+          }
+        }
+        const variant = getWasmComputeVariant();
+        return {
+          type: 'gc-skew',
+          skew,
+          cumulative: cumulativeSampled,
+          originPosition: minIdx * stepSize,
+          terminusPosition: maxIdx * stepSize,
+          engine: variant === 'simd' ? 'wasm-simd' : 'wasm-baseline',
+        };
+      } finally {
+        handle.free();
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[analysis.worker] SequenceHandle GC skew failed, falling back to JS:', err);
+      }
+    }
+  }
+  return calculateGCSkewFromRef(ref, windowSize);
+}
+
+async function calculateKmerSpectrumFromRefWasm(ref: SequenceBytesRef, k = 4): Promise<KmerSpectrumResult> {
+  if (k <= 10) {
+    const wasm = await getWasmCompute();
+    if (wasm?.SequenceHandle && ref.encoding === 'ascii') {
+      try {
+        const bytes = getSequenceBytesView(ref);
+        const handle = new wasm.SequenceHandle(bytes);
+        try {
+          const res = handle.count_kmers(k);
+          const totalValid = Number(res.total_valid);
+          const counts = res.counts;
+          const alphabet = ['A', 'C', 'G', 'T'];
+          let uniqueKmers = 0;
+          const spectrum: Array<{ kmer: string; count: number; frequency: number }> = [];
+          for (let idx = 0; idx < counts.length; idx++) {
+            const count = counts[idx];
+            if (count > 0) {
+              uniqueKmers++;
+              const temp = idx;
+              let kmer = '';
+              for (let pos = k - 1; pos >= 0; pos--) {
+                const baseIdx = (temp >> (pos * 2)) & 3;
+                kmer += alphabet[baseIdx];
+              }
+              spectrum.push({ kmer, count, frequency: totalValid > 0 ? count / totalValid : 0 });
+            }
+          }
+          spectrum.sort((a, b) => b.count - a.count);
+          return {
+            type: 'kmer-spectrum',
+            kmerSize: k,
+            spectrum: spectrum.slice(0, 100),
+            uniqueKmers,
+            totalKmers: totalValid,
+          };
+        } finally {
+          handle.free();
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[analysis.worker] SequenceHandle k-mer counting failed, falling back to JS:', err);
+        }
+      }
+    }
+  }
+  const sequence = decodeSequenceRef(ref);
+  return calculateKmerSpectrum(sequence, k);
+}
+
+async function calculateComplexityFromRefWasm(ref: SequenceBytesRef, windowSize = 100): Promise<ComplexityResult> {
+  const wasm = await getWasmCompute();
+  const windowSizeInt = Math.max(1, Math.floor(windowSize));
+  const stepSize = Math.max(1, Math.floor(windowSizeInt / 2));
+
+  if (wasm?.SequenceHandle && ref.encoding === 'ascii') {
+    try {
+      const bytes = getSequenceBytesView(ref);
+      const handle = new wasm.SequenceHandle(bytes);
+      try {
+        const wasmEntropy = handle.windowed_entropy(windowSizeInt, stepSize);
+        const seq = decodeSequenceRef(ref);
+        const entropy: number[] = [];
+        const linguistic: number[] = [];
+        const lowComplexityRegions: Array<{ start: number; end: number }> = [];
+        let inLowRegion = false;
+        let regionStart = 0;
+
+        for (let i = 0; i < wasmEntropy.length; i++) {
+          const e = wasmEntropy[i] ?? 0;
+          entropy.push(e);
+          linguistic.push(uniqueTrimerRatioAt(seq, i * stepSize, windowSizeInt));
+
+          const isLow = e < 0.5;
+          const pos = i * stepSize;
+          if (isLow && !inLowRegion) {
+            inLowRegion = true;
+            regionStart = pos;
+          } else if (!isLow && inLowRegion) {
+            inLowRegion = false;
+            lowComplexityRegions.push({ start: regionStart, end: pos });
+          }
+        }
+        if (inLowRegion) {
+          lowComplexityRegions.push({ start: regionStart, end: seq.length });
+        }
+        return { type: 'complexity', entropy, linguistic, lowComplexityRegions };
+      } finally {
+        handle.free();
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[analysis.worker] SequenceHandle entropy failed, falling back to JS:', err);
+      }
+    }
+  }
+  const sequence = decodeSequenceRef(ref);
+  return calculateComplexity(sequence, windowSize);
+}
+
 async function runAnalysisImpl(request: AnalysisRequest): Promise<AnalysisResult> {
   const { type, sequence, options = {} } = request;
 
@@ -1015,11 +1178,17 @@ async function computeKmerVectorImpl(request: KmerVectorRequest) {
   const sequence = decodeSequenceRef(sequenceRef);
   const frequencies = computeKmerFrequencies(sequence, options);
 
+  const wasm = await getWasmCompute();
+  const gcContent =
+    wasm && typeof wasm.calculate_gc_content === 'function'
+      ? wasm.calculate_gc_content(sequence)
+      : computeGcContent(sequence);
+
   return {
     phageId,
     name,
     frequencies,
-    gcContent: computeGcContent(sequence),
+    gcContent,
     genomeLength: sequenceRef.length ?? sequence.length,
   };
 }
@@ -1089,7 +1258,17 @@ async function computePhasePortraitImpl(request: PhasePortraitRequest) {
   const sequence = decodeSequenceRef(sequenceRef);
   if (!sequence || sequence.length < 100) return null;
 
-  const aaSequence = translateSequence(sequence, 0);
+  const wasm = await getWasmCompute();
+  let aaSequence: string;
+  if (wasm && typeof wasm.translate_sequence === 'function') {
+    try {
+      aaSequence = wasm.translate_sequence(sequence, 0);
+    } catch {
+      aaSequence = translateSequence(sequence, 0);
+    }
+  } else {
+    aaSequence = translateSequence(sequence, 0);
+  }
   if (!aaSequence || aaSequence.length < win) return null;
 
   return computePhasePortrait(aaSequence, win, step);
@@ -1110,10 +1289,16 @@ const workerAPI: SharedAnalysisWorkerAPI = {
 
   async runAnalysisShared(request: SharedAnalysisRequest): Promise<AnalysisResult> {
     if (request.type === 'gc-skew') {
-      return calculateGCSkewFromRef(request.sequenceRef, request.options?.windowSize || 1000);
+      return calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize || 1000);
+    }
+    if (request.type === 'kmer-spectrum') {
+      return calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize || 4);
+    }
+    if (request.type === 'complexity') {
+      return calculateComplexityFromRefWasm(request.sequenceRef, request.options?.windowSize || 100);
     }
 
-    // Fall back to string-based implementations for now (some rely on regex/string APIs).
+    // Fall back to string-based implementations for remaining types (some rely on regex/string APIs).
     const sequence = decodeSequenceRef(request.sequenceRef);
     return runAnalysisImpl({ type: request.type, sequence, options: request.options });
   },
@@ -1124,14 +1309,7 @@ const workerAPI: SharedAnalysisWorkerAPI = {
   ): Promise<AnalysisResult> {
     onProgress({ current: 0, total: 100, message: `Starting ${request.type} analysis...` });
 
-    const result =
-      request.type === 'gc-skew'
-        ? calculateGCSkewFromRef(request.sequenceRef, request.options?.windowSize || 1000)
-        : await runAnalysisImpl({
-            type: request.type,
-            sequence: decodeSequenceRef(request.sequenceRef),
-            options: request.options,
-          });
+    const result = await workerAPI.runAnalysisShared(request);
 
     onProgress({ current: 100, total: 100, message: 'Complete' });
     return result;

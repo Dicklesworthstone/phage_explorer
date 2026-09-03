@@ -367,44 +367,6 @@ export class FunctionalGroupResult {
 if (Symbol.dispose) FunctionalGroupResult.prototype[Symbol.dispose] = FunctionalGroupResult.prototype.free;
 
 /**
- * Result of grid building for sequence viewport
- */
-export class GridResult {
-    static __wrap(ptr) {
-        const obj = Object.create(GridResult.prototype);
-        obj.__wbg_ptr = ptr;
-        GridResultFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        GridResultFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_gridresult_free(ptr, 0);
-    }
-    /**
-     * @returns {string}
-     */
-    get json() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.gridresult_json(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-}
-if (Symbol.dispose) GridResult.prototype[Symbol.dispose] = GridResult.prototype.free;
-
-/**
  * Result of Hoeffding's D computation
  */
 export class HoeffdingResult {
@@ -717,34 +679,6 @@ export class MinHashSignature {
 }
 if (Symbol.dispose) MinHashSignature.prototype[Symbol.dispose] = MinHashSignature.prototype.free;
 
-export class Model3D {
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        Model3DFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_model3d_free(ptr, 0);
-    }
-    /**
-     * @param {Float64Array} vertices
-     * @param {Uint32Array} edges
-     */
-    constructor(vertices, edges) {
-        const ptr0 = passArrayF64ToWasm0(vertices, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passArray32ToWasm0(edges, wasm.__wbindgen_malloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.model3d_new(ptr0, len0, ptr1, len1);
-        this.__wbg_ptr = ret;
-        Model3DFinalization.register(this, this.__wbg_ptr, this);
-        return this;
-    }
-}
-if (Symbol.dispose) Model3D.prototype[Symbol.dispose] = Model3D.prototype.free;
-
 /**
  * Result of Myers diff computation.
  *
@@ -875,65 +809,6 @@ export class MyersDiffResult {
 if (Symbol.dispose) MyersDiffResult.prototype[Symbol.dispose] = MyersDiffResult.prototype.free;
 
 /**
- * Result of PCA computation
- */
-export class PCAResult {
-    static __wrap(ptr) {
-        const obj = Object.create(PCAResult.prototype);
-        obj.__wbg_ptr = ptr;
-        PCAResultFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        PCAResultFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_pcaresult_free(ptr, 0);
-    }
-    /**
-     * Get eigenvalues
-     * @returns {Float64Array}
-     */
-    get eigenvalues() {
-        const ret = wasm.pcaresult_eigenvalues(this.__wbg_ptr);
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Get eigenvectors as flat array (row-major: [pc1_feat1, pc1_feat2, ..., pc2_feat1, ...])
-     * @returns {Float64Array}
-     */
-    get eigenvectors() {
-        const ret = wasm.pcaresult_eigenvectors(this.__wbg_ptr);
-        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
-        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
-        return v1;
-    }
-    /**
-     * Number of components
-     * @returns {number}
-     */
-    get n_components() {
-        const ret = wasm.pcaresult_n_components(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * Number of features
-     * @returns {number}
-     */
-    get n_features() {
-        const ret = wasm.pcaresult_n_features(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-}
-if (Symbol.dispose) PCAResult.prototype[Symbol.dispose] = PCAResult.prototype.free;
-
-/**
  * PCA result buffers in f32.
  *
  * # Ownership
@@ -1004,128 +879,6 @@ export class PCAResultF32 {
     }
 }
 if (Symbol.dispose) PCAResultF32.prototype[Symbol.dispose] = PCAResultF32.prototype.free;
-
-/**
- * Result of PDB parsing containing atom data.
- *
- * Returns flat arrays suitable for direct use with detect_bonds_spatial.
- * This parser is intentionally minimal (no external crates) to keep WASM size small.
- */
-export class PDBParseResult {
-    static __wrap(ptr) {
-        const obj = Object.create(PDBParseResult.prototype);
-        obj.__wbg_ptr = ptr;
-        PDBParseResultFinalization.register(obj, obj.__wbg_ptr, obj);
-        return obj;
-    }
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        PDBParseResultFinalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_pdbparseresult_free(ptr, 0);
-    }
-    /**
-     * @returns {number}
-     */
-    get atom_count() {
-        const ret = wasm.pdbparseresult_atom_count(this.__wbg_ptr);
-        return ret >>> 0;
-    }
-    /**
-     * @returns {string}
-     */
-    get atom_names() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.pdbparseresult_atom_names(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {string}
-     */
-    get chain_ids() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.pdbparseresult_chain_ids(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {string}
-     */
-    get elements() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.pdbparseresult_elements(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {string}
-     */
-    get error() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.pdbparseresult_error(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {Float32Array}
-     */
-    get positions() {
-        const ret = wasm.pdbparseresult_positions(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * @returns {string}
-     */
-    get res_names() {
-        let deferred1_0;
-        let deferred1_1;
-        try {
-            const ret = wasm.pdbparseresult_res_names(this.__wbg_ptr);
-            deferred1_0 = ret[0];
-            deferred1_1 = ret[1];
-            return getStringFromWasm0(ret[0], ret[1]);
-        } finally {
-            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
-        }
-    }
-    /**
-     * @returns {Int32Array}
-     */
-    get res_seqs() {
-        const ret = wasm.pdbparseresult_res_seqs(this.__wbg_ptr);
-        return ret;
-    }
-}
-if (Symbol.dispose) PDBParseResult.prototype[Symbol.dispose] = PDBParseResult.prototype.free;
 
 /**
  * Result of repeat detection
@@ -1353,61 +1106,20 @@ export class SequenceHandle {
         const ret = wasm.sequencehandle_valid_count(this.__wbg_ptr);
         return ret >>> 0;
     }
+    /**
+     * Compute windowed Shannon entropy (normalized 0..=1) for sliding windows.
+     * @param {number} window_size
+     * @param {number} step_size
+     * @returns {Float64Array}
+     */
+    windowed_entropy(window_size, step_size) {
+        const ret = wasm.sequencehandle_windowed_entropy(this.__wbg_ptr, window_size, step_size);
+        var v1 = getArrayF64FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 8, 8);
+        return v1;
+    }
 }
 if (Symbol.dispose) SequenceHandle.prototype[Symbol.dispose] = SequenceHandle.prototype.free;
-
-export class Vector3 {
-    __destroy_into_raw() {
-        const ptr = this.__wbg_ptr;
-        this.__wbg_ptr = 0;
-        Vector3Finalization.unregister(this);
-        return ptr;
-    }
-    free() {
-        const ptr = this.__destroy_into_raw();
-        wasm.__wbg_vector3_free(ptr, 0);
-    }
-    /**
-     * @returns {number}
-     */
-    get x() {
-        const ret = wasm.__wbg_get_vector3_x(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * @returns {number}
-     */
-    get y() {
-        const ret = wasm.__wbg_get_vector3_y(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * @returns {number}
-     */
-    get z() {
-        const ret = wasm.__wbg_get_vector3_z(this.__wbg_ptr);
-        return ret;
-    }
-    /**
-     * @param {number} arg0
-     */
-    set x(arg0) {
-        wasm.__wbg_set_vector3_x(this.__wbg_ptr, arg0);
-    }
-    /**
-     * @param {number} arg0
-     */
-    set y(arg0) {
-        wasm.__wbg_set_vector3_y(this.__wbg_ptr, arg0);
-    }
-    /**
-     * @param {number} arg0
-     */
-    set z(arg0) {
-        wasm.__wbg_set_vector3_z(this.__wbg_ptr, arg0);
-    }
-}
-if (Symbol.dispose) Vector3.prototype[Symbol.dispose] = Vector3.prototype.free;
 
 /**
  * @param {string} sequence_a
@@ -1422,41 +1134,6 @@ export function analyze_kmers(sequence_a, sequence_b, k) {
     const len1 = WASM_VECTOR_LEN;
     const ret = wasm.analyze_kmers(ptr0, len0, ptr1, len1, k);
     return KmerAnalysisResult.__wrap(ret);
-}
-
-/**
- * Build a grid of sequence data for viewport rendering.
- *
- * This is the HOT PATH called on every scroll. Optimized for minimal
- * allocations and fast character processing.
- *
- * # Arguments
- * * `seq` - Full sequence string
- * * `start_index` - Starting position in sequence (0-based)
- * * `cols` - Number of columns in grid
- * * `rows` - Number of rows in grid
- * * `mode` - Display mode: "dna", "aa", or "dual"
- * * `frame` - Reading frame for AA translation (0, 1, or 2)
- *
- * # Returns
- * GridResult with JSON-encoded rows, each containing:
- * - cells: array of {char, phase, is_stop, is_start} for DNA mode
- * - cells: array of {char, codon, is_stop, is_start} for AA mode
- * @param {string} seq
- * @param {number} start_index
- * @param {number} cols
- * @param {number} rows
- * @param {string} mode
- * @param {number} frame
- * @returns {GridResult}
- */
-export function build_grid(seq, start_index, cols, rows, mode, frame) {
-    const ptr0 = passStringToWasm0(seq, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(mode, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ret = wasm.build_grid(ptr0, len0, start_index, cols, rows, ptr1, len1, frame);
-    return GridResult.__wrap(ret);
 }
 
 /**
@@ -2395,77 +2072,6 @@ export function myers_diff_with_limit(seq_a, seq_b, max_d) {
 }
 
 /**
- * Parse a PDB file (string content) into atom data.
- *
- * This is a minimal parser optimized for speed and small WASM size.
- * It extracts only the fields needed for 3D structure visualization:
- * - Coordinates (x, y, z)
- * - Element symbol
- * - Atom name
- * - Chain ID
- * - Residue sequence number
- * - Residue name
- *
- * # Arguments
- * * `pdb_content` - Raw PDB file content as string
- *
- * # Returns
- * PDBParseResult with flat arrays ready for bond detection and rendering.
- *
- * # PDB Format Reference (fixed columns):
- * - Columns 1-6: Record type ("ATOM  " or "HETATM")
- * - Columns 13-16: Atom name
- * - Column 18-20: Residue name
- * - Column 22: Chain ID
- * - Columns 23-26: Residue sequence number
- * - Columns 31-38: X coordinate (Angstroms)
- * - Columns 39-46: Y coordinate
- * - Columns 47-54: Z coordinate
- * - Columns 77-78: Element symbol (right-justified)
- * @param {string} pdb_content
- * @returns {PDBParseResult}
- */
-export function parse_pdb(pdb_content) {
-    const ptr0 = passStringToWasm0(pdb_content, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.parse_pdb(ptr0, len0);
-    return PDBParseResult.__wrap(ret);
-}
-
-/**
- * Compute PCA using power iteration method.
- *
- * # Arguments
- * * `data` - Flattened row-major matrix (n_samples * n_features)
- * * `n_samples` - Number of samples (rows)
- * * `n_features` - Number of features (columns)
- * * `n_components` - Number of principal components to extract
- * * `max_iterations` - Maximum iterations for power iteration (default: 100)
- * * `tolerance` - Convergence tolerance (default: 1e-8)
- *
- * # Returns
- * PCAResult containing eigenvectors and eigenvalues.
- *
- * # Algorithm
- * Uses power iteration to find top eigenvectors of X^T * X without forming
- * the full covariance matrix. This is memory-efficient for high-dimensional
- * data (e.g., k-mer frequencies with 4^k features).
- * @param {Float64Array} data
- * @param {number} n_samples
- * @param {number} n_features
- * @param {number} n_components
- * @param {number} max_iterations
- * @param {number} tolerance
- * @returns {PCAResult}
- */
-export function pca_power_iteration(data, n_samples, n_features, n_components, max_iterations, tolerance) {
-    const ptr0 = passArrayF64ToWasm0(data, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.pca_power_iteration(ptr0, len0, n_samples, n_features, n_components, max_iterations, tolerance);
-    return PCAResult.__wrap(ret);
-}
-
-/**
  * Compute PCA using power iteration (f32 data path).
  *
  * This entrypoint is designed to accept JS `Float32Array` inputs without the caller
@@ -2487,42 +2093,6 @@ export function pca_power_iteration_f32(data, n_samples, n_features, n_component
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.pca_power_iteration_f32(ptr0, len0, n_samples, n_features, n_components, max_iterations, tolerance);
     return PCAResultF32.__wrap(ret);
-}
-
-/**
- * Renders a 3D model to an ASCII string.
- *
- * # Arguments
- * * `model` - The 3D model to render (vertices and edges).
- * * `rx` - Rotation around X axis (radians).
- * * `ry` - Rotation around Y axis (radians).
- * * `rz` - Rotation around Z axis (radians).
- * * `width` - Target width of the ASCII canvas in characters.
- * * `height` - Target height of the ASCII canvas in characters.
- * * `quality` - Rendering quality/style ("low", "medium", "high", "ultra", "blocks").
- * @param {Model3D} model
- * @param {number} rx
- * @param {number} ry
- * @param {number} rz
- * @param {number} width
- * @param {number} height
- * @param {string} quality
- * @returns {string}
- */
-export function render_ascii_model(model, rx, ry, rz, width, height, quality) {
-    let deferred2_0;
-    let deferred2_1;
-    try {
-        _assertClass(model, Model3D);
-        const ptr0 = passStringToWasm0(quality, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.render_ascii_model(model.__wbg_ptr, rx, ry, rz, width, height, ptr0, len0);
-        deferred2_0 = ret[0];
-        deferred2_1 = ret[1];
-        return getStringFromWasm0(ret[0], ret[1]);
-    } finally {
-        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
-    }
 }
 
 /**
@@ -2696,10 +2266,6 @@ export function __wbg_length_7528cf2a241bef97(arg0) {
     const ret = arg0.length;
     return ret;
 }
-export function __wbg_length_c812b8efd064d998(arg0) {
-    const ret = arg0.length;
-    return ret;
-}
 export function __wbg_new_227d7c05414eb861() {
     const ret = new Error();
     return ret;
@@ -2712,19 +2278,12 @@ export function __wbg_new_with_length_67db5cb8cc48e371(arg0) {
     const ret = new Uint32Array(arg0 >>> 0);
     return ret;
 }
-export function __wbg_new_with_length_c06762a91328d9e9(arg0) {
-    const ret = new Int32Array(arg0 >>> 0);
-    return ret;
-}
 export function __wbg_new_with_length_ef112d2291d8ab95(arg0) {
     const ret = new Float32Array(arg0 >>> 0);
     return ret;
 }
 export function __wbg_set_577f5f7485b6744e(arg0, arg1, arg2) {
     arg0.set(getArrayF32FromWasm0(arg1, arg2));
-}
-export function __wbg_set_9e08f8fa085c9c19(arg0, arg1, arg2) {
-    arg0.set(getArrayI32FromWasm0(arg1, arg2));
 }
 export function __wbg_set_b9b5b5cb7b495037(arg0, arg1, arg2) {
     arg0.set(getArrayU8FromWasm0(arg1, arg2));
@@ -2766,9 +2325,6 @@ const DotPlotBuffersFinalization = (typeof FinalizationRegistry === 'undefined')
 const FunctionalGroupResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_functionalgroupresult_free(ptr, 1));
-const GridResultFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_gridresult_free(ptr, 1));
 const HoeffdingResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_hoeffdingresult_free(ptr, 1));
@@ -2781,36 +2337,18 @@ const KmerAnalysisResultFinalization = (typeof FinalizationRegistry === 'undefin
 const MinHashSignatureFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_minhashsignature_free(ptr, 1));
-const Model3DFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_model3d_free(ptr, 1));
 const MyersDiffResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_myersdiffresult_free(ptr, 1));
-const PCAResultFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_pcaresult_free(ptr, 1));
 const PCAResultF32Finalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_pcaresultf32_free(ptr, 1));
-const PDBParseResultFinalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_pdbparseresult_free(ptr, 1));
 const RepeatResultFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_repeatresult_free(ptr, 1));
 const SequenceHandleFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_sequencehandle_free(ptr, 1));
-const Vector3Finalization = (typeof FinalizationRegistry === 'undefined')
-    ? { register: () => {}, unregister: () => {} }
-    : new FinalizationRegistry(ptr => wasm.__wbg_vector3_free(ptr, 1));
-
-function _assertClass(instance, klass) {
-    if (!(instance instanceof klass)) {
-        throw new Error(`expected instance of ${klass.name}`);
-    }
-}
 
 function getArrayF32FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
@@ -2820,11 +2358,6 @@ function getArrayF32FromWasm0(ptr, len) {
 function getArrayF64FromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     return getFloat64ArrayMemory0().subarray(ptr / 8, ptr / 8 + len);
-}
-
-function getArrayI32FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getInt32ArrayMemory0().subarray(ptr / 4, ptr / 4 + len);
 }
 
 function getArrayU32FromWasm0(ptr, len) {
@@ -2859,14 +2392,6 @@ function getFloat64ArrayMemory0() {
         cachedFloat64ArrayMemory0 = new Float64Array(wasm.memory.buffer);
     }
     return cachedFloat64ArrayMemory0;
-}
-
-let cachedInt32ArrayMemory0 = null;
-function getInt32ArrayMemory0() {
-    if (cachedInt32ArrayMemory0 === null || cachedInt32ArrayMemory0.byteLength === 0) {
-        cachedInt32ArrayMemory0 = new Int32Array(wasm.memory.buffer);
-    }
-    return cachedInt32ArrayMemory0;
 }
 
 function getStringFromWasm0(ptr, len) {

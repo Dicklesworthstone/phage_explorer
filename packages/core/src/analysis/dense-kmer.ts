@@ -27,6 +27,20 @@ export { indexToKmer, kmerToIndex };
 export const DENSE_KMER_MAX_K = 10;
 
 /**
+ * Validate whether a k value is supported for dense k-mer counting.
+ */
+export function isValidDenseKmerK(k: number): boolean {
+  return Number.isInteger(k) && k >= 1 && k <= DENSE_KMER_MAX_K;
+}
+
+/**
+ * Get the maximum supported k value for dense k-mer counting.
+ */
+export function getDenseKmerMaxK(): number {
+  return DENSE_KMER_MAX_K;
+}
+
+/**
  * Memory cost in bytes for a dense k-mer count array.
  * Returns 4^k × 4 bytes (Uint32Array).
  */
