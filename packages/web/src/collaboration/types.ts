@@ -31,10 +31,3 @@ export interface SessionState {
   peers: Record<PeerId, UserPresence>;
   connected: boolean;
 }
-
-export interface SignalingMessage {
-  type: 'offer' | 'answer' | 'candidate' | 'join' | 'leave';
-  target?: PeerId;
-  sender: PeerId;
-  payload?: any;
-}
