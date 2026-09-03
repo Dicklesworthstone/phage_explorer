@@ -55,6 +55,12 @@ jobs:
       - name: Check bead closures
         run: bun run check:beads
 
+      - name: Check keyboard shortcuts table
+        run: bun run check:keys
+
+      - name: Check comparison gates
+        run: bun run check:gates
+
       - name: Run tests
         run: bun run test
 

@@ -232,19 +232,25 @@ function render(): string {
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n';
 }
 
-const content = render();
-const check = process.argv.includes('--check');
+export function renderKeyboardShortcuts(): string {
+  return render();
+}
 
-if (check) {
-  const current = existsSync(OUTPUT) ? readFileSync(OUTPUT, 'utf8') : '';
-  if (current !== content) {
-    console.error('docs/keyboard-shortcuts.md is stale.');
-    console.error('The key registries and the document disagree.');
-    console.error('Run: bun scripts/generate-keyboard-tables.ts');
-    process.exit(1);
+if (import.meta.main) {
+  const content = render();
+  const check = process.argv.includes('--check');
+
+  if (check) {
+    const current = existsSync(OUTPUT) ? readFileSync(OUTPUT, 'utf8') : '';
+    if (current !== content) {
+      console.error('docs/keyboard-shortcuts.md is stale.');
+      console.error('The key registries and the document disagree.');
+      console.error('Run: bun scripts/generate-keyboard-tables.ts');
+      process.exit(1);
+    }
+    console.log('docs/keyboard-shortcuts.md is up to date.');
+  } else {
+    writeFileSync(OUTPUT, content);
+    console.log(`Wrote ${OUTPUT}`);
   }
-  console.log('docs/keyboard-shortcuts.md is up to date.');
-} else {
-  writeFileSync(OUTPUT, content);
-  console.log(`Wrote ${OUTPUT}`);
 }
