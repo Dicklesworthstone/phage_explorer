@@ -10,6 +10,8 @@ Over 400 commits of active development since v1.4.1, spanning new analysis modul
 
 [Compare: v1.4.1...main](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.4.1...main)
 
+> **Note on Historical Version Tags**: Git tag `v1.3.2` was historically attached to commit `de580ce` (2026-04-24), which is a descendant of `v1.4.1` (2025-12-15). Under bead `0r8g.2`, Option 1 was selected: rather than rewriting shared git history/tags, `v1.3.2` remains a non-breaking historical artifact and subsequent releases proceed monotonically from `v1.5.0` (`package.json`).
+
 ### New Analysis Overlays and Modules
 
 - **Epistasis & Fitness Landscape Explorer** — interactive epistasis analysis with fitness landscape visualization ([`712b032`](https://github.com/Dicklesworthstone/phage_explorer/commit/712b032c55c4558e5457cb79957ac90362d06df0))
