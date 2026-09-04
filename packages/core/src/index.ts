@@ -114,3 +114,6 @@ export * from './analysis/tail-fiber-structure';
 
 // Capsid Packaging & Ejection Energetics Simulator
 export * from './analysis/capsid-energetics';
+
+// Burst Kinetics & Latency Inference from Growth Curves
+export * from './analysis/burst-kinetics';
