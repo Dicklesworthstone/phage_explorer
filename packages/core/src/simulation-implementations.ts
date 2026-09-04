@@ -16,6 +16,16 @@ import type {
 import { getDefaultParams, STANDARD_CONTROLS } from './simulation';
 import { ribosomeTrafficSimulation } from './analysis/translation-simulation';
 import type { PhageFull } from './types';
+import {
+  reconstructLysogenyCircuit,
+  deriveLysogenyCircuitParams,
+  calculateOperatorOccupancy,
+  simulateSwitchStep,
+  computeCircuitPhasePortrait,
+  computeNullclines,
+  computeAttractors,
+  predictLysogenyFate,
+} from './analysis/lysogeny-circuit';
 
 // Helper to clamp numbers
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -328,6 +338,10 @@ export function derivePhageSimDefaults(
     return derived;
   }
 
+  if (simId === 'lysogeny-circuit') {
+    return deriveLysogenyCircuitParams(phage);
+  }
+
   return {};
 }
 
@@ -356,63 +370,95 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
     parameters: [
       { id: 'moi', label: 'Multiplicity of infection', type: 'number', min: 0.1, max: 5, step: 0.1, defaultValue: 1 },
       { id: 'uv', label: 'UV / damage', type: 'number', min: 0, max: 1, step: 0.05, defaultValue: 0 },
-      { id: 'ciProd', label: 'CI synthesis', type: 'number', min: 0.1, max: 2, step: 0.05, defaultValue: 0.8 },
-      { id: 'croProd', label: 'Cro synthesis', type: 'number', min: 0.1, max: 2, step: 0.05, defaultValue: 0.6 },
+      { id: 'nutrients', label: 'Host nutrient level', type: 'number', min: 0.1, max: 2, step: 0.1, defaultValue: 1 },
+      { id: 'ciProd', label: 'CI synthesis', type: 'number', min: 0.05, max: 2.5, step: 0.05, defaultValue: 0.8 },
+      { id: 'croProd', label: 'Cro synthesis', type: 'number', min: 0.05, max: 2.5, step: 0.05, defaultValue: 0.6 },
       { id: 'decay', label: 'Protein decay', type: 'number', min: 0.01, max: 0.3, step: 0.01, defaultValue: 0.05 },
       { id: 'hill', label: 'Hill cooperativity', type: 'number', min: 1, max: 4, step: 0.2, defaultValue: 2 },
     ],
-    init: (_phage, params): LysogenyCircuitState => {
+    init: (phage, params): LysogenyCircuitState => {
+      const circuit = reconstructLysogenyCircuit(phage);
+      const derived = deriveLysogenyCircuitParams(phage);
       const base = getDefaultParams([
         { id: 'moi', label: '', type: 'number', defaultValue: 1 },
         { id: 'uv', label: '', type: 'number', defaultValue: 0 },
+        { id: 'nutrients', label: '', type: 'number', defaultValue: 1 },
         { id: 'ciProd', label: '', type: 'number', defaultValue: 0.8 },
         { id: 'croProd', label: '', type: 'number', defaultValue: 0.6 },
         { id: 'decay', label: '', type: 'number', defaultValue: 0.05 },
         { id: 'hill', label: '', type: 'number', defaultValue: 2 },
       ]);
-      const merged = { ...base, ...(params ?? {}) } as Record<string, number | boolean | string>;
+      const merged = { ...base, ...derived, ...(params ?? {}) } as Record<string, number | boolean | string>;
+
+      const isLytic = circuit.architecture === 'obligately-lytic';
+      const initialCi = isLytic ? 0.05 : 0.4;
+      const initialCro = isLytic ? 0.8 : 0.3;
+      const initialPhase = isLytic ? 'lytic' : 'undecided';
+
+      const occupancy = calculateOperatorOccupancy(initialCi, initialCro, merged);
+      const predicted = predictLysogenyFate(merged, circuit);
+      const phasePortrait = computeCircuitPhasePortrait(merged, 16);
+      const nullclines = computeNullclines(merged, 30);
+      const attractors = computeAttractors(merged);
+
       return {
         type: 'lysogeny-circuit',
         time: 0,
         running: true,
         speed: 1,
         params: merged,
-        ci: 0.4,
-        cro: 0.3,
+        ci: initialCi,
+        cro: initialCro,
         n: 0.05,
-        phase: 'undecided',
-        history: [] as Array<{ time: number; ci: number; cro: number; phase: string }>,
+        cII: 0.1,
+        recAStar: 0.0,
+        phase: initialPhase,
+        occupancy,
+        circuitInfo: circuit,
+        predictedProbability: predicted.probability,
+        predictionFactors: predicted.factors,
+        phasePortrait,
+        nullclines,
+        attractors,
+        history: [{ time: 0, ci: initialCi, cro: initialCro, cII: 0.1, phase: initialPhase }],
       };
     },
     step: (state: LysogenyCircuitState, dt: number): LysogenyCircuitState => {
-      const uv = Number(state.params.uv ?? 0);
-      const moi = Number(state.params.moi ?? 1);
-      const ciProd = Number(state.params.ciProd ?? 0.8);
-      const croProd = Number(state.params.croProd ?? 0.6);
-      const decay = Number(state.params.decay ?? 0.05);
-      const hill = Number(state.params.hill ?? 2);
+      const simResult = simulateSwitchStep(state, dt, state.params);
+      const predicted = predictLysogenyFate(state.params, state.circuitInfo);
 
-      const ciRepr = 1 / (1 + Math.pow(state.cro / 0.5, hill));
-      const croRepr = 1 / (1 + Math.pow(state.ci / 0.5, hill));
+      const history = [
+        ...state.history,
+        {
+          time: state.time + dt,
+          ci: simResult.ci,
+          cro: simResult.cro,
+          cII: simResult.cII,
+          phase: simResult.phase,
+        },
+      ].slice(-120);
 
-      const ciSynth = ciProd * moi * ciRepr;
-      const croSynth = croProd * croRepr + 0.12 * uv;
-
-      const ciNext = clamp(state.ci + (ciSynth - decay * state.ci - 0.2 * uv) * dt, 0, 3);
-      const croNext = clamp(state.cro + (croSynth - decay * state.cro + 0.05) * dt, 0, 3);
-
-      const phase = ciNext - croNext > 0.2 ? 'lysogenic' : croNext - ciNext > 0.2 ? 'lytic' : 'undecided';
-      const history = [...state.history, { time: state.time + dt, ci: ciNext, cro: croNext, phase }].slice(-120);
       return {
         ...state,
         time: state.time + dt,
-        ci: ciNext,
-        cro: croNext,
-        phase,
+        ci: simResult.ci,
+        cro: simResult.cro,
+        cII: simResult.cII,
+        recAStar: simResult.recAStar,
+        phase: simResult.phase,
+        occupancy: simResult.occupancy,
+        predictedProbability: predicted.probability,
+        predictionFactors: predicted.factors,
         history,
       };
     },
-    getSummary: (state) => `t=${state.time.toFixed(0)} CI=${state.ci.toFixed(2)} Cro=${state.cro.toFixed(2)} · ${state.phase}`,
+    getSummary: (state) => {
+      const pred =
+        state.predictedProbability !== undefined
+          ? ` · P(lyso)=${(state.predictedProbability * 100).toFixed(0)}%`
+          : '';
+      return `t=${state.time.toFixed(0)} CI=${state.ci.toFixed(2)} Cro=${state.cro.toFixed(2)} · ${state.phase}${pred}`;
+    },
   };
 }
 

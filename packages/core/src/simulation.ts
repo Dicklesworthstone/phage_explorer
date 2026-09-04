@@ -2,6 +2,13 @@
 // Common infrastructure for interactive simulations in Phage Explorer
 
 import type { PhageFull } from './types';
+import type {
+  LysogenyCircuitReconstruction,
+  OperatorOccupancy,
+  PhasePortraitPoint,
+  NullclinePoint,
+  AttractorPoint,
+} from './analysis/lysogeny-circuit';
 
 /**
  * Simulation IDs for the 5 planned simulations
@@ -68,10 +75,31 @@ export interface LysogenyCircuitState extends SimStateBase {
   cro: number;
   /** N antiterminator concentration */
   n: number;
+  /** CII activator concentration */
+  cII?: number;
+  /** RecA* activated SOS protease concentration */
+  recAStar?: number;
   /** Phase: 'lysogenic' | 'lytic' | 'undecided' */
   phase: 'lysogenic' | 'lytic' | 'undecided';
+  /** Operator occupancy state and promoter activities */
+  occupancy?: OperatorOccupancy;
+  /** Predicted lysogeny fate probability */
+  predictedProbability?: number;
+  /** Factors influencing fate decision */
+  predictionFactors?: string[];
+  /** Reconstructed circuit architecture and elements */
+  circuitInfo?: LysogenyCircuitReconstruction;
+  /** Phase portrait vector field points */
+  phasePortrait?: PhasePortraitPoint[];
+  /** Nullclines for phase portrait */
+  nullclines?: {
+    ciNullcline: NullclinePoint[];
+    croNullcline: NullclinePoint[];
+  };
+  /** Fixed points / attractors */
+  attractors?: AttractorPoint[];
   /** History for plotting */
-  history: Array<{ time: number; ci: number; cro: number }>;
+  history: Array<{ time: number; ci: number; cro: number; cII?: number; phase?: string }>;
 }
 
 /**
