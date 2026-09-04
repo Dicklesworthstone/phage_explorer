@@ -52,9 +52,13 @@ interface SyntenyBlockBp {
 interface SyntenyStats {
   blockCount: number;
   globalScore: number;
+  scsScore?: number;
   dtwDistance: number;
   coverageQuery: number;
   coverageReference: number;
+  inversionCount?: number;
+  translocationCount?: number;
+  indelCount?: number;
 }
 
 interface WorkerResponse {
@@ -499,6 +503,60 @@ export function SyntenyOverlay({
                     {stats.dtwDistance.toFixed(2)}
                   </div>
                 </div>
+                <div
+                  style={{
+                    padding: '0.5rem',
+                    backgroundColor: colors.backgroundAlt,
+                    borderRadius: '4px',
+                    textAlign: 'center',
+                  }}
+                >
+                  <div style={{ color: colors.textMuted }}>Continuity (SCS)</div>
+                  <div
+                    style={{
+                      fontSize: '1.2rem',
+                      fontWeight: 'bold',
+                      color: blockScoreColor(stats.scsScore ?? stats.globalScore),
+                    }}
+                    title="Synteny Continuity Score (SCS): measures modular order preservation penalized by block fragmentation"
+                  >
+                    {((stats.scsScore ?? stats.globalScore) * 100).toFixed(1)}%
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Rearrangement breakpoint summary banner */}
+            {stats && (Boolean(stats.inversionCount) || Boolean(stats.translocationCount)) && (
+              <div
+                style={{
+                  display: 'flex',
+                  gap: '0.75rem',
+                  fontSize: '0.75rem',
+                  padding: '0.4rem 0.6rem',
+                  backgroundColor: colors.backgroundAlt,
+                  borderRadius: '4px',
+                  border: `1px solid ${colors.borderLight}`,
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                }}
+              >
+                <span style={{ fontWeight: 600, color: colors.textDim }}>Rearrangements:</span>
+                {Boolean(stats.inversionCount) && (
+                  <span style={{ color: '#ef4444', fontWeight: 600 }}>
+                    ↺ {stats.inversionCount} Inversion{stats.inversionCount! > 1 ? 's' : ''}
+                  </span>
+                )}
+                {Boolean(stats.translocationCount) && (
+                  <span style={{ color: '#f59e0b', fontWeight: 600 }}>
+                    ⇄ {stats.translocationCount} Translocation{stats.translocationCount! > 1 ? 's' : ''}
+                  </span>
+                )}
+                {Boolean(stats.indelCount) && (
+                  <span style={{ color: colors.textMuted }}>
+                    ⇥ {stats.indelCount} Indel Gap{stats.indelCount! > 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
             )}
 

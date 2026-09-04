@@ -39,9 +39,13 @@ interface SyntenyBlockBp {
 interface SyntenyStats {
   blockCount: number;
   globalScore: number;
+  scsScore: number;
   dtwDistance: number;
   coverageQuery: number;
   coverageReference: number;
+  inversionCount: number;
+  translocationCount: number;
+  indelCount: number;
 }
 
 interface WorkerResponse {
@@ -192,12 +196,20 @@ self.onmessage = (event: MessageEvent<SyntenyJob>) => {
     const coverageQuery = sumCoverage(blocksBp.map((b) => ({ start: b.startBpQuery, end: b.endBpQuery })));
     const coverageReference = sumCoverage(blocksBp.map((b) => ({ start: b.startBpReference, end: b.endBpReference })));
 
+    const inversionCount = analysis.breakpointDetails.filter(b => b.type === 'inversion').length;
+    const translocationCount = analysis.breakpointDetails.filter(b => b.type === 'translocation').length;
+    const indelCount = analysis.breakpointDetails.filter(b => b.type === 'indel').length;
+
     const stats: SyntenyStats = {
       blockCount: blocksBp.length,
       globalScore: analysis.globalScore,
+      scsScore: analysis.scsScore,
       dtwDistance: analysis.dtwDistance,
       coverageQuery,
       coverageReference,
+      inversionCount,
+      translocationCount,
+      indelCount,
     };
 
     message.ok = true;

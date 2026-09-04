@@ -9,11 +9,25 @@ export interface SyntenyBlock {
   orientation: 'forward' | 'reverse';
 }
 
+export type BreakpointType = 'inversion' | 'translocation' | 'indel';
+
+export interface SyntenyBreakpoint {
+  idxA: number; // Gene index in A
+  idxB: number; // Gene index in B
+  prevBlockIdx: number;
+  nextBlockIdx: number;
+  type: BreakpointType;
+  description: string;
+}
+
 export interface SyntenyAnalysis {
   blocks: SyntenyBlock[];
   breakpoints: number[]; // Indices in A where synteny breaks
-  globalScore: number; // 0-1
+  breakpointDetails: SyntenyBreakpoint[];
+  globalScore: number; // 0-1 (coverage of genome A)
+  scsScore: number; // 0-1 (Synteny Continuity Score)
   dtwDistance: number;
+  warpingPath: [number, number][]; // [geneIdxA, geneIdxB][]
 }
 
 interface GeneTokens {
@@ -118,6 +132,97 @@ function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
   return Math.min(domainDist, nameDist);
 }
 
+/**
+ * Synteny Continuity Score (SCS)
+ *
+ * Quantifies synteny preservation despite sequence divergence and modular rearrangements.
+ * Penalizes block fragmentation into small discontiguous segments while rewarding
+ * long unbroken collinear runs and high pairwise sequence similarity.
+ */
+export function computeSyntenyContinuityScore(
+  blocks: SyntenyBlock[],
+  numGenesA: number
+): number {
+  if (numGenesA <= 0 || blocks.length === 0) return 0;
+
+  const totalAlignedLen = blocks.reduce(
+    (sum, b) => sum + (b.endIdxA - b.startIdxA + 1),
+    0
+  );
+  if (totalAlignedLen <= 0) return 0;
+
+  const coverage = Math.min(1, totalAlignedLen / numGenesA);
+
+  const weightedSimilarity =
+    blocks.reduce((sum, b) => sum + b.score * (b.endIdxA - b.startIdxA + 1), 0) /
+    totalAlignedLen;
+
+  // Block contiguity: sum(len_i^2) / (sum len_i)^2
+  // 1.0 for a single unbroken block; approaches 1/K for K equal fragments
+  const sumLenSq = blocks.reduce((sum, b) => {
+    const len = b.endIdxA - b.startIdxA + 1;
+    return sum + len * len;
+  }, 0);
+  const blockContiguity = sumLenSq / (totalAlignedLen * totalAlignedLen);
+
+  // SCS combines coverage, similarity, and contiguity
+  return Math.min(1, Math.max(0, coverage * weightedSimilarity * Math.sqrt(blockContiguity)));
+}
+
+/**
+ * Classifies synteny breakpoints between adjacent synteny blocks.
+ * Differentiates inversions, translocations/module swaps, and indel gaps.
+ */
+export function classifyBreakpoints(blocks: SyntenyBlock[]): SyntenyBreakpoint[] {
+  const result: SyntenyBreakpoint[] = [];
+  if (blocks.length < 2) return result;
+
+  for (let k = 0; k < blocks.length - 1; k++) {
+    const prev = blocks[k];
+    const next = blocks[k + 1];
+    const idxA = next.startIdxA;
+    const idxB = next.startIdxB;
+
+    let type: BreakpointType = 'indel';
+    let description = '';
+
+    if (prev.orientation !== next.orientation) {
+      type = 'inversion';
+      description = `Inversion boundary: Block #${k + 1} (${prev.orientation}) transitions to Block #${k + 2} (${next.orientation})`;
+    } else if (prev.orientation === 'reverse' && next.orientation === 'reverse') {
+      if (next.startIdxB > prev.startIdxB + 2 || prev.startIdxB > next.endIdxB + 2) {
+        type = 'translocation';
+        description = `Translocated inverted block: reference coordinates jump from [${prev.startIdxB}..${prev.endIdxB}] to [${next.startIdxB}..${next.endIdxB}]`;
+      } else {
+        type = 'indel';
+        description = `Inverted segment gap of ${Math.max(0, next.startIdxA - prev.endIdxA - 1)} genes in query`;
+      }
+    } else {
+      const gapA = next.startIdxA - prev.endIdxA - 1;
+      const stepB = next.startIdxB - prev.endIdxB;
+
+      if (stepB < -1 || stepB > 3) {
+        type = 'translocation';
+        description = `Module translocation: reference coordinate jumps from gene ${prev.endIdxB} to gene ${next.startIdxB}`;
+      } else {
+        type = 'indel';
+        description = gapA > 0 ? `Insertion/deletion gap of ${gapA} unaligned genes in query` : `Local synteny discontinuity`;
+      }
+    }
+
+    result.push({
+      idxA,
+      idxB,
+      prevBlockIdx: k,
+      nextBlockIdx: k + 1,
+      type,
+      description,
+    });
+  }
+
+  return result;
+}
+
 // Dynamic Time Warping for gene lists.
 //
 // DTW is monotonic: its traceback can only move forward through both
@@ -134,7 +239,15 @@ function alignSyntenyForward(
   const m = genesB.length;
   
   if (n === 0 || m === 0) {
-    return { blocks: [], breakpoints: [], globalScore: 0, dtwDistance: Infinity };
+    return {
+      blocks: [],
+      breakpoints: [],
+      breakpointDetails: [],
+      globalScore: 0,
+      scsScore: 0,
+      dtwDistance: Infinity,
+      warpingPath: [],
+    };
   }
 
   // Pre-process genes
@@ -255,11 +368,17 @@ function alignSyntenyForward(
   // Global score: coverage of A by syntenic blocks
   const coverageA = blocks.reduce((sum, b) => sum + (b.endIdxA - b.startIdxA + 1), 0);
   
+  const scsScore = computeSyntenyContinuityScore(blocks, n);
+  const breakpointDetails = classifyBreakpoints(blocks);
+
   return {
     blocks,
     breakpoints,
+    breakpointDetails,
     globalScore: coverageA / n,
-    dtwDistance: dtw[n][m]
+    scsScore,
+    dtwDistance: dtw[n][m],
+    warpingPath: path,
   };
 }
 
@@ -456,12 +575,18 @@ export function alignSynteny(
 
   const coverageA = merged.reduce((sum, b) => sum + (b.endIdxA - b.startIdxA + 1), 0);
 
+  const scsScore = computeSyntenyContinuityScore(merged, genesA.length);
+  const breakpointDetails = classifyBreakpoints(merged);
+
   return {
     blocks: merged,
     breakpoints: merged.slice(1).map(b => b.startIdxA),
+    breakpointDetails,
     globalScore: Math.min(1, coverageA / genesA.length),
+    scsScore,
     // The forward pass's DTW cost remains the comparable global figure; the
     // reverse pass is a search for local rearrangements, not a rival alignment.
     dtwDistance: forward.dtwDistance,
+    warpingPath: forward.warpingPath,
   };
 }
