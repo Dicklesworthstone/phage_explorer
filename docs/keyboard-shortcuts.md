@@ -133,6 +133,7 @@ command palette or a menu.
 | Shortcut | Action | Provenance | Description |
 |---|---|---|---|
 | `Ctrl+Shift+N` | Niche network | demo | Explore niche co-occurrence structure on a simulated community |
+| `—` | Take feature tour |  | Start the guided feature tour |
 | `Ctrl+b` | Toggle beginner mode |  | Enable or disable beginner mode |
 
 ### Export

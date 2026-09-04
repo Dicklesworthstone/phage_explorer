@@ -4,10 +4,11 @@
  * Guided tour that highlights key UI elements with explanations.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useTheme } from '../../hooks/useTheme';
 import { useReducedMotion } from '../../hooks/useReducedMotion';
 import { useOverlay } from './OverlayProvider';
+import { usePhageStore } from '../../store';
 
 interface TourStep {
   target: string; // CSS selector
@@ -48,6 +49,7 @@ export function FeatureTour(): React.ReactElement | null {
   const colors = theme.colors;
   const reducedMotion = useReducedMotion();
   const { isOpen, close } = useOverlay();
+  const completeTour = usePhageStore((s) => s.completeTour);
   const [stepIndex, setStepIndex] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
 
@@ -57,6 +59,25 @@ export function FeatureTour(): React.ReactElement | null {
       setStepIndex(0);
     }
   }, [isOpen]);
+
+  const handleFinish = useCallback(() => {
+    completeTour('welcome');
+    close('tour');
+  }, [completeTour, close]);
+
+  const handleNext = useCallback(() => {
+    if (stepIndex < TOUR_STEPS.length - 1) {
+      setStepIndex(stepIndex + 1);
+    } else {
+      handleFinish();
+    }
+  }, [stepIndex, handleFinish]);
+
+  const handlePrev = useCallback(() => {
+    if (stepIndex > 0) {
+      setStepIndex(stepIndex - 1);
+    }
+  }, [stepIndex]);
 
   // Update target rect
   useEffect(() => {
@@ -73,28 +94,32 @@ export function FeatureTour(): React.ReactElement | null {
       if (stepIndex < TOUR_STEPS.length - 1) {
         setStepIndex(stepIndex + 1);
       } else {
-        close('tour');
+        handleFinish();
       }
     }
-  }, [stepIndex, isOpen, close, reducedMotion]);
+  }, [stepIndex, isOpen, handleFinish, reducedMotion]);
+
+  // Keyboard navigation
+  useEffect(() => {
+    if (!isOpen('tour')) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleFinish();
+      } else if (e.key === 'ArrowRight' || e.key === 'Enter') {
+        handleNext();
+      } else if (e.key === 'ArrowLeft') {
+        handlePrev();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, handleFinish, handleNext, handlePrev]);
 
   if (!isOpen('tour') || !rect) return null;
 
   const step = TOUR_STEPS[stepIndex];
-  
-  const handleNext = () => {
-    if (stepIndex < TOUR_STEPS.length - 1) {
-      setStepIndex(stepIndex + 1);
-    } else {
-      close('tour');
-    }
-  };
-
-  const handlePrev = () => {
-    if (stepIndex > 0) {
-      setStepIndex(stepIndex - 1);
-    }
-  };
 
   const vv = typeof window !== 'undefined' ? window.visualViewport : null;
   const viewportWidth = vv?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 0);
@@ -187,7 +212,7 @@ export function FeatureTour(): React.ReactElement | null {
         </p>
         <div style={{ display: 'flex', justifyContent: 'space-between' }}>
           <button
-            onClick={() => close('tour')}
+            onClick={handleFinish}
             style={{
               background: 'none',
               border: 'none',

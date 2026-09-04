@@ -88,7 +88,7 @@ function LevelCard({ title, desc, icon, selected, onSelect }: LevelCardProps): R
 }
 
 export function WelcomeModal(): React.ReactElement | null {
-  const { close, isOpen } = useOverlay();
+  const { close, isOpen, open } = useOverlay();
 
   // Web-specific preferences (persisted)
   const hasSeenWelcome = useWebPreferences(s => s.hasSeenWelcome);
@@ -120,8 +120,9 @@ export function WelcomeModal(): React.ReactElement | null {
     setHasSeenWelcome(true);
     close('welcome');
     setBeginnerModeEnabled(true);
-    setTimeout(() => startTour('welcome'), TOUR_START_DELAY_MS);
-  }, [setHasSeenWelcome, close, setBeginnerModeEnabled, startTour]);
+    startTour('welcome');
+    setTimeout(() => open('tour'), TOUR_START_DELAY_MS);
+  }, [setHasSeenWelcome, close, open, setBeginnerModeEnabled, startTour]);
 
   const handleBack = useCallback(() => {
     setStep(step === 'primer' ? 'level' : 'intro');

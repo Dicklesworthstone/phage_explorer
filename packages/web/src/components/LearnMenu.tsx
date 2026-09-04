@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useBeginnerMode } from '../education';
+import { useOverlay } from './overlays/OverlayProvider';
 import { IconBookmark, IconChevronDown, IconLearn, IconTarget } from './ui';
 
 type MenuItem = {
@@ -12,6 +13,7 @@ type MenuItem = {
 
 export const LearnMenu: React.FC = () => {
   const { isEnabled, openGlossary, startTour, showContextFor, hasCompletedTour } = useBeginnerMode();
+  const { open: openOverlay } = useOverlay();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -86,13 +88,14 @@ export const LearnMenu: React.FC = () => {
             icon: <IconTarget size={18} />,
             action: () => {
               startTour('welcome');
+              openOverlay('tour');
               closeMenu();
             },
           },
         ] satisfies MenuItem[],
       },
     ] satisfies Array<{ id: string; label: string; items: MenuItem[] }>;
-  }, [closeMenu, hasCompletedTour, openGlossary, showContextFor, startTour]);
+  }, [closeMenu, hasCompletedTour, openGlossary, openOverlay, showContextFor, startTour]);
 
   const items = useMemo(() => sections.flatMap((section) => section.items), [sections]);
 

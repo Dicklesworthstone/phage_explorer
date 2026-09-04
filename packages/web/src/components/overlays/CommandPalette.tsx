@@ -494,10 +494,11 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     'edu:start-welcome-tour': () => {
       setBeginnerModeEnabled(true);
       startTour('welcome');
+      open('tour');
     },
   }), [
     availableThemes, beginnerModeEnabled, currentPhage, currentPhageIndex,
-    openGlossary, phageSummaries, readingFrame, setBeginnerModeEnabled, setCurrentPhageIndex,
+    open, openGlossary, phageSummaries, readingFrame, setBeginnerModeEnabled, setCurrentPhageIndex,
     setReadingFrame, setScrollPosition, setTheme, showToast, startTour, theme.id,
     toggle3DModel, toggleBeginnerMode, toggleSequenceViewMode
   ]);

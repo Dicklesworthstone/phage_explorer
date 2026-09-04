@@ -41,6 +41,7 @@ const CHROME_OVERLAYS = new Set([
   'aaLegend',
   'gpuWasmBenchmark',
   'collaboration',
+  'tour',
 ]);
 
 const overlayActions = ActionRegistryList.filter(a => a.overlayId);

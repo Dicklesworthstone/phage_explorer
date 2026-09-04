@@ -45,6 +45,7 @@ import { SettingsOverlay } from './SettingsOverlay';
 import { GotoOverlay } from './GotoOverlay';
 import { AAKeyOverlay } from './AAKeyOverlay';
 import { AALegend } from './AALegend';
+import { FeatureTour } from './FeatureTour';
 
 // ============================================================================
 // LAZY-LOADED OVERLAYS (heavy analysis components, loaded on-demand)
@@ -331,6 +332,7 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <EagerOverlayBoundary id="aaLegend"><AALegend /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="settings"><SettingsOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="commandPalette"><CommandPalette /></EagerOverlayBoundary>
+      <EagerOverlayBoundary id="tour"><FeatureTour /></EagerOverlayBoundary>
 
       {/* LAZY: Analysis overlays loaded only when open */}
       {lazyOverlays.map(({ id, element }) => (
@@ -481,6 +483,10 @@ function renderLazyOverlay(
     // Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)
     case 'pangenomeGraph':
       return <PangenomeGraphOverlay />;
+
+    // Feature Tour Onboarding
+    case 'tour':
+      return <FeatureTour />;
 
     default:
       return null;
