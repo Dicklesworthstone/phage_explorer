@@ -147,7 +147,8 @@ jobs:
             e2e/command-palette-drift.e2e.ts \
             e2e/provenance-banner.e2e.ts \
             e2e/provenance-badge.e2e.ts \
-            e2e/sequence-scroll-repaint.e2e.ts
+            e2e/sequence-scroll-repaint.e2e.ts \
+            e2e/performance-benchmark.e2e.ts
 
       - name: Upload report on failure
         if: failure()
