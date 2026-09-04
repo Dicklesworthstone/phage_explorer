@@ -102,3 +102,6 @@ export * from './analysis/repeats';
 
 // Lysogeny / Lysis Decision Circuit Reconstructor
 export * from './analysis/lysogeny-circuit';
+
+// Auxiliary Metabolic Gene (AMG) Flux Potential Analyzer
+export * from './analysis/amg-flux';
