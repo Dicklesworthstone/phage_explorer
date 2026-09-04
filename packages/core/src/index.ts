@@ -111,3 +111,6 @@ export * from './analysis/codon-pair-adaptation';
 
 // Structural Epitope Clash Map / Tail Fiber Host Range Analyzer
 export * from './analysis/tail-fiber-structure';
+
+// Capsid Packaging & Ejection Energetics Simulator
+export * from './analysis/capsid-energetics';
