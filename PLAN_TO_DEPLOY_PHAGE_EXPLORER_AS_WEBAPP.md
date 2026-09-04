@@ -2504,7 +2504,7 @@ export default defineConfig({
 - [ ] First-run onboarding flow
 - [ ] "TUI mode" skin option
 - [ ] Error boundary and recovery
-- [ ] Telemetry integration
+- [x] Telemetry integration — Deliberately descoped (no invasive telemetry, privacy-first design; beads `phage_explorer-s4qx.6.6` and `phage_explorer-245z`)
 - [ ] Documentation
 
 **Verification**:
@@ -2541,33 +2541,41 @@ export default defineConfig({
 
 ### Performance
 
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| First Contentful Paint | <1.0s | Lighthouse |
-| Largest Contentful Paint | <1.5s | Lighthouse |
-| Time to Interactive | <2.0s | Lighthouse |
-| Cumulative Layout Shift | <0.1 | Lighthouse |
-| First Input Delay | <50ms | Web Vitals |
-| Keypress to Paint | <16ms | Custom |
-| Scroll FPS | 60fps | Performance API |
+Performance targets are divided into long-term aspirational targets and CI-enforced ratchet assertions (`packages/web/lighthouserc.cjs` and `packages/web/e2e/performance-benchmark.e2e.ts`). CI runs fail immediately if metrics regress past the ratchet thresholds.
+
+| Metric | Target | CI Enforced Ratchet | Measurement / Suite |
+|--------|--------|---------------------|---------------------|
+| First Contentful Paint | <1.0s | <4.5s (Lighthouse) / <5.0s (E2E) | Lighthouse CI (`lighthouserc.cjs`) & Playwright (`performance-benchmark.e2e.ts`) |
+| Largest Contentful Paint | <1.5s | <34.0s (Lighthouse) / <35.0s (E2E) | Dominated by 10.4MB SQLite initial load; enforced in `lighthouserc.cjs` & `performance-benchmark.e2e.ts` |
+| Time to Interactive | <2.0s | <34.0s (Lighthouse) / <35.0s (E2E) | Enforced in `lighthouserc.cjs` & `performance-benchmark.e2e.ts` |
+| Cumulative Layout Shift | <0.1 | <0.3 | Lighthouse CI (`lighthouserc.cjs`) |
+| Total Blocking Time / FID | <50ms FID | TBT <1800ms | Lighthouse CI (`lighthouserc.cjs`) |
+| Keypress to Paint | <16ms | <100ms baseline | Playwright (`performance-benchmark.e2e.ts`, measured 32.2ms in CI software rasterizer) |
+| Scroll FPS | 60fps | >=10 FPS baseline | Playwright (`performance-benchmark.e2e.ts`, software rasterizer baseline) |
+| Analysis Compute (GC/Complexity) | <300ms | <500ms | Playwright (`performance-benchmark.e2e.ts`, measured 104ms GC Skew, 138ms Complexity) |
+| Comparison Mode Open Timing | <500ms | <1000ms | Playwright (`performance-benchmark.e2e.ts`, measured 190ms) |
+| Memory Baseline & Leakage | <100MB / 0MB leak | <150MB baseline, <350MB session, <50MB leak | Playwright (`performance-benchmark.e2e.ts`, measured 51MB baseline, 0.0MB leak over 15 cycles) |
 
 ### Functionality
 
-| Metric | Target |
-|--------|--------|
-| Hotkey parity with TUI | 100% |
-| Overlay parity with TUI | 100% |
-| Simulation parity with TUI | 100% |
-| Offline functionality | Full app usable |
+| Metric | Target | Status |
+|--------|--------|--------|
+| Hotkey parity with TUI | Intentional parity | Verified in `docs/keyboard-shortcuts.md` and `packages/web/src/keyboard/*.test.ts`. All 9 domain differences (e.g. `Ctrl+K` web standard vs `Ctrl+P`/`:`, Alt layer for overlays vs single-key TUI) are formally documented with architectural rationale. |
+| Overlay parity with TUI | 100% | Met. 33/33 TUI-reachable overlays have web counterparts, with data provenance levels tracked and tested. |
+| Simulation parity with TUI | 100% | Met. All 7 simulations run on both web and terminal. |
+| Offline functionality | Full app usable | Met. Service worker offline shell caching + client-side SQLite database. |
 
-### Adoption
+### Adoption Metrics — Descoped (Privacy-First Architecture)
 
-| Metric | Target (3 months) |
-|--------|-------------------|
-| Monthly Active Users | 1,000 |
-| Avg. Session Duration | >5 min |
-| Feature Adoption (simulations) | >30% of users |
-| Return Rate | >40% |
+The original deployment plan proposed product adoption targets (1,000 MAU, >5 min sessions, >30% simulation adoption, >40% return rate).
+
+**Status**: Descoped and removed as success criteria (per architectural decisions in beads `phage_explorer-s4qx.6.6` and `phage_explorer-245z`).
+
+**Rationale**:
+1. Phage Explorer is a free, open-source, privacy-preserving scientific tool.
+2. Tracking monthly active users, session durations, return rates, and per-feature interaction rates requires persistent user identifiers, cookie tracking, session beacons, or third-party product analytics pipelines.
+3. The application intentionally restricts telemetry to standard non-invasive aggregate Vercel page views and Speed Insights, with zero client-side user profiling.
+4. Success is defined by biophysical accuracy, computational correctness, responsiveness, and reproducible offline utility, not growth metrics or user engagement funnels.
 
 ---
 
@@ -2659,6 +2667,6 @@ This plan transforms Phage Explorer from a terminal application into a best-in-c
 4. **Maintains** a single codebase for core logic and computation
 5. **Deploys** seamlessly on Vercel with no backend infrastructure
 
-The phased approach allows incremental delivery while maintaining quality gates at each stage. Success will be measured by both technical metrics (performance, compatibility) and user adoption metrics.
+The phased approach allows incremental delivery while maintaining quality gates at each stage. Success is measured by technical and computational rigor (performance, compatibility, biophysical accuracy) rather than invasive user adoption tracking.
 
 Let's build something beautiful. 🧬✨

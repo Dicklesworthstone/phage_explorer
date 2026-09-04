@@ -327,13 +327,11 @@ against a 1.0 s target, TTI 5.63 s against 2.0 s, on a local server with no
 network latency.
 
 **Success criteria.**
-- [ ] The suite runs in CI without an opt-in env var.
-- [ ] Every target maps to an assertion or an explicit descope.
-- [ ] Where a budget cannot be met, the current number is recorded as a baseline and ratcheted.
+- [x] The suite runs in CI without an opt-in env var.
+- [x] Every target maps to an assertion or an explicit descope.
+- [x] Where a budget cannot be met, the current number is recorded as a baseline and ratcheted.
 
-**Complexity:** M. **Note.** The adoption targets (1,000 MAU, >5 min sessions)
-have zero coverage and nothing measures them. This project deliberately chose no
-telemetry. Amend the plan rather than leaving four unmeasurable targets standing.
+**Resolved (`5t4r.6`, `k4ep.3`).** `performance-benchmark.e2e.ts` now runs in CI with concrete assertions against documented ratchets (FCP, LCP, TTI, keypress-to-paint, scroll FPS, analysis execution, comparison open, memory leak). Lighthouse category floors and metric budgets are enforced as error gates in `lighthouserc.cjs` (`5t4r.5`). `PLAN_TO_DEPLOY_PHAGE_EXPLORER_AS_WEBAPP.md` encodes the CI-enforced ratchet mapping and formally descopes invasive adoption targets with recorded privacy rationale (`k4ep.3`).
 
 ---
 
