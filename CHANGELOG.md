@@ -14,6 +14,18 @@ Over 550 commits of active development since v1.4.1, spanning annotation pipelin
 
 ### New Analysis Overlays and Modules
 
+- **Pan-Phage Graph Pangenome & Variant Cards** — construct rGFA sequence variation graphs, decompose into ultra-bubbles, detect net length deltas, ΔGC shifts, recombination breakpoints, and identify recombination hotspots (`Shift+P`)
+- **Synteny Elastic Alignment DTW** — dynamic time warping synteny alignment across phage pairs with conservation scoring, topological warping path, structural inversions, and translocation detection
+- **Host-Phage Protein Interaction & Effector Docking Map** — bipartite interaction network mapping phage effectors to host proteins with buried surface area, binding affinities (ΔG, Kd), and in-silico mutation simulation (`Alt+I`)
+- **Burst Kinetics & Latency Inference** — fit canonical lysis/burst datasets (Ellis & Delbrück 1939, Wang 2000, Hutchison & Sinsheimer 1966, Henry 2013) with coupled ODEs and simulate in-silico lysis cassette alterations
+- **Capsid Packaging Energetics & Portal Pressure Gauge** — continuum inverse-spool model calculating internal capsid pressure, packaging force, interaxial DNA spacing, and Debye electrostatic repulsion
+- **Structural Epitope Clash Map & Tail Fiber Engineering** — receptor docking, clash penalty analysis, and modular chimera crossover junction recommendations
+- **Codon-Pair Adaptation & Translation Attenuation Lens** — calculate CPS, CPB, and ribosomal pause risk scores to detect translational bottlenecks
+- **Auxiliary Metabolic Gene (AMG) Flux Potential Analyzer** — identify conserved AMG markers and compute predicted flux deltas (Δ-FBA) across host metabolic pathways
+- **Lysogeny Decision Circuit & Phase Portrait Reconstructor** — bistable ODE model of the lambda lysis/lysogeny genetic switch with nullclines, phase portrait vector fields, and UV induction simulation
+- **Pan-Phage Latent Space Atlas** — interactive 2D embedding space projection of ESM-2 protein vectors with functional cluster categorization
+- **HowDoIKnowThis Methodology Affordance** — provides transparent provenance inspection, data source citations, and algorithm execution details across overlays
+- **Feature Tour Onboarding** — interactive step-by-step guided tour reachable via WelcomeModal, CommandPalette, and LearnMenu
 - **Epistasis & Fitness Landscape Explorer** — interactive epistasis analysis with fitness landscape visualization ([`712b032`](https://github.com/Dicklesworthstone/phage_explorer/commit/712b032c55c4558e5457cb79957ac90362d06df0))
 - **Metagenomic Co-Occurrence & Niche Profiler** — model ecological co-occurrence networks and niche partitioning ([`e8e53b8`](https://github.com/Dicklesworthstone/phage_explorer/commit/e8e53b85e5e43070306a481a38b1b1f2968877e7))
 - **Phylodynamic Trajectory Explorer** — visualize evolutionary trajectories over time ([`25bd65a`](https://github.com/Dicklesworthstone/phage_explorer/commit/25bd65a0fe5d6e112f2ab792b8985b87955631c0))
@@ -27,6 +39,7 @@ Over 550 commits of active development since v1.4.1, spanning annotation pipelin
 - **Gene-aware dN/dS with reverse-frame correctness** — selection pressure analysis scoped to individual genes ([`2bae16f`](https://github.com/Dicklesworthstone/phage_explorer/commit/2bae16f31aec3044c047a4a503a5acab4c3c1fa8))
 - **HGT Passport Stamp Provenance View** — amelioration timing for horizontal gene transfer analysis ([`1719004`](https://github.com/Dicklesworthstone/phage_explorer/commit/17190045e0097a80539cc9a34c151fe9199fc89f))
 - **Module Coherence Overlay** added to OverlayManager and AnalysisMenu ([`a34854b`](https://github.com/Dicklesworthstone/phage_explorer/commit/a34854b3969201b0ad4b4bdbdc4df1f45ddf8c3c))
+
 
 ### WASM Acceleration (Rust)
 
