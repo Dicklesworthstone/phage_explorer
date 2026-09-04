@@ -6,7 +6,11 @@
  */
 
 import React, { useMemo, useState, useEffect } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import {
+  analyzePhageHostCodonAdaptation,
+  type PhageFull,
+  type PhageHostAdaptationResult,
+} from '@phage-explorer/core';
 import type { PhageRepository, CodonAdaptation, HostTrnaPool } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -22,7 +26,7 @@ import {
 } from './primitives';
 
 // Color scale for adaptation scores
-function getAdaptationColor(score: number): string {
+export function getAdaptationColor(score: number): string {
   if (score >= 0.8) return '#22c55e';  // Green - high adaptation
   if (score >= 0.6) return '#84cc16';  // Lime
   if (score >= 0.4) return '#f59e0b';  // Orange - moderate
@@ -58,7 +62,13 @@ export function CodonAdaptationOverlay({
   const [hostPools, setHostPools] = useState<HostTrnaPool[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'summary' | 'genes'>('summary');
+  const [viewMode, setViewMode] = useState<'summary' | 'genes' | 'codon_pair_lens'>('summary');
+  const [selectedModuleFilter, setSelectedModuleFilter] = useState<string>('all');
+
+  const adaptationLens = useMemo((): PhageHostAdaptationResult | null => {
+    if (!currentPhage) return null;
+    return analyzePhageHostCodonAdaptation(currentPhage);
+  }, [currentPhage]);
 
   // Hotkey (Alt+T for tRNA/adaptation)
   useHotkey(
@@ -213,9 +223,11 @@ export function CodonAdaptationOverlay({
                 display: 'flex',
                 gap: '0.5rem',
                 fontSize: '0.8rem',
+                flexWrap: 'wrap',
               }}
             >
               <button
+                type="button"
                 onClick={() => setViewMode('summary')}
                 style={{
                   padding: '0.25rem 0.75rem',
@@ -229,6 +241,7 @@ export function CodonAdaptationOverlay({
                 Host Summary
               </button>
               <button
+                type="button"
                 onClick={() => setViewMode('genes')}
                 style={{
                   padding: '0.25rem 0.75rem',
@@ -240,6 +253,21 @@ export function CodonAdaptationOverlay({
                 }}
               >
                 Per-Gene View
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('codon_pair_lens')}
+                style={{
+                  padding: '0.25rem 0.75rem',
+                  backgroundColor: viewMode === 'codon_pair_lens' ? colors.accent : colors.backgroundAlt,
+                  color: viewMode === 'codon_pair_lens' ? '#fff' : colors.text,
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontWeight: viewMode === 'codon_pair_lens' ? 'bold' : 'normal',
+                }}
+              >
+                Codon-Pair Adaptation Lens
               </button>
             </div>
 
@@ -339,6 +367,33 @@ export function CodonAdaptationOverlay({
                           {host.avgTai.toFixed(2)}
                         </span>
                       </div>
+
+                      {/* CPB bar */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ fontSize: '0.7rem', color: colors.textMuted, width: '30px' }}>
+                          CPB
+                        </span>
+                        <div
+                          style={{
+                            flex: 1,
+                            height: '8px',
+                            backgroundColor: colors.background,
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: `${Math.max(0, Math.min(100, (host.avgCpb + 0.15) / 0.3 * 100))}%`,
+                              height: '100%',
+                              backgroundColor: host.avgCpb >= 0 ? '#22c55e' : '#f59e0b',
+                            }}
+                          />
+                        </div>
+                        <span style={{ fontSize: '0.7rem', color: colors.text, width: '35px' }}>
+                          {host.avgCpb.toFixed(2)}
+                        </span>
+                      </div>
                     </div>
 
                     <div
@@ -353,7 +408,7 @@ export function CodonAdaptationOverlay({
                   </div>
                 ))}
               </div>
-            ) : (
+            ) : viewMode === 'genes' ? (
               /* Per-gene view */
               <>
                 {/* Host selector */}
@@ -461,6 +516,386 @@ export function CodonAdaptationOverlay({
                   </div>
                 )}
               </>
+            ) : (
+              /* Codon-Pair Adaptation Lens (Roadmap #44) */
+              adaptationLens && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {/* Hero / Summary Banner */}
+                  <div
+                    style={{
+                      padding: '0.75rem 1rem',
+                      backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                      borderRadius: '6px',
+                      border: `1px solid ${colors.borderLight ?? '#1e293b'}`,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.5rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                        <strong style={{ color: colors.accent ?? '#38bdf8', fontSize: '0.95rem' }}>
+                          Translational Compatibility & Tropism Lens
+                        </strong>
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            fontFamily: 'monospace',
+                            padding: '0.15rem 0.4rem',
+                            backgroundColor: `${colors.accent ?? '#38bdf8'}22`,
+                            color: colors.accent ?? '#38bdf8',
+                            borderRadius: '3px',
+                          }}
+                        >
+                          Roadmap #44
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '0.6rem', fontSize: '0.75rem', fontFamily: 'monospace' }}>
+                        <span>Primary Host: <strong style={{ color: colors.text ?? '#f8fafc' }}>{adaptationLens.primaryHost}</strong></span>
+                        <span>Top Match: <strong style={{ color: colors.success ?? '#22c55e' }}>{adaptationLens.hostRankings[0]?.hostName}</strong></span>
+                      </div>
+                    </div>
+
+                    <div style={{ fontSize: '0.8rem', color: colors.textDim ?? '#94a3b8', lineHeight: 1.4 }}>
+                      {adaptationLens.summary}
+                    </div>
+                  </div>
+
+                  {/* Multi-Host Compatibility Rankings */}
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc', marginBottom: '0.4rem' }}>
+                      Candidate Bacterial Host Translational Rankings ({adaptationLens.hostRankings.length} Hosts)
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                        gap: '0.6rem',
+                      }}
+                    >
+                      {adaptationLens.hostRankings.map((hr, idx) => {
+                        const isTop = idx === 0;
+                        return (
+                          <div
+                            key={hr.hostKey}
+                            style={{
+                              padding: '0.6rem 0.75rem',
+                              backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                              borderRadius: '6px',
+                              border: `1px solid ${
+                                hr.isPrimaryHost
+                                  ? (colors.accent ?? '#38bdf8')
+                                  : isTop
+                                    ? (colors.success ?? '#22c55e')
+                                    : (colors.borderLight ?? '#1e293b')
+                              }`,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.35rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontWeight: 600, fontSize: '0.82rem', color: colors.text ?? '#f8fafc' }}>
+                                #{idx + 1} {hr.hostName}
+                              </span>
+                              {hr.isPrimaryHost && (
+                                <span
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    padding: '0.1rem 0.35rem',
+                                    borderRadius: '3px',
+                                    backgroundColor: `${colors.accent ?? '#38bdf8'}33`,
+                                    color: colors.accent ?? '#38bdf8',
+                                    fontWeight: 'bold',
+                                  }}
+                                >
+                                  PRIMARY
+                                </span>
+                              )}
+                              {!hr.isPrimaryHost && isTop && (
+                                <span
+                                  style={{
+                                    fontSize: '0.65rem',
+                                    padding: '0.1rem 0.35rem',
+                                    borderRadius: '3px',
+                                    backgroundColor: `${colors.success ?? '#22c55e'}33`,
+                                    color: colors.success ?? '#22c55e',
+                                    fontWeight: 'bold',
+                                  }}
+                                >
+                                  TOP MATCH
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Compatibility Progress Bar */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <div
+                                style={{
+                                  flex: 1,
+                                  height: '6px',
+                                  backgroundColor: colors.background ?? '#020617',
+                                  borderRadius: '3px',
+                                  overflow: 'hidden',
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: `${hr.overallCompatibility}%`,
+                                    height: '100%',
+                                    backgroundColor:
+                                      hr.overallCompatibility >= 70
+                                        ? (colors.success ?? '#22c55e')
+                                        : hr.overallCompatibility >= 50
+                                          ? (colors.warning ?? '#eab308')
+                                          : (colors.error ?? '#ef4444'),
+                                  }}
+                                />
+                              </div>
+                              <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', fontWeight: 'bold', color: colors.text ?? '#f8fafc' }}>
+                                {hr.overallCompatibility.toFixed(1)}%
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', fontFamily: 'monospace', color: colors.textMuted ?? '#64748b' }}>
+                              <span>CAI: {hr.meanCai.toFixed(3)}</span>
+                              <span>CPB: {hr.meanCpb.toFixed(3)}</span>
+                              <span>Z: {hr.meanZScore.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Functional Module Adaptation Status */}
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc', marginBottom: '0.4rem' }}>
+                      Functional Module Adaptation & Acquisition Status
+                    </div>
+                    <div
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                        gap: '0.6rem',
+                      }}
+                    >
+                      {adaptationLens.modules.map((mod) => {
+                        const statusColor =
+                          mod.adaptationStatus === 'adapted'
+                            ? (colors.success ?? '#22c55e')
+                            : mod.adaptationStatus === 'transitional'
+                              ? (colors.warning ?? '#eab308')
+                              : (colors.error ?? '#ef4444');
+                        const statusLabel =
+                          mod.adaptationStatus === 'adapted'
+                            ? 'Host-Adapted'
+                            : mod.adaptationStatus === 'transitional'
+                              ? 'Transitional'
+                              : 'Mismatched / Acquired';
+
+                        return (
+                          <div
+                            key={mod.module}
+                            style={{
+                              padding: '0.6rem 0.75rem',
+                              backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                              borderRadius: '6px',
+                              border: `1px solid ${statusColor}44`,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.35rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontWeight: 600, fontSize: '0.8rem', color: colors.text ?? '#f8fafc' }}>
+                                {mod.displayName}
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: '0.65rem',
+                                  padding: '0.1rem 0.35rem',
+                                  borderRadius: '3px',
+                                  backgroundColor: `${statusColor}22`,
+                                  color: statusColor,
+                                  fontWeight: 'bold',
+                                }}
+                              >
+                                {statusLabel}
+                              </span>
+                            </div>
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72rem', fontFamily: 'monospace', color: colors.textDim ?? '#94a3b8' }}>
+                              <span>Genes: {mod.geneCount}</span>
+                              <span>Mean CAI: {mod.meanCai.toFixed(3)}</span>
+                              <span>Mean CPB: {mod.meanCpb.toFixed(3)}</span>
+                              <span>Z: {mod.meanZScore.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Candidate Host-Switching Footprints */}
+                  <div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc', marginBottom: '0.4rem' }}>
+                      Candidate Host-Switching Footprints ({adaptationLens.hostSwitchCandidates.length})
+                    </div>
+                    {adaptationLens.hostSwitchCandidates.length === 0 ? (
+                      <div
+                        style={{
+                          padding: '0.6rem 0.8rem',
+                          backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                          borderRadius: '6px',
+                          border: `1px solid ${colors.borderLight ?? '#1e293b'}`,
+                          fontSize: '0.75rem',
+                          color: colors.textMuted ?? '#64748b',
+                        }}
+                      >
+                        No strong host-switching divergence detected. All viral genes show consistent translational alignment with the primary host profile.
+                      </div>
+                    ) : (
+                      <div
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        {adaptationLens.hostSwitchCandidates.map((g) => (
+                          <div
+                            key={g.geneId}
+                            style={{
+                              padding: '0.6rem 0.75rem',
+                              backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                              borderRadius: '6px',
+                              border: `1px solid ${(colors.warning ?? '#eab308')}66`,
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.3rem',
+                              fontSize: '0.75rem',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <span style={{ fontWeight: 'bold', color: colors.text ?? '#f8fafc', fontFamily: 'monospace' }}>
+                                {g.name} ({g.locusTag})
+                              </span>
+                              <span
+                                style={{
+                                  fontSize: '0.65rem',
+                                  padding: '0.1rem 0.35rem',
+                                  borderRadius: '3px',
+                                  backgroundColor: `${colors.warning ?? '#eab308'}22`,
+                                  color: colors.warning ?? '#eab308',
+                                  fontWeight: 'bold',
+                                }}
+                              >
+                                ΔCAI +{g.hostSwitchFootprint?.caiDelta.toFixed(3)}
+                              </span>
+                            </div>
+                            <div style={{ color: colors.textMuted ?? '#64748b', fontSize: '0.7rem' }}>
+                              {g.product}
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: colors.textDim ?? '#94a3b8', fontFamily: 'monospace' }}>
+                              <span>Preferred: {g.hostSwitchFootprint?.candidateHost}</span>
+                              <span>Significance: {g.hostSwitchFootprint?.significance}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Gene-Level CPB & Z-Score Table */}
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc' }}>
+                        Gene Translational Adaptation Matrix ({adaptationLens.genes.length} CDS)
+                      </span>
+
+                      {/* Module Filter */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem' }}>
+                        <label htmlFor="lens-module-filter" style={{ color: colors.textMuted ?? '#64748b' }}>Module:</label>
+                        <select
+                          id="lens-module-filter"
+                          value={selectedModuleFilter}
+                          onChange={(e) => setSelectedModuleFilter(e.target.value)}
+                          style={{
+                            padding: '0.2rem 0.4rem',
+                            backgroundColor: colors.backgroundAlt ?? '#0f172a',
+                            color: colors.text ?? '#f8fafc',
+                            border: `1px solid ${colors.borderLight ?? '#1e293b'}`,
+                            borderRadius: '3px',
+                            fontSize: '0.75rem',
+                          }}
+                        >
+                          <option value="all">All Modules</option>
+                          <option value="structural">Structural</option>
+                          <option value="replication">Replication</option>
+                          <option value="lysis">Lysis</option>
+                          <option value="packaging_regulatory">Packaging & Regulatory</option>
+                          <option value="amg_auxiliary">AMGs</option>
+                          <option value="unclassified">Unclassified</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        maxHeight: '260px',
+                        overflowY: 'auto',
+                        border: `1px solid ${colors.borderLight ?? '#1e293b'}`,
+                        borderRadius: '4px',
+                      }}
+                    >
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.72rem', fontFamily: 'monospace' }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${colors.borderLight ?? '#1e293b'}`, backgroundColor: colors.backgroundAlt ?? '#0f172a', textAlign: 'left', color: colors.textMuted ?? '#64748b' }}>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Gene</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Module</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Codons</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Primary CAI</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Primary CPB</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Z-Score</th>
+                            <th style={{ padding: '0.35rem 0.5rem' }}>Best Host</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {adaptationLens.genes
+                            .filter((g) => selectedModuleFilter === 'all' || g.module === selectedModuleFilter)
+                            .map((g) => (
+                              <tr key={g.geneId} style={{ borderBottom: `1px solid ${colors.borderLight ?? '#1e293b'}22` }}>
+                                <td style={{ padding: '0.35rem 0.5rem', color: colors.text ?? '#f8fafc', fontWeight: 500 }}>
+                                  {g.name}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: colors.textMuted ?? '#64748b', textTransform: 'capitalize' }}>
+                                  {g.module.replace('_', ' ')}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: colors.textDim ?? '#94a3b8' }}>
+                                  {g.codonCount}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: getAdaptationColor(g.primaryHostCai), fontWeight: 'bold' }}>
+                                  {g.primaryHostCai.toFixed(3)}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: g.primaryHostCpb >= 0 ? (colors.success ?? '#22c55e') : (colors.warning ?? '#eab308') }}>
+                                  {g.primaryHostCpb.toFixed(3)}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: g.primaryHostZScore >= 0 ? (colors.success ?? '#22c55e') : (colors.error ?? '#ef4444') }}>
+                                  {g.primaryHostZScore.toFixed(2)}
+                                </td>
+                                <td style={{ padding: '0.35rem 0.5rem', color: colors.accent ?? '#38bdf8' }}>
+                                  {g.bestHost.replace('_', ' ')}
+                                </td>
+                              </tr>
+                            ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )
             )}
 
             {/* Metric explanations */}

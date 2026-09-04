@@ -105,3 +105,6 @@ export * from './analysis/lysogeny-circuit';
 
 // Auxiliary Metabolic Gene (AMG) Flux Potential Analyzer
 export * from './analysis/amg-flux';
+
+// Phage-Host Codon/Codon-Pair Adaptation Lens
+export * from './analysis/codon-pair-adaptation';
