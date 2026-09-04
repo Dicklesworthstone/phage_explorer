@@ -145,3 +145,18 @@ export {
   type TailFiberHit,
   type TropismPredictionInput,
 } from './tropism';
+
+// Structural Epitope Clash Map / Tail Fiber Host Range Analyzer
+export {
+  analyzeTailFiberStructure,
+  simulateResidueMutation,
+  generateChimeraSuggestions,
+  detectFiberDomainBoundaries,
+  calculatePositionEntropy,
+  type TailFiberStructuralAnalysis,
+  type FiberDomain,
+  type ResidueEpitopeMetric,
+  type ReceptorBindingScore,
+  type MutationSimulationResult,
+  type ChimeraEngineeringSuggestion,
+} from '@phage-explorer/core';

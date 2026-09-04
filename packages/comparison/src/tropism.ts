@@ -1,5 +1,10 @@
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
-import { translateSequence, reverseComplement } from '@phage-explorer/core';
+import {
+  translateSequence,
+  reverseComplement,
+  analyzeTailFiberStructure,
+  type TailFiberStructuralAnalysis,
+} from '@phage-explorer/core';
 
 export interface ReceptorCandidate {
   receptor: string;
@@ -20,6 +25,7 @@ export interface TropismAnalysis {
   hits: TailFiberHit[];
   breadth: 'narrow' | 'multi-receptor' | 'unknown';
   source: 'heuristic' | 'precomputed';
+  structuralAnalysis?: TailFiberStructuralAnalysis | null;
 }
 
 const fiberKeywords = [
@@ -281,12 +287,15 @@ export function analyzeTailFiberTropism(
     mergedHits.forEach(h => h.receptorCandidates.forEach(r => receptors.add(r.receptor)));
     const breadth: TropismAnalysis['breadth'] =
       receptors.size === 0 ? 'unknown' : receptors.size === 1 ? 'narrow' : 'multi-receptor';
+    const primaryGene = mergedHits[0]?.gene ?? phage.genes?.find(isTailFiberGene);
+    const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, null);
     return {
       phageId: phage.id,
       phageName: phage.name,
       hits: mergedHits,
       breadth,
       source: 'precomputed',
+      structuralAnalysis,
     };
   }
 
@@ -324,12 +333,17 @@ export function analyzeTailFiberTropism(
   const breadth: TropismAnalysis['breadth'] =
     receptors.size === 0 ? 'unknown' : receptors.size === 1 ? 'narrow' : 'multi-receptor';
 
+  const primaryGene = hits[0]?.gene ?? phage.genes?.find(isTailFiberGene);
+  const primarySeq = primaryGene && genomeSequence ? translateGeneSequence(genomeSequence, primaryGene) : null;
+  const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, primarySeq);
+
   return {
     phageId: phage.id,
     phageName: phage.name,
     hits,
     breadth,
     source: 'heuristic',
+    structuralAnalysis,
   };
 }
 

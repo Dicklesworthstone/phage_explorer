@@ -264,4 +264,20 @@ describe('analyzeTailFiberTropism', () => {
 
     expect(result.hits.length).toBe(1);
   });
+
+  test('computes structuralAnalysis for tail fiber genes with domains and residue metrics', () => {
+    const phage = makePhage([
+      makeGene('gp37 long tail fiber', 0, 3000),
+    ]);
+
+    const result = analyzeTailFiberTropism(phage);
+
+    expect(result.structuralAnalysis).toBeDefined();
+    expect(result.structuralAnalysis).not.toBeNull();
+    expect(result.structuralAnalysis?.domains.length).toBe(3);
+    expect(result.structuralAnalysis?.receptorScores.length).toBeGreaterThan(0);
+    expect(result.structuralAnalysis?.residues.length).toBeGreaterThan(0);
+    expect(result.structuralAnalysis?.chimeraSuggestions.length).toBeGreaterThan(0);
+  });
 });
+
