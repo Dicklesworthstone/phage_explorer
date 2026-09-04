@@ -13,6 +13,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
+import { useFileSystem } from '../../hooks/useFileSystem';
 import {
   ActionIds,
   ActionRegistryList,
@@ -255,6 +256,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   const colors = theme.colors;
   const { isOpen, toggle, open, close, isMobile } = useOverlay();
   const { toast: showToast } = useToast();
+  const { save: saveFileWithPicker, copy: copyWithFileSystem } = useFileSystem();
   const paletteOpen = isOpen('commandPalette');
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const [query, setQuery] = useState('');
@@ -424,7 +426,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     [ActionIds.EducationToggleBeginnerMode]: () => {
       toggleBeginnerMode();
     },
-    [ActionIds.ExportFasta]: () => {
+    [ActionIds.ExportFasta]: async () => {
       const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
       const seq = diffReferenceSequence;
       if (!seq || seq.length === 0) {
@@ -433,7 +435,18 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       }
       const name = currentPhage?.name || 'phage';
       const fasta = formatFasta(`${name} [exported from Phage Explorer]`, seq);
-      downloadString(fasta, `${name.replace(/\s+/g, '_')}.fasta`);
+      try {
+        await saveFileWithPicker(fasta, {
+          suggestedName: `${name.replace(/\s+/g, '_')}.fasta`,
+          types: [{
+            description: 'FASTA File',
+            accept: { 'text/plain': ['.fasta', '.fa', '.fna'] },
+          }],
+        });
+        showToast({ variant: 'success', message: 'Sequence exported as FASTA.' });
+      } catch {
+        downloadString(fasta, `${name.replace(/\s+/g, '_')}.fasta`);
+      }
     },
     [ActionIds.ExportCopy]: () => {
       const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
@@ -444,18 +457,32 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       }
       const header = currentPhage ? `${currentPhage.name} | ${currentPhage.accession}` : 'phage-sequence';
       const payload = buildSequenceClipboardPayload({ header, sequence: seq, wrap: 80 });
-      copyToClipboard(payload.text, payload.html)
+      copyWithFileSystem(payload.text, 'text/plain')
         .then(() => showToast({ variant: 'success', message: 'Sequence copied (text + HTML).' }))
-        .catch(() => showToast({ variant: 'error', message: 'Failed to copy sequence.' }));
+        .catch(() => copyToClipboard(payload.text, payload.html)
+          .then(() => showToast({ variant: 'success', message: 'Sequence copied (text + HTML).' }))
+          .catch(() => showToast({ variant: 'error', message: 'Failed to copy sequence.' })));
     },
-    [ActionIds.ExportJson]: () => {
+    [ActionIds.ExportJson]: async () => {
       const state = usePhageStore.getState();
       const exportData = {
         phage: state.currentPhage,
         overlays: state.overlayData,
         timestamp: new Date().toISOString(),
       };
-      downloadString(JSON.stringify(exportData, null, 2), 'analysis_export.json', 'application/json');
+      const jsonStr = JSON.stringify(exportData, null, 2);
+      try {
+        await saveFileWithPicker(jsonStr, {
+          suggestedName: `${(state.currentPhage?.name || 'phage').replace(/\s+/g, '_')}_analysis.json`,
+          types: [{
+            description: 'JSON Analysis Export',
+            accept: { 'application/json': ['.json'] },
+          }],
+        });
+        showToast({ variant: 'success', message: 'Analysis exported as JSON.' });
+      } catch {
+        downloadString(jsonStr, 'analysis_export.json', 'application/json');
+      }
     },
     'edu:enable-beginner': () => {
       if (!beginnerModeEnabled) setBeginnerModeEnabled(true);

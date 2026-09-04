@@ -14,8 +14,8 @@
  * The precache with content-hashed filenames handles JS/CSS versioning.
  */
 
-import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL } from 'workbox-precaching';
-import { registerRoute, NavigationRoute } from 'workbox-routing';
+import { precacheAndRoute, cleanupOutdatedCaches, createHandlerBoundToURL, matchPrecache } from 'workbox-precaching';
+import { registerRoute, NavigationRoute, setCatchHandler } from 'workbox-routing';
 import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies';
 import { ExpirationPlugin } from 'workbox-expiration';
 
@@ -217,6 +217,14 @@ registerRoute(
 
 // Serve the precached app shell for navigations to avoid mismatched HTML/assets.
 registerRoute(new NavigationRoute(createHandlerBoundToURL('/index.html')));
+
+// Catch handler: if navigation fails and index.html is unavailable offline, fall back to offline.html
+setCatchHandler(async ({ request }) => {
+  if (request.destination === 'document') {
+    return (await matchPrecache('/offline.html')) || (await caches.match('/offline.html')) || Response.error();
+  }
+  return Response.error();
+});
 
 // =============================================================================
 // Service Worker Lifecycle

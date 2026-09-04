@@ -22,6 +22,13 @@ export interface OpenFileOptions {
 }
 
 /**
+ * Checks if the browser natively supports the File System Access API
+ */
+export function isFileSystemAccessSupported(): boolean {
+  return typeof window !== 'undefined' && 'showSaveFilePicker' in window && 'showOpenFilePicker' in window;
+}
+
+/**
  * Save content to a file
  */
 export async function saveFile(
@@ -30,7 +37,7 @@ export async function saveFile(
 ): Promise<void> {
   try {
     // Try File System Access API
-    if ('showSaveFilePicker' in window) {
+    if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {
       const handle = await (window as any).showSaveFilePicker({
         suggestedName: options.suggestedName || 'download.txt',
         types: options.types,
@@ -61,7 +68,7 @@ export async function openFile(
 ): Promise<File[]> {
   try {
     // Try File System Access API
-    if ('showOpenFilePicker' in window) {
+    if (typeof window !== 'undefined' && 'showOpenFilePicker' in window) {
       const handles = await (window as any).showOpenFilePicker({
         multiple: options.multiple || false,
         types: options.types,
@@ -83,6 +90,7 @@ export async function openFile(
   }
 
   // Fallback: Input element
+  if (typeof document === 'undefined') return [];
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.type = 'file';
@@ -110,7 +118,8 @@ export async function openFile(
 /**
  * Fallback implementation using <a> tag
  */
-function fallbackSaveFile(content: string | Blob | ArrayBuffer, filename = 'download.txt'): void {
+export function fallbackSaveFile(content: string | Blob | ArrayBuffer, filename = 'download.txt'): void {
+  if (typeof document === 'undefined') return;
   const blob = content instanceof Blob 
     ? content 
     : new Blob([content], { type: 'application/octet-stream' });

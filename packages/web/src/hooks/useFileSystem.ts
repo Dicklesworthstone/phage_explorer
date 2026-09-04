@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { copyToClipboard } from '../utils/export';
-import { saveFile, openFile, type SaveFileOptions, type OpenFileOptions } from '../utils/fileSystem';
+import { saveFile, openFile, isFileSystemAccessSupported, type SaveFileOptions, type OpenFileOptions } from '../utils/fileSystem';
 
 async function copyBlobToClipboard(content: Blob, mimeType: string): Promise<void> {
   const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
@@ -28,6 +28,8 @@ async function copyBlobToClipboard(content: Blob, mimeType: string): Promise<voi
 }
 
 export function useFileSystem() {
+  const isSupported = isFileSystemAccessSupported();
+
   const save = useCallback(async (
     content: string | Blob | ArrayBuffer,
     options?: SaveFileOptions
@@ -48,5 +50,5 @@ export function useFileSystem() {
     await copyBlobToClipboard(content, mimeType || content.type || 'application/octet-stream');
   }, []);
 
-  return { save, open, copy };
+  return { save, open, copy, isSupported };
 }
