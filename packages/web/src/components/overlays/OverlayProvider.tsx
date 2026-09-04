@@ -123,7 +123,8 @@ export type OverlayId =
   | 'epistasis'
   | 'environmentalProvenance'
   | 'latentSpaceAtlas'
-  | 'hostInteractions';
+  | 'hostInteractions'
+  | 'pangenomeGraph';
 
 function formatOverlayTitle(id: OverlayId): string {
   return getOverlayTitleMap().get(id) ?? id;

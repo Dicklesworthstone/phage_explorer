@@ -120,3 +120,6 @@ export * from './analysis/burst-kinetics';
 
 // Host-Phage Protein Interaction & Effector Docking Map
 export * from './analysis/host-interactions';
+
+// Pan-Phage Graph Pangenome & Variant Cards
+export * from './analysis/pangenome-graph';

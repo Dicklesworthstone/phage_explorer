@@ -126,6 +126,9 @@ const PhylodynamicsOverlay = lazy(() => import('./PhylodynamicsOverlay').then(m 
 // Environmental provenance analysis
 const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvenanceOverlay').then(m => ({ default: m.EnvironmentalProvenanceOverlay })));
 
+// Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)
+const PangenomeGraphOverlay = lazy(() => import('./PangenomeGraphOverlay').then(m => ({ default: m.PangenomeGraphOverlay })));
+
 interface OverlayManagerProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
@@ -474,6 +477,10 @@ function renderLazyOverlay(
     // Host-Phage Interaction & Effector Docking Map (Roadmap #35)
     case 'hostInteractions':
       return <HostInteractionOverlay />;
+
+    // Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)
+    case 'pangenomeGraph':
+      return <PangenomeGraphOverlay />;
 
     default:
       return null;

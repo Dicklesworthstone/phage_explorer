@@ -87,6 +87,7 @@ command palette or a menu.
 | `l` | Module coherence |  | Open module coherence overlay |
 | `Alt+n` | Non-B-DNA structures |  | Open non-B-DNA analysis |
 | `Shift+V` | Packaging pressure | heuristic | Open the packaging pressure overlay |
+| `Shift+P` | Pangenome graph | heuristic | Open pan-phage variation graph pangenome and variant cards |
 | `Alt+w` | Periodicity spectrogram |  | Open periodicity analysis |
 | `Alt+Shift+p` | Phase portrait |  | Open phase portrait overlay |
 | `Ctrl+Shift+y` | Phylodynamics | external → demo | Open phylodynamic trajectory overlay |
