@@ -114,3 +114,30 @@ export interface ViewportConfig {
   geneMapHeight: number;
   model3DHeight: number;
 }
+
+// Pan-Phage Latent Space Atlas coordinates (precomputed UMAP + HDBSCAN on ESM-2 embeddings)
+export interface LatentSpacePoint {
+  id: number;
+  phageId: number;
+  phageName?: string;
+  geneId: number;
+  geneName?: string;
+  locusTag?: string;
+  product?: string;
+  model: string;
+  x: number;
+  y: number;
+  clusterId: number;
+  outlierScore: number;
+}
+
+export interface LatentSpaceAtlasMetadata {
+  model: string;
+  count: number;
+  clusters: number;
+  outliers: number;
+  meanOutlierScore: number;
+  maxOutlierScore: number;
+  minOutlierScore: number;
+}
+

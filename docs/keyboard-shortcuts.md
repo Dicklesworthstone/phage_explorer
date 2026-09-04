@@ -82,6 +82,7 @@ command palette or a menu.
 | `Alt+h` | HGT provenance tracer |  | Open HGT analysis |
 | `Alt+Shift+h` | Hilbert curve |  | Open Hilbert curve overlay |
 | `Alt+J` | K-mer anomaly cartography |  | Open k-mer anomaly overlay |
+| `Alt+Shift+l` | Latent space atlas |  | Open Pan-Phage Latent Space Atlas |
 | `l` | Module coherence |  | Open module coherence overlay |
 | `Alt+n` | Non-B-DNA structures |  | Open non-B-DNA analysis |
 | `Shift+V` | Packaging pressure | heuristic | Open the packaging pressure overlay |

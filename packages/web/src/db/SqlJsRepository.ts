@@ -6,7 +6,7 @@
  */
 
 import type { Database, Statement } from 'sql.js';
-import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding } from '@phage-explorer/core';
+import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding, type LatentSpacePoint } from '@phage-explorer/core';
 import type { TropismPrediction } from '@phage-explorer/db-runtime';
 import type {
   PhageRepository,
@@ -61,6 +61,8 @@ interface PreparedStatements {
   getCodonAdaptationByHost?: Statement;
   getCodonAdaptationAll?: Statement;
   getFoldEmbeddings?: Statement;
+  getLatentSpaceAtlas?: Statement;
+  getLatentSpaceAtlasByPhage?: Statement;
 }
 
 /**
@@ -236,6 +238,28 @@ export class SqlJsRepository implements PhageRepository {
       WHERE phage_id = ?
       ORDER BY confidence DESC
     `);
+
+    this.statements.getLatentSpaceAtlas = this.safelyPrepare(`
+      SELECT c.id, c.phage_id as phageId, p.name as phageName, c.gene_id as geneId,
+             g.name as geneName, g.locus_tag as locusTag, g.product as product,
+             c.model, c.x, c.y, c.cluster_id as clusterId, c.outlier_score as outlierScore
+      FROM fold_embedding_coords c
+      JOIN phages p ON p.id = c.phage_id
+      JOIN genes g ON g.id = c.gene_id
+      WHERE c.model = ?
+      ORDER BY c.cluster_id ASC, c.outlier_score DESC
+    `);
+
+    this.statements.getLatentSpaceAtlasByPhage = this.safelyPrepare(`
+      SELECT c.id, c.phage_id as phageId, p.name as phageName, c.gene_id as geneId,
+             g.name as geneName, g.locus_tag as locusTag, g.product as product,
+             c.model, c.x, c.y, c.cluster_id as clusterId, c.outlier_score as outlierScore
+      FROM fold_embedding_coords c
+      JOIN phages p ON p.id = c.phage_id
+      JOIN genes g ON g.id = c.gene_id
+      WHERE c.phage_id = ? AND c.model = ?
+      ORDER BY c.cluster_id ASC, c.outlier_score DESC
+    `);
   }
 
   /**
@@ -317,6 +341,32 @@ export class SqlJsRepository implements PhageRepository {
 
     this.cache.set(cacheKey, { data: parsed, timestamp: Date.now() });
     return parsed;
+  }
+
+  async getLatentSpaceAtlas(options?: { phageId?: number; model?: string }): Promise<LatentSpacePoint[]> {
+    const model = options?.model ?? 'facebook/esm2_t6_8M_UR50D';
+    const phageId = options?.phageId;
+    const cacheKey = `latentSpaceAtlas:${phageId ?? 'all'}:${model}`;
+    const cached = this.cache.get(cacheKey) as CacheEntry<LatentSpacePoint[]> | undefined;
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      return cached.data;
+    }
+
+    if (!this.statements) {
+      throw new Error('Database not initialized');
+    }
+
+    let rows: LatentSpacePoint[] = [];
+    if (phageId !== undefined && phageId !== null) {
+      if (!this.statements.getLatentSpaceAtlasByPhage) return [];
+      rows = this.execStatement<LatentSpacePoint>(this.statements.getLatentSpaceAtlasByPhage, [phageId, model]);
+    } else {
+      if (!this.statements.getLatentSpaceAtlas) return [];
+      rows = this.execStatement<LatentSpacePoint>(this.statements.getLatentSpaceAtlas, [model]);
+    }
+
+    this.cache.set(cacheKey, { data: rows, timestamp: Date.now() });
+    return rows;
   }
 
   async getPhageByIndex(index: number): Promise<PhageFull | null> {

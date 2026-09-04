@@ -10,9 +10,10 @@ import {
   preferences,
   tropismPredictions,
   foldEmbeddings,
+  foldEmbeddingCoords,
   proteinDomains,
 } from '@phage-explorer/db-schema';
-import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding } from '@phage-explorer/core';
+import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding, type LatentSpacePoint } from '@phage-explorer/core';
 import type { PhageRepository, CacheEntry, TropismPrediction } from './types';
 import { CHUNK_SIZE } from './types';
 import { LRUCache } from './lru-cache';
@@ -448,6 +449,64 @@ export class BunSqliteRepository implements PhageRepository {
 
     this.cache.set(cacheKey, { data: parsed, timestamp: Date.now() });
     return parsed;
+  }
+
+  async getLatentSpaceAtlas(options?: { phageId?: number; model?: string }): Promise<LatentSpacePoint[]> {
+    const model = options?.model ?? 'facebook/esm2_t6_8M_UR50D';
+    const phageId = options?.phageId;
+    const cacheKey = `latentSpaceAtlas:${phageId ?? 'all'}:${model}`;
+    const cached = this.cache.get(cacheKey) as CacheEntry<LatentSpacePoint[]> | undefined;
+    if (cached && Date.now() - cached.timestamp < 60000) {
+      return cached.data;
+    }
+
+    try {
+      const conditions = [eq(foldEmbeddingCoords.model, model)];
+      if (phageId !== undefined && phageId !== null) {
+        conditions.push(eq(foldEmbeddingCoords.phageId, phageId));
+      }
+
+      const rows = await this.db
+        .select({
+          id: foldEmbeddingCoords.id,
+          phageId: foldEmbeddingCoords.phageId,
+          phageName: phages.name,
+          geneId: foldEmbeddingCoords.geneId,
+          geneName: genes.name,
+          locusTag: genes.locusTag,
+          product: genes.product,
+          model: foldEmbeddingCoords.model,
+          x: foldEmbeddingCoords.x,
+          y: foldEmbeddingCoords.y,
+          clusterId: foldEmbeddingCoords.clusterId,
+          outlierScore: foldEmbeddingCoords.outlierScore,
+        })
+        .from(foldEmbeddingCoords)
+        .innerJoin(phages, eq(foldEmbeddingCoords.phageId, phages.id))
+        .innerJoin(genes, eq(foldEmbeddingCoords.geneId, genes.id))
+        .where(and(...conditions))
+        .orderBy(asc(foldEmbeddingCoords.clusterId), desc(foldEmbeddingCoords.outlierScore));
+
+      const points: LatentSpacePoint[] = rows.map((r) => ({
+        id: r.id,
+        phageId: r.phageId,
+        phageName: r.phageName ?? undefined,
+        geneId: r.geneId,
+        geneName: r.geneName ?? undefined,
+        locusTag: r.locusTag ?? undefined,
+        product: r.product ?? undefined,
+        model: r.model,
+        x: r.x,
+        y: r.y,
+        clusterId: r.clusterId,
+        outlierScore: r.outlierScore,
+      }));
+
+      this.cache.set(cacheKey, { data: points, timestamp: Date.now() });
+      return points;
+    } catch {
+      return [];
+    }
   }
 
   async getModelFrames(phageId: number): Promise<string[] | null> {

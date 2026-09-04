@@ -121,7 +121,8 @@ export type OverlayId =
   | 'nicheNetwork'
   | 'phylodynamics'
   | 'epistasis'
-  | 'environmentalProvenance';
+  | 'environmentalProvenance'
+  | 'latentSpaceAtlas';
 
 function formatOverlayTitle(id: OverlayId): string {
   return getOverlayTitleMap().get(id) ?? id;

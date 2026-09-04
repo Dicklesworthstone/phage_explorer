@@ -78,6 +78,7 @@ export const ActionIds = {
   OverlayNicheNetwork: 'overlay.nicheNetwork',
   OverlayPhylodynamics: 'overlay.phylodynamics',
   OverlayEnvironmentalProvenance: 'overlay.environmentalProvenance',
+  OverlayLatentSpaceAtlas: 'overlay.latentSpaceAtlas',
   OverlayGpuWasmBenchmark: 'overlay.gpuWasmBenchmark',
   OverlayCollaboration: 'overlay.collaboration',
   AnalysisGenomicSignatureRecenter: 'analysis.genomicSignature.recenter',
@@ -810,6 +811,20 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     overlayId: 'foldQuickview',
     overlayAction: 'toggle',
     // ESM2 esm2_t6_8M_UR50D
+    provenance: 'measured',
+  },
+  [ActionIds.OverlayLatentSpaceAtlas]: {
+    id: ActionIds.OverlayLatentSpaceAtlas,
+    title: 'Latent space atlas',
+    category: 'Analysis',
+    description: 'Open Pan-Phage Latent Space Atlas',
+    defaultShortcut: { key: 'l', modifiers: { alt: true, shift: true } },
+    scope: 'global',
+    surfaces: ['web'],
+    minLevel: 'power',
+    overlayId: 'latentSpaceAtlas',
+    overlayAction: 'toggle',
+    // ESM2 + UMAP + HDBSCAN measured 2D manifold
     provenance: 'measured',
   },
   [ActionIds.OverlayRNAStructure]: {

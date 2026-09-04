@@ -98,6 +98,7 @@ const ICON_BY_OVERLAY_ID: Partial<Record<OverlayId, React.ReactNode>> = {
   biasDecomposition: <IconTrendingUp size={ITEM_ICON_SIZE} />,
   proteinDomains: <IconLayers size={ITEM_ICON_SIZE} />,
   foldQuickview: <IconAperture size={ITEM_ICON_SIZE} />,
+  latentSpaceAtlas: <IconAperture size={ITEM_ICON_SIZE} />,
   rnaStructure: <IconDna size={ITEM_ICON_SIZE} />,
   // Host interactions
   tropism: <IconTarget size={ITEM_ICON_SIZE} />,

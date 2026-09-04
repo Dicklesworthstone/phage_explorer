@@ -130,6 +130,10 @@ describe('Comparison Gate 3: Annotation Coverage Gate (T5)', () => {
     const codonCount = db.query<{ n: number }, []>('SELECT count(*) as n FROM codon_adaptation').get()?.n ?? 0;
     expect(codonCount).toBeGreaterThan(2000);
 
+    // latentSpaceAtlas must have >2,000 precomputed embedding coordinates across 24 phages
+    const coordsCount = db.query<{ n: number }, []>('SELECT count(*) as n FROM fold_embedding_coords').get()?.n ?? 0;
+    expect(coordsCount).toBeGreaterThan(2000);
+
     // Sequences must cover all 24 phages
     const seqPhages = db.query<{ n: number }, []>('SELECT count(distinct phage_id) as n FROM sequences').get()?.n ?? 0;
     expect(seqPhages).toBe(24);

@@ -101,6 +101,24 @@ export const foldEmbeddings = sqliteTable('fold_embeddings', {
   uniqueIndex('uniq_fold_embeddings_gene_model').on(table.geneId, table.model),
 ]);
 
+// 2D UMAP projection and HDBSCAN clusters for the Pan-Phage Latent Space Atlas
+export const foldEmbeddingCoords = sqliteTable('fold_embedding_coords', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  phageId: integer('phage_id').notNull().references(() => phages.id),
+  geneId: integer('gene_id').notNull().references(() => genes.id),
+  model: text('model').notNull(),
+  x: real('x').notNull(),
+  y: real('y').notNull(),
+  clusterId: integer('cluster_id').notNull(),
+  outlierScore: real('outlier_score').notNull(),
+  createdAt: integer('created_at'),
+}, (table) => [
+  index('idx_fold_coords_phage').on(table.phageId),
+  index('idx_fold_coords_gene').on(table.geneId),
+  index('idx_fold_coords_cluster').on(table.clusterId),
+  uniqueIndex('uniq_fold_coords_gene_model').on(table.geneId, table.model),
+]);
+
 // User preferences
 export const preferences = sqliteTable('preferences', {
   key: text('key').primaryKey(),

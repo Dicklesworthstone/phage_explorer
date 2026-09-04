@@ -1,4 +1,4 @@
-import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData, FoldEmbedding } from '@phage-explorer/core';
+import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData, FoldEmbedding, LatentSpacePoint } from '@phage-explorer/core';
 
 // Repository interface for database operations
 export interface PhageRepository {
@@ -50,6 +50,9 @@ export interface PhageRepository {
 
   // Optional embeddings for FoldQuickview
   getFoldEmbeddings?(phageId: number, model?: string): Promise<FoldEmbedding[]>;
+
+  // Pan-Phage Latent Space Atlas (UMAP + HDBSCAN on ESM-2 embeddings)
+  getLatentSpaceAtlas?(options?: { phageId?: number; model?: string }): Promise<LatentSpacePoint[]>;
 
   // Close database connection
   close(): Promise<void>;
