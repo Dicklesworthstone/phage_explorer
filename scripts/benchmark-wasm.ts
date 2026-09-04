@@ -94,8 +94,11 @@ const { values } = parseArgs({
     json: { type: 'string', default: '' },
     quick: { type: 'boolean', default: false },
     check: { type: 'string', default: '' },
+    sweeps: { type: 'string', default: '1' },
   },
 });
+
+const numSweeps = Math.max(1, parseInt(values.sweeps, 10) || 1);
 
 const wasm = await import('@phage/wasm-compute');
 const init = (wasm as unknown as { default?: () => Promise<unknown> }).default;
@@ -459,37 +462,79 @@ interface Row {
   unstable: boolean;
   outputsAgree: boolean | null;
   note?: string;
+  /** Recorded speedups across consecutive sweeps when sweeps > 1 */
+  sweeps?: number[];
+  /** Relative spread (max - min) / mean across sweeps */
+  spread?: number;
+  /** True if all sweeps agree within ±20% */
+  agreesWithin20?: boolean;
 }
 
-const rows: Row[] = [];
+function runSweep(): Row[] {
+  const result: Row[] = [];
+  for (const c of CASES) {
+    for (const size of SIZES) {
+      if (c.maxSize !== undefined && size > c.maxSize) continue;
 
-for (const c of CASES) {
-  for (const size of SIZES) {
-    if (c.maxSize !== undefined && size > c.maxSize) continue;
+      const { wasm: w, js, agree, incomparable } = c.run(size);
+      const reps = repsFor(size);
 
-    const { wasm: w, js, agree, incomparable } = c.run(size);
-    const reps = repsFor(size);
+      let outputsAgree: boolean | null = null;
+      if (agree) outputsAgree = agree(w(), js());
 
-    let outputsAgree: boolean | null = null;
-    if (agree) outputsAgree = agree(w(), js());
+      const { a: wt, b: jt } = timePaired(w, js, reps);
 
-    const { a: wt, b: jt } = timePaired(w, js, reps);
-
-    rows.push({
-      kernel: c.kernel,
-      sizeBp: size,
-      wasmMedianMs: Number(wt.medianMs.toFixed(4)),
-      wasmP95Ms: Number(wt.p95Ms.toFixed(4)),
-      jsMedianMs: Number(jt.medianMs.toFixed(4)),
-      jsP95Ms: Number(jt.p95Ms.toFixed(4)),
-      speedup: Number((jt.medianMs / Math.max(wt.medianMs, 1e-9)).toFixed(2)),
-      runs: wt.runs,
-      unstable: driftWarning(wt, jt),
-      outputsAgree,
-      note: incomparable,
-    });
+      result.push({
+        kernel: c.kernel,
+        sizeBp: size,
+        wasmMedianMs: Number(wt.medianMs.toFixed(4)),
+        wasmP95Ms: Number(wt.p95Ms.toFixed(4)),
+        jsMedianMs: Number(jt.medianMs.toFixed(4)),
+        jsP95Ms: Number(jt.p95Ms.toFixed(4)),
+        speedup: Number((jt.medianMs / Math.max(wt.medianMs, 1e-9)).toFixed(2)),
+        runs: wt.runs,
+        unstable: driftWarning(wt, jt),
+        outputsAgree,
+        note: incomparable,
+      });
+    }
   }
+  return result;
 }
+
+let rows: Row[];
+let allSweepRuns: Row[][] | null = null;
+
+if (numSweeps === 1) {
+  rows = runSweep();
+} else {
+  const sweepRuns: Row[][] = [];
+  for (let s = 0; s < numSweeps; s++) {
+    console.log(`[Sweep ${s + 1}/${numSweeps}] Running benchmark cases...`);
+    sweepRuns.push(runSweep());
+  }
+  allSweepRuns = sweepRuns;
+
+  // Aggregate stats across sweeps
+  const lastSweep = sweepRuns[sweepRuns.length - 1];
+  rows = lastSweep.map((template, idx) => {
+    const sweepSpeeds = sweepRuns.map(sw => sw[idx].speedup);
+    const minSpeed = Math.min(...sweepSpeeds);
+    const maxSpeed = Math.max(...sweepSpeeds);
+    const meanSpeed = sweepSpeeds.reduce((acc, v) => acc + v, 0) / sweepSpeeds.length;
+    const spread = meanSpeed > 0 ? (maxSpeed - minSpeed) / meanSpeed : 0;
+    const agreesWithin20 = spread <= 0.20;
+
+    return {
+      ...template,
+      speedup: Number(meanSpeed.toFixed(2)),
+      sweeps: sweepSpeeds,
+      spread: Number(spread.toFixed(3)),
+      agreesWithin20,
+    };
+  });
+}
+
 
 // ---------------------------------------------------------------------------
 // Report
@@ -516,6 +561,7 @@ for (const r of rows) {
   );
 }
 
+
 const unstableCount = rows.filter(r => r.unstable).length;
 if (unstableCount > 0) {
   console.log('');
@@ -525,6 +571,35 @@ if (unstableCount > 0) {
   );
   console.log('  only; rerun on an idle machine before quoting them anywhere.');
 }
+
+if (numSweeps > 1 && allSweepRuns) {
+  console.log('');
+  console.log('=============================================================================');
+  console.log(`MULTI-SWEEP VARIANCE REPORT (${numSweeps} consecutive sweeps)`);
+  console.log('=============================================================================');
+  const sweepHeader = Array.from({ length: numSweeps }, (_, i) => `sw ${i + 1}`.padStart(7)).join(' ');
+  console.log(`kernel                      size      ${sweepHeader}    spread   agree(±20%)`);
+  console.log(`--------------------------- -------- ${'-'.repeat(numSweeps * 8)}  -------- -----------`);
+
+  let agreedCount = 0;
+  for (const r of rows) {
+    if (r.agreesWithin20) agreedCount++;
+    const sweepCols = (r.sweeps ?? []).map(s => `${s}x`.padStart(7)).join(' ');
+    const spreadStr = r.spread !== undefined ? `${(r.spread * 100).toFixed(1)}%`.padStart(8) : '      --';
+    const agreeStr = r.agreesWithin20 ? '✓ agree' : '✗ drift';
+    console.log(
+      `${r.kernel.padEnd(27)} ${String(r.sizeBp).padStart(8)}  ${sweepCols}  ${spreadStr}   ${agreeStr}`
+    );
+  }
+  console.log('-----------------------------------------------------------------------------');
+  console.log(`${agreedCount} of ${rows.length} rows agreed within ±20% across ${numSweeps} sweeps.`);
+  if (agreedCount === rows.length) {
+    console.log('✓ Target runner benchmark stability achieved: all rows within ±20% threshold.');
+  } else {
+    console.log(`~ Note: ${rows.length - agreedCount} rows varied by >20% across sweeps on this runner.`);
+  }
+}
+
 
 const notes = [...new Set(rows.filter(r => r.note).map(r => `  * ${r.kernel}: ${r.note}`))];
 if (notes.length > 0) {

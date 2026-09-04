@@ -41,6 +41,7 @@
     "check:keys": "bun scripts/generate-keyboard-tables.ts --check",
     "wasm:verify": "bun scripts/verify-wasm-toolchain.ts",
     "bench:wasm": "bun scripts/benchmark-wasm.ts --json packages/wasm-compute/benchmark-results.json",
+    "bench:sweeps": "bun scripts/benchmark-wasm.ts --sweeps 3",
     "bench:check": "bun scripts/benchmark-wasm.ts --check packages/wasm-compute/benchmark-results.json",
     "wasm:test": "cd packages/wasm-compute && RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release"
   },
