@@ -21,6 +21,7 @@ interface GeneTokens {
   terms: string[];
   informativeTerms: string[];
   informativeSet: Set<string>;
+  domains: Set<string>;
 }
 
 const STOPWORDS = new Set([
@@ -39,36 +40,82 @@ const STOPWORDS = new Set([
   'orf',
 ]);
 
-function preprocessGene(g: GeneInfo): GeneTokens {
+function preprocessGene(
+  g: GeneInfo,
+  domainMap?: Map<number, string[]> | Record<number, string[]>
+): GeneTokens {
   const n = (g.product || g.name || '').toLowerCase();
   // Split on whitespace, commas, semicolons, dots, hyphens
   // Keep all terms (length >= 1) to support single-letter genes like Lambda A, B, C
   const terms = n.split(/[\s,;.-]+/).filter(t => t.length > 0);
   const informativeTerms = terms.filter(t => !STOPWORDS.has(t));
+
+  const doms = new Set<string>();
+  if (g.domains && Array.isArray(g.domains)) {
+    for (const d of g.domains) {
+      if (typeof d === 'string' && d.trim().length > 0) {
+        doms.add(d.trim().toUpperCase());
+      }
+    }
+  }
+  if (domainMap) {
+    const fromMap = domainMap instanceof Map ? domainMap.get(g.id) : (domainMap as Record<number, string[]>)[g.id];
+    if (fromMap && Array.isArray(fromMap)) {
+      for (const d of fromMap) {
+        if (typeof d === 'string' && d.trim().length > 0) {
+          doms.add(d.trim().toUpperCase());
+        }
+      }
+    }
+  }
+
   return {
     name: n,
     terms,
     informativeTerms,
     informativeSet: new Set(informativeTerms),
+    domains: doms,
   };
 }
 
-// Optimized gene distance using pre-processed tokens
+// Optimized gene distance using pre-processed tokens and Pfam domain sets
 function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
-  if (!t1.name || !t2.name) return 1.0;
-
-  // If filtering removed all terms (e.g. "hypothetical protein"), no match
-  // This takes precedence over exact name match to avoid aligning junk
-  if (t1.informativeSet.size === 0 || t2.informativeTerms.length === 0) return 1.0;
-
-  // Exact match on informative names
-  if (t1.name === t2.name) return 0.0;
-
-  for (const term of t2.informativeTerms) {
-    if (t1.informativeSet.has(term)) return 0.5;
+  // Domain similarity: if both have Pfam domains, compute Jaccard distance
+  let domainDist = 1.0;
+  if (t1.domains.size > 0 && t2.domains.size > 0) {
+    let shared = 0;
+    for (const d of t1.domains) {
+      if (t2.domains.has(d)) shared++;
+    }
+    if (shared > 0) {
+      const union = t1.domains.size + t2.domains.size - shared;
+      // High domain overlap yields distance close to 0.0; partial overlap <= 0.5
+      domainDist = 1.0 - shared / union;
+    }
   }
-  
-  return 1.0;
+
+  // Name similarity
+  let nameDist = 1.0;
+  const t1HasName = Boolean(t1.name) && t1.informativeSet.size > 0;
+  const t2HasName = Boolean(t2.name) && t2.informativeTerms.length > 0;
+
+  if (t1HasName && t2HasName) {
+    if (t1.name === t2.name) {
+      nameDist = 0.0;
+    } else {
+      for (const term of t2.informativeTerms) {
+        if (t1.informativeSet.has(term)) {
+          nameDist = 0.5;
+          break;
+        }
+      }
+    }
+  }
+
+  // Refusal to match on "hypothetical protein" alone:
+  // If neither has informative name tokens and neither shares Pfam domains,
+  // both domainDist and nameDist are 1.0, so distance is 1.0 (no match).
+  return Math.min(domainDist, nameDist);
 }
 
 // Dynamic Time Warping for gene lists.
@@ -78,7 +125,11 @@ function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
 // returns is therefore `orientation: 'forward'`, which is why the exported
 // `alignSynteny` below runs it twice -- once against B, once against B
 // reversed -- rather than calling this directly.
-function alignSyntenyForward(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAnalysis {
+function alignSyntenyForward(
+  genesA: GeneInfo[],
+  genesB: GeneInfo[],
+  domainMap?: Map<number, string[]> | Record<number, string[]>
+): SyntenyAnalysis {
   const n = genesA.length;
   const m = genesB.length;
   
@@ -87,8 +138,8 @@ function alignSyntenyForward(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
   }
 
   // Pre-process genes
-  const tokensA = genesA.map(preprocessGene);
-  const tokensB = genesB.map(preprocessGene);
+  const tokensA = genesA.map(g => preprocessGene(g, domainMap));
+  const tokensB = genesB.map(g => preprocessGene(g, domainMap));
 
   // Initialize DTW matrix
   const dtw = Array(n + 1).fill(0).map(() => Array(m + 1).fill(Infinity));
@@ -238,15 +289,19 @@ function alignSyntenyForward(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
  * higher-scoring one wins. Both cannot be true, and preferring the better
  * explanation is what an aligner does.
  */
-export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAnalysis {
-  const forward = alignSyntenyForward(genesA, genesB);
+export function alignSynteny(
+  genesA: GeneInfo[],
+  genesB: GeneInfo[],
+  domainMap?: Map<number, string[]> | Record<number, string[]>
+): SyntenyAnalysis {
+  const forward = alignSyntenyForward(genesA, genesB, domainMap);
 
   const m = genesB.length;
   if (m === 0 || genesA.length === 0) return forward;
 
   // Second pass against reversed B.
   const reversedB = [...genesB].reverse();
-  const reverse = alignSyntenyForward(genesA, reversedB);
+  const reverse = alignSyntenyForward(genesA, reversedB, domainMap);
 
   // Map reversed indices back to the original coordinate space and mark the
   // orientation. Reversing swaps which end is the start, so the endpoints
@@ -258,29 +313,143 @@ export function alignSynteny(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyAna
     orientation: 'reverse' as const,
   }));
 
+  // Also extract local collinear reverse blocks (chains where i in A increases and j in B decreases).
+  // This allows detecting inversions anywhere in the genome, even when far off the global DTW diagonal.
+  const tokensA = genesA.map(g => preprocessGene(g, domainMap));
+  const tokensB = genesB.map(g => preprocessGene(g, domainMap));
+
+  const visited = new Set<string>();
+  const localReverseBlocks: SyntenyBlock[] = [];
+  for (let i = 0; i < tokensA.length; i++) {
+    for (let j = tokensB.length - 1; j >= 0; j--) {
+      if (visited.has(`${i},${j}`)) continue;
+      const d0 = geneDistanceOptimized(tokensA[i], tokensB[j]);
+      if (d0 < 0.8) {
+        let len = 1;
+        let scoreSum = 1.0 - d0;
+        while (i + len < tokensA.length && j - len >= 0) {
+          const d = geneDistanceOptimized(tokensA[i + len], tokensB[j - len]);
+          if (d < 0.8) {
+            scoreSum += 1.0 - d;
+            len++;
+          } else {
+            break;
+          }
+        }
+        if (len >= 2) {
+          for (let k = 0; k < len; k++) {
+            visited.add(`${i + k},${j - k}`);
+          }
+          localReverseBlocks.push({
+            startIdxA: i,
+            endIdxA: i + len - 1,
+            startIdxB: j - len + 1,
+            endIdxB: j,
+            score: scoreSum / len,
+            orientation: 'reverse',
+          });
+        }
+      }
+    }
+  }
+
+  const allReverseCandidates = [...reverseBlocks, ...localReverseBlocks];
+
   // A single-gene "block" carries no order information, so it cannot evidence
   // an inversion; it would match equally well either way round.
-  const meaningfulReverse = reverseBlocks.filter(b => b.endIdxA > b.startIdxA);
+  const meaningfulReverse = allReverseCandidates.filter(b => b.endIdxA > b.startIdxA);
+  meaningfulReverse.sort(
+    (a, b) => b.score - a.score || (b.endIdxA - b.startIdxA) - (a.endIdxA - a.startIdxA)
+  );
 
   const overlapsInA = (x: SyntenyBlock, y: SyntenyBlock): boolean =>
     x.startIdxA <= y.endIdxA && y.startIdxA <= x.endIdxA;
 
-  const merged: SyntenyBlock[] = [...forward.blocks];
+  let merged: SyntenyBlock[] = [...forward.blocks];
   for (const candidate of meaningfulReverse) {
     const conflicts = merged.filter(b => overlapsInA(b, candidate));
     if (conflicts.length === 0) {
       merged.push(candidate);
       continue;
     }
-    // Only displace the forward interpretation when the inversion explains
-    // those genes better than every forward block it would replace.
-    if (conflicts.every(c => candidate.score > c.score)) {
-      for (const c of conflicts) {
-        const idx = merged.indexOf(c);
-        if (idx >= 0) merged.splice(idx, 1);
-      }
-      merged.push(candidate);
+
+    const candidateLen = candidate.endIdxA - candidate.startIdxA + 1;
+    const candidateMass = candidate.score * candidateLen;
+
+    // A candidate cannot split an enclosing block unless candidate is strictly higher quality
+    const enclosingConflict = conflicts.find(
+      c => c.startIdxA < candidate.startIdxA && candidate.endIdxA < c.endIdxA
+    );
+    if (enclosingConflict && candidate.score <= enclosingConflict.score) {
+      continue;
     }
+
+    let forwardMassInInterval = 0;
+    let canDisplace = true;
+
+    for (const c of conflicts) {
+      const overlapStart = Math.max(c.startIdxA, candidate.startIdxA);
+      const overlapEnd = Math.min(c.endIdxA, candidate.endIdxA);
+      const overlapLen = overlapEnd - overlapStart + 1;
+      forwardMassInInterval += c.score * overlapLen;
+
+      // If c is longer than candidate and has strictly higher score, candidate cannot displace it
+      const cLen = c.endIdxA - c.startIdxA + 1;
+      if (cLen > candidateLen && c.score > candidate.score) {
+        canDisplace = false;
+        break;
+      }
+    }
+
+    if (!canDisplace) continue;
+    if (candidateMass <= forwardMassInInterval) continue;
+
+    // Apply trimming and displacement to conflicts
+    const nextMerged: SyntenyBlock[] = [];
+    for (const b of merged) {
+      if (!overlapsInA(b, candidate)) {
+        nextMerged.push(b);
+        continue;
+      }
+
+      // If b is completely inside candidate, it is displaced
+      if (candidate.startIdxA <= b.startIdxA && b.endIdxA <= candidate.endIdxA) {
+        continue;
+      }
+
+      // If b starts before candidate, retain prefix
+      if (b.startIdxA < candidate.startIdxA) {
+        const trimmedEndA = candidate.startIdxA - 1;
+        const lenA = trimmedEndA - b.startIdxA + 1;
+        if (lenA >= 1) {
+          const trimmed: SyntenyBlock = { ...b, endIdxA: trimmedEndA };
+          if (b.orientation === 'forward') {
+            trimmed.endIdxB = b.startIdxB + lenA - 1;
+          } else {
+            trimmed.startIdxB = b.endIdxB - (lenA - 1);
+          }
+          nextMerged.push(trimmed);
+        }
+      }
+
+      // If b ends after candidate, retain suffix
+      if (b.endIdxA > candidate.endIdxA) {
+        const trimmedStartA = candidate.endIdxA + 1;
+        const lenA = b.endIdxA - trimmedStartA + 1;
+        if (lenA >= 1) {
+          const trimmed: SyntenyBlock = { ...b, startIdxA: trimmedStartA };
+          if (b.orientation === 'forward') {
+            trimmed.startIdxB = b.endIdxB - (lenA - 1);
+          } else {
+            trimmed.endIdxB = b.startIdxB + lenA - 1;
+          }
+          nextMerged.push(trimmed);
+        }
+      }
+    }
+
+    nextMerged.push(candidate);
+    merged = nextMerged;
   }
 
   merged.sort((a, b) => a.startIdxA - b.startIdxA);

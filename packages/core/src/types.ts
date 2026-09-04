@@ -68,6 +68,7 @@ export interface GeneInfo {
   strand: string | null;
   product: string | null;
   type: string | null;
+  domains?: string[];
 }
 
 // Codon usage data

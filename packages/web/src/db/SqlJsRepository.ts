@@ -458,6 +458,35 @@ export class SqlJsRepository implements PhageRepository {
     }
 
     const results = this.execStatement<GeneInfo>(this.statements.getGenes, [phageId]);
+    if (this.statements.getProteinDomains) {
+      try {
+        const domainRows = this.execStatement<{ geneId: number | null; domainId: string }>(
+          this.statements.getProteinDomains,
+          [phageId]
+        );
+        if (domainRows.length > 0) {
+          const domainMap = new Map<number, string[]>();
+          for (const d of domainRows) {
+            if (d.geneId !== null && d.geneId !== undefined) {
+              let list = domainMap.get(d.geneId);
+              if (!list) {
+                list = [];
+                domainMap.set(d.geneId, list);
+              }
+              list.push(d.domainId);
+            }
+          }
+          for (const g of results) {
+            const doms = domainMap.get(g.id);
+            if (doms && doms.length > 0) {
+              g.domains = doms;
+            }
+          }
+        }
+      } catch {
+        // protein_domains table might not exist in minimal fixtures
+      }
+    }
     this.cache.set(cacheKey, { data: results, timestamp: Date.now() });
     return results;
   }

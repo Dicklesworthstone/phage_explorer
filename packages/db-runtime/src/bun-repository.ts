@@ -10,6 +10,7 @@ import {
   preferences,
   tropismPredictions,
   foldEmbeddings,
+  proteinDomains,
 } from '@phage-explorer/db-schema';
 import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding } from '@phage-explorer/core';
 import type { PhageRepository, CacheEntry, TropismPrediction } from './types';
@@ -273,7 +274,7 @@ export class BunSqliteRepository implements PhageRepository {
       return cached.data;
     }
 
-    const result = await this.db
+    const result: GeneInfo[] = await this.db
       .select({
         id: genes.id,
         name: genes.name,
@@ -287,6 +288,38 @@ export class BunSqliteRepository implements PhageRepository {
       .from(genes)
       .where(eq(genes.phageId, phageId))
       .orderBy(asc(genes.startPos));
+
+    try {
+      const domainRows = await this.db
+        .select({
+          geneId: proteinDomains.geneId,
+          domainId: proteinDomains.domainId,
+        })
+        .from(proteinDomains)
+        .where(eq(proteinDomains.phageId, phageId));
+
+      if (domainRows.length > 0) {
+        const domainMap = new Map<number, string[]>();
+        for (const d of domainRows) {
+          if (d.geneId !== null && d.geneId !== undefined) {
+            let list = domainMap.get(d.geneId);
+            if (!list) {
+              list = [];
+              domainMap.set(d.geneId, list);
+            }
+            list.push(d.domainId);
+          }
+        }
+        for (const g of result) {
+          const doms = domainMap.get(g.id);
+          if (doms && doms.length > 0) {
+            g.domains = doms;
+          }
+        }
+      }
+    } catch {
+      // protein_domains table may not exist in minimal test fixtures
+    }
 
     this.cache.set(cacheKey, { data: result, timestamp: Date.now() });
     return result;

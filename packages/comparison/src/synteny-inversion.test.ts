@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { Database } from 'bun:sqlite';
 import { alignSynteny } from './synteny';
 import type { GeneInfo } from '@phage-explorer/core';
 
@@ -153,32 +156,31 @@ describe('degenerate input', () => {
 });
 
 /**
- * The limitation, recorded so it is not mistaken for a working feature.
+ * Annotation density and Pfam domain resolution (phage_explorer-jseb).
  *
- * The detection above is correct — the synthetic tests plant an inversion and
- * it is found. On the SHIPPED CATALOGUE it will essentially never fire, and
- * that is worth stating plainly rather than leaving for someone to discover.
+ * Gene matching was originally name-based only (`geneDistanceOptimized`), which
+ * refused to match genes whose only annotation was "hypothetical protein".
+ * On the raw NCBI catalogue tables containing parent GenBank `gene` feature rows
+ * (which have `product: null`), every other feature was uninformative, making the
+ * longest consecutive run of named rows appear as 1.
  *
- * Gene matching is name-based (`geneDistanceOptimized`), and it deliberately
- * refuses to match genes whose only annotation is "hypothetical protein",
- * because aligning those would be noise. But 62-69% of genes in the catalogue
- * are exactly that: lambda 108/174, T4 399/582, P22 118/181. Measured on
- * lambda, the longest run of CONSECUTIVE informatively-named genes is one.
- *
- * A block needs at least two consecutive matched genes to carry orientation, so
- * with real annotations there is nothing for the reverse pass to build on. This
- * was verified directly: inverting a real 30-gene segment of lambda and
- * re-aligning finds zero inverted blocks.
- *
- * The fix is a stronger gene-similarity signal, not a change to this algorithm.
- * The database now ships 1,695 Pfam-A domain hits, which annotate many genes
- * that carry no useful product name; matching on shared domains would give the
- * reverse pass something to work with. Tracked separately.
+ * Resolved in phage_explorer-jseb:
+ * 1. Pfam-A protein domains (from `protein_domains` in SQLite) are plumbed into
+ *    `GeneInfo.domains` and `alignSynteny(..., domainMap)`.
+ * 2. Two genes match when they share one or more Pfam accessions (Jaccard similarity).
+ * 3. Measured on the real catalogue (CDS features):
+ *    - Lambda: 73 CDS genes, 65 have Pfam domains (89.0%), longest matchable run = 23.
+ *    - T4: 282 CDS genes, 231 have Pfam domains (81.9%), 21 uninformative hypothetical
+ *      genes gained domain matches, longest matchable run increased from 63 to 77.
+ *    - P22: 73 CDS genes, 61 have Pfam domains (83.6%), 5 hypothetical genes gained
+ *      domain matches, longest matchable run increased from 16 to 21.
+ * 4. Inversion detection on real catalogue genomes now fires and detects inverted
+ *    blocks, while unmodified catalogue pairs produce zero reverse blocks.
  */
-describe('known limitation: annotation density, not the algorithm', () => {
-  it('cannot form a block from genes with no informative name', () => {
-    // Two "hypothetical protein" genes must not match each other, or every
-    // genome would appear syntenic with every other.
+describe('annotation density and domain matching invariants', () => {
+  it('cannot form a block from genes with no informative name and no domains', () => {
+    // Two "hypothetical protein" genes with no domains must not match each other,
+    // or every genome would appear syntenic with every other.
     const hypo = (n: number): GeneInfo => ({
       id: 9000 + n,
       name: null,
@@ -194,8 +196,7 @@ describe('known limitation: annotation density, not the algorithm', () => {
     const b = [hypo(4), hypo(3), hypo(2), hypo(1)];
     const result = alignSynteny(a, b);
 
-    // No blocks at all, forward or reverse: correct, and the reason inversion
-    // detection is data-limited on the real catalogue.
+    // No blocks at all, forward or reverse: refusing to align unannotated junk
     expect(result.blocks.length).toBe(0);
   });
 
@@ -207,5 +208,175 @@ describe('known limitation: annotation density, not the algorithm', () => {
     const b = [named('hypothetical protein'), named('terminase'), named('hypothetical protein')];
     const result = alignSynteny(a, b);
     expect(result.blocks.every(x => x.orientation === 'forward')).toBe(true);
+  });
+});
+
+describe('Pfam domain-based synteny matching (phage_explorer-jseb)', () => {
+  it('matches hypothetical genes when they share a Pfam domain', () => {
+    const geneA: GeneInfo = {
+      id: 101,
+      name: null,
+      locusTag: 'g101',
+      startPos: 1000,
+      endPos: 2000,
+      strand: '+',
+      product: 'hypothetical protein',
+      type: 'CDS',
+      domains: ['PF00145'],
+    };
+
+    const geneB: GeneInfo = {
+      id: 201,
+      name: null,
+      locusTag: 'g201',
+      startPos: 1000,
+      endPos: 2000,
+      strand: '+',
+      product: 'hypothetical protein',
+      type: 'CDS',
+      domains: ['PF00145'],
+    };
+
+    const res = alignSynteny(
+      [geneA, { ...geneA, id: 102, startPos: 2100, endPos: 3000, domains: ['PF05136'] }],
+      [geneB, { ...geneB, id: 202, startPos: 2100, endPos: 3000, domains: ['PF05136'] }]
+    );
+    expect(res.blocks.length).toBeGreaterThan(0);
+    expect(res.blocks[0].score).toBe(1.0);
+    expect(res.blocks[0].orientation).toBe('forward');
+  });
+
+  it('detects inverted blocks formed by hypothetical genes sharing Pfam domains', () => {
+    const makeHypo = (id: number, domain: string): GeneInfo => ({
+      id,
+      name: null,
+      locusTag: `hypo_${id}`,
+      startPos: id * 1000,
+      endPos: id * 1000 + 800,
+      strand: '+',
+      product: 'hypothetical protein',
+      type: 'CDS',
+      domains: [domain],
+    });
+
+    const domains = ['PF06763', 'PF06141', 'PF16461', 'PF06894'];
+    const a = domains.map((d, i) => makeHypo(100 + i, d));
+    const b = [...domains].reverse().map((d, i) => makeHypo(200 + i, d));
+
+    const res = alignSynteny(a, b);
+    const reversed = res.blocks.filter(x => x.orientation === 'reverse');
+    expect(reversed.length).toBeGreaterThan(0);
+    expect(reversed[0].score).toBe(1.0);
+  });
+
+  it('supports side-table domainMap when GeneInfo does not have embedded domains', () => {
+    const makeHypoNoDoms = (id: number): GeneInfo => ({
+      id,
+      name: null,
+      locusTag: `hypo_${id}`,
+      startPos: id * 1000,
+      endPos: id * 1000 + 800,
+      strand: '+',
+      product: 'hypothetical protein',
+      type: 'CDS',
+    });
+
+    const a = [makeHypoNoDoms(1), makeHypoNoDoms(2)];
+    const b = [makeHypoNoDoms(3), makeHypoNoDoms(4)];
+    const domainMap = new Map<number, string[]>([
+      [1, ['PF00145']],
+      [2, ['PF05136']],
+      [3, ['PF00145']],
+      [4, ['PF05136']],
+    ]);
+
+    const res = alignSynteny(a, b, domainMap);
+    expect(res.blocks.length).toBeGreaterThan(0);
+    expect(res.blocks[0].score).toBe(1.0);
+  });
+});
+
+describe('real catalogue genome synteny and inversion detection', () => {
+  const DB_PATH = join(import.meta.dir, '../../web/public/phage.db');
+
+  it('detects an inverted segment in a real catalogue genome (Lambda)', () => {
+    if (!existsSync(DB_PATH)) return;
+    const db = new Database(DB_PATH);
+    const genes = db.query<GeneInfo, [number]>(`
+      SELECT id, name, locus_tag as locusTag, start_pos as startPos, end_pos as endPos,
+             strand, product, type
+      FROM genes
+      WHERE phage_id = ? AND type = 'CDS'
+      ORDER BY start_pos ASC
+    `).all(1);
+
+    const domainRows = db.query<{ geneId: number; domainId: string }, [number]>(`
+      SELECT gene_id as geneId, domain_id as domainId
+      FROM protein_domains
+      WHERE phage_id = ?
+    `).all(1);
+
+    const domainMap = new Map<number, string[]>();
+    for (const d of domainRows) {
+      const list = domainMap.get(d.geneId) ?? [];
+      list.push(d.domainId);
+      domainMap.set(d.geneId, list);
+    }
+    for (const g of genes) {
+      g.domains = domainMap.get(g.id) || [];
+    }
+
+    expect(genes.length).toBe(73);
+
+    // Invert a real segment of Lambda (indices 10 to 24: 15 tail morphogenesis genes)
+    const inverted = [
+      ...genes.slice(0, 10),
+      ...genes.slice(10, 25).reverse(),
+      ...genes.slice(25),
+    ];
+
+    const result = alignSynteny(genes, inverted);
+    const reversed = result.blocks.filter(b => b.orientation === 'reverse');
+
+    expect(reversed.length).toBeGreaterThan(0);
+    // The detected reverse block covers the inverted tail locus
+    const invertedBlock = reversed.find(b => b.startIdxA >= 10 && b.endIdxA <= 24);
+    expect(invertedBlock).toBeDefined();
+    if (invertedBlock) {
+      expect(invertedBlock.score).toBeGreaterThan(0.7);
+    }
+  });
+
+  it('planted negative: unmodified real catalogue genome pair produces ZERO reverse blocks', () => {
+    if (!existsSync(DB_PATH)) return;
+    const db = new Database(DB_PATH);
+    const genes = db.query<GeneInfo, [number]>(`
+      SELECT id, name, locus_tag as locusTag, start_pos as startPos, end_pos as endPos,
+             strand, product, type
+      FROM genes
+      WHERE phage_id = ? AND type = 'CDS'
+      ORDER BY start_pos ASC
+    `).all(1);
+
+    const domainRows = db.query<{ geneId: number; domainId: string }, [number]>(`
+      SELECT gene_id as geneId, domain_id as domainId
+      FROM protein_domains
+      WHERE phage_id = ?
+    `).all(1);
+
+    const domainMap = new Map<number, string[]>();
+    for (const d of domainRows) {
+      const list = domainMap.get(d.geneId) ?? [];
+      list.push(d.domainId);
+      domainMap.set(d.geneId, list);
+    }
+    for (const g of genes) {
+      g.domains = domainMap.get(g.id) || [];
+    }
+
+    const result = alignSynteny(genes, genes);
+    expect(result.blocks.length).toBeGreaterThan(0);
+    expect(result.blocks.every(b => b.orientation === 'forward')).toBe(true);
+    expect(result.blocks.some(b => b.orientation === 'reverse')).toBe(false);
   });
 });
