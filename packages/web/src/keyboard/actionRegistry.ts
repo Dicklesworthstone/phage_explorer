@@ -79,6 +79,7 @@ export const ActionIds = {
   OverlayPhylodynamics: 'overlay.phylodynamics',
   OverlayEnvironmentalProvenance: 'overlay.environmentalProvenance',
   OverlayLatentSpaceAtlas: 'overlay.latentSpaceAtlas',
+  OverlayHostInteractions: 'overlay.hostInteractions',
   OverlayGpuWasmBenchmark: 'overlay.gpuWasmBenchmark',
   OverlayCollaboration: 'overlay.collaboration',
   AnalysisGenomicSignatureRecenter: 'analysis.genomicSignature.recenter',
@@ -826,6 +827,19 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     overlayAction: 'toggle',
     // ESM2 + UMAP + HDBSCAN measured 2D manifold
     provenance: 'measured',
+  },
+  [ActionIds.OverlayHostInteractions]: {
+    id: ActionIds.OverlayHostInteractions,
+    title: 'Host interactions',
+    category: 'Analysis',
+    description: 'Open host-phage protein interaction and effector docking map',
+    defaultShortcut: { key: 'i', modifiers: { alt: true } },
+    scope: 'global',
+    surfaces: ['web'],
+    minLevel: 'power',
+    overlayId: 'hostInteractions',
+    overlayAction: 'toggle',
+    provenance: 'heuristic',
   },
   [ActionIds.OverlayRNAStructure]: {
     id: ActionIds.OverlayRNAStructure,

@@ -100,6 +100,7 @@ const RNAStructureOverlay = lazy(() => import('./RNAStructureOverlay').then(m =>
 const TropismOverlay = lazy(() => import('./TropismOverlay').then(m => ({ default: m.TropismOverlay })));
 const DefenseArmsRaceOverlay = lazy(() => import('./DefenseArmsRaceOverlay').then(m => ({ default: m.DefenseArmsRaceOverlay })));
 const AMGPathwayOverlay = lazy(() => import('./AMGPathwayOverlay').then(m => ({ default: m.AMGPathwayOverlay })));
+const HostInteractionOverlay = lazy(() => import('./HostInteractionOverlay').then(m => ({ default: m.HostInteractionOverlay })));
 const CocktailCompatibilityOverlay = lazy(() => import('./CocktailCompatibilityOverlay').then(m => ({ default: m.CocktailCompatibilityOverlay })));
 
 // Structure & stability overlays
@@ -469,6 +470,10 @@ function renderLazyOverlay(
     // Environmental provenance analysis
     case 'environmentalProvenance':
       return <EnvironmentalProvenanceOverlay repository={repository} currentPhage={currentPhage} />;
+
+    // Host-Phage Interaction & Effector Docking Map (Roadmap #35)
+    case 'hostInteractions':
+      return <HostInteractionOverlay />;
 
     default:
       return null;

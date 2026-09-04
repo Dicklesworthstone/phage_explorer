@@ -81,6 +81,7 @@ command palette or a menu.
 | `Alt+p` | Genomic signature PCA |  | Open genomic signature PCA |
 | `Alt+h` | HGT provenance tracer |  | Open HGT analysis |
 | `Alt+Shift+h` | Hilbert curve |  | Open Hilbert curve overlay |
+| `Alt+i` | Host interactions | heuristic | Open host-phage protein interaction and effector docking map |
 | `Alt+J` | K-mer anomaly cartography |  | Open k-mer anomaly overlay |
 | `Alt+Shift+l` | Latent space atlas |  | Open Pan-Phage Latent Space Atlas |
 | `l` | Module coherence |  | Open module coherence overlay |

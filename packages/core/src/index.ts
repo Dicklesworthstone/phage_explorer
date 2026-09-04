@@ -117,3 +117,6 @@ export * from './analysis/capsid-energetics';
 
 // Burst Kinetics & Latency Inference from Growth Curves
 export * from './analysis/burst-kinetics';
+
+// Host-Phage Protein Interaction & Effector Docking Map
+export * from './analysis/host-interactions';

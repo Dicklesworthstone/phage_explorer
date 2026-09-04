@@ -102,6 +102,7 @@ const ICON_BY_OVERLAY_ID: Partial<Record<OverlayId, React.ReactNode>> = {
   rnaStructure: <IconDna size={ITEM_ICON_SIZE} />,
   // Host interactions
   tropism: <IconTarget size={ITEM_ICON_SIZE} />,
+  hostInteractions: <IconTarget size={ITEM_ICON_SIZE} />,
   amgPathway: <IconFlask size={ITEM_ICON_SIZE} />,
   defenseArmsRace: <IconShield size={ITEM_ICON_SIZE} />,
   cocktailCompatibility: <IconShield size={ITEM_ICON_SIZE} />,
