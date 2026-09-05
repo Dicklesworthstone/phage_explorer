@@ -120,13 +120,15 @@ export function computeRSCU(codonCounts: Record<string, number>): RSCUResult[] {
  * This is a strong indicator of mutational pressure vs selection
  */
 export function computeGC3(sequence: string): number {
-  const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
+  const seq = sequence.toUpperCase();
   let gc3 = 0;
   let total = 0;
 
   // Process complete codons
   for (let i = 0; i + 3 <= seq.length; i += 3) {
     const thirdBase = seq[i + 2];
+    // Exclude unknown third positions without shifting the frame.
+    if (!'ACGT'.includes(thirdBase)) continue;
     if (thirdBase === 'G' || thirdBase === 'C') {
       gc3++;
     }

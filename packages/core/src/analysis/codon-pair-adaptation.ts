@@ -10,6 +10,8 @@
 
 import { countCodonUsage, CODON_TABLE, reverseComplement } from '../codons';
 import type { GeneInfo, PhageFull } from '../types';
+import { getGeneMapSegments } from '../genome-import';
+import { analysisJson, createAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 export interface HostProfile {
   key: string;
@@ -94,8 +96,8 @@ export interface PhageHostAdaptationResult {
 }
 
 /**
- * Standard bacterial host reference profiles with empirical codon adaptiveness
- * and codon-pair score distributions.
+ * Built-in illustrative host weights. This module does not supply a versioned
+ * source corpus or calibration evidence for its pair scores and distributions.
  */
 export const CANDIDATE_HOST_PROFILES: Record<string, HostProfile> = {
   escherichia_coli: {
@@ -427,7 +429,7 @@ export function calculateGeneCPB(
   preferredPairs: number;
   deoptimizedPairs: number;
 } {
-  const upperSeq = codingSequence.toUpperCase().replace(/[^ACGT]/g, '');
+  const upperSeq = codingSequence.toUpperCase();
   if (upperSeq.length < 6) {
     return {
       cpb: 0,
@@ -519,16 +521,21 @@ export function extractGeneSequence(
   if (!genomeSequence || genomeSequence.length === 0) {
     return '';
   }
+  if (gene.qualifiers?.transl_table && !['1', '11'].includes(String(gene.qualifiers.transl_table))) return '';
 
-  const start = Math.max(0, Math.min(gene.startPos, gene.endPos));
-  const end = Math.min(genomeSequence.length, Math.max(gene.startPos, gene.endPos));
-  let sub = genomeSequence.substring(start, end);
-
-  if (gene.strand === '-') {
-    sub = reverseComplement(sub);
-  }
-
-  return sub;
+  const segments = getGeneMapSegments(gene);
+  const rawSegments = gene.qualifiers?._segments;
+  if (Array.isArray(rawSegments) && rawSegments.length !== segments.length) return '';
+  if (segments.length === 0 || segments.some(segment => !Number.isSafeInteger(segment.start) || !Number.isSafeInteger(segment.end) ||
+    segment.start < 0 || segment.end > genomeSequence.length || segment.start >= segment.end ||
+    segment.strand !== '+' && segment.strand !== '-')) return '';
+  const sub = segments.map(segment => {
+    const part = genomeSequence.slice(segment.start, segment.end);
+    return segment.strand === '-' ? reverseComplement(part) : part;
+  }).join('');
+  const codonStart = Number(gene.qualifiers?.codon_start ?? 1);
+  if (![1, 2, 3].includes(codonStart)) return '';
+  return sub.slice(codonStart - 1);
 }
 
 /**
@@ -558,6 +565,11 @@ export function analyzePhageHostCodonAdaptation(
     if (g.type && g.type !== 'CDS') continue;
 
     const codingSeq = extractGeneSequence(g, seq);
+    const counts = countCodonUsage(codingSeq);
+    const senseCodonCount = Object.entries(counts).reduce((sum, [codon, count]) =>
+      sum + (CODON_TABLE[codon] && CODON_TABLE[codon] !== '*' ? count : 0), 0);
+    // This combined lens requires a valid adjacent pair for both CAI and CPB.
+    if (senseCodonCount === 0 || calculateGeneCPB(codingSeq, primaryHost).pairCount === 0) continue;
     const mod = classifyFunctionalModule(g.name, g.product);
 
     const caiMap: Record<string, number> = {};
@@ -568,25 +580,10 @@ export function analyzePhageHostCodonAdaptation(
     let maxCai = -1;
 
     for (const h of hosts) {
-      let caiVal: number;
-      let cpbVal: number;
-      let zVal: number;
-
-      if (codingSeq.length >= 6) {
-        caiVal = calculateCAI(codingSeq, h);
-        const cpbStats = calculateGeneCPB(codingSeq, h);
-        cpbVal = cpbStats.cpb;
-        zVal = cpbStats.zScore;
-      } else {
-        // Approximate from global codon counts or heuristic length
-        const dummyCodons: Record<string, number> = {};
-        for (const [codon, weight] of Object.entries(h.codonWeights)) {
-          if (weight > 0.8) dummyCodons[codon] = 5;
-        }
-        caiVal = calculateCAI(dummyCodons, h);
-        cpbVal = h.meanCpb;
-        zVal = 0.0;
-      }
+      const caiVal = calculateCAI(counts, h);
+      const cpbStats = calculateGeneCPB(codingSeq, h);
+      const cpbVal = cpbStats.cpb;
+      const zVal = cpbStats.zScore;
 
       caiMap[h.key] = caiVal;
       cpbMap[h.key] = cpbVal;
@@ -631,7 +628,7 @@ export function analyzePhageHostCodonAdaptation(
       strand: g.strand ?? '+',
       product: g.product ?? 'hypothetical protein',
       module: mod,
-      codonCount: Math.round(Math.abs(g.endPos - g.startPos) / 3),
+      codonCount: senseCodonCount,
       cai: caiMap,
       cpb: cpbMap,
       zScore: zMap,
@@ -699,7 +696,7 @@ export function analyzePhageHostCodonAdaptation(
     });
 
   // Host rankings across the entire phage genome
-  const hostRankings: HostCompatibilityRank[] = hosts.map((h) => {
+  const hostRankings: HostCompatibilityRank[] = (geneAdaptations.length > 0 ? hosts : []).map((h) => {
     const avgCai =
       geneAdaptations.reduce((sum, g) => sum + (g.cai[h.key] ?? 0), 0) /
       (geneAdaptations.length || 1);
@@ -730,7 +727,9 @@ export function analyzePhageHostCodonAdaptation(
   const hostSwitchCandidates = geneAdaptations.filter((g) => g.hostSwitchFootprint);
 
   const topHost = hostRankings[0]?.hostName ?? primaryHost.name;
-  const summary = `Evaluated ${geneAdaptations.length} genes against ${hosts.length} candidate bacterial hosts. Primary host: ${primaryHost.name} (overall compatibility ${hostRankings.find((h) => h.isPrimaryHost)?.overallCompatibility ?? 0}%). Top translational host match: ${topHost}. Found ${hostSwitchCandidates.length} gene(s) with host-switching footprints.`;
+  const summary = geneAdaptations.length > 0
+    ? `Evaluated ${geneAdaptations.length} genes against ${hosts.length} built-in host weight profiles. Highest model score: ${topHost}. These illustrative scores do not predict infection or establish host switching.`
+    : 'No annotated coding sequence with a complete unambiguous sense-codon pair is available. No host scores were inferred.';
 
   return {
     phageId: phage.id,
@@ -742,4 +741,43 @@ export function analyzePhageHostCodonAdaptation(
     hostSwitchCandidates,
     summary,
   };
+}
+
+/** Preserve the actual CDS inputs and distinguish counted codons from host-model scores. */
+export async function createCodonAdaptationRecord(phage: PhageFull, genomeSequence: string,
+  analysis: PhageHostAdaptationResult): Promise<AnalysisRecord> {
+  if (analysis.phageId !== phage.id) throw new Error('Codon analysis belongs to a different genome.');
+  const codingGenes = phage.genes.filter(gene => !gene.type || gene.type === 'CDS');
+  const annotationsById = new Map(codingGenes.map(gene => [gene.id, gene]));
+  const codingSequences = analysis.genes.map(gene => {
+    const annotation = annotationsById.get(gene.geneId);
+    if (!annotation) throw new Error('Codon analysis refers to a missing coding annotation.');
+    return { geneId: gene.geneId, codonCount: gene.codonCount, sequence: extractGeneSequence(annotation, genomeSequence) };
+  });
+  const coverage = { available: analysis.genes.length, total: codingGenes.length, unit: 'genes' as const };
+  const assumptions = ['Built-in illustrative host weights and pair-score distributions; unspecified pairs use a weight-product approximation.',
+    'CAI is a rounded geometric mean with a 0.01 weight floor; combined host scores and divergence labels use fixed heuristic thresholds.'];
+  const limitations = ['These scores are not infection probabilities, experimentally calibrated host ranges or evidence of host switching.',
+    'This combined lens excludes CDS without an unambiguous adjacent sense-codon pair. Missing annotations or sequence do not imply biological absence.'];
+  const modelField = (label: string, value: unknown) => analysis.genes.length > 0
+    ? { label, kind: 'demo' as const, value: analysisJson(value), units: 'records' as const, coverage, assumptions, limitations }
+    : { label, kind: 'unavailable' as const, value: null, units: null, coverage, limitations,
+        missingInputs: ['Annotated coding sequence containing an unambiguous adjacent sense-codon pair.'] };
+  return createAnalysisRecord({ method: { id: 'codon-adaptation-lens', version: '2', implementation: 'JavaScript coding-sequence statistics and illustrative host model' },
+    inputs: [
+      { id: 'sequence', accession: phage.accession, source: phage.localGenome ? 'local' : 'catalog', description: 'Exact genome sequence used for CDS extraction.', data: genomeSequence },
+      { id: 'annotations', accession: phage.accession, source: phage.localGenome ? 'local' : 'catalog', description: 'CDS coordinates, strand, joined segments, reading-frame qualifier and functional labels.',
+        data: analysisJson({ host: phage.host, genes: codingGenes }) },
+      { id: 'host-profiles', accession: null, source: 'demo', description: 'Exact built-in model weights and score distributions; no reference corpus is supplied.', data: analysisJson(CANDIDATE_HOST_PROFILES) },
+    ], parameters: { primaryHost: analysis.primaryHost, codonStart: 'GenBank codon_start, default 1', ambiguityPolicy: 'Preserve positions; skip unknown triplets and pairs' },
+    seed: null, references: [{ id: 'standard-genetic-code', version: '1', description: 'Standard DNA codon meanings (tables 1 and 11); CDS with other declared translation tables are excluded.' }],
+    fields: {
+      codingSequences: { label: 'Consumed coding sequences and sense-codon counts', kind: 'sequence-score', units: 'records', coverage,
+        limitations: ['Transcript-order joined segments, per-segment reverse complement and codon_start are applied. Only analyzed CDS are listed.'],
+        value: analysisJson(codingSequences) },
+      geneScores: modelField('Per-gene host-model scores', analysis.genes),
+      hostRankings: modelField('Host-model rankings', analysis.hostRankings),
+      modules: modelField('Functional module model summaries', analysis.modules),
+    },
+  });
 }

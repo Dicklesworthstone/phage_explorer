@@ -89,7 +89,7 @@ describe('Codon Adaptation Overlay & Lens Tests', () => {
   describe('Full Phage-Host Adaptation Analysis Integration', () => {
     it('computes multi-host rankings and identifies primary host', () => {
       const phage = createMockPhage();
-      const result = analyzePhageHostCodonAdaptation(phage);
+      const result = analyzePhageHostCodonAdaptation(phage, { genomeSequence: 'CTG'.repeat(700) });
 
       expect(result.phageId).toBe(101);
       expect(result.phageName).toBe('Enterobacteria phage T4');
@@ -117,7 +117,7 @@ describe('Codon Adaptation Overlay & Lens Tests', () => {
 
     it('classifies genes into functional modules and produces module adaptation summaries', () => {
       const phage = createMockPhage();
-      const result = analyzePhageHostCodonAdaptation(phage);
+      const result = analyzePhageHostCodonAdaptation(phage, { genomeSequence: 'CTG'.repeat(700) });
 
       expect(result.genes.length).toBe(4);
 
@@ -180,8 +180,8 @@ describe('Codon Adaptation Overlay & Lens Tests', () => {
       expect(result.genes).toEqual([]);
       expect(result.modules).toEqual([]);
       expect(result.hostSwitchCandidates).toEqual([]);
-      expect(result.hostRankings.length).toBeGreaterThan(0);
-      expect(result.summary).toContain('0 genes');
+      expect(result.hostRankings).toEqual([]);
+      expect(result.summary).toContain('No host scores were inferred');
     });
   });
 });

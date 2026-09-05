@@ -8,6 +8,9 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import {
   analyzePhageHostCodonAdaptation,
+  createCodonAdaptationRecord,
+  serializeAnalysisRecord,
+  type AnalysisRecord,
   type PhageFull,
   type PhageHostAdaptationResult,
 } from '@phage-explorer/core';
@@ -20,6 +23,8 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
@@ -58,17 +63,55 @@ export function CodonAdaptationOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('codonAdaptation');
 
-  const [adaptations, setAdaptations] = useState<CodonAdaptation[]>([]);
-  const [hostPools, setHostPools] = useState<HostTrnaPool[]>([]);
+  const [annotationSnapshot, setAnnotationSnapshot] = useState<{ phage: PhageFull; repository: PhageRepository; adaptations: CodonAdaptation[]; hostPools: HostTrnaPool[] } | null>(null);
+  const annotationsCurrent = annotationSnapshot?.phage === currentPhage && annotationSnapshot?.repository === repository;
+  const adaptations = annotationsCurrent ? annotationSnapshot.adaptations : [];
+  const hostPools = annotationsCurrent ? annotationSnapshot.hostPools : [];
   const [loading, setLoading] = useState(false);
   const [selectedHost, setSelectedHost] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'summary' | 'genes' | 'codon_pair_lens'>('summary');
   const [selectedModuleFilter, setSelectedModuleFilter] = useState<string>('all');
+  const open = isOpen('codonAdaptation');
+  const [sequenceSnapshot, setSequenceSnapshot] = useState<{ phage: PhageFull; repository: PhageRepository; sequence: string } | null>(null);
+  const [sequenceLoading, setSequenceLoading] = useState(false);
+  const [sequenceError, setSequenceError] = useState<string | null>(null);
+  const [recordSnapshot, setRecordSnapshot] = useState<{ lens: PhageHostAdaptationResult; record: AnalysisRecord } | null>(null);
+  const [recordError, setRecordError] = useState<string | null>(null);
+  const sequence = sequenceSnapshot?.phage === currentPhage && sequenceSnapshot.repository === repository ? sequenceSnapshot.sequence : null;
 
   const adaptationLens = useMemo((): PhageHostAdaptationResult | null => {
-    if (!currentPhage) return null;
-    return analyzePhageHostCodonAdaptation(currentPhage);
-  }, [currentPhage]);
+    if (!open || viewMode !== 'codon_pair_lens' || !currentPhage || sequence === null) return null;
+    return analyzePhageHostCodonAdaptation(currentPhage, { genomeSequence: sequence });
+  }, [currentPhage, sequence, open, viewMode]);
+  const record = recordSnapshot?.lens === adaptationLens ? recordSnapshot.record : null;
+
+  useEffect(() => {
+    if (!open || viewMode !== 'codon_pair_lens' || !currentPhage) return;
+    if (!repository) {
+      setSequenceLoading(false);
+      setSequenceError('The genome repository is unavailable.');
+      return;
+    }
+    if (sequence !== null) { setSequenceLoading(false); return; }
+    let cancelled = false;
+    setSequenceLoading(true);
+    setSequenceError(null);
+    void repository.getFullGenomeLength(currentPhage.id).then(length => repository.getSequenceWindow(currentPhage.id, 0, length))
+      .then(value => { if (!cancelled) setSequenceSnapshot({ phage: currentPhage, repository, sequence: value }); })
+      .catch(error => { if (!cancelled) setSequenceError(error instanceof Error ? error.message : 'Could not load the coding sequence.'); })
+      .finally(() => { if (!cancelled) setSequenceLoading(false); });
+    return () => { cancelled = true; };
+  }, [open, viewMode, currentPhage, repository, sequence]);
+
+  useEffect(() => {
+    if (!adaptationLens || !currentPhage || sequence === null) return;
+    let cancelled = false;
+    setRecordError(null);
+    void createCodonAdaptationRecord(currentPhage, sequence, adaptationLens)
+      .then(value => { if (!cancelled) setRecordSnapshot({ lens: adaptationLens, record: value }); })
+      .catch(error => { if (!cancelled) setRecordError(error instanceof Error ? error.message : 'Could not export the analysis.'); });
+    return () => { cancelled = true; };
+  }, [adaptationLens, currentPhage, sequence]);
 
   // Hotkey (Alt+T for tRNA/adaptation)
   useHotkey(
@@ -81,8 +124,7 @@ export function CodonAdaptationOverlay({
   useEffect(() => {
     if (!isOpen('codonAdaptation')) return;
     if (!repository?.getCodonAdaptation || !repository?.getHostTrnaPools || !currentPhage) {
-      setAdaptations([]);
-      setHostPools([]);
+      setAnnotationSnapshot(null);
       setLoading(false);
       return;
     }
@@ -95,13 +137,11 @@ export function CodonAdaptationOverlay({
     ])
       .then(([adapt, pools]) => {
         if (cancelled) return;
-        setAdaptations(adapt);
-        setHostPools(pools);
+        setAnnotationSnapshot({ phage: currentPhage, repository, adaptations: adapt, hostPools: pools });
       })
       .catch(() => {
         if (cancelled) return;
-        setAdaptations([]);
-        setHostPools([]);
+        setAnnotationSnapshot(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -198,7 +238,7 @@ export function CodonAdaptationOverlay({
           <OverlayLoadingState message="Loading codon adaptation data...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
-        ) : adaptations.length === 0 ? (
+        ) : !currentPhage ? (
           <OverlayEmptyState
             message={
               !currentPhage
@@ -270,6 +310,11 @@ export function CodonAdaptationOverlay({
                 Codon-Pair Adaptation Lens
               </button>
             </div>
+
+            {viewMode !== 'codon_pair_lens' && hostSummaries.length === 0 && <OverlayEmptyState
+              message="No pre-computed adaptation scores available"
+              hint="Open the Codon-Pair Adaptation Lens to analyze the selected genome's coding sequence with the illustrative host model."
+            />}
 
             {viewMode === 'summary' ? (
               /* Host summary view */
@@ -518,8 +563,19 @@ export function CodonAdaptationOverlay({
               </>
             ) : (
               /* Codon-Pair Adaptation Lens (Roadmap #44) */
-              adaptationLens && (
+              sequenceLoading || sequence === null && !sequenceError ? <OverlayLoadingState message="Loading the selected genome's coding sequence..."><AnalysisPanelSkeleton /></OverlayLoadingState>
+              : sequenceError ? <p role="alert">{sequenceError}</p>
+              : adaptationLens && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  <p role="note">Real coding sequences; illustrative host model. Built-in weights and divergence thresholds are not calibrated infection probabilities or evidence of host switching.</p>
+                  {record && <>
+                    <button type="button" onClick={() => {
+                      try { downloadString(serializeAnalysisRecord(record), 'codon-adaptation.json', 'application/json'); }
+                      catch (error) { setRecordError(error instanceof Error ? error.message : 'Could not export the analysis.'); }
+                    }}>Export codon adaptation experiment</button>
+                    <AnalysisRecordDetails record={record} />
+                  </>}
+                  {recordError && <p role="alert">{recordError}</p>}
                   {/* Hero / Summary Banner */}
                   <div
                     style={{
@@ -535,7 +591,7 @@ export function CodonAdaptationOverlay({
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
                         <strong style={{ color: colors.accent ?? '#38bdf8', fontSize: '0.95rem' }}>
-                          Translational Compatibility & Tropism Lens
+                          Coding Sequence and Host Model
                         </strong>
                         <span
                           style={{
@@ -547,13 +603,13 @@ export function CodonAdaptationOverlay({
                             borderRadius: '3px',
                           }}
                         >
-                          Roadmap #44
+                          Illustrative model
                         </span>
                       </div>
 
                       <div style={{ display: 'flex', gap: '0.6rem', fontSize: '0.75rem', fontFamily: 'monospace' }}>
-                        <span>Primary Host: <strong style={{ color: colors.text ?? '#f8fafc' }}>{adaptationLens.primaryHost}</strong></span>
-                        <span>Top Match: <strong style={{ color: colors.success ?? '#22c55e' }}>{adaptationLens.hostRankings[0]?.hostName}</strong></span>
+                        <span>Reference baseline: <strong style={{ color: colors.text ?? '#f8fafc' }}>{adaptationLens.primaryHost}</strong></span>
+                        <span>Highest model score: <strong style={{ color: colors.success ?? '#22c55e' }}>{adaptationLens.hostRankings[0]?.hostName ?? 'Unavailable'}</strong></span>
                       </div>
                     </div>
 
@@ -565,7 +621,7 @@ export function CodonAdaptationOverlay({
                   {/* Multi-Host Compatibility Rankings */}
                   <div>
                     <div style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc', marginBottom: '0.4rem' }}>
-                      Candidate Bacterial Host Translational Rankings ({adaptationLens.hostRankings.length} Hosts)
+                      Illustrative Host-Profile Rankings ({adaptationLens.hostRankings.length} Profiles)
                     </div>
                     <div
                       style={{
@@ -741,7 +797,7 @@ export function CodonAdaptationOverlay({
                   {/* Candidate Host-Switching Footprints */}
                   <div>
                     <div style={{ fontSize: '0.8rem', fontWeight: 600, color: colors.text ?? '#f8fafc', marginBottom: '0.4rem' }}>
-                      Candidate Host-Switching Footprints ({adaptationLens.hostSwitchCandidates.length})
+                      Host-Profile Score Differences ({adaptationLens.hostSwitchCandidates.length})
                     </div>
                     {adaptationLens.hostSwitchCandidates.length === 0 ? (
                       <div
@@ -754,7 +810,7 @@ export function CodonAdaptationOverlay({
                           color: colors.textMuted ?? '#64748b',
                         }}
                       >
-                        No strong host-switching divergence detected. All viral genes show consistent translational alignment with the primary host profile.
+                        No analyzed gene exceeds the built-in score-difference threshold. This does not establish host range or absence of host switching.
                       </div>
                     ) : (
                       <div
@@ -800,7 +856,7 @@ export function CodonAdaptationOverlay({
                             </div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: colors.textDim ?? '#94a3b8', fontFamily: 'monospace' }}>
                               <span>Preferred: {g.hostSwitchFootprint?.candidateHost}</span>
-                              <span>Significance: {g.hostSwitchFootprint?.significance}</span>
+                              <span>Heuristic difference: {g.hostSwitchFootprint?.significance}</span>
                             </div>
                           </div>
                         ))}

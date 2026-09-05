@@ -7,7 +7,7 @@ test('every worker result property has an evidence adapter and retains its paylo
   // These are transport fixtures, not claims that the scientific kernels ran.
   const fixtures: AnalysisResult[] = [
     { type: 'gc-skew', skew: [0, -1], cumulative: [1, 0], originPosition: 1, terminusPosition: 0, engine: 'js' },
-    { type: 'complexity', entropy: [2], linguistic: [0.5], lowComplexityRegions: [] },
+    { type: 'complexity', entropy: [1], linguistic: [0.5], lowComplexityRegions: [] },
     { type: 'bendability', values: [0.35], flexibleRegions: [] },
     { type: 'promoters', sites: [] }, { type: 'repeats', repeats: [] },
     { type: 'codon-usage', usage: { ATG: 1 }, rscu: { ATG: 1 } },
@@ -25,6 +25,7 @@ test('every worker result property has an evidence adapter and retains its paylo
       expect(record.fields.cumulative.units).toBe('count');
     }
     if (fixture.type === 'codon-usage') expect(record.fields.cai.kind).toBe('unavailable');
+    if (fixture.type === 'complexity') expect(record.fields.entropy.units).toBe('fraction');
     if (fixture.type === 'transcription-flow') expect(record.fields.values.kind).toBe('simulation');
   }
 });

@@ -7,7 +7,57 @@ import {
   CANDIDATE_HOST_PROFILES,
   classifyFunctionalModule,
   matchHostProfile,
+  extractGeneSequence,
+  createCodonAdaptationRecord,
 } from './codon-pair-adaptation';
+import { importLocalGenomes } from '../genome-import';
+import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../analysis-result';
+
+describe('coding sequence coordinates and ambiguity', () => {
+  it('counts only adjacent original-frame sense pairs without joining across unknown codons', () => {
+    const host = { ...CANDIDATE_HOST_PROFILES.escherichia_coli, cpsScores: { AAA_GGG: 0.4 }, meanCpb: 0.1, stdCpb: 0.2 };
+    expect(calculateGeneCPB('ATGNCCAAA', host).pairCount).toBe(0);
+    expect(calculateGeneCPB('atgnnnaaaggg', host)).toEqual({ cpb: 0.4, zScore: 1.5, pairCount: 1, preferredPairs: 1, deoptimizedPairs: 0 });
+    expect(calculateGeneCPB('AAATAAGGG', host).pairCount).toBe(0);
+  });
+
+  it('extracts actual joined and complemented GenBank CDS with codon_start', async () => {
+    const sequence = 'ATGAAACCCCCCGGGTTT';
+    const imported = await importLocalGenomes({ name: 'spliced.gb', text: `LOCUS       SPLICED 18 bp DNA circular\nFEATURES             Location/Qualifiers\n     CDS             join(1..6,13..18)\n                     /gene="forward"\n     CDS             complement(join(1..6,13..18))\n                     /gene="reverse"\n     CDS             join(1..6,13..18)\n                     /gene="offset"\n                     /codon_start=2\nORIGIN\n        1 ${sequence.toLowerCase()}\n//\n` });
+    const [forward, reverse, offset] = imported.genomes[0].phage.genes;
+    expect(extractGeneSequence(forward, sequence)).toBe('ATGAAAGGGTTT');
+    expect(extractGeneSequence(reverse, sequence)).toBe('AAACCCTTTCAT');
+    expect(extractGeneSequence(offset, sequence)).toBe('TGAAAGGGTTT');
+    expect(extractGeneSequence(forward, sequence.slice(0, 12))).toBe('');
+    expect(extractGeneSequence({ ...forward, qualifiers: { _segments: [{ start: 0, end: 6, strand: '+' }, { start: -1, end: 18, strand: '+' }] } }, sequence)).toBe('');
+    expect(extractGeneSequence({ ...forward, qualifiers: { ...forward.qualifiers, transl_table: '4' } }, sequence)).toBe('');
+    expect(extractGeneSequence({ ...forward, qualifiers: { ...forward.qualifiers, transl_table: '11' } }, sequence)).toBe('ATGAAAGGGTTT');
+    expect(extractGeneSequence({ ...forward, qualifiers: { ...forward.qualifiers, codon_start: '4' } }, sequence)).toBe('');
+    const result = analyzePhageHostCodonAdaptation(imported.genomes[0].phage, { genomeSequence: sequence });
+    expect(result.genes.map(gene => gene.codonCount)).toEqual([4, 4, 2]);
+    const record = await createCodonAdaptationRecord(imported.genomes[0].phage, sequence, result);
+    expect(await parseAnalysisRecord(serializeAnalysisRecord(record))).toEqual(record);
+    expect(record.inputs[0]).toMatchObject({ source: 'local', data: sequence });
+    expect(record.inputs[1].data).toEqual(analysisJson({ host: null, genes: imported.genomes[0].phage.genes }));
+    expect(record.inputs[2]).toMatchObject({ source: 'demo', data: CANDIDATE_HOST_PROFILES });
+    expect(record.fields.codingSequences).toMatchObject({ kind: 'sequence-score', coverage: { available: 3, total: 3, unit: 'genes' }, value: [
+      { geneId: forward.id, codonCount: 4, sequence: 'ATGAAAGGGTTT' },
+      { geneId: reverse.id, codonCount: 4, sequence: 'AAACCCTTTCAT' },
+      { geneId: offset.id, codonCount: 2, sequence: 'TGAAAGGGTTT' },
+    ] });
+    expect(record.fields.geneScores.kind).toBe('demo');
+    expect(record.fields.hostRankings.kind).toBe('demo');
+  });
+
+  it('exports unavailable host scores without inventing sequence and rejects a different genome owner', async () => {
+    const phage = makeMockPhage();
+    const result = analyzePhageHostCodonAdaptation(phage);
+    const record = await createCodonAdaptationRecord(phage, '', result);
+    expect(record.fields.hostRankings).toMatchObject({ kind: 'unavailable', value: null, coverage: { available: 0, total: 5, unit: 'genes' } });
+    expect(record.fields.codingSequences.value).toEqual([]);
+    await expect(createCodonAdaptationRecord({ ...phage, id: 999 }, '', result)).rejects.toThrow('different genome');
+  });
+});
 
 function makeMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   return {
@@ -231,21 +281,19 @@ describe('Codon & Codon-Pair Adaptation Lens - Core', () => {
       expect(nrdAGene).toBeDefined();
       expect(nrdAGene?.cai.pseudomonas_aeruginosa).toBeGreaterThan(0.7);
 
-      expect(result.summary).toContain('Evaluated 5 genes against 8 candidate bacterial hosts');
+      expect(result.summary).toContain('Evaluated 5 genes against 8 built-in host weight profiles');
     });
 
-    it('gracefully handles phages without loaded sequence using gene codon approximations', () => {
+    it('does not infer gene or host scores when sequence is unavailable', () => {
       const phage = makeMockPhage();
       const result = analyzePhageHostCodonAdaptation(phage, {
         genomeSequence: null,
       });
 
-      expect(result.genes.length).toBe(5);
-      for (const g of result.genes) {
-        expect(g.primaryHostCai).toBeGreaterThan(0);
-        expect(g.cai.escherichia_coli).toBeGreaterThan(0);
-      }
-      expect(result.hostRankings.length).toBe(8);
+      expect(result.genes).toEqual([]);
+      expect(result.hostRankings).toEqual([]);
+      expect(result.modules).toEqual([]);
+      expect(result.summary).toContain('No host scores were inferred');
     });
   });
 });

@@ -14,7 +14,7 @@ const DESCRIPTORS: ResultDescriptors = {
     terminusPosition: { label: 'Cumulative-maximum candidate', units: 'base-pairs', limit: 'Zero-based candidate from cumulative skew; not an experimentally identified replication terminus.' },
   },
   complexity: {
-    entropy: { label: 'Window nucleotide entropy', units: 'bits', limit: 'Shannon entropy over counted bases in each window; not functional complexity.' },
+    entropy: { label: 'Normalized window nucleotide entropy', units: 'fraction', limit: 'Shannon entropy divided by 2 bits over counted A/C/G/T bases (U is T); not functional complexity. Zero with no counted bases is an encoding convention, not evidence of low complexity.' },
     linguistic: { label: 'Window linguistic diversity', units: 'score', limit: 'A bounded substring-diversity statistic, not a calibrated biological probability.' },
     lowComplexityRegions: { label: 'Low-complexity regions', units: 'records', limit: 'Thresholded sequence windows with zero-based coordinates; threshold choice affects calls.' },
   },
@@ -25,7 +25,7 @@ const DESCRIPTORS: ResultDescriptors = {
   promoters: { sites: { label: 'Promoter and RBS motif hits', units: 'records', limit: 'Pattern hits and heuristic scores, capped at 100; absence does not establish absence of transcription.' } },
   repeats: { repeats: { label: 'Sequence repeat matches', units: 'records', limit: 'Matches within algorithm length, gap and output limits; not a complete repeat annotation.' } },
   'codon-usage': {
-    usage: { label: 'Reading-frame codon counts', units: 'count', limit: 'Frame-zero sequence counts; not a CDS-aware transcriptome estimate.' },
+    usage: { label: 'Reading-frame codon counts', units: 'count', limit: 'Frame-zero DNA triplets; ambiguous triplets are skipped without shifting the frame. Not a CDS-aware transcriptome estimate.' },
     rscu: { label: 'Relative synonymous codon usage', units: 'dimensionless', limit: 'Normalized counts within synonymous codon families; no host reference is supplied.' },
     cai: { label: 'Host codon adaptation', units: 'score', limit: 'Requires an identified host reference codon distribution.' },
   },
@@ -46,10 +46,11 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
   const type = result.type;
   const parameters = analysisJson({ route, requestedOptions: options,
     ...(type === 'gc-skew' ? { windowSize: Math.max(1, Math.floor(options.windowSize || 1000)), stepSize: Math.max(1, Math.floor((options.windowSize || 1000) / 4)), cumulativeConvention: 'inclusive per-base G-C prefix sampled at each window start' } : {}),
-    ...(type === 'complexity' ? { windowSize: options.windowSize || 100 } : {}),
+    ...(type === 'complexity' ? { windowSize: options.windowSize || 100, entropyNormalization: 'Shannon bits / 2; U treated as T' } : {}),
     ...(type === 'bendability' ? { windowSize: options.windowSize || 50 } : {}),
     ...(type === 'repeats' ? { minLength: options.minLength || 8, maxGap: options.maxGap || 5000 } : {}),
-    ...(type === 'kmer-spectrum' ? { kmerSize: options.kmerSize || (route === 'shared' ? 4 : 6) } : {}),
+    ...(type === 'kmer-spectrum' ? { kmerSize: options.kmerSize ?? 6, ambiguityPolicy: 'Unknown bases break windows; U treated as T', frequencyDenominator: 'counted valid windows' } : {}),
+    ...(type === 'codon-usage' ? { frame: 0, ambiguityPolicy: 'Skip non-ACGT triplets without deleting positions' } : {}),
   }) as Record<string, AnalysisJson>;
   const fields: Record<string, AnalysisField> = {};
   let validBases = 0;
@@ -69,7 +70,7 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
     } : { label: descriptor.label, kind: 'sequence-score', units: descriptor.units, value: analysisJson(value), coverage, limitations: [descriptor.limit] };
   }
   const engine = result.type === 'gc-skew' ? result.engine ?? 'unreported worker path' : 'worker pipeline; individual kernel path not reported';
-  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: '1', implementation: engine }, inputs: [{
+  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: ['codon-usage', 'kmer-spectrum', 'complexity'].includes(type) ? '2' : '1', implementation: engine }, inputs: [{
     id: 'sequence', accession: context.accession, source: context.source,
     description: 'Exact decoded nucleotide string supplied to this worker operation; SHA-256 identifies its canonical JSON encoding.', data: sequence,
   }], parameters, seed: null, references: [{ id: 'sequence-worker-method', version: '2026-09-05', description: 'Bundled algorithm and parameter defaults; no external biological reference supplied.' }], fields });

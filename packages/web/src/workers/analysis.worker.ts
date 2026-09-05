@@ -9,6 +9,7 @@ import * as Comlink from 'comlink';
 import {
   computeDinucleotideFrequencies,
   computeGcContent,
+  CODON_TABLE,
   computeKmerFrequencies,
   computePhasePortrait,
   decomposeBias,
@@ -19,6 +20,7 @@ import {
 import {
   topKFromDenseCounts,
   canUseDenseKmerCounts,
+  countKmersDenseJS,
 } from '@phage-explorer/core/analysis/dense-kmer';
 import { gpuCompute } from './gpu/GPUCompute';
 import { getWasmCompute, getWasmComputeVariant } from '../lib/wasm-loader';
@@ -53,26 +55,6 @@ const BENDABILITY: Record<string, number> = {
   'TA': 0.36, 'TT': 0.35, 'TC': 0.30, 'TG': 0.27,
   'CA': 0.27, 'CT': 0.29, 'CC': 0.25, 'CG': 0.20,
   'GA': 0.30, 'GT': 0.32, 'GC': 0.24, 'GG': 0.25,
-};
-
-// Standard genetic code
-const CODON_TABLE: Record<string, string> = {
-  'TTT': 'F', 'TTC': 'F', 'TTA': 'L', 'TTG': 'L',
-  'CTT': 'L', 'CTC': 'L', 'CTA': 'L', 'CTG': 'L',
-  'ATT': 'I', 'ATC': 'I', 'ATA': 'I', 'ATG': 'M',
-  'GTT': 'V', 'GTC': 'V', 'GTA': 'V', 'GTG': 'V',
-  'TCT': 'S', 'TCC': 'S', 'TCA': 'S', 'TCG': 'S',
-  'CCT': 'P', 'CCC': 'P', 'CCA': 'P', 'CCG': 'P',
-  'ACT': 'T', 'ACC': 'T', 'ACA': 'T', 'ACG': 'T',
-  'GCT': 'A', 'GCC': 'A', 'GCA': 'A', 'GCG': 'A',
-  'TAT': 'Y', 'TAC': 'Y', 'TAA': '*', 'TAG': '*',
-  'CAT': 'H', 'CAC': 'H', 'CAA': 'Q', 'CAG': 'Q',
-  'AAT': 'N', 'AAC': 'N', 'AAA': 'K', 'AAG': 'K',
-  'GAT': 'D', 'GAC': 'D', 'GAA': 'E', 'GAG': 'E',
-  'TGT': 'C', 'TGC': 'C', 'TGA': '*', 'TGG': 'W',
-  'CGT': 'R', 'CGC': 'R', 'CGA': 'R', 'CGG': 'R',
-  'AGT': 'S', 'AGC': 'S', 'AGA': 'R', 'AGG': 'R',
-  'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
 };
 
 // ============================================================
@@ -339,7 +321,7 @@ async function calculateGCSkewWasm(sequence: string, windowSize = 1000): Promise
  * Calculate sequence complexity (Shannon entropy + linguistic)
  */
 async function calculateComplexity(sequence: string, windowSize = 100): Promise<ComplexityResult> {
-  const seq = sequence.toUpperCase();
+  const seq = sequence.toUpperCase().replace(/U/g, 'T');
   const entropy: number[] = [];
   const linguistic: number[] = [];
   const lowComplexityRegions: Array<{ start: number; end: number }> = [];
@@ -730,7 +712,8 @@ async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Prom
  * Calculate codon usage statistics
  */
 async function calculateCodonUsage(sequence: string): Promise<CodonUsageResult> {
-  const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
+  // Skip an unrecognized triplet without shifting subsequent reading frames.
+  const seq = sequence.toUpperCase();
   const usage: Record<string, number> = {};
   const rscu: Record<string, number> = {};
 
@@ -740,8 +723,7 @@ async function calculateCodonUsage(sequence: string): Promise<CodonUsageResult> 
   //
   // Bead: phage_explorer-yvs8.2
   //
-  // IMPORTANT: We pass the cleaned `seq` (ACGT-only) so results match the
-  // previous implementation (which removed ambiguous bases).
+  // The Rust counter retains all triplets; keep only standard DNA codons.
   let didUseWasm = false;
   try {
     const wasm = await getWasmCompute();
@@ -751,7 +733,7 @@ async function calculateCodonUsage(sequence: string): Promise<CodonUsageResult> 
         const parsed: unknown = JSON.parse(result.json);
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
           for (const [codon, count] of Object.entries(parsed)) {
-            if (typeof count === 'number' && Number.isFinite(count)) {
+            if (Object.hasOwn(CODON_TABLE, codon) && typeof count === 'number' && Number.isSafeInteger(count) && count > 0) {
               usage[codon] = count;
             }
           }
@@ -804,10 +786,13 @@ async function calculateCodonUsage(sequence: string): Promise<CodonUsageResult> 
  * @see phage_explorer-vk7b.3
  */
 async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpectrumResult> {
-  const seq = sequence.toUpperCase().replace(/[^ACGT]/g, '');
+  if (!Number.isSafeInteger(k) || k < 1) throw new Error('K-mer length must be a positive integer.');
+  // Unknown bases remain boundaries. U follows the byte/WASM convention of T.
+  const seq = sequence.toUpperCase().replace(/U/g, 'T');
+  if (seq.length < k) return { type: 'kmer-spectrum', kmerSize: k, spectrum: [], uniqueKmers: 0, totalKmers: 0 };
   let spectrum: Array<{ kmer: string; count: number; frequency: number }> | null = null;
   let uniqueKmers = 0;
-  let totalKmers = Math.max(1, seq.length - k + 1);
+  let totalKmers = 0;
 
   // Tier 1: Try GPU if k is small enough (shader limit)
   if (k <= 12) {
@@ -816,14 +801,15 @@ async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpect
       if (gpuSupported) {
         const counts = await gpuCompute.countKmers(seq, k);
         if (counts) {
+          totalKmers = Array.from(counts.values()).reduce((sum, count) => sum + count, 0);
           uniqueKmers = counts.size;
           spectrum = Array.from(counts.entries())
             .map(([kmer, count]) => ({
               kmer,
               count,
-              frequency: count / totalKmers,
+              frequency: totalKmers > 0 ? count / totalKmers : 0,
             }))
-            .sort((a, b) => b.count - a.count)
+            .sort((a, b) => b.count - a.count || a.kmer.localeCompare(b.kmer))
             .slice(0, 100);
         }
       }
@@ -867,22 +853,33 @@ async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpect
     }
   }
 
-  // Tier 3: CPU fallback (slow, uses Map<string, number>)
+  // Tier 3: use the existing ambiguity-aware rolling counter for small k.
+  if (!spectrum && canUseDenseKmerCounts(k)) {
+    const counts = countKmersDenseJS(seq, k);
+    totalKmers = counts.totalValid;
+    uniqueKmers = counts.uniqueCount ?? counts.counts.reduce((total, count) => total + (count > 0 ? 1 : 0), 0);
+    spectrum = topKFromDenseCounts(counts.counts, k, 100).map(({ kmer, count }) => ({
+      kmer, count, frequency: totalKmers > 0 ? count / totalKmers : 0,
+    }));
+  }
+
+  // Larger k uses sparse counts with the same ambiguity boundaries.
   if (!spectrum) {
     const counts = new Map<string, number>();
     for (let i = 0; i <= seq.length - k; i++) {
       const kmer = seq.slice(i, i + k);
+      if (/[^ACGT]/.test(kmer)) continue;
       counts.set(kmer, (counts.get(kmer) || 0) + 1);
+      totalKmers++;
     }
     uniqueKmers = counts.size;
-    totalKmers = Math.max(1, seq.length - k + 1);
     spectrum = Array.from(counts.entries())
       .map(([kmer, count]) => ({
         kmer,
         count,
-        frequency: count / totalKmers,
+        frequency: totalKmers > 0 ? count / totalKmers : 0,
       }))
-      .sort((a, b) => b.count - a.count)
+      .sort((a, b) => b.count - a.count || a.kmer.localeCompare(b.kmer))
       .slice(0, 100);
   }
 
@@ -1024,7 +1021,8 @@ async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 10
   return calculateGCSkewFromRef(ref, windowSize);
 }
 
-async function calculateKmerSpectrumFromRefWasm(ref: SequenceBytesRef, k = 4): Promise<KmerSpectrumResult> {
+async function calculateKmerSpectrumFromRefWasm(ref: SequenceBytesRef, k = 6): Promise<KmerSpectrumResult> {
+  if (!Number.isSafeInteger(k) || k < 1) throw new Error('K-mer length must be a positive integer.');
   if (k <= 10) {
     const wasm = await getWasmCompute();
     if (wasm?.SequenceHandle && ref.encoding === 'ascii') {
@@ -1033,32 +1031,21 @@ async function calculateKmerSpectrumFromRefWasm(ref: SequenceBytesRef, k = 4): P
         const handle = new wasm.SequenceHandle(bytes);
         try {
           const res = handle.count_kmers(k);
-          const totalValid = Number(res.total_valid);
-          const counts = res.counts;
-          const alphabet = ['A', 'C', 'G', 'T'];
-          let uniqueKmers = 0;
-          const spectrum: Array<{ kmer: string; count: number; frequency: number }> = [];
-          for (let idx = 0; idx < counts.length; idx++) {
-            const count = counts[idx];
-            if (count > 0) {
-              uniqueKmers++;
-              const temp = idx;
-              let kmer = '';
-              for (let pos = k - 1; pos >= 0; pos--) {
-                const baseIdx = (temp >> (pos * 2)) & 3;
-                kmer += alphabet[baseIdx];
-              }
-              spectrum.push({ kmer, count, frequency: totalValid > 0 ? count / totalValid : 0 });
-            }
+          try {
+            const totalValid = Number(res.total_valid);
+            const spectrum = topKFromDenseCounts(res.counts, k, 100).map(({ kmer, count }) => ({
+              kmer, count, frequency: totalValid > 0 ? count / totalValid : 0,
+            }));
+            return {
+              type: 'kmer-spectrum',
+              kmerSize: k,
+              spectrum,
+              uniqueKmers: res.unique_count,
+              totalKmers: totalValid,
+            };
+          } finally {
+            res.free();
           }
-          spectrum.sort((a, b) => b.count - a.count);
-          return {
-            type: 'kmer-spectrum',
-            kmerSize: k,
-            spectrum: spectrum.slice(0, 100),
-            uniqueKmers,
-            totalKmers: totalValid,
-          };
         } finally {
           handle.free();
         }
@@ -1140,7 +1127,7 @@ async function computeAnalysisResult(request: AnalysisRequest): Promise<Analysis
     case 'codon-usage':
       return calculateCodonUsage(sequence);
     case 'kmer-spectrum':
-      return await calculateKmerSpectrum(sequence, options.kmerSize || 6);
+      return await calculateKmerSpectrum(sequence, options.kmerSize ?? 6);
     case 'transcription-flow': {
       const flow = simulateTranscriptionFlow(sequence);
       return { type: 'transcription-flow', ...flow };
@@ -1320,7 +1307,7 @@ const workerAPI: SharedAnalysisWorkerAPI = {
     if (request.type === 'gc-skew') {
       result = await calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize || 1000);
     } else if (request.type === 'kmer-spectrum') {
-      result = await calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize || 4);
+      result = await calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize ?? 6);
     } else if (request.type === 'complexity') {
       result = await calculateComplexityFromRefWasm(request.sequenceRef, request.options?.windowSize || 100);
     } else {

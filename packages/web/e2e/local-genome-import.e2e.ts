@@ -90,7 +90,7 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     expect(fasta.replace(/^>.*\n/, '').replace(/\s/g, '')).toBe('ATGAAACCCGGGTTTAAACCCTAG');
     await palette(page, 'GC skew analysis');
     await expect(page.getByTestId('overlay-gcSkew')).toContainText(/GC skew/i);
-    await expect(page.getByTestId('overlay-gcSkew')).toContainText('Sequence too short for GC skew analysis');
+    await expect(page.getByTestId('overlay-gcSkew')).toContainText('Two complete 500 bp windows at 125 bp spacing require at least 625 bp.');
     await page.keyboard.press('Escape');
     const requestsBeforeReference = requests.length;
     await page.keyboard.press('Control+Shift+y');

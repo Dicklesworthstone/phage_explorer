@@ -4,6 +4,174 @@ import { createHash } from 'node:crypto';
 import { setupTestHarness } from './e2e-harness';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 
+for (const backend of ['wasm', 'javascript'] as const) test(`sequence workers preserve ambiguity boundaries under ${backend}`, async ({ page, baseURL }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  let workerUrl = '';
+  page.on('request', request => {
+    if (/\/assets\/analysis\.worker-[^/]+\.js$/.test(request.url())) workerUrl = request.url();
+  });
+  if (backend === 'javascript') await page.route(/\/assets\/analysis\.worker-[^/]+\.js$/, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `WebAssembly.instantiate = async () => { throw new Error('Controlled WASM failure'); }; Object.defineProperty(navigator, 'gpu', { value: undefined });\n${await response.text()}` });
+  });
+  try {
+    await catalog(page, baseURL!);
+    await page.keyboard.press('g');
+    await expect(page.getByRole('button', { name: 'Export GC skew experiment' })).toBeVisible();
+    expect(workerUrl).not.toBe('');
+    const observed = await page.evaluate(async url => {
+      const worker = new Worker(url, { type: 'module' });
+      let serial = 0;
+      const call = (path: string, request: unknown) => new Promise<any>((resolve, reject) => {
+        const id = `sequence-oracle-${serial++}`;
+        worker.onerror = event => reject(new Error(event.message));
+        worker.onmessage = event => {
+          if (event.data.id !== id) return;
+          if (event.data.type !== 'RAW') reject(new Error(JSON.stringify(event.data)));
+          else resolve(event.data.value);
+        };
+        worker.postMessage({ id, type: 'APPLY', path: [path], argumentList: [{ type: 'RAW', value: request }] });
+      });
+      const cases = [
+        { type: 'kmer-spectrum', sequence: 'AANNAA', options: { kmerSize: 2 } },
+        { type: 'kmer-spectrum', sequence: 'acnta', options: { kmerSize: 2 } },
+        { type: 'kmer-spectrum', sequence: 'AAAAAA', options: {} },
+        { type: 'kmer-spectrum', sequence: '', options: { kmerSize: 2 } },
+        { type: 'kmer-spectrum', sequence: 'A', options: { kmerSize: 2 } },
+        { type: 'kmer-spectrum', sequence: 'NNNN', options: { kmerSize: 2 } },
+        { type: 'kmer-spectrum', sequence: 'A'.repeat(13) + 'N' + 'A'.repeat(13), options: { kmerSize: 13 } },
+        { type: 'codon-usage', sequence: 'atgnccaaa', options: {} },
+        { type: 'codon-usage', sequence: 'ATGNNNAAAGGG', options: {} },
+        { type: 'codon-usage', sequence: 'NNNN', options: {} },
+        { type: 'codon-usage', sequence: 'AT', options: {} },
+        { type: 'complexity', sequence: 'ACGUACGU', options: { windowSize: 4 } },
+      ];
+      try {
+        const probe = await call('runAnalysis', { type: 'gc-skew', sequence: 'GGGGCCCC', options: { windowSize: 4 } });
+        const transports = ['string', 'ascii', 'acgt05'];
+        if (typeof SharedArrayBuffer !== 'undefined' && crossOriginIsolated) transports.push('shared-ascii');
+        const results = [];
+        for (const transport of transports) {
+          for (const [index, fixture] of cases.entries()) {
+            let request: any = fixture;
+            if (transport !== 'string') {
+              const encoded = transport === 'acgt05'
+                ? Uint8Array.from(fixture.sequence.toUpperCase(), base => ({ A: 0, C: 1, G: 2, T: 3, U: 3 }[base] ?? 4))
+                : new TextEncoder().encode(fixture.sequence);
+              // Padding detects callers that accidentally ignore the view bounds.
+              const buffer = transport === 'shared-ascii' ? new SharedArrayBuffer(encoded.length + 4) : new ArrayBuffer(encoded.length + 4);
+              new Uint8Array(buffer).fill(65);
+              new Uint8Array(buffer, 2, encoded.length).set(encoded);
+              request = { type: fixture.type, options: fixture.options, sequenceRef: {
+                buffer, byteOffset: 2, byteLength: encoded.length, length: encoded.length,
+                encoding: transport === 'acgt05' ? 'acgt05' : 'ascii', isShared: transport === 'shared-ascii', phageId: -1,
+              } };
+            }
+            results.push({ transport, index, result: await call(transport === 'string' ? 'runAnalysis' : 'runAnalysisShared', request) });
+          }
+        }
+        const invalid = [];
+        for (const kmerSize of [0, -1, 1.5]) {
+          try { await call('runAnalysis', { type: 'kmer-spectrum', sequence: 'ACGT', options: { kmerSize } }); invalid.push('accepted'); }
+          catch (error) { invalid.push(String(error)); }
+        }
+        return { probe, results, invalid, transports };
+      } finally { worker.terminate(); }
+    }, workerUrl);
+    expect(observed.probe.engine).toMatch(backend === 'javascript' ? /^js$/ : /^wasm-(simd|baseline)$/);
+    for (const { index, result } of observed.results) {
+      if (index <= 6) {
+        const expected = [
+          { kmerSize: 2, totalKmers: 2, uniqueKmers: 1, counts: { AA: 2 } },
+          { kmerSize: 2, totalKmers: 2, uniqueKmers: 2, counts: { AC: 1, TA: 1 } },
+          { kmerSize: 6, totalKmers: 1, uniqueKmers: 1, counts: { AAAAAA: 1 } },
+          { kmerSize: 2, totalKmers: 0, uniqueKmers: 0, counts: {} },
+          { kmerSize: 2, totalKmers: 0, uniqueKmers: 0, counts: {} },
+          { kmerSize: 2, totalKmers: 0, uniqueKmers: 0, counts: {} },
+          { kmerSize: 13, totalKmers: 2, uniqueKmers: 1, counts: { AAAAAAAAAAAAA: 2 } },
+        ][index];
+        expect(result).toMatchObject({ kmerSize: expected.kmerSize, totalKmers: expected.totalKmers, uniqueKmers: expected.uniqueKmers });
+        expect(Object.fromEntries(result.spectrum.map((row: any) => [row.kmer, row.count]))).toEqual(expected.counts);
+        for (const row of result.spectrum) expect(row.frequency).toBe(row.count / expected.totalKmers);
+      } else if (index <= 10) {
+        expect(result.usage).toEqual([{ ATG: 1, AAA: 1 }, { ATG: 1, AAA: 1, GGG: 1 }, {}, {}][index - 7]);
+        if (index >= 9) expect(Object.values(result.rscu).every(value => value === 0)).toBe(true);
+      } else {
+        expect(result.entropy).toEqual([1, 1]);
+      }
+    }
+    for (const error of observed.invalid) expect(error).toContain('positive integer');
+    await info.attach(`sequence-worker-oracles-${backend}`, { body: JSON.stringify(observed), contentType: 'application/json' });
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
+test('codon lens consumes joined private CDS and replaces exports when the genome changes', async ({ page, baseURL }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  const externalRequests: string[] = [];
+  try {
+    await catalog(page, baseURL!);
+    page.on('request', request => {
+      if (/^https?:/.test(request.url()) && new URL(request.url()).origin !== new URL(baseURL!).origin) externalRequests.push(request.url());
+    });
+    await page.keyboard.press('Control+k');
+    const palette = page.getByTestId('overlay-commandPalette');
+    await palette.getByRole('combobox').fill('Local genomes: import or export');
+    await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).first().click();
+    const importer = page.getByTestId('overlay-genomeImport');
+    const sequence = 'ATGAAACCCCCCGGGTTT';
+    const genbank = (name: string, dna: string, features: boolean) => `LOCUS       ${name} 18 bp DNA circular\nFEATURES             Location/Qualifiers\n${features ? '     CDS             join(1..6,13..18)\n                     /gene="forward"\n     CDS             complement(join(1..6,13..18))\n                     /gene="reverse"\n     CDS             join(1..6,13..18)\n                     /gene="offset"\n                     /codon_start=2\n' : ''}ORIGIN\n        1 ${dna.toLowerCase()}\n//\n`;
+    await importer.getByRole('textbox', { name: 'Paste genome data' }).fill(genbank('JOINED_ORACLE', sequence, true) + genbank('CHANGED_ORACLE', 'CTG'.repeat(6), true) + genbank('NO_CDS_ORACLE', sequence, false));
+    await importer.getByRole('button', { name: 'Parse records', exact: true }).click();
+    await importer.getByRole('button', { name: 'Add records to explorer' }).click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('phage-list-item-selected')).toContainText('JOINED_ORACLE');
+    await page.keyboard.press('Alt+t');
+    const overlay = page.getByTestId('overlay-codonAdaptation');
+    await overlay.getByRole('button', { name: 'Codon-Pair Adaptation Lens' }).click();
+    const download = async () => {
+      const pending = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export codon adaptation experiment' }).click();
+      const stream = await (await pending).createReadStream();
+      if (!stream) throw new Error('No codon experiment download');
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      return parseAnalysisRecord(Buffer.concat(chunks).toString());
+    };
+    const original = await download();
+    expect(original.inputs[0]).toMatchObject({ source: 'local', data: sequence, accession: 'JOINED_ORACLE' });
+    expect(original.fields.codingSequences.value).toEqual([
+      expect.objectContaining({ sequence: 'ATGAAAGGGTTT', codonCount: 4 }),
+      expect.objectContaining({ sequence: 'AAACCCTTTCAT', codonCount: 4 }),
+      expect.objectContaining({ sequence: 'TGAAAGGGTTT', codonCount: 2 }),
+    ]);
+    expect(original.fields.geneScores.kind).toBe('demo');
+    expect(original.inputs[2].source).toBe('demo');
+    await expect(overlay.getByRole('note')).toContainText('illustrative host model');
+    await page.keyboard.press('Escape');
+    await page.getByTestId('phage-list-item').filter({ hasText: 'CHANGED_ORACLE' }).click();
+    await page.keyboard.press('Alt+t');
+    await overlay.getByRole('button', { name: 'Codon-Pair Adaptation Lens' }).click();
+    const changed = await download();
+    expect(changed.inputs[0].accession).toBe('CHANGED_ORACLE');
+    expect(changed.inputs[0].data).toBe('CTG'.repeat(6));
+    expect(changed.cacheKey).not.toBe(original.cacheKey);
+    expect(changed.fields.geneScores.value).not.toEqual(original.fields.geneScores.value);
+    await page.keyboard.press('Escape');
+    await page.getByTestId('phage-list-item').filter({ hasText: 'NO_CDS_ORACLE' }).click();
+    await page.keyboard.press('Alt+t');
+    await overlay.getByRole('button', { name: 'Codon-Pair Adaptation Lens' }).click();
+    const missing = await download();
+    expect(missing.inputs[0].accession).toBe('NO_CDS_ORACLE');
+    expect(missing.fields.hostRankings).toMatchObject({ kind: 'unavailable', value: null });
+    expect(missing.fields.codingSequences.value).toEqual([]);
+    await expect(overlay).toContainText('No host scores were inferred.');
+    await info.attach('codon-experiments', { body: JSON.stringify({ original, changed, missing }), contentType: 'application/json' });
+    expect(pageErrors).toEqual([]);
+    expect(externalRequests).toEqual([]);
+  } finally { await finalize(); }
+});
+
 for (const backend of ['wasm', 'javascript'] as const) test(`GC skew experiment preserves actual worker counts and source under ${backend}`, async ({ page, baseURL }, info) => {
   const { pageErrors, finalize } = setupTestHarness(page, info);
   let disabledWasmWorkers = 0;

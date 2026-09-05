@@ -164,6 +164,14 @@ panels can be unavailable. A bundle containing every analysis action, parameter
 and result remains unfinished; the current bundle preserves inputs and the
 sequence view. These source changes have not been published in a release by this work.
 
+The web **Codon-Pair Adaptation Lens** (Alt+T) reads actual annotated CDS from
+catalog or imported genomes, applying joined segments, strand and `codon_start`.
+Its experiment export retains the genome, annotations, consumed CDS and built-in
+host weights. Host-model scores are illustrative; they are not infection
+probabilities or evidence of host switching. CDS without an unambiguous adjacent
+sense-codon pair, or with a declared translation table other than 1 or 11, are
+excluded. Missing sequence or CDS produces no inferred host scores.
+
 The **current source TUI** uses the same parser and portable bundle:
 
 ```bash

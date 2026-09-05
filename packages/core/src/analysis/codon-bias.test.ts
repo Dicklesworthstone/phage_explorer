@@ -12,6 +12,10 @@ describe('Codon bias', () => {
     // AAA (A), GGG (G), CCC (C) => 2/3 are G/C at third base.
     expect(computeGC3('AAAGGGCCC')).toBeCloseTo(2 / 3, 6);
     expect(computeGC3('')).toBe(0);
+    // AAA | NCC | GGT: known third positions A,C,T; removing N shifts them.
+    expect(computeGC3('AAANCCGGT')).toBeCloseTo(1 / 3, 12);
+    expect(computeGC3('aaAnccggt')).toBeCloseTo(1 / 3, 12);
+    expect(computeGC3('AANCCN')).toBe(0);
   });
 
   it('computeRSCU > computes expected values for a simple 2-codon family (F: TTT/TTC)', () => {
@@ -61,4 +65,3 @@ describe('Codon bias', () => {
     expect(bias.biasScore).toBeLessThanOrEqual(1);
   });
 });
-

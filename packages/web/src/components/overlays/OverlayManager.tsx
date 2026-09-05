@@ -355,7 +355,7 @@ function renderLazyOverlay(
   repository: PhageRepository | null,
   currentPhage: PhageFull | null
 ): React.ReactElement | null {
-  if (currentPhage?.localGenome && (id === 'phylodynamics' || id === 'environmentalProvenance' || id === 'codonAdaptation')) {
+  if (currentPhage?.localGenome && (id === 'phylodynamics' || id === 'environmentalProvenance')) {
     return <Overlay id={id} title={formatOverlayTitle(id)} size="lg"><p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p></Overlay>;
   }
   switch (id) {
