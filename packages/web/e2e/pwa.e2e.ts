@@ -62,7 +62,10 @@ test.beforeEach(async ({ page }) => {
   // under webdriver. No production-only testing hook is added.
   await page.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false });
-    localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' }));
+    // A first offline visit lands on the browser's opaque network-error page.
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' }));
+    }
   });
 });
 
