@@ -928,6 +928,26 @@ or export the model, parameters and raw flux results. Infeasible and invalid
 models show a solver status without a gain. These model responses are not
 measured host metabolism or phage fitness.
 
+AMG experiment exports use a versioned JSON record containing the exact annotation
+inputs, reaction model, marker rules, parameters, raw results and per-field units
+and limitations. **Restore experiment** checks input identity against the selected
+genome and recomputes the model. Copy/export preserve the same record; changing a
+parameter changes its identity. Missing solver results remain explicitly unavailable.
+
+The **GC skew** overlay exports the consumed sequence, window parameters, worker
+backend and numerical results in the same format. Its cumulative curve is a
+per-base G-minus-C count sampled at each window start, including that base;
+JavaScript fallback and WASM use the same convention. Genomes without G or C show
+an undefined result. The candidate coordinates are sequence heuristics, not
+experimentally identified replication sites.
+
+Record SHA-256 values identify canonical JSON content; they do not certify the
+underlying biology or authenticate the author. Records are limited to 10 MiB.
+The shared contract can describe observations, sequence scores, fitted estimates,
+simulations, demonstrations and unavailable values. Browser export is currently
+wired to AMG and GC skew; restoring an experiment is currently supported for AMG.
+Other overlays, TUI evidence display and complete action replay remain open work.
+
 ### Composable UI Primitives
 
 Overlays share 12+ reusable components:

@@ -1,5 +1,6 @@
 import React from 'react';
 import type { CSSProperties } from 'react';
+import type { AnalysisRecord } from '@phage-explorer/core';
 
 /**
  * Provenance badge: says where an overlay's numbers came from.
@@ -171,4 +172,26 @@ export function provenanceMeaning(level: ProvenanceLevel): string {
 
 export function provenanceLabel(level: ProvenanceLevel): string {
   return PROVENANCE_STYLES[level].label;
+}
+
+/** Field-level context from the same record that is copied or downloaded. */
+export function AnalysisRecordDetails({ record }: { record: AnalysisRecord }): React.ReactElement {
+  return <details aria-label="Analysis evidence and inputs" style={{ overflowWrap: 'anywhere', minWidth: 0 }}>
+    <summary>Experiment inputs and evidence</summary>
+    <p>{record.method.implementation} · method {record.method.id} version {record.method.version}</p>
+    <p>Exact input and parameter identity: <code>{record.cacheKey}</code></p>
+    <p>Checksums identify content; they do not validate the biological method.</p>
+    <ul>{record.inputs.map(input => <li key={input.id}>
+      {input.id}: {input.accession ?? input.source} · {input.description} <code>{input.sha256}</code>
+    </li>)}</ul>
+    <dl>{Object.entries(record.fields).map(([id, field]) => <React.Fragment key={id}>
+      <dt>{field.label}: <strong>{field.kind}</strong>{field.units && ` · ${field.units}`}</dt>
+      <dd>
+        Coverage: {field.coverage.available}/{field.coverage.total} {field.coverage.unit}.
+        {field.kind === 'unavailable' && <p>Unavailable: {field.missingInputs.join(' ')}</p>}
+        {(field.kind === 'demo' || field.kind === 'simulation') && <p>{field.assumptions.join(' ')}</p>}
+        <p>{field.limitations.join(' ')}</p>
+      </dd>
+    </React.Fragment>)}</dl>
+  </details>;
 }

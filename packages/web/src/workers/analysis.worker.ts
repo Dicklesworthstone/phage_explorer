@@ -22,6 +22,7 @@ import {
 } from '@phage-explorer/core/analysis/dense-kmer';
 import { gpuCompute } from './gpu/GPUCompute';
 import { getWasmCompute, getWasmComputeVariant } from '../lib/wasm-loader';
+import { createWorkerAnalysisRecord } from './analysis-evidence';
 import type {
   AnalysisRequest,
   AnalysisResult,
@@ -206,6 +207,7 @@ function calculateGCSkewJS(seq: string, windowSize: number, stepSize: number): G
   const skew: number[] = [];
   const cumulative: number[] = [];
   let cumSum = 0;
+  let cumulativeIndex = 0;
 
   for (let i = 0; i <= seq.length - safeWindow; i += safeStep) {
     const window = seq.slice(i, i + safeWindow);
@@ -217,7 +219,12 @@ function calculateGCSkewJS(seq: string, windowSize: number, stepSize: number): G
     const total = g + c;
     const skewVal = total > 0 ? (g - c) / total : 0;
     skew.push(skewVal);
-    cumSum += skewVal;
+    // Match the WASM per-base G-C prefix, sampled at this window's start.
+    while (cumulativeIndex <= i) {
+      const base = seq[cumulativeIndex++];
+      if (base === 'G' || base === 'g') cumSum++;
+      else if (base === 'C' || base === 'c') cumSum--;
+    }
     cumulative.push(cumSum);
   }
 
@@ -893,6 +900,7 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
   const skew: number[] = [];
   const cumulative: number[] = [];
   let cumSum = 0;
+  let cumulativeIndex = 0;
 
   const winSize = Math.max(1, Math.floor(windowSize));
   const stepSize = Math.max(1, Math.floor(winSize / 4));
@@ -920,7 +928,16 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
     const total = g + c;
     const skewVal = total > 0 ? (g - c) / total : 0;
     skew.push(skewVal);
-    cumSum += skewVal;
+    while (cumulativeIndex <= i) {
+      const base = bytes[cumulativeIndex++];
+      if (ref.encoding === 'ascii') {
+        if (base === 71 || base === 103) cumSum++;
+        else if (base === 67 || base === 99) cumSum--;
+      } else {
+        if (base === 2) cumSum++;
+        else if (base === 1) cumSum--;
+      }
+    }
     cumulative.push(cumSum);
   }
 
@@ -1106,7 +1123,7 @@ async function calculateComplexityFromRefWasm(ref: SequenceBytesRef, windowSize 
   return calculateComplexity(sequence, windowSize);
 }
 
-async function runAnalysisImpl(request: AnalysisRequest): Promise<AnalysisResult> {
+async function computeAnalysisResult(request: AnalysisRequest): Promise<AnalysisResult> {
   const { type, sequence, options = {} } = request;
 
   switch (type) {
@@ -1130,6 +1147,17 @@ async function runAnalysisImpl(request: AnalysisRequest): Promise<AnalysisResult
     }
     default:
       throw new Error(`Unknown analysis type: ${type}`);
+  }
+}
+
+async function runAnalysisImpl(request: AnalysisRequest): Promise<AnalysisResult> {
+  const result = await computeAnalysisResult(request);
+  if (!request.evidenceContext) return result;
+  try {
+    return { ...result, evidenceRecord: await createWorkerAnalysisRecord(result, request.sequence, request.options ?? {}, request.evidenceContext, 'string') };
+  } catch (error) {
+    // Export bounds must not disable a valid analysis of a large input.
+    return { ...result, evidenceError: error instanceof Error ? error.message : 'Could not preserve analysis evidence.' };
   }
 }
 
@@ -1288,19 +1316,23 @@ const workerAPI: SharedAnalysisWorkerAPI = {
   computePhasePortrait: computePhasePortraitImpl,
 
   async runAnalysisShared(request: SharedAnalysisRequest): Promise<AnalysisResult> {
+    let result: AnalysisResult;
     if (request.type === 'gc-skew') {
-      return calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize || 1000);
+      result = await calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize || 1000);
+    } else if (request.type === 'kmer-spectrum') {
+      result = await calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize || 4);
+    } else if (request.type === 'complexity') {
+      result = await calculateComplexityFromRefWasm(request.sequenceRef, request.options?.windowSize || 100);
+    } else {
+      // Some kernels require strings; keep the byte-backed hot paths above.
+      result = await computeAnalysisResult({ type: request.type, sequence: decodeSequenceRef(request.sequenceRef), options: request.options });
     }
-    if (request.type === 'kmer-spectrum') {
-      return calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize || 4);
+    if (!request.evidenceContext) return result;
+    try {
+      return { ...result, evidenceRecord: await createWorkerAnalysisRecord(result, decodeSequenceRef(request.sequenceRef), request.options ?? {}, request.evidenceContext, 'shared') };
+    } catch (error) {
+      return { ...result, evidenceError: error instanceof Error ? error.message : 'Could not preserve analysis evidence.' };
     }
-    if (request.type === 'complexity') {
-      return calculateComplexityFromRefWasm(request.sequenceRef, request.options?.windowSize || 100);
-    }
-
-    // Fall back to string-based implementations for remaining types (some rely on regex/string APIs).
-    const sequence = decodeSequenceRef(request.sequenceRef);
-    return runAnalysisImpl({ type: request.type, sequence, options: request.options });
   },
 
   async runAnalysisSharedWithProgress(

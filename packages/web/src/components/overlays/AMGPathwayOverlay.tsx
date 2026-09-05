@@ -5,12 +5,16 @@
  * Shows how phage genes may modulate host metabolism.
  */
 
-import React, { useMemo, useState, useEffect, useCallback } from 'react';
+import React, { useMemo, useState, useEffect, useCallback, useRef } from 'react';
 import {
   runAMGFluxAnalysis,
   runDeltaFbaForAmg,
   createStandardHostMetabolicModel,
   parseHostMetabolicModel,
+  createAMGFluxRecord,
+  restoreAMGFluxRecord,
+  serializeAnalysisRecord,
+  type AnalysisRecord,
   AMG_KNOWLEDGE_BASE,
   type PhageFull,
   type GeneInfo,
@@ -30,6 +34,8 @@ import {
 } from './primitives';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment } from './primitives/types';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { copyToClipboard, downloadString } from '../../utils/export';
 
 /**
  * The marker genes the pipeline's AMG scanner actually looks for.
@@ -112,6 +118,15 @@ export function AMGPathwayOverlay({
   const [hostModel, setHostModel] = useState(createStandardHostMetabolicModel);
   const [modelSource, setModelSource] = useState<'illustrative' | 'imported'>('illustrative');
   const [modelError, setModelError] = useState<string | null>(null);
+  const [experimentError, setExperimentError] = useState<string | null>(null);
+  const [experimentNotice, setExperimentNotice] = useState<string | null>(null);
+  const open = isOpen('amgPathway');
+  const activeInputs = useRef({ phage: currentPhage, hostModel, boostMultiplier, modelSource, open });
+  activeInputs.current = { phage: currentPhage, hostModel, boostMultiplier, modelSource, open };
+  const [experimentSnapshot, setExperimentSnapshot] = useState<{ record: AnalysisRecord; inputs: typeof activeInputs.current } | null>(null);
+  const experiment = experimentSnapshot?.inputs.phage === currentPhage && experimentSnapshot.inputs.hostModel === hostModel &&
+    experimentSnapshot.inputs.boostMultiplier === boostMultiplier && experimentSnapshot.inputs.modelSource === modelSource ? experimentSnapshot.record : null;
+  const importJob = useRef(0);
 
   const [amgs, setAmgs] = useState<AmgAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -147,27 +162,56 @@ export function AMGPathwayOverlay({
     });
   }, [fluxAnalysis, boostMultiplier, hostModel]);
 
-  const importModel = async (file: File | undefined) => {
+  useEffect(() => {
+    if (!open || activeTab !== 'flux') return;
+    let cancelled = false;
+    const inputs = activeInputs.current;
+    setExperimentSnapshot(null);
+    setExperimentError(null);
+    void createAMGFluxRecord(currentPhage, { boostFactor: boostMultiplier, hostModel, modelSource }).then(record => {
+      if (!cancelled) setExperimentSnapshot({ record, inputs });
+    }).catch(error => {
+      if (!cancelled) setExperimentError(error instanceof Error ? error.message : 'Could not preserve experiment inputs.');
+    });
+    return () => { cancelled = true; };
+  }, [currentPhage, hostModel, boostMultiplier, modelSource, activeTab, open]);
+
+  useEffect(() => () => { importJob.current++; }, []);
+  useEffect(() => { if (!open) importJob.current++; }, [open]);
+  useEffect(() => { setExperimentNotice(null); setModelError(null); }, [currentPhage]);
+
+  const importModel = async (file: File | undefined, restoreExperiment = false) => {
     if (!file) return;
+    const job = ++importJob.current;
+    const inputs = activeInputs.current;
+    const isCurrent = () => job === importJob.current && activeInputs.current.open && inputs.phage === activeInputs.current.phage &&
+      inputs.hostModel === activeInputs.current.hostModel && inputs.boostMultiplier === activeInputs.current.boostMultiplier && inputs.modelSource === activeInputs.current.modelSource;
     try {
-      if (file.size > 1_000_000) throw new Error('Model JSON must be smaller than 1 MB.');
-      const parsed = parseHostMetabolicModel(await file.text());
-      setHostModel(parsed);
-      setModelSource('imported');
+      if (file.size > (restoreExperiment ? 10 * 1024 * 1024 : 1_000_000)) throw new Error(restoreExperiment ? 'Experiment JSON must be smaller than 10 MiB.' : 'Model JSON must be smaller than 1 MB.');
+      const content = await file.text();
+      const restored = restoreExperiment ? await restoreAMGFluxRecord(content, inputs.phage) : null;
+      const model = restored?.hostModel ?? parseHostMetabolicModel(content);
+      if (!isCurrent()) return;
+      setHostModel(model);
+      setModelSource(restored?.modelSource ?? 'imported');
+      if (restored) setBoostMultiplier(restored.boostFactor);
       setModelError(null);
+      setExperimentNotice(restored ? 'Experiment inputs restored. Results are recomputed with the recorded parameters.' : null);
     } catch (error) {
+      if (!isCurrent()) return;
       setModelError(`${error instanceof Error ? error.message : 'Could not read model.'} Previous model retained.`);
     }
   };
 
-  const exportFlux = () => {
-    const blob = new Blob([JSON.stringify({ model: hostModel, modelSource, boostMultiplier, analysis: fluxAnalysis }, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'amg-flux.json';
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const exportFlux = async (copy = false) => {
+    if (!experiment) return;
+    try {
+      const content = serializeAnalysisRecord(experiment);
+      if (copy) { await copyToClipboard(content); setExperimentNotice('Experiment JSON copied.'); }
+      else downloadString(content, 'amg-flux.json', 'application/json');
+    } catch (error) {
+      setExperimentError(error instanceof Error ? error.message : 'Could not export the experiment.');
+    }
   };
 
   // Hotkey (Alt+A for AMG)
@@ -630,8 +674,8 @@ export function AMGPathwayOverlay({
                 <input
                   id="amg-boost-slider"
                   type="range"
-                  min="1.5"
-                  max="10.0"
+                  min={Math.min(1.5, boostMultiplier)}
+                  max={Math.max(10, boostMultiplier)}
                   step="0.5"
                   value={boostMultiplier}
                   onChange={(e) => setBoostMultiplier(parseFloat(e.target.value))}
@@ -647,10 +691,15 @@ export function AMGPathwayOverlay({
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
               <label>Import model JSON <input aria-label="Import model JSON" type="file" accept=".json,application/json" onChange={event => { void importModel(event.target.files?.[0]); event.target.value = ''; }} /></label>
+              <label>Restore experiment JSON <input aria-label="Restore experiment JSON" type="file" accept=".json,application/json" onChange={event => { void importModel(event.target.files?.[0], true); event.target.value = ''; }} /></label>
               <button type="button" onClick={() => { setHostModel(createStandardHostMetabolicModel()); setModelSource('illustrative'); setModelError(null); }}>Use teaching model</button>
-              <button type="button" onClick={exportFlux}>Export model and flux results</button>
+              <button type="button" disabled={!experiment} onClick={() => void exportFlux()}>Export model and flux results</button>
+              <button type="button" disabled={!experiment} onClick={() => void exportFlux(true)}>Copy experiment JSON</button>
             </div>
             {modelError && <div role="alert">{modelError}</div>}
+            {experimentError && <div role="alert">{experimentError}</div>}
+            {experimentNotice && <p role="status">{experimentNotice}</p>}
+            {experiment && <AnalysisRecordDetails record={experiment} />}
             <p style={{ fontSize: '0.8rem', color: colors.textMuted }}>
               {modelSource === 'illustrative'
                 ? 'Explore assumed reaction capacities in a teaching network, in arbitrary flux units. It combines reactions from different organisms and does not predict this phage’s host metabolism or measured fitness.'

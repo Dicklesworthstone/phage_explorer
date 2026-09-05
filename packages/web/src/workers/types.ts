@@ -23,6 +23,7 @@ import type {
   PCAResult,
   PhasePortraitResult,
   PhageFull,
+  AnalysisRecord,
 } from '@phage-explorer/core';
 import type { GenomeComparisonResult } from '@phage-explorer/comparison';
 
@@ -142,6 +143,7 @@ export interface AnalysisRequest {
   type: AnalysisType;
   sequence: string;
   options?: AnalysisOptions;
+  evidenceContext?: { accession: string | null; source: 'catalog' | 'local' };
 }
 
 /**
@@ -285,7 +287,7 @@ export interface TranscriptionFlowResult {
 /**
  * Union of all analysis results
  */
-export type AnalysisResult =
+export type AnalysisResult = (
   | GCSkewResult
   | ComplexityResult
   | BendabilityResult
@@ -293,7 +295,10 @@ export type AnalysisResult =
   | RepeatResult
   | CodonUsageResult
   | KmerSpectrumResult
-  | TranscriptionFlowResult;
+  | TranscriptionFlowResult) & {
+    evidenceRecord?: AnalysisRecord;
+    evidenceError?: string;
+  };
 
 /**
  * Progress callback for long-running operations
@@ -435,6 +440,7 @@ export interface SharedAnalysisRequest {
   /** Reference to shared sequence buffer (instead of string) */
   sequenceRef: SharedSequenceRef;
   options?: AnalysisOptions;
+  evidenceContext?: AnalysisRequest['evidenceContext'];
 }
 
 /**

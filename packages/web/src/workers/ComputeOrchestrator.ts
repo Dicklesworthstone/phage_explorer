@@ -378,7 +378,8 @@ export class ComputeOrchestrator {
     phageId: number,
     sequence: string,
     type: AnalysisType,
-    options?: AnalysisOptions
+    options?: AnalysisOptions,
+    evidenceContext?: AnalysisRequest['evidenceContext']
   ): Promise<AnalysisResult> {
     const { finish } = startOperation('analysis', type);
     const instance = await this.getAvailableWorker('analysis');
@@ -387,7 +388,7 @@ export class ComputeOrchestrator {
     try {
       const api = instance.api as SharedAnalysisWorkerAPI;
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
-      const request: SharedAnalysisRequest = { type, sequenceRef, options };
+      const request: SharedAnalysisRequest = { type, sequenceRef, options, evidenceContext };
 
       let result: AnalysisResult;
       if (transfer.length > 0) {

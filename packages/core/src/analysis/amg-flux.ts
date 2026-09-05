@@ -13,6 +13,7 @@
  */
 
 import type { PhageFull } from '../types';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisField, type AnalysisRecord } from '../analysis-result';
 
 export interface KOMapping {
   ko: string; // e.g. "K00525"
@@ -899,4 +900,90 @@ export function runAMGFluxAnalysis(
     topOverallImpactedSubsystem: topSubsystem,
     summary,
   };
+}
+
+const AMG_METHOD = { id: 'amg-bounded-fba', version: '2', implementation: 'JavaScript two-phase bounded simplex' } as const;
+const amgPhageInput = (phage: PhageFull | null) => analysisJson(phage ? {
+  id: phage.id, name: phage.name, accession: phage.accession,
+  genes: phage.genes.map(gene => ({ id: gene.id, name: gene.name, locusTag: gene.locusTag, product: gene.product,
+    startPos: gene.startPos, endPos: gene.endPos, strand: gene.strand, domains: gene.domains ?? [] })),
+} : null);
+const amgReferenceInput = () => analysisJson(AMG_KNOWLEDGE_BASE.map(({ namePattern, ...entry }) => ({
+  ...entry, namePattern: namePattern.source, patternFlags: namePattern.flags,
+})));
+
+/** Export the actual model experiment, with each numerical group retaining its meaning. */
+export async function createAMGFluxRecord(phage: PhageFull | null, options: {
+  boostFactor: number; hostModel: HostMetabolicModel; modelSource: 'illustrative' | 'imported';
+}): Promise<AnalysisRecord> {
+  const { boostFactor, hostModel, modelSource } = options;
+  const analysis = runAMGFluxAnalysis(phage, { boostFactor, hostModel });
+  const coverage = { available: analysis.detectedAmgs.length, total: phage?.genes.length ?? 0, unit: 'genes' as const };
+  const reactionCoverage = { available: analysis.baselineFba.status === 'optimal' ? hostModel.reactions.length : 0, total: hostModel.reactions.length, unit: 'reactions' as const };
+  const kind = modelSource === 'illustrative' ? 'demo' : 'simulation';
+  const units = modelSource === 'illustrative' ? 'arbitrary-flux' : 'model-flux';
+  const assumptions = ['Steady-state S·v = 0 with the supplied finite reaction bounds and objective.',
+    `Each matched AMG is tested independently by multiplying associated upper bounds by ${boostFactor}.`];
+  const limitations = ['Model objective flux is not measured growth, burst size or host fitness.',
+    modelSource === 'illustrative' ? 'The teaching network is uncalibrated and has arbitrary flux units.' : 'Importing a network does not establish its provenance, calibration or flux units.'];
+  const field = (label: string, value: unknown, fieldUnits: 'arbitrary-flux' | 'model-flux' | 'percent' = units): AnalysisField => ({
+    label, kind, value: analysisJson(value), units: fieldUnits, coverage: reactionCoverage, assumptions, limitations,
+  });
+  const fields: Record<string, AnalysisField> = {
+    annotationMatches: { label: 'Annotation marker matches', kind: 'sequence-score', units: 'records', value: analysisJson(analysis.detectedAmgs), coverage,
+      limitations: ['A bounded gene-name, product-name and supplied-domain rule set; no match does not establish absence of an AMG.',
+        'KO confidence values are rule weights, not calibrated probabilities. Positions are zero-based annotation coordinates.'] },
+    baselineObjective: analysis.baselineFba.status === 'optimal'
+      ? field('Baseline objective', analysis.baselineFba.objectiveValue)
+      : { label: 'Baseline objective', kind: 'unavailable', value: null, units: null, coverage: reactionCoverage,
+          limitations, missingInputs: [`A model with a solved feasible optimum; solver status: ${analysis.baselineFba.status}.`] },
+    baselineFluxes: analysis.baselineFba.status === 'optimal'
+      ? field('Baseline reaction fluxes', analysis.baselineFba.fluxes)
+      : { label: 'Baseline reaction fluxes', kind: 'unavailable', value: null, units: null, coverage: reactionCoverage,
+          limitations, missingInputs: [`A solved feasible optimum; solver status: ${analysis.baselineFba.status}.`] },
+    objectiveChanges: field('Individual AMG objective changes by gene ID', Object.fromEntries(analysis.amgResults.map(result => [String(result.amg.geneId), result.deltaObjective]))),
+    percentChanges: { ...field('Individual AMG percentage changes by gene ID', Object.fromEntries(analysis.amgResults.map(result => [String(result.amg.geneId), result.percentGain])), 'percent'),
+      limitations: [...limitations, 'Null means the baseline objective is zero, so percentage change is undefined.'] },
+    sumIndependentChanges: { ...field('Sum of separate objective changes', analysis.totalDeltaFlux),
+      limitations: [...limitations, 'This sum is not a jointly perturbed model; independent effects need not be additive.'] },
+  };
+  if (analysis.baselineFba.status !== 'optimal') {
+    for (const name of ['objectiveChanges', 'percentChanges', 'sumIndependentChanges']) fields[name] = {
+      label: fields[name].label, kind: 'unavailable', units: null, value: null, coverage: reactionCoverage,
+      limitations, missingInputs: [`A baseline feasible optimum; solver status: ${analysis.baselineFba.status}.`],
+    };
+  }
+  if (analysis.failedAmgs.length > 0) fields.failedPerturbations = {
+    label: 'Unsolved AMG perturbations', kind: 'unavailable', units: null, value: null, coverage: {
+      available: analysis.amgResults.length, total: analysis.detectedAmgs.length, unit: 'genes',
+    }, limitations: ['Failed solves are excluded from objective changes, not treated as zero effects.'],
+    missingInputs: analysis.failedAmgs.map(result => `Solved feasible optimum for gene ${result.amg.geneId}; solver status: ${result.status}.`),
+  };
+  return createAnalysisRecord({ method: AMG_METHOD, inputs: [
+    { id: 'annotations', accession: phage?.accession ?? null, source: phage?.localGenome ? 'local' : 'catalog',
+      description: 'Exact selected gene annotations consumed by marker detection; nucleotide sequence is not an input to this method.', data: amgPhageInput(phage) },
+    { id: 'metabolic-model', accession: hostModel.id, source: modelSource === 'illustrative' ? 'demo' : 'local',
+      description: hostModel.description || hostModel.name, data: analysisJson(hostModel) },
+    { id: 'marker-rules', accession: null, source: 'catalog', description: 'Exact marker patterns, KO rule weights and mapped reactions.', data: amgReferenceInput() },
+  ], parameters: { boostFactor, modelSource }, seed: null,
+    references: [{ id: 'amg-marker-rules', version: '2026-09-05', description: 'Bundled rule mapping; exact content is included as an input.' }], fields });
+}
+
+/** Restore only an experiment whose actual annotation and rule inputs match this runtime. */
+export async function restoreAMGFluxRecord(content: string, phage: PhageFull | null): Promise<{
+  record: AnalysisRecord; hostModel: HostMetabolicModel; boostFactor: number; modelSource: 'illustrative' | 'imported';
+}> {
+  const record = await parseAnalysisRecord(content, { methodId: AMG_METHOD.id, methodVersion: AMG_METHOD.version });
+  const annotations = record.inputs.find(input => input.id === 'annotations');
+  if (!annotations || JSON.stringify(analysisJson(annotations.data)) !== JSON.stringify(amgPhageInput(phage))) {
+    throw new Error('This experiment uses different gene annotations. Select its original genome before restoring it.');
+  }
+  const rules = record.inputs.find(input => input.id === 'marker-rules');
+  if (!rules || JSON.stringify(analysisJson(rules.data)) !== JSON.stringify(amgReferenceInput())) throw new Error('This experiment uses incompatible marker rules.');
+  const model = record.inputs.find(input => input.id === 'metabolic-model');
+  const source = record.parameters.modelSource;
+  const boost = record.parameters.boostFactor;
+  if (!model || source !== 'illustrative' && source !== 'imported' || typeof boost !== 'number' || !Number.isFinite(boost) || boost <= 0 || boost > 100) throw new Error('Invalid model experiment parameters.');
+  if ((source === 'illustrative') !== (model.source === 'demo')) throw new Error('Model source and evidence classification disagree.');
+  return { record, hostModel: parseHostMetabolicModel(JSON.stringify(model.data)), boostFactor: boost, modelSource: source };
 }

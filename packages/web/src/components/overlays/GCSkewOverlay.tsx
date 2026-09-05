@@ -7,7 +7,7 @@
  */
 
 import React, { useEffect, useRef, useState } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import { serializeAnalysisRecord, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -29,7 +29,9 @@ import {
 import { ChartOverlaySkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
 import { getOrchestrator } from '../../workers/ComputeOrchestrator';
-import type { GCSkewResult } from '../../workers/types';
+import type { AnalysisResult } from '../../workers/types';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
 
 interface GCSkewOverlayProps {
   repository: PhageRepository | null;
@@ -44,11 +46,13 @@ export function GCSkewOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const sequenceCache = useRef<Map<number, { phage: PhageFull; repository: PhageRepository; sequence: string }>>(new Map());
   const [sequence, setSequence] = useState<string>('');
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [result, setResult] = useState<GCSkewResult | null>(null);
+  const [resultSnapshot, setResultSnapshot] = useState<{ phage: PhageFull; sequence: string; repository: PhageRepository | null; data: Extract<AnalysisResult, { type: 'gc-skew' }> } | null>(null);
+  const result = resultSnapshot?.phage === currentPhage && resultSnapshot?.sequence === sequence && resultSnapshot?.repository === repository ? resultSnapshot.data : null;
+  const [exportError, setExportError] = useState<string | null>(null);
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('gcSkew');
 
@@ -64,7 +68,7 @@ export function GCSkewOverlay({
     if (!isOpen('gcSkew')) return;
     if (!repository || !currentPhage) {
       setSequence('');
-      setResult(null);
+      setResultSnapshot(null);
       setSequenceLoading(false);
       setAnalysisLoading(false);
       return;
@@ -73,8 +77,9 @@ export function GCSkewOverlay({
     const phageId = currentPhage.id;
 
     // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
+    const cached = sequenceCache.current.get(currentPhage.id);
+    if (cached?.phage === currentPhage && cached.repository === repository) {
+      setSequence(cached.sequence);
       setSequenceLoading(false);
       return;
     }
@@ -86,7 +91,7 @@ export function GCSkewOverlay({
       .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
+        sequenceCache.current.set(currentPhage.id, { phage: currentPhage, repository, sequence: seq });
         setSequence(seq);
       })
       .catch(() => {
@@ -108,11 +113,12 @@ export function GCSkewOverlay({
     if (!currentPhage) return;
 
     if (!sequence) {
-      setResult(null);
+      setResultSnapshot(null);
       setAnalysisLoading(false);
       return;
     }
-    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
+    const cached = sequenceCache.current.get(currentPhage.id);
+    if (cached?.phage !== currentPhage || cached.repository !== repository || cached.sequence !== sequence) {
       return;
     }
 
@@ -125,14 +131,16 @@ export function GCSkewOverlay({
           currentPhage.id,
           sequence,
           'gc-skew',
-          { windowSize: 500 }
-        ) as GCSkewResult;
+          { windowSize: 500 },
+          { accession: currentPhage.accession, source: currentPhage.localGenome ? 'local' : 'catalog' }
+        );
 
         if (cancelled) return;
-        setResult(data);
+        if (data.type !== 'gc-skew') throw new Error('Unexpected analysis result.');
+        setResultSnapshot({ phage: currentPhage, sequence, repository, data });
       } catch {
         if (cancelled) return;
-        setResult(null);
+        setResultSnapshot(null);
       } finally {
         if (!cancelled) setAnalysisLoading(false);
       }
@@ -141,7 +149,7 @@ export function GCSkewOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentPhage, sequence]);
+  }, [isOpen, currentPhage, repository, sequence]);
 
   // Draw the sparkline
   useEffect(() => {
@@ -190,7 +198,7 @@ export function GCSkewOverlay({
     ctx.lineWidth = 2;
 
     for (let i = 0; i < vals.length; i++) {
-      const x = (i / (vals.length - 1)) * width;
+      const x = ((i * 125) / sequence.length) * width;
       const normalized = vals[i] / range;
       const y = height / 2 - normalized * (height / 2 - 10);
 
@@ -210,13 +218,7 @@ export function GCSkewOverlay({
     if (result.originPosition !== undefined) {
       const oriBp = result.originPosition;
       const x = (oriBp / len) * width;
-      // Find y for marker - interpolate from cumulative array?
-      // Or just map cumulative value at that BP index?
-      // The cumulative array is sampled.
-      // Let's just find Y from the array index corresponding to BP.
-      // Array size is ~ len / stepSize.
-      // Simple approximation:
-      const idx = Math.floor((oriBp / len) * (vals.length - 1));
+      const idx = Math.round(oriBp / 125);
       const val = vals[idx] ?? 0;
       const normalized = val / range;
       const y = height / 2 - normalized * (height / 2 - 10);
@@ -227,7 +229,7 @@ export function GCSkewOverlay({
     if (result.terminusPosition !== undefined) {
       const terBp = result.terminusPosition;
       const x = (terBp / len) * width;
-      const idx = Math.floor((terBp / len) * (vals.length - 1));
+      const idx = Math.round(terBp / 125);
       const val = vals[idx] ?? 0;
       const normalized = val / range;
       const y = height / 2 - normalized * (height / 2 - 10);
@@ -257,8 +259,9 @@ export function GCSkewOverlay({
   const genomeLength = sequence.length;
 
   const isLoading = sequenceLoading || analysisLoading;
-  const hasData = result && result.cumulative.length >= 2;
-  const isEmpty = !isLoading && (sequence.length === 0 || !result || result.cumulative.length < 2);
+  const hasGc = /[GC]/i.test(sequence);
+  const hasData = result && result.cumulative.length >= 2 && hasGc;
+  const isEmpty = !isLoading && (sequence.length === 0 || !result || result.cumulative.length < 2 || !hasGc);
 
   return (
     <Overlay
@@ -268,6 +271,16 @@ export function GCSkewOverlay({
       size="lg"
     >
       <OverlayStack>
+        {result?.evidenceRecord && <>
+          <button type="button" onClick={() => {
+            try {
+              downloadString(serializeAnalysisRecord(result.evidenceRecord!), 'gc-skew-analysis.json', 'application/json');
+              setExportError(null);
+            } catch (error) { setExportError(error instanceof Error ? error.message : 'Could not export analysis.'); }
+          }}>Export GC skew experiment</button>
+          <AnalysisRecordDetails record={result.evidenceRecord} />
+        </>}
+        {(result?.evidenceError || exportError) && <p role="alert">{result?.evidenceError ?? exportError}</p>}
         {/* Loading State */}
         {isLoading && (
           <OverlayLoadingState message={sequenceLoading ? "Loading sequence data..." : "Computing GC skew..."}>
@@ -393,7 +406,8 @@ export function GCSkewOverlay({
           <OverlayEmptyState
             message={sequence.length === 0
               ? 'No sequence data available.'
-              : 'Sequence too short for GC skew analysis (requires > 1000 bp).'}
+              : !hasGc ? 'GC skew is undefined: this sequence has no G or C bases.'
+              : 'Two complete 500 bp windows at 125 bp spacing require at least 625 bp.'}
             hint={sequence.length === 0 ? 'Select a phage to analyze.' : undefined}
           />
         )}

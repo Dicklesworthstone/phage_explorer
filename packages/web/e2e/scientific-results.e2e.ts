@@ -2,6 +2,117 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { setupTestHarness } from './e2e-harness';
+import { parseAnalysisRecord } from '../../core/src/analysis-result';
+
+for (const backend of ['wasm', 'javascript'] as const) test(`GC skew experiment preserves actual worker counts and source under ${backend}`, async ({ page, baseURL }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  let disabledWasmWorkers = 0;
+  let workerUrl = '';
+  page.on('request', request => {
+    if (/\/assets\/analysis\.worker-[^/]+\.js$/.test(request.url())) workerUrl = request.url();
+  });
+  if (backend === 'javascript') {
+    await page.route(/\/assets\/analysis\.worker-[^/]+\.js$/, async route => {
+      const response = await route.fetch();
+      const body = await response.text();
+      disabledWasmWorkers++;
+      await route.fulfill({ response, body: `WebAssembly.instantiate = async () => { throw new Error('Controlled worker WASM initialization failure'); };\n${body}` });
+    });
+  }
+  try {
+    await catalog(page, baseURL!);
+    await page.keyboard.press('Control+k');
+    const palette = page.getByTestId('overlay-commandPalette');
+    await palette.getByRole('combobox').fill('Local genomes: import or export');
+    await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).first().click();
+    const importer = page.getByTestId('overlay-genomeImport');
+    const sequence = 'G'.repeat(500) + 'C'.repeat(500) + 'ATN'.repeat(100);
+    await importer.getByRole('textbox', { name: 'Paste genome data' }).fill(`>GC_PREFIX_ORACLE\n${sequence}\n>NO_GC_ORACLE\n${'ATN'.repeat(300)}\n`);
+    await importer.getByRole('button', { name: 'Parse records', exact: true }).click();
+    await importer.getByRole('button', { name: 'Add records to explorer' }).click();
+    await page.keyboard.press('Escape');
+    // Import selects the first record; it already has the selected test ID.
+    await expect(page.getByTestId('phage-list-item-selected')).toContainText('GC_PREFIX_ORACLE');
+    await page.keyboard.press('g');
+    const overlay = page.getByTestId('overlay-gcSkew');
+    const download = async () => {
+      const pending = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export GC skew experiment' }).click();
+      const stream = await (await pending).createReadStream();
+      if (!stream) throw new Error('No GC experiment download');
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      return parseAnalysisRecord(Buffer.concat(chunks).toString('utf8'));
+    };
+    const record = await download();
+    expect(record.inputs[0].source).toBe('local');
+    expect(record.inputs[0].accession).toBe('GC_PREFIX_ORACLE');
+    expect(record.inputs[0].data).toBe(sequence);
+    expect(record.inputs[0].sha256).toBe(createHash('sha256').update(JSON.stringify(sequence)).digest('hex'));
+    expect(record.parameters).toMatchObject({ windowSize: 500, stepSize: 125 });
+    // Independent hand-derived prefixes at 0,125,...,750 (inclusive).
+    // First 500 bases add G; the next 500 subtract C.
+    expect(record.fields.cumulative.value).toEqual([1, 126, 251, 376, 499, 374, 249]);
+    expect(record.fields.skew.value).toEqual([1, 0.5, 0, -0.5, -1, -1, -1]);
+    expect(record.fields.cumulative.units).toBe('count');
+    expect(record.fields.originPosition.value).toBe(0);
+    expect(record.fields.terminusPosition.value).toBe(500);
+    // The maximum prefix is 499 at 500 bp, so its marker belongs at the
+    // top of the plotted curve (10 CSS px), not a stretched sample index.
+    const marker = await overlay.getByRole('img', { name: 'GC skew graph showing cumulative nucleotide bias across genome position' }).evaluate(element => {
+      const canvas = element as HTMLCanvasElement;
+      const dpr = canvas.width / canvas.clientWidth;
+      const actual = Array.from(canvas.getContext('2d')!.getImageData(Math.round(canvas.clientWidth * 500 / 1300 * dpr), Math.round(10 * dpr), 1, 1).data);
+      const colorProbe = document.createElement('canvas');
+      const context = colorProbe.getContext('2d')!;
+      context.fillStyle = getComputedStyle(canvas).getPropertyValue('--color-success').trim();
+      context.fillRect(0, 0, 1, 1);
+      return { actual, expected: Array.from(context.getImageData(0, 0, 1, 1).data) };
+    });
+    expect(marker.actual).toEqual(marker.expected);
+    expect(record.method.implementation).toMatch(backend === 'javascript' ? /^js$/ : /^wasm-(simd|baseline)$/);
+    if (backend === 'javascript') expect(disabledWasmWorkers).toBeGreaterThan(0);
+    // Exercise the other production entry point too. This is Comlink 4's
+    // wire shape read from the installed runtime, not a test solver.
+    expect(workerUrl).not.toBe('');
+    const direct = await page.evaluate(async ({ url, sequence }) => {
+      const worker = new Worker(url, { type: 'module' });
+      try {
+        return await new Promise<any>((resolve, reject) => {
+          worker.onerror = event => reject(new Error(event.message));
+          worker.onmessage = event => {
+            if (event.data.id !== 'gc-string-oracle') return;
+            if (event.data.type !== 'RAW') reject(new Error(JSON.stringify(event.data)));
+            else resolve(event.data.value);
+          };
+          worker.postMessage({ id: 'gc-string-oracle', type: 'APPLY', path: ['runAnalysis'], argumentList: [{ type: 'RAW', value: {
+            type: 'gc-skew', sequence: sequence.toLowerCase(), options: { windowSize: 500 },
+            evidenceContext: { accession: 'GC_PREFIX_ORACLE', source: 'local' },
+          } }] });
+        });
+      } finally { worker.terminate(); }
+    }, { url: workerUrl, sequence });
+    const stringRecord = await parseAnalysisRecord(JSON.stringify(direct.evidenceRecord));
+    expect(stringRecord.inputs[0].data).toBe(sequence.toLowerCase());
+    expect(stringRecord.parameters.route).toBe('string');
+    expect(stringRecord.fields).toEqual(record.fields);
+    expect(stringRecord.method.implementation).toBe(record.method.implementation);
+    await overlay.getByText('Experiment inputs and evidence', { exact: true }).click();
+    await expect(overlay.getByLabel('Analysis evidence and inputs')).toContainText(record.cacheKey);
+    await info.attach(`gc-prefix-${backend}`, { body: JSON.stringify(record), contentType: 'application/json' });
+
+    await page.keyboard.press('Escape');
+    await page.getByTestId('phage-list-item').filter({ hasText: 'NO_GC_ORACLE' }).click();
+    await page.keyboard.press('g');
+    await expect(overlay).toContainText('GC skew is undefined');
+    const missing = await download();
+    expect(missing.inputs[0].accession).toBe('NO_GC_ORACLE');
+    expect(missing.cacheKey).not.toBe(record.cacheKey);
+    expect(missing.fields.originPosition).toMatchObject({ kind: 'unavailable', value: null });
+    expect(missing.fields.skew).toMatchObject({ kind: 'unavailable', value: null });
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
 
 test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
 

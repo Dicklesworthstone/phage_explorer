@@ -11,7 +11,41 @@ import {
   type AMGDetection,
   type FBAStatus,
   parseHostMetabolicModel,
+  createAMGFluxRecord,
+  restoreAMGFluxRecord,
 } from './amg-flux';
+import { importLocalGenomes } from '../genome-import';
+import { serializeAnalysisRecord } from '../analysis-result';
+
+describe('reproducible AMG model experiment', () => {
+  it('preserves real annotations, model, parameters and numerical fields across restoration', async () => {
+    const { genomes } = await importLocalGenomes({ name: 'amg.gb', text: 'LOCUS       AMG 9 bp DNA linear\nFEATURES             Location/Qualifiers\n     CDS             1..9\n                     /gene="nrdA"\nORIGIN\n        1 atgaaatag\n//\n' });
+    const phage = genomes[0].phage;
+    const model = { id: 'exact-five', name: 'Five-unit optimum', description: 'Controlled source=sink model', metabolites: ['a'], objectiveReaction: 'sink', reactions: [
+      { id: 'source', name: 'Source', subsystem: 'Exchange', stoichiometry: { a: 1 }, lowerBound: 2, upperBound: 5, reversible: false, koIds: [] },
+      { id: 'sink', name: 'Sink', subsystem: 'Exchange', stoichiometry: { a: -1 }, lowerBound: 1, upperBound: 10, reversible: false, koIds: [] },
+    ] };
+    const record = await createAMGFluxRecord(phage, { hostModel: model, boostFactor: 3, modelSource: 'imported' });
+    expect(record.fields.baselineObjective).toMatchObject({ kind: 'simulation', value: 5, units: 'model-flux' });
+    expect(record.fields.baselineFluxes.value).toEqual({ source: 5, sink: 5 });
+    expect(record.fields.annotationMatches).toMatchObject({ kind: 'sequence-score', coverage: { available: 1, total: 1 } });
+    expect(record.inputs[0].source).toBe('local');
+    const restored = await restoreAMGFluxRecord(serializeAnalysisRecord(record), phage);
+    expect(restored.hostModel).toEqual(model);
+    const repeated = await createAMGFluxRecord(phage, restored);
+    expect(repeated).toEqual(record);
+    await expect(restoreAMGFluxRecord(serializeAnalysisRecord(record), { ...phage, accession: 'DIFFERENT' })).rejects.toThrow('different gene annotations');
+    const teaching = await createAMGFluxRecord(phage, { hostModel: createStandardHostMetabolicModel(), boostFactor: 5, modelSource: 'illustrative' });
+    expect(teaching.fields.baselineObjective.kind).toBe('demo');
+    expect(teaching.fields.baselineObjective.units).toBe('arbitrary-flux');
+    model.reactions[0].lowerBound = 6;
+    const failure = await createAMGFluxRecord(phage, { hostModel: model, boostFactor: 3, modelSource: 'imported' });
+    for (const name of ['baselineObjective', 'baselineFluxes', 'objectiveChanges', 'percentChanges', 'sumIndependentChanges']) {
+      expect(failure.fields[name]).toMatchObject({ kind: 'unavailable', value: null, units: null });
+    }
+    expect(failure.fields.baselineObjective.kind === 'unavailable' && failure.fields.baselineObjective.missingInputs.join()).toContain('infeasible');
+  });
+});
 
 describe('FBA numerical contract', () => {
   const cases: Array<{ name: string; S: number[][]; lb: number[]; ub: number[]; c: number[]; status: FBAStatus; objective: number | null }> = [
