@@ -838,7 +838,7 @@ export class DatabaseLoader {
   /**
    * Load the database (from cache or network)
    */
-  async load(): Promise<PhageRepository> {
+  async load(options: { forceDownload?: boolean } = {}): Promise<PhageRepository> {
     if (this.repository) {
       return this.repository;
     }
@@ -857,7 +857,9 @@ export class DatabaseLoader {
     try {
       // Check cache first
       this.timing.startStage('cacheCheck');
-      const cacheStatus = await this.checkCache();
+      const cacheStatus: Awaited<ReturnType<DatabaseLoader['checkCache']>> = options.forceDownload
+        ? { valid: false }
+        : await this.checkCache();
       this.timing.endStage('cacheCheck');
 
       if (cacheStatus.valid && cacheStatus.entry) {

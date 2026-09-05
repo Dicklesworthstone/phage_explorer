@@ -113,6 +113,7 @@ export default function App(): React.ReactElement {
   const {
     repository,
     isLoading,
+    isFetching,
     progress,
     error,
     isCached,
@@ -1436,7 +1437,7 @@ export default function App(): React.ReactElement {
         </>
       )}
       <TourEngine />
-      <OverlayManager repository={repository} currentPhage={currentPhage} />
+      <OverlayManager repository={repository} currentPhage={currentPhage} reloadDatabase={reload} databaseFetching={isFetching} />
       {/* All toasts (beginner mode, fx safe mode, blocked hotkey) rendered via ToastProvider */}
       <BlockedHotkeyToast info={blockedHotkey} onDismiss={dismissBlockedHotkey} showToast={showToast} />
       <ControlDeck onPrevPhage={handlePrevPhage} onNextPhage={handleNextPhage} />

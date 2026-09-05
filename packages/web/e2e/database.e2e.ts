@@ -257,6 +257,33 @@ test('verified cached catalog remains usable when the database origin is unavail
   }
 });
 
+test('Settings refresh reports corruption and preserves the verified cache for recovery', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    const original = await cachedIdentity(page);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    const descriptor = await (await page.request.get('/phage.db.manifest.json')).json();
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...descriptor, sha256: '0'.repeat(64) } }));
+    await page.getByTestId('header-settings-btn').click();
+    const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
+    await settings.getByRole('button', { name: 'Reload database from server', exact: true }).click();
+    await expect(settings).toContainText('Failed to reload database. Check your connection.');
+    expect(await cachedIdentity(page)).toEqual(original);
+    await expectCatalog(page);
+    await page.unroute('**/phage.db.manifest.json');
+    await Promise.all([
+      page.waitForEvent('domcontentloaded'),
+      settings.getByRole('button', { name: 'Reload database from server', exact: true }).click(),
+    ]);
+    await expectCatalog(page);
+    expect(await cachedIdentity(page)).toEqual(original);
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 test('missing gzip falls back to matching raw SQLite and exposes the shipped atlas', async ({ page }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   let rawDownloads = 0;

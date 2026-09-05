@@ -131,6 +131,8 @@ const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvena
 const PangenomeGraphOverlay = lazy(() => import('./PangenomeGraphOverlay').then(m => ({ default: m.PangenomeGraphOverlay })));
 
 interface OverlayManagerProps {
+  reloadDatabase: () => Promise<void>;
+  databaseFetching: boolean;
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
 }
@@ -305,7 +307,7 @@ function LazyOverlayBoundary({
   );
 }
 
-export function OverlayManager({ repository, currentPhage }: OverlayManagerProps): React.ReactElement | null {
+export function OverlayManager({ repository, currentPhage, reloadDatabase, databaseFetching }: OverlayManagerProps): React.ReactElement | null {
   const { stack } = useOverlay();
 
   const lazyOverlays = stack
@@ -330,7 +332,7 @@ export function OverlayManager({ repository, currentPhage }: OverlayManagerProps
       <EagerOverlayBoundary id="goto"><GotoOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaKey"><AAKeyOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaLegend"><AALegend /></EagerOverlayBoundary>
-      <EagerOverlayBoundary id="settings"><SettingsOverlay /></EagerOverlayBoundary>
+      <EagerOverlayBoundary id="settings"><SettingsOverlay reloadDatabase={reloadDatabase} databaseFetching={databaseFetching} /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="commandPalette"><CommandPalette /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="tour"><FeatureTour /></EagerOverlayBoundary>
 

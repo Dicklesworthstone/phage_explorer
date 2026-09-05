@@ -31,6 +31,7 @@ export function useDatabaseQuery(
   const loaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
   const inFlightLoaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
   const loadGenerationRef = useRef(0);
+  const forceDownloadRef = useRef(false);
 
   const query = useQuery<PhageRepository>({
     queryKey: ['database', databaseUrl],
@@ -57,7 +58,7 @@ export function useDatabaseQuery(
       setIsCached(false);
 
       try {
-        const repository = await nextLoader.load();
+        const repository = await nextLoader.load({ forceDownload: forceDownloadRef.current });
         if (generation !== loadGenerationRef.current) {
           await nextLoader.close().catch(() => {});
           throw new Error('Database load superseded by a newer request');
@@ -100,16 +101,16 @@ export function useDatabaseQuery(
   }, [query.refetch]);
 
   const reload = useCallback(async () => {
-    const loaders = [loaderRef.current, inFlightLoaderRef.current].filter(
-      (loader, index, all): loader is ReturnType<typeof createDatabaseLoader> =>
-        loader !== null && all.indexOf(loader) === index
-    );
-
-    for (const loader of loaders) {
-      await loader.clearCache().catch(() => {});
+    // Keep the verified snapshot until its replacement passes integrity checks.
+    // Hold this flag through query retries, so a failed forced refresh cannot
+    // silently become a successful load of the old cached data.
+    forceDownloadRef.current = true;
+    try {
+      const result = await query.refetch({ cancelRefetch: true });
+      if (result.error) throw result.error;
+    } finally {
+      forceDownloadRef.current = false;
     }
-
-    await query.refetch({ cancelRefetch: true });
   }, [query.refetch]);
 
   return {

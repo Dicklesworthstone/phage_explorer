@@ -11,10 +11,14 @@ import {
   getEffectiveScanlines,
   useWebPreferences,
 } from '../../store/createWebStore';
-import { useDatabase } from '../../hooks/useDatabase';
 import { IconContrast, IconLearn, IconSettings, IconDatabase } from '../ui';
 
-export function SettingsOverlay(): React.ReactElement | null {
+export interface SettingsOverlayProps {
+  reloadDatabase: () => Promise<void>;
+  databaseFetching: boolean;
+}
+
+export function SettingsOverlay({ reloadDatabase, databaseFetching }: SettingsOverlayProps): React.ReactElement | null {
   const { close } = useOverlay();
   const { theme, setTheme, availableThemes } = useTheme();
   const reducedMotion = useReducedMotion();
@@ -49,7 +53,6 @@ export function SettingsOverlay(): React.ReactElement | null {
   const effectiveScanlines = getEffectiveScanlines(scanlines, { reducedMotion, coarsePointer, safeMode: fxSafeMode });
   const effectiveGlow = getEffectiveGlow(glow, { reducedMotion, coarsePointer, safeMode: fxSafeMode });
 
-  const { reload, isFetching } = useDatabase();
   const [reloadStatus, setReloadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
 
   const {
@@ -69,7 +72,7 @@ export function SettingsOverlay(): React.ReactElement | null {
   const handleReloadDatabase = async () => {
     setReloadStatus('loading');
     try {
-      await reload();
+      await reloadDatabase();
       setReloadStatus('success');
       // Reload the page to reinitialize with fresh data
       setTimeout(() => {
@@ -313,10 +316,10 @@ export function SettingsOverlay(): React.ReactElement | null {
                 type="button"
                 className="btn"
                 onClick={handleReloadDatabase}
-                disabled={reloadStatus === 'loading' || isFetching}
+                disabled={reloadStatus === 'loading' || databaseFetching}
                 aria-label="Reload database from server"
               >
-                {reloadStatus === 'loading' || isFetching ? 'Reloading...' : 'Reload Database'}
+                {reloadStatus === 'loading' || databaseFetching ? 'Reloading...' : 'Reload Database'}
               </button>
             </div>
           </div>
