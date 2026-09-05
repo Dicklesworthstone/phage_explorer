@@ -259,7 +259,12 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Actions
   const nextPhage = usePhageStore(s => s.nextPhage);
   const prevPhage = usePhageStore(s => s.prevPhage);
-  const scrollBy = usePhageStore(s => s.scrollBy);
+  const scrollBy = React.useCallback((delta: number) => {
+    const state = usePhageStore.getState();
+    const bases = state.currentPhage?.genomeLength ?? 0;
+    const positions = state.viewMode === 'aa' ? Math.ceil(bases / 3) : bases;
+    state.setScrollPosition(Math.min(Math.max(0, positions - 1), Math.max(0, state.scrollPosition + delta)));
+  }, []);
   const scrollToStart = usePhageStore(s => s.scrollToStart);
   const scrollToEnd = usePhageStore(s => s.scrollToEnd);
   const setScrollPosition = usePhageStore(s => s.setScrollPosition);
@@ -319,7 +324,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       // 1) Prefer DB-backed embeddings when the table exists and is populated.
       if (repository.getFoldEmbeddings) {
         const perPhage = await Promise.all(
-          phages.map((p) => repository.getFoldEmbeddings?.(p.id, FOLD_EMBEDDING_MODEL) ?? Promise.resolve([]))
+          phages.filter(p => !p.localGenome).map((p) => repository.getFoldEmbeddings?.(p.id, FOLD_EMBEDDING_MODEL) ?? Promise.resolve([]))
         );
         const flattened = perPhage.flat();
         if (flattened.length > 0) {
@@ -332,6 +337,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       // 2) Fallback: compute lightweight embeddings on demand from sequences.
       const computed: FoldEmbedding[] = [];
       for (const phage of phages) {
+        if (phage.localGenome) continue;
         const perPhage = await computeEmbeddingsForPhage({
           repository,
           phageId: phage.id,
@@ -355,13 +361,14 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Load fold embeddings corpus on-demand when Fold Quickview opens.
   useEffect(() => {
     if (activeOverlay !== 'foldQuickview') return;
+    if (currentPhage?.localGenome) return;
     if (foldEmbeddings.length > 0) return;
     if (foldCorpusLoading) return;
     if (foldCorpus.length > 0) return;
     if (phages.length === 0) return;
     if (foldCorpusError) return;
     void loadFoldCorpus();
-  }, [activeOverlay, foldEmbeddings.length, foldCorpus.length, foldCorpusError, foldCorpusLoading, loadFoldCorpus, phages.length]);
+  }, [activeOverlay, currentPhage, foldEmbeddings.length, foldCorpus.length, foldCorpusError, foldCorpusLoading, loadFoldCorpus, phages.length]);
 
   // Update terminal size
   useEffect(() => {
@@ -385,16 +392,18 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Load phage list on mount
   useEffect(() => {
+    let cancelled = false;
     const loadPhages = async () => {
       try {
         const list = await repository.listPhages();
-        setPhages(list);
+        if (!cancelled) setPhages(list);
       } catch (err) {
-        setError(`Failed to load phages: ${err}`);
+        if (!cancelled) setError(`Failed to load phages: ${err}`);
       }
     };
 
     loadPhages();
+    return () => { cancelled = true; };
   }, [repository, setPhages, setError]);
 
   // Preload reference sketches (lightweight sampled genomes) for donor inference in HGT tracer
@@ -442,20 +451,30 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Load current phage data when index changes
   useEffect(() => {
     if (phages.length === 0) return;
+    const selectedId = phages[currentPhageIndex]?.id;
+    if (selectedId === undefined) return;
+    let cancelled = false;
+    const isStale = () => {
+      const state = usePhageStore.getState();
+      return cancelled || state.phages[state.currentPhageIndex]?.id !== selectedId;
+    };
 
     const loadPhage = async () => {
       setLoadingPhage(true);
       setAnalysisProgress('Loading sequence...');
       setStructureReport(null);
+      usePhageStore.setState({ overlayData: {} });
       try {
-        const phage = await repository.getPhageByIndex(currentPhageIndex);
-        setCurrentPhage(phage);
+        const phage = await repository.getPhageById(selectedId);
+        if (isStale()) return;
 
         // Load sequence
         if (phage) {
           const length = await repository.getFullGenomeLength(phage.id);
           const seq = await repository.getSequenceWindow(phage.id, 0, length);
+          if (isStale()) return;
           setSequence(seq);
+          setCurrentPhage(phage);
           
           // Check cache
           const seqHash = hashSeq(seq);
@@ -466,7 +485,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
              overlayCacheRef.current.delete(phage.id);
              overlayCacheRef.current.set(phage.id, cache);
              
-             setOverlayData(cache.data);
+             usePhageStore.setState({ overlayData: cache.data });
              setStructureReport(cache.data[STRUCTURE_ID] as StructuralConstraintReport ?? null);
              setAnalysisProgress('');
              setLoadingPhage(false);
@@ -474,7 +493,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
              // Start incremental analysis
              setLoadingPhage(false); // Allow UI to render sequence
              const partialData: any = {};
-             setOverlayData(partialData); // Clear old data
              
              const analyses = [
                { id: 'gcSkew', label: 'GC Skew', fn: () => computeGCskew(seq) },
@@ -511,9 +529,11 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
              ];
 
              for (const job of analyses) {
+               if (isStale()) return;
                setAnalysisProgress(`Analyzing ${job.label}...`);
                // Yield to UI
                await new Promise(resolve => setTimeout(resolve, 10));
+               if (isStale()) return;
                
                const result = job.fn();
                partialData[job.id] = result;
@@ -531,12 +551,15 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
              setAnalysisProgress('');
           }
         } else {
+          setCurrentPhage(null);
+          setSequence('');
           setLoadingPhage(false);
         }
 
         // Prefetch nearby phages
-        repository.prefetchAround(currentPhageIndex, 3);
+        await repository.prefetchAround(currentPhageIndex, 3);
       } catch (err) {
+        if (isStale()) return;
         setError(`Failed to load phage: ${err}`);
         setLoadingPhage(false);
         setAnalysisProgress('');
@@ -544,12 +567,14 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     };
 
     loadPhage();
+    return () => { cancelled = true; };
   }, [repository, phages, currentPhageIndex, setCurrentPhage, setLoadingPhage, setError, setOverlayData])
 
   // Recompute donor-contextual overlays once reference sketches have loaded
   // (or if the current phage was analyzed before sketches were available).
   useEffect(() => {
     if (!currentPhage || !sequence) return;
+    if (phages[currentPhageIndex]?.id !== currentPhage.id) return;
     if (Object.keys(referenceSketchesRef.current).length === 0) return;
 
     const hgtResult = analyzeHGTProvenance(sequence, currentPhage.genes ?? [], referenceSketchesRef.current);
@@ -578,7 +603,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     if (cached) {
       cached.data = { ...cached.data, hgt: hgtResult, tropism: tropismResult };
     }
-  }, [currentPhage, sequence, referenceVersion, setOverlayData]);
+  }, [currentPhage, currentPhageIndex, phages, sequence, referenceVersion, setOverlayData]);
 
   // Load diff reference sequence when needed
   useEffect(() => {
@@ -648,6 +673,11 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Handle keyboard input (global layer is disabled while an overlay is open)
   useInput((input, key) => {
+    if (error) {
+      if (key.escape) setError(null);
+      else if (input === 'q' || input === 'Q') exit();
+      return;
+    }
     // Check for F-key escape sequences or Ink key flags
     const fKey = F_KEYS[input];
 
@@ -1024,7 +1054,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       }
       openOverlay('commandPalette');
     }
-  }, { isActive: !activeOverlay });
+  }, { isActive: !activeOverlay || Boolean(error) });
 
   const colors = theme.colors;
 
@@ -1036,7 +1066,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     return (
       <Box flexDirection="column" padding={2}>
         <Text color="red" bold>Error: {error}</Text>
-        <Text color="gray">Press Q to quit</Text>
+        <Text color="gray">Escape to return to the genome · Q to quit</Text>
       </Box>
     );
   }

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { Box, Text } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
+import { getGeneMapSegments } from '@phage-explorer/core';
 import type { KmerAnomalyOverlay } from '../overlay-computations';
 
 interface GeneMapProps {
@@ -83,8 +84,8 @@ export function GeneMap({
     const barColors: string[] = Array(barWidth).fill(colors.textMuted);
 
     // Track gene density per pixel for overlap detection
-    const density: { forward: number; reverse: number }[] =
-      Array(barWidth).fill(null).map(() => ({ forward: 0, reverse: 0 }));
+    const density: { forward: number; reverse: number; unknown: number }[] =
+      Array(barWidth).fill(null).map(() => ({ forward: 0, reverse: 0, unknown: 0 }));
 
     // Calculate current view position
     const effectivePos = viewMode === 'aa' ? scrollPosition * 3 : scrollPosition;
@@ -92,16 +93,14 @@ export function GeneMap({
 
     // Mark genes with strand information
     for (const gene of genes) {
-      const startPos = Math.floor((gene.startPos / genomeLength) * barWidth);
-      const endPos = Math.max(startPos + 1, Math.floor((gene.endPos / genomeLength) * barWidth));
-      const isForward = gene.strand !== '-';
-
-      for (let i = startPos; i < endPos && i < barWidth; i++) {
-        if (i >= 0) {
-          if (isForward) {
-            density[i].forward++;
-          } else {
-            density[i].reverse++;
+      for (const segment of getGeneMapSegments(gene)) {
+        const startPos = Math.floor((segment.start / genomeLength) * barWidth);
+        const endPos = Math.max(startPos + 1, Math.floor((segment.end / genomeLength) * barWidth));
+        for (let i = startPos; i < endPos && i < barWidth; i++) {
+          if (i >= 0) {
+            if (segment.strand === '+') density[i].forward++;
+            else if (segment.strand === '-') density[i].reverse++;
+            else density[i].unknown++;
           }
         }
       }
@@ -122,6 +121,9 @@ export function GeneMap({
         // Reverse strand only
         barChars[i] = d.reverse > 1 ? '▓' : '█';
         barColors[i] = colors.geneReverse;
+      } else if (d.unknown > 0) {
+        barChars[i] = '?';
+        barColors[i] = colors.textMuted;
       }
     }
 
@@ -211,7 +213,7 @@ export function GeneMap({
   // Find current gene
   const currentGene = useMemo(() => {
     const effectivePos = viewMode === 'aa' ? scrollPosition * 3 : scrollPosition;
-    return genes.find(g => effectivePos >= g.startPos && effectivePos < g.endPos);
+    return genes.find(gene => getGeneMapSegments(gene).some(segment => effectivePos >= segment.start && effectivePos < segment.end));
   }, [genes, scrollPosition, viewMode]);
 
   // Calculate position percentage
@@ -227,10 +229,12 @@ export function GeneMap({
     // Calculate density at each position
     const density: number[] = Array(barWidth).fill(0);
     for (const gene of genes) {
-      const startPos = Math.floor((gene.startPos / genomeLength) * barWidth);
-      const endPos = Math.max(startPos + 1, Math.floor((gene.endPos / genomeLength) * barWidth));
-      for (let i = startPos; i < endPos && i < barWidth; i++) {
-        if (i >= 0) density[i]++;
+      for (const segment of getGeneMapSegments(gene)) {
+        const startPos = Math.floor((segment.start / genomeLength) * barWidth);
+        const endPos = Math.max(startPos + 1, Math.floor((segment.end / genomeLength) * barWidth));
+        for (let i = startPos; i < endPos && i < barWidth; i++) {
+          if (i >= 0) density[i]++;
+        }
       }
     }
 
@@ -251,15 +255,15 @@ export function GeneMap({
   const strandCounts = useMemo(() => {
     let forward = 0;
     let reverse = 0;
+    let unknown = 0;
     for (const gene of genes) {
       if (gene.strand === '-') {
         reverse++;
-      } else {
-        // Count null/undefined as forward (default)
+      } else if (gene.strand === '+') {
         forward++;
-      }
+      } else unknown++;
     }
-    return { forward, reverse };
+    return { forward, reverse, unknown };
   }, [genes]);
 
   // Get enhanced colors from theme
@@ -286,6 +290,7 @@ export function GeneMap({
               <Text color={separatorColor}>·</Text>
               <Text color={colors.geneReverse}>█{STRAND_CHARS.minus}</Text>
               <Text color={colors.textDim}>({strandCounts.reverse})</Text>
+              {strandCounts.unknown > 0 && <Text color={colors.textDim}>? ({strandCounts.unknown})</Text>}
               <Text color={separatorColor}>·</Text>
               <Text color={colors.warning}>◆</Text>
               <Text color={colors.textDim}>overlap</Text>
@@ -375,9 +380,8 @@ export function GeneMap({
           <Text color={colors.textDim}>
             {currentGene.startPos.toLocaleString()}-{currentGene.endPos.toLocaleString()} bp
           </Text>
-          <Text color={currentGene.strand !== '-'
-            ? colors.geneForward : colors.geneReverse}>
-            ({currentGene.strand !== '-' ? '+' : '-'})
+          <Text color={currentGene.strand === '+' ? colors.geneForward : currentGene.strand === '-' ? colors.geneReverse : colors.textMuted}>
+            ({currentGene.strand ?? '?'})
           </Text>
           {currentGene.product && (
             <>

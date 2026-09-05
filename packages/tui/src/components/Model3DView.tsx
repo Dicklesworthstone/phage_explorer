@@ -39,9 +39,9 @@ const Model3DViewInner = memo(function Model3DViewInner({
 
   // Get the appropriate model
   const model = React.useMemo(() => {
-    if (!currentPhage) return null;
+    if (!currentPhage || currentPhage.localGenome) return null;
     return getPhageModel(currentPhage.slug ?? 'lambda');
-  }, [currentPhage?.slug]);
+  }, [currentPhage?.slug, currentPhage?.localGenome]);
 
   // Rendering dimensions (account for border and title/footer rows)
   // Use Math.max to ensure dimensions are always at least 1

@@ -1,5 +1,5 @@
 import React, { memo, useEffect, useId, useMemo, useRef } from 'react';
-import type { GeneInfo } from '@phage-explorer/core';
+import { getGeneMapSegments, type GeneInfo } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
 import { useTheme } from '../hooks/useTheme';
 import { classifyGeneStrand, summarizeGeneStrands } from '../utils/gene-strand';
@@ -9,7 +9,6 @@ import {
   GENE_MAP_UNKNOWN_TRACK,
   getGeneMapTrack,
   getGeneMapTrackDirectionAtY,
-  getGeneMapSegments,
 } from '../utils/gene-map-layout';
 
 const srOnly: React.CSSProperties = {

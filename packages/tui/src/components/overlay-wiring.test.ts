@@ -5,9 +5,9 @@ import { join } from 'node:path';
 /**
  * Overlay wiring guard.
  *
- * The TUI gates its global key handler on `{ isActive: !activeOverlay }`, so
- * whenever an overlay is open the only component listening for Escape is the
- * overlay itself. That makes an overlay id you can OPEN but which has no
+ * The TUI gates normal global keys while an overlay is open. Error recovery
+ * keeps its Escape/Q handler active even when the overlay cannot render.
+ * Otherwise the overlay itself must listen for Escape. An id you can OPEN but which has no
  * render branch an unrecoverable input lock: the store records an active
  * overlay, nothing mounts, and no handler is left to close it. The user has
  * to kill the process.
@@ -90,10 +90,14 @@ describe('TUI overlay wiring', () => {
     expect(rendered.has('anomaly')).toBe(true);
   });
 
-  it('keeps the global input handler gated on an active overlay', () => {
-    // If this gate is ever removed the lock class disappears, and this whole
-    // test file can go with it. While it stands, the parity test is load-bearing.
-    expect(APP_SOURCE).toContain('{ isActive: !activeOverlay }');
+  it('gates normal global input while retaining error recovery', () => {
+    expect(APP_SOURCE).toContain('{ isActive: !activeOverlay || Boolean(error) }');
+    const handler = APP_SOURCE.slice(APP_SOURCE.indexOf('useInput((input, key) => {'));
+    const errorBranch = handler.slice(0, handler.indexOf('// Check for F-key'));
+    expect(errorBranch).toContain('if (error)');
+    expect(errorBranch).toContain('if (key.escape) setError(null)');
+    expect(errorBranch).toContain("input === 'q' || input === 'Q'");
+    expect(errorBranch).toContain('return;');
   });
 });
 

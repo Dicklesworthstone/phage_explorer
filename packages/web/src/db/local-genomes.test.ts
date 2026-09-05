@@ -4,12 +4,37 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { importLocalGenomes } from '@phage-explorer/core';
+import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import { SqlJsRepository } from './SqlJsRepository';
-import { createLocalGenomeRepository, useLocalGenomes } from './local-genomes';
+import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
+import { useLocalGenomes } from './local-genomes';
 
 afterEach(() => useLocalGenomes.setState({ genomes: [], requestedId: null, requestedView: undefined }));
 
 describe('local repository with actual curated SQLite', () => {
+  test('native read-only repository shares private records without writing catalog or cache', async () => {
+    const dbPath = fileURLToPath(new URL('../../public/phage.db', import.meta.url));
+    const before = await readFile(dbPath);
+    const cachePath = `${dbPath}.cache.json`;
+    const beforeCache = await Bun.file(cachePath).exists() ? await readFile(cachePath) : null;
+    const base = new BunSqliteRepository(dbPath, { readonly: true });
+    const imported = await importLocalGenomes({ name: 'native.fa', text: '>NATIVE_LOCAL\nACGTRYN\n>NATIVE_SECOND\nGGCC' });
+    const repo = createLocalGenomeRepository(base, imported.genomes);
+    try {
+      expect(await repo.listPhages()).toHaveLength(26);
+      expect((await repo.getPhageByIndex(24))?.accession).toBe('NATIVE_LOCAL');
+      expect(await repo.getSequenceWindow(imported.genomes[0].phage.id, 0, 7)).toBe('ACGTRYN');
+      await repo.setBiasVector(imported.genomes[0].phage.id, [1, 2]);
+      expect(await repo.getBiasVector(imported.genomes[0].phage.id)).toEqual([1, 2]);
+      expect(await base.getBiasVector(imported.genomes[0].phage.id)).toBeNull();
+      await repo.setPreference('local-import-readonly-probe', 'must-not-persist');
+      expect(await repo.getPreference('local-import-readonly-probe')).toBeNull();
+    } finally { await repo.close(); }
+    expect(await readFile(dbPath)).toEqual(before);
+    const afterCache = await Bun.file(cachePath).exists() ? await readFile(cachePath) : null;
+    expect(afterCache).toEqual(beforeCache);
+  });
+
   test('local selection, windows, search and annotations share the existing interface without changing curated tables', async () => {
     const sql = await initSqlJs({ locateFile: () => fileURLToPath(new URL('./sql-wasm.wasm', import.meta.resolve('sql.js'))) });
     const bytes = await readFile(new URL('../../public/phage.db', import.meta.url));

@@ -4,9 +4,8 @@ import {
   GENE_MAP_REVERSE_TRACK,
   GENE_MAP_UNKNOWN_TRACK,
   getGeneMapTrackDirectionAtY,
-  getGeneMapSegments,
 } from './gene-map-layout';
-import { importLocalGenomes } from '@phage-explorer/core';
+import { importLocalGenomes, getGeneMapSegments } from '@phage-explorer/core';
 
 describe('gene-map tracks', () => {
   it('renders reverse joined CDS segments without filling their intervening bases', async () => {

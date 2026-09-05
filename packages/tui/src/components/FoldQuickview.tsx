@@ -61,6 +61,9 @@ export function FoldQuickview({
   const { stdout } = useStdout();
 
   const genesWithEmbeddings = useMemo(() => {
+    // Imported gene IDs are local to their record, so an equal numeric ID in
+    // the curated corpus is not evidence for this protein's structure.
+    if (phage?.localGenome) return [];
     const map = buildEmbeddingMap(embeddings);
     return (phage?.genes ?? []).filter(g => map.has(g.id)).map(g => ({
       ...g,
@@ -134,7 +137,9 @@ export function FoldQuickview({
         <Text color={colors.textDim}>Esc/F to close</Text>
       </Box>
 
-      {error ? (
+      {phage?.localGenome ? (
+        <Text color={colors.textDim}>Fold reference data was not supplied for this local genome.</Text>
+      ) : error ? (
         <Box flexDirection="column" gap={1}>
           <Text color={colors.error}>{error}</Text>
           {onReload && (

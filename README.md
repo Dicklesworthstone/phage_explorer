@@ -160,10 +160,27 @@ before reloading to preserve the exact original files and selected sequence view
 (mode, reading frame and position). Reimport that bundle to restore them. A public
 share URL does not contain local sequences. Limits are 10 MiB per input/bundle,
 100 records, 5,000,000 bases and 50,000 features per import. Reference-dependent
-panels can be unavailable. TUI import and a bundle containing every analysis action,
-parameter and result remain unfinished; the current bundle preserves inputs and
-the sequence view. These source changes have not been published in a release by
-this work.
+panels can be unavailable. A bundle containing every analysis action, parameter
+and result remains unfinished; the current bundle preserves inputs and the
+sequence view. These source changes have not been published in a release by this work.
+
+The **current source TUI** uses the same parser and portable bundle:
+
+```bash
+# Add local records alongside the curated catalog; save to a new file on exit.
+bun run dev --import my-phage.gb --export-bundle my-session.json
+
+# Reopen the exact inputs and selected view, without requiring a catalog database.
+bun run dev --import my-session.json --no-catalog --export-bundle next-session.json
+```
+
+The export destination must not exist. Imports keep the curated database read-only.
+Use `--allow-accession-collisions` to explicitly retain different records with the
+same accession. In the TUI, `N` switches DNA/amino acids, `F` cycles the reading
+frame, and Ctrl+C exits and saves the requested bundle. Joined CDS segments retain
+their gaps in the terminal gene map. Local records without supplied structure or
+fold references show unavailable states. File import works at startup; an in-app
+paste/review workflow and full analysis replay remain open work.
 
 Deployment details:
 - Hosting: Vercel (prod alias: `phage-explorer.org`)

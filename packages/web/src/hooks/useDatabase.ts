@@ -9,7 +9,8 @@ import type { PhageRepository, DatabaseLoadProgress } from '../db';
 import { createShareAwareRepository } from '../db/createShareAwareRepository';
 import { getInitialShareState } from '../utils/share-state';
 import { useDatabaseQuery } from './useDatabaseQuery';
-import { createLocalGenomeRepository, useLocalGenomes } from '../db/local-genomes';
+import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
+import { useLocalGenomes } from '../db/local-genomes';
 
 export interface UseDatabaseOptions {
   /** URL to load the database from */

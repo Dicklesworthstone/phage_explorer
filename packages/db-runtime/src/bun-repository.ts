@@ -57,12 +57,12 @@ export class BunSqliteRepository implements PhageRepository {
   private codonCache: Map<number, number[]> = new Map();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: { readonly?: boolean } = {}) {
     let opened: Database | null = null;
-    let readonly = false;
+    let readonly = options.readonly ?? false;
     try {
       // Prefer read/write so preferences can persist when allowed
-      opened = new Database(dbPath);
+      opened = new Database(dbPath, { readonly });
     } catch {
       // Fallback to readonly if filesystem is locked (e.g., packaged binary)
       opened = new Database(dbPath, { readonly: true });
@@ -96,6 +96,7 @@ export class BunSqliteRepository implements PhageRepository {
   }
 
   private async saveVectorCache(): Promise<void> {
+    if (this.readonly) return;
     try {
       const bias: Record<string, number[]> = {};
       const codon: Record<string, number[]> = {};

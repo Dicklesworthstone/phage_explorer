@@ -8,6 +8,40 @@ import {
   genePositionToScroll,
 } from './gene-navigation';
 import { matchModifierBinding, type ModifierBinding } from './App';
+import React from 'react';
+import { renderToString } from 'ink';
+import { stripVTControlCharacters } from 'node:util';
+import { importLocalGenomes } from '@phage-explorer/core';
+import { usePhageStore } from '@phage-explorer/state';
+import { GeneMap } from './GeneMap';
+import { Model3DView } from './Model3DView';
+import { FoldQuickview } from './FoldQuickview';
+
+describe('imported terminal genome views', () => {
+  it('renders the hand-derived joined-CDS gaps and no invented private 3D model', async () => {
+    const input = 'LOCUS       X 24 bp DNA circular\nFEATURES             Location/Qualifiers\n     CDS             complement(join(1..6,19..24))\nORIGIN\n        1 atgaaacccgggtttaaaccctag\n//\n';
+    const { genomes } = await importLocalGenomes({ name: 'x.gb', text: input });
+    const saved = usePhageStore.getState();
+    try {
+      usePhageStore.setState({ currentPhage: genomes[0].phage, scrollPosition: 0, viewMode: 'dna', overlayData: {}, show3DModel: true });
+      const rendered = stripVTControlCharacters(renderToString(React.createElement(GeneMap, { width: 90, showDensityHistogram: false }), { columns: 100 }));
+      const genesLine = rendered.split('\n').find(line => line.includes('Genes '));
+      const bar = genesLine?.match(/[▼█▓◆·?]+/)?.[0];
+      // 80 columns / 24 bases: 20 CDS, 40 gap, 20 CDS; column zero is the cursor.
+      expect(bar).toBe(`▼${'█'.repeat(19)}${'·'.repeat(40)}${'█'.repeat(20)}`);
+      const model = stripVTControlCharacters(renderToString(React.createElement(Model3DView, { width: 30, height: 16 }), { columns: 100 }));
+      expect(model).toContain('No model');
+      expect(model).not.toContain(genomes[0].phage.slug!);
+      const fold = stripVTControlCharacters(renderToString(React.createElement(FoldQuickview, {
+        embeddings: [{ geneId: genomes[0].phage.genes[0].id, vector: [1, 0], length: 4, name: 'Curated collision', product: null }],
+        genomeSequence: genomes[0].sequence,
+      }), { columns: 100 }));
+      expect(fold).toContain('Fold reference data was not supplied');
+      expect(fold).not.toContain('Novelty:');
+      expect(fold).not.toContain('Nearest folds');
+    } finally { usePhageStore.setState(saved); }
+  });
+});
 
 // The App component is tightly coupled to Ink and the database, so we test
 // the navigation helpers directly. These are the same functions used by the
