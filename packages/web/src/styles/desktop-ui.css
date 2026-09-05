@@ -36,7 +36,7 @@
 .toolbar-label {
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--color-text-muted);
+  color: var(--color-text-dim);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   white-space: nowrap;
@@ -460,7 +460,7 @@
 
 .category-level--power {
   background: rgba(168, 85, 247, 0.15);
-  color: #a855f7;
+  color: #d8b4fe;
 }
 
 .category-chevron {
@@ -717,7 +717,7 @@
 .quick-stat__label {
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  color: var(--color-text-muted);
+  color: color-mix(in srgb, var(--color-text-dim) 85%, white);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   white-space: nowrap;
@@ -732,7 +732,7 @@
 }
 
 .quick-stat__value--highlight {
-  color: var(--color-primary);
+  color: color-mix(in srgb, var(--color-primary) 65%, white);
   text-shadow: 0 0 8px rgba(34, 211, 238, 0.3);
 }
 

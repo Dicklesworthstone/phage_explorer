@@ -39,7 +39,7 @@ export function PhageList({
     return (
       <div className={`column column--list ${isMobile && hasSelection && mobileListOpen ? 'mobile-drawer' : ''}`}>
         <div className="panel-header">
-          <h3>Phages</h3>
+          <h2>Phages</h2>
         </div>
         <div className="list">
           <PhageListItemSkeleton count={8} />
@@ -51,7 +51,7 @@ export function PhageList({
   return (
     <div className={`column column--list ${isMobile && hasSelection && mobileListOpen ? 'mobile-drawer' : ''}`}>
       <div className="panel-header">
-        <h3>Phages</h3>
+        <h2>Phages</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <span className="badge">{phages.length}</span>
           {isMobile && hasSelection && onClose && (

@@ -332,7 +332,7 @@
 }
 
 .footer-version {
-  color: var(--color-text-muted);
+  color: var(--color-text-dim);
   font-variant-numeric: tabular-nums;
 }
 
@@ -361,7 +361,7 @@
 }
 
 .hint-label {
-  color: var(--color-text-muted);
+  color: var(--color-text-dim);
 }
 
 /* Hide keyboard hints on mobile/tablet (thumb-first UI; hints are redundant and eat space). */

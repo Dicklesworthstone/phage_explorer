@@ -444,7 +444,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             onClick={handleToggleSaved}
             disabled={Boolean(stats.localGenome)}
             title={stats.localGenome ? 'Export a local genome bundle to preserve this record' : undefined}
-            aria-label={`${isSaved ? 'Remove' : 'Save'} ${stats.name}`}
+            aria-label={`${isSaved ? 'Saved. Remove' : 'Save'} ${stats.name}`}
             aria-pressed={isSaved}
           >
             <StarIcon filled={isSaved} />
@@ -454,7 +454,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             type="button"
             className="quick-stat__action"
             onClick={() => stats.localGenome ? open('genomeImport') : void handleShare()}
-            aria-label={stats.localGenome ? 'Export local genome data' : `Share ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name} explorer state`}
+            aria-label={stats.localGenome ? 'Export local data: genome bundle' : `${feedback === 'link-copied' ? 'Copied. Share' : 'Share'} ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name} explorer state`}
           >
             <ShareIcon />
             <span>{stats.localGenome ? 'Export local data' : feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
@@ -465,7 +465,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             onClick={() => void handleCopyCitation()}
             disabled={Boolean(stats.localGenome)}
             title={stats.localGenome ? 'This local input is not an NCBI accession citation' : undefined}
-            aria-label={`Copy a research citation for ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name}`}
+            aria-label={`${feedback === 'citation-copied' ? 'Copied. Cite' : 'Cite'} ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name}: copy research citation`}
           >
             <CitationIcon />
             <span>{feedback === 'citation-copied' ? 'Copied' : 'Cite'}</span>
@@ -474,7 +474,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             type="button"
             className="quick-stat__action"
             onClick={() => void handleCopyAccession()}
-            aria-label={`Copy accession ${stats.accession}`}
+            aria-label={`${feedback === 'accession-copied' ? 'Copied. Copy ID' : 'Copy ID'}: accession ${stats.accession}`}
           >
             <CopyIcon />
             <span>{feedback === 'accession-copied' ? 'Copied' : 'Copy ID'}</span>

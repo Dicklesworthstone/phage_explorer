@@ -1090,7 +1090,6 @@ export default function App(): React.ReactElement {
                 className="btn btn-ghost header-action"
                 type="button"
                 onClick={() => openOverlayCtx('commandPalette')}
-                aria-label="Open command palette"
                 title={commandPaletteShortcut ? `Command Palette (${commandPaletteShortcut})` : 'Command Palette'}
                 data-testid="header-command-palette-btn"
               >
@@ -1205,12 +1204,12 @@ export default function App(): React.ReactElement {
                       className="btn btn-sm"
                       onClick={() => setMobileListOpen(true)}
                       type="button"
-                      aria-label="Open phage list"
+                      aria-label="Phages: open list"
                     >
                       Phages
                     </button>
                   )}
-                  <h3>Details</h3>
+                  <h2>Details</h2>
                 </div>
                 {isLoadingPhage && <span className="badge">Loading</span>}
               </div>
@@ -1228,7 +1227,7 @@ export default function App(): React.ReactElement {
                       </div>
                     )}
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <h4 style={{ marginTop: 0 }}>{currentPhage.name}</h4>
+                      <h3 style={{ marginTop: 0 }}>{currentPhage.name}</h3>
                       <p className="text-dim" style={{ marginBottom: '0.5rem' }}>
                         {currentPhage.family ?? 'Unassigned family'} · {currentPhage.lifecycle ?? 'Lifecycle n/a'}
                       </p>

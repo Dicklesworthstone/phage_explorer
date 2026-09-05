@@ -191,7 +191,7 @@ const classicPalette: ThemePalette = {
   background: '#1a1a2e',
   backgroundAlt: '#252542',
   text: '#e0e0e0',
-  textDim: '#8c8ca0',
+  textDim: '#9797ad',
   textMuted: '#4d4d66',
   border: '#3d3d5c',
   borderFocus: '#5cb85c',

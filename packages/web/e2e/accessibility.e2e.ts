@@ -21,6 +21,37 @@ type AxeResults = {
 const RESEARCH_THEMES = ['holographic', 'cyberpunk', 'classic', 'ocean', 'matrix', 'sunset', 'forest', 'monochrome'];
 
 for (const theme of RESEARCH_THEMES) {
+  test(`catalog audit: ${theme} mobile and desktop`, async ({ page }, info) => {
+    const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);
+    try {
+      await setExperienceLevel(page, 'power');
+      await page.addInitScript(themeId => localStorage.setItem('phage-explorer-theme', themeId), theme);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.goto('/?phage=lambda&model=0');
+      await expect(page.getByRole('heading', { level: 1 })).toContainText('Enterobacteria phage lambda');
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      await ensureAxeLoaded(page);
+      for (const viewport of [{ width: 375, height: 812 }, { width: 1440, height: 1000 }]) {
+        await page.setViewportSize(viewport);
+        await expect(page.locator('.quick-stat__label').first()).toBeVisible();
+        const results = await page.evaluate(async () => {
+          const axe = (window as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<AxeResults> } }).axe;
+          // These rules include best-practice and experimental checks that the
+          // WCAG 2.1 tag-only audit below does not select (including contrast).
+          return axe.run(document, { runOnly: { type: 'rule', values: ['color-contrast', 'heading-order', 'label-content-name-mismatch'] } });
+        });
+        const label = `${theme}-${viewport.width}`;
+        await info.attach(`catalog-audit-${label}`, { body: JSON.stringify(results), contentType: 'application/json' });
+        expect(results.violations, formatViolations(label, results.violations)).toEqual([]);
+      }
+      expect(pageErrors).toEqual([]);
+      expect(consoleErrors).toEqual([]);
+    } finally { await finalize(); }
+  });
+
   test(`local genome accessibility: ${theme} portrait and landscape`, async ({ page }, info) => {
     const { pageErrors, finalize } = setupTestHarness(page, info);
     try {
@@ -39,7 +70,7 @@ for (const theme of RESEARCH_THEMES) {
       await overlay.getByRole('textbox', { name: 'Paste genome data' }).fill('>THEME_LOCAL\nACGT');
       await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
       await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
-      const trigger = page.getByRole('button', { name: 'Export local genome data' });
+      const trigger = page.getByRole('button', { name: 'Export local data: genome bundle' });
       await trigger.click();
       const field = overlay.getByRole('textbox', { name: 'Paste genome data' });
       await expect(field).toHaveValue('');
@@ -131,6 +162,87 @@ for (const theme of RESEARCH_THEMES) {
   });
 }
 
+test('catalog actions retain visible names when saved or copied', async ({ page }, info) => {
+  const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);
+  try {
+    await setExperienceLevel(page, 'power');
+    await page.goto('/?phage=lambda&model=0');
+    await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    const save = page.getByRole('button', { name: 'Save Enterobacteria phage lambda', exact: true });
+    await save.click();
+    const saved = page.getByRole('button', { name: 'Saved. Remove Enterobacteria phage lambda', exact: true });
+    await expect(saved).toHaveAttribute('aria-pressed', 'true');
+    await expect(saved).toContainText('Saved');
+    for (const label of ['Copy ID', 'Cite']) {
+      const action = page.locator('.quick-stat__action').filter({ hasText: label });
+      await action.click();
+      const copied = page.locator('.quick-stat__action').filter({ hasText: 'Copied' });
+      await expect(copied).toBeVisible();
+      await expect(copied).toHaveAccessibleName(new RegExp(`^Copied\\. ${label}`));
+    }
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
+test('illustration loading name follows the delayed real image', async ({ page }, info) => {
+  const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);
+  let releaseImage: (() => void) | undefined;
+  const imageReady = new Promise<void>(resolve => { releaseImage = resolve; });
+  await page.route('**/illustrations/lambda.webp', async route => {
+    await imageReady;
+    await route.continue();
+  });
+  try {
+    await setExperienceLevel(page, 'power');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('/?phage=lambda&model=0', { waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Enterobacteria phage lambda');
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    const illustration = page.locator('.phage-illustration');
+    await expect(illustration).toBeVisible();
+    await expect(illustration).toContainText('Loading...');
+    await expect(illustration).toHaveAccessibleName(/^Loading\.\.\. Anatomical diagram of Enterobacteria phage lambda/);
+    await expect(illustration).toHaveAttribute('aria-busy', 'true');
+    releaseImage?.();
+    await expect(illustration).toHaveAccessibleName(/^Anatomical diagram of Enterobacteria phage lambda/);
+    await expect(illustration).toHaveAttribute('aria-busy', 'false');
+    await expect(illustration).not.toContainText('Loading...');
+    await illustration.click();
+    await expect(page.getByTestId('overlay-illustration')).toBeVisible();
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    releaseImage?.();
+    await page.unrouteAll({ behavior: 'wait' });
+    await finalize();
+  }
+});
+
+test('offline audit: readable recovery page returns to the catalog', async ({ page }, info) => {
+  const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);
+  try {
+    await setExperienceLevel(page, 'power');
+    await page.goto('/offline.html');
+    await expect(page.getByRole('main')).toBeVisible();
+    await expect(page.getByRole('status')).toContainText('Connection restored');
+    await ensureAxeLoaded(page);
+    const results = await page.evaluate(async () => {
+      const axe = (window as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<AxeResults> } }).axe;
+      return axe.run(document, { runOnly: { type: 'rule', values: ['color-contrast', 'heading-order', 'label-content-name-mismatch'] } });
+    });
+    await info.attach('offline-audit', { body: JSON.stringify(results), contentType: 'application/json' });
+    expect(results.violations, formatViolations('offline', results.violations)).toEqual([]);
+    await page.getByRole('link', { name: 'Try Again' }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText('Enterobacteria phage lambda');
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 const AXE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/axe-core@4.11.0/axe.min.js';
 
 async function setExperienceLevel(page: Page, level: 'novice' | 'intermediate' | 'power'): Promise<void> {
@@ -201,6 +313,9 @@ async function runA11yAudit(page: Page): Promise<AxeResults> {
     const axe = (window as unknown as { axe?: { run?: (context?: unknown, options?: unknown) => Promise<AxeResults> } }).axe;
     if (typeof axe?.run !== 'function') throw new Error('axe-core failed to load');
     return await axe.run(document, {
+      // This legacy overlay sweep selects the additions in WCAG 2.1 only.
+      // Cumulative WCAG 2.0 + 2.1 coverage remains on phage_explorer-5t4r.4;
+      // the explicit catalog audits above also check contrast and headings.
       runOnly: { type: 'tag', values: ['wcag21a', 'wcag21aa'] },
     });
   });
@@ -211,7 +326,7 @@ async function expectNoA11yViolations(page: Page, label: string): Promise<void> 
   expect(results.violations, formatViolations(label, results.violations)).toEqual([]);
 }
 
-test('WCAG 2.1 A/AA: base + key overlays', async ({ page }) => {
+test('WCAG 2.1-specific rules: base + key overlays', async ({ page }) => {
   // Keep this test stable even when experience level gating changes.
   await setExperienceLevel(page, 'power');
 
@@ -296,7 +411,7 @@ async function testOverlayA11y(
   await page.waitForTimeout(150);
 }
 
-test('WCAG 2.1 A/AA: analysis overlays', async ({ page }) => {
+test('WCAG 2.1-specific rules: analysis overlays', async ({ page }) => {
   // These overlays are gated behind Intermediate/Power hotkeys.
   await setExperienceLevel(page, 'power');
 
@@ -346,7 +461,7 @@ test('WCAG 2.1 A/AA: analysis overlays', async ({ page }) => {
   await testOverlayA11y(page, 'Alt+b', 'biasDecomposition', 'Bias Decomposition overlay');
 });
 
-test('WCAG 2.1 A/AA: reference overlays', async ({ page }) => {
+test('WCAG 2.1-specific rules: reference overlays', async ({ page }) => {
   // Keep reference overlays audited under the same "power user" state.
   await setExperienceLevel(page, 'power');
 

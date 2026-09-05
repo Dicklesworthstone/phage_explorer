@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Offline - Phage Explorer</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   <!-- Lighthouse's meta-description audit scored this page 0. Cheap to fix and
        it is a real defect: this page is what a user sees when the network is
        gone, and it is the one page most likely to be bookmarked or shared. -->
@@ -13,7 +14,7 @@
       --bg: #0a0a0f;
       --text: #e8e6e3;
       --accent: #4ade80;
-      --muted: #6b7280;
+      --muted: #9ca3af;
     }
     * {
       margin: 0;
@@ -74,16 +75,16 @@
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="icon">&#128301;</div>
+  <main class="container">
+    <div class="icon" aria-hidden="true">&#128301;</div>
     <h1>You're Offline</h1>
     <p>
       Phage Explorer needs an internet connection to load the database for the first time.
       Once loaded, you can explore phages offline.
     </p>
-    <a href="/" class="retry" onclick="window.location.reload()">Try Again</a>
-    <div class="status" id="status">Checking connection...</div>
-  </div>
+    <a href="/" class="retry">Try Again</a>
+    <div class="status" id="status" role="status">Checking connection...</div>
+  </main>
   <script>
     function updateStatus() {
       const status = document.getElementById('status');

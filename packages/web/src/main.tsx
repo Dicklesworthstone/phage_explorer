@@ -143,17 +143,12 @@ const cleanupAll = () => {
 };
 
 if (import.meta.hot) {
-  import.meta.hot.dispose(() => {
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('unload', cleanupAll);
-    }
-    cleanupAll();
-  });
+  import.meta.hot.dispose(cleanupAll);
 }
 
-if (typeof window !== 'undefined') {
-  window.addEventListener('unload', cleanupAll, { once: true });
-}
+// A document restored from the back/forward cache needs its subscriptions and
+// viewport listeners intact. The browser releases them when it discards the
+// document; an unload listener would prevent caching in supported browsers.
 
 const container = document.getElementById('root');
 

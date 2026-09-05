@@ -49,9 +49,6 @@ export function PhagePickerTrigger({
   const positionLabel = totalCount > 0
     ? `${currentIndex + 1}/${totalCount}`
     : '';
-  const positionDescription = totalCount > 0
-    ? `${currentIndex + 1} of ${totalCount}`
-    : 'no phages loaded';
 
   return (
     <button
@@ -60,7 +57,8 @@ export function PhagePickerTrigger({
       onClick={onClick}
       aria-haspopup="dialog"
       aria-expanded={isOpen}
-      aria-label={`Explore phages. Currently viewing ${phageName}, ${positionDescription}`}
+      title="Explore phages"
+      aria-description={`Explore phages. ${totalCount > 0 ? `${currentIndex + 1} of ${totalCount}` : 'No phages loaded'}`}
     >
       <span className="phage-picker-trigger__name">{phageName}</span>
       <ChevronDown />

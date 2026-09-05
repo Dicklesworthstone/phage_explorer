@@ -29,11 +29,12 @@ export async function expectExplorerIdentity(page: Page, testInfo: TestInfo): Pr
   expect(descriptor.manifest.contentVersion, 'Expected database content version').toBe(process.env.PLAYWRIGHT_EXPECTED_CONTENT_VERSION ?? expected.contentVersion);
   expect(descriptor.manifest.sha256, 'Expected database byte digest').toBe(process.env.PLAYWRIGHT_EXPECTED_DATABASE_SHA256 ?? expected.sha256);
   await expect(page.getByRole('heading', { level: 1 }), 'Loaded lambda catalog entry').toContainText('Enterobacteria phage lambda');
-  const picker = page.getByRole('button', { name: /^Explore phages\. Currently viewing/ });
+  const picker = page.locator('button.phage-picker-trigger');
   if (await picker.isVisible()) {
     const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
     if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
-    await expect(picker).toHaveAttribute('aria-label', /lambda, 1 of 24$/);
+    await expect(picker).toHaveAccessibleName(/^Enterobacteria phage lambda(?:\s*1\/24)?$/);
+    await expect(picker).toHaveAccessibleDescription('Explore phages. 1 of 24');
     await picker.click();
     const sheet = page.getByTestId('phage-picker-sheet');
     await expect(sheet.getByRole('listitem'), 'Loaded mobile catalog size').toHaveCount(24);

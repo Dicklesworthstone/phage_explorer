@@ -25,7 +25,7 @@ function queryParam(page: Page, name: string): string | null {
 }
 
 async function expectPhageName(page: Page, name: string): Promise<void> {
-  await expect(page.locator('.detail-card h4')).toHaveText(name, { timeout: 20_000 });
+  await expect(page.locator('.detail-card').getByRole('heading', { level: 3 })).toHaveText(name, { timeout: 20_000 });
 }
 
 async function expectT4AminoAcidState(page: Page): Promise<void> {
@@ -76,7 +76,7 @@ test.describe('Shareable explorer state', () => {
     await test.step('Push a history entry for a new phage and restore T4 with Back', async () => {
       await page.keyboard.press('j');
       await expect.poll(() => queryParam(page, 'phage')).not.toBe('t4');
-      await expect(page.locator('.detail-card h4')).not.toHaveText('Enterobacteria phage T4');
+      await expect(page.locator('.detail-card').getByRole('heading', { level: 3 })).not.toHaveText('Enterobacteria phage T4');
 
       await page.goBack({ waitUntil: 'domcontentloaded' });
       await dismissWelcomeIfPresent(page);

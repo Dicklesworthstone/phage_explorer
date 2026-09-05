@@ -238,7 +238,7 @@ test('desktop: key overlays open and no console errors', async ({ page }, testIn
   }
 
   // Header shortcut hints should reflect actual ActionRegistry bindings (trust surface).
-  const commandPaletteButton = page.getByRole('button', { name: 'Open command palette' });
+  const commandPaletteButton = page.getByRole('button', { name: /^Palette/ });
   await expect(commandPaletteButton).toBeVisible();
   await expect(commandPaletteButton).toHaveAttribute('title', /Command Palette/);
   await expect(commandPaletteButton).toHaveAttribute('title', /Ctrl\+k|Cmd\+k|:/i);

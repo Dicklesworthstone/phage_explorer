@@ -116,8 +116,6 @@ export function PhageIllustration({
     justifyContent: 'center',
     color: 'var(--color-text-dim)',
     fontSize: '0.85rem',
-    opacity: isLoaded ? 0 : 1,
-    transition: 'opacity var(--duration-normal) var(--ease-out)',
     pointerEvents: 'none',
   };
 
@@ -143,7 +141,7 @@ export function PhageIllustration({
       onKeyDown={handleKeyDown}
       role="button"
       tabIndex={0}
-      aria-label={`View ${name} anatomy illustration (click to expand)`}
+      aria-busy={!isLoaded}
       onMouseEnter={(e) => {
         e.currentTarget.style.borderColor = 'var(--color-primary)';
         e.currentTarget.style.boxShadow = '0 0 12px var(--color-primary-glow)';
@@ -157,7 +155,7 @@ export function PhageIllustration({
         if (hint) hint.style.opacity = '0';
       }}
     >
-      <div style={loadingStyle}>Loading...</div>
+      {!isLoaded && <div style={loadingStyle}>Loading...</div>}
       <img
         src={imagePath}
         alt={`Anatomical diagram of ${name} showing structural components`}

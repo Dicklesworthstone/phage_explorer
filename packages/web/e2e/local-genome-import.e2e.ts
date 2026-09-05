@@ -98,7 +98,7 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     expect(requests.slice(requestsBeforeReference).some(request => /ncbi|serratus/.test(request.url))).toBe(false);
     await page.keyboard.press('Escape');
     await page.keyboard.press('v');
-    await page.getByRole('button', { name: 'Export local genome data' }).click();
+    await page.getByRole('button', { name: 'Export local data: genome bundle' }).click();
     overlay = page.getByTestId('overlay-genomeImport');
     const exported = await downloadText(page, () => overlay.getByRole('button', { name: 'Export local genome bundle' }).click());
     const bundle = JSON.parse(exported);
@@ -115,7 +115,7 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     await parseInput(overlay, exported);
     await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
     await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
-    await page.getByRole('button', { name: 'Export local genome data' }).click();
+    await page.getByRole('button', { name: 'Export local data: genome bundle' }).click();
     const second = JSON.parse(await downloadText(page, () => page.getByTestId('overlay-genomeImport').getByRole('button', { name: 'Export local genome bundle' }).click()));
     expect(second).toEqual(bundle);
     expect(requests.some(request => `${request.url} ${request.body ?? ''}`.includes('ATGAAACCCGGGTTTAAACCCTAG'))).toBe(false);
@@ -233,7 +233,7 @@ test('cancel a large input while its actual parser worker is pending', async ({ 
     await expect(overlay).toContainText('4,000,000 bases');
     await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('large');
-    await page.getByRole('button', { name: 'Export local genome data' }).click();
+    await page.getByRole('button', { name: 'Export local data: genome bundle' }).click();
     const bundle = JSON.parse(await downloadText(page, () => overlay.getByRole('button', { name: 'Export local genome bundle' }).click()));
     expect(bundle.inputs).toEqual([{ name: 'large.fa', text: input }]);
     expect(pageErrors).toEqual([]);
