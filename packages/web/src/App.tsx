@@ -1102,6 +1102,13 @@ export default function App(): React.ReactElement {
           children: <BeginnerModeIndicator />,
         }}
       >
+        {repository && progress?.cacheStatus && (
+          <p className="text-dim" role="status" aria-label="Offline database status">
+            {progress.cacheStatus === 'saving' ? 'Saving database for offline use…'
+              : progress.cacheStatus === 'saved' ? 'Database available offline'
+                : 'Database loaded. Offline storage is unavailable.'}
+          </p>
+        )}
         {repository && progress?.updateStatus && (
           <section className="panel panel-compact" aria-label="Database update status">
             <p role="status">{progress.message}</p>

@@ -36,6 +36,10 @@ async function expectCatalog(page: Page) {
   await expect(page.getByTestId('phage-list')).toContainText('48,502');
 }
 
+async function expectOfflineCache(page: Page) {
+  await expect(page.getByRole('status', { name: 'Offline database status', exact: true })).toHaveText('Database available offline');
+}
+
 test('database loads real catalog data and reuses verified cache without another download', async ({ page }, testInfo) => {
   const { consoleErrors, pageErrors, finalize } = setupTestHarness(page, testInfo);
   const downloads: string[] = [];
@@ -50,6 +54,7 @@ test('database loads real catalog data and reuses verified cache without another
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
     expect(new URL(page.url()).origin).toBe(new URL(testInfo.project.use.baseURL!).origin);
+    await expectOfflineCache(page);
     const cold = await cachedIdentity(page);
     expect(cold).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
     expect(downloads.length).toBeGreaterThan(0);
@@ -72,6 +77,7 @@ test('corrupt update cannot replace a verified cached catalog, including after a
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
+    await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     expect(original?.valid).toBe(true);
     const response = await page.request.get('/phage.db.manifest.json');
@@ -125,6 +131,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
+    await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     const artifacts = testInfo.outputPath('changed-database');
     await mkdir(artifacts, { recursive: true });
@@ -211,6 +218,7 @@ test('equivalent builder layouts keep the already verified cache without another
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
+    await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     const artifacts = testInfo.outputPath('equivalent-layout');
     await mkdir(artifacts, { recursive: true });
@@ -241,6 +249,7 @@ test('verified cached catalog remains usable when the database origin is unavail
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
+    await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     let transfers = 0;
     await page.route('**/phage.db*', route => {
@@ -262,6 +271,7 @@ test('Settings refresh reports corruption and preserves the verified cache for r
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
+    await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
     if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
@@ -296,6 +306,7 @@ test('missing gzip falls back to matching raw SQLite and exposes the shipped atl
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
     expect(rawDownloads).toBe(1);
+    await expectOfflineCache(page);
     expect((await cachedIdentity(page))?.valid).toBe(true);
     const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
     if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
@@ -312,4 +323,25 @@ test('missing gzip falls back to matching raw SQLite and exposes the shipped atl
   } finally {
     await finalize();
   }
+});
+
+test('a failed first cache write keeps verified catalog data usable and reports offline unavailability', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.addInitScript(() => {
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function(value, key) {
+        const request = put.call(this, value, key);
+        if (key === 'phage-db:snapshot') {
+          request.addEventListener('success', () => this.transaction.abort(), { once: true });
+        }
+        return request;
+      };
+    });
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    await expect(page.getByRole('status', { name: 'Offline database status', exact: true })).toHaveText('Database loaded. Offline storage is unavailable.');
+    expect(await cachedIdentity(page)).toBeNull();
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
 });

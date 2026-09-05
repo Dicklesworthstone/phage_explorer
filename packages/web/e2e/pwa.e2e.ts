@@ -79,6 +79,7 @@ test.beforeEach(async ({ context }) => {
 async function catalog(page: Page) {
   await expect(page.getByTestId('phage-list-item-selected')).toContainText('Enterobacteria phage lambda');
   await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+  await expect(page.getByRole('status', { name: 'Offline database status', exact: true })).toHaveText('Database available offline');
 }
 
 async function controlled(page: Page) {

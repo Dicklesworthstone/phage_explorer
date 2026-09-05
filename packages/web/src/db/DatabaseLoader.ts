@@ -313,6 +313,7 @@ export class DatabaseLoader {
   /** Last completed timing result (for external access) */
   private lastTiming: DbLoadTiming | null = null;
   private updatePromise: Promise<boolean> | null = null;
+  private cacheWritePromise: Promise<CacheWriteResult> | null = null;
 
   constructor(config: DatabaseLoaderConfig) {
     this.config = {
@@ -345,13 +346,14 @@ export class DatabaseLoader {
     percent: number,
     message: string,
     cached = false,
-    updateStatus?: DatabaseLoadProgress['updateStatus']
+    updateStatus?: DatabaseLoadProgress['updateStatus'],
+    cacheStatus?: DatabaseLoadProgress['cacheStatus']
   ): void {
     if (this.repository && stage !== 'ready' && stage !== 'error') {
-      this.config.onProgress({ stage: 'ready', percent: 100, message: 'Updating the database in the background. Your cached data remains available.', cached: true, updateStatus: 'pending' });
+      this.config.onProgress({ stage: 'ready', percent: 100, message: 'Updating the database in the background. Your cached data remains available.', cached: true, updateStatus: 'pending', cacheStatus: 'saved' });
       return;
     }
-    this.config.onProgress({ stage, percent, message, cached, updateStatus });
+    this.config.onProgress({ stage, percent, message, cached, updateStatus, cacheStatus: cacheStatus ?? (cached ? 'saved' : undefined) });
   }
 
   /**
@@ -918,20 +920,32 @@ export class DatabaseLoader {
       // Download fresh copy (timing is recorded inside downloadDatabase)
       const { db, data } = await this.downloadDatabase(manifest);
 
-      // Save to cache
-      this.progress('initializing', 95, 'Saving to cache...');
+      // Integrity and SQLite opening have succeeded. Do not hold first use
+      // behind IndexedDB persistence, which can be slow on a busy device.
+      const repository = new SqlJsRepository(db);
+      this.repository = repository;
+      this.progress('ready', 100, 'Database ready. Saving the offline copy...', false, undefined, 'saving');
       this.timing.startStage('cacheWrite');
-      await this.saveToCache(data, manifest);
-      this.timing.endStage('cacheWrite');
-
-      this.progress('ready', 100, 'Database ready');
-      this.repository = new SqlJsRepository(db);
+      this.cacheWritePromise = this.saveToCache(data, manifest).then((saved) => {
+        this.timing?.endStage('cacheWrite');
+        // Timing still includes persistence; this is not a startup-speed claim.
+        this.finalizeTiming();
+        if (this.repository === repository) {
+          this.progress('ready', 100, saved.success ? 'Database ready' : 'Database ready. Offline storage is unavailable.', false, undefined, saved.success ? 'saved' : 'unavailable');
+        }
+        return saved;
+      });
+      if (options.forceDownload) {
+        // Settings reloads the page on success, so it needs a durable snapshot.
+        const saved = await this.cacheWritePromise;
+        if (!saved.success) {
+          await repository.close();
+          this.repository = null;
+          throw new Error('The verified database could not be saved. The previous cache has been preserved.');
+        }
+      }
       setDatabaseCacheVersion(manifest.contentVersion);
-
-      // Finalize and log timing
-      this.finalizeTiming();
-
-      return this.repository;
+      return repository;
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       this.progress('error', 0, `Failed to load database: ${message}`);
@@ -1026,10 +1040,11 @@ export class DatabaseLoader {
    * Close the database
    */
   async close(): Promise<void> {
-    if (this.repository) {
-      await this.repository.close();
-      this.repository = null;
-    }
+    const repository = this.repository;
+    this.repository = null;
+    await this.cacheWritePromise;
+    this.cacheWritePromise = null;
+    await repository?.close();
 
     if (this.gzipWorker) {
       this.gzipWorker.terminate();
