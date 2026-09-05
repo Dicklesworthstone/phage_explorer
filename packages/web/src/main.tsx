@@ -1,8 +1,8 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { OverlayProvider } from './components/overlays/OverlayProvider';
-import { ToastProvider } from './components/ui/Toast';
+import { ToastProvider, useToast } from './components/ui/Toast';
 import ErrorBoundary from './components/layout/ErrorBoundary';
 import { ScrollProvider } from './providers';
 import App from './App';
@@ -17,6 +17,51 @@ import './styles/selected-gene-dock.css';
 import './styles/selected-gene-desktop.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
+
+function ServiceWorkerUpdates(): null {
+  const { toast } = useToast();
+  useEffect(() => {
+    if (!import.meta.env.PROD || !('serviceWorker' in navigator) || navigator.webdriver) return;
+    let disposed = false;
+    let unsubscribe: (() => void) | undefined;
+    const register = () => {
+      void import('./registerSW').then(({ registerServiceWorker, updateServiceWorker, removeServiceWorkerCallbacks }) => {
+        if (disposed) return;
+        const reload = () => {
+          void updateServiceWorker().catch(() => {
+            toast({
+              id: 'app-update-error', title: 'Update could not activate',
+              message: 'Your current page is still available. Try reloading the update again.',
+              variant: 'error', duration: 0, actions: [{ label: 'Retry update', onClick: reload }],
+            });
+          });
+        };
+        const callbacks = {
+          onUpdate: () => {
+            if (disposed) return;
+            toast({
+              id: 'app-update', title: 'Update available',
+              message: 'Reload when you are ready to use the new version.',
+              duration: 0, actions: [{ label: 'Reload', onClick: reload }],
+            });
+          },
+        };
+        unsubscribe = () => removeServiceWorkerCallbacks(callbacks);
+        void registerServiceWorker(callbacks);
+      }).catch(() => {
+        if (!disposed) toast({ title: 'Offline setup unavailable', message: 'Reconnect and reload to enable offline access.', variant: 'warning' });
+      });
+    };
+    if (document.readyState === 'complete') register();
+    else window.addEventListener('load', register, { once: true });
+    return () => {
+      disposed = true;
+      window.removeEventListener('load', register);
+      unsubscribe?.();
+    };
+  }, [toast]);
+  return null;
+}
 
 function installViewportVariables(): () => void {
   if (typeof window === 'undefined') return () => undefined;
@@ -120,6 +165,7 @@ if (container) {
         <QueryClientProvider client={queryClient}>
           <ScrollProvider>
             <ToastProvider>
+              <ServiceWorkerUpdates />
               <OverlayProvider>
                 <App />
                 <GeneSelectionBridge />
@@ -133,23 +179,4 @@ if (container) {
       </ErrorBoundary>
     </React.StrictMode>,
   );
-}
-
-if (import.meta.env.PROD && typeof window !== 'undefined' && 'serviceWorker' in navigator && !navigator.webdriver) {
-  window.addEventListener('load', () => {
-    void import('./registerSW').then(({ registerServiceWorker, updateServiceWorker }) => {
-      const reloadKey = 'phage-explorer-sw-updated';
-      void registerServiceWorker({
-        onUpdate: () => {
-          try {
-            if (sessionStorage.getItem(reloadKey)) return;
-            sessionStorage.setItem(reloadKey, '1');
-          } catch {
-            // Ignore storage errors (private mode, quota).
-          }
-          void updateServiceWorker();
-        },
-      });
-    });
-  });
 }

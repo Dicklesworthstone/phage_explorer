@@ -1101,6 +1101,14 @@ export default function App(): React.ReactElement {
           children: <BeginnerModeIndicator />,
         }}
       >
+        {repository && progress?.updateStatus && (
+          <section className="panel panel-compact" aria-label="Database update status">
+            <p role="status">{progress.message}</p>
+            {progress.updateStatus === 'ready' && (
+              <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>Reload database</button>
+            )}
+          </section>
+        )}
         {(!repository || error) && (
           <section className="panel panel-compact" aria-label="Repository status">
             <div className="panel-header">

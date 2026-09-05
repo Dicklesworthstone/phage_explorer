@@ -55,8 +55,14 @@ export async function registerServiceWorker(
     // Check for updates periodically (every hour)
     if (!updateIntervalId) {
       updateIntervalId = setInterval(() => {
-        void registrationForUpdates?.update();
+        // Offline update checks are expected to fail; retry at the next interval.
+        void registrationForUpdates?.update().catch(() => undefined);
       }, 60 * 60 * 1000);
+    }
+
+    // An update can already be waiting when a tab is reopened.
+    if (registration.waiting && navigator.serviceWorker.controller) {
+      callbacks.onUpdate?.();
     }
 
     // Handle updates
@@ -101,25 +107,44 @@ export async function registerServiceWorker(
  */
 export async function updateServiceWorker(): Promise<void> {
   const registration = await navigator.serviceWorker.getRegistration();
+  if (!registration) throw new Error('The update registration is unavailable.');
   if (registration?.waiting) {
-    registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    const waiting = registration.waiting;
+    const previousController = navigator.serviceWorker.controller;
 
     // Wait until the new service worker takes control to avoid reloading back into old caches.
-    await new Promise<void>((resolve) => {
-      let done = false;
-      const finish = () => {
-        if (done) return;
-        done = true;
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+      };
+      const onControllerChange = () => {
+        if (!navigator.serviceWorker.controller || navigator.serviceWorker.controller === previousController) return;
+        cleanup();
         resolve();
       };
-
-      navigator.serviceWorker.addEventListener('controllerchange', finish, { once: true });
-      // Fallback: if controllerchange never fires, still allow reload after a short delay.
-      window.setTimeout(finish, 1500);
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('The update has not activated. Please try reloading again.'));
+      }, 10_000);
+      navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+      try {
+        waiting.postMessage({ type: 'SKIP_WAITING' });
+      } catch (error) {
+        cleanup();
+        reject(error);
+      }
     });
-
-    window.location.reload();
   }
+  // Another tab may have activated the waiting worker before this click.
+  window.location.reload();
+}
+
+/** Release callbacks when their UI owner unmounts; registration remains shared. */
+export function removeServiceWorkerCallbacks(callbacks: ServiceWorkerCallbacks): void {
+  if (callbacks.onUpdate) updateCallbacks.delete(callbacks.onUpdate);
+  if (callbacks.onSuccess) successCallbacks.delete(callbacks.onSuccess);
+  if (callbacks.onOffline) offlineCallbacks.delete(callbacks.onOffline);
 }
 
 /**

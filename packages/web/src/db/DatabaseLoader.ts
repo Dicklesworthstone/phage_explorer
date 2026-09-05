@@ -344,9 +344,14 @@ export class DatabaseLoader {
     stage: DatabaseLoadProgress['stage'],
     percent: number,
     message: string,
-    cached = false
+    cached = false,
+    updateStatus?: DatabaseLoadProgress['updateStatus']
   ): void {
-    this.config.onProgress({ stage, percent, message, cached });
+    if (this.repository && stage !== 'ready' && stage !== 'error') {
+      this.config.onProgress({ stage: 'ready', percent: 100, message: 'Updating the database in the background. Your cached data remains available.', cached: true, updateStatus: 'pending' });
+      return;
+    }
+    this.config.onProgress({ stage, percent, message, cached, updateStatus });
   }
 
   /**
@@ -983,18 +988,24 @@ export class DatabaseLoader {
         } finally {
           db.close();
         }
-        if (!saved.success) return false;
+        if (!saved.success) {
+          this.progress('ready', 100, 'The database update could not be saved. Your verified cached database is still in use.', true, 'failed');
+          return false;
+        }
 
         // Note: The old repository is still valid until reload
         if (import.meta.env?.DEV) {
           console.log('Database updated, reload to use new version');
         }
+        this.progress('ready', 100, 'Database update downloaded. Reload to use it.', true, 'ready');
         return true;
       }
 
       return false;
     } catch {
-      // Offline or error - ignore
+      if (this.repository) {
+        this.progress('ready', 100, 'Database update failed. Your verified cached database is still in use.', true, 'failed');
+      }
       return false;
     }
   }

@@ -119,7 +119,8 @@ test('cold load rejects a mismatched descriptor instead of displaying unverified
   }
 });
 
-test('real data and schema update downloads once, then reuses the verified new cache', async ({ page }, testInfo) => {
+for (const mode of ['normal', 'interrupted write', 'two tabs'] as const) {
+test(`real data and schema update converges to a verified cache: ${mode}`, async ({ page, context }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   try {
     await page.goto('/?phage=lambda&model=0');
@@ -146,30 +147,93 @@ test('real data and schema update downloads once, then reuses the verified new c
     expect(manifest.contentVersion).not.toBe(original!.contentVersion);
     let downloads = 0;
     let notModified = 0;
-    await page.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
+    await context.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
       if (route.request().headers()['if-none-match'] === '"real-update"') {
         notModified++;
         return route.fulfill({ status: 304, headers: { ETag: '"real-update"' } });
       }
       return route.fulfill({ json: manifest, headers: { ETag: '"real-update"' } });
     });
-    await page.route('**/phage.db.gz?*', route => {
+    let releaseConcurrentDownloads: (() => void) | undefined;
+    const bothDownloading = new Promise<void>(resolve => { releaseConcurrentDownloads = resolve; });
+    await context.route('**/phage.db.gz?*', async route => {
       downloads++;
+      if (mode === 'two tabs') {
+        if (downloads === 2) releaseConcurrentDownloads?.();
+        await bothDownloading;
+      }
       return route.fulfill({ body: gz, contentType: 'application/gzip' });
     });
-    await page.reload();
+    if (mode === 'interrupted write') {
+      await page.addInitScript(() => {
+        // Abort the real loader's first update transaction after put succeeds.
+        // The atomic record must retain both the previous identity and bytes.
+        const put = IDBObjectStore.prototype.put;
+        IDBObjectStore.prototype.put = function(value, key) {
+          const request = put.call(this, value, key);
+          if (key === 'phage-db:snapshot' && !sessionStorage.getItem('aborted-update-write')) {
+            sessionStorage.setItem('aborted-update-write', 'yes');
+            request.addEventListener('success', () => this.transaction.abort(), { once: true });
+          }
+          return request;
+        };
+      });
+    }
+    const second = mode === 'two tabs' ? await context.newPage() : null;
+    await Promise.all([page.reload(), second?.goto('/?phage=lambda&model=0')]);
     await expectCatalog(page);
+    if (second) await expectCatalog(second);
+    if (mode === 'interrupted write') {
+      await expect(page.getByRole('region', { name: 'Database update status' })).toContainText('could not be saved');
+      expect(await cachedIdentity(page)).toEqual(original);
+      await page.reload();
+      await expectCatalog(page);
+    }
     await expect.poll(() => cachedIdentity(page)).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
-    expect(downloads).toBe(1);
+    const expectedDownloads = mode === 'normal' ? 1 : 2;
+    expect(downloads).toBe(expectedDownloads);
+    if (second) expect(await cachedIdentity(second)).toEqual(await cachedIdentity(page));
     expect(notModified).toBeGreaterThan(0);
     await page.reload();
     await expectCatalog(page);
     await expect(page.getByTestId('phage-list-item-selected')).toContainText('50.0%');
-    expect(downloads).toBe(1);
+    expect(downloads).toBe(expectedDownloads);
     expect(pageErrors).toEqual([]);
+    if (second) await second.close();
   } finally {
     await finalize();
   }
+});
+}
+
+test('equivalent builder layouts keep the already verified cache without another database transfer', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    const original = await cachedIdentity(page);
+    const artifacts = testInfo.outputPath('equivalent-layout');
+    await mkdir(artifacts, { recursive: true });
+    const source = resolve(artifacts, 'source.db');
+    await writeFile(source, await (await page.request.get('/phage.db')).body());
+    execFileSync('bun', ['-e', `import { Database } from 'bun:sqlite';
+      const path=process.argv[1]; const db=Database.deserialize(Buffer.from(await Bun.file(path).arrayBuffer()));
+      try { db.exec('PRAGMA page_size=8192; VACUUM'); await Bun.write(path,db.serialize()); } finally { db.close(); }`, source], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const buildLog = execFileSync('bun', [resolve(process.cwd(), '../../scripts/build-web-db.ts'), '--source', source, '--output', artifacts], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const manifest = JSON.parse(await readFile(resolve(artifacts, 'phage.db.manifest.json'), 'utf8'));
+    expect(manifest.contentVersion).toBe(original!.contentVersion);
+    expect(manifest.sha256).not.toBe(original!.sha256);
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: manifest }));
+    let downloads = 0;
+    page.on('request', request => { if (/\/phage\.db(?:\.gz)?\?/.test(request.url())) downloads++; });
+    await page.reload();
+    await expectCatalog(page);
+    expect(downloads).toBe(0);
+    expect(await cachedIdentity(page)).toEqual(original);
+    expect(pageErrors).toEqual([]);
+    await testInfo.attach('equivalent-builder', { body: buildLog, contentType: 'text/plain' });
+    await testInfo.attach('equivalent-layout-identities', { body: JSON.stringify({ original, nextDeployment: manifest, downloads }), contentType: 'application/json' });
+  } finally { await finalize(); }
 });
 
 test('verified cached catalog remains usable when the database origin is unavailable', async ({ page }, testInfo) => {

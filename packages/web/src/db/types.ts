@@ -157,6 +157,8 @@ export interface DatabaseLoadProgress {
   percent: number;
   message: string;
   cached?: boolean;
+  /** Background updates never make the currently open repository unusable. */
+  updateStatus?: 'pending' | 'ready' | 'failed';
 }
 
 /**

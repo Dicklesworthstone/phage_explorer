@@ -8,7 +8,7 @@
  * - CacheFirst: WASM, fonts, PDB structures, images - immutable content
  * - CacheFirst (versioned): Database assets requested with `?v=<hash>`
  * - StaleWhileRevalidate: Unversioned DB only (fallback for offline)
- * - NetworkFirst: Navigation - prefer fresh but fallback to cache
+ * - Precache: Navigation - keep the app shell and its assets on the same build
  *
  * Note: JS/CSS are NOT cached with StaleWhileRevalidate to prevent stale code bugs.
  * The precache with content-hashed filenames handles JS/CSS versioning.
@@ -262,15 +262,8 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Force immediate activation on install (don't wait for old SW to be released)
-// This ensures users get the latest code as quickly as possible
-self.addEventListener('install', () => {
-  if (import.meta.env.DEV) {
-    console.log('[SW] Installed, skipping wait');
-  }
-  // Skip waiting immediately - don't wait for all clients to close
-  self.skipWaiting();
-});
+// Updates remain waiting until the user accepts the reload prompt. The first
+// installation activates normally because there is no previous worker.
 
 // =============================================================================
 // Cache Statistics Helper
