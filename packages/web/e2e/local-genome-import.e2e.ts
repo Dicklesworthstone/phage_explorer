@@ -72,12 +72,16 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
     await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(25);
     await expect(page.getByRole('figure', { name: 'Gene map visualization for Private α genome.' })).toBeVisible();
-    const segmentColors = await page.getByRole('figure', { name: 'Gene map visualization for Private α genome.' }).locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
+    const readSegmentColors = () => page.getByRole('figure', { name: 'Gene map visualization for Private α genome.' }).locator('canvas').evaluate((canvas: HTMLCanvasElement) => {
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Gene map canvas unavailable');
       const pixel = (fraction: number) => Array.from(ctx.getImageData(Math.floor(canvas.width * fraction), Math.floor(canvas.height * 32 / canvas.getBoundingClientRect().height), 1, 1).data);
       return { first: pixel(0.125), intron: pixel(0.5), last: pixel(0.875) };
     });
+    // Visibility precedes the canvas's requestAnimationFrame paint. Wait for
+    // opaque gene pixels before checking the actual joined-feature geometry.
+    await expect.poll(async () => (await readSegmentColors()).first[3]).toBe(255);
+    const segmentColors = await readSegmentColors();
     expect(segmentColors.first).toEqual(segmentColors.last);
     expect(segmentColors.intron).not.toEqual(segmentColors.first);
     await expect(page.getByRole('link', { name: /Open PRIVATE1.*NCBI/ })).toHaveCount(0);
@@ -138,10 +142,16 @@ test('palette selection and FASTA export follow the selected local genome with a
     await expect(page.getByRole('heading', { level: 1 })).toHaveText('PRIVATE_BETA');
     const fasta = await downloadText(page, () => palette(page, 'Export as FASTA'));
     expect(fasta.replace(/^>.*\n/, '').replace(/\s/g, '')).toBe('GGCC'.repeat(300));
-    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await palette(page, 'Copy sequence');
-    await expect.poll(() => page.evaluate(async () => (await navigator.clipboard.readText()).replace(/^>.*\n/, '').replace(/\s/g, ''))).toBe('GGCC'.repeat(300));
-    expect((await page.evaluate(() => navigator.clipboard.readText())).split('\n')[0]).toBe('>PRIVATE_BETA | PRIVATE_BETA');
+    // Paste into the actual import field, exercising the user's clipboard workflow
+    // without a Chromium-only permission override or synthetic clipboard contents.
+    const pastePanel = await importPanel(page);
+    const pasteField = pastePanel.getByRole('textbox', { name: 'Paste genome data' });
+    await pasteField.focus();
+    await page.keyboard.press('Control+v');
+    await expect(pasteField).toHaveValue(/^>PRIVATE_BETA \| PRIVATE_BETA\n/);
+    expect((await pasteField.inputValue()).replace(/^>.*\n/, '').replace(/\s/g, '')).toBe('GGCC'.repeat(300));
+    await page.keyboard.press('Escape');
     await palette(page, 'GC skew analysis');
     await expect(page.getByTestId('overlay-gcSkew').getByRole('img', { name: 'GC skew graph showing cumulative nucleotide bias across genome position' })).toBeVisible();
     await page.keyboard.press('Escape');
@@ -207,14 +217,25 @@ test('cancel a large input while its actual parser worker is pending', async ({ 
       await new Promise(resolve => setTimeout(resolve, 1000));
       await route.continue().catch(() => {});
     });
-    await overlay.getByLabel('Choose genome file').setInputFiles({ name: 'large.fa', mimeType: 'text/plain', buffer: Buffer.from(`>large\n${'ACGT'.repeat(1_000_000)}`) });
+    const input = `>large\n${'ACGT'.repeat(1_000_000)}`;
+    await overlay.getByLabel('Choose genome file').setInputFiles({ name: 'large.fa', mimeType: 'text/plain', buffer: Buffer.from(input) });
     await expect(overlay.getByRole('status')).toContainText('File loaded locally');
+    expect((await overlay.getByRole('region', { name: 'Genome file preview' }).textContent())?.length).toBe(2000);
+    await expect(overlay).toContainText('Parsing and export use the complete file');
     await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
     await expect.poll(() => workerRequested).toBe(true);
     await overlay.getByRole('button', { name: 'Cancel import', exact: true }).click();
     await expect(overlay.getByRole('status')).toContainText('Import cancelled');
     await expect(overlay.getByRole('button', { name: 'Add records to explorer' })).toHaveCount(0);
     await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+    // The bounded preview must not truncate what a retry parses or exports.
+    await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
+    await expect(overlay).toContainText('4,000,000 bases');
+    await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('large');
+    await page.getByRole('button', { name: 'Export local genome data' }).click();
+    const bundle = JSON.parse(await downloadText(page, () => overlay.getByRole('button', { name: 'Export local genome bundle' }).click()));
+    expect(bundle.inputs).toEqual([{ name: 'large.fa', text: input }]);
     expect(pageErrors).toEqual([]);
   } finally { await finalize(); }
 });

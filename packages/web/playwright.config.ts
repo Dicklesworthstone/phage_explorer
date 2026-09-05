@@ -68,6 +68,19 @@ export default defineConfig({
       use: { ...browserDevice('Desktop Chrome') },
     },
     {
+      name: 'firefox-research',
+      testMatch: /(?:local-genome-import|scientific-results|accessibility)\.e2e\.ts/,
+      use: {
+        ...browserDevice('Desktop Firefox'),
+        launchOptions: { firefoxUserPrefs: { 'general.useragent.override': REQUEST_USER_AGENT } },
+      },
+    },
+    {
+      name: 'webkit-research',
+      testMatch: /(?:local-genome-import|scientific-results|accessibility)\.e2e\.ts/,
+      use: { ...browserDevice('Desktop Safari') },
+    },
+    {
       name: 'chromium-pwa',
       testMatch: /pwa\.e2e\.ts/,
       use: {

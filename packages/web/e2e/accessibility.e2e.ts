@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 type AxeViolationNode = {
   target: string[];
@@ -16,6 +17,119 @@ type AxeViolation = {
 type AxeResults = {
   violations: AxeViolation[];
 };
+
+const RESEARCH_THEMES = ['holographic', 'cyberpunk', 'classic', 'ocean', 'matrix', 'sunset', 'forest', 'monochrome'];
+
+for (const theme of RESEARCH_THEMES) {
+  test(`local genome accessibility: ${theme} portrait and landscape`, async ({ page }, info) => {
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    try {
+      await setExperienceLevel(page, 'power');
+      await page.addInitScript(themeId => localStorage.setItem('phage-explorer-theme', themeId), theme);
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, info);
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await page.keyboard.press('Control+k');
+      const palette = page.getByTestId('overlay-commandPalette');
+      await palette.getByRole('combobox').fill('Local genomes: import or export');
+      await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).click();
+      const overlay = page.getByTestId('overlay-genomeImport');
+      await overlay.getByRole('textbox', { name: 'Paste genome data' }).fill('>THEME_LOCAL\nACGT');
+      await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
+      await overlay.getByRole('button', { name: 'Add records to explorer' }).click();
+      const trigger = page.getByRole('button', { name: 'Export local genome data' });
+      await trigger.click();
+      const field = overlay.getByRole('textbox', { name: 'Paste genome data' });
+      await expect(field).toHaveValue('');
+      await field.fill('>invalid\nACGU');
+      await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
+      await expect(overlay.getByRole('alert')).toContainText('IUPAC DNA');
+      await ensureAxeLoaded(page);
+      const contrast = await page.evaluate(async () => {
+        const axe = (window as unknown as { axe: { run: (context: unknown, options: unknown) => Promise<AxeResults & { passes: { id: string; nodes: unknown[] }[]; incomplete: unknown[] }> } }).axe;
+        const root = document.querySelector('[data-testid="overlay-genomeImport"]');
+        if (!root) throw new Error('Import dialog missing from contrast audit');
+        return axe.run(root, { runOnly: { type: 'rule', values: ['color-contrast'] } });
+      });
+      await info.attach(`contrast-${theme}`, { body: JSON.stringify(contrast), contentType: 'application/json' });
+      expect(contrast.violations, formatViolations(theme, contrast.violations)).toEqual([]);
+      // Axe cannot resolve the sheet's fully transparent decorative pseudo-element.
+      // Retain its incomplete results, and measure five named text surfaces from
+      // their actual computed colors. This is not a full-panel contrast certificate.
+      const textContrast = await overlay.evaluate(root => {
+        const rgb = (value: string) => {
+          if (!/^rgba?\(/.test(value)) throw new Error(`Unresolved CSS color: ${value}`);
+          const parts = value.match(/[\d.]+/g)!.map(Number);
+          return [parts[0], parts[1], parts[2], parts[3] ?? 1];
+        };
+        const over = (front: number[], back: number[]) => {
+          const alpha = front[3] + back[3] * (1 - front[3]);
+          if (!alpha) return [0, 0, 0, 0];
+          return [...front.slice(0, 3).map((c, i) => (c * front[3] + back[i] * back[3] * (1 - front[3])) / alpha), alpha];
+        };
+        // https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html
+        const luminance = (color: number[]) => color.slice(0, 3).map(c => {
+          const s = c / 255;
+          return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+        }).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+        return ['p:nth-of-type(1)', 'p:nth-of-type(2)', 'label[for="local-genome-input"]', 'textarea', 'p[role="alert"]'].map(selector => {
+          const node = root.querySelector<HTMLElement>(selector);
+          if (!node || node.getClientRects().length === 0) throw new Error(`Missing contrast sample ${selector}`);
+          let background = [0, 0, 0, 0];
+          for (let parent: HTMLElement | null = node; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            if (Number(style.opacity) !== 1 || style.backgroundImage !== 'none') throw new Error(`Unresolved painted layer for ${selector}`);
+            for (const pseudo of ['::before', '::after']) {
+              const decoration = getComputedStyle(parent, pseudo);
+              if (!['none', 'normal'].includes(decoration.content) && decoration.display !== 'none' && Number(decoration.opacity) !== 0) {
+                throw new Error(`Unresolved visible decoration for ${selector}`);
+              }
+            }
+            background = over(background, rgb(style.backgroundColor));
+            if (background[3] === 1) break;
+          }
+          if (background[3] !== 1) throw new Error(`No opaque background for ${selector}`);
+          const foreground = over(rgb(getComputedStyle(node).color), background);
+          const a = luminance(foreground), b = luminance(background);
+          return { selector, foreground, background, ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05) };
+        });
+      });
+      await info.attach(`text-contrast-${theme}`, { body: JSON.stringify(textContrast), contentType: 'application/json' });
+      expect(textContrast).toHaveLength(5);
+      for (const sample of textContrast) expect(sample.ratio, `${theme} ${sample.selector}`).toBeGreaterThanOrEqual(4.5);
+
+      const input = `>long_${'αβ'.repeat(80)}\nACGT`;
+      await field.fill(input);
+      await field.press('g');
+      await expect(field).toHaveValue(`${input}g`);
+      await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();
+      await expect(overlay.getByRole('button', { name: 'Add records to explorer' })).toBeVisible();
+      const dialog = page.getByRole('dialog', { name: 'Local genomes', exact: true });
+      for (const viewport of [{ width: 375, height: 812 }, { width: 812, height: 375 }, { width: 375, height: 812 }]) {
+        await page.setViewportSize(viewport);
+        const layout = await overlay.evaluate(element => ({
+          scroll: element.scrollWidth, client: element.clientWidth,
+          body: document.documentElement.scrollWidth, viewport: window.innerWidth,
+        }));
+        expect(layout.scroll, `${theme} dialog width at ${viewport.width}`).toBeLessThanOrEqual(layout.client + 1);
+        expect(layout.body, `${theme} document width at ${viewport.width}`).toBeLessThanOrEqual(layout.viewport + 1);
+        await field.focus();
+        for (const key of ['Tab', 'Shift+Tab']) {
+          for (let i = 0; i < 12; i++) {
+            await page.keyboard.press(key);
+            expect(await dialog.evaluate(element => element.contains(document.activeElement)), `${theme} ${key} focus remains inside dialog at ${viewport.width}`).toBe(true);
+          }
+        }
+      }
+      await page.keyboard.press('Escape');
+      await expect(overlay).not.toBeVisible();
+      await expect(trigger).toBeFocused();
+      expect(pageErrors).toEqual([]);
+    } finally { await finalize(); }
+  });
+}
 
 const AXE_SCRIPT_URL = 'https://cdn.jsdelivr.net/npm/axe-core@4.11.0/axe.min.js';
 

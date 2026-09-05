@@ -175,6 +175,7 @@ export function Overlay({
   // - overlay actually closing (restore focus)
   // - overlay swapping mounts (e.g. Suspense fallback -> loaded overlay) while still open
   const overlayIsOpenLatestRef = useRef(overlayIsOpen);
+  overlayIsOpenLatestRef.current = overlayIsOpen;
   const overlayStackItem = stack.find((item) => item.id === id);
   const closeOnBackdrop = overlayStackItem?.config.closeOnBackdrop ?? true;
   // Use context-provided mobile detection for consistency
@@ -250,7 +251,9 @@ export function Overlay({
   useLayoutEffect(() => {
     if (!overlayIsOpen) return;
 
-    const overlay = overlayRef.current;
+    // Mobile renders the controls and close button inside a BottomSheet portal.
+    // Bind to that dialog too, and rebind when the viewport changes modal layout.
+    const overlay = overlayRef.current?.closest<HTMLElement>('[role="dialog"]');
     if (!overlay) return;
 
     // Focus the overlay on mount
@@ -264,10 +267,14 @@ export function Overlay({
 
     // Prefer focusing an explicitly marked element (e.g. command palette input),
     // otherwise focus the first focusable element, else the overlay container.
+    const getFocusableElements = () => Array.from(overlay.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]'
+    )).filter(element => element.tabIndex >= 0 && !element.matches(':disabled') &&
+      element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden');
     const preferredFocus =
       overlay.querySelector<HTMLElement>('[data-overlay-autofocus]') ??
       overlay.querySelector<HTMLElement>('[autofocus]') ??
-      overlay.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      getFocusableElements()[0];
 
     if (preferredFocus && typeof preferredFocus.focus === 'function') {
       preferredFocus.focus();
@@ -275,14 +282,16 @@ export function Overlay({
       overlay.focus();
     }
 
-    // Get all focusable elements
-    const focusableElements = overlay.querySelectorAll<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
-
     const handleTab = (e: KeyboardEvent) => {
       if (e.key !== 'Tab') return;
-      if (focusableElements.length === 0) return;
+      // Parsing, loading and errors can add, remove or disable controls while
+      // the dialog remains open. A mount-time list traps against stale nodes.
+      const focusableElements = getFocusableElements();
+      if (focusableElements.length === 0) {
+        e.preventDefault();
+        overlay.focus();
+        return;
+      }
 
       const firstElement = focusableElements[0];
       const lastElement = focusableElements[focusableElements.length - 1];
@@ -300,38 +309,26 @@ export function Overlay({
         }
       }
     };
-    if (focusableElements.length > 0) {
-      overlay.addEventListener('keydown', handleTab);
-    }
+    overlay.addEventListener('keydown', handleTab);
 
     return () => {
-      if (focusableElements.length > 0) {
-        overlay.removeEventListener('keydown', handleTab);
-      }
-
-      // If the overlay is still open, do not restore focus or clear the stored focus target.
-      // This happens when the overlay remounts while open (e.g. Suspense fallback replaced by
-      // the loaded overlay).
-      if (overlayIsOpenLatestRef.current) {
-        return;
-      }
-
-      const activeElement = document.activeElement as HTMLElement | null;
-      const shouldRestoreFocus =
-        !activeElement ||
-        activeElement === document.body ||
-        activeElement === document.documentElement ||
-        overlay.contains(activeElement);
+      overlay.removeEventListener('keydown', handleTab);
 
       const stored = PREVIOUS_FOCUS_BY_OVERLAY_ID.get(id) ?? previousFocus.current;
-      PREVIOUS_FOCUS_BY_OVERLAY_ID.delete(id);
-
-      const canFocus = stored && typeof stored.focus === 'function' && (stored as HTMLElement).isConnected;
-      if (shouldRestoreFocus && canFocus) {
-        stored.focus();
-      }
+      // Lazy overlays unmount directly when removed from the stack: they never
+      // render isOpen=false. Wait until the DOM commit has finished so a real
+      // close can be distinguished from a Suspense or responsive-layout swap.
+      queueMicrotask(() => {
+        if (overlayIsOpenLatestRef.current && document.querySelector(`.overlay-${id}`)) return;
+        PREVIOUS_FOCUS_BY_OVERLAY_ID.delete(id);
+        const activeElement = document.activeElement;
+        const shouldRestoreFocus =
+          !activeElement || activeElement === document.body ||
+          activeElement === document.documentElement || overlay.contains(activeElement);
+        if (shouldRestoreFocus && stored?.isConnected) stored.focus();
+      });
     };
-  }, [overlayIsOpen, id]);
+  }, [overlayIsOpen, id, shouldUseBottomSheet]);
 
   // Don't render if not open AND not exiting - AFTER all hooks
   if (!overlayIsOpen && !isExiting) {
@@ -430,7 +427,7 @@ export function Overlay({
         minHeight={size === 'sm' ? 40 : 60}
         maxHeight={94}
       >
-        <div className={`overlay overlay-${id} ${className}`} data-testid={`overlay-${id}`}>
+        <div ref={overlayRef} className={`overlay overlay-${id} ${className}`} data-testid={`overlay-${id}`}>
           {children}
         </div>
       </BottomSheet>

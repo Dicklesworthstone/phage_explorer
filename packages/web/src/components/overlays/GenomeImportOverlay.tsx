@@ -13,6 +13,7 @@ export function GenomeImportOverlay(): React.ReactElement {
   const add = useLocalGenomes(state => state.add);
   const phages = usePhageStore(state => state.phages);
   const [text, setText] = useState('');
+  const [filePreview, setFilePreview] = useState(false);
   const [name, setName] = useState('pasted-genomes.txt');
   const [result, setResult] = useState<GenomeImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +80,7 @@ export function GenomeImportOverlay(): React.ReactElement {
     try {
       const content = await file.text();
       if (generation.current !== current) return;
-      setText(content); setName(file.name); setStatus('File loaded locally. Select Parse records to continue.');
+      setText(content); setFilePreview(content.length > 2000); setName(file.name); setStatus('File loaded locally. Select Parse records to continue.');
     } catch (reason) { if (generation.current === current) setError(reason instanceof Error ? reason.message : 'Could not read the file.'); }
     finally { if (generation.current === current) setBusy(false); }
   };
@@ -102,12 +103,18 @@ export function GenomeImportOverlay(): React.ReactElement {
 
   return (
     <Overlay id="genomeImport" title="Local genomes" size="lg">
-      <div style={{ display: 'grid', gap: 'var(--space-3)' }}>
+      <div style={{ display: 'grid', gap: 'var(--space-3)', minWidth: 0, overflowWrap: 'anywhere' }}>
         <p>Open your own DNA sequences in the sequence viewer, gene map, comparisons and sequence analyses. Input stays in this browser session. Export a bundle before reloading; a share URL does not contain local sequences.</p>
         <p>FASTA, GenBank or a local genome bundle; up to 10 MiB, 100 records and 5,000,000 bases. IUPAC ambiguity codes are retained. FASTA topology is unknown unless the header contains [topology=circular] or [topology=linear].</p>
         <label>Choose genome file <input aria-label="Choose genome file" type="file" accept=".fa,.fasta,.fna,.gb,.gbk,.genbank,.json,.txt" disabled={busy} onChange={event => void chooseFile(event.target.files?.[0])} /></label>
-        <label htmlFor="local-genome-input">Paste genome data</label>
-        <textarea id="local-genome-input" rows={7} value={text} disabled={busy} spellCheck={false} onChange={event => { setText(event.target.value); setName('pasted-genomes.txt'); setResult(null); setError(null); }} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} />
+        {filePreview ? <>
+          <p>{name}: preview of the first 2,000 characters. Parsing and export use the complete file.</p>
+          <pre role="region" aria-label="Genome file preview" style={{ maxHeight: '10rem', overflow: 'auto', whiteSpace: 'pre-wrap', margin: 0 }}>{text.slice(0, 2000)}</pre>
+          <button type="button" className="btn" disabled={busy} onClick={() => { setFilePreview(false); setText(''); setName('pasted-genomes.txt'); setResult(null); setError(null); setStatus('Paste genome data or choose another file.'); }}>Use pasted input instead</button>
+        </> : <>
+          <label htmlFor="local-genome-input">Paste genome data</label>
+          <textarea id="local-genome-input" rows={7} value={text} disabled={busy} spellCheck={false} onChange={event => { setText(event.target.value); setName('pasted-genomes.txt'); setResult(null); setError(null); }} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} />
+        </>}
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-primary" disabled={busy || !text.trim()} onClick={parse}>Parse records</button>
           {busy && <button type="button" className="btn" onClick={cancel}>Cancel import</button>}
