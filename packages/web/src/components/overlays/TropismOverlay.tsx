@@ -3,8 +3,7 @@
  *
  * Uses precomputed tropism predictions when available, otherwise falls back to
  * heuristic tail fiber analysis from @phage-explorer/comparison. Runs on the
- * main thread to avoid extra worker plumbing; fetches the full genome sequence
- * only when heuristics are needed.
+ * main thread. Both paths fetch the real genome for CDS sequence descriptors.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
@@ -170,6 +169,12 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
   const [status, setStatus] = useState<LoadStatus>('idle');
   const [data, setData] = useState<TropismAnalysis | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const demonstration = phage !== null && demoPhageId === phage.id;
+  const currentData = data?.phageId === phage?.id ? data : null;
+
+  useEffect(() => { setDemoPhageId(null); }, [phage?.id]);
 
   // View mode: 'candidates' (standard predictions) vs 'structural_clash' (Roadmap #3 biophysical model)
   const [viewMode, setViewMode] = useState<'candidates' | 'structural_clash'>('candidates');
@@ -183,13 +188,14 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
   const [riskFilter, setRiskFilter] = useState<'all' | 'hypervariable' | 'essential_anchor' | 'clash_critical'>('all');
 
   const breadthLabel = useMemo(() => {
-    if (!data) return null;
-    if (data.breadth === 'narrow') return { text: 'NARROW: single receptor', color: colors.error };
-    if (data.breadth === 'multi-receptor') return { text: 'BROAD: multiple receptor cues', color: colors.success };
+    if (!currentData) return null;
+    if (currentData.breadth === 'narrow') return { text: 'Single receptor cue', color: colors.text };
+    if (currentData.breadth === 'multi-receptor') return { text: 'Multiple receptor cues', color: colors.text };
     return { text: 'UNKNOWN', color: colors.textMuted };
-  }, [data, colors]);
+  }, [currentData, colors]);
 
-  const structural = data?.structuralAnalysis ?? null;
+  const structural = demonstration ? currentData?.structuralAnalysis ?? null : null;
+  const sequenceAnalysis = currentData?.sequenceAnalysis ?? null;
 
   // Initialize simulator to first hypervariable hotspot when available
   useEffect(() => {
@@ -226,30 +232,30 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
   );
 
   useEffect(() => {
-    if (!isOpen('tropism') || !phage) return;
+    if (!isOpen('tropism') || !phage) {
+      setData(null);
+      setStatus('idle');
+      return;
+    }
     let cancelled = false;
     const load = async () => {
       setStatus('loading');
       setError(null);
+      setData(null);
       try {
         const precomputed = phage.tropismPredictions ?? [];
-        if (precomputed.length > 0) {
-          const analysis = analyzeTailFiberTropism(phage, '', toPredictionInputs(phage, precomputed));
-          if (!cancelled) {
-            setData(analysis);
-            setStatus('ready');
-          }
-          return;
-        }
-
-        // Fall back to heuristic analysis using full genome sequence if repository is available
-        if (!repository) {
-          throw new Error('Repository unavailable for tropism analysis');
-        }
-
+        const predictions = toPredictionInputs(phage, precomputed);
         const length = phage.genomeLength ?? 0;
-        const sequence = length > 0 ? await repository.getSequenceWindow(phage.id, 0, length) : '';
-        const analysis = analyzeTailFiberTropism(phage, sequence, []);
+        let sequence = '';
+        try {
+          if (!repository) throw new Error('Repository unavailable for sequence descriptors.');
+          if (length > 0) sequence = await repository.getSequenceWindow(phage.id, 0, length);
+        } catch (err) {
+          if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load the real sequence.');
+          // Stored candidate evidence remains useful without a sequence fetch.
+        }
+        if (cancelled) return;
+        const analysis = analyzeTailFiberTropism(phage, sequence, predictions, { demonstration });
         if (!cancelled) {
           setData(analysis);
           setStatus('ready');
@@ -267,13 +273,13 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
     return () => {
       cancelled = true;
     };
-  }, [isOpen, phage, repository]);
+  }, [isOpen, phage, repository, demonstration, retryCount]);
 
   if (!isOpen('tropism')) {
     return null;
   }
 
-  const hits = data?.hits ?? [];
+  const hits = currentData?.hits ?? [];
 
   return (
     <Overlay
@@ -283,6 +289,13 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
       size="xl"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <p>Receptor candidates are annotation or similarity cues, not measured host range or binding affinity.</p>
+        <label>
+          <input type="checkbox" checked={demonstration} onChange={event => setDemoPhageId(event.target.checked ? phage?.id ?? null : null)} />{' '}
+          Show illustrative structural model
+        </label>
+        {structural && <p role="note" aria-label="Demonstration assumptions">DEMONSTRATION: {structural.assumptions}</p>}
+        {error && <div role="alert">{error} <button type="button" onClick={() => setRetryCount(n => n + 1)}>Retry sequence loading</button></div>}
         {/* Header stats grid */}
         <div
           style={{
@@ -302,7 +315,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
               {breadthLabel?.text ?? 'N/A'}
             </div>
             <div style={{ color: colors.textDim, fontSize: '0.85rem' }}>
-              Source: {data?.source ?? (phage?.tropismPredictions?.length ? 'precomputed' : 'heuristic')}
+              Source: {currentData?.source ?? (phage?.tropismPredictions?.length ? 'precomputed' : 'heuristic')}
             </div>
           </div>
           <div style={{ padding: '0.75rem', borderRadius: '6px', border: `1px solid ${colors.borderLight}` }}>
@@ -311,12 +324,12 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
             <div style={{ color: colors.textDim, fontSize: '0.85rem' }}>Receptor candidates detected</div>
           </div>
           <div style={{ padding: '0.75rem', borderRadius: '6px', border: `1px solid ${colors.borderLight}` }}>
-            <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Structural Epitopes</div>
+            <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>Protein sequence</div>
             <div style={{ color: structural ? colors.success : colors.textMuted, fontWeight: 700 }}>
-              {structural ? `${structural.hypervariableHotspots.length} Hotspots` : 'None'}
+              {sequenceAnalysis ? `${sequenceAnalysis.sequence.length} residues` : 'Unavailable'}
             </div>
             <div style={{ color: colors.textDim, fontSize: '0.85rem' }}>
-              {structural ? `${structural.domains.length} modular domains` : 'No fiber gene'}
+              {sequenceAnalysis ? (currentData?.sequenceSource === 'deposited_translation' ? 'Deposited GenBank translation' : 'Translated from the real genome') : 'Requires a deposited protein translation or complete CDS'}
             </div>
           </div>
         </div>
@@ -356,7 +369,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
               gap: '0.4rem',
             }}
           >
-            <span>Structural Epitope & Clash Map</span>
+            <span>Sequence descriptors & structural illustration</span>
             <span
               style={{
                 fontSize: '0.7rem',
@@ -366,7 +379,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
                 color: viewMode === 'structural_clash' ? '#ffffff' : colors.primary,
               }}
             >
-              Roadmap #3
+              {demonstration ? 'DEMONSTRATION' : 'SEQUENCE'}
             </span>
           </button>
         </div>
@@ -426,6 +439,24 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
         {/* Tab 2: Structural Epitope Clash Map View */}
         {status === 'ready' && viewMode === 'structural_clash' && (
           <>
+            {sequenceAnalysis && (
+              <section aria-label="Real protein sequence descriptors">
+                <h3>{sequenceAnalysis.geneName}: {sequenceAnalysis.sequence.length} residues</h3>
+                <p>{currentData?.translationAssumptions}</p>
+                <p>{sequenceAnalysis.method}</p>
+                <p>Mean hydropathy: {sequenceAnalysis.meanHydropathy?.toFixed(3) ?? 'Unavailable: ambiguous residues'}</p>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sequenceAnalysis.sequence}</pre>
+                <button type="button" onClick={() => {
+                  const blob = new Blob([JSON.stringify({ ...currentData, structuralAnalysis: structural, mode: demonstration ? 'demonstration' : 'sequence' }, null, 2)], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.download = `tropism-${phage?.id}-${demonstration ? 'demonstration' : 'sequence'}.json`;
+                  link.click();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                }}>Export sequence analysis</button>
+              </section>
+            )}
             {!structural ? (
               <div
                 style={{
@@ -437,7 +468,7 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
                   textAlign: 'center',
                 }}
               >
-                No tail fiber or receptor-binding protein was identified in this phage's annotations to model structural domain boundaries and clash profiles.
+                Structural results require a homologous protein alignment and a mapped experimental or validated 3D structure. Sequence alone does not establish surface areas, binding energies, mutation effects or donor compatibility. You can inspect the available receptor evidence, or explicitly select the illustrative model above.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -893,4 +924,3 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
 }
 
 export default TropismOverlay;
-

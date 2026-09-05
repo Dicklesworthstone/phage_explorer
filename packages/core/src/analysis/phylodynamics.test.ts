@@ -246,6 +246,28 @@ describe('computeSelection', () => {
 });
 
 describe('analyzePhylodynamics', () => {
+  it('does not mistake equal-length rotated raw genomes for a coding alignment', () => {
+    const genome = 'ATGAAAGCTGGTACCTTCGACGAGTGGCAATTAGC';
+    const sequences = [0, 3, 6].map((offset, i) => ({
+      id: String(i), sequence: genome.slice(offset) + genome.slice(0, offset), date: 2020 + i,
+    }));
+    const result = analyzePhylodynamics(sequences);
+    expect(result.tree.leafCount).toBe(3);
+    expect(result.selection).toBeNull();
+    expect(result.selectionUnavailableReason).toContain('Equal-length raw genomes are insufficient');
+  });
+
+  it('retains selection for explicitly identified in-frame coding alignments', () => {
+    const sequences = ['ATGAAAGCT', 'ATGAAGGCT', 'ATGAAGGCC'].map((sequence, i) => ({ id: String(i), sequence, date: 2020 + i }));
+    const result = analyzePhylodynamics(sequences, { codingAlignment: { source: 'Hand-aligned synonymous codon example', geneticCode: 1 } });
+    expect(result.selection).not.toBeNull();
+    expect(result.selectionUnavailableReason).toBeUndefined();
+    const invalid = analyzePhylodynamics(sequences.map(s => ({ ...s, sequence: s.sequence.slice(1) })), {
+      codingAlignment: { source: 'Malformed frame', geneticCode: 1 },
+    });
+    expect(invalid.selection).toBeNull();
+  });
+
   it('runs complete analysis pipeline', () => {
     const sequences: DatedSequence[] = [
       { id: 'A', sequence: 'AAAAAAAAAA', date: 2020 },

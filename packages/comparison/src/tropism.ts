@@ -3,7 +3,9 @@ import {
   translateSequence,
   reverseComplement,
   analyzeTailFiberStructure,
+  analyzeTailFiberSequence,
   type TailFiberStructuralAnalysis,
+  type TailFiberSequenceAnalysis,
 } from '@phage-explorer/core';
 
 export interface ReceptorCandidate {
@@ -26,6 +28,9 @@ export interface TropismAnalysis {
   breadth: 'narrow' | 'multi-receptor' | 'unknown';
   source: 'heuristic' | 'precomputed';
   structuralAnalysis?: TailFiberStructuralAnalysis | null;
+  sequenceAnalysis: TailFiberSequenceAnalysis | null;
+  sequenceSource: 'deposited_translation' | 'translated_cds' | null;
+  translationAssumptions: string;
 }
 
 const fiberKeywords = [
@@ -78,12 +83,24 @@ function isTailFiberGene(gene: GeneInfo): boolean {
 }
 
 function translateGeneSequence(genome: string, gene: GeneInfo): string {
+  const qualifiers = gene.qualifiers;
+  if (typeof qualifiers?.translation === 'string' && qualifiers.translation.trim()) {
+    return qualifiers.translation.replace(/\s/g, '').toUpperCase();
+  }
   if (!genome) return '';
-  const start = Math.max(0, gene.startPos); // stored as 0-based
-  const end = Math.min(genome.length, gene.endPos);
+  // These cases need the deposited translation or a complete translation
+  // implementation. Do not silently translate one segment or ignore recoding.
+  if (qualifiers?._segments || qualifiers?.transl_except || qualifiers?.exception) return '';
+  const table = Number(qualifiers?.transl_table ?? 1);
+  const codonStart = Number(qualifiers?.codon_start ?? 1);
+  if (![1, 11].includes(table) || ![1, 2, 3].includes(codonStart)) return '';
+  const start = gene.startPos; // stored as 0-based, half-open
+  const end = gene.endPos;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > genome.length ||
+      end <= start || (end - start - codonStart + 1) % 3 !== 0 || !['+', '-'].includes(gene.strand ?? '')) return '';
   const raw = genome.slice(start, end);
   const dna = gene.strand === '-' ? reverseComplement(raw) : raw;
-  return translateSequence(dna, 0);
+  return translateSequence(dna.slice(codonStart - 1), 0);
 }
 
 function aminoAcidComposition(aa: string): Record<string, number> {
@@ -248,9 +265,11 @@ function isHypothetical(gene: GeneInfo): boolean {
 export function analyzeTailFiberTropism(
   phage: PhageFull,
   genomeSequence = '',
-  precomputed: TropismPredictionInput[] = []
+  precomputed: TropismPredictionInput[] = [],
+  options: { demonstration?: boolean } = {}
 ): TropismAnalysis {
   const hits: TailFiberHit[] = [];
+  const translationAssumptions = 'The deposited GenBank protein translation is preferred. Fallback translation uses zero-based, half-open CDS coordinates, annotated strand and codon_start with standard codons (tables 1/11), without alternative initiation rules. Joined CDS, recoding exceptions and other genetic codes require a deposited translation.';
 
   // If precomputed predictions supplied, prefer them
   if (precomputed.length > 0) {
@@ -258,7 +277,10 @@ export function analyzeTailFiberTropism(
     for (const p of precomputed) {
       const key = p.locusTag ?? `gene-${p.geneId ?? 'unknown'}`;
       const existing = grouped.get(key) ?? {
-        gene: {
+        // A gene feature and its CDS can share a locus tag. Prefer the exact
+        // prediction gene ID, then a CDS, so the deposited translation survives.
+        gene: (p.geneId !== null ? phage.genes.find(g => g.id === p.geneId) : undefined) ??
+          (p.locusTag !== null ? phage.genes.find(g => g.locusTag === p.locusTag && g.type === 'CDS') : undefined) ?? {
           id: p.geneId ?? -1,
           name: p.locusTag ?? null,
           locusTag: p.locusTag ?? null,
@@ -288,7 +310,8 @@ export function analyzeTailFiberTropism(
     const breadth: TropismAnalysis['breadth'] =
       receptors.size === 0 ? 'unknown' : receptors.size === 1 ? 'narrow' : 'multi-receptor';
     const primaryGene = mergedHits[0]?.gene ?? phage.genes?.find(isTailFiberGene);
-    const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, null);
+    const primarySeq = primaryGene ? translateGeneSequence(genomeSequence, primaryGene) : null;
+    const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, primarySeq, options);
     return {
       phageId: phage.id,
       phageName: phage.name,
@@ -296,6 +319,9 @@ export function analyzeTailFiberTropism(
       breadth,
       source: 'precomputed',
       structuralAnalysis,
+      sequenceAnalysis: analyzeTailFiberSequence(phage, primaryGene, primarySeq),
+      sequenceSource: primarySeq ? (primaryGene?.qualifiers?.translation ? 'deposited_translation' : 'translated_cds') : null,
+      translationAssumptions,
     };
   }
 
@@ -307,7 +333,7 @@ export function analyzeTailFiberTropism(
     if (!isFiber && !isHypo) continue;
 
     const text = `${gene.name ?? ''} ${gene.product ?? ''}`.toLowerCase();
-    const aaSeq = genomeSequence ? translateGeneSequence(genomeSequence, gene) : '';
+    const aaSeq = translateGeneSequence(genomeSequence, gene);
     
     const annotationReceptors = annotationDrivenReceptors(text);
     const sequenceReceptors = aaSeq ? sequenceDrivenReceptors(aaSeq) : [];
@@ -334,8 +360,8 @@ export function analyzeTailFiberTropism(
     receptors.size === 0 ? 'unknown' : receptors.size === 1 ? 'narrow' : 'multi-receptor';
 
   const primaryGene = hits[0]?.gene ?? phage.genes?.find(isTailFiberGene);
-  const primarySeq = primaryGene && genomeSequence ? translateGeneSequence(genomeSequence, primaryGene) : null;
-  const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, primarySeq);
+  const primarySeq = primaryGene ? translateGeneSequence(genomeSequence, primaryGene) : null;
+  const structuralAnalysis = analyzeTailFiberStructure(phage, primaryGene, primarySeq, options);
 
   return {
     phageId: phage.id,
@@ -344,6 +370,9 @@ export function analyzeTailFiberTropism(
     breadth,
     source: 'heuristic',
     structuralAnalysis,
+    sequenceAnalysis: analyzeTailFiberSequence(phage, primaryGene, primarySeq),
+    sequenceSource: primarySeq ? (primaryGene?.qualifiers?.translation ? 'deposited_translation' : 'translated_cds') : null,
+    translationAssumptions,
   };
 }
 

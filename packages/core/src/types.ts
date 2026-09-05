@@ -69,6 +69,8 @@ export interface GeneInfo {
   product: string | null;
   type: string | null;
   domains?: string[];
+  /** Original GenBank qualifiers, including deposited translation and CDS exceptions. */
+  qualifiers?: Record<string, unknown> | null;
 }
 
 // Codon usage data
@@ -140,4 +142,3 @@ export interface LatentSpaceAtlasMetadata {
   maxOutlierScore: number;
   minOutlierScore: number;
 }
-

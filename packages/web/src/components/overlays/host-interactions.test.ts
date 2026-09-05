@@ -70,15 +70,15 @@ function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration)', () => {
+describe('Host interaction illustration API and action registry (not browser proof)', () => {
   it('registers ActionIds.OverlayHostInteractions in keyboard action registry with Alt+I', () => {
     const action = ActionRegistry[ActionIds.OverlayHostInteractions];
     expect(action).toBeDefined();
     expect(action.title).toBe('Host interactions');
-    expect(action.category).toBe('Analysis');
+    expect(action.category).toBe('Education');
     expect(action.overlayId).toBe('hostInteractions');
     expect(action.overlayAction).toBe('toggle');
-    expect(action.provenance).toBe('heuristic');
+    expect(action.provenance).toBe('demo');
 
     const shortcut = Array.isArray(action.defaultShortcut)
       ? action.defaultShortcut[0]
@@ -93,7 +93,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
 
   it('runs multi-evidence interaction analysis and constructs bipartite network', () => {
     const phage = createMockPhage();
-    const result = analyzeHostInteractions(phage);
+    const result = analyzeHostInteractions(phage, undefined, { demonstration: true });
 
     expect(result.totalInteractions).toBeGreaterThan(0);
     expect(result.bipartiteNodes.length).toBeGreaterThan(0);
@@ -115,7 +115,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
 
   it('evaluates docking interfaces with buried surface area, deltaG, and Kd', () => {
     const phage = createMockPhage();
-    const result = analyzeHostInteractions(phage);
+    const result = analyzeHostInteractions(phage, undefined, { demonstration: true });
 
     for (const inter of result.interactions) {
       expect(inter.dockingFootprint.buriedSurfaceAreaA2).toBeGreaterThanOrEqual(800);
@@ -128,7 +128,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
 
   it('generates in-silico effector mutations with predicted affinity gains', () => {
     const phage = createMockPhage();
-    const result = analyzeHostInteractions(phage);
+    const result = analyzeHostInteractions(phage, undefined, { demonstration: true });
 
     expect(result.inSilicoEngineeringCandidates.length).toBeGreaterThanOrEqual(2);
     for (const cand of result.inSilicoEngineeringCandidates) {
@@ -143,6 +143,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
     const phage = createMockPhage();
 
     const ecoliResult = analyzeHostInteractions(phage, CANONICAL_HOST_TARGETS, {
+      demonstration: true,
       hostOrganism: 'Escherichia coli',
     });
     expect(ecoliResult.totalInteractions).toBeGreaterThan(0);
@@ -151,6 +152,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
     }
 
     const pseudoResult = analyzeHostInteractions(phage, CANONICAL_HOST_TARGETS, {
+      demonstration: true,
       hostOrganism: 'Pseudomonas aeruginosa',
     });
     for (const inter of pseudoResult.interactions) {
@@ -160,7 +162,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Web Integration
 
   it('handles phages without genes gracefully', () => {
     const emptyPhage = createMockPhage({ genes: [] });
-    const result = analyzeHostInteractions(emptyPhage);
+    const result = analyzeHostInteractions(emptyPhage, undefined, { demonstration: true });
 
     expect(result.totalInteractions).toBe(0);
     expect(result.bipartiteNodes.length).toBe(0);

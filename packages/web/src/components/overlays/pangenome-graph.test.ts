@@ -47,15 +47,15 @@ function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
+describe('Pangenome illustration API and action registry (not browser proof)', () => {
   it('registers ActionIds.OverlayPangenomeGraph in keyboard action registry with Shift+P', () => {
     const action = ActionRegistry[ActionIds.OverlayPangenomeGraph];
     expect(action).toBeDefined();
     expect(action.title).toBe('Pangenome graph');
-    expect(action.category).toBe('Analysis');
+    expect(action.category).toBe('Education');
     expect(action.overlayId).toBe('pangenomeGraph');
     expect(action.overlayAction).toBe('toggle');
-    expect(action.provenance).toBe('heuristic');
+    expect(action.provenance).toBe('demo');
 
     const shortcut = Array.isArray(action.defaultShortcut)
       ? action.defaultShortcut[0]
@@ -70,7 +70,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
 
   it('runs variation graph pangenome construction for comparative visualization', () => {
     const phage = createMockPhage();
-    const result = constructPangenomeGraph(phage);
+    const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
     expect(result.includedGenomesCount).toBeGreaterThanOrEqual(4);
     expect(result.segments.length).toBeGreaterThan(0);
@@ -88,7 +88,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
 
   it('provides structured variant cards with net length delta, GC shift, and breakpoints', () => {
     const phage = createMockPhage();
-    const result = constructPangenomeGraph(phage);
+    const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
     for (const card of result.variantCards) {
       expect(card.id).toMatch(/^var-bubble-\d+$/);
@@ -105,7 +105,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
 
   it('identifies HGT candidates based on |ΔGC| >= 4.0%', () => {
     const phage = createMockPhage();
-    const result = constructPangenomeGraph(phage);
+    const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
     const hgtCards = result.variantCards.filter((c) => c.isHgtCandidate);
     expect(hgtCards.length).toBeGreaterThan(0);
@@ -117,7 +117,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
 
   it('computes Heaps law openness alpha and recombination hotspots', () => {
     const phage = createMockPhage();
-    const result = constructPangenomeGraph(phage);
+    const result = constructPangenomeGraph(phage, [], { demonstration: true });
     const { metrics } = result;
 
     expect(metrics.coreFraction).toBeGreaterThan(0);
@@ -134,7 +134,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Web Integration)', () => {
 
   it('handles phages without annotated genes gracefully', () => {
     const emptyPhage = createMockPhage({ genes: [] });
-    const result = constructPangenomeGraph(emptyPhage);
+    const result = constructPangenomeGraph(emptyPhage, [], { demonstration: true });
 
     expect(result.includedGenomesCount).toBeGreaterThanOrEqual(4);
     expect(result.segments.length).toBeGreaterThan(0);

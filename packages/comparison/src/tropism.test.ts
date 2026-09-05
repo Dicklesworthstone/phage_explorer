@@ -265,19 +265,84 @@ describe('analyzeTailFiberTropism', () => {
     expect(result.hits.length).toBe(1);
   });
 
-  test('computes structuralAnalysis for tail fiber genes with domains and residue metrics', () => {
+  test('retains the structural illustration only after explicit opt-in', () => {
     const phage = makePhage([
       makeGene('gp37 long tail fiber', 0, 3000),
     ]);
 
     const result = analyzeTailFiberTropism(phage);
 
-    expect(result.structuralAnalysis).toBeDefined();
-    expect(result.structuralAnalysis).not.toBeNull();
-    expect(result.structuralAnalysis?.domains.length).toBe(3);
-    expect(result.structuralAnalysis?.receptorScores.length).toBeGreaterThan(0);
-    expect(result.structuralAnalysis?.residues.length).toBeGreaterThan(0);
-    expect(result.structuralAnalysis?.chimeraSuggestions.length).toBeGreaterThan(0);
+    expect(result.structuralAnalysis).toBeNull();
+    expect(result.sequenceAnalysis).toBeNull();
+    const demo = analyzeTailFiberTropism(phage, '', [], { demonstration: true });
+    expect(demo.structuralAnalysis?.source).toBe('demonstration');
+    expect(demo.structuralAnalysis?.domains.length).toBe(3);
+    expect(demo.structuralAnalysis?.receptorScores.length).toBeGreaterThan(0);
+    expect(demo.structuralAnalysis?.residues.length).toBeGreaterThan(0);
+    expect(demo.structuralAnalysis?.chimeraSuggestions.length).toBeGreaterThan(0);
+  });
+
+  test.each(['+', '-'])('uses the actual %s CDS even when predictions were precomputed', strand => {
+    const gene = { ...makeGene('tail fiber', 3, 15, 'fiber'), strand };
+    const phage = makePhage([gene]);
+    // Independently encoded MKR* on either strand, surrounded by non-CDS bases.
+    const genome = strand === '+' ? 'GGGATGAAAAGATAACCC' : 'GGGTTATCTTTTCATCCC';
+    const predictions = [{ geneId: gene.id, locusTag: gene.locusTag, receptor: 'LamB', confidence: 0.7 }];
+    const result = analyzeTailFiberTropism(phage, genome, predictions);
+    expect(result.source).toBe('precomputed');
+    expect(result.hits[0].gene.name).toBe('fiber');
+    expect(result.sequenceAnalysis?.sequence).toBe('MKR');
+    expect(result.sequenceAnalysis?.residues.map(r => r.hydropathy)).toEqual([1.9, -3.9, -4.5]);
+    expect(result.structuralAnalysis).toBeNull();
+    expect(JSON.stringify(result)).not.toMatch(/ddgAlaScan|affinityScore|chimeraSuggestions/);
+  });
+
+  test.each([
+    { startPos: -1, endPos: 8, strand: '+' },
+    { startPos: 0, endPos: 12, strand: '+' },
+    { startPos: 0, endPos: 8, strand: '+' },
+    { startPos: 0, endPos: 9, strand: null },
+  ])('does not invent a protein for an incomplete or invalid CDS %p', coordinates => {
+    const gene = { ...makeGene('tail fiber', 0, 9), ...coordinates };
+    const result = analyzeTailFiberTropism(makePhage([gene]), 'ATGAAAAGA');
+    expect(result.hits).toHaveLength(1);
+    expect(result.sequenceAnalysis).toBeNull();
+    expect(result.structuralAnalysis).toBeNull();
+  });
+
+  test('prefers deposited translation for joined or recoded CDS instead of synthesizing a replacement', () => {
+    const gene = { ...makeGene('tail fiber', 0, 9), qualifiers: {
+      translation: 'M U K', transl_table: '4', transl_except: '(pos:4..6,aa:Sec)', _segments: '[{"start":0,"end":3}]',
+    } };
+    const phage = makePhage([gene]);
+    const result = analyzeTailFiberTropism(phage, 'ATGAAAAGA');
+    expect(result.sequenceSource).toBe('deposited_translation');
+    expect(result.sequenceAnalysis?.sequence).toBe('MUK');
+    expect(result.sequenceAnalysis?.residues[1].hydropathy).toBeNull();
+    expect(result.structuralAnalysis).toBeNull();
+  });
+
+  test.each([
+    { transl_table: '4' }, { transl_except: '(pos:4..6,aa:Sec)' }, { _segments: '[{"start":0,"end":3}]' },
+  ])('preserves receptor cues without inventing translation for unsupported qualifiers %p', qualifiers => {
+    const gene = { ...makeGene('tail fiber', 0, 9), qualifiers };
+    const result = analyzeTailFiberTropism(makePhage([gene]), 'ATGAAAAGA');
+    expect(result.hits).toHaveLength(1);
+    expect(result.sequenceAnalysis).toBeNull();
+  });
+
+  test('applies codon_start after orienting the CDS', () => {
+    const gene = { ...makeGene('tail fiber', 0, 10), qualifiers: { codon_start: '2', transl_table: '11' } };
+    expect(analyzeTailFiberTropism(makePhage([gene]), 'CATGAAAAGA').sequenceAnalysis?.sequence).toBe('MKR');
+  });
+
+  test('matches the exact predicted CDS before an earlier gene feature sharing its locus tag', () => {
+    const cds = { ...makeGene('tail fiber', 0, 9), qualifiers: { translation: 'MKW' } };
+    const feature = { ...cds, id: cds.id + 1, type: 'gene', qualifiers: { gene: 'fiber' } };
+    const phage = makePhage([feature, cds]);
+    const result = analyzeTailFiberTropism(phage, 'ATGAAAAGA', [{ geneId: cds.id, locusTag: cds.locusTag, receptor: 'LamB', confidence: 0.7 }]);
+    expect(result.hits[0].gene.id).toBe(cds.id);
+    expect(result.sequenceSource).toBe('deposited_translation');
+    expect(result.sequenceAnalysis?.sequence).toBe('MKW');
   });
 });
-

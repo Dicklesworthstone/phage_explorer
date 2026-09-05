@@ -128,6 +128,8 @@ export interface InSilicoEffectorMutationResult {
 }
 
 export interface HostInteractionAnalysisResult {
+  source: 'demonstration';
+  assumptions: string;
   phageName: string;
   hostOrganism: string;
   totalInteractions: number;
@@ -900,6 +902,7 @@ export function simulateInSilicoEffectorMutations(
 // =============================================================================
 
 export interface HostInteractionOptions {
+  demonstration?: boolean;
   hostOrganism?: string; // Filter to specific host organism
   minConfidence?: number; // Minimum confidence cutoff (default: 0.35)
   topKPerEffector?: number; // Max host interactions per phage effector (default: 3)
@@ -911,6 +914,9 @@ export function analyzeHostInteractions(
   hostDatabase: HostProtein[] = CANONICAL_HOST_TARGETS,
   options: HostInteractionOptions = {}
 ): HostInteractionAnalysisResult {
+  if (options.demonstration !== true) {
+    throw new Error('Validated host protein evidence and mapped structures are required for physical interaction results. The pseudo-vector docking model is available only as an explicit demonstration.');
+  }
   const {
     hostOrganism,
     minConfidence = 0.35,
@@ -1111,6 +1117,8 @@ export function analyzeHostInteractions(
     `${interactionsByRole['anti-defense']} anti-defense evasion, and ${interactionsByRole['transcription-takeover']} transcription takeover links.`;
 
   return {
+    source: 'demonstration',
+    assumptions: 'Illustration using selected gene annotations, deterministic pseudo-vectors for host proteins and formula-based docking scores. Surface areas, binding energies, affinities and engineered mutations are invented model outputs, not measurements or validated predictions for this phage.',
     phageName: phage.name,
     hostOrganism: primaryHost,
     totalInteractions: predictedInteractions.length,

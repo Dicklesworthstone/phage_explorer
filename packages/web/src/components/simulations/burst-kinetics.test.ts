@@ -31,8 +31,8 @@ function mockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Burst Kinetics & Latency Inference (Roadmap #33)', () => {
-  it('has valid canonical growth curve benchmark datasets', () => {
+describe('Illustrative growth-curve API (not biological calibration or browser proof)', () => {
+  it('has structurally valid example curves', () => {
     const curves = Object.values(CANONICAL_GROWTH_CURVES);
     expect(curves.length).toBe(4);
     for (const dataset of curves) {
@@ -48,29 +48,29 @@ describe('Burst Kinetics & Latency Inference (Roadmap #33)', () => {
     }
   });
 
-  it('accurately fits T4 on E. coli B growth curve (Ellis & Delbrück 1939)', () => {
+  it('fits the hand-entered T4 example curve', () => {
     const t4Dataset = CANONICAL_GROWTH_CURVES['t4_ecoli'];
     expect(t4Dataset).toBeDefined();
 
     const phage = mockPhage({ name: 'Enterobacteria phage T4' });
-    const result = inferBurstKinetics(phage, t4Dataset);
+    const result = inferBurstKinetics(phage, t4Dataset, { demonstration: true });
 
     expect(result.fittedParameters.latentPeriod).toBeGreaterThan(15);
     expect(result.fittedParameters.latentPeriod).toBeLessThan(35);
     expect(result.fittedParameters.burstSize).toBeGreaterThan(50);
     expect(result.fittedParameters.burstSize).toBeLessThan(250);
     expect(result.fitQualityR2).toBeGreaterThan(0.90);
-    expect(result.confidenceIntervals.latentPeriod[0]).toBeLessThanOrEqual(result.fittedParameters.latentPeriod);
-    expect(result.confidenceIntervals.latentPeriod[1]).toBeGreaterThanOrEqual(result.fittedParameters.latentPeriod);
+    expect(result.confidenceIntervals).toBeNull();
+    expect(result.source).toBe('demonstration');
     expect(result.fittedTrajectory.length).toBeGreaterThan(20);
   });
 
-  it('accurately fits Lambda on E. coli K-12 growth curve (Wang 2000)', () => {
+  it('fits the hand-entered lambda example curve', () => {
     const lambdaDataset = CANONICAL_GROWTH_CURVES['lambda_ecoli'];
     expect(lambdaDataset).toBeDefined();
 
     const phage = mockPhage({ name: 'Enterobacteria phage lambda' });
-    const result = inferBurstKinetics(phage, lambdaDataset);
+    const result = inferBurstKinetics(phage, lambdaDataset, { demonstration: true });
 
     expect(result.fittedParameters.latentPeriod).toBeGreaterThan(35);
     expect(result.fittedParameters.latentPeriod).toBeLessThan(65);
@@ -79,12 +79,12 @@ describe('Burst Kinetics & Latency Inference (Roadmap #33)', () => {
     expect(result.fitQualityR2).toBeGreaterThan(0.90);
   });
 
-  it('accurately fits phiX174 on E. coli C growth curve (Hutchison & Sinsheimer 1966)', () => {
+  it('fits the hand-entered phiX174 example curve', () => {
     const phiXDataset = CANONICAL_GROWTH_CURVES['phix174_ecoli'];
     expect(phiXDataset).toBeDefined();
 
     const phage = mockPhage({ name: 'Escherichia virus phiX174' });
-    const result = inferBurstKinetics(phage, phiXDataset);
+    const result = inferBurstKinetics(phage, phiXDataset, { demonstration: true });
 
     expect(result.fittedParameters.latentPeriod).toBeGreaterThan(10);
     expect(result.fittedParameters.latentPeriod).toBeLessThan(30);
@@ -93,12 +93,12 @@ describe('Burst Kinetics & Latency Inference (Roadmap #33)', () => {
     expect(result.fitQualityR2).toBeGreaterThan(0.85);
   });
 
-  it('accurately fits PAK_P1 on P. aeruginosa OD clearance curve (Henry et al. 2013)', () => {
+  it('fits the hand-entered PAK_P1 example curve', () => {
     const pakDataset = CANONICAL_GROWTH_CURVES['pseudomonas_pak_p1'];
     expect(pakDataset).toBeDefined();
 
     const phage = mockPhage({ name: 'Pseudomonas phage PAK_P1' });
-    const result = inferBurstKinetics(phage, pakDataset);
+    const result = inferBurstKinetics(phage, pakDataset, { demonstration: true });
 
     expect(result.fittedParameters.latentPeriod).toBeGreaterThan(20);
     expect(result.fittedParameters.latentPeriod).toBeLessThan(50);

@@ -51,10 +51,10 @@ function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Structural Epitope & Clash Map (Web Integration)', () => {
-  it('runs tail fiber structural analysis and identifies modular domain architecture', () => {
+describe('Illustrative tail fiber model through the comparison API (not browser proof)', () => {
+  it('builds the illustrative modular domain architecture after opt-in', () => {
     const phage = createMockPhage();
-    const tropism = analyzeTailFiberTropism(phage);
+    const tropism = analyzeTailFiberTropism(phage, '', [], { demonstration: true });
 
     expect(tropism.structuralAnalysis).toBeDefined();
     expect(tropism.structuralAnalysis).not.toBeNull();
@@ -81,7 +81,7 @@ describe('Structural Epitope & Clash Map (Web Integration)', () => {
 
   it('evaluates surface receptor affinity and clash scores across canonical targets', () => {
     const phage = createMockPhage();
-    const struct = analyzeTailFiberStructure(phage);
+    const struct = analyzeTailFiberStructure(phage, null, null, { demonstration: true });
     expect(struct).not.toBeNull();
 
     const receptors = struct!.receptorScores;
@@ -101,9 +101,9 @@ describe('Structural Epitope & Clash Map (Web Integration)', () => {
     }
   });
 
-  it('performs live in-silico mutation simulation and calculates stability / clash penalties', () => {
+  it('calculates the example mutation model outputs', () => {
     const phage = createMockPhage();
-    const struct = analyzeTailFiberStructure(phage);
+    const struct = analyzeTailFiberStructure(phage, null, null, { demonstration: true });
     expect(struct).not.toBeNull();
 
     // Mutate position 1 (anchor) to bulky Tryptophan
@@ -120,9 +120,11 @@ describe('Structural Epitope & Clash Map (Web Integration)', () => {
     expect(mutRbd.affinityDeltas).toBeDefined();
   });
 
-  it('provides modular chimera engineering recommendations with crossover junctions', () => {
+  it('retains example chimera scenarios with illustration labels', () => {
     const phage = createMockPhage();
-    const struct = analyzeTailFiberStructure(phage);
+    const struct = analyzeTailFiberStructure(phage, null, null, { demonstration: true });
+    expect(struct?.source).toBe('demonstration');
+    expect(struct?.assumptions).toContain('not predictions');
     expect(struct).not.toBeNull();
 
     const chimeras = struct!.chimeraSuggestions;

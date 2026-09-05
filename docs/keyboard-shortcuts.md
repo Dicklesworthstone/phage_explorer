@@ -81,13 +81,11 @@ command palette or a menu.
 | `Alt+p` | Genomic signature PCA |  | Open genomic signature PCA |
 | `Alt+h` | HGT provenance tracer |  | Open HGT analysis |
 | `Alt+Shift+h` | Hilbert curve |  | Open Hilbert curve overlay |
-| `Alt+i` | Host interactions | heuristic | Open host-phage protein interaction and effector docking map |
 | `Alt+J` | K-mer anomaly cartography |  | Open k-mer anomaly overlay |
 | `Alt+Shift+l` | Latent space atlas |  | Open Pan-Phage Latent Space Atlas |
 | `l` | Module coherence |  | Open module coherence overlay |
 | `Alt+n` | Non-B-DNA structures |  | Open non-B-DNA analysis |
 | `Shift+V` | Packaging pressure | heuristic | Open the packaging pressure overlay |
-| `Shift+P` | Pangenome graph | heuristic | Open pan-phage variation graph pangenome and variant cards |
 | `Alt+w` | Periodicity spectrogram |  | Open periodicity analysis |
 | `Alt+Shift+p` | Phase portrait |  | Open phase portrait overlay |
 | `Ctrl+Shift+y` | Phylodynamics | external → demo | Open phylodynamic trajectory overlay |
@@ -132,7 +130,9 @@ command palette or a menu.
 
 | Shortcut | Action | Provenance | Description |
 |---|---|---|---|
+| `Alt+i` | Host interactions | demo | View available receptor evidence or explicitly select an illustrative interaction model |
 | `Ctrl+Shift+N` | Niche network | demo | Explore niche co-occurrence structure on a simulated community |
+| `Shift+P` | Pangenome graph | demo | View comparative data requirements or explicitly select illustrative pangenome templates |
 | `—` | Take feature tour |  | Start the guided feature tour |
 | `Ctrl+b` | Toggle beginner mode |  | Enable or disable beginner mode |
 

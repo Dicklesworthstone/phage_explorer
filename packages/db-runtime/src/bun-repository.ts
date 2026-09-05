@@ -275,7 +275,7 @@ export class BunSqliteRepository implements PhageRepository {
       return cached.data;
     }
 
-    const result: GeneInfo[] = await this.db
+    const rows = await this.db
       .select({
         id: genes.id,
         name: genes.name,
@@ -285,10 +285,16 @@ export class BunSqliteRepository implements PhageRepository {
         strand: genes.strand,
         product: genes.product,
         type: genes.type,
+        qualifiers: genes.qualifiers,
       })
       .from(genes)
       .where(eq(genes.phageId, phageId))
       .orderBy(asc(genes.startPos));
+
+    const result: GeneInfo[] = rows.map(({ qualifiers, ...gene }) => {
+      const parsed = safeJsonParse<unknown>(qualifiers, null);
+      return { ...gene, qualifiers: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
+    });
 
     try {
       const domainRows = await this.db

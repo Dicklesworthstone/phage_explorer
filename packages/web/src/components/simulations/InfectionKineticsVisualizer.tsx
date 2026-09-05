@@ -19,7 +19,6 @@ const COLORS = {
   bacteria: '#22c55e',
   infected: '#eab308',
   phage: '#6366f1',
-  ciEnvelope: 'rgba(99, 102, 241, 0.15)',
   experimentalPoint: '#ef4444',
   fittedCurve: '#818cf8',
 };
@@ -35,6 +34,9 @@ export function InfectionKineticsVisualizer({
 
   // View mode tab: Forward ODE dynamics vs Experimental Latency & Burst Inference
   const [viewMode, setViewMode] = useState<'forward_ode' | 'latency_inference'>('forward_ode');
+  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
+  const demonstration = demoPhageId === (currentPhage?.id ?? -1);
+  useEffect(() => { setDemoPhageId(null); setViewMode('forward_ode'); }, [currentPhage?.id]);
 
   // Curve selection for experimental fitting
   const [selectedCurveId, setSelectedCurveId] = useState<string>('t4_ecoli');
@@ -54,6 +56,7 @@ export function InfectionKineticsVisualizer({
 
   // Run Burst Kinetics & Latency Inference on selected experimental dataset
   const inferenceResult: BurstInferenceResult | null = useMemo(() => {
+    if (!demonstration || viewMode !== 'latency_inference') return null;
     const curve = CANONICAL_GROWTH_CURVES[selectedCurveId] ?? CANONICAL_GROWTH_CURVES.t4_ecoli;
     const phageToUse: PhageFull = currentPhage ?? {
       id: 999,
@@ -79,8 +82,8 @@ export function InfectionKineticsVisualizer({
       hasModel: false,
     };
 
-    return inferBurstKinetics(phageToUse, curve, { maxIterations: 65 });
-  }, [selectedCurveId, currentPhage]);
+    return inferBurstKinetics(phageToUse, curve, { maxIterations: 65, demonstration: true });
+  }, [selectedCurveId, currentPhage, demonstration, viewMode]);
 
   // Forward simulation series
   const series = useMemo(() => {
@@ -217,7 +220,7 @@ export function InfectionKineticsVisualizer({
     ctx.fillText('Phase plane (B vs P)', insetX + insetW / 2, insetY - 4);
   }, [series, width, height, colors, viewMode]);
 
-  // Render Experimental Curve Fitting Canvas with 95% CI Envelope
+  // Render the example curve and sigmoid fit without invented uncertainty.
   useEffect(() => {
     if (viewMode !== 'latency_inference' || !inferenceResult) return;
     const canvas = fitCanvasRef.current;
@@ -278,26 +281,7 @@ export function InfectionKineticsVisualizer({
     ctx.textAlign = 'center';
     ctx.fillText(`L = ${inferenceResult.fittedParameters.latentPeriod.toFixed(1)} min`, latentX, padding.top - 8);
 
-    // 95% Confidence Interval Shaded Band
-    ctx.fillStyle = COLORS.ciEnvelope;
-    ctx.beginPath();
     const traj = inferenceResult.fittedTrajectory;
-    traj.forEach((pt, idx) => {
-      const v = isOD ? pt.od600 * 1.08 : pt.phage * 1.25;
-      const x = xScale(pt.timeMin);
-      const y = yScale(v);
-      if (idx === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    for (let i = traj.length - 1; i >= 0; i--) {
-      const pt = traj[i];
-      const v = isOD ? pt.od600 * 0.92 : pt.phage * 0.80;
-      const x = xScale(pt.timeMin);
-      const y = yScale(v);
-      ctx.lineTo(x, y);
-    }
-    ctx.closePath();
-    ctx.fill();
 
     // Fitted Trajectory Curve
     ctx.strokeStyle = COLORS.fittedCurve;
@@ -365,7 +349,7 @@ export function InfectionKineticsVisualizer({
         </button>
         <button
           type="button"
-          onClick={() => setViewMode('latency_inference')}
+          onClick={() => { setDemoPhageId(currentPhage?.id ?? -1); setViewMode('latency_inference'); }}
           style={{
             padding: '0.35rem 0.75rem',
             borderRadius: '4px',
@@ -377,7 +361,7 @@ export function InfectionKineticsVisualizer({
             color: viewMode === 'latency_inference' ? '#ffffff' : colors.textMuted,
           }}
         >
-          Burst Kinetics & Latency Inference (Roadmap #33)
+          Show illustrative growth-curve fitting
         </button>
       </div>
 
@@ -426,6 +410,7 @@ export function InfectionKineticsVisualizer({
         /* Experimental Latency Inference & Lysis Cassette View */
         inferenceResult && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+            <p role="note" aria-label="Demonstration assumptions">DEMONSTRATION: {inferenceResult.assumptions}</p>
             {/* Dataset Selector Header */}
             <div
               style={{
@@ -441,7 +426,7 @@ export function InfectionKineticsVisualizer({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>Dataset:</span>
+                <span style={{ fontSize: '0.8rem', color: colors.textMuted }}>Example curve:</span>
                 <select
                   value={selectedCurveId}
                   onChange={(e) => setSelectedCurveId(e.target.value)}
@@ -464,15 +449,15 @@ export function InfectionKineticsVisualizer({
               </div>
 
               <div style={{ fontSize: '0.75rem', color: colors.textDim }}>
-                Fit Quality: <strong style={{ color: colors.success }}>R² = {inferenceResult.fitQualityR2.toFixed(3)}</strong> | AIC: {inferenceResult.aic}
+                Descriptive fit: <strong>R² = {inferenceResult.fitQualityR2?.toFixed(3) ?? 'Undefined'}</strong>
               </div>
             </div>
 
-            {/* Canvas Plot of Observed vs Fitted Curve with 95% CI */}
+            {/* Example observations and fitted sigmoid */}
             <div style={{ position: 'relative' }}>
               <canvas
                 ref={fitCanvasRef}
-                aria-label="Experimental curve fit with confidence envelope"
+                aria-label="Demonstration growth curve and sigmoid fit"
                 role="img"
                 style={{ width: `${width}px`, height: `${Math.max(260, height)}px`, display: 'block', borderRadius: '4px' }}
               />
@@ -492,15 +477,11 @@ export function InfectionKineticsVisualizer({
               >
                 <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: COLORS.experimentalPoint }} />
-                  Experimental data
+                  Example points
                 </span>
                 <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <span style={{ width: '12px', height: '2px', backgroundColor: COLORS.fittedCurve }} />
-                  Fitted DDE
-                </span>
-                <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span style={{ width: '10px', height: '6px', backgroundColor: COLORS.ciEnvelope }} />
-                  95% CI band
+                  Fitted sigmoid
                 </span>
               </div>
             </div>
@@ -519,7 +500,7 @@ export function InfectionKineticsVisualizer({
                   {inferenceResult.fittedParameters.latentPeriod.toFixed(1)} min
                 </div>
                 <div style={{ fontSize: '0.65rem', color: colors.textDim }}>
-                  95% CI: [{inferenceResult.confidenceIntervals.latentPeriod[0]} - {inferenceResult.confidenceIntervals.latentPeriod[1]}]
+                  Uncertainty not estimated
                 </div>
               </div>
 
@@ -529,16 +510,16 @@ export function InfectionKineticsVisualizer({
                   {Math.round(inferenceResult.fittedParameters.burstSize)} virions
                 </div>
                 <div style={{ fontSize: '0.65rem', color: colors.textDim }}>
-                  95% CI: [{inferenceResult.confidenceIntervals.burstSize[0]} - {inferenceResult.confidenceIntervals.burstSize[1]}]
+                  Uncertainty not estimated
                 </div>
               </div>
 
               <div style={{ padding: '0.5rem', borderRadius: '4px', border: `1px solid ${colors.borderLight}`, backgroundColor: colors.backgroundAlt }}>
-                <div style={{ fontSize: '0.7rem', color: colors.textMuted }}>Adsorption Rate (k)</div>
+                <div style={{ fontSize: '0.7rem', color: colors.textMuted }}>{inferenceResult.adsorptionRateStatus === 'unidentifiable' ? 'Assumed' : 'Unvalidated model'} Adsorption Rate (k)</div>
                 <div style={{ fontSize: '0.9rem', fontWeight: 700, color: colors.text, fontFamily: 'monospace' }}>
                   {inferenceResult.fittedParameters.adsorptionRate.toExponential(2)}
                 </div>
-                <div style={{ fontSize: '0.65rem', color: colors.textDim }}>mL / (phage · min)</div>
+                <div style={{ fontSize: '0.65rem', color: colors.textDim }}>{inferenceResult.adsorptionRateStatus === 'unidentifiable' ? 'Not identifiable from these observations' : 'Depends on an unvalidated OD biomass term'}</div>
               </div>
 
               <div style={{ padding: '0.5rem', borderRadius: '4px', border: `1px solid ${colors.borderLight}`, backgroundColor: colors.backgroundAlt }}>

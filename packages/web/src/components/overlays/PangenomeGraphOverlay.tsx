@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useHotkey } from '../../hooks';
 import { useTheme } from '../../hooks/useTheme';
 import { ActionIds } from '../../keyboard';
@@ -60,12 +60,15 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
   const [hgtOnly, setHgtOnly] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
+  const demonstration = phage !== null && demoPhageId === phage.id;
+  useEffect(() => { setDemoPhageId(null); setSelectedCardId(null); }, [phage?.id]);
 
   // Build variation pangenome graph
   const graphResult: PangenomeGraphResult | null = useMemo(() => {
-    if (!phage) return null;
-    return constructPangenomeGraph(phage);
-  }, [phage]);
+    if (!phage || !demonstration) return null;
+    return constructPangenomeGraph(phage, [], { demonstration: true });
+  }, [phage, demonstration]);
 
   // Filter variant cards
   const filteredCards: VariantCard[] = useMemo(() => {
@@ -130,11 +133,13 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
         size="lg"
       >
         <OverlayDescription title="Pan-Phage Graph Pangenome & Variant Cards">
-          Constructs a sequence variation graph and extracts variant cards across comparative phage cohorts.
+          A real variation graph requires comparative nucleotide sequences and their alignments. The available annotation templates cannot identify variants, donors or recombination breakpoints.
         </OverlayDescription>
         <OverlayEmptyState
-          message="No comparative sequence variation detected for the selected genome."
+          message={`${phage.genes.length} annotated genes are available for ${phage.name}. Comparative sequence evidence has not been supplied to this panel.`}
         />
+        <button type="button" onClick={() => toggle('comparison')}>Open sequence comparison</button>
+        <button type="button" onClick={() => setDemoPhageId(phage.id)}>Show illustrative pangenome</button>
       </Overlay>
     );
   }
@@ -144,10 +149,12 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
   return (
     <Overlay
       id="pangenomeGraph"
-      title={`Pan-Phage Graph Pangenome & Variant Cards: ${phage.name}`}
+      title={`DEMONSTRATION — Pangenome templates: ${phage.name}`}
       size="lg"
     >
       <OverlayStack gap="md">
+        <p role="note" aria-label="Demonstration assumptions">{graphResult.assumptions}</p>
+        <button type="button" onClick={() => setDemoPhageId(null)}>Return to available data</button>
         <OverlayDescription title="Variation Graph Pangenome & Recombination Mosaicism">
           {graphResult.summary}
         </OverlayDescription>

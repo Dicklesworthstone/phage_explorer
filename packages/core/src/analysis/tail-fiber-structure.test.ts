@@ -8,6 +8,7 @@ import {
   calculateResidueEpitopeMetrics,
   simulateResidueMutation,
   analyzeTailFiberStructure,
+  analyzeTailFiberSequence,
   BACTERIAL_SURFACE_RECEPTORS,
 } from './tail-fiber-structure';
 
@@ -67,7 +68,24 @@ function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Tail Fiber Structural Epitope Clash Map - Core', () => {
+describe('Tail fiber sequence analysis and illustrative structural model', () => {
+  it.each([undefined, '', 'MAEKLL', 'M'.repeat(200)])('does not infer structural quantities from sequence %p by default', sequence => {
+    const phage = createMockPhage();
+    expect(analyzeTailFiberStructure(phage, phage.genes[1], sequence)).toBeNull();
+  });
+
+  it('computes hydropathy directly without replacing short or ambiguous proteins', () => {
+    const phage = createMockPhage();
+    const known = analyzeTailFiberSequence(phage, phage.genes[1], 'MKR*');
+    expect(known?.sequence).toBe('MKR');
+    expect(known?.residues.map(r => r.hydropathy)).toEqual([1.9, -3.9, -4.5]);
+    expect(known?.meanHydropathy).toBeCloseTo(-6.5 / 3, 12);
+    const ambiguous = analyzeTailFiberSequence(phage, phage.genes[1], 'MX');
+    expect(ambiguous?.residues[1].hydropathy).toBeNull();
+    expect(ambiguous?.meanHydropathy).toBeNull();
+    expect(analyzeTailFiberSequence(phage, phage.genes[1], 'M*R')).toBeNull();
+    expect(analyzeTailFiberSequence(phage, phage.genes[1], '')).toBeNull();
+  });
   describe('Tail fiber detection', () => {
     it('identifies tail fiber genes by name, product, or Pfam domains', () => {
       const g1: GeneInfo = {
@@ -248,8 +266,10 @@ describe('Tail Fiber Structural Epitope Clash Map - Core', () => {
   describe('Receptor binding scoring & host range inference', () => {
     it('scores canonical bacterial surface receptors', () => {
       const mockPhage = createMockPhage();
-      const analysis = analyzeTailFiberStructure(mockPhage);
+      const analysis = analyzeTailFiberStructure(mockPhage, null, null, { demonstration: true });
       expect(analysis).not.toBeNull();
+      expect(analysis?.source).toBe('demonstration');
+      expect(analysis?.assumptions).toContain('synthetic model outputs');
       expect(analysis!.receptorScores.length).toBe(BACTERIAL_SURFACE_RECEPTORS.length);
 
       const topReceptor = analysis!.receptorScores[0];
@@ -266,7 +286,7 @@ describe('Tail Fiber Structural Epitope Clash Map - Core', () => {
   describe('In-silico point mutation simulation', () => {
     it('computes stability perturbation and clash risk for core mutations vs surface mutations', () => {
       const mockPhage = createMockPhage();
-      const analysis = analyzeTailFiberStructure(mockPhage);
+      const analysis = analyzeTailFiberStructure(mockPhage, null, null, { demonstration: true });
       expect(analysis).not.toBeNull();
 
       // Simulate a bulky mutation (e.g., Trp) at position 1 (anchor core)
@@ -284,9 +304,9 @@ describe('Tail Fiber Structural Epitope Clash Map - Core', () => {
   });
 
   describe('Modular chimera engineering suggestions', () => {
-    it('generates actionable modular chimera swap recommendations at the shaft-RBD junction', () => {
+    it('retains example chimera scenarios in the explicitly selected demonstration', () => {
       const mockPhage = createMockPhage();
-      const analysis = analyzeTailFiberStructure(mockPhage);
+      const analysis = analyzeTailFiberStructure(mockPhage, null, null, { demonstration: true });
       expect(analysis).not.toBeNull();
 
       expect(analysis!.chimeraSuggestions.length).toBeGreaterThan(0);
@@ -316,7 +336,7 @@ describe('Tail Fiber Structural Epitope Clash Map - Core', () => {
           },
         ],
       });
-      const analysis = analyzeTailFiberStructure(nonFiberPhage);
+      const analysis = analyzeTailFiberStructure(nonFiberPhage, null, null, { demonstration: true });
       expect(analysis).toBeNull();
     });
   });

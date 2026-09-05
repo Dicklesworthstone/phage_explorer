@@ -86,6 +86,9 @@ export interface ChimeraEngineeringSuggestion {
 }
 
 export interface TailFiberStructuralAnalysis {
+  /** This model has no measured structure, homolog alignment or calibrated affinity. */
+  source: 'demonstration';
+  assumptions: string;
   phageId: number;
   phageName: string;
   geneId: number;
@@ -105,6 +108,44 @@ export interface TailFiberStructuralAnalysis {
   }[];
   chimeraSuggestions: ChimeraEngineeringSuggestion[];
   summary: string;
+}
+
+/** Descriptors calculated directly from an explicitly supplied protein sequence. */
+export interface TailFiberSequenceAnalysis {
+  phageId: number;
+  geneId: number;
+  geneName: string;
+  sequence: string;
+  residues: Array<{ position: number; aminoAcid: string; hydropathy: number | null }>;
+  meanHydropathy: number | null;
+  method: string;
+}
+
+export function analyzeTailFiberSequence(
+  phage: PhageFull,
+  gene: GeneInfo | null | undefined,
+  sequence: string | null | undefined
+): TailFiberSequenceAnalysis | null {
+  if (!gene || !sequence) return null;
+  const protein = sequence.toUpperCase().replace(/\*$/, '');
+  if (!protein || !/^[ACDEFGHIKLMNPQRSTVWYXBZJUO]+$/.test(protein)) return null;
+  const residues = Array.from(protein, (aminoAcid, index) => ({
+    position: index + 1,
+    aminoAcid,
+    hydropathy: KYTE_DOOLITTLE[aminoAcid] ?? null,
+  }));
+  // Unknown residues are missing observations, not neutral hydropathy.
+  const known = residues.filter((r): r is typeof r & { hydropathy: number } => r.hydropathy !== null);
+  return {
+    phageId: phage.id,
+    geneId: gene.id,
+    geneName: gene.name ?? gene.locusTag ?? `gene_${gene.id}`,
+    sequence: protein,
+    residues,
+    meanHydropathy: known.length === residues.length
+      ? known.reduce((sum, r) => sum + r.hydropathy, 0) / known.length : null,
+    method: 'Kyte–Doolittle residue hydropathy from the supplied protein sequence; no structural or host-range inference.',
+  };
 }
 
 // Kyte-Doolittle hydropathy scale
@@ -749,8 +790,12 @@ export function generateChimeraSuggestions(
 export function analyzeTailFiberStructure(
   phage: PhageFull,
   targetGene?: GeneInfo | null,
-  translatedSequence?: string | null
+  translatedSequence?: string | null,
+  options: { demonstration?: boolean } = {}
 ): TailFiberStructuralAnalysis | null {
+  // Sequence alone cannot supply an alignment, 3D surface or binding energy.
+  // Keep the existing teaching model available only after explicit opt-in.
+  if (options.demonstration !== true) return null;
   // Find tail fiber gene if not provided
   let gene = targetGene;
   if (!gene) {
@@ -802,6 +847,8 @@ export function analyzeTailFiberStructure(
     `Found ${hypervariableHotspots.length} hypervariable epitope hotspot residues in the receptor-binding tip.`;
 
   return {
+    source: 'demonstration',
+    assumptions: `Illustration using ${translatedSequence && translatedSequence.length >= 20 ? 'the supplied protein sequence' : 'a repeated MAEKLL… example sequence'} and ${gene.name ?? gene.locusTag ?? 'gene'} annotation. Homologs, domain boundaries, surface areas, energies, affinities and chimera scenarios are synthetic model outputs, not predictions for ${phage.name}.`,
     phageId: phage.id,
     phageName: phage.name,
     geneId: gene.id,

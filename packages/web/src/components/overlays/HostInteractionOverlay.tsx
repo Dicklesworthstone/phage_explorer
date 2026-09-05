@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useHotkey } from '../../hooks';
 import { useTheme } from '../../hooks/useTheme';
 import { ActionIds } from '../../keyboard';
@@ -49,15 +49,19 @@ export function HostInteractionOverlay(): React.ReactElement | null {
   const [selectedOrganism, setSelectedOrganism] = useState<string>('all');
   const [minConfidenceCutoff, setMinConfidenceCutoff] = useState<number>(0.35);
   const [selectedInteractionId, setSelectedInteractionId] = useState<string | null>(null);
+  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
+  const demonstration = phage !== null && demoPhageId === phage.id;
+  useEffect(() => { setDemoPhageId(null); setSelectedInteractionId(null); }, [phage?.id]);
 
   // Run core multi-evidence analysis
   const analysisResult = useMemo(() => {
-    if (!phage) return null;
+    if (!phage || !demonstration) return null;
     return analyzeHostInteractions(phage, undefined, {
       hostOrganism: selectedOrganism === 'all' ? undefined : selectedOrganism,
       minConfidence: minConfidenceCutoff,
+      demonstration: true,
     });
-  }, [phage, selectedOrganism, minConfidenceCutoff]);
+  }, [phage, selectedOrganism, minConfidenceCutoff, demonstration]);
 
   // Filter interactions based on active tab
   const filteredInteractions = useMemo(() => {
@@ -99,12 +103,14 @@ export function HostInteractionOverlay(): React.ReactElement | null {
         title={`Host–Phage Interactions: ${phage.name}`}
         size="lg"
       >
-        <OverlayDescription title="Roadmap #35: Multi-Evidence Host-Phage Interaction Network">
-          Fuses protein language model embeddings (ESM-2), curated domain interaction priors (iPfam/3did), and structural surface docking complementarity to identify viral effectors targeting bacterial host machinery.
+        <OverlayDescription title="Host interaction evidence">
+          Physical affinities and mutation effects require mapped protein structures and validated interaction evidence. The current pseudo-vector model cannot establish these quantities for the selected phage.
         </OverlayDescription>
         <OverlayEmptyState
-          message="No effector interactions exceeded the current confidence threshold. Try lowering the confidence slider or switching host organisms."
+          message={demonstration ? 'No illustrative interactions exceed the selected threshold.' : `${phage.genes.length} gene annotations are available. Stored receptor-candidate evidence can be explored in the tropism panel.`}
         />
+        <button type="button" onClick={() => toggle('tropism')}>Open receptor evidence</button>
+        <button type="button" onClick={() => setDemoPhageId(demonstration ? null : phage.id)}>{demonstration ? 'Return to available data' : 'Show illustrative interaction model'}</button>
       </Overlay>
     );
   }
@@ -112,10 +118,12 @@ export function HostInteractionOverlay(): React.ReactElement | null {
   return (
     <Overlay
       id="hostInteractions"
-      title={`Host–Phage Interaction & Effector Docking Map: ${phage.name}`}
+      title={`DEMONSTRATION — Host interaction model: ${phage.name}`}
       size="lg"
     >
       <OverlayStack gap="md">
+        <p role="note" aria-label="Demonstration assumptions">{analysisResult.assumptions}</p>
+        <button type="button" onClick={() => setDemoPhageId(null)}>Return to available data</button>
         <OverlayDescription title="Multi-Evidence Bayesian Effector Docking Network">
           {analysisResult.summary}
         </OverlayDescription>

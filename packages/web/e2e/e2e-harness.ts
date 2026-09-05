@@ -18,7 +18,7 @@ import * as path from 'path';
 
 export interface TestEvent {
   ts: number;
-  type: 'step' | 'pageerror' | 'console' | 'request' | 'response' | 'custom';
+  type: 'step' | 'pageerror' | 'console' | 'request' | 'response' | 'requestfailed' | 'custom';
   data: unknown;
 }
 
@@ -37,11 +37,12 @@ export interface PageErrorEntry {
 
 export interface NetworkEntry {
   ts: number;
-  type: 'request' | 'response';
+  type: 'request' | 'response' | 'requestfailed';
   url: string;
   method?: string;
   status?: number;
   resourceType?: string;
+  failure?: string;
 }
 
 export interface TestHarnessState {
@@ -61,6 +62,7 @@ const CAPTURE_NETWORK_PATTERNS = [
   /\.js$/, // Dynamic chunks
   /\.wasm$/, // WASM modules
   /phage\.db/, // SQLite database
+  /\/entrez\/eutils\//, // Real scientific inputs and explicit network-failure controls
   /worker/, // Web workers
   /chunk/, // Code-split chunks
   /\.woff2?$/, // Fonts (optional, can be noisy)
@@ -165,6 +167,20 @@ export function createTestHarness(page: Page, legacyArrays?: LegacyArrays): Test
     };
     state.network.push(entry);
     state.events.push({ ts: entry.ts, type: 'response', data: entry });
+  });
+
+  page.on('requestfailed', (request: Request) => {
+    if (!shouldCaptureRequest(request.url())) return;
+    const entry: NetworkEntry = {
+      ts: Date.now() - state.startTs,
+      type: 'requestfailed',
+      url: request.url(),
+      method: request.method(),
+      resourceType: request.resourceType(),
+      failure: request.failure()?.errorText,
+    };
+    state.network.push(entry);
+    state.events.push({ ts: entry.ts, type: 'requestfailed', data: entry });
   });
 
   return state;

@@ -36,7 +36,10 @@ function mockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Host-Phage Protein Interaction & Effector Docking Map (Roadmap #35)', () => {
+describe('Host interaction illustration and mathematical helpers', () => {
+  it.each([undefined, { demonstration: false }, { embeddingOverrides: new Map([[1, [1, 0, 0]]]) }])('rejects ordinary physical interaction requests: %p', options => {
+    expect(() => analyzeHostInteractions(mockPhage(), undefined, options)).toThrow('explicit demonstration');
+  });
   describe('Canonical Host Database & Domain Priors', () => {
     it('contains comprehensive bacterial host targets across compartments', () => {
       expect(CANONICAL_HOST_TARGETS.length).toBeGreaterThanOrEqual(15);
@@ -211,7 +214,9 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Roadmap #35)', 
         ],
       });
 
-      const result = analyzeHostInteractions(mockPhageObj);
+      const result = analyzeHostInteractions(mockPhageObj, undefined, { demonstration: true });
+      expect(result.source).toBe('demonstration');
+      expect(result.assumptions).toContain('invented model outputs');
 
       expect(result.totalInteractions).toBeGreaterThan(0);
       expect(result.bipartiteNodes.length).toBeGreaterThan(0);
@@ -292,7 +297,7 @@ describe('Host-Phage Protein Interaction & Effector Docking Map (Roadmap #35)', 
 
     it('operates safely when phage has no genes', () => {
       const emptyPhage = mockPhage({ genes: [] });
-      const result = analyzeHostInteractions(emptyPhage);
+      const result = analyzeHostInteractions(emptyPhage, undefined, { demonstration: true });
 
       expect(result.totalInteractions).toBe(0);
       expect(result.bipartiteNodes.length).toBe(0);

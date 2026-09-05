@@ -155,8 +155,12 @@ describe('burst-kinetics', () => {
     });
   });
 
-  describe('Full Inference Engine (inferBurstKinetics)', () => {
-    it('infers realistic kinetic parameters from T4 experimental one-step growth curve', () => {
+  describe('Explicit sigmoid teaching model (inferBurstKinetics)', () => {
+    it.each(Object.values(CANONICAL_GROWTH_CURVES))('rejects ordinary biological inference for $id', curve => {
+      expect(() => inferBurstKinetics(createMockPhage(), curve)).toThrow('explicit demonstration');
+    });
+
+    it('retains example curve fitting without invented uncertainty or adsorption identifiability', () => {
       const t4Phage = createMockPhage({
         name: 'Enterobacteria phage T4',
         genes: [
@@ -166,7 +170,7 @@ describe('burst-kinetics', () => {
       });
 
       const curve = CANONICAL_GROWTH_CURVES.t4_ecoli;
-      const result = inferBurstKinetics(t4Phage, curve, { maxIterations: 60 });
+      const result = inferBurstKinetics(t4Phage, curve, { maxIterations: 60, demonstration: true });
 
       expect(result.curveId).toBe('t4_ecoli');
       expect(result.phageName).toBe('Enterobacteria phage T4');
@@ -182,9 +186,10 @@ describe('burst-kinetics', () => {
       expect(Number.isFinite(result.bic)).toBe(true);
       expect(result.residuals.length).toBe(curve.data.length);
 
-      // 95% Confidence intervals
-      expect(result.confidenceIntervals.latentPeriod[0]).toBeLessThan(result.fittedParameters.latentPeriod);
-      expect(result.confidenceIntervals.latentPeriod[1]).toBeGreaterThan(result.fittedParameters.latentPeriod);
+      expect(result.confidenceIntervals).toBeNull();
+      expect(result.adsorptionRateStatus).toBe('unidentifiable');
+      expect(result.source).toBe('demonstration');
+      expect(result.summary).not.toContain('95% CI');
 
       // Lysis cassette and genomic correlation
       expect(result.lysisCassette.hasHolin).toBe(true);
@@ -202,13 +207,26 @@ describe('burst-kinetics', () => {
       });
 
       const curve = CANONICAL_GROWTH_CURVES.pseudomonas_pak_p1;
-      const result = inferBurstKinetics(pakPhage, curve, { maxIterations: 60 });
+      const result = inferBurstKinetics(pakPhage, curve, { maxIterations: 60, demonstration: true });
 
       expect(result.curveId).toBe('pseudomonas_pak_p1');
+      expect(result.adsorptionRateStatus).toBe('unvalidated_fit');
       expect(result.fittedParameters.latentPeriod).toBeGreaterThan(20);
       expect(result.fittedParameters.latentPeriod).toBeLessThan(50);
       expect(result.fitQualityR2).toBeGreaterThan(0.70);
       expect(result.fittedTrajectory.length).toBeGreaterThan(10);
+    });
+
+    it('reports undefined R squared for constant observations and preserves the supplied adsorption assumption', () => {
+      const curve = CANONICAL_GROWTH_CURVES.t4_ecoli;
+      const constant = { ...curve, data: curve.data.map(point => ({ ...point, value: 1e8 })) };
+      const result = inferBurstKinetics(createMockPhage(), constant, {
+        demonstration: true, maxIterations: 2, initialParams: { adsorptionRate: 7e-10 },
+      });
+      expect(result.fitQualityR2).toBeNull();
+      expect(result.confidenceIntervals).toBeNull();
+      expect(result.fittedParameters.adsorptionRate).toBe(7e-10);
+      expect(result.adsorptionRateStatus).toBe('unidentifiable');
     });
   });
 });

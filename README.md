@@ -484,8 +484,10 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 |---------|--------|
 | **CRISPR Pressure** | Spacer matching against mock host CRISPR arrays; rates evolutionary pressure 0-10 scale |
 | **Anti-CRISPR (ACR)** | Heuristic scoring for defense-suppressing genes; flags known families (e.g., AcrIIA4). Ocr-like proteins are classified as anti-RM. |
-| **Tail Fiber Tropism** | Precomputed lightweight trigram-embedding predictions loaded from `data/tropism-embeddings.json`; not ESM2/HDBSCAN inference at build time |
+| **Tail Fiber Tropism** | Precomputed trigram receptor candidates from `data/tropism-embeddings.json`, with deposited GenBank protein translations and sequence hydropathy available in the panel and JSON export |
 | **Prophage Excision** | Detects integrase genes; searches for attL/attR direct repeats; models excision products |
+
+Tropism candidates are annotation or similarity cues; they do not establish host range or binding affinity. Structural affinity and mutation illustrations, host interaction models, pangenome examples, and growth-curve fitting require explicit demonstration mode, with their inputs and assumptions shown beside the output. Growth-curve examples provide no confidence intervals. Phylodynamics preserves its NCBI sequence path but requires an identified coding alignment before reporting selection statistics; failed retrieval shows unavailable data and offers an explicit synthetic illustration.
 
 ### Protein Structure & Function
 
@@ -985,11 +987,11 @@ For temporal analysis, the pipeline:
 3. Use the Fold Viewer overlay to compare ESM2 protein embeddings
 4. Cross-reference local Pfam-A domain hits and conservative AMG-to-KEGG ortholog predictions
 
-**Phage therapy candidate screening:**
-1. Use Host Tropism overlay to verify target range
-2. Check Defense Arms Race for anti-CRISPR genes
-3. Run Cocktail Compatibility for multi-phage therapy
-4. Simulate Resistance Evolution to predict durability
+**Exploring host interaction hypotheses:**
+1. Inspect receptor candidates and their evidence in Host Tropism
+2. Inspect defense annotations in Defense Arms Race
+3. Explore the assumptions in Cocktail Compatibility and Resistance Evolution
+4. Treat these outputs as hypotheses requiring experimental validation
 
 ### Educational Use
 

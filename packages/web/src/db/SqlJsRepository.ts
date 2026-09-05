@@ -110,7 +110,7 @@ export class SqlJsRepository implements PhageRepository {
 
       getGenes: this.db.prepare(`
         SELECT id, name, locus_tag as locusTag, start_pos as startPos, end_pos as endPos,
-               strand, product, type
+               strand, product, type, qualifiers
         FROM genes
         WHERE phage_id = ?
         ORDER BY start_pos ASC
@@ -507,7 +507,11 @@ export class SqlJsRepository implements PhageRepository {
       throw new Error('Database not initialized');
     }
 
-    const results = this.execStatement<GeneInfo>(this.statements.getGenes, [phageId]);
+    const rows = this.execStatement<Omit<GeneInfo, 'qualifiers'> & { qualifiers: string | null }>(this.statements.getGenes, [phageId]);
+    const results: GeneInfo[] = rows.map(({ qualifiers, ...gene }) => {
+      const parsed = safeJsonParse<unknown>(qualifiers, null);
+      return { ...gene, qualifiers: parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null };
+    });
     if (this.statements.getProteinDomains) {
       try {
         const domainRows = this.execStatement<{ geneId: number | null; domainId: string }>(

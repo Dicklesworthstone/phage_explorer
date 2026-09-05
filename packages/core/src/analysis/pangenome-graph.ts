@@ -118,6 +118,8 @@ export interface PangenomeMetrics {
 }
 
 export interface PangenomeGraphResult {
+  source: 'demonstration';
+  assumptions: string;
   referencePhageName: string;
   referenceGenomeLength: number;
   includedGenomesCount: number;
@@ -317,6 +319,7 @@ export const CANONICAL_PANGENOME_TEMPLATES: Record<string, ComparativePangenomeT
 // =============================================================================
 
 export interface PangenomeOptions {
+  demonstration?: boolean;
   coreThreshold?: number; // Frequency to be considered core segment (default: 0.8)
   minBubbleSizeBp?: number; // Minimum bubble span to report (default: 50)
   maxVariants?: number; // Maximum number of variant cards (default: 50)
@@ -331,6 +334,9 @@ export function constructPangenomeGraph(
   comparativeGenomes: PhageFull[] = [],
   options: PangenomeOptions = {}
 ): PangenomeGraphResult {
+  if (options.demonstration !== true) {
+    throw new Error('Comparative sequence alignments are required for a real pangenome. This annotation-based graph is available only as an explicit demonstration.');
+  }
   const {
     coreThreshold = 0.8,
     minBubbleSizeBp = 50,
@@ -365,7 +371,7 @@ export function constructPangenomeGraph(
             gcShift: 1.5,
             genes: [{ name: 'cmp_gene', product: 'Accessory gene variation', impact: 'modified' as GeneImpactType }],
             donor: { name: cmp.name, similarity: 0.90, lineage: cmp.family || 'Bacteriophage' },
-            rationale: 'Observed genetic divergence in comparative genome alignment.',
+            rationale: 'Hypothetical variation inserted by the teaching template; no comparative alignment was computed.',
           },
         ],
       });
@@ -411,7 +417,7 @@ export function constructPangenomeGraph(
           genomeName: v.donor.name,
           similarity: v.donor.similarity,
           possibleLineage: v.donor.lineage,
-          evidence: `${(v.donor.similarity * 100).toFixed(0)}% nucleotide identity across bubble flanking anchors`,
+          evidence: `Illustrative ${(v.donor.similarity * 100).toFixed(0)}% identity parameter; not calculated from sequence alignments`,
         },
         rationale: v.rationale,
         companionName: companion.name,
@@ -707,6 +713,8 @@ export function constructPangenomeGraph(
     `Identified ${recombinationHotspots.length} major mosaic recombination hotspots.`;
 
   return {
+    source: 'demonstration',
+    assumptions: 'Annotation-scaled teaching templates with invented companion variations, identity parameters, breakpoints and openness. No comparative nucleotide sequences were aligned; the displayed variants and donors are not findings for the selected phage.',
     referencePhageName: referencePhage.name,
     referenceGenomeLength: refLength,
     includedGenomesCount: totalGenomesCount,

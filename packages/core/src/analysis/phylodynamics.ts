@@ -113,6 +113,7 @@ export interface PhylodynamicsResult {
   clockRegression: ClockRegressionResult | null;
   skyline: SkylinePlot | null;
   selection: SelectionResult | null;
+  selectionUnavailableReason?: string;
 }
 
 // =============================================================================
@@ -854,6 +855,8 @@ export interface PhylodynamicsOptions {
   runSkyline?: boolean;
   /** Run selection analysis */
   runSelection?: boolean;
+  /** Caller-supplied provenance for a homologous, in-frame coding alignment. */
+  codingAlignment?: { source: string; geneticCode: 1 };
   /**
    * Precomputed pairwise distances, for sequences that are not aligned.
    *
@@ -902,17 +905,17 @@ export function analyzePhylodynamics(
     skyline = computeSkyline(tree);
   }
 
-  // Selection analysis.
-  //
-  // Ancestral reconstruction is a column-wise majority vote, so it is only
-  // defined for aligned sequences. Run on ragged input it takes the first
-  // sequence's length as the consensus length and silently compares
-  // non-homologous positions, producing a dN/dS that looks like a measurement
-  // and is not one. Skip it and return null instead, so the caller can say the
-  // analysis was not available rather than show a fabricated ratio.
+  // Equal genome lengths do not establish homology or a reading frame.
+  // The caller must identify a coding alignment; raw FASTA/Mash inputs do not.
   let selection: SelectionResult | null = null;
-  const aligned = sequences.every(s => s.sequence.length === sequences[0].sequence.length);
-  if (runSelection && aligned) {
+  const aligned = sequences.length >= 2 && sequences.every(s =>
+    s.sequence.length === sequences[0].sequence.length && /^(?:[ACGT]{3}|---)+$/i.test(s.sequence));
+  const codingAlignment = options.codingAlignment;
+  const hasCodingAlignment = codingAlignment?.geneticCode === 1 && Boolean(codingAlignment.source.trim());
+  const selectionUnavailableReason = runSelection && !(aligned && hasCodingAlignment)
+    ? 'Selection requires an explicitly identified homologous coding alignment in frame with the standard genetic code. Equal-length raw genomes are insufficient.'
+    : undefined;
+  if (runSelection && aligned && hasCodingAlignment) {
     // Reconstruct ancestral sequences for internal nodes
     reconstructAncestralSequences(tree.root);
     selection = computeSelection(tree);
@@ -923,6 +926,7 @@ export function analyzePhylodynamics(
     clockRegression: clockResult,
     skyline,
     selection,
+    selectionUnavailableReason,
   };
 }
 

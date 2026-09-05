@@ -50,7 +50,16 @@ function mockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
   };
 }
 
-describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => {
+describe('Illustrative pangenome templates', () => {
+  it.each([{ companions: undefined }, { companions: [] }, { companions: [mockPhage({ id: 2 })] }])('does not invent variants for ordinary comparative metadata %p', ({ companions }) => {
+    expect(() => constructPangenomeGraph(mockPhage(), companions ? [...companions] : undefined)).toThrow('Comparative sequence alignments are required');
+  });
+
+  it('carries the illustration boundary into serialized results', () => {
+    const result = constructPangenomeGraph(mockPhage(), [], { demonstration: true });
+    expect(result.source).toBe('demonstration');
+    expect(JSON.parse(JSON.stringify(result)).assumptions).toContain('not findings');
+  });
   describe('Canonical Pangenome Templates', () => {
     it('defines rich comparative companion genomes for myoviruses and siphoviruses', () => {
       expect(CANONICAL_PANGENOME_TEMPLATES.myovirus).toBeDefined();
@@ -71,7 +80,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
   describe('Graph Construction & Bubble Decomposition', () => {
     it('constructs sequence graph with core backbones and variant branches for T4', () => {
       const phage = mockPhage();
-      const result: PangenomeGraphResult = constructPangenomeGraph(phage);
+      const result: PangenomeGraphResult = constructPangenomeGraph(phage, [], { demonstration: true });
 
       expect(result.referencePhageName).toBe(phage.name);
       expect(result.includedGenomesCount).toBeGreaterThanOrEqual(4); // T4 + T2, T6, RB69
@@ -98,7 +107,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('creates valid topology links connecting core backbones through bubble branches', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       const segmentIds = new Set(result.segments.map((s) => s.id));
       for (const link of result.links) {
@@ -111,7 +120,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('constructs walks for each genome path through the variation graph', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       const refPath = result.paths.find((p) => p.genomeName === phage.name);
       expect(refPath).toBeDefined();
@@ -129,7 +138,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
   describe('Variant Cards Generation & Annotation', () => {
     it('extracts structured variant cards with locus, span, and GC shift', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       expect(result.variantCards.length).toBeGreaterThan(0);
 
@@ -149,7 +158,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('identifies HGT candidates based on significant GC content shifts (>= 4.0%)', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       const hgtCandidates = result.variantCards.filter((c) => c.isHgtCandidate);
       expect(hgtCandidates.length).toBeGreaterThan(0);
@@ -163,7 +172,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('detects inverted repeats for inversion variants', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       const inversionCard = result.variantCards.find((c) => c.type === 'inversion');
       expect(inversionCard).toBeDefined();
@@ -172,7 +181,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('associates overlapping genes and their impact types', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
 
       const cardsWithGenes = result.variantCards.filter((c) => c.overlappedGenes.length > 0);
       expect(cardsWithGenes.length).toBeGreaterThan(0);
@@ -190,7 +199,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
   describe('Pangenome Metrics & Recombination Hotspots', () => {
     it('calculates core fraction and Heaps law openness alpha', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
       const { metrics } = result;
 
       expect(metrics.panGenomeLengthBp).toBeGreaterThan(metrics.coreGenomeLengthBp);
@@ -205,7 +214,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
 
     it('identifies recombination hotspots with diversity scores', () => {
       const phage = mockPhage();
-      const result = constructPangenomeGraph(phage);
+      const result = constructPangenomeGraph(phage, [], { demonstration: true });
       const { recombinationHotspots } = result.metrics;
 
       expect(recombinationHotspots.length).toBeGreaterThan(0);
@@ -228,7 +237,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
         gcContent: 49.9,
       });
 
-      const result = constructPangenomeGraph(lambdaPhage);
+      const result = constructPangenomeGraph(lambdaPhage, [], { demonstration: true });
       expect(result.includedGenomesCount).toBeGreaterThanOrEqual(3);
       expect(result.genomes.some((g) => g.name.includes('434'))).toBe(true);
       expect(result.genomes.some((g) => g.name.includes('HK97'))).toBe(true);
@@ -243,7 +252,7 @@ describe('Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)', () => 
         gcContent: 36.0,
       });
 
-      const result = constructPangenomeGraph(ref, [companion1]);
+      const result = constructPangenomeGraph(ref, [companion1], { demonstration: true });
       expect(result.genomes.some((g) => g.name === 'Custom Phage Alpha')).toBe(true);
       expect(result.includedGenomesCount).toBeGreaterThanOrEqual(5);
     });

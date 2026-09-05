@@ -1,19 +1,12 @@
 /**
  * burst-kinetics.ts
  *
- * Roadmap #33: Burst Kinetics & Latency Inference from Growth Curves
- *
- * Infers burst size, latent period, and lysis timing distribution directly
- * from experimental optical density (OD600) or plaque-forming unit (PFU) time series:
- * 1. Classic & delay infection ODE modeling with Runge-Kutta 4 solver.
- * 2. Inverse parameter estimation using non-linear least squares / Nelder-Mead optimization
- *    to fit adsorption rate (k), latent period (L), burst size (b), bacterial growth rate (mu),
- *    and phage decay rate (delta).
- * 3. Statistical evaluation: R², log-likelihood, AIC/BIC, residuals, and bootstrap 95% confidence intervals.
- * 4. Lysis cassette detection (holins, antiholins, endolysins, spanins) and genomic correlation
- *    linking inferred latent periods with genetic architecture.
- * 5. Pre-loaded benchmark experimental datasets (T4 Ellis & Delbrück 1939, Lambda, PhiX174, Pseudomonas PAK_P1).
- * 6. In-silico lysis cassette modification simulation (e.g. antiholin knockout, holin timing shift).
+ * Explicit teaching illustration for Roadmap #33.
+ * Fits hand-entered example curves with a sigmoid approximation and Nelder-Mead.
+ * The fit does not establish biological parameters or uncertainty. Annotation
+ * keyword matches feed illustrative cassette scenarios, not measured timing.
+ * Validated experimental provenance and an identifiable forward model remain
+ * required for the planned biological inference capability.
  */
 
 import type { PhageFull } from '../types';
@@ -113,12 +106,15 @@ export interface InSilicoMutationShift {
 }
 
 export interface BurstInferenceResult {
+  source: 'demonstration';
+  assumptions: string;
+  adsorptionRateStatus: 'unidentifiable' | 'unvalidated_fit';
   curveId: string;
   curveTitle: string;
   phageName: string;
   fittedParameters: InfectionParameters;
-  confidenceIntervals: ConfidenceIntervals;
-  fitQualityR2: number;
+  confidenceIntervals: null;
+  fitQualityR2: number | null;
   logLikelihood: number;
   aic: number;
   bic: number;
@@ -871,8 +867,11 @@ export function simulateInSilicoCassetteMutations(
 export function inferBurstKinetics(
   phage: PhageFull,
   growthCurve: ExperimentalGrowthCurve,
-  options: { initialParams?: Partial<InfectionParameters>; maxIterations?: number } = {}
+  options: { initialParams?: Partial<InfectionParameters>; maxIterations?: number; demonstration?: boolean } = {}
 ): BurstInferenceResult {
+  if (options.demonstration !== true) {
+    throw new Error('The sigmoid growth-curve model is an explicit demonstration, not biological parameter inference. Validated experimental inputs and an identifiable forward model are required.');
+  }
   const autoGuess = estimateInitialParameters(growthCurve.data, growthCurve.defaultB0, growthCurve.defaultP0);
   const defaultGuess: InfectionParameters = {
     ...autoGuess,
@@ -881,6 +880,11 @@ export function inferBurstKinetics(
 
   // Perform non-linear optimization
   const fittedParameters = fitInfectionParameters(defaultGuess, growthCurve.data, options.maxIterations ?? 75);
+  // PFU and bacterial-count observations do not depend on adsorption in this
+  // model. OD includes an adsorption-dependent infected-biomass term, whose
+  // biological validity and identifiability have not been established.
+  const observesAdsorption = growthCurve.data.some(point => point.type === 'OD');
+  if (!observesAdsorption) fittedParameters.adsorptionRate = defaultGuess.adsorptionRate;
 
   // Evaluate fit quality
   const fit = evaluateFit(fittedParameters, growthCurve.data);
@@ -889,35 +893,15 @@ export function inferBurstKinetics(
   const observedValues = growthCurve.data.map((d) => (d.type === 'OD' ? d.value : Math.log10(Math.max(1, d.value))));
   const meanObs = observedValues.reduce((a, b) => a + b, 0) / Math.max(1, observedValues.length);
   const ssTotal = observedValues.reduce((sum, v) => sum + Math.pow(v - meanObs, 2), 0);
-  const fitQualityR2 = ssTotal > 0 ? Math.max(0, Math.min(0.999, 1 - fit.sse / ssTotal)) : 0.95;
+  const fitQualityR2 = ssTotal > 0 ? 1 - fit.sse / ssTotal : null;
 
-  // Information criteria (k = 4 parameters)
+  // Count parameters present in the observation equations, not proof of
+  // identifiability: latency, PFU burst size, biomass growth, OD adsorption.
   const nPoints = growthCurve.data.length;
-  const aic = Math.round((2 * 4 - 2 * fit.logLikelihood) * 10) / 10;
-  const bic = Math.round((4 * Math.log(Math.max(1, nPoints)) - 2 * fit.logLikelihood) * 10) / 10;
-
-  // Bootstrap 95% confidence intervals (± 8-15% empirical margin based on residuals)
-  const residualStd = Math.sqrt(fit.sse / Math.max(1, nPoints - 4));
-  const relErr = Math.min(0.20, Math.max(0.04, residualStd * 0.15));
-
-  const confidenceIntervals: ConfidenceIntervals = {
-    adsorptionRate: [
-      fittedParameters.adsorptionRate * (1 - relErr * 1.5),
-      fittedParameters.adsorptionRate * (1 + relErr * 1.5),
-    ],
-    latentPeriod: [
-      Math.round(fittedParameters.latentPeriod * (1 - relErr) * 10) / 10,
-      Math.round(fittedParameters.latentPeriod * (1 + relErr) * 10) / 10,
-    ],
-    burstSize: [
-      Math.round(fittedParameters.burstSize * (1 - relErr * 1.2)),
-      Math.round(fittedParameters.burstSize * (1 + relErr * 1.2)),
-    ],
-    bacterialGrowthRate: [
-      Math.round(fittedParameters.bacterialGrowthRate * (1 - relErr) * 1000) / 1000,
-      Math.round(fittedParameters.bacterialGrowthRate * (1 + relErr) * 1000) / 1000,
-    ],
-  };
+  const parameterCount = 1 + Number(growthCurve.data.some(point => point.type === 'PFU')) +
+    Number(growthCurve.data.some(point => point.type !== 'PFU')) + Number(observesAdsorption);
+  const aic = Math.round((2 * parameterCount - 2 * fit.logLikelihood) * 10) / 10;
+  const bic = Math.round((parameterCount * Math.log(Math.max(1, nPoints)) - 2 * fit.logLikelihood) * 10) / 10;
 
   // Lysis cassette analysis and genomic correlation
   const lysisCassette = analyzeLysisCassette(phage);
@@ -925,21 +909,21 @@ export function inferBurstKinetics(
   const inSilicoScenarios = simulateInSilicoCassetteMutations(fittedParameters, lysisCassette);
 
   const summary =
-    `Burst Kinetics for ${phage.name} on ${growthCurve.hostName}: ` +
-    `Inferred latent period L = ${fittedParameters.latentPeriod.toFixed(1)} min ` +
-    `[95% CI: ${confidenceIntervals.latentPeriod[0]} - ${confidenceIntervals.latentPeriod[1]} min], ` +
-    `Burst size b = ${Math.round(fittedParameters.burstSize)} phages/cell ` +
-    `[95% CI: ${confidenceIntervals.burstSize[0]} - ${confidenceIntervals.burstSize[1]}], ` +
-    `Adsorption rate k = ${fittedParameters.adsorptionRate.toExponential(2)} mL/(phage·min). ` +
-    `Model fit R² = ${fitQualityR2.toFixed(3)} (AIC: ${aic}).`;
+    `Demonstration curve ${growthCurve.title}, using ${phage.name} annotations for illustrative cassette scenarios. ` +
+    `Sigmoid model latency = ${fittedParameters.latentPeriod.toFixed(1)} min; model burst size = ${Math.round(fittedParameters.burstSize)}. ` +
+    `${observesAdsorption ? 'The OD adsorption fit is unvalidated' : 'Adsorption is not identifiable from these observations'}; uncertainty has not been estimated. ` +
+    `Descriptive R² = ${fitQualityR2?.toFixed(3) ?? 'undefined for constant observations'}.`;
 
   return {
+    source: 'demonstration',
+    assumptions: 'Hand-entered example growth curves without verified experimental provenance, fitted to a sigmoid approximation rather than a DDE. PFU and bacterial-count curves do not depend on adsorption; OD uses an unvalidated infected-biomass term. No bootstrap or confidence interval was computed. Cassette timing and mutation scenarios are illustrative, not predictions for the selected phage.',
+    adsorptionRateStatus: observesAdsorption ? 'unvalidated_fit' : 'unidentifiable',
     curveId: growthCurve.id,
     curveTitle: growthCurve.title,
     phageName: phage.name,
     fittedParameters,
-    confidenceIntervals,
-    fitQualityR2: Math.round(fitQualityR2 * 1000) / 1000,
+    confidenceIntervals: null,
+    fitQualityR2: fitQualityR2 === null ? null : Math.round(fitQualityR2 * 1000) / 1000,
     logLikelihood: Math.round(fit.logLikelihood * 10) / 10,
     aic,
     bic,

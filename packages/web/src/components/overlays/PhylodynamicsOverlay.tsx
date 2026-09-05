@@ -67,7 +67,14 @@ export function PhylodynamicsOverlay({
 
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('tree');
-  const [result, setResult] = useState<PhylodynamicsResult | null>(null);
+  const [storedResult, setResult] = useState<PhylodynamicsResult | null>(null);
+  const [resultKey, setResultKey] = useState<string | null>(null);
+  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const demonstration = demoPhageId === (currentPhage?.id ?? -1);
+  const inputKey = `${currentPhage?.id ?? 'none'}:${demonstration ? 'demo' : 'real'}:${retryCount}`;
+  const result = resultKey === inputKey ? storedResult : null;
+  useEffect(() => { setDemoPhageId(null); }, [currentPhage?.id]);
   const [error, setError] = useState<string | null>(null);
   const [dataSource, setDataSource] = useState<DataSource>('loading');
   const [apiMessage, setApiMessage] = useState<string>('');
@@ -94,7 +101,7 @@ export function PhylodynamicsOverlay({
       return;
     }
 
-    const phageKey = String(currentPhage?.id ?? 'demo');
+    const phageKey = inputKey;
     const phageName = currentPhage?.name ?? 'bacteriophage';
     const shouldRun = justOpened || lastAnalyzedKeyRef.current !== phageKey || !result;
     if (!shouldRun) return;
@@ -103,6 +110,7 @@ export function PhylodynamicsOverlay({
     setError(null);
     setDataSource('loading');
     setApiMessage('');
+    setResult(null);
 
     let cancelled = false;
 
@@ -111,15 +119,29 @@ export function PhylodynamicsOverlay({
         lastAnalyzedKeyRef.current = phageKey;
 
         // Check cache first
-        const cacheKey = generateCacheKey('phylodynamics', { phageKey, phageName });
+        const cacheKey = generateCacheKey('phylodynamics', { phageKey, phageName, method: 'explicit-demo-coding-alignment-3' });
         const cached = getCached<{ result: PhylodynamicsResult; source: 'real' | 'demo'; count: number }>(cacheKey);
         if (cached) {
           if (cancelled) return;
+          setResultKey(phageKey);
           setResult(cached.result);
           setDataSource(cached.source);
           setSequenceCount(cached.count);
           setApiMessage(cached.source === 'real' ? 'Data loaded from cache' : '');
           setLoading(false);
+          return;
+        }
+
+        if (demonstration) {
+          const seed = currentPhage?.id ?? 1;
+          const sequences = generateDemoPhylodynamicsData(15, 300, seed);
+          const analysisResult = analyzePhylodynamics(sequences);
+          if (cancelled) return;
+          setResultKey(phageKey);
+          setResult(analysisResult);
+          setDataSource('demo');
+          setSequenceCount(sequences.length);
+          setApiMessage(`Explicit illustration: 15 synthetic 300-base sequences, seed ${seed}, with generated dates. These are not samples of ${phageName}.`);
           return;
         }
 
@@ -160,9 +182,8 @@ export function PhylodynamicsOverlay({
               if (cancelled) return;
 
               if (!fastaResult.success || fastaResult.data.size < 5) {
-                // Not enough real sequence to build a tree on. Fall through to
-                // the demo path, which is clearly labelled, rather than
-                // synthesising input and calling it real.
+                // Not enough real sequence to build a tree. Report unavailable
+                // data; illustrations require a separate user action.
                 break;
               }
 
@@ -186,8 +207,7 @@ export function PhylodynamicsOverlay({
               // This is the step that makes the real sequences usable. Every
               // number below it -- tree, clock rate, skyline -- is derived from
               // this matrix, so if the sketches cannot be built there is no
-              // honest analysis to show and the demo path is the correct
-              // outcome.
+              // analysis to show. Keep missing data distinct from illustrations.
               await initMinHashWasm();
               if (cancelled) return;
               const sketches = new SketchCache();
@@ -220,6 +240,7 @@ export function PhylodynamicsOverlay({
               });
 
               if (cancelled) return;
+              setResultKey(phageKey);
               setResult(analysisResult);
               setDataSource('real');
               // Report what was ANALYSED, not what was found. These differ
@@ -243,32 +264,15 @@ export function PhylodynamicsOverlay({
             }
           }
         } catch {
-          // API failed, will fall back to demo data
+          // Keep failure separate from the explicit demonstration path.
         }
 
-        // Fallback to demo data if real API didn't work
+        // Missing data is not permission to substitute synthetic sequences.
         if (!usedRealData) {
           if (cancelled) return;
-          setApiMessage('Using demonstration data (no dated sequences found or API unavailable)');
-
-          // Generate synthetic dated sequences using phage ID as seed for consistency
-          const seed = currentPhage?.id ?? 1;
-          const seqLength = Math.min(300, Math.floor((currentPhage?.genomeLength ?? 30000) / 100));
-          const sequences: DatedSequence[] = generateDemoPhylodynamicsData(15, seqLength, seed);
-
-          const analysisResult = analyzePhylodynamics(sequences, {
-            runClock: true,
-            runSkyline: true,
-            runSelection: true,
-          });
-
-          if (cancelled) return;
-          setResult(analysisResult);
-          setDataSource('demo');
-          setSequenceCount(15);
-
-          // Cache demo result with shorter TTL
-          setCache(cacheKey, { result: analysisResult, source: 'demo' as const, count: 15 }, { ttl: 60 * 60 * 1000 });
+          setResult(null);
+          setDataSource('error');
+          setError('At least five dated nucleotide sequences and usable MinHash sketches are required. No usable cohort was retrieved; NCBI may be unavailable or the selected phage may lack dated records. Retry the search or explicitly select the synthetic illustration.');
         }
       } catch (err) {
         if (cancelled) return;
@@ -287,7 +291,7 @@ export function PhylodynamicsOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, result, currentPhage]);
+  }, [isOpen, result, currentPhage, inputKey, demonstration]);
 
   // Generate pseudo-sequence from accession for analysis
   // This creates a deterministic sequence that can be used for tree building
@@ -701,6 +705,10 @@ export function PhylodynamicsOverlay({
   return (
     <Overlay id="phylodynamics" title="PHYLODYNAMIC TRAJECTORY EXPLORER" size="xl">
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', height: '100%' }}>
+        <div>
+          <button type="button" onClick={() => { setDemoPhageId(null); setRetryCount(n => n + 1); }}>Search real dated sequences</button>
+          <button type="button" onClick={() => setDemoPhageId(currentPhage?.id ?? -1)}>Show synthetic phylodynamics illustration</button>
+        </div>
         {/* Data source banner */}
         <div
           style={{
@@ -729,7 +737,7 @@ export function PhylodynamicsOverlay({
           )}
           {dataSource === 'error' && (
             <>
-              <strong style={{ color: colors.error }}>ERROR</strong>: Failed to fetch data. Showing demo visualization.
+              <strong style={{ color: colors.error }}>DATA UNAVAILABLE</strong>: No synthetic data was substituted.
             </>
           )}
         </div>
@@ -833,6 +841,7 @@ export function PhylodynamicsOverlay({
         )}
 
         {/* Stats footer */}
+        {result?.selectionUnavailableReason && <p role="note">{result.selectionUnavailableReason}</p>}
         {result && (
           <div
             style={{
