@@ -9,6 +9,7 @@ import {
   GENE_MAP_UNKNOWN_TRACK,
   getGeneMapTrack,
   getGeneMapTrackDirectionAtY,
+  getGeneMapSegments,
 } from '../utils/gene-map-layout';
 
 const srOnly: React.CSSProperties = {
@@ -63,7 +64,7 @@ function GeneMapCanvasBase({
     const unknownPart = strands.unknown > 0
       ? `, and ${strands.unknown} with unknown strand annotation`
       : '';
-    const lengthPart = genomeLength == null
+    const lengthPart = genomeLength === null
       ? ' Genome length is not reported.'
       : ` Genome length: ${genomeLength.toLocaleString()} base pairs.`;
 
@@ -122,7 +123,7 @@ function GeneMapCanvasBase({
 
   const getHitInfo = (clientX: number, clientY: number): HitInfo | undefined => {
     const canvas = canvasRef.current;
-    if (!canvas || genomeLength == null || genomeLength <= 0) return;
+    if (!canvas || genomeLength === null || genomeLength <= 0) return;
 
     const rect = canvas.getBoundingClientRect();
     const x = clientX - rect.left;
@@ -140,21 +141,22 @@ function GeneMapCanvasBase({
 
     if (targetDirection) {
       for (const gene of genes) {
-        if (classifyGeneStrand(gene.strand) !== targetDirection) continue;
+        for (const segment of getGeneMapSegments(gene)) {
+          if (classifyGeneStrand(segment.strand) !== targetDirection) continue;
+          const startPosition = segment.start;
+          const endPosition = segment.end;
+          const startX = (startPosition / genomeLength) * rect.width;
+          const endX = (endPosition / genomeLength) * rect.width;
+          const geneWidth = Math.max(1, endX - startX);
+          const hitWidth = Math.max(geneWidth, 44);
+          const centerX = startX + geneWidth / 2;
 
-        const startPosition = Math.min(gene.startPos, gene.endPos);
-        const endPosition = Math.max(gene.startPos, gene.endPos);
-        const startX = (startPosition / genomeLength) * rect.width;
-        const endX = (endPosition / genomeLength) * rect.width;
-        const geneWidth = Math.max(1, endX - startX);
-        const hitWidth = Math.max(geneWidth, 44);
-        const centerX = startX + geneWidth / 2;
-
-        if (x < centerX - hitWidth / 2 || x > centerX + hitWidth / 2) continue;
-        const distance = Math.abs(x - centerX);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestGene = gene;
+          if (x < centerX - hitWidth / 2 || x > centerX + hitWidth / 2) continue;
+          const distance = Math.abs(x - centerX);
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            bestGene = gene;
+          }
         }
       }
     }
@@ -325,7 +327,7 @@ function GeneMapCanvasBase({
     ctx.fillStyle = c.background;
     ctx.fillRect(0, 0, width, displayHeight);
 
-    if (gl == null || gl <= 0) {
+    if (gl === null || gl <= 0) {
       ctx.fillStyle = c.textMuted;
       ctx.font = '11px sans-serif';
       ctx.textAlign = 'center';
@@ -351,27 +353,29 @@ function GeneMapCanvasBase({
     ctx.stroke();
 
     for (const gene of g) {
-      const startPosition = Math.min(gene.startPos, gene.endPos);
-      const endPosition = Math.max(gene.startPos, gene.endPos);
-      const startX = (startPosition / gl) * width;
-      const endX = (endPosition / gl) * width;
-      const geneWidth = Math.max(1, endX - startX);
-      const direction = classifyGeneStrand(gene.strand);
-      const track = getGeneMapTrack(direction);
+      for (const segment of getGeneMapSegments(gene)) {
+        const startPosition = segment.start;
+        const endPosition = segment.end;
+        const startX = (startPosition / gl) * width;
+        const endX = (endPosition / gl) * width;
+        const geneWidth = Math.max(1, endX - startX);
+        const direction = classifyGeneStrand(segment.strand);
+        const track = getGeneMapTrack(direction);
 
-      ctx.fillStyle = direction === 'forward'
-        ? (c.geneForward ?? '#22c55e')
-        : direction === 'reverse'
-          ? (c.geneReverse ?? '#ef4444')
-          : c.textMuted;
-      ctx.fillRect(startX, track.y, geneWidth, track.height);
+        ctx.fillStyle = direction === 'forward'
+          ? (c.geneForward ?? '#22c55e')
+          : direction === 'reverse'
+            ? (c.geneReverse ?? '#ef4444')
+            : c.textMuted;
+        ctx.fillRect(startX, track.y, geneWidth, track.height);
 
-      if (geneWidth > 40 && gene.name) {
-        ctx.fillStyle = '#ffffff';
-        ctx.font = direction === 'unknown' ? '8px sans-serif' : '10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(gene.name, startX + geneWidth / 2, track.y + track.height / 2);
+        if (geneWidth > 40 && gene.name) {
+          ctx.fillStyle = '#ffffff';
+          ctx.font = direction === 'unknown' ? '8px sans-serif' : '10px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(gene.name, startX + geneWidth / 2, track.y + track.height / 2);
+        }
       }
     }
 
@@ -432,7 +436,7 @@ function GeneMapCanvasBase({
           width: '100%',
           height: '100%',
           display: 'block',
-          cursor: genomeLength == null ? 'default' : 'pointer',
+          cursor: genomeLength === null ? 'default' : 'pointer',
           touchAction: 'pan-y',
         }}
         onClick={handleClick}
@@ -443,7 +447,7 @@ function GeneMapCanvasBase({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchCancel}
         aria-hidden="true"
-        title={genomeLength == null ? 'Genome length not reported' : 'Click to jump to position'}
+        title={genomeLength === null ? 'Genome length not reported' : 'Click to jump to position'}
       />
 
       {hoveredGene && (() => {

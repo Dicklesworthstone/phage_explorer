@@ -9,6 +9,7 @@ import type { PhageRepository, DatabaseLoadProgress } from '../db';
 import { createShareAwareRepository } from '../db/createShareAwareRepository';
 import { getInitialShareState } from '../utils/share-state';
 import { useDatabaseQuery } from './useDatabaseQuery';
+import { createLocalGenomeRepository, useLocalGenomes } from '../db/local-genomes';
 
 export interface UseDatabaseOptions {
   /** URL to load the database from */
@@ -57,11 +58,13 @@ export function useDatabase(options: UseDatabaseOptions = {}): UseDatabaseResult
   const { databaseUrl = '/phage.db', autoLoad = true } = options;
   const query = useDatabaseQuery({ databaseUrl, enabled: autoLoad });
   const initialShareState = getInitialShareState();
+  const localGenomes = useLocalGenomes(state => state.genomes);
 
   const repository = useMemo(() => {
-    if (!query.repository) return null;
-    return createShareAwareRepository(query.repository, initialShareState.phageKey);
-  }, [initialShareState.phageKey, query.repository]);
+    if (!query.repository && localGenomes.length === 0) return null;
+    const combined = localGenomes.length ? createLocalGenomeRepository(query.repository, localGenomes) : query.repository!;
+    return createShareAwareRepository(combined, initialShareState.phageKey);
+  }, [initialShareState.phageKey, query.repository, localGenomes]);
 
   const load = useCallback(async () => {
     await query.load();

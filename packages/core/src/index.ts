@@ -1,5 +1,6 @@
 // Types
 export * from './types';
+export * from './genome-import';
 
 // Codon translation and utilities
 export * from './codons';

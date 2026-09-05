@@ -4,13 +4,25 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## [Unreleased] — post-v1.4.1 (2025-12-16 through 2026-09-03)
+## [Unreleased] — post-v1.4.1 (2025-12-16 through 2026-09-05)
 
 Over 550 commits of active development since v1.4.1, spanning annotation pipelines, ESM2 embeddings, Pfam domain architectures, WASM acceleration, WebGL rendering, mobile discovery, and rigorous test coverage.
 
 [Compare: v1.4.1...main](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.4.1...main)
 
 > **Note on Historical Version Tags**: Git tag `v1.3.2` was historically attached to commit `de580ce` (2026-04-24), which is a descendant of `v1.4.1` (2025-12-15). Under bead `0r8g.2`, Option 1 was selected: rather than rewriting shared git history/tags, `v1.3.2` remains a non-breaking historical artifact and subsequent releases proceed monotonically from `v1.5.0` (`package.json`).
+
+### September 5 source changes awaiting publication
+
+- **Private genome input** — local FASTA/GenBank records join the browser repository and existing navigation, gene map, comparisons and sequence analyses. Original files and the selected sequence view round-trip through a versioned bundle. Imports never replace curated records. TUI import and complete analysis replay remain unfinished. See [the importer](packages/core/src/genome-import.ts) and [browser journeys](packages/web/e2e/local-genome-import.e2e.ts).
+- **Selection and sequence exports** — command-palette navigation loads the selected genome. FASTA and clipboard exports read that genome's sequence; previously they read the diff reference, which could be empty or belong to another genome.
+- **Browser comparison recovery** — workers handle browsers without `SharedArrayBuffer`; a new comparison cancels the previous computation, and worker failures clear loading and permit retry.
+- **Verified database loading** — logical dataset versions and exact-byte checksums are separate. Cached bytes are checked before SQLite opens, and the catalog becomes usable while offline persistence finishes. Settings refresh and service-worker updates preserve a single active database owner (`aae96b8`, `c4767c3`, `0e864c9`).
+- **Numerical and scientific corrections** — bounded FBA solves feasibility and objective constraints and labels its teaching model as uncalibrated (`303c320`). Tropism can use deposited protein translations; synthetic structural quantities, host interactions, pangenome examples and phylodynamic examples require explicit opt-in. Burst fitting no longer invents confidence intervals (`6d973da`). These corrections narrow the claims of the older feature descriptions below.
+
+These entries describe local source and production-build verification, not a new
+public deployment or binary release. Revision IDs above refer to local commits;
+public commit links can be added when those commits are published.
 
 ### New Analysis Overlays and Modules
 

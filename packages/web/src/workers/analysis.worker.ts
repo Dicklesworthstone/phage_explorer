@@ -143,7 +143,7 @@ function decodeAsciiBytes(bytes: Uint8Array): string {
   if (textDecoder) {
     // TextDecoder.decode() rejects views over SharedArrayBuffer; copy to a regular buffer first
     const safeBuf =
-      bytes.buffer instanceof SharedArrayBuffer
+      typeof SharedArrayBuffer !== 'undefined' && bytes.buffer instanceof SharedArrayBuffer
         ? new Uint8Array(bytes)
         : bytes;
     return textDecoder.decode(safeBuf);

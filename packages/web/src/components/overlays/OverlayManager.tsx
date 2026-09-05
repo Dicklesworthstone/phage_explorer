@@ -55,6 +55,7 @@ import { FeatureTour } from './FeatureTour';
 const SimulationHub = lazy(() => import('./SimulationHub').then(m => ({ default: m.SimulationHub })));
 const SimulationView = lazy(() => import('../SimulationView'));
 const ComparisonOverlay = lazy(() => import('./ComparisonOverlay').then(m => ({ default: m.ComparisonOverlay })));
+const GenomeImportOverlay = lazy(() => import('./GenomeImportOverlay').then(m => ({ default: m.GenomeImportOverlay })));
 const CollaborationOverlay = lazy(() => import('./CollaborationOverlay').then(m => ({ default: m.CollaborationOverlay })));
 const ResistanceEvolutionOverlay = lazy(() => import('./ResistanceEvolutionOverlay').then(m => ({ default: m.ResistanceEvolutionOverlay })));
 
@@ -131,6 +132,7 @@ const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvena
 const PangenomeGraphOverlay = lazy(() => import('./PangenomeGraphOverlay').then(m => ({ default: m.PangenomeGraphOverlay })));
 
 interface OverlayManagerProps {
+  onSelectPhage: (index: number) => Promise<void>;
   reloadDatabase: () => Promise<void>;
   databaseFetching: boolean;
   repository: PhageRepository | null;
@@ -307,7 +309,7 @@ function LazyOverlayBoundary({
   );
 }
 
-export function OverlayManager({ repository, currentPhage, reloadDatabase, databaseFetching }: OverlayManagerProps): React.ReactElement | null {
+export function OverlayManager({ repository, currentPhage, reloadDatabase, databaseFetching, onSelectPhage }: OverlayManagerProps): React.ReactElement | null {
   const { stack } = useOverlay();
 
   const lazyOverlays = stack
@@ -333,7 +335,7 @@ export function OverlayManager({ repository, currentPhage, reloadDatabase, datab
       <EagerOverlayBoundary id="aaKey"><AAKeyOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaLegend"><AALegend /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="settings"><SettingsOverlay reloadDatabase={reloadDatabase} databaseFetching={databaseFetching} /></EagerOverlayBoundary>
-      <EagerOverlayBoundary id="commandPalette"><CommandPalette /></EagerOverlayBoundary>
+      <EagerOverlayBoundary id="commandPalette"><CommandPalette repository={repository} onSelectPhage={onSelectPhage} /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="tour"><FeatureTour /></EagerOverlayBoundary>
 
       {/* LAZY: Analysis overlays loaded only when open */}
@@ -353,7 +355,12 @@ function renderLazyOverlay(
   repository: PhageRepository | null,
   currentPhage: PhageFull | null
 ): React.ReactElement | null {
+  if (currentPhage?.localGenome && (id === 'phylodynamics' || id === 'environmentalProvenance' || id === 'codonAdaptation')) {
+    return <Overlay id={id} title={formatOverlayTitle(id)} size="lg"><p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p></Overlay>;
+  }
   switch (id) {
+    case 'genomeImport':
+      return <GenomeImportOverlay />;
     // Simulation & comparison
     case 'simulationHub':
       return <SimulationHub />;

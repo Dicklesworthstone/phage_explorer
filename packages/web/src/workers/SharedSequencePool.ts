@@ -84,7 +84,7 @@ export function decodeSequence(view: Uint8Array, length?: number): string {
   if (textDecoder) {
     // TextDecoder.decode() rejects views over SharedArrayBuffer; copy to a regular buffer first
     const safeBuf =
-      slice.buffer instanceof SharedArrayBuffer ? new Uint8Array(slice) : slice;
+      typeof SharedArrayBuffer !== 'undefined' && slice.buffer instanceof SharedArrayBuffer ? new Uint8Array(slice) : slice;
     return textDecoder.decode(safeBuf);
   }
 

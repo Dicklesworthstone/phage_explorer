@@ -14,6 +14,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
 import { useFileSystem } from '../../hooks/useFileSystem';
+import type { PhageRepository } from '../../db';
 import {
   ActionIds,
   ActionRegistryList,
@@ -246,12 +247,14 @@ function matchesContext(cmd: Command, ctx: AppContext): boolean {
 }
 
 interface CommandPaletteProps {
+  repository: PhageRepository | null;
+  onSelectPhage: (index: number) => Promise<void>;
   commands?: Command[];
   /** Current app context for filtering */
   context?: Partial<AppContext>;
 }
 
-export function CommandPalette({ commands: customCommands, context: propContext }: CommandPaletteProps): React.ReactElement | null {
+export function CommandPalette({ repository, onSelectPhage, commands: customCommands, context: propContext }: CommandPaletteProps): React.ReactElement | null {
   const { theme, setTheme, availableThemes } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle, open, close, isMobile } = useOverlay();
@@ -290,7 +293,6 @@ export function CommandPalette({ commands: customCommands, context: propContext 
   const readingFrame = usePhageStore((s) => s.readingFrame);
   const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
   const toggle3DModel = usePhageStore((s) => s.toggle3DModel);
-  const setCurrentPhageIndex = usePhageStore((s) => s.setCurrentPhageIndex);
   const currentPhageIndex = usePhageStore((s) => s.currentPhageIndex);
 
   // Merge prop context with inferred context
@@ -375,18 +377,27 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     close('commandPalette');
   }, [close]);
 
+  const readSelectedSequence = useCallback(async () => {
+    const phage = usePhageStore.getState().currentPhage;
+    if (!repository || !phage) throw new Error('No genome is selected.');
+    const length = phage.genomeLength ?? await repository.getFullGenomeLength(phage.id);
+    const sequence = await repository.getSequenceWindow(phage.id, 0, length);
+    if (!sequence) throw new Error('The selected genome has no sequence available.');
+    return { phage, sequence };
+  }, [repository]);
+
   // Implementations for non-overlay actions
   const commandImpls = useMemo<Record<string, () => void>>(() => ({
     [ActionIds.NavNextPhage]: () => {
       if (phageSummaries.length > 0) {
         const nextIndex = (currentPhageIndex + 1) % phageSummaries.length;
-        setCurrentPhageIndex(nextIndex);
+        void onSelectPhage(nextIndex);
       }
     },
     [ActionIds.NavPrevPhage]: () => {
       if (phageSummaries.length > 0) {
         const prevIndex = (currentPhageIndex - 1 + phageSummaries.length) % phageSummaries.length;
-        setCurrentPhageIndex(prevIndex);
+        void onSelectPhage(prevIndex);
       }
     },
     [ActionIds.ViewCycleTheme]: () => {
@@ -427,14 +438,14 @@ export function CommandPalette({ commands: customCommands, context: propContext 
       toggleBeginnerMode();
     },
     [ActionIds.ExportFasta]: async () => {
-      const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
-      const seq = diffReferenceSequence;
-      if (!seq || seq.length === 0) {
-        showToast({ variant: 'warning', message: 'No sequence available to export.' });
+      let selected: Awaited<ReturnType<typeof readSelectedSequence>>;
+      try { selected = await readSelectedSequence(); }
+      catch (error) {
+        showToast({ variant: 'error', message: error instanceof Error ? error.message : 'Could not load the selected sequence.' });
         return;
       }
-      const name = currentPhage?.name || 'phage';
-      const fasta = formatFasta(`${name} [exported from Phage Explorer]`, seq);
+      const name = selected.phage.name;
+      const fasta = formatFasta(`${name} [exported from Phage Explorer]`, selected.sequence);
       try {
         await saveFileWithPicker(fasta, {
           suggestedName: `${name.replace(/\s+/g, '_')}.fasta`,
@@ -448,17 +459,17 @@ export function CommandPalette({ commands: customCommands, context: propContext 
         downloadString(fasta, `${name.replace(/\s+/g, '_')}.fasta`);
       }
     },
-    [ActionIds.ExportCopy]: () => {
-      const { currentPhage, diffReferenceSequence } = usePhageStore.getState();
-      const seq = diffReferenceSequence;
-      if (!seq || seq.length === 0) {
-        showToast({ variant: 'warning', message: 'No sequence loaded to copy.' });
+    [ActionIds.ExportCopy]: async () => {
+      let selected: Awaited<ReturnType<typeof readSelectedSequence>>;
+      try { selected = await readSelectedSequence(); }
+      catch (error) {
+        showToast({ variant: 'error', message: error instanceof Error ? error.message : 'Could not load the selected sequence.' });
         return;
       }
-      const header = currentPhage ? `${currentPhage.name} | ${currentPhage.accession}` : 'phage-sequence';
-      const payload = buildSequenceClipboardPayload({ header, sequence: seq, wrap: 80 });
+      const header = `${selected.phage.name} | ${selected.phage.accession}`;
+      const payload = buildSequenceClipboardPayload({ header, sequence: selected.sequence, wrap: 80 });
       copyWithFileSystem(payload.text, 'text/plain')
-        .then(() => showToast({ variant: 'success', message: 'Sequence copied (text + HTML).' }))
+        .then(() => showToast({ variant: 'success', message: 'Sequence copied as FASTA text.' }))
         .catch(() => copyToClipboard(payload.text, payload.html)
           .then(() => showToast({ variant: 'success', message: 'Sequence copied (text + HTML).' }))
           .catch(() => showToast({ variant: 'error', message: 'Failed to copy sequence.' })));
@@ -498,9 +509,9 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     },
   }), [
     availableThemes, beginnerModeEnabled, currentPhage, currentPhageIndex,
-    open, openGlossary, phageSummaries, readingFrame, setBeginnerModeEnabled, setCurrentPhageIndex,
+    open, openGlossary, phageSummaries, readingFrame, setBeginnerModeEnabled, onSelectPhage,
     setReadingFrame, setScrollPosition, setTheme, showToast, startTour, theme.id,
-    toggle3DModel, toggleBeginnerMode, toggleSequenceViewMode
+    toggle3DModel, toggleBeginnerMode, toggleSequenceViewMode, readSelectedSequence
   ]);
 
   // Generate commands from ActionRegistry (single source of truth for shortcuts)
@@ -719,7 +730,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
                 action: () => {
                   const state = usePhageStore.getState();
                   const idx = state.phages.findIndex((p) => p.id === phageId);
-                  if (idx >= 0) state.setCurrentPhageIndex(idx);
+                  if (idx >= 0) void onSelectPhage(idx);
                 },
                 minLevel: 'novice',
               };
@@ -767,7 +778,7 @@ export function CommandPalette({ commands: customCommands, context: propContext 
     }, 80);
 
     return () => window.clearTimeout(timer);
-  }, [commands, paletteOpen, query, workerReady]);
+  }, [commands, onSelectPhage, paletteOpen, query, workerReady]);
 
   // Reset selection when results change
   useEffect(() => {

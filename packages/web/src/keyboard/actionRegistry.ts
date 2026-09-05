@@ -30,6 +30,7 @@ export const ActionIds = {
   OverlaySearch: 'overlay.search',
   OverlayCommandPalette: 'overlay.commandPalette',
   OverlaySettings: 'overlay.settings',
+  OverlayGenomeImport: 'overlay.genomeImport',
   OverlayCloseAll: 'overlay.closeAll',
   OverlayAnalysisMenu: 'overlay.analysisMenu',
   OverlaySimulationHub: 'overlay.simulationHub',
@@ -158,6 +159,14 @@ export interface ActionDefinition {
 // NOTE: This is a foundational set. Additional actions will be added as
 // hotkeys are migrated to the registry.
 export const ActionRegistry: Record<ActionId, ActionDefinition> = {
+  [ActionIds.OverlayGenomeImport]: {
+    id: ActionIds.OverlayGenomeImport,
+    title: 'Local genomes: import or export',
+    category: 'Overlays',
+    description: 'Open private FASTA/GenBank records or export their original inputs and sequence view',
+    defaultShortcut: [], scope: 'global', surfaces: ['web'],
+    overlayId: 'genomeImport', overlayAction: 'open', provenance: 'measured',
+  },
   [ActionIds.NavNextPhage]: {
     id: ActionIds.NavNextPhage,
     title: 'Next phage',

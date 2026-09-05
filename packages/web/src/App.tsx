@@ -16,6 +16,7 @@ import { useOverlay } from './components/overlays/OverlayProvider';
 import type { OverlayId } from './components/overlays/OverlayProvider';
 import { DataLoadingOverlay } from './components/DataLoadingOverlay';
 import { useDatabase } from './hooks/useDatabase';
+import { useLocalGenomes } from './db/local-genomes';
 import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotkey';
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
@@ -149,6 +150,7 @@ export default function App(): React.ReactElement {
   }, []);
 
   const phages = usePhageStore((s) => s.phages);
+  const requestedLocalId = useLocalGenomes(state => state.requestedId);
   const currentPhageIndex = usePhageStore((s) => s.currentPhageIndex);
   const currentPhage = usePhageStore((s) => s.currentPhage);
   /**
@@ -653,25 +655,41 @@ export default function App(): React.ReactElement {
     void preloadWorkers();
   }, []);
 
-  const hydratedRef = useRef(false);
+  const hydratedRepositoryRef = useRef<PhageRepository | null>(null);
   useEffect(() => {
-    if (!repository || hydratedRef.current) return;
-    hydratedRef.current = true;
+    if (!repository || (hydratedRepositoryRef.current === repository && requestedLocalId === null)) return;
+    const previousId = usePhageStore.getState().currentPhage?.id;
+    let cancelled = false;
 
     void (async () => {
       try {
         const list = await repository.listPhages();
+        if (cancelled) return;
         setPhages(list);
 
         if (list.length > 0) {
-          await loadPhage(repository, 0);
+          const selectedIndex = list.findIndex(phage => phage.id === (requestedLocalId ?? previousId));
+          await loadPhage(repository, Math.max(0, selectedIndex));
+          if (!cancelled && requestedLocalId !== null) {
+            const local = useLocalGenomes.getState();
+            if (local.requestedId === requestedLocalId && local.requestedView && usePhageStore.getState().currentPhage?.id === requestedLocalId) {
+              const state = usePhageStore.getState();
+              state.setViewMode(local.requestedView.viewMode);
+              state.setReadingFrame(local.requestedView.readingFrame);
+              state.setScrollPosition(local.requestedView.scrollPosition);
+            }
+            local.acknowledgeSelection(requestedLocalId);
+          }
         }
+        if (!cancelled) hydratedRepositoryRef.current = repository;
       } catch (err) {
+        if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Failed to load phages';
         setError(message);
       }
     })();
-  }, [loadPhage, repository, setError, setPhages]);
+    return () => { cancelled = true; };
+  }, [loadPhage, repository, requestedLocalId, setError, setPhages]);
 
   const handleSelectPhage = useCallback(
     async (index: number) => {
@@ -1444,7 +1462,7 @@ export default function App(): React.ReactElement {
         </>
       )}
       <TourEngine />
-      <OverlayManager repository={repository} currentPhage={currentPhage} reloadDatabase={reload} databaseFetching={isFetching} />
+      <OverlayManager repository={repository} currentPhage={currentPhage} reloadDatabase={reload} databaseFetching={isFetching} onSelectPhage={handleSelectPhage} />
       {/* All toasts (beginner mode, fx safe mode, blocked hotkey) rendered via ToastProvider */}
       <BlockedHotkeyToast info={blockedHotkey} onDismiss={dismissBlockedHotkey} showToast={showToast} />
       <ControlDeck onPrevPhage={handlePrevPhage} onNextPhage={handleNextPhage} />

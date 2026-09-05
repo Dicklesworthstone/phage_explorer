@@ -147,6 +147,24 @@ The full web experience is live at **https://phage-explorer.org**. It includes:
 - **WASM-Accelerated** — Rust-compiled sequence operations (translation, k-mer counting, MinHash) for fast in-browser analysis
 - **Mobile-Friendly** — Touch gestures, bottom sheets, haptic feedback
 
+**Local genomes in the current source build:** Open the command palette and choose
+**Local genomes: import or export**. Paste or select DNA FASTA or GenBank files,
+review their records and annotation warnings, then add them to the existing
+sequence viewer, gene map, comparison tools and sequence analyses. Different
+records with the same accession require an explicit choice; curated records are
+preserved. GenBank complement/join segments retain their strand and coordinates.
+Unsupported locations remain in the original source and are excluded from the map.
+
+Imports stay in browser memory for the session. Export a **local genome bundle**
+before reloading to preserve the exact original files and selected sequence view
+(mode, reading frame and position). Reimport that bundle to restore them. A public
+share URL does not contain local sequences. Limits are 10 MiB per input/bundle,
+100 records, 5,000,000 bases and 50,000 features per import. Reference-dependent
+panels can be unavailable. TUI import and a bundle containing every analysis action,
+parameter and result remain unfinished; the current bundle preserves inputs and
+the sequence view. These source changes have not been published in a release by
+this work.
+
 Deployment details:
 - Hosting: Vercel (prod alias: `phage-explorer.org`)
 - Build command: `cd packages/web && bun run ../../scripts/build-web-db.ts --source public/phage.db --output public && bun run build`

@@ -7,6 +7,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
+import { useOverlay } from './overlays/OverlayProvider';
 import { haptics } from '../utils/haptics';
 import { buildShareUrl, getGeneShareKey, parseShareState } from '../utils/share-state';
 import {
@@ -155,6 +156,7 @@ function CitationIcon(): React.ReactElement {
 }
 
 export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElement | null {
+  const { open } = useOverlay();
   const currentPhage = usePhageStore((state) => state.currentPhage);
   const selectedGeneId = usePhageStore((state) => state.selectedGeneId);
   const viewMode = usePhageStore((state) => state.viewMode);
@@ -197,6 +199,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       name: currentPhage.name,
       slug: currentPhage.slug,
       accession: currentPhage.accession,
+      localGenome: currentPhage.localGenome,
       length: currentPhage.genomeLength,
       gcContent: currentPhage.gcContent,
       geneCount: currentPhage.genes?.length ?? 0,
@@ -248,7 +251,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
   const primaryPdbId = stats?.pdbIds[0] ?? null;
   const pdbUrl = primaryPdbId ? buildRcsbPdbUrl(primaryPdbId) : '';
   const shareUrl = useMemo(() => {
-    if (!stats) return '';
+    if (!stats || stats.localGenome) return '';
     const baseUrl = typeof window === 'undefined'
       ? 'https://phage-explorer.org/'
       : window.location.href;
@@ -358,11 +361,11 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       <div className="quick-stat">
         <span className="quick-stat__label">Length</span>
         <span className="quick-stat__value">
-          {stats.length == null ? 'Not reported' : `${formatNumber(stats.length)} bp`}
+          {stats.length === null || stats.length === undefined ? 'Not reported' : `${formatNumber(stats.length)} bp`}
         </span>
       </div>
 
-      {stats.gcContent != null && (
+      {stats.gcContent !== null && stats.gcContent !== undefined && (
         <div className="quick-stat">
           <span className="quick-stat__label">GC Content</span>
           <span className="quick-stat__value">{stats.gcContent.toFixed(1)}%</span>
@@ -411,7 +414,7 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
       <div className="quick-stat quick-stat--actions">
         <span className="quick-stat__label">Research</span>
         <div className="quick-stat__actions">
-          <a
+          {!stats.localGenome && <a
             className="quick-stat__action"
             href={ncbiUrl}
             target="_blank"
@@ -420,7 +423,8 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
           >
             <ExternalLinkIcon />
             <span>NCBI</span>
-          </a>
+          </a>}
+          {stats.localGenome && <span>Local {stats.localGenome.topology} DNA</span>}
           {primaryPdbId && (
             <a
               className="quick-stat__action"
@@ -438,6 +442,8 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
             type="button"
             className={`quick-stat__action ${isSaved ? 'quick-stat__action--active' : ''}`}
             onClick={handleToggleSaved}
+            disabled={Boolean(stats.localGenome)}
+            title={stats.localGenome ? 'Export a local genome bundle to preserve this record' : undefined}
             aria-label={`${isSaved ? 'Remove' : 'Save'} ${stats.name}`}
             aria-pressed={isSaved}
           >
@@ -447,16 +453,18 @@ export function QuickStats({ className = '' }: QuickStatsProps): React.ReactElem
           <button
             type="button"
             className="quick-stat__action"
-            onClick={() => void handleShare()}
-            aria-label={`Share ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name} explorer state`}
+            onClick={() => stats.localGenome ? open('genomeImport') : void handleShare()}
+            aria-label={stats.localGenome ? 'Export local genome data' : `Share ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name} explorer state`}
           >
             <ShareIcon />
-            <span>{feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
+            <span>{stats.localGenome ? 'Export local data' : feedback === 'link-copied' ? 'Copied' : 'Share'}</span>
           </button>
           <button
             type="button"
             className="quick-stat__action"
             onClick={() => void handleCopyCitation()}
+            disabled={Boolean(stats.localGenome)}
+            title={stats.localGenome ? 'This local input is not an NCBI accession citation' : undefined}
             aria-label={`Copy a research citation for ${selectedGeneLabel ? `${selectedGeneLabel} in ` : ''}${stats.name}`}
           >
             <CitationIcon />

@@ -80,6 +80,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
 
   const [error, setError] = useState<string | null>(null);
   const workerRef = useRef<Worker | null>(null);
+  const cancelWorkerRef = useRef<(() => void) | null>(null);
   const [sequenceA, setSequenceA] = useState<string>('');
   const [sequenceB, setSequenceB] = useState<string>('');
   const [diffMask, setDiffMask] = useState<Uint8Array | null>(null);
@@ -91,24 +92,14 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
   const phageB = phageBIndex !== null ? phages[phageBIndex] : null;
   const canCompare = Boolean(repository && phageA && phageB && phageA.id !== phageB.id);
 
-  // Create worker once
+  // Cancel computation as well as publication when the overlay closes.
   useEffect(() => {
-    let worker: Worker | null = null;
-    try {
-      worker = new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url), { type: 'module' });
-    } catch {
-      try {
-        worker = new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url));
-      } catch {
-        // Both worker variants failed; leave worker null.
-      }
-    }
-    if (worker) workerRef.current = worker;
     return () => {
-      worker?.terminate();
-      workerRef.current = null;
+      activeJobIdRef.current = null;
+      cancelWorkerRef.current?.();
+      setComparisonLoading(false);
     };
-  }, []);
+  }, [setComparisonLoading]);
 
   // Default selection when opened
   useEffect(() => {
@@ -123,6 +114,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     if (!repository || !phageA || !phageB || phageA.id === phageB.id) return;
     const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     activeJobIdRef.current = jobId;
+    cancelWorkerRef.current?.();
     setComparisonLoading(true);
     setError(null);
     setDiffMask(null);
@@ -164,13 +156,20 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         codonUsageB: fullB.codonUsage ?? null,
       };
 
-      const worker = workerRef.current;
-      let payload: ComparisonWorkerPayload | null = null;
-      if (worker) {
-        payload = await new Promise<ComparisonWorkerPayload>((resolve, reject) => {
+      const payload = await new Promise<ComparisonWorkerPayload>((resolve, reject) => {
+          const worker = new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url), { type: 'module' });
+          workerRef.current = worker;
+          const dispose = () => {
+            worker.terminate();
+            if (workerRef.current === worker) {
+              workerRef.current = null;
+              cancelWorkerRef.current = null;
+            }
+          };
+          cancelWorkerRef.current = () => { dispose(); reject(new Error('Comparison cancelled')); };
           const handleMessage = (event: MessageEvent<ComparisonWorkerMessage>) => {
             if (event.data.jobId && event.data.jobId !== jobId) return;
-            worker.removeEventListener('message', handleMessage);
+            dispose();
             if (event.data.ok && event.data.result) {
               resolve({
                 result: event.data.result,
@@ -182,13 +181,12 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               reject(new Error(event.data.error ?? 'Worker comparison failed'));
             }
           };
-          worker.addEventListener('message', handleMessage);
-          worker.postMessage(job, [...transferA, ...transferB]);
+          worker.onmessage = handleMessage;
+          worker.onerror = () => { dispose(); reject(new Error('The comparison worker failed. Select Run to retry.')); };
+          worker.onmessageerror = () => { dispose(); reject(new Error('The comparison worker returned unreadable data. Select Run to retry.')); };
+          try { worker.postMessage(job, [...transferA, ...transferB]); }
+          catch (err) { dispose(); reject(err); }
         });
-      }
-      if (!payload) {
-        throw new Error('Worker comparison failed');
-      }
       if (activeJobIdRef.current !== jobId) return;
       if (payload.diffMask) {
         setDiffMask(payload.diffMask);

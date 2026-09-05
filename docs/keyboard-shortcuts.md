@@ -122,6 +122,7 @@ command palette or a menu.
 | `Esc` | Close overlays |  | Close open overlays |
 | `⌘+k / Ctrl+k / :` | Command palette |  | Open the command palette |
 | `?` | Help overlay |  | Open keyboard shortcuts help |
+| `—` | Local genomes: import or export |  | Open private FASTA/GenBank records or export their original inputs and sequence view |
 | `—` | Multi-Tab Sync |  | Synchronize navigation and view state across browser tabs |
 | `⌘+, / Ctrl+,` | Settings overlay |  | Open settings |
 | `d` | Toggle help detail |  | Toggle detailed shortcuts in help overlay |

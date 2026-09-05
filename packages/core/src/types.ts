@@ -46,6 +46,13 @@ export interface GridRow {
 
 // Phage summary for list display
 export interface PhageSummary {
+  /** Private user input; reference services must not query this record implicitly. */
+  localGenome?: {
+    contentId: string;
+    sequenceSha256: string;
+    format: 'fasta' | 'genbank';
+    topology: 'linear' | 'circular' | 'unknown';
+  };
   id: number;
   slug: string | null;
   name: string;
