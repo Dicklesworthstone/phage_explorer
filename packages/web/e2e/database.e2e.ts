@@ -83,7 +83,7 @@ test('corrupt update cannot replace a verified cached catalog, including after a
     let updateDownloads = 0;
     await page.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
       manifestRequests++;
-      if (route.request().headers()['if-none-match'] === '"test-update"') {
+      if (route.request().headers()['if-none-match'] === '"test-update"') { // ubs:ignore — public test ETag, not a secret or authentication token.
         return route.fulfill({ status: 304, headers: { ETag: '"test-update"' } });
       }
       return route.fulfill({ status: 200, json: update, headers: { ETag: '"test-update"' } });

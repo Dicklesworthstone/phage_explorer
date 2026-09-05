@@ -1,6 +1,6 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { setupTestHarness } from './e2e-harness';
 
@@ -47,20 +47,27 @@ const test = base.extend<{ assets: AssetServer }>({
     assets.origin = `http://127.0.0.1:${address.port}`;
     try { await use(assets); }
     finally {
-      await testInfo.attach('origin-requests', { body: JSON.stringify(assets.requests), contentType: 'application/json' });
+      const requestLog = testInfo.outputPath('origin-requests.json');
+      await writeFile(requestLog, JSON.stringify(assets.requests));
+      await testInfo.attach('origin-requests', { path: requestLog, contentType: 'application/json' });
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   },
 });
 
-test.use({ userAgent: USER_AGENT, serviceWorkers: 'allow' });
+test.use({
+  userAgent: USER_AGENT, serviceWorkers: 'allow',
+  // Chromium's browser-owned worker update fetches need the process-level UA
+  // as well as the page/context override.
+  launchOptions: { args: [`--user-agent=${USER_AGENT}`] },
+});
 // Two full real SW installations and precaching are included in the update
 // journey. This is a lifecycle budget, not a performance threshold.
 test.setTimeout(120_000);
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ context }) => {
   // Exercise the existing normal-user registration branch, normally skipped
   // under webdriver. No production-only testing hook is added.
-  await page.addInitScript(() => {
+  await context.addInitScript(() => {
     Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false });
     // A first offline visit lands on the browser's opaque network-error page.
     if (location.protocol === 'http:' || location.protocol === 'https:') {
@@ -140,12 +147,12 @@ test('installable manifest, real worker control and offline catalog with uncache
     await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
     await catalog(page);
     expect(pageErrors).toEqual([]);
-    expect(assets.requests.every(r => r.userAgent === USER_AGENT)).toBe(true);
+    expect(assets.requests.filter(r => r.userAgent !== USER_AGENT)).toEqual([]);
     await testInfo.attach('offline-identity-and-installability', { body: JSON.stringify({ before, after: await identity(page), readiness }), contentType: 'application/json' });
   } finally { await context.setOffline(false); await finalize(); }
 });
 
-test('real update waits for user action, survives reopening and activates before reload', async ({ page, assets }, testInfo) => {
+test('real update waits for user action, survives reopening and activates before reload', async ({ page, context, assets }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   try {
     await page.goto(`${assets.origin}/?phage=lambda&model=0`);
@@ -161,6 +168,10 @@ test('real update waits for user action, survives reopening and activates before
     await expect(page.getByText('Update available', { exact: true })).toBeVisible();
     expect(await page.evaluate(() => navigator.serviceWorker.controller === (window as Window & { originalController?: ServiceWorker | null }).originalController)).toBe(true);
     expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistration())?.waiting?.state)).toBe('installed');
+    const second = await context.newPage();
+    await second.goto(`${assets.origin}/?phage=lambda&model=0`);
+    await catalog(second);
+    await expect(second.getByText('Update available', { exact: true })).toBeVisible();
     // A reopened page must still offer the already-waiting update.
     await page.reload();
     await catalog(page);
@@ -179,6 +190,16 @@ test('real update waits for user action, survives reopening and activates before
     expect(await page.evaluate(async () => (await navigator.serviceWorker.getRegistration())?.waiting ?? null)).toBeNull();
     expect(await identity(page)).toEqual(before);
     await expect(page.getByText('Update available', { exact: true })).toHaveCount(0);
+    // The other tab's waiting worker has already activated. Its pending Reload
+    // action must still reload successfully instead of silently doing nothing.
+    await Promise.all([
+      second.waitForEvent('domcontentloaded'),
+      second.getByRole('button', { name: 'Reload', exact: true }).click(),
+    ]);
+    await catalog(second);
+    expect(await identity(second)).toEqual(before);
+    await expect(second.getByText('Update available', { exact: true })).toHaveCount(0);
+    await second.close();
     expect(pageErrors).toEqual([]);
   } finally { await finalize(); }
 });
