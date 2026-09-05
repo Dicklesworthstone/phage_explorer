@@ -15,7 +15,7 @@
 import { test, expect, type Page, type CDPSession } from '@playwright/test';
 
 // Base URL for tests - uses Playwright's baseURL from config
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
+const BASE_URL = '/'; // Resolve every navigation through Playwright's selected baseURL.
 
 const THRESHOLDS = {
   // Load metrics (simulated 3G: ~1.5Mbps, 400ms RTT)
@@ -349,7 +349,7 @@ test.describe('Performance Benchmarks', () => {
     expect(latency).toBeLessThan(THRESHOLDS.KEYPRESS_TO_PAINT_CI_MAX);
   });
 
-  test('Memory Usage Baseline', async ({ page }) => {
+  test('Memory Usage Baseline', async ({ page }, testInfo) => {
     await ensureAppReady(page);
     await page.waitForTimeout(2000);
 
@@ -364,7 +364,7 @@ test.describe('Performance Benchmarks', () => {
       expect(memoryBaseline.usedJSHeapSize).toBeLessThan(THRESHOLDS.MEMORY_BASELINE_CI_MAX);
     }
 
-    expect(page.url()).toContain(BASE_URL.replace('http://', ''));
+    expect(new URL(page.url()).origin).toBe(new URL(testInfo.project.use.baseURL!).origin);
   });
 
   test('Memory Usage - Extended Session Simulation', async ({ page }) => {

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setupTestHarness } from './e2e-harness';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -76,8 +76,7 @@ test.describe('Overlay Lazy Loading', () => {
 
     // Seed intermediate level so a lazy-loaded analysis overlay is reachable
     // from the keyboard (core overlays like Help/Settings are eagerly bundled).
-    await page.goto('/');
-    await page.evaluate(() => {
+    await page.addInitScript(() => {
       localStorage.setItem(
         'phage-explorer-main-prefs',
         JSON.stringify({ experienceLevel: 'intermediate' })
@@ -85,10 +84,10 @@ test.describe('Overlay Lazy Loading', () => {
     });
 
     await test.step('Cold load', async () => {
-      await page.reload();
-      await expect(page.locator('header.app-header')).toBeVisible();
-      // Wait for app to stabilize
-      await page.waitForTimeout(1000);
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, testInfo);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
       coldLoadEndMs = Date.now() - state.startTs;
     });
 
@@ -162,12 +161,9 @@ test.describe('Overlay Lazy Loading', () => {
         c.url.includes('/overlays/')
       );
 
-      // If no specific GC skew chunk found, check for any new JS request
-      const anyNewChunk = postOpenChunks.length > 0;
-
       expect(
-        gcSkewChunk || anyNewChunk,
-        'Expected at least one chunk request after opening GC skew overlay'
+        gcSkewChunk,
+        'Expected the GC skew module after opening its overlay'
       ).toBeTruthy();
     });
 
@@ -186,9 +182,7 @@ test.describe('Overlay Lazy Loading', () => {
         }
       }
 
-      // This is a soft check - Vite HMR in dev mode may preload more
-      // In production, this should be strict
-      // expect(unrelatedLoads).toHaveLength(0);
+      expect(unrelatedLoads, 'Opening GC skew must not fetch unrelated overlay chunks').toHaveLength(0);
     });
 
     await test.step('Write network-chunks.json artifact', async () => {

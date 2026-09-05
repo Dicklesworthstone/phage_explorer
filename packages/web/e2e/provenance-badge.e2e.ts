@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 /**
  * The provenance badge must actually render.
@@ -20,8 +21,9 @@ test.use({ serviceWorkers: 'block' });
 
 test('the provenance level is visible before and after opening an overlay', async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(300_000);
+  const { finalize } = setupTestHarness(page, testInfo);
 
   await page.addInitScript(() =>
     localStorage.setItem(
@@ -29,14 +31,11 @@ test('the provenance level is visible before and after opening an overlay', asyn
       JSON.stringify({ experienceLevel: 'power' })
     )
   );
-  await page.goto('http://localhost:5173');
-  await page.waitForSelector('#root > div', { timeout: 60000 });
+  await page.goto('/?phage=lambda&model=0');
+  await expectExplorerIdentity(page, testInfo);
 
   const skip = page.locator('button:has-text("Skip")').first();
   if (await skip.isVisible().catch(() => false)) await skip.click();
-  await expect(page.getByRole('heading', { level: 1 })).toContainText(/phage/i, {
-    timeout: 60000,
-  });
 
   await page.getByRole('button', { name: /command palette/i }).first().click();
   const palette = page.locator('[data-testid="overlay-commandPalette"]');
@@ -58,10 +57,12 @@ test('the provenance level is visible before and after opening an overlay', asyn
   const overlay = page.locator('[data-testid="overlay-stability"]');
   await overlay.waitFor({ timeout: 30000 });
   await expect(overlay).toContainText(/heuristic/i);
+  await finalize();
 });
 
-test('a measured overlay carries no badge', async ({ page }) => {
+test('a measured overlay carries no badge', async ({ page }, testInfo) => {
   test.setTimeout(300_000);
+  const { finalize } = setupTestHarness(page, testInfo);
 
   // The discrimination check. If the badge rendered on everything, the test
   // above would pass and the label would carry no information: measured is the
@@ -72,14 +73,11 @@ test('a measured overlay carries no badge', async ({ page }) => {
       JSON.stringify({ experienceLevel: 'power' })
     )
   );
-  await page.goto('http://localhost:5173');
-  await page.waitForSelector('#root > div', { timeout: 60000 });
+  await page.goto('/?phage=lambda&model=0');
+  await expectExplorerIdentity(page, testInfo);
 
   const skip = page.locator('button:has-text("Skip")').first();
   if (await skip.isVisible().catch(() => false)) await skip.click();
-  await expect(page.getByRole('heading', { level: 1 })).toContainText(/phage/i, {
-    timeout: 60000,
-  });
 
   await page.getByRole('button', { name: /command palette/i }).first().click();
   const palette = page.locator('[data-testid="overlay-commandPalette"]');
@@ -89,4 +87,5 @@ test('a measured overlay carries no badge', async ({ page }) => {
   const option = palette.locator('[role="option"]', { hasText: /GC skew/i }).first();
   await expect(option).toBeVisible({ timeout: 30000 });
   await expect(option).not.toContainText(/heuristic|demo data|simulation/i);
+  await finalize();
 });

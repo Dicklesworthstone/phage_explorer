@@ -4,13 +4,14 @@
  * Critical tests that run after deployment to verify the live site is working.
  * Captures JavaScript errors and tests key mobile interactions.
  *
- * Run with: PLAYWRIGHT_LIVE=1 bunx playwright test production-health.e2e.ts
+ * Run with: PLAYWRIGHT_LIVE=1 PLAYWRIGHT_BASE_URL=https://phage-explorer.org bunx playwright test production-health.e2e.ts
  */
 
 import { test, expect, type Page, type ConsoleMessage, type TestInfo } from '@playwright/test';
-import { setupTestHarness } from './e2e-harness';
+import { expectExplorerIdentity, setupTestHarness, type TestHarnessState } from './e2e-harness';
+import { readFile } from 'node:fs/promises';
 
-const SITE_URL = process.env.PLAYWRIGHT_BASE_URL || 'https://phage-explorer.org';
+const SITE_PATH = '/?phage=lambda&model=0';
 const LIVE_ENABLED = process.env.PLAYWRIGHT_LIVE === '1';
 
 interface JsError {
@@ -92,7 +93,13 @@ class ErrorCollector {
 interface SetupResult {
   collector: ErrorCollector;
   finalize: () => Promise<void>;
+  state: TestHarnessState;
 }
+
+const pendingFinalizers = new Map<string, () => Promise<void>>();
+test.afterEach(async ({ page: _page }, testInfo) => {
+  await pendingFinalizers.get(testInfo.testId)?.();
+});
 
 async function setupErrorCollector(page: Page, testInfo: TestInfo): Promise<SetupResult> {
   const collector = new ErrorCollector();
@@ -101,19 +108,53 @@ async function setupErrorCollector(page: Page, testInfo: TestInfo): Promise<Setu
 
   // Also set up test harness for structured artifact capture
   const harness = setupTestHarness(page, testInfo);
+  const finalize = async () => {
+    pendingFinalizers.delete(testInfo.testId);
+    await harness.finalize();
+  };
+  pendingFinalizers.set(testInfo.testId, finalize);
 
   return {
     collector,
-    finalize: harness.finalize,
+    finalize,
+    state: harness.state,
   };
 }
 
 async function gotoAndWait(page: Page): Promise<void> {
-  await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForSelector('#root', { timeout: 30000 });
-  // Wait for initial render and data load
-  await page.waitForTimeout(2000);
+  await page.goto(SITE_PATH, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await expectExplorerIdentity(page, test.info());
 }
+
+test('identity guard rejects a convincing page from the wrong origin', async ({ page }, testInfo) => {
+  const { finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('data:text/html,<main><h1>Phage Explorer</h1><p>Database ready</p></main>');
+    await expect(expectExplorerIdentity(page, testInfo)).rejects.toThrow('Selected explorer origin');
+  } finally { await finalize(); }
+});
+
+test('identity guard rejects a blank shell despite a valid descriptor', async ({ page }, testInfo) => {
+  const { finalize } = setupTestHarness(page, testInfo);
+  try {
+    const manifest = JSON.parse(await readFile(new URL('../public/phage.db.manifest.json', import.meta.url), 'utf8'));
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: manifest }));
+    await page.route(url => url.searchParams.has('blank-shell'), route => route.fulfill({ contentType: 'text/html', body: '<main><h1>Phage Explorer</h1></main>' }));
+    await page.goto('/?blank-shell=1');
+    await expect(expectExplorerIdentity(page, testInfo)).rejects.toThrow('Loaded lambda catalog entry');
+  } finally { await finalize(); }
+});
+
+test('identity guard rejects a stale data descriptor on the selected origin', async ({ page }, testInfo) => {
+  const { finalize } = setupTestHarness(page, testInfo);
+  try {
+    const manifest = JSON.parse(await readFile(new URL('../public/phage.db.manifest.json', import.meta.url), 'utf8'));
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...manifest, contentVersion: '0'.repeat(64) } }));
+    await page.route(url => url.searchParams.has('stale-descriptor'), route => route.fulfill({ contentType: 'text/html', body: '<main>Phage Explorer</main>' }));
+    await page.goto('/?stale-descriptor=1');
+    await expect(expectExplorerIdentity(page, testInfo)).rejects.toThrow('Expected database content version');
+  } finally { await finalize(); }
+});
 
 test.describe('Production Health Checks', () => {
   test.skip(!LIVE_ENABLED, 'Set PLAYWRIGHT_LIVE=1 to run production health checks');
@@ -132,7 +173,7 @@ test.describe('Production Health Checks', () => {
     console.log(errorCollector.report());
 
     // Take screenshot for evidence
-    await page.screenshot({ path: 'screenshots/health-check-homepage.png' });
+    await page.screenshot({ path: testInfo.outputPath('health-check-homepage.png') });
 
     // Filter out non-critical worker errors (simulation workers can fail gracefully)
     const criticalErrors = errorCollector.errors.filter(e =>
@@ -156,16 +197,39 @@ test.describe('Production Health Checks', () => {
     // Check that the sequence canvas has non-zero dimensions
     const canvas = page.locator('canvas[role="img"]').first();
     await expect(canvas).toBeVisible({ timeout: 10000 });
+    // Sequence drawing is suspended outside the viewport.
+    await canvas.scrollIntoViewIfNeeded();
+    await expect(canvas).toBeInViewport();
 
     const dimensions = await canvas.evaluate((el) => {
       const rect = el.getBoundingClientRect();
-      const ctx = (el as HTMLCanvasElement).getContext('2d');
+      // The sequence renderer can bind WebGL. Copy pixels into a separate 2D
+      // probe instead of asking the application's canvas to change contexts.
+      const probe = document.createElement('canvas');
+      probe.width = 128;
+      probe.height = 128;
+      const ctx = probe.getContext('2d', { willReadFrequently: true });
+      if (!ctx) throw new Error('Canvas pixel probe is unavailable');
+      const countColors = (source: HTMLCanvasElement) => {
+        ctx.clearRect(0, 0, 128, 128);
+        ctx.drawImage(source, 0, 0, 128, 128);
+        const pixels = ctx.getImageData(0, 0, 128, 128).data;
+        const colors = new Set<number>();
+        for (let i = 0; i < pixels.length; i += 4) {
+          colors.add(pixels[i] * 16777216 + pixels[i + 1] * 65536 + pixels[i + 2] * 256 + pixels[i + 3]);
+        }
+        return colors.size;
+      };
+      const blank = document.createElement('canvas');
+      blank.width = 128;
+      blank.height = 128;
       return {
         clientWidth: rect.width,
         clientHeight: rect.height,
         canvasWidth: (el as HTMLCanvasElement).width,
         canvasHeight: (el as HTMLCanvasElement).height,
-        hasContext: !!ctx,
+        paintedColors: countColors(el as HTMLCanvasElement),
+        blankColors: countColors(blank),
       };
     });
 
@@ -175,7 +239,9 @@ test.describe('Production Health Checks', () => {
     expect(dimensions.clientHeight, 'Canvas should have non-zero client height').toBeGreaterThan(0);
     expect(dimensions.canvasWidth, 'Canvas buffer width should be non-zero').toBeGreaterThan(0);
     expect(dimensions.canvasHeight, 'Canvas buffer height should be non-zero').toBeGreaterThan(0);
-    expect(dimensions.hasContext, 'Canvas should have 2D context').toBe(true);
+    expect(dimensions.blankColors, 'Blank canvas negative control').toBe(1);
+    expect(dimensions.paintedColors, 'Sequence canvas must contain drawn pixels').toBeGreaterThan(dimensions.blankColors);
+    await testInfo.attach('canvas-pixel-evidence', { body: JSON.stringify(dimensions), contentType: 'application/json' });
 
     // Assert no critical JS errors during render (ignore known non-critical worker noise)
     const criticalErrors = errorCollector.errors.filter(e =>
@@ -192,15 +258,7 @@ test.describe('Production Health Checks', () => {
 
     await gotoAndWait(page);
 
-    // Wait for database to fully load (progress indicator should disappear)
-    await page.waitForFunction(() => {
-      const loader = document.querySelector('[aria-busy="true"]');
-      return !loader || loader.getAttribute('aria-busy') === 'false';
-    }, { timeout: 30000 }).catch(() => {
-      console.log('Warning: Database loading check timed out');
-    });
-
-    // Check that sequence data is displayed
+    // gotoAndWait already asserted the real catalog and expected data identity.
     const sequenceCanvas = page.locator('canvas[role="img"]');
     await expect(sequenceCanvas.first()).toBeVisible({ timeout: 15000 });
 
@@ -216,7 +274,7 @@ test.describe('Production Health Checks', () => {
     await finalize();
   });
 
-  test('mobile: touch scroll works on iPhone viewport', async ({ page }, testInfo) => {
+  test('mobile: touch scroll changes sequence position in a phone viewport', async ({ page, browserName }, testInfo) => {
     // Set iPhone 14 Pro viewport
     await page.setViewportSize({ width: 393, height: 852 });
 
@@ -246,8 +304,40 @@ test.describe('Production Health Checks', () => {
     console.log('Touch action:', touchAction);
     expect(touchAction, 'Canvas touchAction should be none for custom scroll').toBe('none');
 
+    if (browserName === 'chromium') {
+      await canvas.scrollIntoViewIfNeeded();
+      const position = page.locator('.sequence-view__jump-status').first();
+      await expect(position).toContainText('Pos:');
+      const beforePosition = await position.innerText();
+      const box = await canvas.boundingBox();
+      if (!box) throw new Error('Sequence canvas has no touch target');
+      const viewport = page.viewportSize();
+      if (!viewport) throw new Error('Phone viewport is unavailable');
+      const x = box.x + box.width / 2;
+      const startY = Math.min(box.y + box.height - 30, viewport.height - 80);
+      const endY = Math.max(box.y + 30, startY - 180);
+      expect(startY - endY, 'Gesture must move inside the visible canvas').toBeGreaterThan(50);
+      const session = await page.context().newCDPSession(page);
+      try {
+        await session.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: startY }] });
+        for (let step = 1; step <= 6; step++) {
+          await session.send('Input.dispatchTouchEvent', {
+            type: 'touchMove', touchPoints: [{ x, y: startY + (endY - startY) * step / 6 }],
+          });
+        }
+        await session.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        await expect(position).not.toHaveText(beforePosition);
+        await testInfo.attach('touch-scroll-evidence', {
+          body: JSON.stringify({ before: beforePosition, after: await position.innerText(), browserName, viewport }),
+          contentType: 'application/json',
+        });
+      } finally { await session.detach(); }
+    } else {
+      throw new Error('Touch gesture proof requires a supported browser input adapter');
+    }
+
     // Take mobile screenshot
-    await page.screenshot({ path: 'screenshots/health-check-mobile.png' });
+    await page.screenshot({ path: testInfo.outputPath('health-check-mobile.png') });
 
     // Verify no critical errors during mobile interaction
     // Filter out non-critical worker errors and ResizeObserver warnings
@@ -281,7 +371,7 @@ test.describe('Production Health Checks', () => {
     expect(dimensions.width, 'Canvas width in landscape').toBeGreaterThan(0);
     expect(dimensions.height, 'Canvas height in landscape').toBeGreaterThan(0);
 
-    await page.screenshot({ path: 'screenshots/health-check-landscape.png' });
+    await page.screenshot({ path: testInfo.outputPath('health-check-landscape.png') });
 
     // Filter out non-critical worker errors
     const criticalErrors = errorCollector.errors.filter(e =>
@@ -306,7 +396,7 @@ test.describe('Production Health Checks', () => {
 
     // LCP should be reasonable
     const lcp = await page.evaluate(() => {
-      return new Promise<number>((resolve) => {
+      return new Promise<number | null>((resolve) => {
         new PerformanceObserver((entryList) => {
           const entries = entryList.getEntries();
           if (entries.length > 0) {
@@ -315,15 +405,15 @@ test.describe('Production Health Checks', () => {
         }).observe({ type: 'largest-contentful-paint', buffered: true });
 
         // Timeout fallback
-        setTimeout(() => resolve(0), 5000);
+        setTimeout(() => resolve(null), 5000);
       });
     });
 
     console.log(`LCP: ${lcp}ms`);
     // LCP should be under 4 seconds for good user experience
-    if (lcp > 0) {
-      expect(lcp, 'LCP should be under 4 seconds').toBeLessThan(4000);
-    }
+    expect(lcp, 'LCP must actually be observed').not.toBeNull();
+    expect(lcp, 'LCP must be positive').toBeGreaterThan(0);
+    expect(lcp, 'LCP should be under 4 seconds').toBeLessThan(4000);
     await finalize();
   });
 
@@ -343,8 +433,8 @@ test.describe('Production Health Checks', () => {
     await finalize();
   });
 
-  test('wasm: WASM loads and initializes', async ({ page }, testInfo) => {
-    const { collector: errorCollector, finalize } = await setupErrorCollector(page, testInfo);
+  test('wasm: SQLite WASM loads and initializes the real catalog', async ({ page }, testInfo) => {
+    const { collector: errorCollector, finalize, state } = await setupErrorCollector(page, testInfo);
 
     await gotoAndWait(page);
 
@@ -356,16 +446,15 @@ test.describe('Production Health Checks', () => {
 
     console.log('WASM errors:', wasmErrors.length > 0 ? JSON.stringify(wasmErrors, null, 2) : 'None');
 
-    // If WASM failed, it should fall back gracefully - so this is informational
-    if (wasmErrors.length > 0) {
-      console.log('Warning: WASM errors detected, fallback may be active');
-    }
+    expect(wasmErrors, 'SQLite WASM must initialize without errors').toHaveLength(0);
+    expect(state.network.some(entry => entry.type === 'response' && /sql-wasm.*\.wasm/.test(entry.url) && entry.status === 200), 'Bundled SQLite WASM response was observed').toBe(true);
     await finalize();
   });
 
   test('headers: security headers are present', async ({ page }, testInfo) => {
     const { finalize } = await setupErrorCollector(page, testInfo);
-    const response = await page.goto(SITE_URL);
+    const response = await page.goto(SITE_PATH);
+    await expectExplorerIdentity(page, testInfo);
 
     expect(response).not.toBeNull();
     if (response) {

@@ -8,9 +8,45 @@
  * - network.json: filtered request/response data
  */
 
-import { type Page, type TestInfo, type ConsoleMessage, type Request, type Response } from '@playwright/test';
+import { expect, type Page, type TestInfo, type ConsoleMessage, type Request, type Response } from '@playwright/test';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+
+/** Assert the selected origin, expected release data, and an actual catalog. */
+export async function expectExplorerIdentity(page: Page, testInfo: TestInfo): Promise<void> {
+  const baseURL = testInfo.project.use.baseURL;
+  if (!baseURL) throw new Error('Explorer verification requires a configured baseURL.');
+  const origin = new URL(baseURL).origin;
+  expect(new URL(page.url()).origin, 'Selected explorer origin').toBe(origin);
+  const expected = JSON.parse(await fs.readFile(new URL('../public/phage.db.manifest.json', import.meta.url), 'utf8'));
+  const descriptor = await page.evaluate(async () => {
+    const response = await fetch('/phage.db.manifest.json', { cache: 'no-store' });
+    return { ok: response.ok, url: response.url, manifest: await response.json() };
+  });
+  expect(descriptor.ok, 'Database descriptor response').toBe(true);
+  expect(new URL(descriptor.url).origin, 'Database descriptor origin').toBe(origin);
+  expect(descriptor.manifest.version, 'Database descriptor contract').toBe(2);
+  expect(descriptor.manifest.contentVersion, 'Expected database content version').toBe(process.env.PLAYWRIGHT_EXPECTED_CONTENT_VERSION ?? expected.contentVersion);
+  expect(descriptor.manifest.sha256, 'Expected database byte digest').toBe(process.env.PLAYWRIGHT_EXPECTED_DATABASE_SHA256 ?? expected.sha256);
+  await expect(page.getByRole('heading', { level: 1 }), 'Loaded lambda catalog entry').toContainText('Enterobacteria phage lambda');
+  const picker = page.getByRole('button', { name: /^Explore phages\. Currently viewing/ });
+  if (await picker.isVisible()) {
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    await expect(picker).toHaveAttribute('aria-label', /lambda, 1 of 24$/);
+    await picker.click();
+    const sheet = page.getByTestId('phage-picker-sheet');
+    await expect(sheet.getByRole('listitem'), 'Loaded mobile catalog size').toHaveCount(24);
+    await expect(sheet.getByRole('button', { name: 'Open Enterobacteria phage lambda, current phage', exact: true }), 'Loaded mobile lambda genome length').toContainText('48,502');
+    await page.getByRole('dialog', { name: 'Explore phages', exact: true }).getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(sheet).not.toBeVisible();
+  } else {
+    await expect(page.getByTestId('phage-list-item-selected'), 'Loaded lambda catalog entry').toContainText('Enterobacteria phage lambda');
+    await expect(page.locator('[data-testid^="phage-list-item"]'), 'Loaded catalog size').toHaveCount(24);
+    await expect(page.getByTestId('phage-list-item-selected'), 'Loaded lambda genome length').toContainText('48,502');
+  }
+  await testInfo.attach('explorer-identity', { body: JSON.stringify({ origin, manifest: descriptor.manifest, selectedPhage: 'lambda', catalogCount: 24 }), contentType: 'application/json' });
+}
 
 // -----------------------------------------------------------------------------
 // Types
@@ -253,9 +289,21 @@ export function setupTestHarness(page: Page, testInfo: TestInfo): {
 
   // Create harness state with legacy arrays populated from the same handlers
   const state = createTestHarness(page, { pageErrors, consoleErrors });
+  const unexpectedLocalRequests: string[] = [];
+  const selectedHost = new URL(testInfo.project.use.baseURL ?? 'http://localhost').hostname;
+  const isLoopback = (host: string) => host === 'localhost' || host.endsWith('.localhost') || host === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(host);
+  if (process.env.PLAYWRIGHT_LIVE === '1' && !isLoopback(selectedHost)) {
+    page.on('request', request => {
+      if (isLoopback(new URL(request.url()).hostname)) {
+        unexpectedLocalRequests.push(request.url());
+        logEvent(state, 'custom', { unexpectedLocalRequest: request.url() });
+      }
+    });
+  }
 
   const finalize = async () => {
     await writeArtifacts(state, testInfo);
+    expect(unexpectedLocalRequests, 'Live verification must not request localhost').toEqual([]);
   };
 
   return { state, finalize, pageErrors, consoleErrors };

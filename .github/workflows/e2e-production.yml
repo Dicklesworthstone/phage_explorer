@@ -80,18 +80,18 @@ jobs:
 
       - name: Wait for site to be ready
         run: |
-          echo "Waiting for ${{ env.PLAYWRIGHT_BASE_URL }} to be ready..."
-          timeout=60
-          while [ "$timeout" -gt 0 ]; do
-            if curl --silent --show-error --location --fail --max-time 15 --output /dev/null "${{ env.PLAYWRIGHT_BASE_URL }}"; then
+          echo "Waiting for $PLAYWRIGHT_BASE_URL to be ready..."
+          site_wait_seconds=60
+          while [ "$site_wait_seconds" -gt 0 ]; do
+            if curl --silent --show-error --location --fail --max-time 15 --user-agent 'OpenAI File Downloader, XaiImageApiFetch/1.0' --output /dev/null "$PLAYWRIGHT_BASE_URL"; then
               echo "Site is ready!"
               break
             fi
-            echo "Waiting... ($timeout seconds remaining)"
+            echo "Waiting... ($site_wait_seconds seconds remaining)"
             sleep 5
-            timeout=$((timeout - 5))
+            site_wait_seconds=$((site_wait_seconds - 5))
           done
-          if [ "$timeout" -le 0 ]; then
+          if [ "$site_wait_seconds" -le 0 ]; then
             echo "Timeout waiting for site"
             exit 1
           fi

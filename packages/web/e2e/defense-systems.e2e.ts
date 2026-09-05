@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { setupTestHarness } from './e2e-harness';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 /**
  * Smoke test that verifies the heuristic defense-system annotations are
@@ -11,30 +11,16 @@ import { setupTestHarness } from './e2e-harness';
 test('defense systems overlay renders heuristic annotations', async ({ page }, testInfo) => {
   const { finalize } = setupTestHarness(page, testInfo);
 
-  await page.goto('http://localhost:5173');
-
-  // Seed persisted main-store preferences so the overlay is not gated.
-  await page.evaluate(() => {
+  // Seed before hydration in this test's fresh browser context.
+  await page.addInitScript(() => {
     localStorage.setItem(
       'phage-explorer-main-prefs',
       JSON.stringify({ experienceLevel: 'power' })
     );
   });
 
-  // Clear any cached SQLite database so the build picks up the new phage.db.
-  await page.evaluate(() => {
-    return new Promise<void>((resolve) => {
-      const req = indexedDB.deleteDatabase('phage-explorer-db');
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-    });
-  });
-
-  // Reload so the app hydrates with the seeded preferences and fresh DB.
-  await page.reload();
-
-  // Wait for the app shell to render.
-  await page.waitForSelector('#root > div', { timeout: 30000 });
+  await page.goto('/?phage=lambda&model=0');
+  await expectExplorerIdentity(page, testInfo);
 
   // Dismiss the welcome modal if it appears.
   const skipWelcome = page.locator('button:has-text("Skip")').first();
@@ -45,6 +31,7 @@ test('defense systems overlay renders heuristic annotations', async ({ page }, t
   // Select T7, which has heuristic defense-system annotations in the DB.
   const t7Item = page.locator('[data-testid="phage-list-item"]', { hasText: /T7/i }).first();
   await t7Item.click();
+  await expect(page.getByTestId('phage-list-item-selected')).toContainText('Enterobacteria phage T7');
 
   // Open the defense arms race overlay via the command palette.
   await page.keyboard.press('Control+k');

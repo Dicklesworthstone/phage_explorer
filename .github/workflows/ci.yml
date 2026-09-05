@@ -150,6 +150,14 @@ jobs:
             e2e/sequence-scroll-repaint.e2e.ts \
             e2e/performance-benchmark.e2e.ts
 
+      - name: Verify installed PWA and scientific result provenance
+        working-directory: packages/web
+        env:
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/pwa-science
+        run: |
+          bunx playwright test --project=chromium --project=chromium-pwa --workers=1 \
+            --output=test-results/pwa-science e2e/pwa.e2e.ts e2e/scientific-results.e2e.ts
+
       - name: Upload report on failure
         if: failure()
         uses: actions/upload-artifact@v4

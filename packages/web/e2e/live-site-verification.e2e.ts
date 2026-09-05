@@ -6,22 +6,29 @@
  */
 
 import { test, expect, type Page } from '@playwright/test';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
-const SITE_URL = 'https://phage-explorer.org';
-const LIVE_ENABLED = process.env.PLAYWRIGHT_LIVE === '1';
-const SCREENSHOT_DIR = 'screenshots';
+const SITE_URL = '/?phage=lambda&model=0';
+const LIVE_ENABLED = process.env.PLAYWRIGHT_LIVE === '1'; // ubs:ignore — public test-selection flag, not a secret/token comparison.
+const finalizers = new Map<string, () => Promise<void>>();
 
 async function gotoSite(page: Page): Promise<void> {
   await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForSelector('#root', { timeout: 30000 });
-  await page.waitForTimeout(500);
+  await expectExplorerIdentity(page, test.info());
 }
 
 test.describe('Phage Explorer Live Site Verification', () => {
   test.skip(!LIVE_ENABLED, 'Set PLAYWRIGHT_LIVE=1 to run live-site verification');
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page }, testInfo) => {
+    finalizers.set(testInfo.testId, setupTestHarness(page, testInfo).finalize);
+    testInfo.annotations.push({ type: 'proof-scope', description: 'Catalog identity is asserted; screenshots are diagnostic captures unless the individual test asserts the interaction.' });
     // Set viewport for consistent screenshots
     await page.setViewportSize({ width: 1440, height: 900 });
+  });
+  test.afterEach(async ({ page: _page }, testInfo) => {
+    const finalize = finalizers.get(testInfo.testId);
+    finalizers.delete(testInfo.testId);
+    await finalize?.();
   });
 
   test('01-homepage-loads', async ({ page }) => {
@@ -29,7 +36,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
 
     // Take initial screenshot
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/01-homepage.png`,
+      path: test.info().outputPath('01-homepage.png'),
       fullPage: false
     });
 
@@ -44,7 +51,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const welcomeModal = page.locator('.welcome-modal, [role="dialog"]');
     if (await welcomeModal.isVisible({ timeout: 3000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/02-welcome-modal.png`
+        path: test.info().outputPath('02-welcome-modal.png')
       });
 
       // Try to close or proceed through modal
@@ -66,7 +73,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
 
     // Screenshot the main sequence view
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/03-sequence-view.png`
+      path: test.info().outputPath('03-sequence-view.png')
     });
   });
 
@@ -81,7 +88,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
       await selector.first().click();
       await page.waitForTimeout(300);
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/04-phage-selector.png`
+        path: test.info().outputPath('04-phage-selector.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -94,7 +101,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
 
     // Screenshot showing control deck
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/05-control-deck.png`
+      path: test.info().outputPath('05-control-deck.png')
     });
   });
 
@@ -110,7 +117,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const settingsOverlay = page.locator('[data-overlay="settings"], .settings-overlay, [role="dialog"]:has-text("Settings")');
     if (await settingsOverlay.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/06-settings-overlay.png`
+        path: test.info().outputPath('06-settings-overlay.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -128,7 +135,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const searchOverlay = page.locator('[data-overlay="search"], .search-overlay, [role="dialog"]:has-text("Search")');
     if (await searchOverlay.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/07-search-overlay.png`
+        path: test.info().outputPath('07-search-overlay.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -146,7 +153,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const helpOverlay = page.locator('[data-overlay="help"], .help-overlay, [role="dialog"]:has-text("Help")');
     if (await helpOverlay.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/08-help-overlay.png`
+        path: test.info().outputPath('08-help-overlay.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -162,7 +169,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.waitForTimeout(2000); // Give 3D time to load
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/09-3d-model.png`
+      path: test.info().outputPath('09-3d-model.png')
     });
 
     // Toggle off
@@ -181,7 +188,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const analysisMenu = page.locator('[data-overlay="analysisMenu"], .analysis-menu, [role="dialog"]:has-text("Analysis")');
     if (await analysisMenu.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/10-analysis-menu.png`
+        path: test.info().outputPath('10-analysis-menu.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -197,7 +204,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.waitForTimeout(1000);
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/11-complexity-analysis.png`
+      path: test.info().outputPath('11-complexity-analysis.png')
     });
     await page.keyboard.press('Escape');
   });
@@ -212,7 +219,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.waitForTimeout(1000);
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/12-gc-skew.png`
+      path: test.info().outputPath('12-gc-skew.png')
     });
     await page.keyboard.press('Escape');
   });
@@ -228,7 +235,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.waitForTimeout(500);
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/13-zoomed-in.png`
+      path: test.info().outputPath('13-zoomed-in.png')
     });
 
     // Zoom out
@@ -238,7 +245,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.waitForTimeout(500);
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/14-zoomed-out.png`
+      path: test.info().outputPath('14-zoomed-out.png')
     });
   });
 
@@ -251,7 +258,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     await page.keyboard.press('Escape');
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/15-mobile-view.png`
+      path: test.info().outputPath('15-mobile-view.png')
     });
   });
 
@@ -271,7 +278,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
       await page.waitForTimeout(500);
 
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/16-mobile-action-drawer.png`
+        path: test.info().outputPath('16-mobile-action-drawer.png')
       });
     }
   });
@@ -287,7 +294,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     });
 
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/17-dark-theme.png`
+      path: test.info().outputPath('17-dark-theme.png')
     });
 
     // Dark theme should have dark background
@@ -306,7 +313,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const comparisonOverlay = page.locator('[data-overlay="comparison"], .comparison-overlay');
     if (await comparisonOverlay.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/18-comparison-overlay.png`
+        path: test.info().outputPath('18-comparison-overlay.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -324,7 +331,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
     const cmdPalette = page.locator('[data-overlay="commandPalette"], .command-palette');
     if (await cmdPalette.isVisible({ timeout: 2000 }).catch(() => false)) {
       await page.screenshot({
-        path: `${SCREENSHOT_DIR}/19-command-palette.png`
+        path: test.info().outputPath('19-command-palette.png')
       });
       await page.keyboard.press('Escape');
     }
@@ -340,7 +347,7 @@ test.describe('Phage Explorer Live Site Verification', () => {
 
     // Final full-page screenshot
     await page.screenshot({
-      path: `${SCREENSHOT_DIR}/20-final-overview-1080p.png`,
+      path: test.info().outputPath('20-final-overview-1080p.png'),
       fullPage: false
     });
   });

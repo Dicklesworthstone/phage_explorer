@@ -12,7 +12,7 @@
 
 import { test, expect, type Page, type CDPSession } from '@playwright/test';
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
+const BASE_URL = '/'; // Resolve every navigation through Playwright's selected baseURL.
 const PERF_ENABLED = process.env.PLAYWRIGHT_PERF === '1';
 
 // Mobile device configurations

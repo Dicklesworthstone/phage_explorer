@@ -1,14 +1,14 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
-import { setupTestHarness } from './e2e-harness';
+import { test, expect, type Page, type Route, type TestInfo } from '@playwright/test';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 /**
  * The banner must describe the data that was actually used.
  *
  * The phylodynamics overlay printed a green "REAL DATA" banner over a tree
  * built from hashes of accession strings. Deleting the hash was necessary and
- * not sufficient: the overlay still falls back to a synthetic path whenever
- * NCBI returns too little to analyse, and nothing verified that the banner
- * followed the fallback.
+ * not sufficient: unavailable data must remain unavailable until a user
+ * explicitly selects an illustration. Real retrieved sequences must retain
+ * their analysis path and the banner must count the sequences actually used.
  *
  * That is what this file checks, and it checks it by CONTROLLING the network
  * rather than hoping. A test that merely opens the overlay and reads the banner
@@ -47,7 +47,7 @@ test.describe.configure({ mode: 'default' });
 
 const NCBI_GLOB = 'https://eutils.ncbi.nlm.nih.gov/**';
 
-async function bootstrap(page: Page): Promise<void> {
+async function bootstrap(page: Page, testInfo: TestInfo): Promise<void> {
   // Seed BEFORE the first navigation rather than setting storage and reloading.
   // The reload cost a second full boot of the app, including a 10 MB SQLite
   // load, and doubled every test's runtime for no added coverage.
@@ -56,25 +56,15 @@ async function bootstrap(page: Page): Promise<void> {
       'phage-explorer-main-prefs',
       JSON.stringify({ experienceLevel: 'power' })
     );
-    // A cached result from an earlier run of this same build would be a hit and
-    // would short-circuit the path under test.
-    for (const k of Object.keys(localStorage)) {
-      if (k.startsWith('phage_api_cache_')) localStorage.removeItem(k);
-    }
+    // Each Playwright test starts with a fresh browser context.
   });
 
-  await page.goto('http://localhost:5173');
-  await page.waitForSelector('#root > div', { timeout: 60000 });
+  await page.goto('/?phage=lambda&model=0');
+  await expectExplorerIdentity(page, testInfo);
 
   const skip = page.locator('button:has-text("Skip")').first();
   if (await skip.isVisible().catch(() => false)) await skip.click();
 
-  // Wait for a phage to be loaded before opening anything. The overlay's effect
-  // depends on currentPhage, and racing the database load is what made this
-  // hang rather than fail.
-  await expect(page.getByRole('heading', { level: 1 })).toContainText(/phage/i, {
-    timeout: 60000,
-  });
 }
 
 async function openPhylodynamics(page: Page) {
@@ -111,7 +101,7 @@ async function openPhylodynamics(page: Page) {
   // mounting and its loading state rendering. That is not hypothetical: it let
   // a phase read the overlay mid-fetch and assert against "LOADING: Searching
   // NCBI...". Waiting for the banner itself cannot pass early.
-  await expect(overlay.getByText(/demonstration data|REAL DATA/i).first()).toBeVisible({
+  await expect(overlay.getByText(/DATA UNAVAILABLE|REAL DATA/i).first()).toBeVisible({
     timeout: 120000,
   });
   return overlay;
@@ -240,14 +230,18 @@ test('the provenance banner tracks the data that was actually used', async ({
   // ---------------------------------------------------------------------
   await page.route(NCBI_GLOB, route => route.abort());
 
-  await bootstrap(page);
+  await bootstrap(page, testInfo);
   let overlay = await openPhylodynamics(page);
   let body = (await overlay.innerText()).replace(/\s+/g, ' ');
 
   expect(body, 'a failed fetch must not leave a REAL DATA claim up').not.toMatch(
     /\bREAL DATA\b/
   );
-  expect(body).toMatch(/demonstration data/i);
+  expect(body).toMatch(/DATA UNAVAILABLE/);
+  await expect(overlay.getByRole('img', { name: /UPGMA phylogenetic tree/ })).toHaveCount(0);
+  await overlay.getByRole('button', { name: 'Show synthetic phylodynamics illustration' }).click();
+  await expect(overlay).toContainText('15 synthetic 300-base sequences');
+  await expect(overlay.getByRole('img', { name: /UPGMA phylogenetic tree/ })).toBeVisible();
 
   // ---------------------------------------------------------------------
   // Phase 2: six dated records with six FASTA bodies of DIFFERENT lengths,
@@ -308,17 +302,12 @@ test('the provenance banner tracks the data that was actually used', async ({
   overlay = await openPhylodynamics(page);
   body = (await overlay.innerText()).replace(/\s+/g, ' ');
 
-  if (/\bREAL DATA\b/.test(body)) {
-    const m = body.match(/based on (\d+) dated sequences/i);
-    expect(m).not.toBeNull();
-    // The whole point: 6, not 8.
-    expect(Number(m![1])).toBe(returned);
-    expect(Number(m![1])).not.toBe(found);
-  } else {
-    // Falling back is acceptable here. Claiming real data for eight sequences
-    // when six were analysed is not.
-    expect(body).toMatch(/demonstration data/i);
-  }
+  expect(body, 'six retrieved sequences retain the real analysis path').toMatch(/\bREAL DATA\b/);
+  const m = body.match(/based on (\d+) dated sequences/i);
+  expect(m).not.toBeNull();
+  expect(Number(m![1])).toBe(returned);
+  expect(Number(m![1])).not.toBe(found);
+  expect(body).toContain('Equal-length raw genomes are insufficient');
 
   await finalize();
 });
