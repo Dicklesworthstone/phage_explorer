@@ -6,10 +6,10 @@
  *
  * 1. AMG detection from Pfam annotations, gene names, and products
  * 2. Mapping to KEGG Orthology (KO) and metabolic reactions
- * 3. Exact linear programming simplex solver for steady-state stoichiometric systems:
+ * 3. Floating-point linear programming for steady-state stoichiometric systems:
  *      Maximize c^T * v subject to S * v = 0, v_lb <= v <= v_ub
  * 4. Delta-FBA comparison: baseline host metabolism vs AMG-augmented metabolism
- * 5. Pathway impact quantification and viral replication fitness gain estimation
+ * 5. Illustrative pathway responses to assumed capacity changes
  */
 
 import type { PhageFull } from '../types';
@@ -65,11 +65,31 @@ export interface HostMetabolicModel {
   objectiveReaction: string;
 }
 
-export interface FBAResult {
-  objectiveValue: number;
-  fluxes: Record<string, number>;
-  status: 'optimal' | 'infeasible' | 'unbounded';
+/** Parse the small, explicit JSON model format used by the browser sandbox. */
+export function parseHostMetabolicModel(json: string): HostMetabolicModel {
+  const decoded: unknown = JSON.parse(json);
+  const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+  const value = record(decoded) && record(decoded.model) ? decoded.model : decoded;
+  const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === 'string' && s.length > 0);
+  if (!record(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || !value.name ||
+      typeof value.description !== 'string' || typeof value.objectiveReaction !== 'string' ||
+      !strings(value.metabolites) || !Array.isArray(value.reactions) || value.reactions.length === 0 ||
+      value.reactions.length > 100 || value.metabolites.length > 100 ||
+      !value.reactions.every(r => record(r) && typeof r.id === 'string' && r.id && typeof r.name === 'string' &&
+        typeof r.subsystem === 'string' && record(r.stoichiometry) && Object.values(r.stoichiometry).every(Number.isFinite) &&
+        Number.isFinite(r.lowerBound) && Number.isFinite(r.upperBound) && typeof r.reversible === 'boolean' && strings(r.koIds))) {
+    throw new Error('Invalid model JSON. Supply id, name, description, metabolites, objectiveReaction and up to 100 reactions with finite coefficients and bounds. Export the teaching model for the format.');
+  }
+  // Shape checks above establish the model type. Structural model errors such
+  // as missing objectives and incompatible bounds remain explicit solver statuses.
+  return value as unknown as HostMetabolicModel;
 }
+
+export type FBAStatus = 'optimal' | 'infeasible' | 'unbounded' | 'invalid_input' | 'iteration_limit' | 'numerical_error';
+
+export type FBAResult =
+  | { status: 'optimal'; objectiveValue: number; fluxes: Record<string, number> }
+  | { status: Exclude<FBAStatus, 'optimal'>; objectiveValue: null; fluxes: Record<string, number> };
 
 export interface ReactionDelta {
   reactionId: string;
@@ -89,15 +109,17 @@ export interface PathwayImpact {
 }
 
 export interface DeltaFBAResult {
+  status: 'optimal';
   amg: AMGDetection;
   baselineObjective: number;
   augmentedObjective: number;
   deltaObjective: number;
-  percentGain: number;
+  percentGain: number | null; // Undefined when the baseline objective is zero.
   pathwayImpacts: PathwayImpact[];
   topReactionDeltas: ReactionDelta[];
-  fitnessScore: number; // 0..100 composite metabolic advantage score
 }
+
+export type DeltaFBAFailure = { amg: AMGDetection; status: Exclude<FBAStatus, 'optimal'> };
 
 export interface AMGFluxAnalysisResult {
   phageId: number;
@@ -105,6 +127,7 @@ export interface AMGFluxAnalysisResult {
   detectedAmgs: AMGDetection[];
   baselineFba: FBAResult;
   amgResults: DeltaFBAResult[];
+  failedAmgs: DeltaFBAFailure[];
   totalDeltaFlux: number;
   topOverallImpactedSubsystem: string;
   summary: string;
@@ -241,8 +264,8 @@ export const AMG_KNOWLEDGE_BASE: Array<{
 export function createStandardHostMetabolicModel(): HostMetabolicModel {
   return {
     id: 'host_core_metabolism',
-    name: 'Bacterial Host Central & Precursor Metabolism (E. coli core)',
-    description: 'Stoichiometric model encompassing glycolysis, PPP, TCA, nucleotide salvage, phosphate recycling, and photosystem electron flux',
+    name: 'Illustrative precursor network',
+    description: 'Teaching model in arbitrary flux units combining carbon, nucleotide and photosynthetic reactions. Not a calibrated organism-specific reconstruction; bound changes are user assumptions.',
     objectiveReaction: 'BIOMASS_VIRAL_DNTPS',
     metabolites: [
       'glc',
@@ -474,183 +497,148 @@ export function createStandardHostMetabolicModel(): HostMetabolicModel {
 }
 
 /**
- * Exact Linear Programming Simplex Solver with Bounded Variables
+ * Floating-point two-phase simplex for bounded steady-state fluxes.
  *
  * Solves: Maximize c^T * v subject to S * v = 0, l_j <= v_j <= u_j
  * Uses 2-Phase Simplex method with upper-bounded variable transformations.
  */
 export class FBASimplexSolver {
-  private numRows: number;
-  private numCols: number;
-  private tableau: number[][];
-  private basis: number[];
-  private colNames: string[];
-  private lowerBounds: number[];
-  private upperBounds: number[];
-
   constructor(
-    stoichiometricMatrix: number[][],
-    lowerBounds: number[],
-    upperBounds: number[],
-    objective: number[],
-    reactionIds: string[]
-  ) {
-    const m = stoichiometricMatrix.length;
-    const n = lowerBounds.length;
+    private stoichiometricMatrix: number[][],
+    private lowerBounds: number[],
+    private upperBounds: number[],
+    private objective: number[],
+    private reactionIds: string[]
+  ) {}
 
-    this.numCols = n;
-    this.lowerBounds = [...lowerBounds];
-    this.upperBounds = [...upperBounds];
-    this.colNames = [...reactionIds];
-
-    // Formulate as inequality constraints: A * x <= b, x >= 0
-    // where x_j = v_j - l_j >= 0, and U_j = u_j - l_j >= 0
-    // Steady state: S * v = 0 <=> S * (x + l) = 0 <=> S * x = -S * l = b_met
-    //   S * x <= b_met  and  -S * x <= -b_met
-    // Upper bounds:
-    //   x_j <= U_j
-    const A: number[][] = [];
-    const b: number[] = [];
-
-    // 1. Steady state equality constraints as pairs of inequalities
-    for (let i = 0; i < m; i++) {
-      let b_i = 0;
-      for (let j = 0; j < n; j++) {
-        b_i -= stoichiometricMatrix[i][j] * this.lowerBounds[j];
-      }
-
-      // S[i] * x <= b_i
-      A.push([...stoichiometricMatrix[i]]);
-      b.push(Math.max(0, b_i));
-
-      // -S[i] * x <= -b_i
-      A.push(stoichiometricMatrix[i].map((val) => -val));
-      b.push(Math.max(0, -b_i));
-    }
-
-    // 2. Upper bounds x_j <= U_j
-    for (let j = 0; j < n; j++) {
-      const row = new Array(n).fill(0);
-      row[j] = 1;
-      A.push(row);
-      b.push(Math.max(0, this.upperBounds[j] - this.lowerBounds[j]));
-    }
-
-    const numConstraints = A.length;
-    this.numRows = numConstraints;
-
-    // Tableau has (numConstraints + 1) rows and (numCols + numConstraints + 1) columns
-    // Row 0: -objective
-    // Rows 1..numConstraints: constraints with slack variables
-    const totalCols = n + numConstraints + 1;
-    this.tableau = Array.from({ length: numConstraints + 1 }, () => new Array(totalCols).fill(0));
-    this.basis = new Array(numConstraints);
-
-    for (let j = 0; j < n; j++) {
-      this.tableau[0][j] = -objective[j];
-    }
-
-    for (let i = 0; i < numConstraints; i++) {
-      for (let j = 0; j < n; j++) {
-        this.tableau[i + 1][j] = A[i][j];
-      }
-      this.tableau[i + 1][n + i] = 1; // Slack variable
-      this.tableau[i + 1][totalCols - 1] = b[i];
-      this.basis[i] = n + i;
-    }
-  }
-
-  /**
-   * Run the Simplex algorithm to optimality
-   */
   public solve(maxIterations = 5000): {
     optimal: boolean;
-    objective: number;
+    status: FBAStatus;
+    objective: number | null;
     fluxes: Record<string, number>;
   } {
-    const numConstraints = this.numRows;
-    const n = this.numCols;
-    const totalCols = n + numConstraints + 1;
-    const rhsCol = totalCols - 1;
+    const { stoichiometricMatrix: S, lowerBounds: lb, upperBounds: ub, objective: c, reactionIds: ids } = this;
+    const n = lb.length;
+    const eps = 1e-9;
+    const fail = (status: Exclude<FBAStatus, 'optimal'>) => ({ optimal: false, status, objective: null, fluxes: {} });
+    // Finite lower bounds also support reversible reactions. +Infinity is an
+    // explicit absent upper bound, never an arithmetic tableau entry.
+    if (!Number.isSafeInteger(maxIterations) || maxIterations < 0 ||
+        ub.length !== n || c.length !== n || ids.length !== n || new Set(ids).size !== n ||
+        ids.some(id => !id) || lb.some(v => !Number.isFinite(v)) ||
+        ub.some(v => !Number.isFinite(v) && v !== Infinity) || c.some(v => !Number.isFinite(v)) ||
+        S.some(row => row.length !== n || row.some(v => !Number.isFinite(v)))) return fail('invalid_input');
+    if (lb.some((v, j) => v > ub[j])) return fail('infeasible');
 
-    let iter = 0;
-    while (iter++ < maxIterations) {
-      // Find entering variable (Bland's rule / most negative reduced cost in Row 0)
-      let enterCol = -1;
-      let minCost = -1e-8;
-      for (let j = 0; j < n + numConstraints; j++) {
-        if (this.tableau[0][j] < minCost) {
-          minCost = this.tableau[0][j];
-          enterCol = j;
-        }
+    const bounded = ub.flatMap((v, j) => Number.isFinite(v) ? [j] : []);
+    const artificialStart = n + bounded.length;
+    const rhs = artificialStart + S.length;
+    let table: number[][] = [new Array(rhs + 1).fill(0)];
+    let basis: number[] = [];
+    // Shift v=x+lb. Each equality gets an artificial basic variable; its
+    // signed RHS is preserved. Row scaling avoids dependence on chosen units.
+    S.forEach((coeff, i) => {
+      const scale = Math.max(...coeff.map(Math.abs), 0) || 1;
+      const normalized = coeff.map(value => value / scale);
+      const b = -normalized.reduce((sum, value, j) => sum + value * lb[j], 0);
+      const sign = b < 0 ? -1 : 1;
+      const row = new Array(rhs + 1).fill(0);
+      normalized.forEach((value, j) => { row[j] = sign * value; });
+      row[artificialStart + i] = 1;
+      row[rhs] = sign * b;
+      table.push(row);
+      basis.push(artificialStart + i);
+    });
+    bounded.forEach((j, i) => {
+      const row = new Array(rhs + 1).fill(0);
+      row[j] = 1;
+      row[n + i] = 1;
+      row[rhs] = ub[j] - lb[j];
+      table.push(row);
+      basis.push(n + i);
+    });
+    let iterations = 0;
+    const finiteTable = () => table.every(row => row.every(Number.isFinite));
+    const pivot = (r: number, col: number) => {
+      const value = table[r][col];
+      for (let j = 0; j <= rhs; j++) table[r][j] /= value;
+      for (let i = 0; i < table.length; i++) {
+        if (i === r) continue;
+        const factor = table[i][col];
+        for (let j = 0; j <= rhs; j++) table[i][j] -= factor * table[r][j];
+        table[i][col] = 0;
       }
-
-      if (enterCol === -1) break; // Optimal found
-
-      // Minimum ratio test for leaving variable
-      let leaveRow = -1;
-      let minRatio = Infinity;
-      for (let i = 0; i < numConstraints; i++) {
-        const rowIdx = i + 1;
-        const pivot = this.tableau[rowIdx][enterCol];
-        if (pivot > 1e-9) {
-          const ratio = this.tableau[rowIdx][rhsCol] / pivot;
-          if (ratio < minRatio - 1e-9) {
-            minRatio = ratio;
-            leaveRow = rowIdx;
-          }
-        }
-      }
-
-      if (leaveRow === -1) break; // Unbounded
-
-      this.pivot(leaveRow, enterCol);
-      this.basis[leaveRow - 1] = enterCol;
-    }
-
-    // Extract solution
-    const x = new Array(n).fill(0);
-    for (let i = 0; i < numConstraints; i++) {
-      const basicVar = this.basis[i];
-      if (basicVar < n) {
-        x[basicVar] = Math.max(0, this.tableau[i + 1][rhsCol]);
-      }
-    }
-
-    // Convert back from x_j to v_j = x_j + l_j, clamped to [l_j, u_j]
-    const fluxes: Record<string, number> = {};
-    for (let j = 0; j < n; j++) {
-      const v = Math.min(this.upperBounds[j], Math.max(this.lowerBounds[j], x[j] + this.lowerBounds[j]));
-      fluxes[this.colNames[j]] = Math.round(v * 1000) / 1000;
-    }
-
-    const objVal = Math.round(this.tableau[0][rhsCol] * 1000) / 1000;
-
-    return {
-      optimal: true,
-      objective: Math.max(0, objVal),
-      fluxes,
+      basis[r - 1] = col;
+      iterations++;
     };
-  }
-
-  private pivot(pRow: number, pCol: number): void {
-    const pivotVal = this.tableau[pRow][pCol];
-    const totalCols = this.numCols + this.numRows + 1;
-
-    for (let c = 0; c < totalCols; c++) {
-      this.tableau[pRow][c] /= pivotVal;
-    }
-
-    for (let r = 0; r < this.numRows + 1; r++) {
-      if (r !== pRow) {
-        const factor = this.tableau[r][pCol];
-        if (Math.abs(factor) > 1e-12) {
-          for (let c = 0; c < totalCols; c++) {
-            this.tableau[r][c] -= factor * this.tableau[pRow][c];
+    const setObjective = (cost: number[]) => {
+      table[0] = new Array(rhs + 1).fill(0);
+      cost.forEach((value, j) => { table[0][j] = -value; });
+      basis.forEach((basic, i) => {
+        const factor = cost[basic] ?? 0;
+        for (let j = 0; j <= rhs; j++) table[0][j] += factor * table[i + 1][j];
+      });
+    };
+    const optimize = (columns: number): FBAStatus => {
+      for (;;) {
+        if (!finiteTable() || table.slice(1).some(row => row[rhs] < -eps)) return 'numerical_error';
+        // Bland's entering rule and basis-index tie break prevent cycling.
+        const enter = table[0].findIndex((value, j) => j < columns && value < -eps);
+        if (enter < 0) return 'optimal';
+        if (iterations >= maxIterations) return 'iteration_limit';
+        let leave = -1;
+        let ratio = Infinity;
+        for (let i = 1; i < table.length; i++) {
+          if (table[i][enter] <= eps) continue;
+          const candidate = table[i][rhs] / table[i][enter];
+          if (candidate < ratio - eps || (Math.abs(candidate - ratio) <= eps &&
+              (leave < 0 || basis[i - 1] < basis[leave - 1]))) {
+            ratio = candidate;
+            leave = i;
           }
         }
+        if (leave < 0) return 'unbounded';
+        pivot(leave, enter);
+      }
+    };
+
+    setObjective(Array.from({ length: rhs }, (_, j) => j >= artificialStart ? -1 : 0));
+    const phaseOne = optimize(rhs);
+    if (phaseOne !== 'optimal') return fail(phaseOne === 'unbounded' ? 'numerical_error' : phaseOne);
+    if (table[0][rhs] < -eps) return fail('infeasible');
+    // Artificial variables at zero must leave the basis before phase two.
+    // A row with no remaining coefficient is a redundant equality.
+    for (let i = basis.length - 1; i >= 0; i--) {
+      if (basis[i] < artificialStart) continue;
+      const col = table[i + 1].findIndex((v, j) => j < artificialStart && Math.abs(v) > eps);
+      if (col >= 0) {
+        if (iterations >= maxIterations) return fail('iteration_limit');
+        pivot(i + 1, col);
+      } else {
+        table = table.filter((_, row) => row !== i + 1);
+        basis = basis.filter((_, row) => row !== i);
       }
     }
+    const objectiveScale = Math.max(...c.map(Math.abs), 0) || 1;
+    setObjective(c.map(value => value / objectiveScale));
+    const phaseTwo = optimize(artificialStart);
+    if (phaseTwo !== 'optimal') return fail(phaseTwo);
+    const v = [...lb];
+    basis.forEach((basic, i) => { if (basic < n) v[basic] += table[i + 1][rhs]; });
+    const tolerance = 1e-7;
+    const balanceOK = S.every(row => {
+      const terms = row.map((value, j) => value * v[j]);
+      return Math.abs(terms.reduce((sum, value) => sum + value, 0)) <=
+        tolerance * Math.max(1, terms.reduce((sum, value) => sum + Math.abs(value), 0));
+    });
+    const boundsOK = v.every((value, j) => Number.isFinite(value) &&
+      value >= lb[j] - tolerance * Math.max(1, Math.abs(lb[j])) &&
+      (ub[j] === Infinity || value <= ub[j] + tolerance * Math.max(1, Math.abs(ub[j]))));
+    const objective = v.reduce((sum, value, j) => sum + c[j] * value, 0);
+    const tableauObjective = table[0][rhs] * objectiveScale + lb.reduce((sum, value, j) => sum + c[j] * value, 0);
+    if (!balanceOK || !boundsOK || !Number.isFinite(objective) || !Number.isFinite(tableauObjective) ||
+        Math.abs(objective - tableauObjective) > tolerance * Math.max(1, Math.abs(objective))) return fail('numerical_error');
+    return { optimal: true, status: 'optimal', objective, fluxes: Object.fromEntries(ids.map((id, j) => [id, v[j]])) };
   }
 }
 
@@ -661,6 +649,12 @@ export class FBASimplexSolver {
 export function solveFBA(model: HostModelLike): FBAResult {
   const reactions = model.reactions;
   const metabolites = model.metabolites;
+
+  if (!reactions.some(r => r.id === model.objectiveReaction) ||
+      new Set(metabolites).size !== metabolites.length ||
+      reactions.some(r => Object.keys(r.stoichiometry).some(met => !metabolites.includes(met)))) {
+    return { status: 'invalid_input', objectiveValue: null, fluxes: {} };
+  }
 
   const m = metabolites.length;
   const n = reactions.length;
@@ -687,11 +681,10 @@ export function solveFBA(model: HostModelLike): FBAResult {
   const solver = new FBASimplexSolver(S, lowerBounds, upperBounds, c, reactionIds);
   const sol = solver.solve();
 
-  return {
-    objectiveValue: sol.objective,
-    fluxes: sol.fluxes,
-    status: sol.optimal ? 'optimal' : 'infeasible',
-  };
+  if (sol.status !== 'optimal' || sol.objective === null) {
+    return { status: sol.status === 'optimal' ? 'numerical_error' : sol.status, objectiveValue: null, fluxes: {} };
+  }
+  return { status: 'optimal', objectiveValue: sol.objective, fluxes: sol.fluxes };
 }
 
 export type HostModelLike = HostMetabolicModel;
@@ -759,7 +752,9 @@ export function runDeltaFbaForAmg(
   amg: AMGDetection,
   baselineFba: FBAResult,
   boostFactor = 5.0
-): DeltaFBAResult {
+): DeltaFBAResult | DeltaFBAFailure {
+  if (baselineFba.status !== 'optimal') return { amg, status: baselineFba.status };
+  if (!Number.isFinite(boostFactor) || boostFactor <= 0) return { amg, status: 'invalid_input' };
   // Create augmented model: multiply upper bounds of AMG-associated reactions
   const augmentedModel: HostMetabolicModel = {
     ...baseModel,
@@ -775,20 +770,19 @@ export function runDeltaFbaForAmg(
   };
 
   const augmentedFba = solveFBA(augmentedModel);
+  if (augmentedFba.status !== 'optimal') return { amg, status: augmentedFba.status };
 
   const baselineObj = baselineFba.objectiveValue;
   const augmentedObj = augmentedFba.objectiveValue;
-  const deltaObj = Math.max(0, augmentedObj - baselineObj);
+  const deltaObj = augmentedObj - baselineObj;
   const percentGain =
-    baselineObj > 0.001
-      ? Math.round(((augmentedObj - baselineObj) / baselineObj) * 1000) / 10
-      : deltaObj > 0
-        ? 100.0
-        : 0.0;
+    Math.abs(baselineObj) > 1e-9
+      ? Math.round((deltaObj / Math.abs(baselineObj)) * 1000) / 10
+      : null;
 
   // Calculate reaction-level deltas
   const reactionDeltas: ReactionDelta[] = [];
-  const subsystemDeltas: Record<string, { total: number; count: number }> = {};
+  const subsystemDeltas: Record<string, { total: number; count: number }> = Object.create(null);
 
   for (const rxn of baseModel.reactions) {
     const baseFlux = baselineFba.fluxes[rxn.id] ?? 0;
@@ -835,13 +829,8 @@ export function runDeltaFbaForAmg(
 
   pathwayImpacts.sort((a, b) => b.totalDeltaFlux - a.totalDeltaFlux);
 
-  // Composite fitness advantage score (0..100)
-  const fitnessScore = Math.min(
-    100,
-    Math.round(percentGain * 0.6 + (pathwayImpacts.length > 0 ? pathwayImpacts[0].totalDeltaFlux : 0) * 4)
-  );
-
   return {
+    status: 'optimal',
     amg,
     baselineObjective: baselineObj,
     augmentedObjective: augmentedObj,
@@ -849,7 +838,6 @@ export function runDeltaFbaForAmg(
     percentGain,
     pathwayImpacts,
     topReactionDeltas: reactionDeltas.slice(0, 8),
-    fitnessScore,
   };
 }
 
@@ -858,19 +846,21 @@ export function runDeltaFbaForAmg(
  */
 export function runAMGFluxAnalysis(
   phage?: PhageFull | null,
-  options: { boostFactor?: number } = {}
+  options: { boostFactor?: number; hostModel?: HostMetabolicModel } = {}
 ): AMGFluxAnalysisResult {
   const boost = options.boostFactor ?? 5.0;
-  const hostModel = createStandardHostMetabolicModel();
+  const hostModel = options.hostModel ?? createStandardHostMetabolicModel();
   const detectedAmgs = detectAmgsFromPhage(phage);
   const baselineFba = solveFBA(hostModel);
 
-  const amgResults: DeltaFBAResult[] = detectedAmgs.map((amg) =>
+  const outcomes = detectedAmgs.map((amg) =>
     runDeltaFbaForAmg(hostModel, amg, baselineFba, boost)
   );
+  const amgResults = outcomes.filter((result): result is DeltaFBAResult => result.status === 'optimal');
+  const failedAmgs = outcomes.filter((result): result is DeltaFBAFailure => result.status !== 'optimal');
 
   let totalDeltaFlux = 0;
-  const subsystemTotals: Record<string, number> = {};
+  const subsystemTotals: Record<string, number> = Object.create(null);
 
   for (const res of amgResults) {
     totalDeltaFlux += res.deltaObjective;
@@ -889,12 +879,14 @@ export function runAMGFluxAnalysis(
   }
 
   const summary =
-    detectedAmgs.length === 0
+    baselineFba.status !== 'optimal'
+      ? `Flux analysis unavailable: ${baselineFba.status}. No objective gain is reported.`
+      : detectedAmgs.length === 0
       ? 'No Auxiliary Metabolic Genes detected in this phage genome.'
-      : `Detected ${detectedAmgs.length} AMG(s) boosting host metabolism by up to +${Math.max(
-          ...amgResults.map((r) => r.percentGain),
+      : `Detected ${detectedAmgs.length} AMG(s). Assumed capacity changes in ${hostModel.name} give up to +${Math.max(
+          ...amgResults.map((r) => r.percentGain ?? 0),
           0
-        )}% objective flux. Primary impact subsystem: ${topSubsystem}.`;
+        )}% model objective flux (${failedAmgs.length} failed solves). This is not a measured fitness gain. Primary impact subsystem: ${topSubsystem}.`;
 
   return {
     phageId: phage?.id ?? 0,
@@ -902,6 +894,7 @@ export function runAMGFluxAnalysis(
     detectedAmgs,
     baselineFba,
     amgResults,
+    failedAmgs,
     totalDeltaFlux: Math.round(totalDeltaFlux * 1000) / 1000,
     topOverallImpactedSubsystem: topSubsystem,
     summary,

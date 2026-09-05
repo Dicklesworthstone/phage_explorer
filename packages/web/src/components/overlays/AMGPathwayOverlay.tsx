@@ -10,6 +10,7 @@ import {
   runAMGFluxAnalysis,
   runDeltaFbaForAmg,
   createStandardHostMetabolicModel,
+  parseHostMetabolicModel,
   AMG_KNOWLEDGE_BASE,
   type PhageFull,
   type GeneInfo,
@@ -74,6 +75,10 @@ function getAmgColor(amgType: string): string {
   return AMG_COLORS[amgType] ?? AMG_COLORS.default;
 }
 
+function formatGain(value: number | null): string {
+  return value === null ? 'Undefined (zero baseline)' : `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
+}
+
 // AMG type descriptions
 const AMG_DESCRIPTIONS: Record<string, string> = {
   photosynthesis: 'Photosynthesis-related genes that can enhance host photosynthetic capacity during infection',
@@ -104,6 +109,9 @@ export function AMGPathwayOverlay({
   const [activeTab, setActiveTab] = useState<'annotations' | 'flux'>('annotations');
   const [boostMultiplier, setBoostMultiplier] = useState<number>(5.0);
   const [showFullFluxTable, setShowFullFluxTable] = useState<boolean>(false);
+  const [hostModel, setHostModel] = useState(createStandardHostMetabolicModel);
+  const [modelSource, setModelSource] = useState<'illustrative' | 'imported'>('illustrative');
+  const [modelError, setModelError] = useState<string | null>(null);
 
   const [amgs, setAmgs] = useState<AmgAnnotation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -111,14 +119,13 @@ export function AMGPathwayOverlay({
   const [filterType, setFilterType] = useState<string>('all');
 
   const fluxAnalysis = useMemo(
-    () => runAMGFluxAnalysis(currentPhage, { boostFactor: boostMultiplier }),
-    [currentPhage, boostMultiplier]
+    () => runAMGFluxAnalysis(currentPhage, { boostFactor: boostMultiplier, hostModel }),
+    [currentPhage, boostMultiplier, hostModel]
   );
 
   const simulatedCandidateGains = useMemo(() => {
     if (fluxAnalysis.detectedAmgs.length > 0) return [];
-    const hostModel = createStandardHostMetabolicModel();
-    return AMG_KNOWLEDGE_BASE.map((kb) => {
+    return AMG_KNOWLEDGE_BASE.flatMap((kb) => {
       const dummyAmg = {
         geneId: 999,
         geneName: kb.ko.name.split(' ')[0],
@@ -132,12 +139,36 @@ export function AMGPathwayOverlay({
         boostedReactions: [...kb.reactions],
       };
       const res = runDeltaFbaForAmg(hostModel, dummyAmg, fluxAnalysis.baselineFba, boostMultiplier);
-      return {
+      if (res.status !== 'optimal') return [];
+      return [{
         kb,
         res,
-      };
+      }];
     });
-  }, [fluxAnalysis, boostMultiplier]);
+  }, [fluxAnalysis, boostMultiplier, hostModel]);
+
+  const importModel = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      if (file.size > 1_000_000) throw new Error('Model JSON must be smaller than 1 MB.');
+      const parsed = parseHostMetabolicModel(await file.text());
+      setHostModel(parsed);
+      setModelSource('imported');
+      setModelError(null);
+    } catch (error) {
+      setModelError(`${error instanceof Error ? error.message : 'Could not read model.'} Previous model retained.`);
+    }
+  };
+
+  const exportFlux = () => {
+    const blob = new Blob([JSON.stringify({ model: hostModel, modelSource, boostMultiplier, analysis: fluxAnalysis }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'amg-flux.json';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
 
   // Hotkey (Alt+A for AMG)
   useHotkey(
@@ -594,7 +625,7 @@ export function AMGPathwayOverlay({
                     fontWeight: 600,
                   }}
                 >
-                  V_max Boost Multiplier: <span style={{ color: colors.accent ?? '#38bdf8' }}>{boostMultiplier.toFixed(1)}x</span>
+                  Assumed capacity multiplier: <span style={{ color: colors.accent ?? '#38bdf8' }}>{boostMultiplier.toFixed(1)}x</span>
                 </label>
                 <input
                   id="amg-boost-slider"
@@ -609,11 +640,29 @@ export function AMGPathwayOverlay({
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: colors.textMuted ?? '#64748b' }}>
-                <span>Host Stoichiometric Model:</span>
-                <span style={{ color: colors.accent ?? '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>E. coli Core (FBA)</span>
+                <span>Model:</span>
+                <span style={{ color: colors.accent ?? '#38bdf8', fontFamily: 'monospace', fontWeight: 600 }}>{hostModel.name}</span>
               </div>
             </div>
 
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+              <label>Import model JSON <input aria-label="Import model JSON" type="file" accept=".json,application/json" onChange={event => { void importModel(event.target.files?.[0]); event.target.value = ''; }} /></label>
+              <button type="button" onClick={() => { setHostModel(createStandardHostMetabolicModel()); setModelSource('illustrative'); setModelError(null); }}>Use teaching model</button>
+              <button type="button" onClick={exportFlux}>Export model and flux results</button>
+            </div>
+            {modelError && <div role="alert">{modelError}</div>}
+            <p style={{ fontSize: '0.8rem', color: colors.textMuted }}>
+              {modelSource === 'illustrative'
+                ? 'Explore assumed reaction capacities in a teaching network, in arbitrary flux units. It combines reactions from different organisms and does not predict this phage’s host metabolism or measured fitness.'
+                : 'User-supplied model. Flux units and biological interpretation depend on its source, medium and bounds; imported models are not independently validated here.'}
+              {' '}{hostModel.description}
+            </p>
+            {fluxAnalysis.baselineFba.status !== 'optimal' ? (
+              <div role="alert">Flux analysis unavailable: {fluxAnalysis.baselineFba.status}. No objective gain is reported.</div>
+            ) : <>
+            {fluxAnalysis.failedAmgs.length > 0 && (
+              <div role="alert">No gain is reported for failed solves: {fluxAnalysis.failedAmgs.map(result => `${result.amg.geneName} (${result.status})`).join(', ')}.</div>
+            )}
             {/* Top KPI Metrics Cards */}
             <div
               style={{
@@ -634,7 +683,7 @@ export function AMGPathwayOverlay({
                 <div style={{ fontSize: '1.05rem', fontWeight: 'bold', fontFamily: 'monospace', color: colors.text ?? '#f8fafc' }}>
                   {fluxAnalysis.baselineFba.objectiveValue.toFixed(3)}
                 </div>
-                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>mmol / gDW / h</div>
+                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>{modelSource === 'illustrative' ? 'arbitrary flux units' : 'model flux units'}</div>
               </div>
 
               <div
@@ -651,7 +700,7 @@ export function AMGPathwayOverlay({
                     ? Math.max(...fluxAnalysis.amgResults.map((r) => r.augmentedObjective)).toFixed(3)
                     : fluxAnalysis.baselineFba.objectiveValue.toFixed(3)}
                 </div>
-                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>mmol / gDW / h</div>
+                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>{modelSource === 'illustrative' ? 'arbitrary flux units' : 'model flux units'}</div>
               </div>
 
               <div
@@ -671,9 +720,9 @@ export function AMGPathwayOverlay({
                     color: fluxAnalysis.amgResults.length > 0 ? (colors.success ?? '#22c55e') : (colors.textMuted ?? '#64748b'),
                   }}
                 >
-                  +{fluxAnalysis.amgResults.length > 0 ? Math.max(...fluxAnalysis.amgResults.map((r) => r.percentGain)).toFixed(1) : '0.0'}%
+                  {fluxAnalysis.amgResults.length > 0 ? formatGain(fluxAnalysis.amgResults.some(r => r.percentGain === null) ? null : Math.max(...fluxAnalysis.amgResults.map(r => r.percentGain!))) : 'No AMG result'}
                 </div>
-                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>over unaugmented host</div>
+                <div style={{ fontSize: '0.68rem', color: colors.textDim ?? '#94a3b8' }}>relative to the unmodified model</div>
               </div>
 
               <div
@@ -707,13 +756,13 @@ export function AMGPathwayOverlay({
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ color: colors.warning ?? '#eab308', fontWeight: 'bold', fontSize: '0.9rem' }}>
-                    Host Bottleneck Analysis (0 AMGs Detected)
+                    What-if examples (0 AMG candidates detected)
                   </span>
                 </div>
                 <div style={{ fontSize: '0.8rem', color: colors.textDim ?? '#94a3b8', lineHeight: 1.4 }}>
-                  This phage does not encode known Auxiliary Metabolic Genes. Host central metabolism supports a baseline viral dNTP production of{' '}
-                  <strong style={{ color: colors.text ?? '#f8fafc' }}>{fluxAnalysis.baselineFba.objectiveValue.toFixed(3)} mmol/gDW/h</strong>.
-                  Replication is rate-limited by host precursor synthesis bottlenecks: ribonucleoside diphosphate reduction (<code style={{ color: colors.accent ?? '#38bdf8' }}>RNR_REDUCTASE</code>) and thymidylate synthase (<code style={{ color: colors.accent ?? '#38bdf8' }}>THYMIDYLATE_SYNTHASE</code>).
+                  No AMG candidates matched the available annotations. The selected network has a baseline objective of{' '}
+                  <strong style={{ color: colors.text ?? '#f8fafc' }}>{fluxAnalysis.baselineFba.objectiveValue.toFixed(3)} model units</strong>.
+                  The examples below add hypothetical reaction capacity; they are not genes detected in this phage.
                 </div>
 
                 <div style={{ marginTop: '0.25rem' }}>
@@ -750,8 +799,8 @@ export function AMGPathwayOverlay({
                             <td style={{ padding: '0.35rem', color: colors.success ?? '#22c55e', fontWeight: 'bold' }}>
                               {res.augmentedObjective.toFixed(3)}
                             </td>
-                            <td style={{ padding: '0.35rem', color: res.percentGain > 0 ? (colors.success ?? '#22c55e') : (colors.textMuted ?? '#64748b') }}>
-                              +{res.percentGain.toFixed(1)}%
+                            <td style={{ padding: '0.35rem', color: (res.percentGain ?? 0) > 0 ? (colors.success ?? '#22c55e') : (colors.textMuted ?? '#64748b') }}>
+                              {formatGain(res.percentGain)}
                             </td>
                           </tr>
                         ))}
@@ -835,16 +884,7 @@ export function AMGPathwayOverlay({
                             border: `1px solid ${colors.success ?? '#22c55e'}44`,
                           }}
                         >
-                          +{res.percentGain.toFixed(1)}% dNTP Flux
-                        </span>
-                        <span
-                          style={{
-                            fontFamily: 'monospace',
-                            fontSize: '0.75rem',
-                            color: colors.textMuted ?? '#64748b',
-                          }}
-                        >
-                          Score: {res.fitnessScore}/100
+                          {formatGain(res.percentGain)} model objective
                         </span>
                       </div>
                     </div>
@@ -950,7 +990,7 @@ export function AMGPathwayOverlay({
                   cursor: 'pointer',
                 }}
               >
-                {showFullFluxTable ? '▼ Hide Stoichiometric Network Fluxes' : '▶ View Full Stoichiometric Network Fluxes (18 Reactions)'}
+                {showFullFluxTable ? '▼ Hide Stoichiometric Network Fluxes' : `▶ View Full Stoichiometric Network Fluxes (${hostModel.reactions.length} Reactions)`}
               </button>
 
               {showFullFluxTable && (
@@ -976,7 +1016,7 @@ export function AMGPathwayOverlay({
                       </tr>
                     </thead>
                     <tbody>
-                      {createStandardHostMetabolicModel().reactions.map((rxn) => (
+                      {hostModel.reactions.map((rxn) => (
                         <tr key={rxn.id} style={{ borderBottom: `1px solid ${colors.borderLight ?? '#1e293b'}22` }}>
                           <td style={{ padding: '0.25rem 0.35rem', color: colors.accent ?? '#38bdf8' }}>{rxn.id}</td>
                           <td style={{ padding: '0.25rem 0.35rem', color: colors.text ?? '#f8fafc' }}>{rxn.name}</td>
@@ -992,6 +1032,7 @@ export function AMGPathwayOverlay({
                 </div>
               )}
             </div>
+            </>}
           </div>
         )}
       </div>

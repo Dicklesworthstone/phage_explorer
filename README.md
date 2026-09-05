@@ -884,6 +884,13 @@ above is what a build produces today.
 | **Ecology** | Host Tropism (precomputed trigram), Defense Arms Race, Cocktail Compatibility, AMG Pathways (conservative KEGG mappings) |
 | **Simulation** | All 7 interactive simulations |
 
+The AMG Pathways **Flux Potential** tab is an FBA sandbox. Its default precursor
+network is illustrative, with arbitrary flux units and user-adjusted reaction
+capacities. Import a small model as JSON (up to 100 reactions and metabolites),
+or export the model, parameters and raw flux results. Infeasible and invalid
+models show a solver status without a gain. These model responses are not
+measured host metabolism or phage fitness.
+
 ### Composable UI Primitives
 
 Overlays share 12+ reusable components:

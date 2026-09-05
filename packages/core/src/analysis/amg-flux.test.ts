@@ -9,7 +9,125 @@ import {
   runDeltaFbaForAmg,
   solveFBA,
   type AMGDetection,
+  type FBAStatus,
+  parseHostMetabolicModel,
 } from './amg-flux';
+
+describe('FBA numerical contract', () => {
+  const cases: Array<{ name: string; S: number[][]; lb: number[]; ub: number[]; c: number[]; status: FBAStatus; objective: number | null }> = [
+    { name: 'fixed source violates steady state', S: [[1]], lb: [1], ub: [1], c: [1], status: 'infeasible', objective: null },
+    { name: 'nonzero lower-bound objective offset', S: [], lb: [2], ub: [5], c: [1], status: 'optimal', objective: 5 },
+    { name: 'inconsistent bounds', S: [], lb: [5], ub: [2], c: [1], status: 'infeasible', objective: null },
+    { name: 'reversible flux with negative optimum', S: [[1, -1]], lb: [-5, -3], ub: [-2, 4], c: [0, 1], status: 'optimal', objective: -2 },
+    { name: 'phase-one feasible positive lower bounds', S: [[1, -1]], lb: [2, 1], ub: [5, 10], c: [0, 1], status: 'optimal', objective: 5 },
+    { name: 'zero capacity', S: [[1, -1]], lb: [0, 0], ub: [0, 10], c: [0, 1], status: 'optimal', objective: 0 },
+    { name: 'unbounded objective', S: [], lb: [0], ub: [Infinity], c: [1], status: 'unbounded', objective: null },
+    { name: 'duplicate and zero equality rows', S: [[1, -1], [2, -2], [0, 0]], lb: [2, 1], ub: [5, 10], c: [0, 1], status: 'optimal', objective: 5 },
+    { name: 'negative objective coefficient', S: [], lb: [-3], ub: [5], c: [-2], status: 'optimal', objective: 6 },
+    { name: 'small equality coefficients', S: [[1e-12, -1e-12]], lb: [0, 0], ub: [5, 10], c: [0, 1e-12], status: 'optimal', objective: 5e-12 },
+  ];
+  for (const fixture of cases) {
+    it(fixture.name, () => {
+      const ids = fixture.lb.map((_, i) => `r${i}`);
+      const result = new FBASimplexSolver(fixture.S, fixture.lb, fixture.ub, fixture.c, ids).solve();
+      expect(result.status).toBe(fixture.status);
+      expect(result.optimal).toBe(fixture.status === 'optimal');
+      if (fixture.objective === null) {
+        expect(result.objective).toBeNull();
+        expect(result.fluxes).toEqual({});
+      } else {
+        expect(result.objective).toBeCloseTo(fixture.objective, 10);
+        const flux = ids.map(id => result.fluxes[id]);
+        fixture.S.forEach(row => expect(Math.abs(row.reduce((sum, a, j) => sum + a * flux[j], 0))).toBeLessThan(1e-8));
+        flux.forEach((v, j) => {
+          expect(v).toBeGreaterThanOrEqual(fixture.lb[j] - 1e-8);
+          expect(v).toBeLessThanOrEqual(fixture.ub[j] + 1e-8);
+        });
+        expect(flux.reduce((sum, v, j) => sum + fixture.c[j] * v, 0)).toBeCloseTo(result.objective!, 10);
+      }
+    });
+  }
+
+  it('reports exhausted iterations and invalid input instead of a numerical optimum', () => {
+    expect(new FBASimplexSolver([], [0], [5], [1], ['r']).solve(0).status).toBe('iteration_limit');
+    expect(new FBASimplexSolver([[1, 2]], [0], [5], [1], ['r']).solve().status).toBe('invalid_input');
+    expect(new FBASimplexSolver([], [NaN], [5], [1], ['r']).solve().status).toBe('invalid_input');
+    expect(new FBASimplexSolver([], [0], [5], [Infinity], ['r']).solve().status).toBe('invalid_input');
+    expect(new FBASimplexSolver([], [0, 0], [5, 5], [1, 1], ['r', 'r']).solve().status).toBe('invalid_input');
+    expect(new FBASimplexSolver([], [-1e308], [1e308], [1], ['r']).solve().status).toBe('numerical_error');
+  });
+
+  it('rejects missing objective and undeclared metabolites', () => {
+    const model = createStandardHostMetabolicModel();
+    expect(solveFBA({ ...model, objectiveReaction: 'missing' }).status).toBe('invalid_input');
+    expect(solveFBA({ ...model, metabolites: [] }).status).toBe('invalid_input');
+  });
+
+  it('imports explicit model JSON and rejects malformed or oversized models', () => {
+    const model = createStandardHostMetabolicModel();
+    expect(parseHostMetabolicModel(JSON.stringify(model))).toEqual(model);
+    expect(parseHostMetabolicModel(JSON.stringify({ model, analysis: {} }))).toEqual(model);
+    expect(() => parseHostMetabolicModel('{}')).toThrow('Invalid model');
+    expect(() => parseHostMetabolicModel(JSON.stringify({ ...model, reactions: Array(101).fill(model.reactions[0]) }))).toThrow('Invalid model');
+    expect(() => parseHostMetabolicModel(JSON.stringify({ ...model, reactions: [{ ...model.reactions[0], lowerBound: null }] }))).toThrow('Invalid model');
+  });
+
+  it('matches independent vertex enumeration on 48 bounded three-reaction systems', () => {
+    // A bounded plane intersects a box at vertices with at least two active
+    // bounds. Enumerating those intersections does not use simplex or its basis.
+    for (let k = 0; k < 48; k++) {
+      const row = [1 + k % 3, -(1 + k % 4), 1 + k % 2];
+      const lb = [k % 4 - 2, -3, k % 3 - 2];
+      const ub = [3 + k % 3, 2 + k % 4, 4];
+      const c = [k % 5 - 2, 2 - k % 4, 1];
+      let expected = -Infinity;
+      for (let free = 0; free < 3; free++) {
+        const fixed = [0, 1, 2].filter(j => j !== free);
+        for (let corner = 0; corner < 4; corner++) {
+          const v = [0, 0, 0];
+          fixed.forEach((j, bit) => { v[j] = corner & (1 << bit) ? ub[j] : lb[j]; });
+          v[free] = -fixed.reduce((sum, j) => sum + row[j] * v[j], 0) / row[free];
+          if (v[free] >= lb[free] - 1e-10 && v[free] <= ub[free] + 1e-10) expected = Math.max(expected, v.reduce((sum, value, j) => sum + c[j] * value, 0));
+        }
+      }
+      const result = new FBASimplexSolver([row], lb, ub, c, ['a', 'b', 'c']).solve();
+      expect(result.status).toBe(expected === -Infinity ? 'infeasible' : 'optimal');
+      if (expected !== -Infinity) expect(result.objective).toBeCloseTo(expected, 8);
+    }
+  });
+
+  it('does not turn an infeasible model into an AMG gain', () => {
+    const model = createStandardHostMetabolicModel();
+    model.reactions[0].lowerBound = 20;
+    const phage = { id: 1, name: 'example', genes: [{ id: 1, name: 'nrdA', startPos: 0, endPos: 300 }] } as PhageFull;
+    const result = runAMGFluxAnalysis(phage, { hostModel: model });
+    expect(result.baselineFba.status).toBe('infeasible');
+    expect(result.baselineFba.objectiveValue).toBeNull();
+    expect(result.amgResults).toEqual([]);
+    expect(result.failedAmgs.map(r => r.status)).toEqual(['infeasible']);
+    expect(result.summary).toContain('No objective gain');
+  });
+
+  it('treats imported subsystem names as data rather than object prototypes', () => {
+    const model = createStandardHostMetabolicModel();
+    model.reactions.forEach(r => { r.subsystem = '__proto__'; });
+    const phage = { id: 1, name: 'example', genes: [{ id: 1, name: 'nrdA', startPos: 0, endPos: 300 }] } as PhageFull;
+    const result = runAMGFluxAnalysis(phage, { hostModel: model });
+    expect(result.amgResults[0].pathwayImpacts[0].pathwayName).toBe('__proto__');
+    expect(Number.isFinite(result.amgResults[0].pathwayImpacts[0].totalDeltaFlux)).toBe(true);
+    expect(Object.prototype).not.toHaveProperty('total');
+  });
+
+  it('marks relative gain undefined when the baseline objective is zero', () => {
+    const model = createStandardHostMetabolicModel();
+    model.reactions.forEach(r => { r.upperBound = 0; });
+    const phage = { id: 1, name: 'example', genes: [{ id: 1, name: 'nrdA', startPos: 0, endPos: 300 }] } as PhageFull;
+    const result = runAMGFluxAnalysis(phage, { hostModel: model });
+    expect(result.amgResults[0].percentGain).toBeNull();
+    expect(result.amgResults[0].deltaObjective).toBe(0);
+    expect(result.amgResults[0]).not.toHaveProperty('fitnessScore');
+  });
+});
 
 describe('AMG Flux Potential Analyzer - Core', () => {
   describe('Standard Host Metabolic Model', () => {
@@ -44,6 +162,7 @@ describe('AMG Flux Potential Analyzer - Core', () => {
       const result = solveFBA(model);
 
       expect(result.status).toBe('optimal');
+      if (result.status !== 'optimal') throw new Error(result.status);
       expect(result.objectiveValue).toBeGreaterThan(0);
       expect(result.fluxes[model.objectiveReaction]).toBeCloseTo(result.objectiveValue, 2);
 
@@ -230,6 +349,7 @@ describe('AMG Flux Potential Analyzer - Core', () => {
     it('boosts reaction flux and increases viral objective value', () => {
       const model = createStandardHostMetabolicModel();
       const baseFba = solveFBA(model);
+      if (baseFba.status !== 'optimal') throw new Error(baseFba.status);
 
       const mockNrdA: AMGDetection = {
         geneId: 1,
@@ -246,9 +366,11 @@ describe('AMG Flux Potential Analyzer - Core', () => {
 
       const deltaResult = runDeltaFbaForAmg(model, mockNrdA, baseFba, 4.0);
 
+      expect(deltaResult.status).toBe('optimal');
+      if (deltaResult.status !== 'optimal') throw new Error(deltaResult.status);
       expect(deltaResult.baselineObjective).toBe(baseFba.objectiveValue);
       expect(deltaResult.augmentedObjective).toBeGreaterThanOrEqual(deltaResult.baselineObjective);
-      expect(deltaResult.fitnessScore).toBeGreaterThanOrEqual(0);
+      expect(deltaResult.percentGain).toBeGreaterThanOrEqual(0);
       expect(deltaResult.topReactionDeltas.length).toBeGreaterThan(0);
 
       // The boosted reaction should have a delta

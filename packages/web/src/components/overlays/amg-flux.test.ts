@@ -155,8 +155,10 @@ describe('AMG Flux Potential Analyzer (Web & Integration)', () => {
 
     expect(whatIfResults.length).toBe(AMG_KNOWLEDGE_BASE.length);
     for (const r of whatIfResults) {
+      expect(r.status).toBe('optimal');
+      if (r.status !== 'optimal') throw new Error(r.status);
       expect(r.augmentedObjective).toBeGreaterThanOrEqual(r.baselineObjective);
-      expect(r.fitnessScore).toBeGreaterThanOrEqual(0);
+      expect(r.percentGain).toBeGreaterThanOrEqual(0);
     }
   });
 });
