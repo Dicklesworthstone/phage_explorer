@@ -176,16 +176,14 @@ jobs:
         run: |
           set -euo pipefail
           db="packages/web/public/phage.db"
-          gz="packages/web/public/phage.db.gz"
 
           # Fail rather than ship a release without data. A missing database is
           # not a degraded release, it is a broken install path.
           [[ -f "$db" ]] || { echo "::error::$db is missing; refusing to publish a release without it"; exit 1; }
-          [[ -f "$gz" ]] || { echo "::error::$gz is missing; install.sh prefers it"; exit 1; }
-
-          mkdir -p dist
-          cp "$db" "$gz" dist/
-          ls -la dist/phage.db dist/phage.db.gz
+          # Gzip is generated/ignored, so a fresh checkout must build it from
+          # the same source as the raw DB and transport/content descriptor.
+          bun scripts/build-web-db.ts --source "$db" --output dist
+          ls -la dist/phage.db dist/phage.db.gz dist/phage.db.manifest.json
 
           # Guard against publishing the stale 3.1 MB database that v1.4.1
           # shipped, from before Pfam domains, ESM2 embeddings and codon
@@ -206,7 +204,7 @@ jobs:
           shopt -s nullglob
           cd dist
           rm -f sha256.txt
-          for f in phage-explorer-* phage.db phage.db.gz; do
+          for f in phage-explorer-* phage.db phage.db.gz phage.db.manifest.json; do
             case "$f" in
               *.sha256|*.sigstore.json|sha256.txt) ;;
               *) [[ -f "$f" ]] && shasum -a 256 "$f" >> sha256.txt ;;

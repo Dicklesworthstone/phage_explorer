@@ -1,70 +1,224 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { setupTestHarness } from './e2e-harness';
+import { execFileSync } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
-test('database loads successfully', async ({ page }, testInfo) => {
-  const { consoleErrors, finalize } = setupTestHarness(page, testInfo);
+test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
 
-  // Clear IndexedDB before test
-  await page.goto('http://localhost:5173');
-  await page.evaluate(() => {
-    return new Promise<void>((resolve) => {
-      const req = indexedDB.deleteDatabase('phage-explorer-db');
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
+async function cachedIdentity(page: Page) {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('phage-explorer-db');
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
     });
+    try {
+      const entry = await new Promise<{ data: Uint8Array; contentVersion: string; sha256: string } | undefined>((resolve, reject) => {
+        const request = db.transaction('database').objectStore('database').get('phage-db:snapshot');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      if (!entry) return null;
+      const bytes = new Uint8Array(entry.data);
+      const hash = await crypto.subtle.digest('SHA-256', bytes);
+      const actual = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+      return { contentVersion: entry.contentVersion, sha256: entry.sha256, size: bytes.length, valid: actual === entry.sha256 };
+    } finally {
+      db.close();
+    }
   });
+}
 
-  // Reload with clean state
-  await page.reload();
+async function expectCatalog(page: Page) {
+  await expect(page.getByTestId('phage-list-item-selected')).toContainText('Enterobacteria phage lambda');
+  await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+  await expect(page.getByTestId('phage-list')).toContainText('48,502');
+}
 
-  // Wait for the app to load and database to initialize
-  // The app should show phage list items when DB loads successfully
-  await page.waitForSelector('[data-testid="phage-list-item"], .phage-item, [class*="phage"]', {
-    timeout: 30000,
-  }).catch(() => null);
+test('database loads real catalog data and reuses verified cache without another download', async ({ page }, testInfo) => {
+  const { consoleErrors, pageErrors, finalize } = setupTestHarness(page, testInfo);
+  const downloads: string[] = [];
+  page.on('request', request => {
+    if (/\/phage\.db(?:\.gz)?(?:\?|$)/.test(request.url())) downloads.push(request.url());
+  });
+  try {
+    const response = await page.request.get('/phage.db.manifest.json');
+    expect(response.ok()).toBe(true);
+    const manifest = await response.json();
+    expect(manifest.version).toBe(2);
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    expect(new URL(page.url()).origin).toBe(new URL(testInfo.project.use.baseURL!).origin);
+    const cold = await cachedIdentity(page);
+    expect(cold).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
+    expect(downloads.length).toBeGreaterThan(0);
 
-  // Check for error messages
-  const errorText = await page.locator('text=/file is not a database/i').count();
-  expect(errorText).toBe(0);
-
-  // Check for "Database Load Failed" text
-  const failedText = await page.locator('text=/Database Load Failed/i').count();
-  expect(failedText).toBe(0);
-
-  // Wait a bit more for any async errors
-  await page.waitForTimeout(3000);
-
-  // Filter for database-related errors
-  const dbErrors = consoleErrors.filter(e =>
-    e.includes('file is not a database') ||
-    e.includes('Database') ||
-    e.includes('SQLite')
-  );
-
-  expect(dbErrors).toHaveLength(0);
-  await finalize();
+    downloads.length = 0;
+    await page.reload();
+    await expectCatalog(page);
+    expect(await cachedIdentity(page)).toEqual(cold);
+    expect(downloads).toHaveLength(0);
+    expect(pageErrors).toHaveLength(0);
+    expect(consoleErrors.filter(e => /database|sqlite|hash mismatch/i.test(e))).toHaveLength(0);
+    await testInfo.attach('database-identity', { body: JSON.stringify({ cold, warmDatabaseTransfers: downloads.length }), contentType: 'application/json' });
+  } finally {
+    await finalize();
+  }
 });
 
-test('phage list renders after database loads', async ({ page }, testInfo) => {
+test('corrupt update cannot replace a verified cached catalog, including after a 304 manifest', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    const original = await cachedIdentity(page);
+    expect(original?.valid).toBe(true);
+    const response = await page.request.get('/phage.db.manifest.json');
+    const manifest = await response.json();
+    // Controlled update fault: a new manifest arrives but the server still
+    // serves the old DB bytes. This is protocol fault injection, not live data.
+    const update = { ...manifest, contentVersion: 'a'.repeat(64), sha256: 'b'.repeat(64) };
+    let manifestRequests = 0;
+    let updateDownloads = 0;
+    await page.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
+      manifestRequests++;
+      if (route.request().headers()['if-none-match'] === '"test-update"') {
+        return route.fulfill({ status: 304, headers: { ETag: '"test-update"' } });
+      }
+      return route.fulfill({ status: 200, json: update, headers: { ETag: '"test-update"' } });
+    });
+    page.on('request', request => {
+      if (/\/phage\.db(?:\.gz)?\?/.test(request.url())) updateDownloads++;
+    });
+    await page.reload();
+    await expectCatalog(page);
+    await expect.poll(() => manifestRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => updateDownloads).toBeGreaterThan(0);
+    // A rejected background refresh must keep the actual previous bytes and identity.
+    expect(await cachedIdentity(page)).toEqual(original);
+    expect(pageErrors).toHaveLength(0);
+  } finally {
+    await finalize();
+  }
+});
+
+test('cold load rejects a mismatched descriptor instead of displaying unverified data', async ({ page }, testInfo) => {
   const { finalize } = setupTestHarness(page, testInfo);
+  try {
+    const response = await page.request.get('/phage.db.manifest.json');
+    const manifest = await response.json();
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...manifest, sha256: '0'.repeat(64) } }));
+    await page.goto('/?model=0');
+    await expect(page.getByRole('heading', { name: 'Database load failed' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Repository status' })).toContainText('Database integrity check failed');
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+    expect(await cachedIdentity(page)).toBeNull();
+  } finally {
+    await finalize();
+  }
+});
 
-  await page.goto('http://localhost:5173');
+test('real data and schema update downloads once, then reuses the verified new cache', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    const original = await cachedIdentity(page);
+    const artifacts = testInfo.outputPath('changed-database');
+    await mkdir(artifacts, { recursive: true });
+    const source = resolve(artifacts, 'source.db');
+    const raw = await page.request.get('/phage.db');
+    expect(raw.ok()).toBe(true);
+    await writeFile(source, await raw.body());
+    // Mutate a private SQLite snapshot. The actual build command generates the
+    // served bytes and descriptor; neither checksum nor result is hard-coded.
+    execFileSync('bun', ['-e', `import { Database } from 'bun:sqlite';
+      const path = process.argv[1]; const db = Database.deserialize(Buffer.from(await Bun.file(path).arrayBuffer()));
+      try { db.run("UPDATE phages SET gc_content=50 WHERE slug='lambda'"); db.run('PRAGMA user_version=1'); await Bun.write(path, db.serialize()); }
+      finally { db.close(); }`, source], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const sourceBytes = await readFile(source);
+    const buildLog = execFileSync('bun', [resolve(process.cwd(), '../../scripts/build-web-db.ts'), '--source', source, '--output', artifacts], { stdio: ['ignore', 'pipe', 'inherit'] });
+    expect((await readFile(source)).equals(sourceBytes)).toBe(true);
+    await testInfo.attach('update-builder', { body: buildLog, contentType: 'text/plain' });
+    const manifest = JSON.parse(await readFile(resolve(artifacts, 'phage.db.manifest.json'), 'utf8'));
+    const gz = await readFile(resolve(artifacts, 'phage.db.gz'));
+    expect(manifest.contentVersion).not.toBe(original!.contentVersion);
+    let downloads = 0;
+    let notModified = 0;
+    await page.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
+      if (route.request().headers()['if-none-match'] === '"real-update"') {
+        notModified++;
+        return route.fulfill({ status: 304, headers: { ETag: '"real-update"' } });
+      }
+      return route.fulfill({ json: manifest, headers: { ETag: '"real-update"' } });
+    });
+    await page.route('**/phage.db.gz?*', route => {
+      downloads++;
+      return route.fulfill({ body: gz, contentType: 'application/gzip' });
+    });
+    await page.reload();
+    await expectCatalog(page);
+    await expect.poll(() => cachedIdentity(page)).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
+    expect(downloads).toBe(1);
+    expect(notModified).toBeGreaterThan(0);
+    await page.reload();
+    await expectCatalog(page);
+    await expect(page.getByTestId('phage-list-item-selected')).toContainText('50.0%');
+    expect(downloads).toBe(1);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await finalize();
+  }
+});
 
-  // Wait for loading to complete - look for any content that indicates success
-  await page.waitForFunction(() => {
-    // Check if there's loading indicator gone or content appeared
-    const loading = document.querySelector('[class*="loading"]');
-    const content = document.body.innerText;
-    return !loading || content.includes('T4') || content.includes('Lambda') || content.includes('phage');
-  }, { timeout: 30000 });
+test('verified cached catalog remains usable when the database origin is unavailable', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    const original = await cachedIdentity(page);
+    let transfers = 0;
+    await page.route('**/phage.db*', route => {
+      if (/\/phage\.db(?:\.gz)?(?:\?|$)/.test(route.request().url())) transfers++;
+      return route.abort('internetdisconnected');
+    });
+    await page.reload();
+    await expectCatalog(page);
+    expect(await cachedIdentity(page)).toEqual(original);
+    expect(transfers).toBe(0);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await finalize();
+  }
+});
 
-  // Take a screenshot for debugging
-  await page.screenshot({ path: testInfo.outputPath('database-load.png') });
-
-  // Verify no error state
-  const bodyText = await page.locator('body').innerText();
-  expect(bodyText).not.toContain('file is not a database');
-  expect(bodyText).not.toContain('Database Load Failed');
-
-  await finalize();
+test('missing gzip falls back to matching raw SQLite and exposes the shipped atlas', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let rawDownloads = 0;
+  page.on('request', request => {
+    if (/\/phage\.db\?/.test(request.url())) rawDownloads++;
+  });
+  try {
+    await page.addInitScript(() => localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' })));
+    await page.route('**/phage.db.gz?*', route => route.fulfill({ status: 404 }));
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    expect(rawDownloads).toBe(1);
+    expect((await cachedIdentity(page))?.valid).toBe(true);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.keyboard.press('Alt+Shift+l');
+    const atlas = page.getByTestId('overlay-latentSpaceAtlas');
+    await expect(atlas).toBeVisible();
+    await expect(atlas).toContainText('Showing 2039 of 2039 proteins');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Alt+e');
+    const defense = page.getByTestId('overlay-defenseArmsRace');
+    await expect(defense).toBeVisible();
+    await expect(defense.getByRole('button', { name: /anti-RM.*1/i })).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  } finally {
+    await finalize();
+  }
 });

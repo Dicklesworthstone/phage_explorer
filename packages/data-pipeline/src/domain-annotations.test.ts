@@ -4,6 +4,7 @@ import {
   detectDomainDefenseSystems,
   detectDomainAmgs,
   updateDomainAnnotations,
+  refreshDomainAnnotationMetadata,
   PFAM_DEFENSE_RULES,
   PFAM_AMG_RULES,
 } from './domain-annotations';
@@ -165,5 +166,26 @@ describe('domain-annotations', () => {
     ).all();
     expect(metaRows.some(m => m.key === 'domain_defense')).toBe(true);
     expect(metaRows.some(m => m.key === 'domain_amg')).toBe(true);
+    expect(JSON.parse(metaRows.find(m => m.key === 'domain_defense')!.value)).toMatchObject({ count: 1, phages: 1 });
+  });
+
+  it('refreshes stale coverage without changing annotations or churning unchanged metadata', () => {
+    db.run(`INSERT INTO defense_systems (phage_id, system_type, source) VALUES
+      (1, 'anti-RM', 'pfam-domain'), (2, 'anti-RM', 'pfam-domain'), (3, 'anti-CRISPR', 'esm2-nn')`);
+    db.run(`INSERT INTO annotation_meta VALUES ('domain_defense', '{"count":87,"phages":15}', 1)`);
+    const result = refreshDomainAnnotationMetadata(db);
+    expect(result.defenseCount).toBe(3);
+    const first = db.query<{ value: string; updated_at: number }, []>(
+      `SELECT value, updated_at FROM annotation_meta WHERE key='domain_defense'`
+    ).get()!;
+    expect(JSON.parse(first.value)).toEqual({ count: 2, phages: 2, source: 'pfam-domain' });
+    expect(db.query('SELECT COUNT(*) AS n FROM defense_systems').get()).toEqual({ n: 3 });
+    refreshDomainAnnotationMetadata(db);
+    expect(db.query(`SELECT value, updated_at FROM annotation_meta WHERE key='domain_defense'`).get()).toEqual(first);
+    // Removing screening candidates from this in-memory fixture changes total
+    // coverage without presenting the candidates as Pfam-supported calls.
+    db.run("DELETE FROM defense_systems WHERE source='esm2-nn'");
+    expect(refreshDomainAnnotationMetadata(db)).toMatchObject({ defenseCount: 2, defensePhages: 2 });
+    expect(db.query(`SELECT value, updated_at FROM annotation_meta WHERE key='domain_defense'`).get()).toEqual(first);
   });
 });

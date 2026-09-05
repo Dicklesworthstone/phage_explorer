@@ -138,6 +138,8 @@ export async function safeCacheWrite(
           ? value.byteLength
           : value instanceof ArrayBuffer
             ? value.byteLength
+            : value !== null && typeof value === 'object' && 'data' in value && value.data instanceof Uint8Array
+              ? value.data.byteLength
             : typeof value === 'string'
               ? value.length * 2
               : JSON.stringify(value).length * 2;

@@ -2,23 +2,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-
-// Remove raw phage.db from build output (only .gz needed for production)
-function removeRawDbPlugin(): Plugin {
-  return {
-    name: 'remove-raw-db',
-    closeBundle() {
-      const rawDbPath = path.resolve(__dirname, 'dist/phage.db');
-      if (fs.existsSync(rawDbPath)) {
-        fs.unlinkSync(rawDbPath);
-        console.log('✓ Removed raw phage.db from dist (keeping only .gz)');
-      }
-    },
-  };
-}
 
 /**
  * Build id, baked into the client and used to version every API cache entry.
@@ -67,7 +53,6 @@ export default defineConfig({
   },
   plugins: [
     react(),
-    removeRawDbPlugin(),
     VitePWA({
       // Use custom service worker with Workbox strategies
       strategies: 'injectManifest',

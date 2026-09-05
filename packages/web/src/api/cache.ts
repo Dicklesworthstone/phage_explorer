@@ -48,6 +48,12 @@ const DEFAULT_CONFIG: CacheConfig = {
   version: BUILD_CACHE_VERSION,
 };
 
+/** Bind analysis entries to the dataset actually opened by the repository. */
+export function setDatabaseCacheVersion(contentVersion: string | null): void {
+  if (contentVersion !== null && !/^[a-f0-9]{64}$/.test(contentVersion)) throw new Error('Invalid database content version');
+  DEFAULT_CONFIG.version = contentVersion === null ? BUILD_CACHE_VERSION : `${BUILD_CACHE_VERSION}:${contentVersion}`;
+}
+
 const CACHE_ROOT = 'phage_api_cache_';
 const CACHE_INDEX_KEY = 'phage_api_cache_index';
 
@@ -310,16 +316,17 @@ export function withCache<T, A extends unknown[]>(
 ): (...args: A) => Promise<T> {
   return async (...args: A): Promise<T> => {
     const key = keyGenerator(...args);
+    const version = DEFAULT_CONFIG.version;
 
     // Try cache first
-    const cached = getCached<T>(key);
+    const cached = getCached<T>(key, { version });
     if (cached !== null) {
       return cached;
     }
 
     // Fetch and cache
     const result = await fn(...args);
-    setCache(key, result, { ttl: options.ttl });
+    if (DEFAULT_CONFIG.version === version) setCache(key, result, { ttl: options.ttl, version });
     return result;
   };
 }

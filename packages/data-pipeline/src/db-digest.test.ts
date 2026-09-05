@@ -41,4 +41,36 @@ describe('computeDatabaseContentDigest', () => {
     expect(revertedHash).toBe(baselineHash);
     db.close();
   });
+
+  it('includes column names, constraints, indexes and schema version', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE sample (value TEXT); INSERT INTO sample VALUES ("same");');
+      const original = computeDatabaseContentDigest(db);
+      db.exec('ALTER TABLE sample RENAME COLUMN value TO renamed');
+      const renamed = computeDatabaseContentDigest(db);
+      expect(renamed).not.toBe(original);
+      db.exec('CREATE UNIQUE INDEX unique_sample ON sample(renamed)');
+      const indexed = computeDatabaseContentDigest(db);
+      expect(indexed).not.toBe(renamed);
+      db.exec('PRAGMA user_version=1');
+      expect(computeDatabaseContentDigest(db)).not.toBe(indexed);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('handles quoted schema identifiers and insertion-order differences', () => {
+    const first = new Database(':memory:');
+    const second = new Database(':memory:');
+    try {
+      for (const db of [first, second]) db.exec('CREATE TABLE "a""b" ("c""d" TEXT)');
+      first.exec('INSERT INTO "a""b" VALUES (\'a,b\'), (\'c\')');
+      second.exec('INSERT INTO "a""b" VALUES (\'c\'), (\'a,b\')');
+      expect(computeDatabaseContentDigest(first)).toBe(computeDatabaseContentDigest(second));
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
 });

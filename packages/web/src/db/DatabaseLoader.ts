@@ -6,6 +6,7 @@
  */
 
 import type { Database, SqlJsStatic } from 'sql.js';
+import { setDatabaseCacheVersion } from '../api/cache';
 import { isWASMSupported, detectWASM } from '../utils/wasm';
 import {
   DbTimingRecorder,
@@ -58,9 +59,36 @@ const INDEXEDDB_NAME = 'phage-explorer-db';
 const INDEXEDDB_STORE = 'database';
 const INDEXEDDB_VERSION = 1;
 
-// Cache keys for ETag-based conditional requests
-const MANIFEST_ETAG_KEY = 'manifest-etag';
-const MANIFEST_CACHE_KEY = 'manifest-cache';
+interface CachedDatabase {
+  version: 2;
+  data: Uint8Array;
+  contentVersion: string;
+  sha256: string;
+}
+
+/** Reject the old ambiguous hash contract rather than blessing unchecked bytes. */
+export function isDatabaseManifest(value: unknown): value is DatabaseManifest {
+  if (!value || typeof value !== 'object') return false;
+  const manifest = value as Partial<DatabaseManifest>;
+  const digest = /^[a-f0-9]{64}$/;
+  return manifest.version === 2 &&
+    typeof manifest.contentVersion === 'string' && digest.test(manifest.contentVersion) && // ubs:ignore — public cache version, not a secret comparison.
+    typeof manifest.sha256 === 'string' && digest.test(manifest.sha256) && // ubs:ignore — public artifact checksum, not authentication.
+    typeof manifest.size === 'number' && Number.isSafeInteger(manifest.size) && manifest.size >= 16 &&
+    typeof manifest.generatedAt === 'string'; // ubs:ignore — validates a public timestamp's type.
+}
+
+async function sha256(data: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', toArrayBuffer(data));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export async function verifyDatabaseBytes(data: Uint8Array, manifest: DatabaseManifest): Promise<void> {
+  if (!isDatabaseManifest(manifest)) throw new Error('Unsupported database manifest. Refresh the application.');
+  if (data.byteLength !== manifest.size || await sha256(data) !== manifest.sha256) { // ubs:ignore — these public integrity hashes contain no secret.
+    throw new Error('Database integrity check failed. The download does not match its manifest; the previous cache has been preserved.');
+  }
+}
 
 /**
  * Convert a Uint8Array view into an ArrayBuffer.
@@ -195,18 +223,22 @@ async function fetchManifestWithETag(
 ): Promise<{ manifest: DatabaseManifest | null; fromCache: boolean }> {
   let cachedEtag: string | null = null;
   let cachedManifest: DatabaseManifest | null = null;
+  const cacheKey = `manifest:${manifestUrl}`;
 
   // Cache reads are best-effort; IDB may be unavailable (private mode / quota / permissions).
   try {
-    cachedEtag = await getFromIndexedDB<string>(MANIFEST_ETAG_KEY);
-    cachedManifest = await getFromIndexedDB<DatabaseManifest>(MANIFEST_CACHE_KEY);
+    const cached = await getFromIndexedDB<{ etag: string | null; manifest: unknown }>(cacheKey);
+    if (cached && isDatabaseManifest(cached.manifest)) {
+      cachedEtag = cached.etag;
+      cachedManifest = cached.manifest;
+    }
   } catch {
     cachedEtag = null;
     cachedManifest = null;
   }
 
   const fetchWith = async (headers?: HeadersInit) =>
-    fetch(manifestUrl, { cache: 'no-cache', headers });
+    fetch(manifestUrl, { cache: 'no-cache', headers, signal: AbortSignal.timeout(10_000) });
 
   let response: Response;
   try {
@@ -241,7 +273,9 @@ async function fetchManifestWithETag(
 
   let manifest: DatabaseManifest;
   try {
-    manifest = await response.json();
+    const value: unknown = await response.json();
+    if (!isDatabaseManifest(value)) throw new Error('Unsupported database manifest');
+    manifest = value;
   } catch {
     if (cachedManifest) {
       return { manifest: cachedManifest, fromCache: true };
@@ -251,11 +285,7 @@ async function fetchManifestWithETag(
 
   // Cache writes are best-effort; a quota/IDB failure should not block the app.
   try {
-    const newEtag = response.headers.get('ETag');
-    if (newEtag) {
-      await setInIndexedDB(MANIFEST_ETAG_KEY, newEtag);
-    }
-    await setInIndexedDB(MANIFEST_CACHE_KEY, manifest);
+    await setInIndexedDB(cacheKey, { etag: response.headers.get('ETag'), manifest });
   } catch {
     // Ignore caching failures.
   }
@@ -282,6 +312,7 @@ export class DatabaseLoader {
   >();
   /** Last completed timing result (for external access) */
   private lastTiming: DbLoadTiming | null = null;
+  private updatePromise: Promise<boolean> | null = null;
 
   constructor(config: DatabaseLoaderConfig) {
     this.config = {
@@ -323,32 +354,32 @@ export class DatabaseLoader {
    */
   async checkCache(): Promise<{
     valid: boolean;
-    hash?: string;
+    entry?: CachedDatabase;
     stale?: boolean;
-    manifestHash?: string;
   }> {
     this.progress('checking', 0, 'Checking cache...');
 
     try {
       // Check if we have a cached database
-      const cachedData = await getFromIndexedDB<Uint8Array>(`${this.config.dbName}:data`);
-      const cachedHash = await getFromIndexedDB<string>(`${this.config.dbName}:hash`);
-
-      if (!cachedData || !cachedHash) {
-        return { valid: false };
-      }
+      const entry = await this.readVerifiedCache();
+      if (!entry) return { valid: false };
 
       // Try to fetch manifest with ETag support (much faster for unchanged manifests)
       const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
-      if (manifest && manifest.hash !== cachedHash) {
-        // Cache is usable but stale. We'll load it and refresh in the background.
-        return { valid: true, hash: cachedHash, stale: true, manifestHash: manifest.hash };
-      }
-
-      return { valid: true, hash: cachedHash, stale: false, manifestHash: manifest?.hash };
+      return { valid: true, entry, stale: !!manifest && manifest.contentVersion !== entry.contentVersion };
     } catch {
       return { valid: false };
     }
+  }
+
+  private async readVerifiedCache(): Promise<CachedDatabase | null> {
+    const entry = await getFromIndexedDB<CachedDatabase>(`${this.config.dbName}:snapshot`);
+    if (!entry || entry.version !== 2 || !(entry.data instanceof Uint8Array) ||
+        !this.isValidSqliteData(entry.data) ||
+        !/^[a-f0-9]{64}$/.test(entry.contentVersion) || await sha256(entry.data) !== entry.sha256) {
+      return null;
+    }
+    return entry;
   }
 
   /**
@@ -356,21 +387,12 @@ export class DatabaseLoader {
    */
   async loadFromCache(): Promise<Database | null> {
     try {
-      const cachedData = await getFromIndexedDB<Uint8Array>(`${this.config.dbName}:data`);
-      if (!cachedData) {
-        return null;
-      }
-
-      // Validate cached data has SQLite header
-      if (!this.isValidSqliteData(cachedData)) {
-        console.warn('Cached data is not valid SQLite, clearing cache');
-        await this.clearCache();
-        return null;
-      }
+      const entry = await this.readVerifiedCache();
+      if (!entry) return null;
 
       this.progress('initializing', 90, 'Initializing from cache...', true);
       const SQL = await this.getSqlJs();
-      return new SQL.Database(cachedData);
+      return new SQL.Database(entry.data);
     } catch (error) {
       console.error('Failed to load from cache:', error);
       // Clear potentially corrupted cache
@@ -559,7 +581,7 @@ export class DatabaseLoader {
   private async fetchBytes(url: string, label: string): Promise<Uint8Array> {
     let response: Response;
     try {
-      response = await fetch(url, { cache: 'no-store' });
+      response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(60_000) });
     } catch (error) {
       const offlineHint =
         typeof navigator !== 'undefined' && navigator.onLine === false
@@ -630,18 +652,19 @@ export class DatabaseLoader {
    *
    * @returns Result indicating success or quota error
    */
-  async saveToCache(db: Database, hash: string): Promise<CacheWriteResult> {
+  async saveToCache(data: Uint8Array, manifest: DatabaseManifest): Promise<CacheWriteResult> {
     try {
-      const data = db.export();
+      await verifyDatabaseBytes(data, manifest);
       const idb = await openIndexedDB();
 
       try {
-        // Write data first (largest payload)
+        // A single IDB record/transaction binds identity to the exact verified
+        // download. Exporting a live sql.js DB can change its byte layout.
         const dataResult = await safeCacheWrite(
           idb,
           INDEXEDDB_STORE,
-          `${this.config.dbName}:data`,
-          data
+          `${this.config.dbName}:snapshot`,
+          { version: 2, data, contentVersion: manifest.contentVersion, sha256: manifest.sha256 } satisfies CachedDatabase
         );
 
         if (!dataResult.success) {
@@ -651,7 +674,7 @@ export class DatabaseLoader {
                 `Tried to cache ${(data.byteLength / 1024 / 1024).toFixed(1)}MB.`
             );
             // Log storage stats for debugging
-            if (import.meta.env.DEV) {
+            if (import.meta.env?.DEV) {
               await logCacheStats();
             }
           } else {
@@ -661,24 +684,10 @@ export class DatabaseLoader {
           return dataResult;
         }
 
-        // Write hash (small payload, unlikely to fail if data succeeded)
-        const hashResult = await safeCacheWrite(
-          idb,
-          INDEXEDDB_STORE,
-          `${this.config.dbName}:hash`,
-          hash
-        );
-
         idb.close();
-
-        if (!hashResult.success) {
-          console.error('[DatabaseLoader] Failed to cache hash:', hashResult.error);
-          return hashResult;
-        }
-
-        if (import.meta.env.DEV) {
+        if (import.meta.env?.DEV) {
           console.log(
-            `[DatabaseLoader] Cached ${(data.byteLength / 1024 / 1024).toFixed(1)}MB database (hash: ${hash.slice(0, 8)}...)`
+            `[DatabaseLoader] Cached ${(data.byteLength / 1024 / 1024).toFixed(1)}MB database (version: ${manifest.contentVersion.slice(0, 8)}...)`
           );
         }
 
@@ -710,6 +719,7 @@ export class DatabaseLoader {
    * Clear the cache
    */
   async clearCache(): Promise<void> {
+    await deleteFromIndexedDB(`${this.config.dbName}:snapshot`);
     await deleteFromIndexedDB(`${this.config.dbName}:data`);
     await deleteFromIndexedDB(`${this.config.dbName}:hash`);
   }
@@ -717,21 +727,19 @@ export class DatabaseLoader {
   /**
    * Download and initialize the database
    */
-  async downloadDatabase(expectedHash?: string): Promise<{ db: Database; hash: string }> {
+  async downloadDatabase(manifest: DatabaseManifest): Promise<{ db: Database; data: Uint8Array }> {
+    if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
     this.progress('downloading', 10, 'Downloading database...');
 
     const downloadUrl = (() => {
-      if (!expectedHash) return this.config.databaseUrl;
-      if (typeof window === 'undefined') return this.config.databaseUrl;
-
       try {
-        const url = new URL(this.config.databaseUrl, window.location.href);
+        const url = new URL(this.config.databaseUrl, typeof window === 'undefined' ? undefined : window.location.href);
         // Cache-bust any service-worker CacheFirst/SWR behavior by making the request URL unique per version.
-        url.searchParams.set('v', expectedHash);
+        url.searchParams.set('v', manifest.contentVersion);
         return url.toString();
       } catch {
         const separator = this.config.databaseUrl.includes('?') ? '&' : '?';
-        return `${this.config.databaseUrl}${separator}v=${encodeURIComponent(expectedHash)}`;
+        return `${this.config.databaseUrl}${separator}v=${encodeURIComponent(manifest.contentVersion)}`;
       }
     })();
 
@@ -788,6 +796,7 @@ export class DatabaseLoader {
 
     this.timing?.setBytesDecompressed(combined.length);
     this.progress('decompressing', 60, 'Processing database...');
+    await verifyDatabaseBytes(combined, manifest);
 
     // Validate downloaded data is a valid SQLite database
     if (!this.isValidSqliteData(combined)) {
@@ -812,28 +821,13 @@ export class DatabaseLoader {
     const SQL = await this.getSqlJs();
     this.timing?.endStage('sqlJsInit');
 
-    // Calculate hash from data
-    const hashBuffer = await crypto.subtle.digest('SHA-256', toArrayBuffer(combined));
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
-
-    if (expectedHash && hash !== expectedHash) {
-      // Hash mismatch can happen when the database is updated but a service worker
-      // serves a stale cached version. Instead of failing completely, we log a warning
-      // and proceed with the downloaded data. The caller should handle cache invalidation.
-      console.warn(
-        `[DatabaseLoader] Hash mismatch (expected ${expectedHash.slice(0, 16)}…, got ${hash.slice(0, 16)}…). ` +
-          'Proceeding with downloaded database. Service worker cache may be stale.'
-      );
-    }
-
     this.timing?.startStage('dbOpen');
     const db = new SQL.Database(combined);
     // Run a simple query to warm up the database
     db.exec('SELECT 1');
     this.timing?.endStage('dbOpen');
 
-    return { db, hash };
+    return { db, data: combined };
   }
 
   /**
@@ -861,7 +855,7 @@ export class DatabaseLoader {
       const cacheStatus = await this.checkCache();
       this.timing.endStage('cacheCheck');
 
-      if (cacheStatus.valid) {
+      if (cacheStatus.valid && cacheStatus.entry) {
         const stale = cacheStatus.stale === true;
         this.progress(
           'initializing',
@@ -873,7 +867,7 @@ export class DatabaseLoader {
         this.timing.setSource('cache');
 
         this.timing.startStage('cacheRead');
-        const cachedData = await getFromIndexedDB<Uint8Array>(`${this.config.dbName}:data`);
+        const cachedData = cacheStatus.entry.data;
         this.timing.endStage('cacheRead');
 
         if (cachedData && this.isValidSqliteData(cachedData)) {
@@ -896,12 +890,13 @@ export class DatabaseLoader {
             true
           );
           this.repository = new SqlJsRepository(db);
+          setDatabaseCacheVersion(cacheStatus.entry.contentVersion);
 
           // Finalize and log timing
           this.finalizeTiming();
 
           // Check for updates in background
-          void this.checkForUpdates();
+          if (stale) void this.checkForUpdates();
 
           return this.repository;
         }
@@ -910,26 +905,21 @@ export class DatabaseLoader {
       // Cold load path
       this.timing.setCached(false);
 
-      // Try to fetch the manifest so we can cache-bust service worker DB caching and validate the hash.
-      let expectedHash: string | undefined;
-      try {
-        const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
-        expectedHash = manifest?.hash;
-      } catch {
-        expectedHash = undefined;
-      }
+      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
+      if (!manifest) throw new Error('Database manifest unavailable or unsupported. Connect to the network and refresh the application.');
 
       // Download fresh copy (timing is recorded inside downloadDatabase)
-      const { db, hash } = await this.downloadDatabase(expectedHash);
+      const { db, data } = await this.downloadDatabase(manifest);
 
       // Save to cache
       this.progress('initializing', 95, 'Saving to cache...');
       this.timing.startStage('cacheWrite');
-      await this.saveToCache(db, hash);
+      await this.saveToCache(data, manifest);
       this.timing.endStage('cacheWrite');
 
       this.progress('ready', 100, 'Database ready');
       this.repository = new SqlJsRepository(db);
+      setDatabaseCacheVersion(manifest.contentVersion);
 
       // Finalize and log timing
       this.finalizeTiming();
@@ -965,31 +955,38 @@ export class DatabaseLoader {
    * Check for database updates in background
    */
   async checkForUpdates(): Promise<boolean> {
+    if (!this.updatePromise) {
+      this.updatePromise = this.refreshCache().finally(() => { this.updatePromise = null; });
+    }
+    return this.updatePromise;
+  }
+
+  private async refreshCache(): Promise<boolean> {
     try {
       // Use ETag-based conditional request for efficient checking
-      const { manifest, fromCache } = await fetchManifestWithETag(this.config.manifestUrl);
+      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
 
       if (!manifest) {
         return false;
       }
 
-      // If we got a cached manifest via 304, no update needed
-      if (fromCache) {
-        return false;
-      }
-
-      const cachedHash = await getFromIndexedDB<string>(`${this.config.dbName}:hash`);
-
-      if (manifest.hash !== cachedHash) {
-        if (import.meta.env.DEV) {
+      const cached = await this.readVerifiedCache();
+      if (manifest.contentVersion !== cached?.contentVersion) { // ubs:ignore — compares public dataset versions, not credentials.
+        if (import.meta.env?.DEV) {
           console.log('Database update available, downloading in background...');
         }
         // Download new version
-        const { db, hash } = await this.downloadDatabase(manifest.hash);
-        await this.saveToCache(db, hash);
+        const { db, data } = await this.downloadDatabase(manifest);
+        let saved: CacheWriteResult;
+        try {
+          saved = await this.saveToCache(data, manifest);
+        } finally {
+          db.close();
+        }
+        if (!saved.success) return false;
 
         // Note: The old repository is still valid until reload
-        if (import.meta.env.DEV) {
+        if (import.meta.env?.DEV) {
           console.log('Database updated, reload to use new version');
         }
         return true;

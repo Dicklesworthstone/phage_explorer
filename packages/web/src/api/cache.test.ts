@@ -8,6 +8,8 @@ import {
   clearCache,
   generateCacheKey,
   BUILD_CACHE_VERSION,
+  setDatabaseCacheVersion,
+  withCache,
 } from './cache';
 
 /**
@@ -62,14 +64,39 @@ const originalWindow = (globalThis as { window?: unknown }).window;
 (globalThis as { window?: unknown }).window = { localStorage: storage };
 
 afterAll(() => {
+  setDatabaseCacheVersion(null);
   (globalThis as { window?: unknown }).window = originalWindow;
 });
 
 beforeEach(() => {
   storage.clear();
+  setDatabaseCacheVersion(null);
 });
 
 describe('a changed version cannot read the previous version', () => {
+  it('does not cache an in-flight result under a newly opened dataset', async () => {
+    setDatabaseCacheVersion('a'.repeat(64));
+    let finish!: (value: number) => void;
+    const pending = withCache(() => new Promise<number>(resolve => { finish = resolve; }), () => 'pending')();
+    setDatabaseCacheVersion('b'.repeat(64));
+    setCache('pending', 43);
+    finish(42);
+    expect(await pending).toBe(42);
+    expect(getCached<number>('pending')).toBe(43);
+  });
+  it('isolates analysis results when only the loaded dataset changes', () => {
+    const first = 'a'.repeat(64);
+    setDatabaseCacheVersion(first);
+    setCache('analysis', { result: 42 });
+    expect(getCached<{ result: number }>('analysis')).toEqual({ result: 42 });
+    setDatabaseCacheVersion(first);
+    expect(getCached<{ result: number }>('analysis')).toEqual({ result: 42 });
+    setDatabaseCacheVersion('b'.repeat(64));
+    expect(getCached('analysis')).toBeNull();
+    setCache('analysis', { result: 43 });
+    expect(getCached<{ result: number }>('analysis')).toEqual({ result: 43 });
+    expect(() => setDatabaseCacheVersion('invalid')).toThrow('Invalid database');
+  });
   it('misses when the version differs', () => {
     setCache('k', { source: 'real', value: 42 }, { version: 'build-1' });
     expect(getCached('k', { version: 'build-2' })).toBeNull();

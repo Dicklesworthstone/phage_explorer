@@ -242,12 +242,13 @@ describe('the release workflow ships the database', () => {
     expect(workflow).toContain('softprops/action-gh-release');
   });
 
-  it('stages both the plain and compressed database into dist', () => {
+  it('generates raw, compressed and manifest release assets from the committed database', () => {
     expect(workflow).toContain('packages/web/public/phage.db');
-    expect(workflow).toContain('packages/web/public/phage.db.gz');
-    // install.sh tries the .gz first (3.9 MB against 10.4 MB) and falls back to
-    // the plain file when gunzip is unavailable, so both must be published.
-    expect(workflow).toMatch(/cp "\$db" "\$gz" dist\//);
+    // The gzip is ignored, so requiring it in a fresh checkout breaks releases.
+    // The builder-to-browser E2E test separately executes this producer.
+    expect(workflow).toContain('bun scripts/build-web-db.ts --source "$db" --output dist');
+    expect(workflow).toContain('dist/phage.db dist/phage.db.gz dist/phage.db.manifest.json');
+    expect(workflow).not.toContain('cp "$db" "$gz" dist/');
   });
 
   it('refuses to publish without a database rather than degrading quietly', () => {
@@ -264,6 +265,7 @@ describe('the release workflow ships the database', () => {
     // A truncated SQLite download fails confusingly rather than obviously, so
     // this is the asset most worth checksumming.
     expect(workflow).toMatch(/phage-explorer-\* phage\.db phage\.db\.gz/);
+    expect(workflow).toContain('phage.db.gz phage.db.manifest.json; do');
     expect(workflow).toContain('phage.db missing from sha256.txt');
   });
 });

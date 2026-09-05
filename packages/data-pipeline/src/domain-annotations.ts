@@ -296,7 +296,13 @@ export function updateDomainAnnotations(
     );
   }
 
-  // Record annotation metadata in annotation_meta table
+  return refreshDomainAnnotationMetadata(db);
+}
+
+/** Refresh coverage from the stored annotations without rerunning or replacing calls. */
+export function refreshDomainAnnotationMetadata(
+  db: Database
+): { defenseCount: number; defensePhages: number; amgCount: number; amgPhages: number } {
   db.run(`
     CREATE TABLE IF NOT EXISTS annotation_meta (
       key TEXT PRIMARY KEY,
@@ -313,22 +319,31 @@ export function updateDomainAnnotations(
     `SELECT COUNT(*) as count, COUNT(DISTINCT phage_id) as phages FROM amg_annotations`
   ).get() ?? { count: 0, phages: 0 };
 
+  const domainDefense = db.query<{ count: number; phages: number }, []>(
+    `SELECT COUNT(*) as count, COUNT(DISTINCT phage_id) as phages FROM defense_systems WHERE source = 'pfam-domain'`
+  ).get() ?? { count: 0, phages: 0 };
+  const domainAmg = db.query<{ count: number; phages: number }, []>(
+    `SELECT COUNT(*) as count, COUNT(DISTINCT phage_id) as phages FROM amg_annotations
+     WHERE json_valid(evidence) AND json_extract(evidence, '$.source') = 'pfam-domain'`
+  ).get() ?? { count: 0, phages: 0 };
+
   const now = Date.now();
   const upsertMeta = db.prepare(`
     INSERT INTO annotation_meta (key, value, updated_at)
     VALUES (?, ?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    WHERE annotation_meta.value != excluded.value
   `);
 
   upsertMeta.run('domain_defense', JSON.stringify({
-    count: defenseStats.count,
-    phages: defenseStats.phages,
+    count: domainDefense.count,
+    phages: domainDefense.phages,
     source: 'pfam-domain',
   }), now);
 
   upsertMeta.run('domain_amg', JSON.stringify({
-    count: amgStats.count,
-    phages: amgStats.phages,
+    count: domainAmg.count,
+    phages: domainAmg.phages,
     source: 'pfam-domain',
   }), now);
 

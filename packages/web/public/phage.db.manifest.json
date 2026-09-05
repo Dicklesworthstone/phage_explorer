@@ -1,7 +1,8 @@
 {
-  "version": 1,
-  "hash": "b059622ded60d352bf1ca0fe09250cbf7e6c49160a17decae2168ec3eabc7c6a",
-  "size": 10878976,
-  "sizeFormatted": "10.4 MB",
-  "generatedAt": "2026-09-03T19:37:27.886Z"
+  "version": 2,
+  "contentVersion": "88e3079e1d0495f348526c826bc1a051ff4df3d172402d9e63e2b7fed25825c1",
+  "sha256": "c07f30d2019fea6ca5d9b5d244a5f9aea84d01e2997580a49bfa9dcb4783e9b9",
+  "size": 11202560,
+  "sizeFormatted": "10.7 MB",
+  "generatedAt": "2026-09-05T00:30:20.067Z"
 }

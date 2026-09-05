@@ -6,6 +6,7 @@
  */
 
 import { Database } from 'bun:sqlite';
+import { refreshDomainAnnotationMetadata } from './domain-annotations';
 import {
   detectAntiCrisprCandidates,
   type GeneEmbeddingInput,
@@ -72,6 +73,7 @@ export function updateAntiCrisprInDatabase(
     // precision and contain known non-Acr proteins (e.g. methyltransferases, kinases).
     // They are screening candidates, NOT confirmed defense system annotations.
     db.run(`DELETE FROM defense_systems WHERE source = 'esm2-nn'`);
+    refreshDomainAnnotationMetadata(db);
 
     // 4. Update annotation_meta with calibrated screening metadata and controls
     const metaValue = JSON.stringify({

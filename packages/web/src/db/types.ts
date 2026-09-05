@@ -163,8 +163,11 @@ export interface DatabaseLoadProgress {
  * Database manifest for cache invalidation
  */
 export interface DatabaseManifest {
-  version: number;
-  hash: string;
+  version: 2;
+  /** Logical schema + row identity, independent of SQLite page layout. */
+  contentVersion: string;
+  /** SHA-256 of the exact decompressed SQLite artifact. */
+  sha256: string;
   size: number;
   sizeFormatted?: string;
   generatedAt: string;
