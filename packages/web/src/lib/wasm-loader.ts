@@ -110,8 +110,8 @@ export interface WasmComputeModule {
   count_kmers_dense?: (seq: Uint8Array, k: number) => DenseKmerResult;
   count_kmers_dense_canonical?: (seq: Uint8Array, k: number) => DenseKmerResult;
 
-  detect_palindromes?: (seq: string, min_len: number, max_gap: number) => RepeatResult;
-  detect_tandem_repeats?: (seq: string, min_unit: number, max_unit: number, min_copies: number) => RepeatResult;
+  detect_palindromes?: (seq: string, min_len: number, max_gap: number, max_results?: number) => RepeatResult;
+  detect_tandem_repeats?: (seq: string, min_unit: number, max_unit: number, min_copies: number, max_results?: number) => RepeatResult;
 
   // --- Dot plot ---
   dotplot_self_buffers?: (seq: Uint8Array, bins: number, window: number) => DotPlotBuffers;

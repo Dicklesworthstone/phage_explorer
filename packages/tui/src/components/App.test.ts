@@ -17,8 +17,27 @@ import { GeneMap } from './GeneMap';
 import { Model3DView } from './Model3DView';
 import { FoldQuickview } from './FoldQuickview';
 import { GelView } from './GelView';
+import { RepeatOverlay } from './RepeatOverlay';
+import { computeRepeatMarks, findTerminalPalindromes } from '../overlay-computations';
 
 describe('imported terminal genome views', () => {
+  it('rejects unknown/odd-center palindrome marks and preserves real cached lengths', () => {
+    expect(computeRepeatMarks('NNNNNNNN').positions).toEqual([]);
+    expect(computeRepeatMarks('GAANTTC').positions).toEqual([]);
+    expect(findTerminalPalindromes('gaattc')).toEqual([{ pos: 1, len: 6 }]);
+    const marks = computeRepeatMarks('GAATTC');
+    expect(marks.positions).toEqual([1]);
+    expect(marks.lengths).toEqual([6]);
+    const saved = usePhageStore.getState();
+    try {
+      usePhageStore.setState({ overlayData: { repeats: marks } });
+      const rendered = stripVTControlCharacters(renderToString(React.createElement(RepeatOverlay, { sequence: 'GAATTC' }), { columns: 100 }));
+      expect(rendered).toContain('1  len=6');
+      expect(rendered).not.toContain('len=0');
+      expect(rendered).toContain('1-based starts');
+    } finally { usePhageStore.setState(saved); }
+  });
+
   it('renders a circular origin cut, correct cut count and separated ladder bands', async () => {
     const { genomes } = await importLocalGenomes({ name: 'origin.fasta', text: '>Origin digest [topology=circular]\nAATTCAAAAG\n' });
     const saved = usePhageStore.getState();

@@ -789,7 +789,7 @@ export function detect_functional_groups(positions: Float32Array, elements: stri
  * # Returns
  * RepeatResult with JSON array of {start, end, arm_length, gap, sequence}
  */
-export function detect_palindromes(seq: string, min_len: number, max_gap: number): RepeatResult;
+export function detect_palindromes(seq: string, min_len: number, max_gap: number, max_results?: number | null): RepeatResult;
 
 /**
  * Detect tandem repeats (consecutive copies of a pattern).
@@ -803,7 +803,7 @@ export function detect_palindromes(seq: string, min_len: number, max_gap: number
  * # Returns
  * RepeatResult with JSON array of {start, end, unit, copies, sequence}
  */
-export function detect_tandem_repeats(seq: string, min_unit: number, max_unit: number, min_copies: number): RepeatResult;
+export function detect_tandem_repeats(seq: string, min_unit: number, max_unit: number, min_copies: number, max_results?: number | null): RepeatResult;
 
 /**
  * Compute dotplot identity buffers for a sequence against itself.

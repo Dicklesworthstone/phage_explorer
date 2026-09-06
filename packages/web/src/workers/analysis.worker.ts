@@ -16,6 +16,10 @@ import {
   performPCA,
   simulateTranscriptionFlow,
   translateSequence,
+  detectPalindromesJS,
+  detectTandemRepeatsJS,
+  type PalindromeHit,
+  type TandemRepeatHit,
 } from '@phage-explorer/core';
 import {
   topKFromDenseCounts,
@@ -513,21 +517,19 @@ function findPromoters(sequence: string): PromoterResult {
  * Find repeat sequences
  */
 async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Promise<RepeatResult> {
+  if (!Number.isSafeInteger(minLength) || minLength < 1 || !Number.isSafeInteger(maxGap) || maxGap < 0) {
+    throw new RangeError('Repeat length must be positive and gap non-negative integers');
+  }
+  // Validate the sequence without scanning it or silently inventing zero hits.
+  detectPalindromesJS(sequence, 1, 0, 0);
   const wasm = await getWasmCompute();
   const repeats: RepeatResult['repeats'] = [];
   const seen = new Set<string>();
-  const seq = sequence.toUpperCase();
+  const seq = sequence.toUpperCase().replace(/U/g, 'T');
 
   const step = Math.max(1, Math.floor(seq.length / 500));
 
   const reverseComplement = (s: string): string => {
-    if (wasm && typeof wasm.reverse_complement === 'function') {
-      try {
-        return wasm.reverse_complement(s);
-      } catch {
-        // fallback
-      }
-    }
     const comp: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C' };
     return s.split('').reverse().map(c => comp[c] || c).join('');
   };
@@ -539,16 +541,16 @@ async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Prom
     repeats.push(repeat);
   };
 
-  // Keep the existing heuristic direct/inverted repeat scan (fast and noise-resistant).
-  // We cap this so we leave space for WASM-derived palindromes/tandem repeats.
+  // Sample non-overlapping pairs, reserving room for the detailed scans below.
   const heuristicCap = 30;
 
-  for (let i = 0; i < seq.length - minLength; i += step) {
+  for (let i = 0; i <= seq.length - minLength; i += step) {
     const pattern = seq.slice(i, i + minLength);
     if (/[^ACGT]/.test(pattern)) continue;
 
     const searchStart = Math.min(i + minLength, seq.length);
-    const searchEnd = Math.min(i + maxGap, seq.length);
+    // maxGap counts intervening bases, not distance from the first arm's start.
+    const searchEnd = Math.min(searchStart + maxGap + minLength, seq.length);
     const searchRegion = seq.slice(searchStart, searchEnd);
 
     // Direct repeats
@@ -579,133 +581,48 @@ async function findRepeats(sequence: string, minLength = 8, maxGap = 5000): Prom
     if (repeats.length >= heuristicCap) break;
   }
 
-  // Prefer WASM palindrome/tandem repeat detection when available.
-  // Bead: phage_explorer-yvs8.3
   const maxResults = 50;
-  const remaining = Math.max(0, maxResults - repeats.length);
-  let didUseWasm = false;
-
-  // Guardrails: the current Rust algorithms scan the whole sequence and can be slow/noisy on very large genomes.
-  // Keep big-phage behavior stable by falling back to heuristics only.
-  const wasmLengthThreshold = 120_000;
-
-  try {
-    const wasm = await getWasmCompute();
-    if (wasm && remaining > 0 && seq.length <= wasmLengthThreshold && typeof wasm.detect_palindromes === 'function') {
-      didUseWasm = true;
-
-      // Palindromes: treat `minLength` as a minimum total length target, but Rust takes arm length.
-      // Clamp the hairpin loop/spacer to avoid pathological work when callers pass large gaps.
-      const minArmLen = Math.max(2, Math.floor(minLength / 2));
-      const maxPalindromeGap = Math.min(50, Math.max(0, Math.floor(maxGap)));
-
-      const palResult = wasm.detect_palindromes(seq, minArmLen, maxPalindromeGap);
+  const minArmLength = Math.max(2, Math.ceil(minLength / 2));
+  const palindromeMaxGap = Math.min(50, maxGap);
+  const detailedScan = seq.length <= 120_000;
+  const detailLimit = 10;
+  let engine: RepeatResult['engine'] = 'js';
+  if (detailedScan) {
+    let palindromes: PalindromeHit[] | undefined;
+    let tandem: TandemRepeatHit[] | undefined;
+    const maxUnit = Math.max(minArmLength, Math.min(64, minLength));
+    if (wasm?.detect_palindromes && wasm.detect_tandem_repeats) {
       try {
-        const parsed: unknown = JSON.parse(palResult.json);
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            if (repeats.length >= maxResults) break;
-            if (!item || typeof item !== 'object') continue;
-
-            const start = Number((item as { start?: unknown }).start);
-            const end = Number((item as { end?: unknown }).end);
-            const sequenceStr = (item as { sequence?: unknown }).sequence;
-
-            if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-            const s = Math.max(0, Math.floor(start));
-            const e = Math.min(seq.length, Math.floor(end));
-            if (e <= s) continue;
-
-            const subseq =
-              typeof sequenceStr === 'string' && sequenceStr.length > 0
-                ? sequenceStr
-                : seq.slice(s, e);
-
-            // Filter noisy ambiguous palindromes (typically N-runs).
-            if (/[^ACGTU]/i.test(subseq)) continue;
-
-            pushRepeat({
-              type: 'palindrome',
-              position1: s,
-              sequence: subseq.toUpperCase(),
-              length: e - s,
-            });
-          }
-        }
-      } finally {
-        palResult.free();
-      }
-
-      if (repeats.length < maxResults && typeof wasm.detect_tandem_repeats === 'function') {
-        // Tandem repeats: scan for consecutive repeats of a unit of length ~minLength/2..minLength.
-        // This keeps results useful and avoids flooding the UI with tiny microsatellites.
-        const minUnit = Math.max(2, Math.floor(minLength / 2));
-        const maxUnit = Math.max(minUnit, Math.min(64, Math.floor(minLength)));
-        const minCopies = 2;
-
-        const tandemResult = wasm.detect_tandem_repeats(seq, minUnit, maxUnit, minCopies);
-        try {
-          const parsed: unknown = JSON.parse(tandemResult.json);
-          if (Array.isArray(parsed)) {
-            for (const item of parsed) {
-              if (repeats.length >= maxResults) break;
-              if (!item || typeof item !== 'object') continue;
-
-              const start = Number((item as { start?: unknown }).start);
-              const end = Number((item as { end?: unknown }).end);
-              const unit = (item as { unit?: unknown }).unit;
-              const copies = Number((item as { copies?: unknown }).copies);
-
-              if (!Number.isFinite(start) || !Number.isFinite(end) || !Number.isFinite(copies)) continue;
-              if (typeof unit !== 'string' || unit.length === 0) continue;
-
-              const s = Math.max(0, Math.floor(start));
-              const e = Math.min(seq.length, Math.floor(end));
-              if (e <= s) continue;
-
-              const unitUpper = unit.toUpperCase();
-              if (/[^ACGTU]/.test(unitUpper)) continue;
-
-              const unitLen = unitUpper.length;
-              const pos2 = s + unitLen;
-              pushRepeat({
-                type: 'tandem',
-                position1: s,
-                position2: pos2 < e ? pos2 : undefined,
-                sequence: unitUpper,
-                length: Math.max(1, Math.floor(unitLen * copies)),
-              });
-            }
-          }
-        } finally {
-          tandemResult.free();
-        }
+        const palResult = wasm.detect_palindromes(seq, minArmLength, palindromeMaxGap, detailLimit);
+        try { palindromes = JSON.parse(palResult.json) as PalindromeHit[]; }
+        finally { palResult.free(); }
+        const tandemResult = wasm.detect_tandem_repeats(seq, minArmLength, maxUnit, 2, detailLimit);
+        try { tandem = JSON.parse(tandemResult.json) as TandemRepeatHit[]; }
+        finally { tandemResult.free(); }
+        engine = getWasmComputeVariant() === 'simd' ? 'wasm-simd' : 'wasm-baseline';
+      } catch {
+        // Recompute both families so a partial WASM result cannot change coverage.
+        palindromes = undefined;
+        tandem = undefined;
       }
     }
-  } catch {
-    didUseWasm = false;
-  }
-
-  // JS fallback: re-add simple palindromes when WASM wasn't used (keeps behavior close to previous overlay).
-  if (!didUseWasm && repeats.length < maxResults) {
-    for (let i = 0; i < seq.length - minLength; i += step) {
-      const pattern = seq.slice(i, i + minLength);
-      if (/[^ACGT]/.test(pattern)) continue;
-      const revComp = reverseComplement(pattern);
-      if (pattern === revComp && repeats.length < maxResults) {
-        pushRepeat({
-          type: 'palindrome',
-          position1: i,
-          sequence: pattern,
-          length: minLength,
-        });
-      }
-      if (repeats.length >= maxResults) break;
+    palindromes ??= detectPalindromesJS(seq, minArmLength, palindromeMaxGap, detailLimit);
+    tandem ??= detectTandemRepeatsJS(seq, minArmLength, maxUnit, 2, detailLimit);
+    for (const hit of palindromes) {
+      pushRepeat({ type: hit.gap === 0 ? 'palindrome' : 'inverted', position1: hit.start,
+        position2: hit.start + hit.arm_length + hit.gap, sequence: hit.sequence,
+        length: hit.end - hit.start, armLength: hit.arm_length, gap: hit.gap });
+    }
+    for (const hit of tandem) {
+      pushRepeat({ type: 'tandem', position1: hit.start, position2: hit.start + hit.unit.length,
+        sequence: hit.unit, length: hit.end - hit.start, copies: hit.copies });
     }
   }
-
   repeats.sort((a, b) => a.position1 - b.position1);
-  return { type: 'repeats', repeats: repeats.slice(0, maxResults) };
+  return { type: 'repeats', engine, repeats: repeats.slice(0, maxResults), search: {
+    step, minLength, maxGap, minArmLength, palindromeMaxGap, detailedScan,
+    maxResults, maxPairedResults: heuristicCap, maxPerDetail: detailLimit,
+  } };
 }
 
 /**
@@ -1123,7 +1040,7 @@ async function computeAnalysisResult(request: AnalysisRequest): Promise<Analysis
     case 'promoters':
       return findPromoters(sequence);
     case 'repeats':
-      return await findRepeats(sequence, options.minLength || 8, options.maxGap || 5000);
+      return await findRepeats(sequence, options.minLength ?? 8, options.maxGap ?? 5000);
     case 'codon-usage':
       return calculateCodonUsage(sequence);
     case 'kmer-spectrum':

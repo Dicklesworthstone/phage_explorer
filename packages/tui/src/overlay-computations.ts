@@ -4,6 +4,7 @@
 import {
   detectPromoters,
   computeRegulatoryConstellation,
+  isComplementBaseCode,
   type RegulatoryConstellation,
 } from '@phage-explorer/core';
 
@@ -27,6 +28,7 @@ export interface MarkOverlay {
   label: string;
   positions: number[]; // absolute base positions of marks
   motifs?: string[]; // optional motif labels aligned to positions
+  lengths?: number[]; // repeat lengths aligned to positions
 }
 
 export interface KmerHotspot {
@@ -131,50 +133,36 @@ export function computePromoterMarks(sequence: string): MarkOverlay {
   };
 }
 
-export function computeRepeatMarks(sequence: string, minLen = 6): MarkOverlay {
-  const marks: number[] = [];
+export function findTerminalPalindromes(sequence: string, minLen = 6): Array<{ pos: number; len: number }> {
+  if (!Number.isSafeInteger(minLen) || minLen < 2) throw new RangeError('Palindrome length must be an integer of at least two bases');
+  const hits: Array<{ pos: number; len: number }> = [];
   const seq = sequence.toUpperCase();
   const len = seq.length;
 
-  // Pre-compute complement for speed
-  // (Optional, but direct charAt lookup is fast enough)
-
   for (let i = 0; i <= len - minLen; i++) {
-    // Check lengths 6 to 10
-    // We only need to find the *shortest* palindrome at this position to mark it?
-    // Or longest? The original code marked 'i' if ANY found.
-    // Optimization: Check the palindrome property directly.
-    
-    for (let l = minLen; l <= minLen + 4 && i + l <= len; l++) {
+    // Shortest zero-gap palindrome at each start within the bounded size range.
+    // A resolved DNA/RNA base cannot complement itself at an odd center.
+    for (let l = minLen + minLen % 2; l <= minLen + 4 && i + l <= len; l += 2) {
       let isPalindrome = true;
       for (let j = 0; j < Math.floor(l / 2); j++) {
-        const startChar = seq[i + j];
-        const endChar = seq[i + l - 1 - j];
-        
-        // Simple complement check without map allocation
-        let expectedEnd = '';
-        if (startChar === 'A') expectedEnd = 'T';
-        else if (startChar === 'T') expectedEnd = 'A';
-        else if (startChar === 'G') expectedEnd = 'C';
-        else if (startChar === 'C') expectedEnd = 'G';
-        else expectedEnd = startChar; // N or other matches self? Or should fail?
-        // Original logic: split().reverse().map(...) used identity for unknown.
-        // map((c) => { if(c=='A')... else return c })
-        
-        if (endChar !== expectedEnd) {
+        if (!isComplementBaseCode(seq.charCodeAt(i + j), seq.charCodeAt(i + l - 1 - j))) {
           isPalindrome = false;
           break;
         }
       }
 
       if (isPalindrome) {
-        // TUI overlays display 1-based coordinates; store marks accordingly.
-        marks.push(i + 1);
+        hits.push({ pos: i + 1, len: l });
         break; // Found one at this position, move to next pos
       }
     }
   }
-  return { id: 'repeats', label: 'Repeats/Palindromes', positions: marks };
+  return hits;
+}
+
+export function computeRepeatMarks(sequence: string, minLen = 6): MarkOverlay {
+  const hits = findTerminalPalindromes(sequence, minLen);
+  return { id: 'repeats', label: 'Repeats/Palindromes', positions: hits.map(hit => hit.pos), lengths: hits.map(hit => hit.len) };
 }
 
 // K-mer anomaly map using Jensen-Shannon divergence vs global k-mer distribution

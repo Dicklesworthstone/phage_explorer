@@ -23,7 +23,10 @@ const DESCRIPTORS: ResultDescriptors = {
     flexibleRegions: { label: 'High-score regions', units: 'records', limit: 'Thresholded model scores and zero-based coordinates; no physical flexibility units.' },
   },
   promoters: { sites: { label: 'Promoter and RBS motif hits', units: 'records', limit: 'Pattern hits and heuristic scores, capped at 100; absence does not establish absence of transcription.' } },
-  repeats: { repeats: { label: 'Sequence repeat matches', units: 'records', limit: 'Matches within algorithm length, gap and output limits; not a complete repeat annotation.' } },
+  repeats: {
+    repeats: { label: 'Sequence repeat matches', units: 'records', limit: 'Zero-based, end-exclusive coordinates. Resolved arms/units only; ambiguity is allowed in spacers. Matches are bounded, not a complete repeat annotation or a physical structure prediction.' },
+    search: { label: 'Repeat search coverage and limits', units: 'records', limit: 'Linear scan; sampled non-overlapping pairs, first matching partner, bounded detail prefixes. No circular-origin search.' },
+  },
   'codon-usage': {
     usage: { label: 'Reading-frame codon counts', units: 'count', limit: 'Frame-zero DNA triplets; ambiguous triplets are skipped without shifting the frame. Not a CDS-aware transcriptome estimate.' },
     rscu: { label: 'Relative synonymous codon usage', units: 'dimensionless', limit: 'Normalized counts within synonymous codon families; no host reference is supplied.' },
@@ -48,7 +51,7 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
     ...(type === 'gc-skew' ? { windowSize: Math.max(1, Math.floor(options.windowSize || 1000)), stepSize: Math.max(1, Math.floor((options.windowSize || 1000) / 4)), cumulativeConvention: 'inclusive per-base G-C prefix sampled at each window start' } : {}),
     ...(type === 'complexity' ? { windowSize: options.windowSize || 100, entropyNormalization: 'Shannon bits / 2; U treated as T' } : {}),
     ...(type === 'bendability' ? { windowSize: options.windowSize || 50 } : {}),
-    ...(type === 'repeats' ? { minLength: options.minLength || 8, maxGap: options.maxGap || 5000 } : {}),
+    ...(type === 'repeats' ? { minLength: options.minLength ?? 8, maxGap: options.maxGap ?? 5000 } : {}),
     ...(type === 'kmer-spectrum' ? { kmerSize: options.kmerSize ?? 6, ambiguityPolicy: 'Unknown bases break windows; U treated as T', frequencyDenominator: 'counted valid windows' } : {}),
     ...(type === 'codon-usage' ? { frame: 0, ambiguityPolicy: 'Skip non-ACGT triplets without deleting positions' } : {}),
   }) as Record<string, AnalysisJson>;
@@ -69,8 +72,10 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
       limitations: [descriptor.limit], assumptions: ['Built-in sequence-conditioned transcription rules with their default parameters.'],
     } : { label: descriptor.label, kind: 'sequence-score', units: descriptor.units, value: analysisJson(value), coverage, limitations: [descriptor.limit] };
   }
-  const engine = result.type === 'gc-skew' ? result.engine ?? 'unreported worker path' : 'worker pipeline; individual kernel path not reported';
-  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: ['codon-usage', 'kmer-spectrum', 'complexity'].includes(type) ? '2' : '1', implementation: engine }, inputs: [{
+  let engine = 'worker pipeline; individual kernel path not reported';
+  if (result.type === 'gc-skew') engine = result.engine ?? 'unreported worker path';
+  if (result.type === 'repeats') engine = `JS pair scan; ${result.engine ?? 'unreported'} detailed kernels`;
+  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: ['codon-usage', 'kmer-spectrum', 'complexity', 'repeats'].includes(type) ? '2' : '1', implementation: engine }, inputs: [{
     id: 'sequence', accession: context.accession, source: context.source,
     description: 'Exact decoded nucleotide string supplied to this worker operation; SHA-256 identifies its canonical JSON encoding.', data: sequence,
   }], parameters, seed: null, references: [{ id: 'sequence-worker-method', version: '2026-09-05', description: 'Bundled algorithm and parameter defaults; no external biological reference supplied.' }], fields });

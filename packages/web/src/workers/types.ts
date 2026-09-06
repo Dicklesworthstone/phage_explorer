@@ -245,12 +245,27 @@ export interface PromoterResult {
  */
 export interface RepeatResult {
   type: 'repeats';
+  engine?: 'js' | 'wasm-baseline' | 'wasm-simd';
+  search: {
+    step: number;
+    minLength: number;
+    maxGap: number;
+    minArmLength: number;
+    palindromeMaxGap: number;
+    detailedScan: boolean;
+    maxResults: number;
+    maxPairedResults: number;
+    maxPerDetail: number;
+  };
   repeats: Array<{
     type: 'direct' | 'inverted' | 'palindrome' | 'tandem';
     position1: number;
     position2?: number;
     sequence: string;
     length: number;
+    armLength?: number;
+    gap?: number;
+    copies?: number;
   }>;
 }
 

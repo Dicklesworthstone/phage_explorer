@@ -1598,13 +1598,17 @@ export function detect_functional_groups(positions, elements, bonds) {
  * @param {string} seq
  * @param {number} min_len
  * @param {number} max_gap
+ * @param {number | null} [max_results]
  * @returns {RepeatResult}
  */
-export function detect_palindromes(seq, min_len, max_gap) {
+export function detect_palindromes(seq, min_len, max_gap, max_results) {
     const ptr0 = passStringToWasm0(seq, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.detect_palindromes(ptr0, len0, min_len, max_gap);
-    return RepeatResult.__wrap(ret);
+    const ret = wasm.detect_palindromes(ptr0, len0, min_len, max_gap, isLikeNone(max_results) ? Number.MAX_SAFE_INTEGER : (max_results) >>> 0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return RepeatResult.__wrap(ret[0]);
 }
 
 /**
@@ -1622,13 +1626,17 @@ export function detect_palindromes(seq, min_len, max_gap) {
  * @param {number} min_unit
  * @param {number} max_unit
  * @param {number} min_copies
+ * @param {number | null} [max_results]
  * @returns {RepeatResult}
  */
-export function detect_tandem_repeats(seq, min_unit, max_unit, min_copies) {
+export function detect_tandem_repeats(seq, min_unit, max_unit, min_copies, max_results) {
     const ptr0 = passStringToWasm0(seq, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.detect_tandem_repeats(ptr0, len0, min_unit, max_unit, min_copies);
-    return RepeatResult.__wrap(ret);
+    const ret = wasm.detect_tandem_repeats(ptr0, len0, min_unit, max_unit, min_copies, isLikeNone(max_results) ? Number.MAX_SAFE_INTEGER : (max_results) >>> 0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return RepeatResult.__wrap(ret[0]);
 }
 
 /**
@@ -2240,7 +2248,7 @@ export function translate_sequence(seq, frame) {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
-export function __wbg___wbindgen_throw_bb96b2010945f0bc(arg0, arg1) {
+export function __wbg___wbindgen_throw_5d9e815e6fdf150f(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
 export function __wbg_error_757e9472f8410341(arg0, arg1) {
@@ -2254,15 +2262,15 @@ export function __wbg_error_757e9472f8410341(arg0, arg1) {
         wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
     }
 }
-export function __wbg_length_1009454859bb3e03(arg0) {
+export function __wbg_length_2ea75db9a3294a06(arg0) {
     const ret = arg0.length;
     return ret;
 }
-export function __wbg_length_36bd29c6848c2144(arg0) {
+export function __wbg_length_31bdaf014f5fbde2(arg0) {
     const ret = arg0.length;
     return ret;
 }
-export function __wbg_length_7528cf2a241bef97(arg0) {
+export function __wbg_length_8768c6f6941913e3(arg0) {
     const ret = arg0.length;
     return ret;
 }
@@ -2270,26 +2278,26 @@ export function __wbg_new_227d7c05414eb861() {
     const ret = new Error();
     return ret;
 }
-export function __wbg_new_with_length_3ffc1c56427c525c(arg0) {
+export function __wbg_new_with_length_5ffeddb9d9fbb96f(arg0) {
     const ret = new Uint8Array(arg0 >>> 0);
     return ret;
 }
-export function __wbg_new_with_length_67db5cb8cc48e371(arg0) {
+export function __wbg_new_with_length_867011e49634d0b3(arg0) {
     const ret = new Uint32Array(arg0 >>> 0);
     return ret;
 }
-export function __wbg_new_with_length_ef112d2291d8ab95(arg0) {
+export function __wbg_new_with_length_cbf540b1826ead5a(arg0) {
     const ret = new Float32Array(arg0 >>> 0);
     return ret;
 }
-export function __wbg_set_577f5f7485b6744e(arg0, arg1, arg2) {
-    arg0.set(getArrayF32FromWasm0(arg1, arg2));
+export function __wbg_set_4063c0b3fc4d4c18(arg0, arg1, arg2) {
+    arg0.set(getArrayU32FromWasm0(arg1, arg2));
 }
-export function __wbg_set_b9b5b5cb7b495037(arg0, arg1, arg2) {
+export function __wbg_set_5f2ad37e5e02dc7b(arg0, arg1, arg2) {
     arg0.set(getArrayU8FromWasm0(arg1, arg2));
 }
-export function __wbg_set_e575799cdfbae72f(arg0, arg1, arg2) {
-    arg0.set(getArrayU32FromWasm0(arg1, arg2));
+export function __wbg_set_c41f8dbc07a2190f(arg0, arg1, arg2) {
+    arg0.set(getArrayF32FromWasm0(arg1, arg2));
 }
 export function __wbg_stack_3b0d974bbf31e44f(arg0, arg1) {
     const ret = arg1.stack;
@@ -2297,6 +2305,11 @@ export function __wbg_stack_3b0d974bbf31e44f(arg0, arg1) {
     const len1 = WASM_VECTOR_LEN;
     getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
     getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
+}
+export function __wbindgen_generic_0000000000000001(arg0, arg1) {
+    // Cast intrinsic for `Ref(String) -> Externref`.
+    const ret = getStringFromWasm0(arg0, arg1);
+    return ret;
 }
 export function __wbindgen_init_externref_table() {
     const table = wasm.__wbindgen_externrefs;
@@ -2414,6 +2427,10 @@ function getUint8ArrayMemory0() {
     return cachedUint8ArrayMemory0;
 }
 
+function isLikeNone(x) {
+    return x === undefined || x === null;
+}
+
 function passArray32ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 4, 4) >>> 0;
     getUint32ArrayMemory0().set(arg, ptr / 4);
@@ -2477,6 +2494,12 @@ function passStringToWasm0(arg, malloc, realloc) {
 
     WASM_VECTOR_LEN = offset;
     return ptr;
+}
+
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_externrefs.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
 }
 
 let cachedTextDecoder = new TextDecoder('utf-8', { ignoreBOM: true, fatal: true });

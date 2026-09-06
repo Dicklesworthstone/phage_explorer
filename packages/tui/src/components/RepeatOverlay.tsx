@@ -1,28 +1,10 @@
 import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { MarkOverlay } from '../overlay-computations';
+import { findTerminalPalindromes, type MarkOverlay } from '../overlay-computations';
 
 interface Props {
   sequence: string;
-}
-
-function findPalindromes(seq: string, minLen = 6): Array<{ pos: number; len: number }> {
-  const hits: Array<{ pos: number; len: number }> = [];
-  const upper = seq.toUpperCase();
-  const revCompChar = (c: string) => (c === 'A' ? 'T' : c === 'T' ? 'A' : c === 'C' ? 'G' : c === 'G' ? 'C' : c);
-
-  for (let i = 0; i <= upper.length - minLen; i++) {
-    for (let len = minLen; len <= minLen + 4 && i + len <= upper.length; len++) {
-      const sub = upper.slice(i, i + len);
-      const rev = sub.split('').reverse().map(revCompChar).join('');
-      if (sub === rev) {
-        hits.push({ pos: i + 1, len });
-        break;
-      }
-    }
-  }
-  return hits;
 }
 
 function densitySparkline(positions: number[], genomeLength: number, bins = 60): string {
@@ -45,10 +27,10 @@ export function RepeatOverlay({ sequence }: Props): React.ReactElement {
   const overlayData = usePhageStore(s => s.overlayData.repeats) as MarkOverlay | undefined;
 
   const hits = useMemo(() => {
-    if (overlayData && 'positions' in overlayData) {
-      return overlayData.positions.map(pos => ({ pos, len: 0 }));
+    if (overlayData?.lengths && overlayData.lengths.length === overlayData.positions.length) {
+      return overlayData.positions.map((pos, index) => ({ pos, len: overlayData.lengths![index] }));
     }
-    return findPalindromes(sequence);
+    return findTerminalPalindromes(sequence);
   }, [sequence, overlayData]);
   const topHits = hits.slice(0, 12);
   const spark = useMemo(() => densitySparkline(hits.map(h => h.pos), sequence.length), [hits, sequence.length]);
@@ -73,12 +55,13 @@ export function RepeatOverlay({ sequence }: Props): React.ReactElement {
       {sequence.length === 0 ? (
         <Text color={colors.textDim}>No sequence loaded</Text>
       ) : hits.length === 0 ? (
-        <Text color={colors.textDim}>No palindromic repeats ≥6 bp detected</Text>
+        <Text color={colors.textDim}>No resolved zero-gap palindromes of 6–10 bp found</Text>
       ) : (
         <>
           <Text color={colors.textDim}>
             Density sparkline: {spark} (▁ low repeats → █ high)
           </Text>
+          <Text color={colors.textDim}>Linear, 1-based starts; shortest 6–10 bp zero-gap hit per start.</Text>
           <Text color={colors.textDim}>Total hits: {hits.length}. Showing first {topHits.length}.</Text>
           {topHits.map(hit => (
             <Text key={`${hit.pos}-${hit.len}`} color={colors.text}>

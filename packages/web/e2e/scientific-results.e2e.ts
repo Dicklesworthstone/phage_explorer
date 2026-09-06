@@ -61,6 +61,101 @@ test('restriction gel honors imported circular topology, overlapping sites and c
   } finally { await finalize(); }
 });
 
+for (const backend of ['wasm', 'javascript'] as const) test(`repeat coordinates and coverage survive the ${backend} backend`, async ({ page, baseURL }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  let workerUrl = '';
+  page.on('request', request => {
+    if (/\/assets\/analysis\.worker-[^/]+\.js$/.test(request.url())) workerUrl = request.url();
+  });
+  if (backend === 'javascript') await page.route(/\/assets\/analysis\.worker-[^/]+\.js$/, async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `WebAssembly.instantiate = async () => { throw new Error('Controlled WASM failure'); };\n${await response.text()}` });
+  });
+  const inputs = [
+    { name: 'Odd spacer', sequence: 'ACGTANNNTACGT' },
+    { name: 'Tandem copies', sequence: 'ACGAACGAACGA' },
+    { name: 'Unresolved control', sequence: 'NNNNNNNNNNNN' },
+  ];
+  try {
+    await catalog(page, baseURL!);
+    for (const input of inputs) {
+      await page.keyboard.press('Control+k');
+      const palette = page.getByTestId('overlay-commandPalette');
+      await palette.getByRole('combobox').fill('Local genomes: import or export');
+      await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).first().click();
+      const importer = page.getByTestId('overlay-genomeImport');
+      await importer.getByLabel('Paste genome data').fill(`>${input.name}\n${input.sequence}\n`);
+      await importer.getByRole('button', { name: 'Parse records', exact: true }).click();
+      await importer.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText(input.name);
+      await page.keyboard.press('r');
+      const overlay = page.getByTestId('overlay-repeats');
+      const table = overlay.getByRole('table', { name: 'Repeat matches' });
+      await expect(table).toBeVisible();
+      await expect(overlay).toContainText('1-based arm starts');
+      if (input.name === 'Odd spacer') { // ubs:ignore — public experiment label, not an authentication comparison.
+        const row = table.getByRole('row').filter({ hasText: 'Arms: 5 bp; spacer: 3 bp' });
+        await expect(row).toContainText('Inverted');
+        await expect(row.getByRole('cell').nth(1)).toHaveText('1 ↔ 9');
+        await expect(row.getByRole('cell').nth(2)).toContainText(input.sequence);
+        await expect(row.getByRole('cell').nth(3)).toHaveText('13 bp');
+      } else if (input.name === 'Tandem copies') { // ubs:ignore — public experiment label, not an authentication comparison.
+        const row = table.getByRole('row').filter({ hasText: '3 copies of 4 bp' });
+        await expect(row).toContainText('Tandem');
+        await expect(row.getByRole('cell').nth(1)).toHaveText('1 ↔ 5');
+        await expect(row.getByRole('cell').nth(3)).toHaveText('12 bp');
+      } else {
+        await expect(table).toContainText('No repeats found within these search limits');
+      }
+      const downloading = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export repeat experiment', exact: true }).click();
+      const download = await downloading;
+      const record = await parseAnalysisRecord(await readFile((await download.path())!, 'utf8'));
+      expect(record.method).toMatchObject({ id: 'sequence-repeats', version: '2' });
+      expect(record.method.implementation).toMatch(backend === 'javascript' ? /JS pair scan; js detailed/ : /JS pair scan; wasm-(baseline|simd) detailed/);
+      expect(record.inputs[0].data).toBe(input.sequence);
+      expect(record.inputs[0].source).toBe('local');
+      expect(record.fields.search.value).toMatchObject({ step: 1, minLength: 8, maxGap: 5000, palindromeMaxGap: 50, maxPerDetail: 10 });
+      if (input.name === 'Odd spacer') { // ubs:ignore — public experiment label, not an authentication comparison.
+        expect(record.fields.repeats.value).toContainEqual({ type: 'inverted', position1: 0, position2: 8, sequence: input.sequence, length: 13, armLength: 5, gap: 3 });
+      }
+      await page.keyboard.press('Escape');
+    }
+    expect(workerUrl).not.toBe('');
+    const observed = await page.evaluate(async url => {
+      const worker = new Worker(url, { type: 'module' });
+      let serial = 0;
+      const call = (request: unknown) => new Promise<any>((resolve, reject) => {
+        const id = `repeat-oracle-${serial++}`;
+        worker.onerror = event => reject(new Error(event.message));
+        worker.onmessage = event => {
+          if (event.data.id !== id) return;
+          if (event.data.type !== 'RAW') reject(new Error(JSON.stringify(event.data)));
+          else resolve(event.data.value);
+        };
+        worker.postMessage({ id, type: 'APPLY', path: ['runAnalysis'], argumentList: [{ type: 'RAW', value: request }] });
+      });
+      try {
+        const adjacent = await call({ type: 'repeats', sequence: 'ACGAACGA', options: { minLength: 4, maxGap: 0 } });
+        const lastPartner = await call({ type: 'repeats', sequence: 'ACGACACGA', options: { minLength: 4, maxGap: 1 } });
+        const invalid = [];
+        for (const minLength of [0, -1, 1.5]) {
+          try { await call({ type: 'repeats', sequence: 'ACGT', options: { minLength } }); invalid.push('accepted'); }
+          catch (error) { invalid.push(String(error)); }
+        }
+        return { adjacent, lastPartner, invalid };
+      } finally { worker.terminate(); }
+    }, workerUrl);
+    expect(observed.adjacent.engine).toMatch(backend === 'javascript' ? /^js$/ : /^wasm-(simd|baseline)$/);
+    expect(observed.adjacent.search).toMatchObject({ step: 1, maxGap: 0, palindromeMaxGap: 0, detailedScan: true, maxResults: 50 });
+    expect(observed.adjacent.repeats.filter((hit: any) => hit.type === 'direct')).toEqual([{ type: 'direct', position1: 0, position2: 4, sequence: 'ACGA', length: 4 }]);
+    expect(observed.lastPartner.repeats.filter((hit: any) => hit.type === 'direct')).toEqual([{ type: 'direct', position1: 0, position2: 5, sequence: 'ACGA', length: 4 }]);
+    expect(observed.invalid.every((error: string) => error !== 'accepted')).toBe(true);
+    await info.attach('repeat-oracles', { body: JSON.stringify({ inputs, backend, observed }), contentType: 'application/json' });
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 for (const backend of ['wasm', 'javascript'] as const) test(`sequence workers preserve ambiguity boundaries under ${backend}`, async ({ page, baseURL }, info) => {
   const { pageErrors, finalize } = setupTestHarness(page, info);
   let workerUrl = '';

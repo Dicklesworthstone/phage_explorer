@@ -9,13 +9,15 @@ test('every worker result property has an evidence adapter and retains its paylo
     { type: 'gc-skew', skew: [0, -1], cumulative: [1, 0], originPosition: 1, terminusPosition: 0, engine: 'js' },
     { type: 'complexity', entropy: [1], linguistic: [0.5], lowComplexityRegions: [] },
     { type: 'bendability', values: [0.35], flexibleRegions: [] },
-    { type: 'promoters', sites: [] }, { type: 'repeats', repeats: [] },
+    { type: 'promoters', sites: [] },
+    { type: 'repeats', repeats: [], search: { step: 1, minLength: 8, maxGap: 0, minArmLength: 4, palindromeMaxGap: 0, detailedScan: true, maxResults: 50, maxPairedResults: 30, maxPerDetail: 10 } },
     { type: 'codon-usage', usage: { ATG: 1 }, rscu: { ATG: 1 } },
     { type: 'kmer-spectrum', kmerSize: 2, spectrum: [{ kmer: 'GC', count: 1, frequency: 1 }], uniqueKmers: 1, totalKmers: 1 },
     { type: 'transcription-flow', values: [0.1], peaks: [] },
   ];
   for (const fixture of fixtures) {
-    const record = await createWorkerAnalysisRecord(fixture, 'GCATN', { windowSize: 4 }, { accession: 'PRIVATE', source: 'local' }, 'shared');
+    const options = fixture.type === 'repeats' ? { minLength: 8, maxGap: 0 } : { windowSize: 4 };
+    const record = await createWorkerAnalysisRecord(fixture, 'GCATN', options, { accession: 'PRIVATE', source: 'local' }, 'shared');
     expect(await parseAnalysisRecord(serializeAnalysisRecord(record))).toEqual(record);
     for (const [name, value] of Object.entries(fixture)) if (name !== 'type' && name !== 'engine') expect(record.fields[name].value).toEqual(value);
     expect(record.inputs[0].data).toBe('GCATN');
@@ -25,6 +27,10 @@ test('every worker result property has an evidence adapter and retains its paylo
       expect(record.fields.cumulative.units).toBe('count');
     }
     if (fixture.type === 'codon-usage') expect(record.fields.cai.kind).toBe('unavailable');
+    if (fixture.type === 'repeats') {
+      expect(record.fields.search.value).toEqual(fixture.search);
+      expect(record.parameters.maxGap).toBe(0);
+    }
     if (fixture.type === 'complexity') expect(record.fields.entropy.units).toBe('fraction');
     if (fixture.type === 'transcription-flow') expect(record.fields.values.kind).toBe('simulation');
   }

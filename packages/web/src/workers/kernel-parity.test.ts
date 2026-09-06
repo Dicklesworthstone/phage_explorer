@@ -490,6 +490,36 @@ for (const { name, wasm } of variants) {
     });
   });
 
+  describe(`repeat coordinates and bounds [${name}]`, () => {
+    it('preserves unknown Unicode characters without invalid UTF-8', () => {
+      expect(wasm.reverse_complement('ACé')).toBe('éGT');
+      expect(wasm.reverse_complement('🧬aRy')).toBe('rYt🧬');
+    });
+    it('finds odd spacers without fabricating extra gap values', () => {
+      for (const gap of [0, 1, 3, 5]) {
+        const sequence = 'ACGTA' + 'N'.repeat(gap) + 'TACGT';
+        const result = wasm.detect_palindromes(sequence, 5, gap + 1);
+        try {
+          expect(JSON.parse(result.json)).toEqual([{ start: 0, end: sequence.length, arm_length: 5, gap, sequence }]);
+        } finally { result.free(); }
+      }
+    });
+    it('returns bounded prefixes and excludes unresolved tandem units', () => {
+      const sequence = 'AC'.repeat(100);
+      const tandem = wasm.detect_tandem_repeats(sequence, 2, 4, 2, 2);
+      const palindrome = wasm.detect_palindromes('AT'.repeat(100), 2, 5, 2);
+      const unknown = wasm.detect_tandem_repeats('NNNNNNNN', 2, 4, 2);
+      try {
+        expect(JSON.parse(tandem.json)).toEqual(detectTandemRepeatsJS(sequence, 2, 4, 2).slice(0, 2));
+        expect(JSON.parse(palindrome.json)).toEqual(detectPalindromesJS('AT'.repeat(100), 2, 5).slice(0, 2));
+        expect(JSON.parse(unknown.json)).toEqual([]);
+      } finally { tandem.free(); palindrome.free(); unknown.free(); }
+      expect(() => wasm.detect_palindromes('ACGT', 0, 0)).toThrow();
+      expect(() => wasm.detect_tandem_repeats('ACGT', 0, 4, 2)).toThrow();
+      expect(() => wasm.detect_palindromes('AA"TT', 1, 3)).toThrow();
+    });
+  });
+
   describe(`scan_kl_windows invariants & discrimination [${name}]`, () => {
     it('computes non-negative KL divergence values at valid window intervals', () => {
       const bytes = encode(SEQ.slice(0, 500));

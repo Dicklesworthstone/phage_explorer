@@ -1,9 +1,9 @@
 /**
  * Exact JavaScript reference implementations for repeat detection.
  *
- * Implements bit-for-bit parity with WASM kernels:
- * - `detect_palindromes(seq, min_len, max_gap)`
- * - `detect_tandem_repeats(seq, min_unit, max_unit, min_copies)`
+ * Coordinates are zero-based, end-exclusive. Arms/units must be resolved bases;
+ * IUPAC ambiguity is permitted in spacers. Optional limits return a deterministic
+ * prefix without constructing the full result on highly repetitive inputs.
  *
  * @see phage_explorer-lru9
  */
@@ -22,6 +22,11 @@ export interface TandemRepeatHit {
   unit: string;
   copies: number;
   sequence: string;
+}
+
+function validateRepeatInput(seq: string, maxResults: number): void {
+  if (!/^[ACGTURYSWKMBDHVN]*$/i.test(seq)) throw new RangeError('Repeat input must contain only DNA/RNA IUPAC bases');
+  if (!Number.isSafeInteger(maxResults) || maxResults < 0) throw new RangeError('Repeat result limit must be a non-negative integer');
 }
 
 /**
@@ -47,34 +52,27 @@ export function isComplementBaseCode(a: number, b: number): boolean {
  * @param minLen - Minimum arm length
  * @param maxGap - Maximum spacer gap between arms
  */
-export function detectPalindromesJS(seq: string, minLen: number, maxGap: number): PalindromeHit[] {
-  const bytes = new TextEncoder().encode(seq);
-  const n = bytes.length;
+export function detectPalindromesJS(seq: string, minLen: number, maxGap: number, maxResults = Number.MAX_SAFE_INTEGER): PalindromeHit[] {
+  validateRepeatInput(seq, maxResults);
+  if (!Number.isSafeInteger(minLen) || minLen < 1 || !Number.isSafeInteger(maxGap) || maxGap < 0) {
+    throw new RangeError('Repeat arm length must be positive and spacer length non-negative integers');
+  }
+  const n = seq.length;
   const results: PalindromeHit[] = [];
 
-  if (n < minLen * 2) {
+  if (minLen > Math.floor(n / 2) || maxResults === 0) {
     return results;
   }
 
-  for (let center = minLen; center <= n - minLen; center++) {
-    for (let gap = 0; gap <= maxGap; gap++) {
-      const halfGap = Math.floor(gap / 2);
-      if (center < minLen + halfGap || center + halfGap + minLen > n) {
-        continue;
-      }
-
+  // The boundary after the left arm also starts the spacer, even for odd gaps.
+  for (let leftEnd = minLen; leftEnd <= n - minLen; leftEnd++) {
+    for (let gap = 0; gap <= Math.min(maxGap, n - leftEnd - minLen); gap++) {
       let armLen = 0;
-      const limit = Math.min(n - center - halfGap, center - halfGap);
+      const rightStart = leftEnd + gap;
+      const limit = Math.min(n - rightStart, leftEnd);
 
       for (let offset = 0; offset < limit; offset++) {
-        const leftIdx = center - halfGap - offset - 1;
-        const rightIdx = center + halfGap + offset;
-
-        if (rightIdx >= n) {
-          break;
-        }
-
-        if (isComplementBaseCode(bytes[leftIdx], bytes[rightIdx])) {
+        if (isComplementBaseCode(seq.charCodeAt(leftEnd - offset - 1), seq.charCodeAt(rightStart + offset))) {
           armLen = offset + 1;
         } else {
           break;
@@ -82,8 +80,8 @@ export function detectPalindromesJS(seq: string, minLen: number, maxGap: number)
       }
 
       if (armLen >= minLen) {
-        const start = center - halfGap - armLen;
-        const end = center + halfGap + armLen;
+        const start = leftEnd - armLen;
+        const end = rightStart + armLen;
         const subseq = seq.slice(start, end);
 
         results.push({
@@ -93,6 +91,7 @@ export function detectPalindromesJS(seq: string, minLen: number, maxGap: number)
           gap,
           sequence: subseq,
         });
+        if (results.length >= maxResults) return results;
       }
     }
   }
@@ -114,12 +113,17 @@ export function detectTandemRepeatsJS(
   seq: string,
   minUnit: number,
   maxUnit: number,
-  minCopies: number
+  minCopies: number,
+  maxResults = Number.MAX_SAFE_INTEGER
 ): TandemRepeatHit[] {
+  validateRepeatInput(seq, maxResults);
+  if (!Number.isSafeInteger(minUnit) || minUnit < 1 || !Number.isSafeInteger(maxUnit) || maxUnit < minUnit || !Number.isSafeInteger(minCopies) || minCopies < 2) {
+    throw new RangeError('Repeat unit bounds must be positive integers and minimum copies at least two');
+  }
   const n = seq.length;
   const results: TandemRepeatHit[] = [];
 
-  if (n < minUnit * minCopies) {
+  if (minUnit > Math.floor(n / minCopies) || maxResults === 0) {
     return results;
   }
 
@@ -129,6 +133,7 @@ export function detectTandemRepeatsJS(
     const maxU = Math.min(maxUnit, n - start);
     for (let unitLen = minUnit; unitLen <= maxU; unitLen++) {
       const unit = upper.slice(start, start + unitLen);
+      if (/[^ACGTU]/.test(unit)) continue;
       let copies = 1;
       let pos = start + unitLen;
 
@@ -153,6 +158,7 @@ export function detectTandemRepeatsJS(
           copies,
           sequence: subseq,
         });
+        if (results.length >= maxResults) return results;
       }
     }
   }

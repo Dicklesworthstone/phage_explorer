@@ -80,37 +80,35 @@ pub fn translate_sequence(seq: &str, frame: u8) -> String {
 /// Reverse complement sequence (preserving case).
 #[wasm_bindgen]
 pub fn reverse_complement(seq: &str) -> String {
-    let bytes = seq.as_bytes();
-    let mut result = Vec::with_capacity(bytes.len());
+    let mut result = String::with_capacity(seq.len());
 
-    // Process in reverse
-    for &b in bytes.iter().rev() {
-        let comp = match b {
+    // Reverse characters, not UTF-8 bytes: unknown characters stay intact.
+    for base in seq.chars().rev() {
+        let comp = match base {
             // Standard bases
-            b'A' => b'T', b'T' => b'A', b'G' => b'C', b'C' => b'G',
-            b'a' => b't', b't' => b'a', b'g' => b'c', b'c' => b'g',
+            'A' => 'T', 'T' => 'A', 'G' => 'C', 'C' => 'G',
+            'a' => 't', 't' => 'a', 'g' => 'c', 'c' => 'g',
             // IUPAC ambiguity codes
-            b'N' => b'N', b'n' => b'n',
-            b'R' => b'Y', b'r' => b'y', // Purine (A/G) -> Pyrimidine (T/C)
-            b'Y' => b'R', b'y' => b'r',
-            b'S' => b'S', b's' => b's', // Strong (G/C)
-            b'W' => b'W', b'w' => b'w', // Weak (A/T)
-            b'K' => b'M', b'k' => b'm', // Keto (G/T) -> Amino (A/C)
-            b'M' => b'K', b'm' => b'k',
-            b'B' => b'V', b'b' => b'v', // Not A -> Not T
-            b'V' => b'B', b'v' => b'b',
-            b'D' => b'H', b'd' => b'h', // Not C -> Not G
-            b'H' => b'D', b'h' => b'd',
+            'N' => 'N', 'n' => 'n',
+            'R' => 'Y', 'r' => 'y', // Purine (A/G) -> Pyrimidine (T/C)
+            'Y' => 'R', 'y' => 'r',
+            'S' => 'S', 's' => 's', // Strong (G/C)
+            'W' => 'W', 'w' => 'w', // Weak (A/T)
+            'K' => 'M', 'k' => 'm', // Keto (G/T) -> Amino (A/C)
+            'M' => 'K', 'm' => 'k',
+            'B' => 'V', 'b' => 'v', // Not A -> Not T
+            'V' => 'B', 'v' => 'b',
+            'D' => 'H', 'd' => 'h', // Not C -> Not G
+            'H' => 'D', 'h' => 'd',
             // U (RNA) treated as T
-            b'U' => b'A', b'u' => b'a',
+            'U' => 'A', 'u' => 'a',
             // Unknown - keep as is
             other => other,
         };
         result.push(comp);
     }
 
-    // SAFETY: We only transform ASCII characters to ASCII
-    unsafe { String::from_utf8_unchecked(result) }
+    result
 }
 
 /// Calculate GC content percentage.
@@ -988,8 +986,8 @@ pub fn minhash_jaccard_from_signatures(sig_a: &[u32], sig_b: &[u32]) -> f64 {
     }
 
     // Check for empty signatures (all MAX)
-    let empty_a = sig_a.iter().all(|&v| v == u32::MAX);
-    let empty_b = sig_b.iter().all(|&v| v == u32::MAX);
+    let empty_a = sig_a.iter().all(|&v| v == u32::MAX); // ubs:ignore — public MinHash empty sentinel, not a signature authentication check.
+    let empty_b = sig_b.iter().all(|&v| v == u32::MAX); // ubs:ignore — public MinHash empty sentinel, not a signature authentication check.
     if empty_a || empty_b {
         return 0.0;
     }
@@ -1882,33 +1880,30 @@ impl RepeatResult {
 /// # Returns
 /// RepeatResult with JSON array of {start, end, arm_length, gap, sequence}
 #[wasm_bindgen]
-pub fn detect_palindromes(seq: &str, min_len: usize, max_gap: usize) -> RepeatResult {
+pub fn detect_palindromes(seq: &str, min_len: usize, max_gap: usize, max_results: Option<usize>) -> Result<RepeatResult, String> {
+    validate_repeat_input(seq)?;
+    if min_len == 0 {
+        return Err("Repeat arm length must be positive".to_string());
+    }
     let bytes = seq.as_bytes();
     let n = bytes.len();
+    let limit = max_results.unwrap_or(usize::MAX);
     let mut results: Vec<String> = Vec::new();
 
-    if n < min_len * 2 {
-        return RepeatResult { json: "[]".to_string() };
+    if min_len > n / 2 || limit == 0 {
+        return Ok(RepeatResult { json: "[]".to_string() });
     }
 
-    // Check every potential center position
-    for center in min_len..(n - min_len + 1) {
-        for gap in 0..=max_gap {
-            if center < min_len + gap / 2 || center + gap / 2 + min_len > n {
-                continue;
-            }
-
-            let half_gap = gap / 2;
+    // Boundary after the left arm / before the spacer (including odd gaps).
+    for left_end in min_len..=n - min_len {
+        for gap in 0..=max_gap.min(n - left_end - min_len) {
+            let right_start = left_end + gap;
             let mut arm_len = 0;
 
             // Expand outward checking for complementary bases
-            for offset in 0..min_len.max((n - center - half_gap).min(center - half_gap)) {
-                let left_idx = center - half_gap - offset - 1;
-                let right_idx = center + half_gap + offset;
-
-                if right_idx >= n {
-                    break;
-                }
+            for offset in 0..(n - right_start).min(left_end) {
+                let left_idx = left_end - offset - 1;
+                let right_idx = right_start + offset;
 
                 let left_base = bytes[left_idx];
                 let right_base = bytes[right_idx];
@@ -1921,21 +1916,32 @@ pub fn detect_palindromes(seq: &str, min_len: usize, max_gap: usize) -> RepeatRe
             }
 
             if arm_len >= min_len {
-                let start = center - half_gap - arm_len;
-                let end = center + half_gap + arm_len;
+                let start = left_end - arm_len;
+                let end = right_start + arm_len;
                 let subseq = std::str::from_utf8(&bytes[start..end]).unwrap_or("");
 
                 results.push(format!(
                     "{{\"start\":{},\"end\":{},\"arm_length\":{},\"gap\":{},\"sequence\":\"{}\"}}",
                     start, end, arm_len, gap, subseq
                 ));
+                if results.len() >= limit {
+                    return Ok(RepeatResult { json: format!("[{}]", results.join(",")) });
+                }
             }
         }
     }
 
-    RepeatResult {
+    Ok(RepeatResult {
         json: format!("[{}]", results.join(",")),
+    })
+}
+
+// Keeps byte offsets equal to base coordinates and JSON sequence fields safe.
+fn validate_repeat_input(seq: &str) -> Result<(), String> {
+    if !seq.bytes().all(|base| b"ACGTURYSWKMBDHVN".contains(&base.to_ascii_uppercase())) {
+        return Err("Repeat input must contain only DNA/RNA IUPAC bases".to_string());
     }
+    Ok(())
 }
 
 /// Check if two bases are complements
@@ -1963,13 +1969,19 @@ pub fn detect_tandem_repeats(
     min_unit: usize,
     max_unit: usize,
     min_copies: usize,
-) -> RepeatResult {
+    max_results: Option<usize>,
+) -> Result<RepeatResult, String> {
+    validate_repeat_input(seq)?;
+    if min_unit == 0 || max_unit < min_unit || min_copies < 2 {
+        return Err("Repeat unit bounds must be positive and minimum copies at least two".to_string());
+    }
     let bytes = seq.as_bytes();
     let n = bytes.len();
+    let limit = max_results.unwrap_or(usize::MAX);
     let mut results: Vec<String> = Vec::new();
 
-    if n < min_unit * min_copies {
-        return RepeatResult { json: "[]".to_string() };
+    if min_unit > n / min_copies || limit == 0 {
+        return Ok(RepeatResult { json: "[]".to_string() });
     }
 
     // For each starting position
@@ -1977,6 +1989,9 @@ pub fn detect_tandem_repeats(
         // For each unit length
         for unit_len in min_unit..=max_unit.min(n - start) {
             let unit = &bytes[start..start + unit_len];
+            if !unit.iter().all(|base| b"ACGTU".contains(&base.to_ascii_uppercase())) {
+                continue;
+            }
 
             // Count consecutive copies
             let mut copies = 1;
@@ -2001,18 +2016,60 @@ pub fn detect_tandem_repeats(
                     "{{\"start\":{},\"end\":{},\"unit\":\"{}\",\"copies\":{},\"sequence\":\"{}\"}}",
                     start, end, unit_str, copies, subseq
                 ));
+                if results.len() >= limit {
+                    return Ok(RepeatResult { json: format!("[{}]", results.join(",")) });
+                }
             }
         }
     }
 
-    RepeatResult {
+    Ok(RepeatResult {
         json: format!("[{}]", results.join(",")),
-    }
+    })
 }
 
 // ============================================================================
 // GC Skew and Sequence Complexity
 // ============================================================================
+
+#[cfg(test)]
+mod repeat_coordinate_tests {
+    use super::*;
+
+    #[test]
+    fn reverse_complement_preserves_valid_utf8() {
+        // Safely demonstrates the old byte-reversal defect without creating an invalid String.
+        let reversed_bytes: Vec<u8> = "ACé".bytes().rev().collect();
+        assert!(String::from_utf8(reversed_bytes).is_err());
+        assert_eq!(reverse_complement("ACé"), "éGT");
+        assert_eq!(reverse_complement("🧬aRy"), "rYt🧬");
+        assert_eq!(reverse_complement("AaCGTN"), "NACGtT");
+    }
+
+    #[test]
+    fn odd_spacer_is_preserved_with_half_open_coordinates() {
+        let result = detect_palindromes("ACGTANNNTACGT", 5, 4, None).unwrap();
+        assert_eq!(result.json, r#"[{"start":0,"end":13,"arm_length":5,"gap":3,"sequence":"ACGTANNNTACGT"}]"#);
+        let zero_gap = detect_palindromes("ACGTATACGT", 5, 1, None).unwrap();
+        assert_eq!(zero_gap.json, r#"[{"start":0,"end":10,"arm_length":5,"gap":0,"sequence":"ACGTATACGT"}]"#);
+    }
+
+    #[test]
+    fn repeat_bounds_and_invalid_inputs_do_not_overflow_or_loop() {
+        assert!(detect_palindromes("ACGT", 0, 0, None).is_err());
+        assert!(detect_tandem_repeats("ACGT", 0, 4, 2, None).is_err());
+        assert!(detect_tandem_repeats("ACGT", 2, 1, 2, None).is_err());
+        assert!(detect_palindromes("AA\"TT", 1, 3, None).is_err());
+        assert!(detect_palindromes("AAéTT", 1, 3, None).is_err());
+        assert_eq!(detect_palindromes("ACGT", usize::MAX, usize::MAX, None).unwrap().json, "[]");
+        assert_eq!(detect_tandem_repeats("ACGT", usize::MAX, usize::MAX, 2, None).unwrap().json, "[]");
+        assert_eq!(detect_palindromes("ACGT", 2, usize::MAX, None).unwrap().json,
+            r#"[{"start":0,"end":4,"arm_length":2,"gap":0,"sequence":"ACGT"}]"#);
+        assert_eq!(detect_tandem_repeats("NNNNNNNN", 2, 4, 2, None).unwrap().json, "[]");
+        assert_eq!(detect_tandem_repeats("ACACAC", 2, 2, 2, Some(1)).unwrap().json,
+            r#"[{"start":0,"end":6,"unit":"AC","copies":3,"sequence":"ACACAC"}]"#);
+    }
+}
 
 /// Compute GC skew using a sliding window.
 ///
@@ -3144,7 +3201,7 @@ fn detect_phosphates(
         if idx >= element_bytes.len() {
             continue;
         }
-        if element_bytes[idx] != b'P' && element_bytes[idx] != b'p' {
+        if element_bytes[idx] != b'P' && element_bytes[idx] != b'p' { // ubs:ignore — public atom element symbol, not a credential comparison.
             continue;
         }
 
@@ -4921,7 +4978,7 @@ mod sequence_handle_tests {
         assert_eq!(sig.signature.len(), 128);
         assert_eq!(sig.k, 3);
         // Signature should have some actual values (not all MAX)
-        assert!(sig.signature.iter().any(|&v| v != u32::MAX));
+        assert!(sig.signature.iter().any(|&v| v != u32::MAX)); // ubs:ignore — test of a public MinHash sentinel, not credential verification.
     }
 
     #[test]
