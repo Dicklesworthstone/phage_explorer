@@ -4,6 +4,63 @@ import { createHash } from 'node:crypto';
 import { setupTestHarness } from './e2e-harness';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 
+test('restriction gel honors imported circular topology, overlapping sites and combined cuts', async ({ page, baseURL }, info) => {
+  const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);
+  const inputs = [
+    { name: 'Origin digest', sequence: 'AATTCAAAAG', topology: 'circular' },
+    { name: 'Overlap digest', sequence: 'GCGGCCGCGGCCGC', topology: 'linear' },
+    { name: 'Combined digest', sequence: 'GAATTCGATCGATC', topology: 'linear' },
+    { name: 'Ambiguous digest', sequence: 'GGACCTTTTGGTCCAAAA', topology: 'linear' },
+  ];
+  try {
+    await catalog(page, baseURL!);
+    for (const input of inputs) {
+      await page.keyboard.press('Control+k');
+      const palette = page.getByTestId('overlay-commandPalette');
+      await palette.getByRole('combobox').fill('Local genomes: import or export');
+      await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).first().click();
+      const importer = page.getByTestId('overlay-genomeImport');
+      await importer.getByLabel('Paste genome data').fill(`>${input.name} [topology=${input.topology}]\n${input.sequence}\n`);
+      await importer.getByRole('button', { name: 'Parse records', exact: true }).click();
+      await importer.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText(input.name);
+      await page.keyboard.press('Alt+g');
+      const gel = page.getByTestId('overlay-gel');
+      await expect(gel.getByLabel('Molecule topology:')).toHaveValue(input.topology);
+      // Explicitly select each experiment; enzyme selections persist between genomes.
+      for (const button of await gel.getByRole('button', { pressed: true }).all()) await button.click();
+      const sizes = gel.getByRole('region', { name: 'Digest fragment sizes' });
+      if (input.name === 'Origin digest') { // ubs:ignore — public experiment name, not a cryptographic digest or secret.
+        await gel.getByRole('button', { name: 'EcoRI (1)', exact: true }).click();
+        await expect(gel).toContainText('1 cut → 1 fragment');
+        await expect(sizes).toContainText('10 bp');
+        await gel.getByLabel('Molecule topology:').selectOption('linear');
+        await expect(gel.getByRole('button', { name: 'EcoRI (0)', exact: true })).toBeVisible();
+        await expect(gel).toContainText('0 cuts → 1 fragment');
+        await gel.getByLabel('Molecule topology:').selectOption('circular');
+        await expect(gel).toContainText('1 cut → 1 fragment');
+      } else if (input.name === 'Overlap digest') { // ubs:ignore — public experiment name, not a cryptographic digest or secret.
+        await gel.getByRole('button', { name: 'NotI (2)', exact: true }).click();
+        await expect(gel).toContainText('2 cuts → 3 fragments');
+        await expect(sizes.locator('span')).toHaveText(['6 bp', '6 bp', '2 bp']);
+      } else if (input.name === 'Combined digest') { // ubs:ignore — public experiment name, not a cryptographic digest or secret.
+        await gel.getByRole('button', { name: 'EcoRI (1)', exact: true }).click();
+        await gel.getByRole('button', { name: 'MboI (2)', exact: true }).click();
+        await expect(gel).toContainText('3 cuts → 4 fragments');
+        await expect(sizes.locator('span')).toHaveText(['5 bp', '4 bp', '4 bp', '1 bp']);
+      } else {
+        await gel.getByRole('button', { name: 'AvaII (2)', exact: true }).click();
+        await expect(sizes.locator('span')).toHaveText(['9 bp', '8 bp', '1 bp']);
+      }
+      await expect(gel.getByRole('img', { name: 'Virtual gel electrophoresis visualization' })).toBeVisible();
+      await page.keyboard.press('Escape');
+    }
+    await info.attach('restriction-inputs', { body: JSON.stringify(inputs.map(input => ({ ...input, sha256: createHash('sha256').update(input.sequence).digest('hex') }))), contentType: 'application/json' });
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 for (const backend of ['wasm', 'javascript'] as const) test(`sequence workers preserve ambiguity boundaries under ${backend}`, async ({ page, baseURL }, info) => {
   const { pageErrors, finalize } = setupTestHarness(page, info);
   let workerUrl = '';

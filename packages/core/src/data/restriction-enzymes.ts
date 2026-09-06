@@ -4,7 +4,7 @@
  * Common restriction enzymes used in molecular biology.
  * Includes recognition sites and cut offsets.
  * Site format: 5'-...-3'
- * Cut offset: index after which cut occurs on forward strand.
+ * Cut offset: number of bases before the cut on the forward strand.
  *
  * Based on NEB/neb.com
  */
@@ -12,7 +12,7 @@
 export interface RestrictionEnzyme {
   name: string;
   site: string;
-  cutOffset: number; // 0-based index after which cut occurs
+  cutOffset: number; // Boundary offset from the recognition site's start
   overhang: '5' | '3' | 'blunt';
 }
 
@@ -30,6 +30,9 @@ export const RESTRICTION_ENZYMES: RestrictionEnzyme[] = [
   { name: 'SmaI', site: 'CCCGGG', cutOffset: 3, overhang: 'blunt' },
   { name: 'ClaI', site: 'ATCGAT', cutOffset: 2, overhang: '5' },
   { name: 'EcoRV', site: 'GATATC', cutOffset: 3, overhang: 'blunt' },
+  { name: 'NcoI', site: 'CCATGG', cutOffset: 1, overhang: '5' },
+  { name: 'NdeI', site: 'CATATG', cutOffset: 2, overhang: '5' },
+  { name: 'XhoI', site: 'CTCGAG', cutOffset: 1, overhang: '5' },
   
   // 4-cutters (Frequent)
   { name: 'AluI', site: 'AGCT', cutOffset: 2, overhang: 'blunt' },
@@ -51,7 +54,7 @@ export function expandSiteRegex(site: string): RegExp {
   const map: Record<string, string> = {
     A: 'A', C: 'C', G: 'G', T: 'T',
     R: '[AG]', Y: '[CT]', M: '[AC]', K: '[GT]', S: '[GC]', W: '[AT]',
-    H: '[ACT]', B: '[GCT]', V: '[GAC]', D: '[GAT]', N: '.'
+    H: '[ACT]', B: '[GCT]', V: '[GAC]', D: '[GAT]', N: '[ACGT]'
   };
   
   const regexStr = site.toUpperCase().split('').map(c => map[c] ?? escapeRegexLiteral(c)).join('');

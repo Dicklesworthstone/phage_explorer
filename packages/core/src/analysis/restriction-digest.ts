@@ -21,40 +21,58 @@ export interface DigestResult {
 }
 
 /**
- * Digest a genome with a single enzyme
+ * Definite cuts on the supplied strand for the catalog's palindromic sites.
+ * Coordinates are boundaries between bases, in [0, length] for linear DNA and
+ * [0, length) for circular DNA. Unresolved sequence bases do not imply a cut.
  */
-export function digestGenome(
+export function findRestrictionCutSites(
   sequence: string,
   enzyme: RestrictionEnzyme,
   isCircular = false
-): DigestResult {
-  const seq = sequence.toUpperCase();
-  const regex = expandSiteRegex(enzyme.site);
-  const cutSites: number[] = [];
-  let match;
-
-  // Find all matches
-  while ((match = regex.exec(seq)) !== null) {
-    const cutPos = match.index + enzyme.cutOffset;
-    if (cutPos >= 0 && cutPos <= seq.length) {
-      cutSites.push(cutPos);
-    }
+): number[] {
+  if (!enzyme.site || !/^[ACGTRYSWKMBDHVN]+$/i.test(enzyme.site) || !Number.isInteger(enzyme.cutOffset)) {
+    throw new RangeError('A restriction enzyme needs an IUPAC recognition site and an integer cut offset');
   }
+  const seq = sequence.toUpperCase();
+  if (seq.length < enzyme.site.length) return [];
+  const search = isCircular ? seq + seq.slice(0, enzyme.site.length - 1) : seq;
+  const regex = expandSiteRegex(enzyme.site);
+  const cuts = new Set<number>();
+  let match;
+  while ((match = regex.exec(search)) !== null && match.index < seq.length) {
+    const cutPos = match.index + enzyme.cutOffset;
+    if (isCircular) {
+      cuts.add(((cutPos % seq.length) + seq.length) % seq.length);
+    } else if (cutPos >= 0 && cutPos <= seq.length) {
+      cuts.add(cutPos);
+    }
+    // Global regex matching otherwise skips overlapping recognition sites.
+    regex.lastIndex = match.index + 1;
+  }
+  return [...cuts].sort((a, b) => a - b);
+}
+
+/** Ideal complete digest with one or several enzymes; shared by web and TUI. */
+export function digestGenome(
+  sequence: string,
+  enzyme: RestrictionEnzyme | readonly RestrictionEnzyme[],
+  isCircular = false
+): DigestResult {
+  const enzymes: readonly RestrictionEnzyme[] = 'site' in enzyme ? [enzyme] : enzyme;
+  const name = enzymes.map(item => item.name).join('+');
+  const seq = sequence.toUpperCase();
+  const cutSites = [...new Set(enzymes.flatMap(item => findRestrictionCutSites(seq, item, isCircular)))].sort((a, b) => a - b);
 
   if (cutSites.length === 0) {
     return {
-      enzyme: enzyme.name,
-      fragments: [{ start: 0, end: seq.length, length: seq.length, sequence: seq }],
+      enzyme: name,
+      fragments: seq.length ? [{ start: 0, end: seq.length, length: seq.length, sequence: seq }] : [],
       cutSites: [],
     };
   }
 
   const fragments: DigestFragment[] = [];
   
-  // If circular, we might wrap around
-  // Sort cut sites just in case (though regex exec is ordered)
-  cutSites.sort((a, b) => a - b);
-
   for (let i = 0; i < cutSites.length - 1; i++) {
     const start = cutSites[i];
     const end = cutSites[i + 1];
@@ -104,7 +122,7 @@ export function digestGenome(
   fragments.sort((a, b) => b.length - a.length);
 
   return {
-    enzyme: enzyme.name,
+    enzyme: name,
     fragments,
     cutSites,
   };
@@ -112,8 +130,8 @@ export function digestGenome(
 
 /**
  * Compute band migration distance
- * Ogston model approximation: d ~ 1/log(L)
- * Simplified: d = 100 - k * log10(L)
+ * Illustrative log-size calibration, not a physical gel mobility prediction.
+ * Map the percentage migration onto maxRun (e.g. terminal rows).
  */
 export function calculateMigration(length: number, maxRun = 100): number {
   // Map 20kb -> 5%, 100bp -> 95%
@@ -129,5 +147,5 @@ export function calculateMigration(length: number, maxRun = 100): number {
   if (length <= 0) return maxRun;
   const logL = Math.log10(length);
   const dist = 173.2 - 39.1 * logL;
-  return Math.max(0, Math.min(maxRun, dist));
+  return Math.max(0, Math.min(100, dist)) * maxRun / 100;
 }

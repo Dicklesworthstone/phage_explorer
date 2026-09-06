@@ -6,7 +6,7 @@
  */
 
 import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import { digestGenome, findRestrictionCutSites, RESTRICTION_ENZYMES, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -22,28 +22,11 @@ import {
 } from './primitives';
 import type { GelLane, GelBand, GelInteraction } from './primitives/types';
 
-// Restriction enzyme database
-interface RestrictionEnzyme {
-  name: string;
-  site: string; // Recognition sequence (5' to 3')
-  cutOffset: number; // Offset from start of recognition site for cut
-  color?: string;
-}
-
-const RESTRICTION_ENZYMES: RestrictionEnzyme[] = [
-  { name: 'EcoRI', site: 'GAATTC', cutOffset: 1, color: '#ef4444' },
-  { name: 'HindIII', site: 'AAGCTT', cutOffset: 1, color: '#f59e0b' },
-  { name: 'BamHI', site: 'GGATCC', cutOffset: 1, color: '#22c55e' },
-  { name: 'PstI', site: 'CTGCAG', cutOffset: 5, color: '#3b82f6' },
-  { name: 'SalI', site: 'GTCGAC', cutOffset: 1, color: '#8b5cf6' },
-  { name: 'XbaI', site: 'TCTAGA', cutOffset: 1, color: '#ec4899' },
-  { name: 'SmaI', site: 'CCCGGG', cutOffset: 3, color: '#14b8a6' },
-  { name: 'KpnI', site: 'GGTACC', cutOffset: 5, color: '#f97316' },
-  { name: 'NcoI', site: 'CCATGG', cutOffset: 1, color: '#06b6d4' },
-  { name: 'NdeI', site: 'CATATG', cutOffset: 2, color: '#a855f7' },
-  { name: 'NotI', site: 'GCGGCCGC', cutOffset: 2, color: '#6366f1' },
-  { name: 'XhoI', site: 'CTCGAG', cutOffset: 1, color: '#84cc16' },
-];
+const ENZYME_COLORS: Record<string, string> = {
+  EcoRI: '#ef4444', HindIII: '#f59e0b', BamHI: '#22c55e', PstI: '#3b82f6',
+  SalI: '#8b5cf6', XbaI: '#ec4899', SmaI: '#14b8a6', KpnI: '#f97316',
+  NcoI: '#06b6d4', NdeI: '#a855f7', NotI: '#6366f1', XhoI: '#84cc16',
+};
 
 // DNA size ladders
 const LADDERS = {
@@ -60,55 +43,6 @@ const LADDERS = {
     sizes: [23130, 9416, 6557, 4361, 2322, 2027, 564],
   },
 };
-
-// Find all occurrences of recognition site in sequence
-function findCutSites(sequence: string, site: string): number[] {
-  const positions: number[] = [];
-  const upper = sequence.toUpperCase();
-  let idx = 0;
-  while ((idx = upper.indexOf(site, idx)) !== -1) {
-    positions.push(idx);
-    idx++;
-  }
-  return positions;
-}
-
-// Perform in silico digest
-function digestSequence(
-  sequence: string,
-  enzymes: RestrictionEnzyme[]
-): { fragments: number[]; cutSites: number[] } {
-  if (!sequence || enzymes.length === 0) {
-    return { fragments: [sequence.length], cutSites: [] };
-  }
-
-  // Collect all cut positions
-  const allCuts: number[] = [0];
-  for (const enzyme of enzymes) {
-    const sites = findCutSites(sequence, enzyme.site);
-    for (const pos of sites) {
-      allCuts.push(pos + enzyme.cutOffset);
-    }
-  }
-  allCuts.push(sequence.length);
-
-  // Sort and dedupe
-  const sortedCuts = [...new Set(allCuts)].sort((a, b) => a - b);
-
-  // Calculate fragment sizes
-  const fragments: number[] = [];
-  for (let i = 0; i < sortedCuts.length - 1; i++) {
-    const size = sortedCuts[i + 1] - sortedCuts[i];
-    if (size > 0) {
-      fragments.push(size);
-    }
-  }
-
-  return {
-    fragments: fragments.sort((a, b) => b - a),
-    cutSites: sortedCuts.slice(1, -1),
-  };
-}
 
 // Calculate band intensity based on fragment size
 function calculateIntensity(size: number, maxSize: number): number {
@@ -173,6 +107,14 @@ export function GelOverlay({
   // Selected enzymes for digest
   const [selectedEnzymes, setSelectedEnzymes] = useState<string[]>(['EcoRI']);
   const [ladderType, setLadderType] = useState<keyof typeof LADDERS>('1kb');
+  const [topologyChoice, setTopologyChoice] = useState<{ phageId: number; value: 'linear' | 'circular' } | null>(null);
+  const topology = topologyChoice && topologyChoice.phageId === currentPhage?.id
+    ? topologyChoice.value
+    : currentPhage?.localGenome?.topology === 'circular' ? 'circular' : 'linear';
+  const isCircular = topology === 'circular';
+  const cutCounts = useMemo(() => new Map(RESTRICTION_ENZYMES.map(enzyme => [
+    enzyme.name, findRestrictionCutSites(sequence, enzyme, isCircular).length,
+  ])), [sequence, isCircular]);
 
   // Hover state
   const [hoverInfo, setHoverInfo] = useState<GelInteraction | null>(null);
@@ -187,6 +129,7 @@ export function GelOverlay({
   // Fetch full genome when overlay opens or phage changes
   useEffect(() => {
     if (!isOpen('gel')) return;
+    setSequenceError(null);
     if (!repository || !currentPhage) {
       setSequence('');
       setLoading(false);
@@ -244,15 +187,15 @@ export function GelOverlay({
     if (!sequence) return null;
 
     const enzymes = RESTRICTION_ENZYMES.filter((e) => selectedEnzymes.includes(e.name));
-    const { fragments, cutSites } = digestSequence(sequence, enzymes);
+    const { fragments, cutSites } = digestGenome(sequence, enzymes, isCircular);
 
     return {
-      fragments,
+      fragments: fragments.map(fragment => fragment.length),
       cutSites,
       numCuts: cutSites.length,
       enzymes,
     };
-  }, [sequence, selectedEnzymes]);
+  }, [sequence, selectedEnzymes, isCircular]);
 
   // Build gel lanes
   const gelLanes = useMemo((): GelLane[] => {
@@ -303,7 +246,7 @@ export function GelOverlay({
         id: 'digest',
         label: enzymeLabel,
         bands: fragmentsToGelBands(digestResult.fragments, maxSize),
-        color: digestResult.enzymes[0]?.color ?? '#a5c9ff',
+        color: ENZYME_COLORS[digestResult.enzymes[0]?.name] ?? '#a5c9ff',
       });
     }
 
@@ -331,8 +274,8 @@ export function GelOverlay({
           }}
         >
           <strong style={{ color: colors.accent }}>Virtual Gel</strong>: Simulate restriction
-          enzyme digestion and visualize fragment patterns. Useful for experimental planning
-          and verifying genome assemblies.
+          enzyme digestion and visualize predicted fragment sizes. Choose the molecule's
+          topology; records without topology metadata initially use a linear model.
         </div>
 
         {loading ? (
@@ -368,24 +311,26 @@ export function GelOverlay({
               >
                 {RESTRICTION_ENZYMES.map((enzyme) => {
                   const isSelected = selectedEnzymes.includes(enzyme.name);
-                  const sites = findCutSites(sequence, enzyme.site);
+                  const count = cutCounts.get(enzyme.name) ?? 0;
+                  const color = ENZYME_COLORS[enzyme.name] ?? colors.accent;
                   return (
                     <button
                       key={enzyme.name}
                       onClick={() => toggleEnzyme(enzyme.name)}
+                      aria-pressed={isSelected}
                       style={{
                         padding: '0.25rem 0.5rem',
                         fontSize: '0.75rem',
-                        backgroundColor: isSelected ? enzyme.color : colors.backgroundAlt,
+                        backgroundColor: isSelected ? color : colors.backgroundAlt,
                         color: isSelected ? '#fff' : colors.text,
-                        border: `1px solid ${isSelected ? enzyme.color : colors.borderLight}`,
+                        border: `1px solid ${isSelected ? color : colors.borderLight}`,
                         borderRadius: '4px',
                         cursor: 'pointer',
-                        opacity: sites.length === 0 ? 0.5 : 1,
+                        opacity: count === 0 ? 0.5 : 1,
                       }}
-                      title={`${enzyme.name}: ${enzyme.site} (${sites.length} cuts)`}
+                      title={`${enzyme.name}: ${enzyme.site} (${count} cuts)`}
                     >
-                      {enzyme.name} ({sites.length})
+                      {enzyme.name} ({count})
                     </button>
                   );
                 })}
@@ -397,10 +342,20 @@ export function GelOverlay({
               style={{
                 display: 'flex',
                 gap: '1rem',
+                flexWrap: 'wrap',
                 alignItems: 'center',
                 fontSize: '0.8rem',
               }}
             >
+              <label style={{ color: colors.textMuted }}>
+                Molecule topology:
+                <select value={topology} onChange={event => {
+                  if (currentPhage) setTopologyChoice({ phageId: currentPhage.id, value: event.target.value as 'linear' | 'circular' });
+                }}>
+                  <option value="linear">Linear</option>
+                  <option value="circular">Circular</option>
+                </select>
+              </label>
               <label style={{ color: colors.textMuted }}>
                 Ladder:
                 <select
@@ -488,8 +443,8 @@ export function GelOverlay({
             </div>
 
             {/* Fragment table */}
-            {digestResult && digestResult.fragments.length > 1 && (
-              <div>
+            {digestResult && (
+              <div role="region" aria-label="Digest fragment sizes">
                 <div
                   style={{
                     fontSize: '0.75rem',
@@ -520,7 +475,7 @@ export function GelOverlay({
                         fontFamily: 'monospace',
                       }}
                     >
-                      {formatSize(size)}
+                      {size.toLocaleString()} bp
                     </span>
                   ))}
                 </div>
@@ -537,9 +492,10 @@ export function GelOverlay({
                 color: colors.textDim,
               }}
             >
-              <strong>Usage:</strong> Select restriction enzymes to simulate digestion.
-              Compare predicted band patterns with experimental gels to validate genome
-              assemblies. Enzymes showing 0 cuts have no recognition sites in this genome.
+              <strong>Model:</strong> Ideal complete digestion at definite recognition sites.
+              Unresolved sequence bases do not imply a cut. Methylation, partial digestion
+              and the different mobility of uncut circular DNA are not modeled; band positions
+              illustrate fragment size rather than predict an experimental gel.
             </div>
           </>
         )}

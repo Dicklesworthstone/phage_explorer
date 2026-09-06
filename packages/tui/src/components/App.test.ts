@@ -16,8 +16,29 @@ import { usePhageStore } from '@phage-explorer/state';
 import { GeneMap } from './GeneMap';
 import { Model3DView } from './Model3DView';
 import { FoldQuickview } from './FoldQuickview';
+import { GelView } from './GelView';
 
 describe('imported terminal genome views', () => {
+  it('renders a circular origin cut, correct cut count and separated ladder bands', async () => {
+    const { genomes } = await importLocalGenomes({ name: 'origin.fasta', text: '>Origin digest [topology=circular]\nAATTCAAAAG\n' });
+    const saved = usePhageStore.getState();
+    try {
+      usePhageStore.setState({ currentPhage: genomes[0].phage });
+      const circular = stripVTControlCharacters(renderToString(React.createElement(GelView, { sequence: genomes[0].sequence }), { columns: 100 }));
+      expect(circular).toContain('Cuts: 1; fragments: 1');
+      expect(circular).toContain('10 bp');
+      expect(circular).toContain('Topology: circular');
+      const rows = [20000, 10000, 5000, 2000, 1000, 500, 200].map(size => circular.split('\n').findIndex(line => line.includes(`—${size}—`)));
+      expect(rows.every(row => row >= 0)).toBe(true);
+      expect(rows.map(row => row - rows[0])).toEqual([0, 3, 5, 8, 10, 12, 15]);
+      const phage = genomes[0].phage;
+      usePhageStore.setState({ currentPhage: { ...phage, localGenome: { ...phage.localGenome!, topology: 'linear' } } });
+      const linear = stripVTControlCharacters(renderToString(React.createElement(GelView, { sequence: genomes[0].sequence }), { columns: 100 }));
+      expect(linear).toContain('Cuts: 0; fragments: 1');
+      expect(linear).toContain('Topology: linear');
+    } finally { usePhageStore.setState(saved); }
+  });
+
   it('renders the hand-derived joined-CDS gaps and no invented private 3D model', async () => {
     const input = 'LOCUS       X 24 bp DNA circular\nFEATURES             Location/Qualifiers\n     CDS             complement(join(1..6,19..24))\nORIGIN\n        1 atgaaacccgggtttaaaccctag\n//\n';
     const { genomes } = await importLocalGenomes({ name: 'x.gb', text: input });
