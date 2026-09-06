@@ -5,7 +5,7 @@
  * for experimental planning and genome verification.
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import { digestGenome, findRestrictionCutSites, RESTRICTION_ENZYMES, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -99,16 +99,21 @@ export function GelOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{
+    repository: PhageRepository; phage: PhageFull; sequence: string;
+  } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phage === currentPhage
+    ? loaded.sequence : '';
   const [sequenceError, setSequenceError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Selected enzymes for digest
   const [selectedEnzymes, setSelectedEnzymes] = useState<string[]>(['EcoRI']);
   const [ladderType, setLadderType] = useState<keyof typeof LADDERS>('1kb');
-  const [topologyChoice, setTopologyChoice] = useState<{ phageId: number; value: 'linear' | 'circular' } | null>(null);
-  const topology = topologyChoice && topologyChoice.phageId === currentPhage?.id
+  const [topologyChoice, setTopologyChoice] = useState<{
+    repository: PhageRepository | null; phage: PhageFull; value: 'linear' | 'circular';
+  } | null>(null);
+  const topology = topologyChoice && topologyChoice.phage === currentPhage && topologyChoice.repository === repository
     ? topologyChoice.value
     : currentPhage?.localGenome?.topology === 'circular' ? 'circular' : 'linear';
   const isCircular = topology === 'circular';
@@ -130,38 +135,32 @@ export function GelOverlay({
   useEffect(() => {
     if (!isOpen('gel')) return;
     setSequenceError(null);
+    setLoaded(null);
+    setTopologyChoice(null);
+    setHoverInfo(null);
     if (!repository || !currentPhage) {
-      setSequence('');
       setLoading(false);
       return;
     }
 
     const phageId = currentPhage.id;
 
-    // Check cache first
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setLoading(true);
     setSequenceError(null);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         // A failed database read used to render as "No sequence loaded", which
         // tells the user this phage has no data rather than that something
         // broke. Surface the real cause.
-        setSequence('');
+        setLoaded(null);
         setSequenceError(
           `Could not load sequence: ${err instanceof Error ? err.message : String(err)}`
         );
@@ -350,7 +349,7 @@ export function GelOverlay({
               <label style={{ color: colors.textMuted }}>
                 Molecule topology:
                 <select value={topology} onChange={event => {
-                  if (currentPhage) setTopologyChoice({ phageId: currentPhage.id, value: event.target.value as 'linear' | 'circular' });
+                  if (currentPhage) setTopologyChoice({ repository, phage: currentPhage, value: event.target.value as 'linear' | 'circular' });
                 }}>
                   <option value="linear">Linear</option>
                   <option value="circular">Circular</option>

@@ -9,7 +9,7 @@ import { parseAnalysisRecord } from '../../core/src/analysis-result';
 // An isolated component journey deliberately changes repository props without
 // reloading the page. It uses the real local repository, component and worker;
 // only input selection and a delayed read are controlled by the fixture.
-for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository identity survives replacement and late reads under ${backend}`, async ({ page }, info) => {
+for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository identity survives replacement and late reads under ${backend}`, async ({ page }, info) => {
   const webRoot = process.cwd();
   const fixtureId = resolve(webRoot, 'src/repeat-repository-fixture.tsx');
   const server = await createViteServer({
@@ -28,6 +28,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository i
           import { importLocalGenomes } from '@phage-explorer/core';
           import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
           import { RepeatsOverlay } from './components/overlays/RepeatsOverlay';
+          import { GelOverlay } from './components/overlays/GelOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -39,6 +40,19 @@ for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository i
           }
           const a = await entry('ACGTANNNTACGT');
           const b = await entry('NNNNNNNNNNNN');
+          const gelA = await entry('GAATTCAAAA');
+          const gelB = await entry('CCCCCCCCCC');
+          const gelDelayed = await entry('CCCCCCCCCC');
+          const gelRead = gelDelayed.repository.getSequenceWindow.bind(gelDelayed.repository);
+          let releaseGel;
+          const gelGate = new Promise(resolve => { releaseGel = resolve; });
+          gelDelayed.repository.getSequenceWindow = async (...args) => {
+            window.gelReadPending = true;
+            await gelGate;
+            const value = await gelRead(...args);
+            window.gelReadReleased = true;
+            return value;
+          };
           const delayed = await entry('ACGAACGAACGA');
           const read = delayed.repository.getSequenceWindow.bind(delayed.repository);
           let release;
@@ -57,11 +71,13 @@ for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository i
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.releaseGelRead = releaseGel;
               window.releaseRepeatRead = release;
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
+              window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} />;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -110,6 +126,40 @@ for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository i
     await page.evaluate(() => (window as any).releaseRepeatRead());
     await expect.poll(() => page.evaluate(() => (window as any).repeatReadReleased)).toBe(true);
     expect((await exported()).resultId).toBe(second.resultId);
+    await page.evaluate(() => (window as any).setRepeatOpen(false));
+    await select('gelA');
+    await page.evaluate(() => (window as any).setGelOpen(true));
+    const gel = page.getByTestId('overlay-gel');
+    const sizes = gel.getByRole('region', { name: 'Digest fragment sizes' }).locator('span');
+    await expect(sizes).toHaveText(['9 bp', '1 bp']);
+    await gel.getByLabel('Molecule topology:').selectOption('circular');
+    await expect(sizes).toHaveText(['10 bp']);
+    await select('gelB');
+    await expect(gel.getByLabel('Molecule topology:')).toHaveValue('linear');
+    await expect(gel).toContainText('0 cuts → 1 fragment');
+    await expect(sizes).toHaveText(['10 bp']);
+    await select('gelDelayed');
+    await expect.poll(() => page.evaluate(() => (window as any).gelReadPending)).toBe(true);
+    await expect(sizes).toHaveCount(0);
+    await select('gelA');
+    await expect(sizes).toHaveText(['9 bp', '1 bp']);
+    await page.evaluate(() => (window as any).releaseGelRead());
+    await expect.poll(() => page.evaluate(() => (window as any).gelReadReleased)).toBe(true);
+    await expect(sizes).toHaveText(['9 bp', '1 bp']);
+    await select('broken');
+    await expect(gel).toContainText('Could not load sequence');
+    await expect(sizes).toHaveCount(0);
+    await select('missing');
+    await expect(gel).toContainText('No sequence loaded');
+    await select('gelA');
+    await expect(sizes).toHaveText(['9 bp', '1 bp']);
+    await page.evaluate(() => (window as any).setGelOpen(false));
+    await expect(gel).toHaveCount(0);
+    await select('gelB');
+    await page.evaluate(() => (window as any).setGelOpen(true));
+    await expect(gel).toContainText('0 cuts → 1 fragment');
+    await page.evaluate(() => (window as any).setGelOpen(false));
+    await page.evaluate(() => (window as any).setRepeatOpen(true));
     await select('broken');
     await expect(overlay).toContainText('Repeat analysis unavailable');
     await expect(overlay.getByRole('button', { name: 'Export repeat experiment' })).toHaveCount(0);
