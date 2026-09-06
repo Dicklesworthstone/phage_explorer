@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'bun:test';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { Database } from 'bun:sqlite';
 import { PHAGE_CATALOG } from './phage-catalog';
+import { computeDatabaseContentDigest } from '../../../scripts/build-web-db';
 
 /**
  * The README's "Included Phages" table is a hand-maintained list of 24 genome
@@ -272,11 +276,37 @@ describe('the release workflow ships the database', () => {
 
 describe('the shipped database is the current one', () => {
   const dbPath = join(import.meta.dir, '../../web/public/phage.db');
-  const gzPath = `${dbPath}.gz`;
-
-  it('is present in both forms the installer looks for', () => {
+  it('generates both installer forms with matching bytes and logical content from a fresh output directory', () => {
     expect(existsSync(dbPath)).toBe(true);
-    expect(existsSync(gzPath)).toBe(true);
+    // Gzip is a generated, ignored asset. Exercise the actual release producer
+    // instead of relying on a previous local build to populate public/.
+    const output = mkdtempSync(join(tmpdir(), 'phage-release-db-'));
+    const sourceBytes = readFileSync(dbPath);
+    const build = Bun.spawnSync({
+      cmd: [process.execPath, join(REPO_ROOT, 'scripts/build-web-db.ts'), '--source', dbPath, '--output', output],
+      stdout: 'pipe', stderr: 'pipe',
+    });
+    if (build.exitCode !== 0) {
+      throw new Error(`Database build failed (${build.exitCode}):\n${build.stdout.toString()}\n${build.stderr.toString()}`);
+    }
+    const raw = readFileSync(join(output, 'phage.db'));
+    const compressed = readFileSync(join(output, 'phage.db.gz'));
+    const manifest = JSON.parse(readFileSync(join(output, 'phage.db.manifest.json'), 'utf8'));
+    expect(gunzipSync(compressed)).toEqual(raw);
+    expect(manifest.version).toBe(2);
+    expect(manifest.size).toBe(raw.length);
+    expect(manifest.sha256).toBe(createHash('sha256').update(raw).digest('hex'));
+    expect(readFileSync(dbPath)).toEqual(sourceBytes);
+    const source = new Database(dbPath, { readonly: true });
+    const shipped = new Database(join(output, 'phage.db'), { readonly: true });
+    try {
+      expect(manifest.contentVersion).toBe(computeDatabaseContentDigest(source));
+      expect(computeDatabaseContentDigest(shipped)).toBe(manifest.contentVersion);
+      expect(shipped.query('PRAGMA quick_check').get()).toEqual({ quick_check: 'ok' });
+    } finally {
+      source.close();
+      shipped.close();
+    }
   });
 
   it('is far larger than the 3.1 MB database v1.4.1 shipped', () => {

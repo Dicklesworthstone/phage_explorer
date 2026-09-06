@@ -1,8 +1,133 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { resolve } from 'node:path';
+import { createServer as createViteServer } from 'vite';
 import { setupTestHarness } from './e2e-harness';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
+
+// An isolated component journey deliberately changes repository props without
+// reloading the page. It uses the real local repository, component and worker;
+// only input selection and a delayed read are controlled by the fixture.
+for (const backend of ['wasm', 'javascript'] as const) test(`repeat repository identity survives replacement and late reads under ${backend}`, async ({ page }, info) => {
+  const webRoot = process.cwd();
+  const fixtureId = resolve(webRoot, 'src/repeat-repository-fixture.tsx');
+  const server = await createViteServer({
+    root: webRoot,
+    cacheDir: info.outputPath('vite-cache'),
+    configFile: resolve(webRoot, 'vite.config.ts'),
+    server: { host: '127.0.0.1', port: 0, open: false },
+    plugins: [{
+      name: 'repeat-repository-fixture',
+      resolveId(id) { if (id === '/src/repeat-repository-fixture.tsx') return fixtureId; },
+      load(id) {
+        if (id !== fixtureId) return;
+        return `
+          import React, { useEffect, useState } from 'react';
+          import { createRoot } from 'react-dom/client';
+          import { importLocalGenomes } from '@phage-explorer/core';
+          import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
+          import { RepeatsOverlay } from './components/overlays/RepeatsOverlay';
+          import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
+          import { ToastProvider } from './components/ui/Toast';
+          import { ScrollProvider } from './providers';
+          import './styles/index.css';
+          async function entry(sequence) {
+            const genome = (await importLocalGenomes({ name: 'input.fasta', text: '>input\\n' + sequence })).genomes[0];
+            genome.phage = { ...genome.phage, id: 1 };
+            return { phage: genome.phage, repository: createLocalGenomeRepository(null, [genome]) };
+          }
+          const a = await entry('ACGTANNNTACGT');
+          const b = await entry('NNNNNNNNNNNN');
+          const delayed = await entry('ACGAACGAACGA');
+          const read = delayed.repository.getSequenceWindow.bind(delayed.repository);
+          let release;
+          const gate = new Promise(resolve => { release = resolve; });
+          delayed.repository.getSequenceWindow = async (...args) => {
+            window.repeatReadPending = true;
+            await gate;
+            const value = await read(...args);
+            window.repeatReadReleased = true;
+            return value;
+          };
+          const broken = await entry('ACGAACGA');
+          broken.repository.getSequenceWindow = async () => { throw new Error('Controlled read failure'); };
+          function Fixture() {
+            const [selected, select] = useState(a);
+            const { open, close } = useOverlay();
+            useEffect(() => {
+              open('repeats');
+              window.selectRepeatInput = name => select({ a, b, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.releaseRepeatRead = release;
+              window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
+            }, []);
+            return <RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} />;
+          }
+          createRoot(document.getElementById('root')).render(
+            <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
+          );
+        `;
+      },
+      configureServer(vite) {
+        vite.middlewares.use('/repeat-repository-fixture', (_request, response, next) => {
+          void vite.transformIndexHtml('/repeat-repository-fixture', '<div id="root"></div><script type="module" src="/src/repeat-repository-fixture.tsx"></script>')
+            .then(html => { response.setHeader('Content-Type', 'text/html'); response.end(html); }).catch(next);
+        });
+      },
+    }],
+  });
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  if (backend === 'javascript') await page.route('**/analysis.worker.ts?*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `WebAssembly.instantiate = async () => { throw new Error('Controlled WASM failure'); };\n${await response.text()}` });
+  });
+  try {
+    await server.listen();
+    await page.goto(`${server.resolvedUrls!.local[0]}repeat-repository-fixture`);
+    const overlay = page.getByTestId('overlay-repeats');
+    const table = overlay.getByRole('table', { name: 'Repeat matches' });
+    const select = (name: string) => page.evaluate(name => (window as any).selectRepeatInput(name), name);
+    const exported = async () => {
+      const downloading = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export repeat experiment', exact: true }).click();
+      return parseAnalysisRecord(await readFile((await (await downloading).path())!, 'utf8'));
+    };
+    await expect(table).toContainText('Arms: 5 bp; spacer: 3 bp');
+    const first = await exported();
+    expect(first.inputs[0].data).toBe('ACGTANNNTACGT');
+    await select('b');
+    await expect(table).toContainText('No repeats found within these search limits');
+    const second = await exported();
+    expect(second.inputs[0].data).toBe('NNNNNNNNNNNN');
+    expect(second.inputs[0].sha256).not.toBe(first.inputs[0].sha256);
+    expect(second.method.implementation).toMatch(backend === 'javascript' ? /js detailed/ : /wasm-(baseline|simd) detailed/);
+    await select('delayed');
+    await expect.poll(() => page.evaluate(() => (window as any).repeatReadPending)).toBe(true);
+    await expect(overlay.getByRole('button', { name: 'Export repeat experiment' })).toHaveCount(0);
+    await select('b');
+    await expect(table).toContainText('No repeats found within these search limits');
+    await page.evaluate(() => (window as any).releaseRepeatRead());
+    await expect.poll(() => page.evaluate(() => (window as any).repeatReadReleased)).toBe(true);
+    expect((await exported()).resultId).toBe(second.resultId);
+    await select('broken');
+    await expect(overlay).toContainText('Repeat analysis unavailable');
+    await expect(overlay.getByRole('button', { name: 'Export repeat experiment' })).toHaveCount(0);
+    await select('missing');
+    await expect(overlay).toContainText('No sequence data available');
+    await select('a');
+    await expect(table).toContainText('Arms: 5 bp; spacer: 3 bp');
+    expect((await exported()).resultId).toBe(first.resultId);
+    await page.evaluate(() => (window as any).setRepeatOpen(false));
+    await expect(overlay).toHaveCount(0);
+    await select('b');
+    await page.evaluate(() => (window as any).setRepeatOpen(true));
+    await expect(table).toContainText('No repeats found within these search limits');
+    expect((await exported()).resultId).toBe(second.resultId);
+    expect(errors).toEqual([]);
+    await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
+  } finally { await server.close(); }
+});
 
 test('restriction gel honors imported circular topology, overlapping sites and combined cuts', async ({ page, baseURL }, info) => {
   const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, info);

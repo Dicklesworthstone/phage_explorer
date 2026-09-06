@@ -4,7 +4,7 @@
  * Displays direct repeats, inverted repeats, and palindromic sequences.
  */
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import { serializeAnalysisRecord, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -35,15 +35,15 @@ export function RepeatsOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [snapshot, setSnapshot] = useState<{
     phage: PhageFull; repository: PhageRepository | null; sequence: string;
     data: Extract<AnalysisResult, { type: 'repeats' }>;
   } | null>(null);
-  const result = snapshot?.phage === currentPhage && snapshot?.repository === repository && snapshot?.sequence === sequence ? snapshot.data : null;
+  const currentSnapshot = snapshot?.phage === currentPhage && snapshot?.repository === repository ? snapshot : null;
+  const result = currentSnapshot?.data ?? null;
+  const sequence = currentSnapshot?.sequence ?? '';
   const repeats = result?.repeats ?? [];
   const search = result?.search;
   const [error, setError] = useState<string | null>(null);
@@ -56,73 +56,32 @@ export function RepeatsOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Fetch sequence when overlay opens
+  // Keep reading and computing in one selection-scoped request. Numeric IDs
+  // can be reused by another repository; retaining a separate ID-only sequence
+  // cache can relabel old bases as a result for the new repository.
   useEffect(() => {
     if (!isOpen('repeats')) return;
-    setError(null);
-    if (!repository || !currentPhage) {
-      setSequence('');
-      setSnapshot(null);
-      setSequenceLoading(false);
-      setAnalysisLoading(false);
-      return;
-    }
-
-    const phageId = currentPhage.id;
-
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setSequenceLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setSequenceLoading(true);
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        setSequence('');
-        setError(`Could not load sequence: ${cause instanceof Error ? cause.message : String(cause)}`);
-      })
-      .finally(() => {
-        if (!cancelled) setSequenceLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, repository, currentPhage]);
-
-  // Compute repeats in the analysis worker to avoid main-thread jank.
-  useEffect(() => {
-    if (!isOpen('repeats')) return;
-    if (!currentPhage) return;
-
-    if (!sequence) {
-      setSnapshot(null);
-      setAnalysisLoading(false);
-      return;
-    }
-    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
-      return;
-    }
-
-    let cancelled = false;
-    setAnalysisLoading(true);
     setError(null);
     setExportError(null);
     setSnapshot(null);
-
+    setAnalysisLoading(false);
+    if (!repository || !currentPhage) {
+      setSequenceLoading(false);
+      return;
+    }
+    let cancelled = false;
+    let reading = true;
+    setSequenceLoading(true);
     (async () => {
       try {
+        const length = await repository.getFullGenomeLength(currentPhage.id);
+        if (cancelled) return;
+        const sequence = await repository.getSequenceWindow(currentPhage.id, 0, length);
+        if (cancelled) return;
+        reading = false;
+        setSequenceLoading(false);
+        if (!sequence) return;
+        setAnalysisLoading(true);
         const result = await getOrchestrator().runAnalysisWithSharedBuffer(
           currentPhage.id,
           sequence,
@@ -137,16 +96,19 @@ export function RepeatsOverlay({
       } catch (cause: unknown) {
         if (cancelled) return;
         setSnapshot(null);
-        setError(`Repeat analysis failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        setError(`${reading ? 'Could not load sequence' : 'Repeat analysis failed'}: ${cause instanceof Error ? cause.message : String(cause)}`);
       } finally {
-        if (!cancelled) setAnalysisLoading(false);
+        if (!cancelled) {
+          setSequenceLoading(false);
+          setAnalysisLoading(false);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentPhage, repository, sequence]);
+  }, [isOpen, currentPhage, repository]);
 
   const direct = repeats.filter(r => r.type === 'direct');
   const inverted = repeats.filter(r => r.type === 'inverted');
