@@ -1,6 +1,208 @@
 # Bridge Plan: Phage Explorer
 
-## Current reality check — 2026-09-04
+## Current reality check — 2026-09-06
+
+**Source baseline:** `a24273410baa0a9294aa1da212ee591588771c8e` on main.
+This assessment supersedes the September 4 assessment below. Historical failures
+are retained as history; they must not be reported as current defects after repair.
+The active task system remains `br`. This document is an assessment and design,
+not a second TODO system. No implementation, issue closure, or publication is
+credited to this assessment.
+
+**Verdict:** Phage Explorer is a working genome explorer with substantial analysis
+and teaching functionality. It is not a finished, validated research platform.
+The biggest immediate gap is dependable distribution of the current capability;
+the biggest scientific gap is real reference/experimental inputs and validated
+methods behind the ambitious research views. Guarding an illustrative result
+against misinterpretation is valuable containment, not delivery of that method.
+
+### Fresh evidence and its limits
+
+AGENTS.md (626 lines) and README.md (1,102 lines) were read completely. The
+deployment/parity plans, scientific roadmap families, original design history,
+WASM specifications and interface documentation were cross-checked against code
+and the existing backlog. The very large historical roadmap's example code and
+example biological numbers are proposals, not independently validated oracles.
+This is a capability assessment, not a claim to have audited every source line
+or independently reproduced every scientific algorithm.
+
+Evidence is retained under `/tmp/phage-execution-20260905/`, with prefixes
+`reality-20260906`, `dist-reality-20260906` and `e2e-reality-20260906`.
+Decisive results are recorded here and in br so temporary logs are not the sole
+source of the conclusions.
+
+| Check | Observed result | What it does not prove |
+|---|---|---|
+| `bun run test` | Exit 0; 2,111 passed, zero failed, 135 files | Biological validity of every estimator; parity with the CI environment |
+| `bun run check` | Exit 0, including lint, typechecks, scripts, keyboard documentation, bead closures and all 15 comparison gates | A release or complete browser/device coverage |
+| Native Rust, wrapper bypass exported | `cargo test --release`: 37 passed, zero failed; exit 0 | All browser WASM paths or performance ratios |
+| Fresh Vite production build | Exit 0; 449 modules; entry JS 857.15 kB / 258.71 kB gzip; 99 precache entries / 4,795.15 KiB | First-visit latency, total network weight, or a Lighthouse performance score |
+| Production browser journeys | 78/78 passed in 6.4 minutes: 25 scientific/import/keyboard cases on each of Chromium, Firefox and WebKit, plus three Chromium PWA cases | Full suite, all themes, physical phones, manual screen readers or all TUI interactions |
+| Live targeted journeys | 3/3 passed in 19.2 seconds at `https://phage-explorer.org`: actual repeat coordinates/export under WASM and forced JS fallback; pangenome/host demo opt-in and phage-change reset | All live features, live PWA lifecycle or full scientific inference |
+| TUI smoke with copied database | Lambda, 24-phage catalog, sequence/gene map and `?` help rendered; Ctrl-C exited 0 | Pixel-perfect terminal layout or full interaction parity |
+| Committed SQLite | `quick_check=ok`, no foreign-key or sequence-length mismatches; 24 phages, 4,836 genes, 1,695 domain hits, 2,039 ESM2 plus 2,039 trigram vectors, 2,039 atlas coordinates | Annotation completeness for each phage or correctness of every inferred annotation |
+| Live database bytes and descriptor | Version 2, 11,202,560 bytes, generated 2026-09-06 19:05 UTC; downloaded gzip decompresses to SHA256 `c07f30d2019fea6ca5d9b5d244a5f9aea84d01e2997580a49bfa9dcb4783e9b9`, equal to committed raw DB, local gzip and descriptor. Content version `88e3079e1d0495f348526c826bc1a051ff4df3d172402d9e63e2b7fed25825c1` | Atomicity of every future data build or identical content across repeated deployments |
+| GitHub checks at source baseline | Lighthouse succeeded; main CI failed at **Run tests**, while its Chromium E2E job succeeded | The failing test's cause: public job-log download returned HTTP 403 |
+| Release automation | Failed at **Reject a stale version whose tag points elsewhere** | Permission to retag, overwrite a tag or publish |
+| Latest public binary | v1.4.1, published 2025-12-16, database asset 3,125,248 bytes | Current source features reaching installer users |
+
+The first local browser selection incorrectly included Chromium-CDP PWA tests in
+Firefox/WebKit projects. It was interrupted (exit 130); it is not a product
+failure or a passing run. The corrected matrix uses the existing engine boundary
+and the freshly built assets, with no changed assertions or product test config.
+The first live invocation misparsed a variadic `--project` argument and ran no
+tests. Neither setup attempt earns proof credit.
+
+Primary remote evidence: [CI](https://github.com/Dicklesworthstone/phage_explorer/actions/runs/34053748450),
+[Lighthouse](https://github.com/Dicklesworthstone/phage_explorer/actions/runs/34053748480),
+[release automation](https://github.com/Dicklesworthstone/phage_explorer/actions/runs/34053748473),
+[binary release](https://github.com/Dicklesworthstone/phage_explorer/releases/tag/v1.4.1).
+
+### Numbered vision and gap coverage
+
+`WORKING` applies only to the named exercised behavior. `PARTIAL` retains both
+the useful implementation and its unfinished scope. `UNPROVEN` is not a finding
+that code is broken. Bead IDs below omit the common `phage_explorer-` prefix.
+
+| # | Testable goal / source | Current reality | Remaining work and coverage |
+|---|---|---|---|
+| 1 | Browse curated genomes, DNA/AA, genes, search and keyboard overlays; README | WORKING core | Complete terminal/browser/theme proof: `7r0ep.35` and children, `wzjl.2`, `jcud` |
+| 2 | Inspect deposited web structures and procedural terminal morphology; README | PARTIAL proof | Verify mapped residues, missing structures and surface distinctions: `z1wa`, `7r0ep.19`, `.35.5` |
+| 3 | Analyze private FASTA/GenBank without upload; workflow plans | WORKING import/source-and-view round trip; PARTIAL experiment workflow | Startup TUI and browser import exist; in-app terminal parity and full action replay remain: `.31/.32`, `.33/.34`, `.35.5/.35.6` |
+| 4 | Export reproducible results from real computations; original/workflow plans | PARTIAL | AMG restore and GC/codon/repeat results are connected; exhaustive result adapters and replay are unfinished: `.17/.18`, `.33/.34` |
+| 5 | Stable annotated raw/gzip/browser/TUI dataset; README | WORKING tested local paths; PARTIAL delivery proof | Version/checksum separation repaired; retain atomic build, metadata and repeated-deployment acceptance: `il8a.2`, `.6`, `.9/.10` |
+| 6 | Reliable current cross-platform installer; README | NOT MET | Stale public binary, stale version tag and failed CI unit step: `0r8g`, `0r8g.3/.5`; new `0r8g.6/.7` cover the CI repair/proof |
+| 7 | Fast first visit and smooth exploration; deployment plan | UNPROVEN against final targets | Lighthouse green enforces a 0.28 performance floor and 34-second LCP ceiling, not >90/<1.5s goals: `5a2`, `5t4r.4`, `.7/.8`, `j5me/.39` |
+| 8 | Correct workers, WASM and fallback computations; ABI specs | PARTIAL conformance | Recent GC/restriction/repeat/UTF-8 repairs are real; remaining families and cache identities need coverage: `.21` and children, `.17/.18` |
+| 9 | Sequence statistics, logos, spatial encodings and codon/tRNA adaptation; roadmap | PARTIAL, useful methods exist | Independent counts, frames, strand, ambiguity and reference coverage: `.21.1/.21.2` |
+| 10 | Exact repeats, dot plots, restriction gels, non-B/curvature/periodicity; roadmap | PARTIAL | Actual sequence-derived results and fresh repeat/gel browser proof; remaining motif models and repository-change cache correctness: `.21.3/.21.4` |
+| 11 | PCA, synteny/DTW, bias and property portraits; roadmap | PARTIAL | Distance/normalization/degenerate matrix oracles and frontend agreement: `.21.5/.21.6`; alignment-free similarity is not phylogenetic proof |
+| 12 | Graph pangenome and real structural variants; curated idea 3 | NOT IMPLEMENTED real method; explicit demo works | Annotation-template graph is gated by `demonstration===true`; real alignments/variants remain `aocy1` and `.1` |
+| 13 | Protein-grounded host interactions and structural constraints; curated ideas 1/8 | PARTIAL real inputs; docking method absent | Pseudo-vector docking is explicit demo; references, residue mappings and valid estimators: `.19/.20`, `vny8/.2`, `z1wa/.3` |
+| 14 | Burst/latency inference from experiments; roadmap 33 | NOT IMPLEMENTED validated inference; explicit illustration works | CSV observations, identifiable forward model and real uncertainty: `r22j/.4`; sigmoid illustrations are not inference |
+| 15 | Organism-specific AMG flux prediction; roadmap 37 | PARTIAL | Bounded LP repair and model import/export work; sourced host models and supported reaction mapping remain `.37/.38` |
+| 16 | CRISPR/Acr, HGT/recombination, environmental and dated inference; roadmap | PARTIAL | Real sequence/annotation/search paths exist; external evidence, alignment and inferential limits remain `.29/.30`, `.21.7/.21.8`, `.25/.26`, `.27/.28` |
+| 17 | RNA, epistasis, stability, integration/circuits and infection/packaging models; roadmap | PARTIAL educational capability | Numerical conformance and evidence-backed predictive upgrades remain `.23` and its three implementation/proof pairs |
+| 18 | Protein latent atlas and explainable comparisons; curated idea 10 | WORKING basic atlas data; PARTIAL interpretation | Current ESM/Pfam data do not prove function. Sequence/PCA and reference tasks cover validity; contrastive genome-model training was explicitly descoped in `wae`, not silently forgotten |
+| 19 | Offline install/update/recovery, mobile and accessible operation; deployment plan | WORKING three Chromium PWA journeys; PARTIAL broad proof | `.35.2/.35.3/.35.4`, `jyt7j`, `wzjl.2`, human-owned `jcud`; uncached external structures are not available offline |
+| 20 | Accurate current capability and performance documentation; AGENTS/README | PARTIAL; factual drift remains | `.13/.14`: old database/annotation counts, CRISPR wording, narrow export inventory, network/offline promises and unsourced ratios |
+| 21 | Expert commands, saved sessions, undo/redo and macros; deployment/original plans | PARTIAL commands; general macro/replay absent | `.33/.34`; overlay-stack undo and version-1 input/view bundles do not fulfill full history/replay |
+
+**Would completing the backlog finish the vision?** Most retained capability
+families already have implementation and verification coverage. However, a broad
+title is insufficient: positive scientific methods cannot be closed by adding
+labels or refusing inputs. Full completion requires their actual method/input
+acceptance, integrated research journeys, measured performance, and human/release
+evidence. Historical proposals explicitly descoped in `wae`, `pt19`, `8kpa` and
+`i5y3` are not missing active tasks. The roadmap is not a promise that a simulated
+score will become clinical or experimental truth merely through implementation.
+
+**Coverage corrections:** the newly observed CI unit-test discrepancy lacked a
+specific active diagnostic leaf; `0r8g.6` and `.7` now track repair and verification
+under the existing release epic. Retain repeat repository/cache invalidation inside
+`.21.3/.21.4`, where it was already discovered, instead of duplicating that work.
+Resolve the deployment plan's ten-theme/customization promise explicitly inside
+`.35.3/.35.4` and `.13/.14`; current code has eight palettes plus a high-contrast
+setting, so a closed imported high-contrast bead is not evidence of a missing
+implementation. No new contrastive-learning epic is justified by an old proposal
+with an explicit recorded descope.
+
+### Bridge execution design
+
+| Order | Deliverable and touchpoints | Acceptance / effort |
+|---|---|---|
+| 1 | Reproduce current CI unit failure using `.github/workflows/ci.yml`, installed Bun/toolchain and failing test output; prepare coherent staged release | Same failing assertion reproduced and fixed without weakening it; full CI job and clean staged installs on supported platforms. S diagnosis, size of fix unknown. Publication remains `ubuntu`'s release task |
+| 2 | Repair remaining result identity at `RepeatsOverlay.tsx` and existing worker/cache boundaries; finish useful result adapters | Same numeric phage ID in two repositories with different bases must change displayed coordinates/export digest; late old request cannot win. S/M, `.21.3/.21.4`, `.17/.18` |
+| 3 | Finish one complete private research workflow through existing repository and action dispatcher | Import → inspect CDS → analyze → export → restore/replay with exact inputs, parameters, cancellation and stale-input refusal. M, `.31–.34`; current useful import remains available |
+| 4 | Finish data-build consistency and profile startup; then change the measured bottleneck | Schema/atlas-only changes invalidate semantic identity; unchanged reload avoids DB download. Separate cold/warm runs, transfer/CPU/memory and first usable sequence. M/L, `.9/.10`, `il8a.2/.6`, `5a2/.8`, `j5me/.39` |
+| 5 | Deliver real science by domain: aligned variants, sourced host/structure evidence, measured burst series, curated FBA host model | Each has positive independent references, adversarial cases, real producer→worker→panel→export proof and limited claims. L/XL; use existing domain tasks and `.19/.20` rather than another generic framework |
+| 6 | Complete remaining numerical families and browser/terminal/accessibility proof | All named family oracles and controls, actual engine/device distinction, human screen-reader evidence; documentation corrected alongside verified changes. L staged, `.21/.23/.35`, `.13/.14`, `jcud` |
+
+Release readiness for the useful explorer and completion of the full research
+roadmap are separate outcomes. Do not block a truthful explorer release on every
+future scientific method, or describe that release as completion of those methods.
+
+### Ambition round 1 — make an entire experiment dependable
+
+The improvement over isolated overlay repairs is a complete repeatable user
+experiment. Identity must start with the loaded bases and annotation/reference
+versions, survive worker computation and display, and remain intact in restored
+exports. A current phage label on stale cached bases is still a wrong result.
+Start with the existing GC/codon/repeat/AMG consumers rather than designing another
+schema. The repeat cache counterexample belongs to `.21.3/.21.4`; `.17/.18`
+retain producer-to-export adapter coverage. `.31–.34` must compose the already
+working input/view bundle with typed actions and parameters. A two-minute positive
+import/analyze/export/replay journey and deliberately changed-input controls are
+the acceptance boundary, not the number of schema fields or panels migrated.
+
+### Ambition round 2 — remove artificial waiting without reducing scope
+
+The minimal input and result contracts are present in source now. Waiting for
+every `.17` adapter to finish before any real scientific method begins creates
+an unnecessary serial bottleneck. Convert those completion dependencies to
+related work, while each method still must deliver its own result adapter and
+positive proof before closure. Keep genuine reference prerequisites such as
+`.19` for host interactions/structural work and the corrected LP prerequisite
+for host FBA models.
+
+Similarly, `.33` cannot wait for all of `.31`: the remaining import scope includes
+the very action replay that `.33` supplies. Their current APIs support joint
+implementation; keep the shared acceptance and remove that completion dependency.
+The CI repair/proof pair (`0r8g.6/.7`) gates release verification, while the
+human-owned release task retains stale-version/tag and publication decisions.
+
+### Ambition round 3 — spend mathematical effort on falsifiable results
+
+For burst fitting, inspect sensitivity/rank and profile likelihood before quoting
+several fitted parameters: a curve can fit while adsorption or latency remains
+unidentifiable. Validate uncertainty against repeated generated observations with
+declared noise and a separately derived reference; keep those controls distinct
+from actual imported experimental data. For pangenomes, reconstruct known edits
+on small real sequence pairs and test identical/reverse-complement/circular-origin
+controls before ranking donor hypotheses. For FBA, enforce mass balance, bounds,
+objective consistency and independent optima separately from host-model validity.
+
+For PCA/atlas comparisons, judge neighbor claims in the declared source feature
+space; projected proximity alone is not functional similarity. Degenerate
+eigenspaces need subspace-aware comparisons rather than arbitrary sign matching.
+For performance, measure the fraction of cold-start time attributable to transfer,
+database initialization, annotation loading, workers and rendering before choosing
+Rust, caching or bundle changes. Report warm-reload behavior and peak memory beside
+latency so an apparent speedup cannot hide extra downloads or unbounded caching.
+These are concrete extensions of `r22j/.4`, `aocy1/.1`, `.37/.38`, `.21.5/.21.6`
+and `5a2/.8`; no general mathematical infrastructure or new learning-model scope
+is required to get their benefit.
+
+### Refinement results
+
+The unchanged Phase 3a prompt was applied before and after ambition; the unchanged
+Phase 5 prompt is recorded with each actual round in `7r0ep` comments. Each round
+reviews the retained capability families and the changed leaf/proof requirements;
+unchanged beads are reused, not recreated to inflate activity.
+
+| Round | Finding and correction |
+|---|---|
+| 1: Coverage | Retained the ten-theme/customization promise in `.35.3`, recognized existing high contrast and the explicit `wae` descope, and made `.13` current factual corrections specific. |
+| 2: Dependencies | Added CI repair as a release prerequisite, documented the replay/import semantic deadlock, and retained genuine reference/data prerequisites. |
+| 3: Proof | Propagated new acceptance into `.18`, `.34`, `.4`, `.21.6`, `.8`, `.35.4`; the Firefox issue now explicitly gates its browser verification. |
+| 4: Freshness | Corrected the release title and current version failure, recorded live web proof and raw/gzip/metadata repair in `.9/.10`, and preserved remaining atomic-build and release acceptance. |
+| 5: Convergence | Rechecked coverage, changed acceptance, genuine prerequisites, proof companions and human ownership; no further requirement change found. `bv --robot-triage`, `bv --robot-plan` and `br dep cycles` confirm an acyclic actionable graph. |
+
+Final backlog: **65 open, 10 in progress, 976 historically closed**; 34 actionable
+and 41 dependency-blocked. Two CI issues were added and no issue was closed.
+The graph has 1,051 nodes, 804 edges reported by bv, no cycles and
+completed phase-two metrics. The first available research prerequisite is `.19`;
+the immediate distribution repair is `0r8g.6`. This is not a completion percentage
+or a time estimate. Reference acquisition and human verification have uncertain
+durations; historical close velocity is unsuitable for predicting their finish.
+
+This assessment has zero new runtime capability credit. Its consumer is the
+user-requested reality check and the next implementing agent. Retire its active
+status when superseded by newer evidence; preserve historical content without
+deleting files. The next implementation block should deliver a tested capability
+or repair from the existing graph rather than another assessment.
+
+## Historical reality check — 2026-09-04
 
 **Baseline:** `f9cbbf9ad97ddee790330fd6ad2721db6de6a8a7`. This section supersedes
 revision 4 below. The older assessment remains as history, not an active task list.
