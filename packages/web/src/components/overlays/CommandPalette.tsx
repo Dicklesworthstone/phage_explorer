@@ -312,6 +312,7 @@ export function CommandPalette({ repository, onSelectPhage, commands: customComm
 
   // Initialize search worker for off-main-thread fuzzy search (prefer preloaded).
   useEffect(() => {
+    if (!paletteOpen) return;
     let cancelled = false;
 
     const preloaded = getSearchWorker();
@@ -368,7 +369,7 @@ export function CommandPalette({ repository, onSelectPhage, commands: customComm
       workerRef.current = null;
       setWorkerReady(false);
     };
-  }, []);
+  }, [paletteOpen]);
 
   const executeCommand = useCallback((cmd: Command) => {
     addRecentCommand(cmd.id);

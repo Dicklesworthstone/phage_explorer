@@ -650,10 +650,12 @@ export default function App(): React.ReactElement {
     [setCurrentPhage, setCurrentPhageIndex, setError, setLoadingPhage]
   );
 
-  // Preload workers on mount for instant overlay feel
+  // Idle during a database download is not the end of startup. Give the
+  // catalog and first genome priority before warming optional overlay workers.
   useEffect(() => {
+    if (!repository || !fullSequence) return;
     void preloadWorkers();
-  }, []);
+  }, [repository, fullSequence]);
 
   const hydratedRepositoryRef = useRef<PhageRepository | null>(null);
   useEffect(() => {

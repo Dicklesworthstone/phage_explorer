@@ -86,6 +86,7 @@ function extractContext(sequence: string, start: number, end: number, pad = 20):
 
 export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps): React.ReactElement | null {
   const { isOpen, close } = useOverlay();
+  const overlayOpen = isOpen('search');
   const { theme } = useTheme();
   const colors = theme.colors;
 
@@ -120,8 +121,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   // Track if we're using a preloaded worker (don't terminate on unmount)
   const usingPreloadedRef = useRef(false);
 
-  // Initialize worker - use preloaded if available, otherwise create new
+  // Keep hotkeys mounted, but start compute only when the panel is opened.
   useEffect(() => {
+    if (!overlayOpen) return;
     let cancelled = false;
     usingPreloadedRef.current = false;
 
@@ -184,9 +186,8 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
       workerRef.current = null;
       setWorkerReady(false);
     };
-  }, [workerInitKey]);
+  }, [overlayOpen, workerInitKey]);
 
-  const overlayOpen = isOpen('search');
   const hasDatabase = Boolean(repository);
   const hasPhage = Boolean(currentPhage);
   const isInitializing = (!workerReady && !workerError) || status === 'loading';

@@ -333,6 +333,9 @@ export class DatabaseLoader {
         // Load WASM from CDN
         locateFile: (file: string) =>
           `https://sql.js.org/dist/${file}`,
+      }).catch((error) => {
+        this.sqlPromise = null;
+        throw error;
       });
     }
     return this.sqlPromise;
@@ -736,6 +739,14 @@ export class DatabaseLoader {
    */
   async downloadDatabase(manifest: DatabaseManifest): Promise<{ db: Database; data: Uint8Array }> {
     if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
+    // Neither downloading nor verifying the SQLite bytes needs the SQL engine.
+    // Start its independent asset fetch now rather than after the full download.
+    const timing = this.timing;
+    timing?.startStage('sqlJsInit');
+    const sqlReady = this.getSqlJs().finally(() => timing?.endStage('sqlJsInit'));
+    // Observe early failures while the download is pending. Awaiting sqlReady
+    // below still propagates the original error and prevents opening/caching.
+    void sqlReady.catch(() => {});
     this.progress('downloading', 10, 'Downloading database...');
 
     const downloadUrl = (() => {
@@ -824,9 +835,7 @@ export class DatabaseLoader {
 
     this.progress('initializing', 80, 'Initializing database...');
 
-    this.timing?.startStage('sqlJsInit');
-    const SQL = await this.getSqlJs();
-    this.timing?.endStage('sqlJsInit');
+    const SQL = await sqlReady;
 
     this.timing?.startStage('dbOpen');
     const db = new SQL.Database(combined);

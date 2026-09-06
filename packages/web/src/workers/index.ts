@@ -14,7 +14,7 @@ export {
   type SequenceBuffer,
 } from './SharedSequencePool';
 
-// Worker preloader - call preloadWorkers() on app mount for instant overlay feel
+// Worker preloader - warm optional search after the first genome is available.
 export {
   preloadWorkers,
   getSearchWorker,

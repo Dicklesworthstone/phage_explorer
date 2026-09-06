@@ -3,6 +3,7 @@ import { setupTestHarness } from './e2e-harness';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { createServer } from 'node:http';
 
 test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
 
@@ -40,6 +41,140 @@ async function expectOfflineCache(page: Page) {
   await expect(page.getByRole('status', { name: 'Offline database status', exact: true })).toHaveText('Database available offline');
 }
 
+// WebKit cannot fulfill a synthetic 304 through Playwright routing. Serve a
+// real conditional HTTP response so every engine exercises the same protocol.
+async function serveConditionalManifest(manifest: unknown, etag: string, onResponse: (notModified: boolean) => void) {
+  const server = createServer((request, response) => {
+    const headers = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'If-None-Match',
+      'Access-Control-Expose-Headers': 'ETag',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cache-Control': 'no-cache',
+      'Content-Type': 'application/json',
+      ETag: etag,
+    };
+    if (request.method === 'OPTIONS') { // ubs:ignore — public HTTP method comparison, not authentication or a secret.
+      response.writeHead(204, headers).end();
+      return;
+    } // ubs:ignore — closes the OPTIONS branch; request headers are never merged into response headers.
+    const notModified = request.headers['if-none-match'] === etag; // ubs:ignore — public ETag comparison; no secret and no request object is merged into state.
+    onResponse(notModified);
+    response.writeHead(notModified ? 304 : 200, headers);
+    response.end(notModified ? undefined : JSON.stringify(manifest));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Manifest server did not bind a TCP port');
+  return {
+    url: `http://127.0.0.1:${address.port}/phage.db.manifest.json`,
+    close: () => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+  };
+}
+
+test('SQLite initializes during the real database download and optional search waits for the catalog', async ({ page }, testInfo) => {
+  const { pageErrors, consoleErrors, finalize } = setupTestHarness(page, testInfo);
+  let releaseDownload!: () => void;
+  const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve; });
+  let downloading = false;
+  let sqlReady = false;
+  let searchRequests = 0;
+  await page.route('**/phage.db.gz?*', async route => {
+    downloading = true;
+    await downloadGate;
+    await route.continue(); // Delay the actual asset; never substitute database bytes.
+  });
+  page.on('requestfinished', request => {
+    if (/\/sql-wasm-[^/]+\.wasm$/.test(request.url())) sqlReady = true;
+  });
+  page.on('request', request => {
+    if (/\/search\.worker-[^/]+\.js$/.test(request.url())) searchRequests++;
+  });
+  try {
+    await page.goto('/?phage=lambda&model=0', { waitUntil: 'domcontentloaded' });
+    await expect.poll(() => downloading).toBe(true);
+    await expect.poll(() => sqlReady, { message: 'SQLite WASM completes while the DB response is still held' }).toBe(true);
+    expect(searchRequests, 'optional worker must not compete with initial database loading').toBe(0);
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+    releaseDownload();
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    await expect.poll(() => searchRequests, { message: 'search still preloads after the catalog becomes usable' }).toBe(1);
+    expect((await cachedIdentity(page))?.valid).toBe(true);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.keyboard.press('/');
+    const search = page.locator('.overlay-search');
+    await search.getByLabel('Query', { exact: true }).fill('ATG');
+    await expect(search.locator('[data-result-index="0"]')).toContainText('ATG');
+    await search.locator('[data-result-index="0"]').click();
+    await expect(search).not.toBeVisible();
+    await page.keyboard.press('Control+k');
+    await page.getByRole('combobox', { name: 'Search commands' }).fill('lambda');
+    await expect(page.getByTestId('command-palette-results')).toContainText('Enterobacteria phage lambda');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('combobox', { name: 'Search commands' })).toHaveValue('');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('combobox', { name: 'Search commands' })).not.toBeVisible();
+    await page.keyboard.press('/');
+    await search.getByLabel('Query', { exact: true }).fill('ATGC');
+    await expect(search.locator('[data-result-index="0"]')).toContainText('ATGC');
+    expect(searchRequests, 'Search and Command Palette reuse the one preloaded worker across reopen').toBe(1);
+    expect(pageErrors).toEqual([]);
+    expect(consoleErrors).toEqual([]);
+  } finally {
+    releaseDownload();
+    await finalize();
+  }
+});
+
+test('an early SQLite download failure is observed and Retry recovers without a page reload', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let releaseDownload!: () => void;
+  const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve; });
+  let failedWasm = false;
+  let rejectWasm = true;
+  await page.route('**/phage.db.gz?*', async route => {
+    await downloadGate;
+    await route.continue();
+  });
+  await page.route('**/sql-wasm-*.wasm', async route => {
+    if (rejectWasm) {
+      failedWasm = true;
+      await route.abort('failed'); // Explicit transport fault; successful retry uses the real WASM asset.
+    } else {
+      await route.continue();
+    }
+  });
+  try {
+    await page.goto('/?phage=lambda&model=0', { waitUntil: 'domcontentloaded' });
+    const identity = await page.evaluate(() => {
+      document.documentElement.dataset.startupIdentity = crypto.randomUUID();
+      return document.documentElement.dataset.startupIdentity;
+    });
+    await expect.poll(() => failedWasm).toBe(true);
+    releaseDownload();
+    await expect(page.getByRole('status', { name: 'Database loading progress' })).toContainText('error');
+    await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+    expect(await cachedIdentity(page)).toBeNull();
+    expect(pageErrors, 'an early rejected initialization must not become an unhandled rejection').toEqual([]);
+    rejectWasm = false;
+    await page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    expect((await cachedIdentity(page))?.valid).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.dataset.startupIdentity)).toBe(identity);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    releaseDownload();
+    await finalize();
+  }
+});
+
 test('database loads real catalog data and reuses verified cache without another download', async ({ page }, testInfo) => {
   const { consoleErrors, pageErrors, finalize } = setupTestHarness(page, testInfo);
   const downloads: string[] = [];
@@ -74,6 +209,7 @@ test('database loads real catalog data and reuses verified cache without another
 
 test('corrupt update cannot replace a verified cached catalog, including after a 304 manifest', async ({ page }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let manifestServer: Awaited<ReturnType<typeof serveConditionalManifest>> | undefined;
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
@@ -86,26 +222,27 @@ test('corrupt update cannot replace a verified cached catalog, including after a
     // serves the old DB bytes. This is protocol fault injection, not live data.
     const update = { ...manifest, contentVersion: 'a'.repeat(64), sha256: 'b'.repeat(64) };
     let manifestRequests = 0;
+    let notModified = 0;
     let updateDownloads = 0;
-    await page.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
+    manifestServer = await serveConditionalManifest(update, '"test-update"', cached => {
       manifestRequests++;
-      if (route.request().headers()['if-none-match'] === '"test-update"') { // ubs:ignore — public test ETag, not a secret or authentication token.
-        return route.fulfill({ status: 304, headers: { ETag: '"test-update"' } });
-      }
-      return route.fulfill({ status: 200, json: update, headers: { ETag: '"test-update"' } });
+      if (cached) notModified++;
     });
+    const manifestUrl = manifestServer.url;
+    await page.route('**/phage.db.manifest.json', route => route.continue({ url: manifestUrl }));
     page.on('request', request => {
       if (/\/phage\.db(?:\.gz)?\?/.test(request.url())) updateDownloads++;
     });
     await page.reload();
     await expectCatalog(page);
     await expect.poll(() => manifestRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => notModified).toBeGreaterThan(0);
     await expect.poll(() => updateDownloads).toBeGreaterThan(0);
     // A rejected background refresh must keep the actual previous bytes and identity.
     expect(await cachedIdentity(page)).toEqual(original);
     expect(pageErrors).toHaveLength(0);
   } finally {
-    await finalize();
+    try { await finalize(); } finally { await manifestServer?.close(); }
   }
 });
 
@@ -128,6 +265,7 @@ test('cold load rejects a mismatched descriptor instead of displaying unverified
 for (const mode of ['normal', 'interrupted write', 'two tabs'] as const) {
 test(`real data and schema update converges to a verified cache: ${mode}`, async ({ page, context }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let manifestServer: Awaited<ReturnType<typeof serveConditionalManifest>> | undefined;
   try {
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
@@ -154,13 +292,11 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
     expect(manifest.contentVersion).not.toBe(original!.contentVersion);
     let downloads = 0;
     let notModified = 0;
-    await context.route('**/phage.db.manifest.json', route => { // ubs:ignore — test-only fixed response; no request object is merged into runtime state.
-      if (route.request().headers()['if-none-match'] === '"real-update"') {
-        notModified++;
-        return route.fulfill({ status: 304, headers: { ETag: '"real-update"' } });
-      }
-      return route.fulfill({ json: manifest, headers: { ETag: '"real-update"' } });
+    manifestServer = await serveConditionalManifest(manifest, '"real-update"', cached => {
+      if (cached) notModified++;
     });
+    const manifestUrl = manifestServer.url;
+    await context.route('**/phage.db.manifest.json', route => route.continue({ url: manifestUrl }));
     let releaseConcurrentDownloads: (() => void) | undefined;
     const bothDownloading = new Promise<void>(resolve => { releaseConcurrentDownloads = resolve; });
     await context.route('**/phage.db.gz?*', async route => {
@@ -208,7 +344,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
     expect(pageErrors).toEqual([]);
     if (second) await second.close();
   } finally {
-    await finalize();
+    try { await finalize(); } finally { await manifestServer?.close(); }
   }
 });
 }
