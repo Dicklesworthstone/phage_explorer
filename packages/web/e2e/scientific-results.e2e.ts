@@ -29,6 +29,8 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
           import { RepeatsOverlay } from './components/overlays/RepeatsOverlay';
           import { GelOverlay } from './components/overlays/GelOverlay';
+          import { PromoterOverlay } from './components/overlays/PromoterOverlay';
+          import { ComplexityOverlay } from './components/overlays/ComplexityOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -42,6 +44,9 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const b = await entry('NNNNNNNNNNNN');
           const gelA = await entry('GAATTCAAAA');
           const gelB = await entry('CCCCCCCCCC');
+          const regulatory = await entry('A'.repeat(100) + 'TTGACA' + 'N'.repeat(17) + 'TATAAT' + 'A'.repeat(100));
+          const diverse = await entry('ACGT'.repeat(250));
+          const uniform = await entry('A'.repeat(1000));
           const gelDelayed = await entry('CCCCCCCCCC');
           const gelRead = gelDelayed.repository.getSequenceWindow.bind(gelDelayed.repository);
           let releaseGel;
@@ -71,13 +76,14 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.releaseGelRead = releaseGel;
               window.releaseRepeatRead = release;
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -174,6 +180,23 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await page.evaluate(() => (window as any).setRepeatOpen(true));
     await expect(table).toContainText('No repeats found within these search limits');
     expect((await exported()).resultId).toBe(second.resultId);
+    await page.evaluate(() => (window as any).setRepeatOpen(false));
+    await select('regulatory');
+    await page.evaluate(() => (window as any).setAnalysisOpen('promoter', true));
+    const promoter = page.getByTestId('overlay-promoter');
+    const promoterCount = promoter.getByText('Promoters (σ70/σ32/σ54)', { exact: true }).locator('..').locator('div').last();
+    // This input matches σ32 at 100 and σ70 at 123 (zero-based starts).
+    await expect(promoterCount).toHaveText('2');
+    await select('uniform');
+    await expect(promoterCount).toHaveText('0');
+    await page.evaluate(() => (window as any).setAnalysisOpen('promoter', false));
+    await select('diverse');
+    await page.evaluate(() => (window as any).setAnalysisOpen('complexity', true));
+    const complexity = page.getByTestId('overlay-complexity');
+    const entropy = complexity.getByText('Avg Shannon Entropy', { exact: true }).locator('../..');
+    await expect(entropy).toContainText('2.000');
+    await select('uniform');
+    await expect(entropy).toContainText('0.000');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
