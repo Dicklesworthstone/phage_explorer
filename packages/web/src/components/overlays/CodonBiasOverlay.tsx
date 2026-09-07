@@ -2,10 +2,10 @@
  * CodonBiasOverlay - Codon Usage Bias Analysis
  *
  * Visualizes Relative Synonymous Codon Usage (RSCU) and other
- * codon bias metrics to understand translational selection.
+ * composition metrics from a forward frame-zero genome scan.
  */
 
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -21,6 +21,7 @@ import {
   OverlayStatCard,
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
   OverlayLegend,
   OverlayLegendItem,
   HowDoIKnowThis,
@@ -160,8 +161,12 @@ export function CodonBiasOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{
+    repository: PhageRepository; phage: PhageFull; sequence: string;
+  } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phage === currentPhage
+    ? loaded.sequence : '';
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // View options
@@ -178,35 +183,29 @@ export function CodonBiasOverlay({
   // Fetch sequence when overlay opens
   useEffect(() => {
     if (!isOpen('codonBias')) return;
+    setLoaded(null);
+    setError(null);
     if (!repository || !currentPhage) {
-      setSequence('');
       setLoading(false);
       return;
     }
 
     const phageId = currentPhage.id;
 
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setLoading(true);
 
     repository
       .getFullGenomeLength(phageId)
-      .then(length => repository.getSequenceWindow(phageId, 0, length))
+      .then(length => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then(seq => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setSequence('');
+        setLoaded(null);
+        setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -255,7 +254,7 @@ export function CodonBiasOverlay({
   if (!isOpen('codonBias')) return null;
 
   const hasData = !!analysis;
-  const isEmpty = !loading && !analysis;
+  const isEmpty = !loading && !error && !analysis;
 
   return (
     <Overlay
@@ -271,8 +270,8 @@ export function CodonBiasOverlay({
           action={
             hasData && currentPhage ? (
               <HowDoIKnowThis
-                title="Codon Usage Bias & Translational Adaptation"
-                computation="Relative Synonymous Codon Usage (RSCU) and Effective Number of Codons (Nc) computed over all coding sequences, quantifying codon choice asymmetry and translational selection relative to host tRNA pools."
+                title="Genome Frame-Zero Codon Composition"
+                computation="RSCU compares observed triplet counts with equal usage within each synonymous codon family. The complete genome is scanned from its first base in forward frame zero; CDS annotations, reading-frame changes and host tRNA reference data are not used. Nc uses the implementation's simplified Wright-style estimator."
                 inputs={[
                   { label: 'Genome', value: `${currentPhage.name} (${currentPhage.accession ?? currentPhage.id})` },
                   { label: 'Total Codons', value: `${analysis.totalCodons.toLocaleString()}` },
@@ -281,21 +280,16 @@ export function CodonBiasOverlay({
                 ]}
                 implementation={{
                   engine: 'JavaScript',
-                  details: 'Exact codon family frequency analysis and Wright effective codon number formulation',
+                  details: 'Frame-zero triplet counts, within-family RSCU and simplified effective codon number estimate with fallback values for codon-family groups lacking sufficient counts',
                 }}
-                annotationRelease={{
-                  database: 'RefSeq Host tRNA Pools',
-                  version: 'Release 2026-08',
-                  details: '61 anticodon translation pools per host taxon',
-                }}
-                citation={`Codon usage bias and the effective number of codons (Nc) were calculated across all coding sequences of ${currentPhage.name} following Wright's formulation, and Relative Synonymous Codon Usage (RSCU) values were determined relative to host translational tRNA pools in Phage Explorer.`}
+                citation={`Phage Explorer counted consecutive triplets in forward frame zero of the complete ${currentPhage.name} genome and calculated within-family RSCU, GC3 and a simplified effective codon number estimate. CDS annotations and host tRNA reference data were not used; these genome-composition statistics do not establish translational adaptation.`}
               />
             ) : undefined
           }
         >
-          Relative Synonymous Codon Usage (RSCU) reveals translational selection.
-          RSCU &gt; 1.0 indicates preferred codons; RSCU &lt; 1.0 indicates avoided codons.
-          Strong bias suggests adaptation to host tRNA pools.
+          This view counts consecutive triplets from the first genome base in forward frame zero.
+          RSCU &gt; 1.0 indicates above-equal usage within a synonymous family; RSCU &lt; 1.0 indicates below-equal usage.
+          CDS annotations and host tRNA reference data are not used, so these statistics alone do not establish translational adaptation.
         </OverlayDescription>
 
         {/* Loading State */}
@@ -306,10 +300,11 @@ export function CodonBiasOverlay({
         )}
 
         {/* Empty State */}
+        {error && <OverlayErrorState message="Could not load sequence" details={error} />}
         {isEmpty && (
           <OverlayEmptyState
             message={!sequence ? 'No sequence loaded' : 'Sequence too short for analysis'}
-            hint="Select a phage with coding sequences to analyze."
+            hint="Select a genome with at least 300 bases to scan."
           />
         )}
 
@@ -481,8 +476,9 @@ export function CodonBiasOverlay({
             {/* Interpretation */}
             <OverlayDescription title="Interpretation:" style={{ fontSize: '0.75rem' }}>
               Nc (Effective Number of Codons) ranges from 20 (extreme bias) to 61 (uniform).
-              Values &lt; 40 suggest selection for translational efficiency. GC3 ≠ GC suggests
-              selection overrides mutational pressure. Preferred codons often match abundant host tRNAs.
+              Lower estimates indicate greater skew in the counted triplets. GC3 summarizes their
+              third-position GC content. Inferring coding-region usage or host adaptation requires
+              CDS and host-reference analysis beyond this frame-zero genome scan.
             </OverlayDescription>
           </>
         )}

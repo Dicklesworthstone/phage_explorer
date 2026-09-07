@@ -40,6 +40,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { PromoterOverlay } from './components/overlays/PromoterOverlay';
           import { ComplexityOverlay } from './components/overlays/ComplexityOverlay';
           import { NonBDNAOverlay } from './components/overlays/NonBDNAOverlay';
+          import { CodonBiasOverlay } from './components/overlays/CodonBiasOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -57,6 +58,8 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const diverse = await entry('ACGT'.repeat(250));
           const uniform = await entry('A'.repeat(1000));
           const quadruplex = await entry('A'.repeat(100) + 'GGGTGGGTGGGTGGG' + 'A'.repeat(100));
+          const codonA = await entry('GCC'.repeat(120));
+          const codonB = await entry('AAA'.repeat(150));
           const gelDelayed = await entry('CCCCCCCCCC');
           const gelRead = gelDelayed.repository.getSequenceWindow.bind(gelDelayed.repository);
           let releaseGel;
@@ -86,7 +89,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, quadruplex, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, quadruplex, codonA, codonB, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
                 const read = quadruplex.repository.getSequenceWindow.bind(quadruplex.repository);
@@ -104,7 +107,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -267,6 +270,36 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await select('uniform');
     await page.evaluate(() => (window as any).setAnalysisOpen('nonBDNA', true));
     await expect(g4Count).toHaveText('(0)');
+    await page.evaluate(() => (window as any).setAnalysisOpen('nonBDNA', false));
+    await select('codonA');
+    await page.evaluate(() => (window as any).setAnalysisOpen('codonBias', true));
+    const codon = page.getByTestId('overlay-codonBias');
+    const codonCount = codon.getByText('Total Codons', { exact: true }).locator('..').locator('div').last();
+    const gc3 = codon.getByText('GC3 Content', { exact: true }).locator('..').locator('div').last();
+    await expect(codonCount).toHaveText('120');
+    await expect(gc3).toHaveText('100.0%');
+    await select('codonB');
+    await expect(codonCount).toHaveText('150');
+    await expect(gc3).toHaveText('0.0%');
+    await codon.getByRole('button', { name: /How do I know this:/ }).click();
+    const codonProvenance = page.getByRole('dialog', { name: /Provenance & calculation details for Genome Frame-Zero/ });
+    await expect(codonProvenance).toContainText('forward frame zero');
+    await expect(codonProvenance).toContainText('CDS annotations and host tRNA reference data were not used');
+    await expect(codonProvenance).not.toContainText('RefSeq Host tRNA Pools');
+    await expect(codonProvenance).not.toContainText('Release 2026-08');
+    await codonProvenance.getByRole('button', { name: 'Close provenance details' }).click();
+    await select('broken');
+    await expect(codon).toContainText('Could not load sequence');
+    await expect(codonCount).toHaveCount(0);
+    await select('missing');
+    await expect(codon).toContainText('No sequence loaded');
+    await select('codonA');
+    await expect(codonCount).toHaveText('120');
+    await page.evaluate(() => (window as any).setAnalysisOpen('codonBias', false));
+    await expect(codon).toHaveCount(0);
+    await select('codonB');
+    await page.evaluate(() => (window as any).setAnalysisOpen('codonBias', true));
+    await expect(codonCount).toHaveText('150');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
