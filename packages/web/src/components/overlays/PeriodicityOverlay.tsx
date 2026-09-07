@@ -7,7 +7,7 @@
  * Part of: phage_explorer-axn (Advanced: Periodicity & Tandem Repeat Wavelet Spectrogram)
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import {
   analyzePeriodicity,
@@ -25,6 +25,7 @@ import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
 } from './primitives';
 import { DEFAULT_HEATMAP_SCALE } from '../primitives/colorScales';
 import type { HeatmapHover } from '../primitives/types';
@@ -45,12 +46,11 @@ export function PeriodicityOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-
-  const [sequence, setSequence] = useState('');
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
+  const selectedInput = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
+  const sequence = selectedInput?.sequence ?? '';
+  const [readError, setReadError] = useState<string | null>(null);
   const [loadingSequence, setLoadingSequence] = useState(false);
-  const [loadingAnalysis, setLoadingAnalysis] = useState(false);
-  const [analysis, setAnalysis] = useState<PeriodicityAnalysis | null>(null);
   const [hover, setHover] = useState<HeatmapHover | null>(null);
 
   // Controls
@@ -61,6 +61,13 @@ export function PeriodicityOverlay({
 
   const minPeriod = 2;
   const stepSize = Math.max(1, Math.floor(windowSize / 4));
+  const analysisInput = useMemo(() => ({ selectedInput, encoding, windowSize, stepSize, minPeriod, maxPeriod, candidateThreshold }),
+    [selectedInput, encoding, windowSize, stepSize, minPeriod, maxPeriod, candidateThreshold]);
+  const [computed, setComputed] = useState<{ input: typeof analysisInput; data: PeriodicityAnalysis | null; error: string | null } | null>(null);
+  const currentResult = computed?.input === analysisInput ? computed : null;
+  const analysis = currentResult?.data ?? null;
+  const loadingAnalysis = sequence.length > 0 && currentResult === null;
+  const error = readError ?? currentResult?.error ?? null;
 
   // Hotkey (Alt+W)
   useHotkey(
@@ -72,36 +79,27 @@ export function PeriodicityOverlay({
   // Fetch full genome when overlay opens
   useEffect(() => {
     if (!isOpen('periodicity')) return;
+    setLoaded(null);
+    setReadError(null);
+    setHover(null);
     if (!repository || !currentPhage) {
-      setSequence('');
-      setAnalysis(null);
       setLoadingSequence(false);
-      setLoadingAnalysis(false);
-      setHover(null);
       return;
     }
 
     const phageId = currentPhage.id;
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoadingSequence(false);
-      setLoadingAnalysis(false);
-      return;
-    }
-
     let cancelled = false;
     setLoadingSequence(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setSequence('');
+        setReadError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         if (!cancelled) setLoadingSequence(false);
@@ -114,46 +112,30 @@ export function PeriodicityOverlay({
 
   // Compute spectrogram + candidates
   useEffect(() => {
-    if (!isOpen('periodicity')) {
-      setAnalysis(null);
-      setLoadingAnalysis(false);
-      setHover(null);
-      return;
-    }
-    if (!sequence) {
-      setAnalysis(null);
-      setLoadingAnalysis(false);
-      return;
-    }
-
-    setLoadingAnalysis(true);
+    setComputed(null);
     setHover(null);
+    const inputSequence = analysisInput.selectedInput?.sequence;
+    if (!isOpen('periodicity') || !inputSequence) {
+      return;
+    }
 
     // Yield to allow overlay paint before compute.
     let cancelled = false;
     const handle = window.setTimeout(() => {
       if (cancelled) return;
       try {
-        const res = analyzePeriodicity(sequence, {
-          encoding,
-          windowSize,
-          stepSize,
-          minPeriod,
-          maxPeriod,
-          candidateThreshold,
-        });
-        setAnalysis(res);
-      } finally {
-        if (!cancelled) setLoadingAnalysis(false);
+        const res = analyzePeriodicity(inputSequence, analysisInput);
+        setComputed({ input: analysisInput, data: res, error: null });
+      } catch (cause: unknown) {
+        setComputed({ input: analysisInput, data: null, error: cause instanceof Error ? cause.message : String(cause) });
       }
     }, 0);
 
     return () => {
       cancelled = true;
       window.clearTimeout(handle);
-      setLoadingAnalysis(false);
     };
-  }, [candidateThreshold, encoding, isOpen, maxPeriod, sequence, stepSize, windowSize]);
+  }, [analysisInput, isOpen]);
 
   const spectrum = analysis?.spectrum ?? null;
   const hoverLabel = useMemo(() => {
@@ -205,6 +187,7 @@ export function PeriodicityOverlay({
         }}
       >
         {/* Loading */}
+        {error && <OverlayErrorState message={readError ? 'Could not load sequence' : 'Could not compute periodicity'} details={error} />}
         {loadingSequence && (
           <OverlayLoadingState message="Loading sequence data...">
             <AnalysisPanelSkeleton rows={3} />
@@ -322,7 +305,7 @@ export function PeriodicityOverlay({
         )}
 
         {/* Main view */}
-        {!loadingSequence && !loadingAnalysis && (!analysis || !spectrum || spectrum.rows === 0) ? (
+        {!error && !loadingSequence && !loadingAnalysis && (!analysis || !spectrum || spectrum.rows === 0) ? (
           <OverlayEmptyState
             message={!sequence ? 'No sequence loaded' : 'Sequence too short for spectrogram'}
             hint={!sequence ? 'Select a phage to analyze.' : 'The sequence must be long enough to compute windowed autocorrelation.'}

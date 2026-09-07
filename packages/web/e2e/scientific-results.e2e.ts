@@ -42,6 +42,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { NonBDNAOverlay } from './components/overlays/NonBDNAOverlay';
           import { CodonBiasOverlay } from './components/overlays/CodonBiasOverlay';
           import { BendabilityOverlay } from './components/overlays/BendabilityOverlay';
+          import { PeriodicityOverlay } from './components/overlays/PeriodicityOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -99,6 +100,8 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
+                window.quadruplexReadPending = false;
+                window.quadruplexReadReleased = false;
                 const read = quadruplex.repository.getSequenceWindow.bind(quadruplex.repository);
                 const gate = new Promise(resolve => { window.releaseQuadruplexRead = resolve; });
                 quadruplex.repository.getSequenceWindow = async (...args) => {
@@ -114,7 +117,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /><PeriodicityOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -362,6 +365,36 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     expect((await bendPixels())[1]).toEqual(gap);
     await select('bendC');
     await expect(bendAverage).toHaveText('0.250');
+    await page.evaluate(() => (window as any).setAnalysisOpen('bendability', false));
+    await select('diverse');
+    await page.evaluate(() => (window as any).setAnalysisOpen('periodicity', true));
+    const periodicity = page.getByTestId('overlay-periodicity');
+    await periodicity.getByRole('combobox').first().selectOption('gc');
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 4 bp');
+    await select('uniform');
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 2 bp');
+    await expect(periodicity).not.toContainText('0–1,000 (1,000 bp) • 4 bp');
+    await page.evaluate(() => (window as any).holdQuadruplexRead());
+    await select('quadruplex');
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadPending)).toBe(true);
+    await expect(periodicity.getByRole('img')).toHaveCount(0);
+    await expect(periodicity).not.toContainText('Repeat candidates');
+    await select('diverse');
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 4 bp');
+    await page.evaluate(() => (window as any).releaseQuadruplexRead());
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadReleased)).toBe(true);
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 4 bp');
+    await select('broken');
+    await expect(periodicity).toContainText('Could not load sequence');
+    await expect(periodicity.getByRole('img')).toHaveCount(0);
+    await select('missing');
+    await expect(periodicity).toContainText('No sequence loaded');
+    await select('diverse');
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 4 bp');
+    await page.evaluate(() => (window as any).setAnalysisOpen('periodicity', false));
+    await select('uniform');
+    await page.evaluate(() => (window as any).setAnalysisOpen('periodicity', true));
+    await expect(periodicity).toContainText('0–1,000 (1,000 bp) • 2 bp');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
