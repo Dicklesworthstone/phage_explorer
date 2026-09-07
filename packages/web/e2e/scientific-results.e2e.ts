@@ -2,20 +2,28 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
-import { createServer as createViteServer } from 'vite';
+import { createServer as createViteServer, loadConfigFromFile, mergeConfig, type UserConfig, type InlineConfig } from 'vite';
 import { setupTestHarness } from './e2e-harness';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 
 // An isolated component journey deliberately changes repository props without
 // reloading the page. It uses the real local repository, component and worker;
 // only input selection and a delayed read are controlled by the fixture.
+let fixtureConfig: UserConfig | undefined;
 for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository identity survives replacement and late reads under ${backend}`, async ({ page }, info) => {
   const webRoot = process.cwd();
   const fixtureId = resolve(webRoot, 'src/repeat-repository-fixture.tsx');
-  const server = await createViteServer({
+  // Resolve once per worker: repeated bundled-config loads can race temporary
+  // module cleanup when an isolated checkout shares installed dependencies.
+  if (!fixtureConfig) {
+    const loaded = await loadConfigFromFile({ command: 'serve', mode: 'development' }, resolve(webRoot, 'vite.config.ts'));
+    if (!loaded) throw new Error('Could not load browser fixture configuration');
+    fixtureConfig = loaded.config;
+  }
+  const server = await createViteServer(mergeConfig(fixtureConfig, {
     root: webRoot,
     cacheDir: info.outputPath('vite-cache'),
-    configFile: resolve(webRoot, 'vite.config.ts'),
+    configFile: false,
     server: { host: '127.0.0.1', port: 0, open: false },
     plugins: [{
       name: 'repeat-repository-fixture',
@@ -97,7 +105,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
         });
       },
     }],
-  });
+  } satisfies InlineConfig));
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   if (backend === 'javascript') await page.route('**/analysis.worker.ts?*', async route => {
@@ -188,7 +196,15 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     // This input matches σ32 at 100 and σ70 at 123 (zero-based starts).
     await expect(promoterCount).toHaveText('2');
     await select('uniform');
+    // Soft assertions still fail the test; continue to diagnose complexity too.
     await expect.soft(promoterCount).toHaveText('0');
+    await select('broken');
+    await expect(promoter).toContainText('Could not load sequence');
+    await expect(promoterCount).toHaveCount(0);
+    await select('missing');
+    await expect(promoter).toContainText('No sequence data available');
+    await select('uniform');
+    await expect(promoterCount).toHaveText('0');
     await page.evaluate(() => (window as any).setAnalysisOpen('promoter', false));
     await select('diverse');
     await page.evaluate(() => (window as any).setAnalysisOpen('complexity', true));
@@ -196,6 +212,18 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     const entropy = complexity.getByText('Avg Shannon Entropy', { exact: true }).locator('../..');
     await expect(entropy).toContainText('1.000');
     await select('uniform');
+    await expect(entropy).toContainText('0.000');
+    await select('broken');
+    await expect(complexity).toContainText('Complexity analysis unavailable');
+    await expect(complexity.getByRole('img')).toHaveCount(0);
+    await select('missing');
+    await expect(complexity.getByRole('img')).toHaveCount(0);
+    await select('diverse');
+    await expect(entropy).toContainText('1.000');
+    await page.evaluate(() => (window as any).setAnalysisOpen('complexity', false));
+    await expect(complexity).toHaveCount(0);
+    await select('uniform');
+    await page.evaluate(() => (window as any).setAnalysisOpen('complexity', true));
     await expect(entropy).toContainText('0.000');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
