@@ -19,6 +19,7 @@ import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import {
   OverlayLoadingState,
   OverlayErrorState,
+  OverlayEmptyState,
 } from './primitives';
 
 interface TranscriptionFlowOverlayProps {
@@ -34,113 +35,63 @@ export function TranscriptionFlowOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const activePhageIdRef = useRef<number | null>(null);
-  const [sequence, setSequence] = useState<string>('');
-  const [data, setData] = useState<{ values: number[]; peaks: Array<{ start: number; end: number; flux: number }> }>({ values: [], peaks: [] });
-  const [sequenceLoading, setSequenceLoading] = useState(false);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    repository: PhageRepository;
+    phage: PhageFull;
+    data: TranscriptionFlowResult | null;
+    stage: 'sequence' | 'analysis' | null;
+    error: string | null;
+  } | null>(null);
+  const current = snapshot?.repository === repository && snapshot?.phage === currentPhage ? snapshot : null;
+  const sequenceLoading = Boolean(repository && currentPhage && (!current || current.stage === 'sequence'));
+  const analysisLoading = current?.stage === 'analysis';
+  const error = current?.error ?? null;
 
-  // Fetch sequence when overlay opens
+  // Keep the read and worker result in one selection-scoped operation.
   useEffect(() => {
     if (!isOpen('transcriptionFlow')) return;
+    setSnapshot(null);
     if (!repository || !currentPhage) {
-      setSequence('');
-      setSequenceLoading(false);
-      setData({ values: [], peaks: [] });
-      setAnalysisLoading(false);
-      setError(null);
-      return;
-    }
-
-    const phageId = currentPhage.id;
-    if (activePhageIdRef.current !== phageId) {
-      activePhageIdRef.current = phageId;
-      setSequence('');
-      setData({ values: [], peaks: [] });
-      setAnalysisLoading(false);
-      setError(null);
-    }
-
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setSequenceLoading(false);
       return;
     }
 
     let cancelled = false;
-    setSequenceLoading(true);
-
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setSequence('');
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setSequenceLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, repository, currentPhage]);
-
-  // Calculate transcription flow data via worker
-  useEffect(() => {
-    if (!isOpen('transcriptionFlow')) return;
-    if (!repository || !currentPhage) {
-      setData({ values: [], peaks: [] });
-      setAnalysisLoading(false);
-      setError(null);
-      return;
-    }
-
-    if (!sequence) {
-      setData({ values: [], peaks: [] });
-      setAnalysisLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setAnalysisLoading(true);
-    setError(null);
-
+    const input = { repository, phage: currentPhage };
+    setSnapshot({ ...input, data: null, stage: 'sequence', error: null });
     const runAnalysis = async () => {
       try {
+        const length = await repository.getFullGenomeLength(currentPhage.id);
+        if (cancelled) return;
+        const sequence = await repository.getSequenceWindow(currentPhage.id, 0, length);
+        if (cancelled) return;
+        if (!sequence) {
+          setSnapshot({ ...input, data: null, stage: null, error: null });
+          return;
+        }
+        setSnapshot({ ...input, data: null, stage: 'analysis', error: null });
         const result = await getOrchestrator().runAnalysis({
           type: 'transcription-flow',
           sequence,
         }) as TranscriptionFlowResult;
 
         if (!cancelled) {
-          setData({ values: result.values, peaks: result.peaks });
+          setSnapshot({ ...input, data: result, stage: null, error: null });
         }
       } catch (err) {
         if (cancelled) return;
-        setData({ values: [], peaks: [] });
-        setError(err instanceof Error ? err.message : 'Transcription flow analysis failed');
-      } finally {
-        if (!cancelled) setAnalysisLoading(false);
+        setSnapshot({ ...input, data: null, stage: null, error: err instanceof Error ? err.message : 'Transcription flow analysis failed' });
       }
     };
 
-    runAnalysis();
+    void runAnalysis();
 
     return () => {
       cancelled = true;
     };
-  }, [currentPhage, isOpen, repository, sequence]);
+  }, [currentPhage, isOpen, repository]);
 
-  const { values, peaks } = data;
+  const values = current?.data?.values ?? [];
+  const peaks = current?.data?.peaks ?? [];
 
   // Register hotkey
   useHotkey(
@@ -254,6 +205,8 @@ export function TranscriptionFlowOverlay({
             message="Transcription flow analysis failed"
             details={error}
           />
+        ) : values.length === 0 ? (
+          <OverlayEmptyState message="No sequence loaded" hint="Select a phage to analyze." />
         ) : (
           <div style={{
             border: `1px solid ${colors.borderLight}`,
@@ -265,7 +218,7 @@ export function TranscriptionFlowOverlay({
             <canvas
               ref={canvasRef}
               role="img"
-              aria-label="Transcription flow diagram showing gene expression patterns and regulatory connections"
+              aria-label="Heuristic transcription flow profile from sequence motifs"
               style={{
                 width: '100%',
                 height: '100%',
@@ -276,7 +229,7 @@ export function TranscriptionFlowOverlay({
         )}
 
         {/* Top Peaks */}
-        <div>
+        {!loading && !error && values.length > 0 && <div>
           <h3 style={{ color: colors.primary, fontSize: '1rem', marginBottom: '0.5rem' }}>Top Flow Regions</h3>
           {peaks.length === 0 ? (
             <div style={{ color: colors.textDim }}>No prominent peaks detected.</div>
@@ -301,7 +254,7 @@ export function TranscriptionFlowOverlay({
               ))}
             </div>
           )}
-        </div>
+        </div>}
 
         <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginTop: '0.5rem' }}>
           Heuristic model: promoters seed flow, palindromic repeats attenuate. Future: σ-factor presets, terminator prediction.
