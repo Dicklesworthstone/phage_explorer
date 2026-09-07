@@ -68,24 +68,27 @@ export function DotPlotOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('dotPlot');
   const workerRef = useRef<Worker | null>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const requestIdRef = useRef(0);
 
   // State
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
+  const input = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
+  const sequence = input?.sequence ?? '';
   const loading = sequenceLoading || computeLoading;
-
-  // Analysis results
-  const [directValues, setDirectValues] = useState<Float32Array | null>(null);
-  const [invertedValues, setInvertedValues] = useState<Float32Array | null>(null);
-  const [bins, setBins] = useState(0);
-  const [windowSize, setWindowSize] = useState(0);
 
   // UI state
   const [viewMode, setViewMode] = useState<ViewMode>('combined');
   const [resolution, setResolution] = useState(80);
+  const request = useMemo(() => ({ input, resolution }), [input, resolution]);
+  const [computed, setComputed] = useState<{ request: typeof request; response: DotPlotWorkerResponse } | null>(null);
+  const response = computed?.request === request ? computed.response : null;
+  const directValues = response?.directValues ?? null;
+  const invertedValues = response?.invertedValues ?? null;
+  const bins = response?.bins ?? 0;
+  const windowSize = response?.window ?? 0;
   const [hoverInfo, setHoverInfo] = useState<HeatmapHover | null>(null);
   const viewSelectId = 'dotplot-view';
   const resolutionSelectId = 'dotplot-resolution';
@@ -97,21 +100,10 @@ export function DotPlotOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Initialize worker
+  // Reuse initialization; request IDs below isolate progressive replies.
   useEffect(() => {
-    let worker: Worker | null = null;
-    try {
-      worker = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url), { type: 'module' });
-    } catch {
-      try {
-        worker = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url));
-      } catch {
-        // Both worker variants failed; leave worker null.
-      }
-    }
-    if (worker) workerRef.current = worker;
     return () => {
-      worker?.terminate();
+      workerRef.current?.terminate();
       workerRef.current = null;
     };
   }, []);
@@ -122,8 +114,10 @@ export function DotPlotOverlay({
       setSequenceLoading(false);
       return;
     }
+    setLoaded(null);
+    setError(null);
+    setHoverInfo(null);
     if (!repository || !currentPhage) {
-      setSequence('');
       setSequenceLoading(false);
       setComputeLoading(false);
       return;
@@ -131,30 +125,21 @@ export function DotPlotOverlay({
 
     const phageId = currentPhage.id;
 
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setSequenceLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setSequenceLoading(true);
 
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         // Do not swallow this. Setting an empty sequence rendered "No sequence
         // loaded", which tells the user this phage has no data when in fact the
         // database read failed. The overlay already renders OverlayErrorState.
-        setSequence('');
         setError(
           `Could not load sequence: ${err instanceof Error ? err.message : String(err)}`
         );
@@ -171,70 +156,83 @@ export function DotPlotOverlay({
 
   // Run dot plot analysis when sequence or resolution changes
   useEffect(() => {
+    setComputed(null);
+    setHoverInfo(null);
     if (!isOpen('dotPlot')) {
       setComputeLoading(false);
       return;
     }
-    if (!sequence || sequence.length < 100) {
-      setDirectValues(null);
-      setInvertedValues(null);
+    const selected = request.input;
+    if (!selected || selected.sequence.length < 100) {
       setComputeLoading(false);
       return;
     }
 
-    const phageId = currentPhage?.id;
-    if (phageId !== undefined && sequenceCache.current.get(phageId) !== sequence) {
-      return;
+    // Start only when needed, then reuse the worker across input changes.
+    if (!workerRef.current) {
+      try {
+        workerRef.current = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url), { type: 'module' });
+      } catch {
+        try {
+          workerRef.current = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url));
+        } catch {
+          // Report creation failure below.
+        }
+      }
     }
-
     const worker = workerRef.current;
     if (!worker) {
+      setError('Dot plot worker unavailable');
       setComputeLoading(false);
       return;
     }
 
     let cancelled = false;
-    setDirectValues(null);
-    setInvertedValues(null);
+    const requestId = ++requestIdRef.current;
     setComputeLoading(true);
     setError(null);
 
     const handleMessage = (event: MessageEvent<DotPlotWorkerResponse>) => {
       const response = event.data;
-      if (cancelled) return;
+      if (cancelled || response.requestId !== requestId) return;
       setComputeLoading(false);
 
       if (!response.ok) {
-        setDirectValues(null);
-        setInvertedValues(null);
+        setComputed(null);
         setError(response.error ?? 'Dot plot computation failed');
         return;
       }
 
       if (response.directValues && response.invertedValues) {
-        setDirectValues(response.directValues);
-        setInvertedValues(response.invertedValues);
-        setBins(response.bins ?? 0);
-        setWindowSize(response.window ?? 0);
+        setComputed({ request, response });
+      } else {
+        setComputed(null);
+        setError('Dot plot worker returned no matrix');
       }
     };
 
     worker.onmessage = handleMessage;
-
-    if (phageId) {
-      const { ref: sequenceRef, transfer } = SharedSequencePool.getInstance().getOrCreateRef(phageId, sequence);
-      worker.postMessage({ sequenceRef, config: { bins: resolution } }, transfer);
-    } else {
-      // Compatibility fallback: unknown phage id; keep string path.
-      worker.postMessage({ sequence, config: { bins: resolution } });
+    worker.onerror = (event) => {
+      if (cancelled) return;
+      setComputed(null);
+      setComputeLoading(false);
+      setError(event.message || 'Dot plot worker failed');
+    };
+    try {
+      const { ref: sequenceRef, transfer } = SharedSequencePool.getInstance().getOrCreateRef(selected.phage.id, selected.sequence);
+      worker.postMessage({ requestId, sequenceRef, config: { bins: request.resolution } }, transfer);
+    } catch (cause: unknown) {
+      setComputeLoading(false);
+      setError(cause instanceof Error ? cause.message : String(cause));
     }
 
     return () => {
       cancelled = true;
       worker.onmessage = null;
+      worker.onerror = null;
       setComputeLoading(false);
     };
-  }, [isOpen, sequence, resolution, currentPhage?.id]);
+  }, [isOpen, request]);
 
   // Combined values (max of direct and inverted)
   const combinedValues = useMemo(() => {

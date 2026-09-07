@@ -138,6 +138,7 @@ self.onmessage = async (event: MessageEvent<DotPlotJob>) => {
             try {
               if (jobId === activeJobId) {
                 const response: DotPlotWorkerResponse = {
+                  requestId: job.requestId,
                   ok: true,
                   directValues: previewResult.direct,
                   invertedValues: previewResult.inverted,
@@ -157,6 +158,7 @@ self.onmessage = async (event: MessageEvent<DotPlotJob>) => {
             try {
               if (jobId === activeJobId) {
                 const response: DotPlotWorkerResponse = {
+                  requestId: job.requestId,
                   ok: true,
                   directValues: fullResult.direct,
                   invertedValues: fullResult.inverted,
@@ -180,7 +182,7 @@ self.onmessage = async (event: MessageEvent<DotPlotJob>) => {
     const computeAndPost = async (bins: number): Promise<void> => {
       if (jobId !== activeJobId) return;
 
-      const response: DotPlotWorkerResponse = { ok: false };
+      const response: DotPlotWorkerResponse = { requestId: job.requestId, ok: false };
       const wasmResult = await tryComputeDotPlotWasm(job, bins, targetWindow);
 
       if (jobId !== activeJobId) return;
@@ -247,7 +249,7 @@ self.onmessage = async (event: MessageEvent<DotPlotJob>) => {
     await computeAndPost(targetBins);
     return;
   } catch (err) {
-    const response: DotPlotWorkerResponse = { ok: false };
+    const response: DotPlotWorkerResponse = { requestId: job?.requestId, ok: false };
     if (import.meta.env.DEV) {
       console.error('DotPlot worker error:', err);
     }

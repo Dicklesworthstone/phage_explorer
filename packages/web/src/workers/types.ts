@@ -495,10 +495,11 @@ export interface SharedSearchWorkerAPI extends SearchWorkerAPI {
 // ============================================================
 
 export type DotPlotJob =
-  | { sequence: string; config?: DotPlotConfig }
-  | { sequenceRef: SequenceBytesRef; config?: DotPlotConfig };
+  | { requestId?: number; sequence: string; config?: DotPlotConfig }
+  | { requestId?: number; sequenceRef: SequenceBytesRef; config?: DotPlotConfig };
 
 export interface DotPlotWorkerResponse {
+  requestId?: number;
   ok: boolean;
   result?: DotPlotResult;
   // Pre-flattened for HeatmapCanvas

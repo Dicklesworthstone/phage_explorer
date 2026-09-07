@@ -46,6 +46,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { TranscriptionFlowOverlay } from './components/overlays/TranscriptionFlowOverlay';
           import { ProphageExcisionOverlay } from './components/overlays/ProphageExcisionOverlay';
           import { StructureConstraintOverlay } from './components/overlays/StructureConstraintOverlay';
+          import { DotPlotOverlay } from './components/overlays/DotPlotOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -62,6 +63,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const regulatory = await entry('A'.repeat(100) + 'TTGACA' + 'N'.repeat(17) + 'TATAAT' + 'A'.repeat(100));
           const diverse = await entry('ACGT'.repeat(250));
           const uniform = await entry('A'.repeat(1000));
+          const dotInverted = await entry('AT'.repeat(480));
           const rbs = await entry('C'.repeat(100) + 'AGGAGG' + 'A'.repeat(6) + 'ATG' + 'C'.repeat(100));
           const excision = await entry('N'.repeat(100) + 'TTTTCTTT' + 'N'.repeat(100));
           const quadruplex = await entry('A'.repeat(100) + 'GGGTGGGTGGGTGGG' + 'A'.repeat(100));
@@ -97,12 +99,27 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           };
           const broken = await entry('ACGAACGA');
           broken.repository.getSequenceWindow = async () => { throw new Error('Controlled read failure'); };
+          // Retain a real old worker response to exercise stale-reply rejection.
+          const NativeWorker = window.Worker;
+          window.Worker = class extends NativeWorker {
+            constructor(url, options) {
+              super(url, options);
+              if (String(url).includes('dotplot.worker')) {
+                this.addEventListener('message', event => {
+                  if (!window.captureNextDotReply) return;
+                  window.captureNextDotReply = false;
+                  const data = event.data;
+                  window.replayDotReply = () => this.dispatchEvent(new MessageEvent('message', { data }));
+                });
+              }
+            }
+          };
           function Fixture() {
             const [selected, select] = useState(a);
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, rbs, excision, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, dotInverted, rbs, excision, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
                 window.quadruplexReadPending = false;
@@ -122,7 +139,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /><PeriodicityOverlay currentPhage={selected.phage} repository={selected.repository} /><TranscriptionFlowOverlay currentPhage={selected.phage} repository={selected.repository} /><ProphageExcisionOverlay currentPhage={selected.phage} repository={selected.repository} /><StructureConstraintOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /><PeriodicityOverlay currentPhage={selected.phage} repository={selected.repository} /><TranscriptionFlowOverlay currentPhage={selected.phage} repository={selected.repository} /><ProphageExcisionOverlay currentPhage={selected.phage} repository={selected.repository} /><StructureConstraintOverlay currentPhage={selected.phage} repository={selected.repository} /><DotPlotOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -139,7 +156,11 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
   } satisfies InlineConfig));
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
-  if (backend === 'javascript') await page.route('**/analysis.worker.ts?*', async route => {
+  // Route both modes so Playwright uses the same uncached module loading.
+  // WebKit can reject cached Vite worker imports under COEP; keep normal
+  // worker bytes unchanged while matching the forced-JS route's cache policy.
+  if (backend === 'wasm') await page.route(/\/(?:analysis|dotplot)\.worker\.ts\?/, route => route.continue());
+  if (backend === 'javascript') await page.route(/\/(?:analysis|dotplot)\.worker\.ts\?/, async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: `WebAssembly.instantiate = async () => { throw new Error('Controlled WASM failure'); };\n${await response.text()}` });
   });
@@ -501,6 +522,49 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await select('uniform');
     await page.evaluate(() => (window as any).setAnalysisOpen('structureConstraint', true));
     await expect(rbsCount).toContainText('0 found');
+    await page.evaluate(() => (window as any).setAnalysisOpen('structureConstraint', false));
+    await select('uniform');
+    await page.evaluate(() => { (window as any).captureNextDotReply = true; });
+    await page.evaluate(() => (window as any).setAnalysisOpen('dotPlot', true));
+    const dot = page.getByTestId('overlay-dotPlot');
+    await dot.getByLabel('View:', { exact: true }).selectOption('inverted');
+    await dot.getByLabel('Resolution:', { exact: true }).selectOption('40');
+    const dotPixel = () => dot.getByRole('img', { name: 'Dot plot inverted view' }).evaluate(element => {
+      const canvas = element as HTMLCanvasElement;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Dot plot canvas unavailable');
+      return Array.from(context.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data);
+    });
+    await expect.poll(dotPixel).toEqual([30, 41, 59, 255]);
+    await select('dotInverted');
+    await expect.poll(dotPixel).toEqual([239, 68, 68, 255]);
+    await page.evaluate(async () => {
+      (window as any).replayDotReply();
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+    });
+    await expect.poll(dotPixel).toEqual([239, 68, 68, 255]);
+    await dot.getByLabel('Resolution:', { exact: true }).selectOption('120');
+    await expect(dot).toContainText('(120x120, window:');
+    await page.evaluate(() => (window as any).holdQuadruplexRead());
+    await select('quadruplex');
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadPending)).toBe(true);
+    await expect(dot.getByRole('img')).toHaveCount(0);
+    await select('uniform');
+    await expect.poll(dotPixel).toEqual([30, 41, 59, 255]);
+    await page.evaluate(() => (window as any).releaseQuadruplexRead());
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadReleased)).toBe(true);
+    await expect.poll(dotPixel).toEqual([30, 41, 59, 255]);
+    await select('broken');
+    await expect(dot).toContainText('Could not load sequence');
+    await expect(dot.getByRole('img')).toHaveCount(0);
+    await select('missing');
+    await expect(dot).toContainText('No sequence loaded');
+    await select('dotInverted');
+    await expect(dot.getByRole('img')).toBeVisible();
+    await page.evaluate(() => (window as any).setAnalysisOpen('dotPlot', false));
+    await select('uniform');
+    await page.evaluate(() => (window as any).setAnalysisOpen('dotPlot', true));
+    await expect.poll(dotPixel).toEqual([30, 41, 59, 255]);
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
