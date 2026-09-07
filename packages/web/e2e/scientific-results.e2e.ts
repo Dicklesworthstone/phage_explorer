@@ -65,6 +65,8 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const codonPartial = await entry('NNG'.repeat(150));
           const codonMixed = await entry('GCCNNN'.repeat(75));
           const bendC = await entry('C'.repeat(1000));
+          const bendGap = await entry('A'.repeat(120) + 'N'.repeat(240) + 'A'.repeat(120));
+          const bendSlopeGap = await entry('A'.repeat(120) + 'N'.repeat(240) + 'C'.repeat(120));
           const gelDelayed = await entry('CCCCCCCCCC');
           const gelRead = gelDelayed.repository.getSequenceWindow.bind(gelDelayed.repository);
           let releaseGel;
@@ -94,7 +96,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, bendC, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
                 const read = quadruplex.repository.getSequenceWindow.bind(quadruplex.repository);
@@ -336,6 +338,29 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await expect(bend).toHaveCount(0);
     await select('bendC');
     await page.evaluate(() => (window as any).setAnalysisOpen('bendability', true));
+    await expect(bendAverage).toHaveText('0.250');
+    await select('codonUnknown');
+    await expect(bend).toContainText('No resolved dinucleotides in the scanned windows');
+    await expect(bendAverage).toHaveCount(0);
+    await expect(bend.getByRole('img')).toHaveCount(0);
+    await select('bendGap');
+    await expect(bendAverage).toHaveText('0.350');
+    await expect(bend).toContainText('20 of 36 windows have resolved dinucleotides');
+    const bendPixels = () => bend.getByRole('img').evaluate(element => {
+      const canvas = element as HTMLCanvasElement;
+      const context = canvas.getContext('2d');
+      if (!context) throw new Error('Bendability canvas unavailable');
+      return [0.1, 0.5, 0.9].map(x => Array.from(context.getImageData(Math.floor(canvas.width * x), Math.floor(canvas.height * 0.5), 1, 1).data));
+    });
+    const [left, gap, right] = await bendPixels();
+    expect(left).toEqual(right);
+    expect(gap).not.toEqual(left);
+    await select('bendSlopeGap');
+    await expect(bendAverage).toHaveText('0.300');
+    // A line joining the known runs would cross this pixel. Missing windows
+    // must remain a gap, not a connecting line or compressed coordinates.
+    expect((await bendPixels())[1]).toEqual(gap);
+    await select('bendC');
     await expect(bendAverage).toHaveText('0.250');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });

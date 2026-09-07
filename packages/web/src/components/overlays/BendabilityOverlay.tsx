@@ -38,8 +38,8 @@ const BENDABILITY: Record<string, number> = {
 };
 
 // Calculate bendability profile
-function calculateBendability(sequence: string, windowSize = 50): number[] {
-  const values: number[] = [];
+function calculateBendability(sequence: string, windowSize = 50): Array<number | null> {
+  const values: Array<number | null> = [];
   const seq = sequence.toUpperCase();
   const windowSizeInt = Math.max(1, Math.floor(windowSize));
   const stepSize = Math.max(1, Math.floor(windowSizeInt / 4));
@@ -57,7 +57,8 @@ function calculateBendability(sequence: string, windowSize = 50): number[] {
       }
     }
 
-    values.push(count > 0 ? sum / count : 0.3);
+    // Keep the window's position even when it contains no observed pairs.
+    values.push(count > 0 ? sum / count : null);
   }
 
   return values;
@@ -170,11 +171,12 @@ export function BendabilityOverlay({
   }, [isOpen, repository, currentPhage]);
 
   const bendability = useMemo(() => calculateBendability(sequence), [sequence]);
+  const observed = useMemo(() => bendability.filter((value): value is number => value !== null), [bendability]);
 
   // Draw visualization
   useEffect(() => {
     // Need at least 2 data points to draw lines and avoid division by zero
-    if (!isOpen('bendability') || !canvasRef.current || bendability.length < 2) return;
+    if (!isOpen('bendability') || !canvasRef.current || bendability.length < 2 || observed.length === 0) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -193,8 +195,8 @@ export function BendabilityOverlay({
     ctx.fillRect(0, 0, width, height);
 
     // Find range
-    const min = Math.min(...bendability);
-    const max = Math.max(...bendability);
+    const min = Math.min(...observed);
+    const max = Math.max(...observed);
     const range = max - min || 1;
 
     const rigidRgb = parseCssColorToRgb(colors.info) ?? { r: 0, g: 80, b: 255 };
@@ -203,12 +205,14 @@ export function BendabilityOverlay({
     // Draw heatmap-style bars
     const barWidth = width / bendability.length;
     for (let i = 0; i < bendability.length; i++) {
-      const normalized = (bendability[i] - min) / range;
+      const value = bendability[i];
+      if (value === null) continue;
+      const normalized = (value - min) / range;
       const x = i * barWidth;
 
       // Color gradient from rigid (low) to flexible (high)
       ctx.fillStyle = lerpColor(rigidRgb, flexibleRgb, normalized);
-      ctx.fillRect(x, 0, barWidth + 1, height);
+      ctx.fillRect(x, 0, barWidth, height);
     }
 
     // Overlay line graph
@@ -216,26 +220,33 @@ export function BendabilityOverlay({
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.lineWidth = 2;
 
+    let connected = false;
     for (let i = 0; i < bendability.length; i++) {
+      const value = bendability[i];
+      if (value === null) {
+        connected = false;
+        continue;
+      }
       const x = (i / (bendability.length - 1)) * width;
-      const normalized = (bendability[i] - min) / range;
+      const normalized = (value - min) / range;
       const y = height - normalized * height;
 
-      if (i === 0) ctx.moveTo(x, y);
+      if (!connected) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
+      connected = true;
     }
     ctx.stroke();
-  }, [isOpen, bendability, colors]);
+  }, [isOpen, bendability, observed, colors]);
 
   if (!isOpen('bendability')) {
     return null;
   }
 
-  const avg = bendability.length > 0
-    ? (bendability.reduce((a, b) => a + b, 0) / bendability.length).toFixed(3)
+  const avg = observed.length > 0
+    ? (observed.reduce((a, b) => a + b, 0) / observed.length).toFixed(3)
     : '0.000';
-  const maxBend = bendability.length > 0 ? Math.max(...bendability).toFixed(3) : '0.000';
-  const minBend = bendability.length > 0 ? Math.min(...bendability).toFixed(3) : '0.000';
+  const maxBend = observed.length > 0 ? Math.max(...observed).toFixed(3) : '0.000';
+  const minBend = observed.length > 0 ? Math.min(...observed).toFixed(3) : '0.000';
 
   return (
     <Overlay
@@ -256,13 +267,14 @@ export function BendabilityOverlay({
         {/* Description */}
         {!loading && (
           <OverlayDescription title="DNA Bendability">
-            Predicts local flexibility based on dinucleotide step parameters. Flexible regions (red) may be involved
-            in protein binding, nucleosome positioning, or regulatory functions.
+            Uses a simplified dinucleotide model in 50-base windows sampled every 12 bases.
+            Scores average resolved pairs within each window. Windows without resolved pairs remain
+            gaps and are excluded from summary statistics. These model scores are not structural measurements.
           </OverlayDescription>
         )}
 
         {/* Stats */}
-        {!loading && bendability.length > 0 && (
+        {!loading && observed.length > 0 && (
           <OverlayStatGrid>
             <OverlayStatCard label="Average" value={avg} />
             <OverlayStatCard label="Most Flexible" value={maxBend} labelColor="var(--color-error)" />
@@ -271,7 +283,7 @@ export function BendabilityOverlay({
         )}
 
         {/* Canvas */}
-        {!loading && bendability.length >= 2 && (
+        {!loading && observed.length > 0 && bendability.length >= 2 && (
           <OverlaySection>
             <canvas
               ref={canvasRef}
@@ -302,10 +314,16 @@ export function BendabilityOverlay({
           </OverlaySection>
         )}
 
-        {!loading && !error && sequence.length === 0 && (
+        {!loading && !error && sequence.length > 0 && (
+          <p>{observed.length} of {bendability.length} windows have resolved dinucleotides.</p>
+        )}
+
+        {!loading && !error && observed.length === 0 && (
           <OverlayEmptyState
-            message="No sequence data available."
-            hint="Select a phage to analyze."
+            message={sequence.length === 0 ? 'No sequence data available.'
+              : bendability.length === 0 ? 'Sequence too short for a 50-base window'
+                : 'No resolved dinucleotides in the scanned windows'}
+            hint="Bendability scores require adjacent resolved A/C/G/T bases within a sampled window."
           />
         )}
       </OverlayStack>
