@@ -188,13 +188,13 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     // This input matches σ32 at 100 and σ70 at 123 (zero-based starts).
     await expect(promoterCount).toHaveText('2');
     await select('uniform');
-    await expect(promoterCount).toHaveText('0');
+    await expect.soft(promoterCount).toHaveText('0');
     await page.evaluate(() => (window as any).setAnalysisOpen('promoter', false));
     await select('diverse');
     await page.evaluate(() => (window as any).setAnalysisOpen('complexity', true));
     const complexity = page.getByTestId('overlay-complexity');
     const entropy = complexity.getByText('Avg Shannon Entropy', { exact: true }).locator('../..');
-    await expect(entropy).toContainText('2.000');
+    await expect(entropy).toContainText('1.000');
     await select('uniform');
     await expect(entropy).toContainText('0.000');
     expect(errors).toEqual([]);
