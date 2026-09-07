@@ -20,6 +20,7 @@ import {
   OverlayStatCard,
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
   OverlayLegend,
   OverlayLegendItem,
 } from './primitives';
@@ -41,12 +42,16 @@ export function ComplexityOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const [snapshot, setSnapshot] = useState<{
+    repository: PhageRepository; phage: PhageFull; sequence: string; result: ComplexityResult;
+  } | null>(null);
+  const current = snapshot?.repository === repository && snapshot?.phage === currentPhage ? snapshot : null;
+  const sequence = current?.sequence ?? '';
+  const entropy = current?.result.entropy ?? [];
+  const linguistic = current?.result.linguistic ?? [];
+  const [error, setError] = useState<string | null>(null);
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [entropy, setEntropy] = useState<number[]>([]);
-  const [linguistic, setLinguistic] = useState<number[]>([]);
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('complexity');
 
@@ -60,91 +65,53 @@ export function ComplexityOverlay({
   // Fetch sequence when overlay opens
   useEffect(() => {
     if (!isOpen('complexity')) return;
+    setSnapshot(null);
+    setError(null);
+    setAnalysisLoading(false);
     if (!repository || !currentPhage) {
-      setSequence('');
-      setEntropy([]);
-      setLinguistic([]);
       setSequenceLoading(false);
       setAnalysisLoading(false);
       return;
     }
 
-    const phageId = currentPhage.id;
-
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setSequenceLoading(false);
-      return;
-    }
-
     let cancelled = false;
+    let reading = true;
     setSequenceLoading(true);
-
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setSequence('');
-      })
-      .finally(() => {
-        if (!cancelled) setSequenceLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, repository, currentPhage]);
-
-  // Compute complexity in the analysis worker (WASM-accelerated) to avoid main-thread jank.
-  useEffect(() => {
-    if (!isOpen('complexity')) return;
-    if (!currentPhage) return;
-
-    if (!sequence) {
-      setEntropy([]);
-      setLinguistic([]);
-      setAnalysisLoading(false);
-      return;
-    }
-    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
-      return;
-    }
-
-    let cancelled = false;
-    setAnalysisLoading(true);
-
     (async () => {
       try {
+        const length = await repository.getFullGenomeLength(currentPhage.id);
+        if (cancelled) return;
+        const sequence = await repository.getSequenceWindow(currentPhage.id, 0, length);
+        if (cancelled) return;
+        reading = false;
+        setSequenceLoading(false);
+        if (!sequence) return;
+        setAnalysisLoading(true);
         const result = await getOrchestrator().runAnalysisWithSharedBuffer(
           currentPhage.id,
           sequence,
           'complexity',
           { windowSize: 100 }
-        ) as ComplexityResult;
+        );
 
         if (cancelled) return;
-        setEntropy(result.entropy);
-        setLinguistic(result.linguistic);
-      } catch {
+        if (result.type !== 'complexity') throw new Error('Unexpected analysis result');
+        setSnapshot({ repository, phage: currentPhage, sequence, result });
+      } catch (cause: unknown) {
         if (cancelled) return;
-        setEntropy([]);
-        setLinguistic([]);
+        setError(`${reading ? 'Could not load sequence' : 'Complexity analysis failed'}: ${cause instanceof Error ? cause.message : String(cause)}`);
       } finally {
-        if (!cancelled) setAnalysisLoading(false);
+        if (!cancelled) {
+          setSequenceLoading(false);
+          setAnalysisLoading(false);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentPhage, sequence]);
+  }, [isOpen, repository, currentPhage]);
 
   // Draw the visualization
   useEffect(() => {
@@ -214,7 +181,7 @@ export function ComplexityOverlay({
 
   const isLoading = sequenceLoading || analysisLoading;
   const hasData = entropy.length >= 2;
-  const isEmpty = !isLoading && (sequence.length === 0 || entropy.length < 2);
+  const isEmpty = !isLoading && !error && (sequence.length === 0 || entropy.length < 2);
 
   const avgEntropy = entropy.length > 0
     ? (entropy.reduce((a, b) => a + b, 0) / entropy.length).toFixed(3)
@@ -232,6 +199,7 @@ export function ComplexityOverlay({
       size="lg"
     >
       <OverlayStack>
+        {error && <OverlayErrorState message="Complexity analysis unavailable" details={error} />}
         {/* Loading State */}
         {isLoading && (
           <OverlayLoadingState message={sequenceLoading ? "Loading sequence data..." : "Computing complexity..."}>
