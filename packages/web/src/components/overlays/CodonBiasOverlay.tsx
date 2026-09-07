@@ -253,8 +253,8 @@ export function CodonBiasOverlay({
 
   if (!isOpen('codonBias')) return null;
 
-  const hasData = !!analysis;
-  const isEmpty = !loading && !error && !analysis;
+  const hasData = !!analysis && analysis.totalCodons > 0;
+  const isEmpty = !loading && !error && !hasData;
 
   return (
     <Overlay
@@ -303,8 +303,11 @@ export function CodonBiasOverlay({
         {error && <OverlayErrorState message="Could not load sequence" details={error} />}
         {isEmpty && (
           <OverlayEmptyState
-            message={!sequence ? 'No sequence loaded' : 'Sequence too short for analysis'}
-            hint="Select a genome with at least 300 bases to scan."
+            message={!sequence ? 'No sequence loaded' : sequence.length < 300
+              ? 'Sequence too short for analysis' : 'No complete A/C/G/T triplets in frame zero'}
+            hint={sequence.length >= 300
+              ? 'Unresolved triplets provide no codon-usage observations. Bias statistics require complete triplets.'
+              : 'Select a genome with at least 300 bases to scan.'}
           />
         )}
 

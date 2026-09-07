@@ -16,6 +16,7 @@ import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
   OverlayDescription,
   OverlaySection,
   OverlayStack,
@@ -118,8 +119,12 @@ export function BendabilityOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{
+    repository: PhageRepository; phage: PhageFull; sequence: string;
+  } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phage === currentPhage
+    ? loaded.sequence : '';
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
   // Hotkey to toggle overlay
@@ -132,34 +137,28 @@ export function BendabilityOverlay({
   // Fetch sequence when overlay opens
   useEffect(() => {
     if (!isOpen('bendability')) return;
+    setLoaded(null);
+    setError(null);
     if (!repository || !currentPhage) {
-      setSequence('');
       setLoading(false);
       return;
     }
 
     const phageId = currentPhage.id;
 
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setSequence('');
+        setLoaded(null);
+        setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -246,6 +245,7 @@ export function BendabilityOverlay({
       size="lg"
     >
       <OverlayStack>
+        {error && <OverlayErrorState message="Could not load sequence" details={error} />}
         {/* Loading State */}
         {loading && (
           <OverlayLoadingState message="Loading sequence data...">
@@ -302,7 +302,7 @@ export function BendabilityOverlay({
           </OverlaySection>
         )}
 
-        {!loading && sequence.length === 0 && (
+        {!loading && !error && sequence.length === 0 && (
           <OverlayEmptyState
             message="No sequence data available."
             hint="Select a phage to analyze."

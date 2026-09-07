@@ -41,6 +41,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { ComplexityOverlay } from './components/overlays/ComplexityOverlay';
           import { NonBDNAOverlay } from './components/overlays/NonBDNAOverlay';
           import { CodonBiasOverlay } from './components/overlays/CodonBiasOverlay';
+          import { BendabilityOverlay } from './components/overlays/BendabilityOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -60,6 +61,10 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const quadruplex = await entry('A'.repeat(100) + 'GGGTGGGTGGGTGGG' + 'A'.repeat(100));
           const codonA = await entry('GCC'.repeat(120));
           const codonB = await entry('AAA'.repeat(150));
+          const codonUnknown = await entry('NNN'.repeat(150));
+          const codonPartial = await entry('NNG'.repeat(150));
+          const codonMixed = await entry('GCCNNN'.repeat(75));
+          const bendC = await entry('C'.repeat(1000));
           const gelDelayed = await entry('CCCCCCCCCC');
           const gelRead = gelDelayed.repository.getSequenceWindow.bind(gelDelayed.repository);
           let releaseGel;
@@ -89,7 +94,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, quadruplex, codonA, codonB, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, bendC, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
                 const read = quadruplex.repository.getSequenceWindow.bind(quadruplex.repository);
@@ -107,7 +112,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -300,6 +305,38 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await select('codonB');
     await page.evaluate(() => (window as any).setAnalysisOpen('codonBias', true));
     await expect(codonCount).toHaveText('150');
+    for (const input of ['codonUnknown', 'codonPartial']) {
+      await select(input);
+      await expect(codon).toContainText('No complete A/C/G/T triplets in frame zero');
+      await expect(codonCount).toHaveCount(0);
+      await expect(codon.getByRole('button', { name: /How do I know this:/ })).toHaveCount(0);
+    }
+    await select('codonMixed');
+    await expect(codonCount).toHaveText('75');
+    await expect(gc3).toHaveText('100.0%');
+    await select('codonB');
+    await expect(codonCount).toHaveText('150');
+    await expect(gc3).toHaveText('0.0%');
+    await page.evaluate(() => (window as any).setAnalysisOpen('codonBias', false));
+    await select('uniform');
+    await page.evaluate(() => (window as any).setAnalysisOpen('bendability', true));
+    const bend = page.getByTestId('overlay-bendability');
+    const bendAverage = bend.getByText('Average', { exact: true }).locator('..').locator('div').last();
+    await expect(bendAverage).toHaveText('0.350');
+    await select('bendC');
+    await expect(bendAverage).toHaveText('0.250');
+    await select('broken');
+    await expect(bend).toContainText('Could not load sequence');
+    await expect(bend.getByRole('img')).toHaveCount(0);
+    await select('missing');
+    await expect(bend).toContainText('No sequence data available');
+    await select('uniform');
+    await expect(bendAverage).toHaveText('0.350');
+    await page.evaluate(() => (window as any).setAnalysisOpen('bendability', false));
+    await expect(bend).toHaveCount(0);
+    await select('bendC');
+    await page.evaluate(() => (window as any).setAnalysisOpen('bendability', true));
+    await expect(bendAverage).toHaveText('0.250');
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
