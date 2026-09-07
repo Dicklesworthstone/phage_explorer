@@ -25,6 +25,32 @@ function makeGene(overrides: Partial<GeneInfo> & { id: number }): GeneInfo {
   };
 }
 
+describe('resolved attachment-repeat evidence', () => {
+  it('does not infer attachment sites from unknown sequence', () => {
+    const result = analyzeProphageExcision('N'.repeat(208), []);
+    expect(result.directRepeats).toEqual([]);
+    expect(result.attachmentSites).toEqual([]);
+    expect(result.bestPrediction.excisionProduct).toBeNull();
+  });
+
+  it('rejects unresolved bases on either side even within the mismatch allowance', () => {
+    const repeat = 'ACGTACGTTAGCTAC';
+    for (const unknown of ['N', 'R', 'Y']) {
+      const unresolved = repeat.slice(0, -1) + unknown;
+      expect(findDirectRepeats(repeat + unresolved, 15, 15, 1)).toEqual([]);
+      expect(findDirectRepeats(unresolved + repeat, 15, 15, 1)).toEqual([]);
+    }
+  });
+
+  it('preserves resolved imperfect repeats and their coordinates across unknown gaps', () => {
+    const left = 'ACGTACGTTAGCTAC';
+    const right = 'ACGTACGTTAGCTAT';
+    expect(findDirectRepeats((left + 'NNNNN' + right).toLowerCase(), 15, 15, 1)).toEqual([
+      { pos1: 0, pos2: 20, sequence: left, mismatches: 1, hammingDistance: 1 },
+    ]);
+  });
+});
+
 describe('findIntegrases', () => {
   it('returns empty array for empty gene list', () => {
     expect(findIntegrases([])).toEqual([]);

@@ -223,6 +223,8 @@ export function findDirectRepeats(
   for (let kmerLen = maxLength; kmerLen >= minLength; kmerLen--) {
     for (let i = 0; i <= leftRegion.length - kmerLen; i++) {
       const kmer1 = leftRegion.slice(i, i + kmerLen);
+      // Unknown bases are missing evidence, including within the mismatch budget.
+      if (/[^ACGT]/.test(kmer1)) continue;
 
       for (let j = 0; j <= rightRegion.length - kmerLen; j++) {
         // Enforce non-overlapping repeats
@@ -230,6 +232,7 @@ export function findDirectRepeats(
         if (rightOffset + j < i + kmerLen) continue;
 
         const kmer2 = rightRegion.slice(j, j + kmerLen);
+        if (/[^ACGT]/.test(kmer2)) continue;
         const hd = hammingDistance(kmer1, kmer2);
 
         if (hd <= maxMismatches) {

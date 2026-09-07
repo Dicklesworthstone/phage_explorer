@@ -44,6 +44,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           import { BendabilityOverlay } from './components/overlays/BendabilityOverlay';
           import { PeriodicityOverlay } from './components/overlays/PeriodicityOverlay';
           import { TranscriptionFlowOverlay } from './components/overlays/TranscriptionFlowOverlay';
+          import { ProphageExcisionOverlay } from './components/overlays/ProphageExcisionOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
@@ -60,6 +61,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
           const regulatory = await entry('A'.repeat(100) + 'TTGACA' + 'N'.repeat(17) + 'TATAAT' + 'A'.repeat(100));
           const diverse = await entry('ACGT'.repeat(250));
           const uniform = await entry('A'.repeat(1000));
+          const excision = await entry('N'.repeat(100) + 'TTTTCTTT' + 'N'.repeat(100));
           const quadruplex = await entry('A'.repeat(100) + 'GGGTGGGTGGGTGGG' + 'A'.repeat(100));
           const codonA = await entry('GCC'.repeat(120));
           const codonB = await entry('AAA'.repeat(150));
@@ -98,7 +100,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
             const { open, close } = useOverlay();
             useEffect(() => {
               open('repeats');
-              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
+              window.selectRepeatInput = name => select({ a, b, regulatory, diverse, uniform, excision, bendC, bendGap, bendSlopeGap, quadruplex, codonA, codonB, codonUnknown, codonPartial, codonMixed, gelA, gelB, gelDelayed, delayed, broken, missing: { phage: null, repository: null } }[name]);
               window.setAnalysisOpen = (id, value) => value ? open(id) : close(id);
               window.holdQuadruplexRead = () => {
                 window.quadruplexReadPending = false;
@@ -118,7 +120,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
               window.setRepeatOpen = value => value ? open('repeats') : close('repeats');
               window.setGelOpen = value => value ? open('gel') : close('gel');
             }, []);
-            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /><PeriodicityOverlay currentPhage={selected.phage} repository={selected.repository} /><TranscriptionFlowOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
+            return <><RepeatsOverlay currentPhage={selected.phage} repository={selected.repository} /><GelOverlay currentPhage={selected.phage} repository={selected.repository} /><PromoterOverlay currentPhage={selected.phage} repository={selected.repository} /><ComplexityOverlay currentPhage={selected.phage} repository={selected.repository} /><NonBDNAOverlay currentPhage={selected.phage} repository={selected.repository} /><CodonBiasOverlay currentPhage={selected.phage} repository={selected.repository} /><BendabilityOverlay currentPhage={selected.phage} repository={selected.repository} /><PeriodicityOverlay currentPhage={selected.phage} repository={selected.repository} /><TranscriptionFlowOverlay currentPhage={selected.phage} repository={selected.repository} /><ProphageExcisionOverlay currentPhage={selected.phage} repository={selected.repository} /></>;
           }
           createRoot(document.getElementById('root')).render(
             <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
@@ -429,6 +431,42 @@ for (const backend of ['wasm', 'javascript'] as const) test(`sequence repository
     await select('uniform');
     await page.evaluate(() => (window as any).setAnalysisOpen('transcriptionFlow', true));
     await expect(flowBins).toHaveText('5');
+    await page.evaluate(() => (window as any).setAnalysisOpen('transcriptionFlow', false));
+    await select('excision');
+    await page.evaluate(() => (window as any).setAnalysisOpen('prophageExcision', true));
+    const mapper = page.getByTestId('overlay-prophageExcision');
+    await mapper.getByRole('button', { name: 'hotspots', exact: true }).click();
+    await expect(mapper).toContainText('motif TTTTCTTT');
+    await expect(mapper.getByText('@100', { exact: true })).toBeVisible();
+    await expect(mapper).not.toContainText('Best Predicted Integration');
+    await select('uniform');
+    await expect(mapper).toContainText('No integration hotspots detected');
+    await expect(mapper).not.toContainText('motif TTTTCTTT');
+    await page.evaluate(() => (window as any).holdQuadruplexRead());
+    await select('quadruplex');
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadPending)).toBe(true);
+    await expect(mapper.getByRole('button', { name: 'hotspots', exact: true })).toHaveCount(0);
+    await select('excision');
+    await expect(mapper.getByText('@100', { exact: true })).toBeVisible();
+    await page.evaluate(() => (window as any).releaseQuadruplexRead());
+    await expect.poll(() => page.evaluate(() => (window as any).quadruplexReadReleased)).toBe(true);
+    await expect(mapper.getByText('@100', { exact: true })).toBeVisible();
+    await select('broken');
+    await expect(mapper).toContainText('Could not load sequence');
+    await expect(mapper).not.toContainText('motif TTTTCTTT');
+    await select('missing');
+    await expect(mapper).toContainText('No sequence data available');
+    await select('excision');
+    await expect(mapper.getByText('@100', { exact: true })).toBeVisible();
+    await page.evaluate(() => (window as any).setAnalysisOpen('prophageExcision', false));
+    await select('uniform');
+    await page.evaluate(() => (window as any).setAnalysisOpen('prophageExcision', true));
+    await expect(mapper).toContainText('No integration hotspots detected');
+    await select('codonUnknown');
+    await expect(mapper.getByText('Repeats', { exact: true }).locator('..').locator('div').first()).toHaveText('0');
+    await expect(mapper).not.toContainText('Best Predicted Integration');
+    await select('excision');
+    await expect(mapper.getByText('@100', { exact: true })).toBeVisible();
     expect(errors).toEqual([]);
     await info.attach('repository-identities', { body: JSON.stringify({ backend, first, second }), contentType: 'application/json' });
   } finally { await server.close(); }
