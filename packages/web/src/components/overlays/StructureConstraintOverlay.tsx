@@ -8,7 +8,7 @@
  *   (fast, no-dependency; not a substitute for real structural models).
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import {
   analyzeStructuralConstraints,
   analyzeRNAStructure,
@@ -28,6 +28,7 @@ import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
 } from './primitives';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
@@ -127,8 +128,9 @@ export function StructureConstraintOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded.sequence : '';
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>('rna');
   const [strand, setStrand] = useState<'+' | '-'>('+');
@@ -152,34 +154,28 @@ export function StructureConstraintOverlay({
   // Fetch full genome when overlay opens or phage changes
   useEffect(() => {
     if (!isOpen('structureConstraint')) return;
+    setLoaded(null);
+    setError(null);
+    setHoverInfo(null);
     if (!repository || !currentPhage) {
-      setSequence('');
       setLoading(false);
       return;
     }
 
     const phageId = currentPhage.id;
 
-    // Check cache first
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
+      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
       .then((seq: string) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+        setLoaded({ repository, phage: currentPhage, sequence: seq });
       })
-      .catch(() => {
+      .catch((cause: unknown) => {
         if (cancelled) return;
-        setSequence('');
+        setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -463,6 +459,8 @@ export function StructureConstraintOverlay({
           <OverlayLoadingState message="Loading sequence for structure analysis...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
+        ) : error ? (
+          <OverlayErrorState message="Could not load sequence" details={error} />
         ) : !sequence ? (
           <OverlayEmptyState
             message="No sequence loaded"
