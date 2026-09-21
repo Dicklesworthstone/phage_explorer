@@ -7,8 +7,5 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../db-schema" },
-    { "path": "../core" }
-  ]
+  "references": [{ "path": "../db-schema" }, { "path": "../core" }]
 }

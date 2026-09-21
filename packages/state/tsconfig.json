@@ -7,9 +7,5 @@
     "noEmit": false
   },
   "include": ["src/**/*"],
-  "references": [
-    { "path": "../core" },
-    { "path": "../db-runtime" },
-    { "path": "../comparison" }
-  ]
+  "references": [{ "path": "../core" }, { "path": "../db-runtime" }, { "path": "../comparison" }]
 }
