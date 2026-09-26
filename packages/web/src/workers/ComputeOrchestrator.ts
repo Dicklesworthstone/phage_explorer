@@ -1,18 +1,10 @@
 /**
- * ComputeOrchestrator - Worker Management System
+ * ComputeOrchestrator - bounded analysis/simulation worker management.
  *
- * Manages a pool of Web Workers for heavy computation:
- * - Analysis worker: GC skew, complexity, bendability, etc.
- * - Simulation worker: All phage simulations
- *
- * Features:
- * - Type-safe worker communication via Comlink
- * - Worker pooling and lifecycle management
- * - Progress reporting for long operations
- * - Graceful cancellation
- * - SharedArrayBuffer support for zero-copy sequence sharing
+ * All jobs share a hard worker budget, queue FIFO, and accept an optional
+ * AbortSignal. Aborting an active calculation terminates its worker; aborting
+ * queued work never interrupts somebody else's calculation.
  */
-
 import * as Comlink from 'comlink';
 import type { KmerFrequencyOptions, KmerVector, PCAOptions, PCAResult, PhasePortraitResult } from '@phage-explorer/core';
 import type {
@@ -38,74 +30,37 @@ import type {
 } from './types';
 import { SharedSequencePool, decodeSequence } from './SharedSequencePool';
 import { startOperation, getAggregateStats, printReport } from './perf-instrumentation';
+import { WorkerTaskPool } from './WorkerTaskPool';
 
 type WorkerType = 'analysis' | 'simulation';
-
 interface WorkerInstance {
   id: string;
   worker: Worker;
   api: SharedAnalysisWorkerAPI | SimulationWorkerAPI;
-  type: WorkerType;
-  busy: boolean;
-  lastUsed: number;
-  healthy: boolean;
 }
 
-/**
- * Simple mutex for synchronizing worker pool access
- */
-class Mutex {
-  private locked = false;
-  private queue: Array<() => void> = [];
-
-  async acquire(): Promise<void> {
-    if (!this.locked) {
-      this.locked = true;
-      return;
-    }
-    return new Promise((resolve) => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release(): void {
-    if (this.queue.length > 0) {
-      const next = this.queue.shift()!;
-      next();
-    } else {
-      this.locked = false;
-    }
-  }
-}
-
-/**
- * ComputeOrchestrator - Singleton worker manager
- */
 export class ComputeOrchestrator {
   private static instance: ComputeOrchestrator | null = null;
-
-  private workers = new Map<string, WorkerInstance>();
-  private config: Required<WorkerPoolConfig>;
+  private readonly pool: WorkerTaskPool<WorkerType, WorkerInstance>;
+  private readonly sequencePool: SharedSequencePool;
   private cleanupInterval: ReturnType<typeof setInterval> | null = null;
-  private poolMutex = new Mutex();
-  private sequencePool: SharedSequencePool;
+  private disposed = false;
+  private nextWorkerId = 0;
 
   private constructor(config: WorkerPoolConfig = {}) {
-    this.config = {
-      maxWorkers: config.maxWorkers ?? 4,
-      idleTimeout: config.idleTimeout ?? 60000, // 1 minute
-    };
-
-    // Initialize shared sequence pool
+    const idleTimeout = config.idleTimeout ?? 60000;
+    if (!Number.isFinite(idleTimeout) || idleTimeout < 0) {
+      throw new Error('Worker idle timeout must be a non-negative finite number.');
+    }
+    this.pool = new WorkerTaskPool(config.maxWorkers ?? 4, type => this.createWorker(type), instance => {
+      instance.worker.onerror = null;
+      instance.worker.onmessageerror = null;
+      instance.worker.terminate();
+    });
     this.sequencePool = SharedSequencePool.getInstance();
-
-    // Start cleanup interval
-    this.cleanupInterval = setInterval(() => this.cleanupIdleWorkers(), 30000);
+    this.cleanupInterval = setInterval(() => this.pool.pruneIdle(idleTimeout), 30000);
   }
 
-  /**
-   * Get or create the singleton instance
-   */
   static getInstance(config?: WorkerPoolConfig): ComputeOrchestrator {
     if (!ComputeOrchestrator.instance) {
       ComputeOrchestrator.instance = new ComputeOrchestrator(config);
@@ -113,686 +68,288 @@ export class ComputeOrchestrator {
     return ComputeOrchestrator.instance;
   }
 
-  /**
-   * Create a worker of the specified type
-   */
   private createWorker(type: WorkerType): WorkerInstance {
-    const workerId = `${type}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-    let worker: Worker;
-    let api: SharedAnalysisWorkerAPI | SimulationWorkerAPI;
-
+    const id = `${type}-${++this.nextWorkerId}`;
+    let worker: Worker | undefined;
     try {
       if (type === 'analysis') {
         try {
-          // Prefer module workers in modern browsers.
           worker = new Worker(new URL('./analysis.worker.ts', import.meta.url), { type: 'module' });
         } catch {
-          // Fallback for older browsers that support Workers but not module workers.
           worker = new Worker(new URL('./analysis.worker.ts', import.meta.url));
         }
-        api = Comlink.wrap<SharedAnalysisWorkerAPI>(worker);
       } else {
         try {
           worker = new Worker(new URL('./simulation.worker.ts', import.meta.url), { type: 'module' });
         } catch {
           worker = new Worker(new URL('./simulation.worker.ts', import.meta.url));
         }
-        api = Comlink.wrap<SimulationWorkerAPI>(worker);
       }
-    } catch (error) {
-      console.error(`Failed to create ${type} worker:`, error);
-      throw new Error(
-        `Failed to create ${type} worker: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
-    }
-
-    const instance: WorkerInstance = {
-      id: workerId,
-      worker,
-      api,
-      type,
-      busy: false,
-      lastUsed: Date.now(),
-      healthy: true,
-    };
-
-    // Listen for worker errors to mark as unhealthy
-    worker.onerror = (event) => {
-      console.error(`Worker ${workerId} error:`, event.message);
-      instance.healthy = false;
-    };
-
-    this.workers.set(workerId, instance);
-    return instance;
-  }
-
-  /**
-   * Get an available worker of the specified type (thread-safe)
-   */
-  private async getAvailableWorker(type: WorkerType): Promise<WorkerInstance> {
-    await this.poolMutex.acquire();
-    try {
-      // Clean up any unhealthy workers first
-      for (const [id, instance] of this.workers.entries()) {
-        if (!instance.healthy && !instance.busy) {
-          instance.worker.terminate();
-          this.workers.delete(id);
-        }
-      }
-
-      // Find an idle, healthy worker of the right type
-      for (const instance of this.workers.values()) {
-        if (instance.type === type && !instance.busy && instance.healthy) {
-          instance.busy = true;
-          instance.lastUsed = Date.now();
-          return instance;
-        }
-      }
-
-      // No idle workers, check if we can create a new one
-      const typeCount = Array.from(this.workers.values()).filter(w => w.type === type).length;
-      if (typeCount < Math.ceil(this.config.maxWorkers / 2)) {
-        const instance = this.createWorker(type);
-        instance.busy = true;
-        return instance;
-      }
-
-      // At capacity - create one anyway (overflow for burst handling)
-      // but log a warning for monitoring
-      if (typeCount >= Math.ceil(this.config.maxWorkers / 2)) {
-        console.warn(`Worker pool at capacity for ${type}, creating overflow worker`);
-      }
-      const instance = this.createWorker(type);
-      instance.busy = true;
+      const api = type === 'analysis'
+        ? Comlink.wrap<SharedAnalysisWorkerAPI>(worker)
+        : Comlink.wrap<SimulationWorkerAPI>(worker);
+      const instance: WorkerInstance = { id, worker, api };
+      // Browser errors need not reject an outstanding Comlink RPC. Settle its
+      // task explicitly so the worker budget and caller cannot remain stuck.
+      worker.onerror = event => this.pool.invalidate(instance, new Error(`Worker ${id}: ${event.message}`));
+      worker.onmessageerror = () => this.pool.invalidate(instance, new Error(`Worker ${id} could not deserialize a message.`));
       return instance;
-    } finally {
-      this.poolMutex.release();
+    } catch (error) {
+      worker?.terminate();
+      throw new Error(`Failed to create ${type} worker: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  /**
-   * Release a worker back to the pool with health validation
-   */
-  private releaseWorker(instance: WorkerInstance, error?: Error): void {
-    instance.lastUsed = Date.now();
-
-    // If an error occurred during execution, mark as unhealthy
-    if (error) {
-      instance.healthy = false;
-      console.warn(`Worker ${instance.id} marked unhealthy after error:`, error.message);
-    }
-
-    // Only release healthy workers back to pool
-    if (instance.healthy) {
-      instance.busy = false;
-    } else {
-      // Schedule unhealthy worker for cleanup
-      instance.busy = false;
-      // Terminate immediately if not in use
-      instance.worker.terminate();
-      this.workers.delete(instance.id);
-    }
-  }
-
-  /**
-   * Clean up idle workers
-   */
-  private cleanupIdleWorkers(): void {
-    const now = Date.now();
-    
-    // Group workers by type
-    const byType: Record<WorkerType, WorkerInstance[]> = {
-      analysis: [],
-      simulation: []
-    };
-
-    for (const instance of this.workers.values()) {
-      byType[instance.type].push(instance);
-    }
-
-    // Process each type
-    for (const type of ['analysis', 'simulation'] as WorkerType[]) {
-      const instances = byType[type];
-      
-      // Sort by last used (oldest first) to prioritize removing stale ones
-      instances.sort((a, b) => a.lastUsed - b.lastUsed);
-
-      // Keep at least one
-      if (instances.length <= 1) continue;
-
-      for (const instance of instances) {
-        // Don't remove if it's the last one (re-check count)
-        if (this.workers.size <= 1) break; // Global safety
-        
-        // Check if idle and timed out
-        if (!instance.busy && now - instance.lastUsed > this.config.idleTimeout) {
-          // Ensure we keep at least one of this type
-          const remainingOfType = Array.from(this.workers.values())
-            .filter(w => w.type === type && w.id !== instance.id).length;
-            
-          if (remainingOfType >= 1) {
-            instance.worker.terminate();
-            this.workers.delete(instance.id);
-          }
-        }
-      }
-    }
-  }
-
-  // ============================================================
-  // Analysis API
-  // ============================================================
-
-  /**
-   * Run an analysis task
-   */
-  async runAnalysis(request: AnalysisRequest): Promise<AnalysisResult> {
-    const { finish } = startOperation('analysis', request.type);
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
+  private async runTask<T>(
+    type: WorkerType,
+    operation: string | null,
+    execute: (instance: WorkerInstance, isActive: () => boolean) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const metric = operation === null ? null : startOperation(type, operation);
+    let active = true;
+    let failed = false;
     try {
-      const api = instance.api as SharedAnalysisWorkerAPI;
-      const result = await api.runAnalysis(request);
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
+      return await this.pool.run(type, instance => execute(instance, () => active && !signal?.aborted), signal);
+    } catch (error) {
+      failed = true;
+      throw error instanceof Error ? error : new Error(String(error));
     } finally {
-      this.releaseWorker(instance, error);
+      active = false;
+      // Includes failures during worker acquisition and queued cancellation.
+      metric?.finish(failed);
     }
   }
 
-  /**
-   * Run an analysis task with progress reporting
-   */
+  async runAnalysis(request: AnalysisRequest, signal?: AbortSignal): Promise<AnalysisResult> {
+    const snapshot = structuredClone(request);
+    return this.runTask('analysis', snapshot.type, async instance => {
+      return (instance.api as SharedAnalysisWorkerAPI).runAnalysis(snapshot);
+    }, signal);
+  }
+
   async runAnalysisWithProgress(
     request: AnalysisRequest,
-    onProgress: (progress: ProgressInfo) => void
+    onProgress: (progress: ProgressInfo) => void,
+    signal?: AbortSignal,
   ): Promise<AnalysisResult> {
-    const { finish } = startOperation('analysis', request.type);
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-    try {
-      const api = instance.api as SharedAnalysisWorkerAPI;
-      const result = await api.runAnalysisWithProgress(request, Comlink.proxy(onProgress));
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+    const snapshot = structuredClone(request);
+    return this.runTask('analysis', snapshot.type, async (instance, isActive) => {
+      return (instance.api as SharedAnalysisWorkerAPI).runAnalysisWithProgress(
+        snapshot, Comlink.proxy((progress: ProgressInfo) => { if (isActive()) onProgress(progress); }),
+      );
+    }, signal);
   }
 
-  // ============================================================
-  // SharedArrayBuffer Analysis API (Zero-Copy)
-  // ============================================================
-
-  /**
-   * Check if SharedArrayBuffer is available for zero-copy operations.
-   */
   isSharedMemoryAvailable(): boolean {
     return this.sequencePool.isUsingSharedMemory();
   }
 
-  /**
-   * Preload a sequence into the shared buffer pool.
-   * Call this when loading a phage to prepare for analysis operations.
-   *
-   * @param phageId - Unique identifier for the phage
-   * @param sequence - DNA sequence string
-   * @returns SharedSequenceRef for use with analysis methods
-   */
   preloadSequence(phageId: number, sequence: string): SharedSequenceRef {
     return this.sequencePool.getOrCreateRef(phageId, sequence).ref;
   }
 
-  /**
-   * Get a sequence reference if already preloaded.
-   * Returns undefined if the sequence isn't in the pool.
-   */
   getSequenceRef(phageId: number): SharedSequenceRef | undefined {
     return this.sequencePool.getRef(phageId)?.ref;
   }
 
-  /**
-   * Release a sequence from the shared buffer pool.
-   * Call this when navigating away from a phage to free memory.
-   */
   releaseSequence(phageId: number): void {
     this.sequencePool.release(phageId);
   }
 
-  /**
-   * Run an analysis task using a shared buffer reference.
-   * This avoids copying the sequence data to the worker.
-   *
-   * If the sequence isn't preloaded, it will be preloaded automatically.
-   */
   async runAnalysisWithSharedBuffer(
     phageId: number,
     sequence: string,
     type: AnalysisType,
     options?: AnalysisOptions,
-    evidenceContext?: AnalysisRequest['evidenceContext']
+    evidenceContext?: AnalysisRequest['evidenceContext'],
+    signal?: AbortSignal,
   ): Promise<AnalysisResult> {
-    const { finish } = startOperation('analysis', type);
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
+    const snapshot = structuredClone({ options, evidenceContext });
+    return this.runTask('analysis', type, async instance => {
       const api = instance.api as SharedAnalysisWorkerAPI;
+      // Allocate/transfer only after admission. Queued cancellation must not
+      // detach a buffer or replace a sequence reference used by another task.
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
-      const request: SharedAnalysisRequest = { type, sequenceRef, options, evidenceContext };
-
-      let result: AnalysisResult;
-      if (transfer.length > 0) {
-        result = await api.runAnalysisShared(Comlink.transfer(request, transfer));
-      } else {
-        result = await api.runAnalysisShared(request);
-      }
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      const request: SharedAnalysisRequest = { type, sequenceRef, ...snapshot };
+      return transfer.length > 0
+        ? api.runAnalysisShared(Comlink.transfer(request, transfer))
+        : api.runAnalysisShared(request);
+    }, signal);
   }
 
-  /**
-   * Run analysis with shared buffer and progress reporting.
-   */
   async runAnalysisWithSharedBufferProgress(
     phageId: number,
     sequence: string,
     type: AnalysisType,
     onProgress: (progress: ProgressInfo) => void,
-    options?: AnalysisOptions
+    options?: AnalysisOptions,
+    signal?: AbortSignal,
   ): Promise<AnalysisResult> {
-    const { finish } = startOperation('analysis', type);
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
+    const snapshot = structuredClone(options);
+    return this.runTask('analysis', type, async (instance, isActive) => {
       const api = instance.api as SharedAnalysisWorkerAPI;
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
-      const request: SharedAnalysisRequest = { type, sequenceRef, options };
-
-      let result: AnalysisResult;
-      if (transfer.length > 0) {
-        result = await api.runAnalysisSharedWithProgress(
-          Comlink.transfer(request, transfer),
-          Comlink.proxy(onProgress)
-        );
-      } else {
-        result = await api.runAnalysisSharedWithProgress(request, Comlink.proxy(onProgress));
-      }
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      const request: SharedAnalysisRequest = { type, sequenceRef, options: snapshot };
+      const report = Comlink.proxy((progress: ProgressInfo) => { if (isActive()) onProgress(progress); });
+      return transfer.length > 0
+        ? api.runAnalysisSharedWithProgress(Comlink.transfer(request, transfer), report)
+        : api.runAnalysisSharedWithProgress(request, report);
+    }, signal);
   }
 
-  /**
-   * Decode a sequence from a SharedSequenceRef.
-   * Useful when workers need to read the sequence.
-   */
   decodeSequenceFromRef(ref: SharedSequenceRef): string {
-    const view = new Uint8Array(ref.buffer, ref.byteOffset, ref.byteLength);
-    return decodeSequence(view, ref.length);
+    return decodeSequence(new Uint8Array(ref.buffer, ref.byteOffset, ref.byteLength), ref.length);
   }
 
-  /**
-   * Get shared sequence pool statistics.
-   */
-  getSequencePoolStats(): {
-    size: number;
-    maxSize: number;
-    totalBytes: number;
-    sharedMemory: boolean;
-  } {
+  getSequencePoolStats(): { size: number; maxSize: number; totalBytes: number; sharedMemory: boolean } {
     return this.sequencePool.getStats();
   }
 
-  // ============================================================
-  // PCA Overlay API (off-main-thread)
-  // ============================================================
-
-  /**
-   * Compute a dense k-mer frequency vector in the analysis worker.
-   *
-   * Uses SharedArrayBuffer when available to avoid copying the genome string.
-   */
   async computeKmerVectorWithSharedBuffer(
     phageId: number,
     name: string,
     sequence: string,
-    options?: KmerFrequencyOptions
+    options?: KmerFrequencyOptions,
+    signal?: AbortSignal,
   ): Promise<KmerVector> {
-    const { finish } = startOperation('analysis', 'kmer-vector');
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
+    const snapshot = structuredClone(options);
+    return this.runTask('analysis', 'kmer-vector', async instance => {
       const api = instance.api as SharedAnalysisWorkerAPI;
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
-      const request: KmerVectorRequest = { phageId, name, sequenceRef, options };
-
-      const result =
-        transfer.length > 0
-          ? await api.computeKmerVector(Comlink.transfer(request, transfer))
-          : await api.computeKmerVector(request);
-
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      const request: KmerVectorRequest = { phageId, name, sequenceRef, options: snapshot };
+      return transfer.length > 0
+        ? api.computeKmerVector(Comlink.transfer(request, transfer))
+        : api.computeKmerVector(request);
+    }, signal);
   }
 
-  /**
-   * Compute PCA for genomic signature vectors (k-mer frequencies) in the analysis worker.
-   *
-   * Uses a single flat `Float32Array` transfer to reduce structured-clone overhead.
-   */
   async computeGenomicSignaturePca(
     vectors: KmerVector[],
-    options?: PCAOptions
+    options?: PCAOptions,
+    signal?: AbortSignal,
   ): Promise<PCAResult | null> {
-    const { finish } = startOperation('analysis', 'genomic-signature-pca');
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
-      if (vectors.length < 3) {
-        finish(false);
-        return null;
-      }
-
-      const dim = vectors[0].frequencies.length;
-      if (dim <= 0) {
-        finish(false);
-        return null;
-      }
-
-      for (let i = 1; i < vectors.length; i++) {
-        if (vectors[i].frequencies.length !== dim) {
+    // Capture the caller's exact vectors before queueing; later UI mutations
+    // must not change an already submitted experiment.
+    const snapshot = structuredClone(vectors);
+    const optionSnapshot = structuredClone(options);
+    return this.runTask('analysis', 'genomic-signature-pca', async instance => {
+      if (snapshot.length < 3) return null;
+      const dim = snapshot[0].frequencies.length;
+      if (dim <= 0) return null;
+      for (let i = 1; i < snapshot.length; i++) {
+        if (snapshot[i].frequencies.length !== dim) {
           throw new Error('All PCA vectors must have the same dimensionality');
         }
       }
-
-      const flat = new Float32Array(vectors.length * dim);
-      const metas: GenomicSignaturePcaRequest['vectors'] = vectors.map((v, i) => {
-        flat.set(v.frequencies, i * dim);
-        return {
-          phageId: v.phageId,
-          name: v.name,
-          gcContent: v.gcContent,
-          genomeLength: v.genomeLength,
-        };
+      const flat = new Float32Array(snapshot.length * dim);
+      const metas: GenomicSignaturePcaRequest['vectors'] = snapshot.map((vector, index) => {
+        flat.set(vector.frequencies, index * dim);
+        return { phageId: vector.phageId, name: vector.name, gcContent: vector.gcContent, genomeLength: vector.genomeLength };
       });
-
-      const request: GenomicSignaturePcaRequest = {
-        vectors: metas,
-        frequencies: flat,
-        dim,
-        options,
-      };
-
-      const api = instance.api as SharedAnalysisWorkerAPI;
-      const result = await api.computeGenomicSignaturePca(
-        Comlink.transfer(request, [flat.buffer])
-      );
-
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      const request: GenomicSignaturePcaRequest = { vectors: metas, frequencies: flat, dim, options: optionSnapshot };
+      return (instance.api as SharedAnalysisWorkerAPI).computeGenomicSignaturePca(Comlink.transfer(request, [flat.buffer]));
+    }, signal);
   }
 
-  /**
-   * Compute dinucleotide-bias PCA (bias decomposition) in the analysis worker.
-   *
-   * Uses SharedArrayBuffer when available to avoid copying the genome string.
-   */
   async computeBiasDecompositionWithSharedBuffer(
     phageId: number,
     sequence: string,
     windowSize: number,
-    stepSize: number
+    stepSize: number,
+    signal?: AbortSignal,
   ): Promise<BiasDecompositionWorkerResult | null> {
-    const { finish } = startOperation('analysis', 'bias-decomposition');
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
+    return this.runTask('analysis', 'bias-decomposition', async instance => {
       const api = instance.api as SharedAnalysisWorkerAPI;
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
       const request: BiasDecompositionRequest = { sequenceRef, windowSize, stepSize };
-
-      const result =
-        transfer.length > 0
-          ? await api.computeBiasDecomposition(Comlink.transfer(request, transfer))
-          : await api.computeBiasDecomposition(request);
-
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      return transfer.length > 0
+        ? api.computeBiasDecomposition(Comlink.transfer(request, transfer))
+        : api.computeBiasDecomposition(request);
+    }, signal);
   }
 
-  /**
-   * Compute phase portrait (AA property PCA) in the analysis worker.
-   *
-   * Uses SharedArrayBuffer when available to avoid copying the genome string.
-   */
   async computePhasePortraitWithSharedBuffer(
     phageId: number,
     sequence: string,
     windowSize: number,
-    stepSize: number
+    stepSize: number,
+    signal?: AbortSignal,
   ): Promise<PhasePortraitResult | null> {
-    const { finish } = startOperation('analysis', 'phase-portrait');
-    const instance = await this.getAvailableWorker('analysis');
-    let error: Error | undefined;
-
-    try {
+    return this.runTask('analysis', 'phase-portrait', async instance => {
       const api = instance.api as SharedAnalysisWorkerAPI;
       const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
       const request: PhasePortraitRequest = { sequenceRef, windowSize, stepSize };
-
-      const result =
-        transfer.length > 0
-          ? await api.computePhasePortrait(Comlink.transfer(request, transfer))
-          : await api.computePhasePortrait(request);
-
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+      return transfer.length > 0
+        ? api.computePhasePortrait(Comlink.transfer(request, transfer))
+        : api.computePhasePortrait(request);
+    }, signal);
   }
 
-  // ============================================================
-  // Simulation API
-  // ============================================================
-
-  /**
-   * Initialize a simulation
-   */
-  async initSimulation(params: SimInitParams): Promise<SimState> {
-    const { finish } = startOperation('simulation', params.simId);
-    const instance = await this.getAvailableWorker('simulation');
-    let error: Error | undefined;
-    try {
-      const api = instance.api as SimulationWorkerAPI;
-      const result = await api.init(params);
-      finish(false);
-      return result;
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      finish(true);
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+  async initSimulation(params: SimInitParams, signal?: AbortSignal): Promise<SimState> {
+    const snapshot = structuredClone(params);
+    return this.runTask('simulation', snapshot.simId, async instance => {
+      return (instance.api as SimulationWorkerAPI).init(snapshot);
+    }, signal);
   }
 
-  /**
-   * Step a simulation forward
-   */
-  async stepSimulation(state: SimState, dt: number): Promise<SimState> {
-    const instance = await this.getAvailableWorker('simulation');
-    let error: Error | undefined;
-    try {
-      const api = instance.api as SimulationWorkerAPI;
-      return await api.step({ state, dt });
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+  async stepSimulation(state: SimState, dt: number, signal?: AbortSignal): Promise<SimState> {
+    const snapshot = structuredClone(state);
+    return this.runTask('simulation', null, async instance => {
+      return (instance.api as SimulationWorkerAPI).step({ state: snapshot, dt });
+    }, signal);
   }
 
-  /**
-   * Step a simulation multiple times in batch
-   */
-  async stepSimulationBatch(state: SimState, dt: number, steps: number): Promise<SimState[]> {
-    const instance = await this.getAvailableWorker('simulation');
-    let error: Error | undefined;
-    try {
-      const api = instance.api as SimulationWorkerAPI;
-      return await api.stepBatch(state, dt, steps);
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+  async stepSimulationBatch(state: SimState, dt: number, steps: number, signal?: AbortSignal): Promise<SimState[]> {
+    const snapshot = structuredClone(state);
+    return this.runTask('simulation', null, async instance => {
+      return (instance.api as SimulationWorkerAPI).stepBatch(snapshot, dt, steps);
+    }, signal);
   }
 
-  /**
-   * Get simulation metadata
-   */
-  async getSimulationMetadata(simId: SimulationId): Promise<{
-    name: string;
-    description: string;
-    parameters: SimParameter[];
+  async getSimulationMetadata(simId: SimulationId, signal?: AbortSignal): Promise<{
+    name: string; description: string; parameters: SimParameter[];
   }> {
-    const instance = await this.getAvailableWorker('simulation');
-    let error: Error | undefined;
-    try {
-      const api = instance.api as SimulationWorkerAPI;
-      return await api.getMetadata(simId);
-    } catch (e) {
-      error = e instanceof Error ? e : new Error(String(e));
-      throw error;
-    } finally {
-      this.releaseWorker(instance, error);
-    }
+    return this.runTask('simulation', null, async instance => {
+      return (instance.api as SimulationWorkerAPI).getMetadata(simId);
+    }, signal);
   }
 
-  // ============================================================
-  // Lifecycle
-  // ============================================================
-
-  /**
-   * Get worker pool stats
-   */
   getStats(): {
     total: number;
     busy: number;
+    queued: number;
     byType: Record<WorkerType, { total: number; busy: number }>;
   } {
-    const stats = {
-      total: this.workers.size,
-      busy: 0,
+    const stats = this.pool.getStats();
+    return {
+      total: stats.total, busy: stats.busy, queued: stats.queued,
       byType: {
-        analysis: { total: 0, busy: 0 },
-        simulation: { total: 0, busy: 0 },
-      } as Record<WorkerType, { total: number; busy: number }>,
+        analysis: stats.byType.get('analysis') ?? { total: 0, busy: 0 },
+        simulation: stats.byType.get('simulation') ?? { total: 0, busy: 0 },
+      },
     };
-
-    for (const instance of this.workers.values()) {
-      stats.byType[instance.type].total++;
-      if (instance.busy) {
-        stats.busy++;
-        stats.byType[instance.type].busy++;
-      }
-    }
-
-    return stats;
   }
 
-  /**
-   * Get performance instrumentation stats (dev-only).
-   * Call this to see timing/cancellation metrics.
-   */
   getPerfStats() {
     return getAggregateStats();
   }
 
-  /**
-   * Print a formatted performance report to the console (dev-only).
-   */
   printPerfReport() {
     printReport();
   }
 
-  /**
-   * Terminate all workers and cleanup
-   */
   dispose(): void {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
-    }
-
-    for (const instance of this.workers.values()) {
-      instance.worker.terminate();
-    }
-    this.workers.clear();
-
-    // Clear the sequence pool
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.cleanupInterval) clearInterval(this.cleanupInterval);
+    this.cleanupInterval = null;
+    this.pool.dispose();
     this.sequencePool.clear();
-
-    ComputeOrchestrator.instance = null;
+    if (ComputeOrchestrator.instance === this) ComputeOrchestrator.instance = null;
   }
 }
 
-// Export singleton accessor
 export function getOrchestrator(config?: WorkerPoolConfig): ComputeOrchestrator {
   return ComputeOrchestrator.getInstance(config);
 }
