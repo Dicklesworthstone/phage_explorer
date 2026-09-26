@@ -1,9 +1,15 @@
-import { analysisJson, createAnalysisRecord, type AnalysisField, type AnalysisJson, type AnalysisRecord, type ScoreUnits } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisField, type AnalysisJson, type AnalysisRecord, type ScoreUnits } from '@phage-explorer/core';
 import type { AnalysisOptions, AnalysisRequest, AnalysisResult, AnalysisType } from './types';
 
 type Descriptor = { label: string; units: ScoreUnits; limit: string };
 type ResultKeys<T extends AnalysisType> = Exclude<keyof Extract<AnalysisResult, { type: T }>, 'type' | 'engine' | 'evidenceRecord' | 'evidenceError'>;
 type ResultDescriptors = { [T in AnalysisType]: Record<ResultKeys<T>, Descriptor> };
+
+const REPEAT_METHOD_VERSION = '2';
+const WORKER_METHOD_REFERENCE = {
+  id: 'sequence-worker-method', version: '2026-09-05',
+  description: 'Bundled algorithm and parameter defaults; no external biological reference supplied.',
+};
 
 /** Adding a worker result kind or property requires its interpretation here. */
 const DESCRIPTORS: ResultDescriptors = {
@@ -75,8 +81,79 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
   let engine = 'worker pipeline; individual kernel path not reported';
   if (result.type === 'gc-skew') engine = result.engine ?? 'unreported worker path';
   if (result.type === 'repeats') engine = `JS pair scan; ${result.engine ?? 'unreported'} detailed kernels`;
-  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: ['codon-usage', 'kmer-spectrum', 'complexity', 'repeats'].includes(type) ? '2' : '1', implementation: engine }, inputs: [{
+  return createAnalysisRecord({ method: { id: `sequence-${type}`, version: type === 'repeats' ? REPEAT_METHOD_VERSION : ['codon-usage', 'kmer-spectrum', 'complexity'].includes(type) ? '2' : '1', implementation: engine }, inputs: [{
     id: 'sequence', accession: context.accession, source: context.source,
     description: 'Exact decoded nucleotide string supplied to this worker operation; SHA-256 identifies its canonical JSON encoding.', data: sequence,
-  }], parameters, seed: null, references: [{ id: 'sequence-worker-method', version: '2026-09-05', description: 'Bundled algorithm and parameter defaults; no external biological reference supplied.' }], fields });
+  }], parameters, seed: null, references: [WORKER_METHOD_REFERENCE], fields });
+}
+
+export interface RepeatReplay {
+  record: AnalysisRecord;
+  sequence: string;
+  options: { minLength: number; maxGap: number };
+}
+
+const canonical = (value: unknown): string => JSON.stringify(analysisJson(value));
+const jsonObject = (value: AnalysisJson | undefined): value is Record<string, AnalysisJson> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** Verify file checksums and the supported method contract before applying any settings. */
+export async function parseRepeatReplay(content: string): Promise<RepeatReplay> {
+  const record = await parseAnalysisRecord(content, { methodId: 'sequence-repeats', methodVersion: REPEAT_METHOD_VERSION });
+  if (record.inputs.length !== 1 || record.inputs[0].id !== 'sequence' ||
+    !['catalog', 'local'].includes(record.inputs[0].source) ||
+    typeof record.inputs[0].data !== 'string' || record.inputs[0].data.length === 0) {
+    throw new Error('Repeat replay requires one exact, non-demo nucleotide sequence.');
+  }
+  if (record.seed !== null || canonical(record.references) !== canonical([WORKER_METHOD_REFERENCE])) {
+    throw new Error('Repeat replay seed or reference versions are incompatible with this method.');
+  }
+  const params = record.parameters;
+  const requested = params.requestedOptions;
+  const { minLength, maxGap } = params;
+  if (Object.keys(params).some(key => !['route', 'requestedOptions', 'minLength', 'maxGap'].includes(key)) ||
+    (params.route !== 'string' && params.route !== 'shared') || !jsonObject(requested) ||
+    Object.keys(requested).some(key => !['minLength', 'maxGap'].includes(key)) ||
+    Object.values(requested).some(value => typeof value !== 'number' || !Number.isSafeInteger(value)) ||
+    (requested.minLength ?? 8) !== minLength || (requested.maxGap ?? 5000) !== maxGap) {
+    throw new Error('Saved repeat parameters are inconsistent or contain unsupported options.');
+  }
+  if (typeof minLength !== 'number' || !Number.isSafeInteger(minLength) || minLength < 4 || minLength > 256 ||
+    typeof maxGap !== 'number' || !Number.isSafeInteger(maxGap) || maxGap < 0 || maxGap > 100000) {
+    throw new Error('Saved repeat parameters exceed supported replay bounds (arms 4–256 bp, gaps 0–100,000 bp).');
+  }
+  const { repeats, search } = record.fields;
+  if (Object.keys(record.fields).length !== 2 || repeats?.kind !== 'sequence-score' || repeats.units !== 'records' ||
+    !Array.isArray(repeats.value) || search?.kind !== 'sequence-score' || search.units !== 'records' || !jsonObject(search.value)) {
+    throw new Error('Saved repeat result is missing its matches or search evidence.');
+  }
+  return { record, sequence: record.inputs[0].data, options: { minLength, maxGap } };
+}
+
+export interface RepeatReplayComparison {
+  matches: boolean;
+  differences: string[];
+  implementationMatches: boolean;
+  exactRecord: boolean;
+}
+
+/**
+ * Compare freshly recomputed evidence, not a checksum alone. Transport/backend
+ * and input display metadata may change between machines; report exact-record
+ * and implementation identity separately rather than hiding that distinction.
+ */
+export function compareRepeatReplay(saved: AnalysisRecord, fresh: AnalysisRecord): RepeatReplayComparison {
+  const differences: string[] = [];
+  if (saved.method.id !== fresh.method.id || saved.method.version !== fresh.method.version) differences.push('method/version');
+  if (canonical(saved.inputs.map(input => ({ id: input.id, data: input.data }))) !==
+    canonical(fresh.inputs.map(input => ({ id: input.id, data: input.data })))) differences.push('exact sequence input');
+  if (saved.parameters.minLength !== fresh.parameters.minLength || saved.parameters.maxGap !== fresh.parameters.maxGap ||
+    saved.seed !== fresh.seed) differences.push('search parameters/seed');
+  if (canonical(saved.references) !== canonical(fresh.references)) differences.push('reference versions');
+  if (canonical(saved.fields) !== canonical(fresh.fields)) differences.push('repeat results, search limits or evidence fields');
+  return {
+    matches: differences.length === 0, differences,
+    implementationMatches: saved.method.implementation === fresh.method.implementation,
+    exactRecord: differences.length === 0 && saved.resultId === fresh.resultId,
+  };
 }

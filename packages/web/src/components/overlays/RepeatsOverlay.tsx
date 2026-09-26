@@ -22,6 +22,13 @@ import { getOrchestrator } from '../../workers/ComputeOrchestrator';
 import type { AnalysisResult } from '../../workers/types';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
+import { parseRepeatReplay, compareRepeatReplay, type RepeatReplay, type RepeatReplayComparison } from '../../workers/analysis-evidence';
+
+interface RepeatParameters {
+  minLength: number;
+  maxGap: number;
+  replay?: RepeatReplay;
+}
 
 interface RepeatsOverlayProps {
   repository: PhageRepository | null;
@@ -39,13 +46,17 @@ export function RepeatsOverlay({
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [minLengthInput, setMinLengthInput] = useState('8');
   const [maxGapInput, setMaxGapInput] = useState('5000');
-  const [parameters, setParameters] = useState({ minLength: 8, maxGap: 5000 });
+  const [parameters, setParameters] = useState<RepeatParameters>({ minLength: 8, maxGap: 5000 });
   const controllerRef = useRef<AbortController | null>(null);
+  const importGeneration = useRef(0);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [wasCancelled, setWasCancelled] = useState(false);
   const [snapshot, setSnapshot] = useState<{
     phage: PhageFull; repository: PhageRepository | null; sequence: string;
-    parameters: { minLength: number; maxGap: number };
+    parameters: RepeatParameters;
     data: Extract<AnalysisResult, { type: 'repeats' }>;
+    replay: RepeatReplayComparison | null;
   } | null>(null);
   const currentSnapshot = snapshot?.phage === currentPhage && snapshot?.repository === repository && snapshot?.parameters === parameters ? snapshot : null;
   const result = currentSnapshot?.data ?? null;
@@ -67,7 +78,9 @@ export function RepeatsOverlay({
   // Repository reads may not be interruptible, but an abandoned read must never
   // launch a worker or publish a result under a newer selection.
   useEffect(() => {
-    if (!isOpen('repeats')) return;
+    if (!isOpen('repeats')) return () => { importGeneration.current++; };
+    setImportLoading(false);
+    setImportError(null);
     setError(null);
     setExportError(null);
     setSnapshot(null);
@@ -75,7 +88,7 @@ export function RepeatsOverlay({
     setAnalysisLoading(false);
     if (!repository || !currentPhage) {
       setSequenceLoading(false);
-      return;
+      return () => { importGeneration.current++; };
     }
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -87,6 +100,9 @@ export function RepeatsOverlay({
         if (controller.signal.aborted) return;
         const sequence = await repository.getSequenceWindow(currentPhage.id, 0, length);
         if (controller.signal.aborted) return;
+        if (parameters.replay && sequence !== parameters.replay.sequence) {
+          throw new Error('Saved experiment sequence does not match the selected genome. Load its exact source genome before replaying.');
+        }
         reading = false;
         setSequenceLoading(false);
         if (!sequence) return;
@@ -95,13 +111,18 @@ export function RepeatsOverlay({
           currentPhage.id,
           sequence,
           'repeats',
-          parameters,
+          { minLength: parameters.minLength, maxGap: parameters.maxGap },
           { accession: currentPhage.accession, source: currentPhage.localGenome ? 'local' : 'catalog' },
           controller.signal,
         );
         if (controller.signal.aborted) return;
         if (result.type !== 'repeats') throw new Error('Unexpected analysis result');
-        setSnapshot({ phage: currentPhage, repository, sequence, parameters, data: result });
+        const replay = parameters.replay
+          ? result.evidenceRecord
+            ? compareRepeatReplay(parameters.replay.record, result.evidenceRecord)
+            : { matches: false, differences: ['fresh result evidence is unavailable'], implementationMatches: false, exactRecord: false }
+          : null;
+        setSnapshot({ phage: currentPhage, repository, sequence, parameters, data: result, replay });
       } catch (cause: unknown) {
         if (controller.signal.aborted) return;
         setSnapshot(null);
@@ -114,12 +135,16 @@ export function RepeatsOverlay({
       }
     })();
     return () => {
+      importGeneration.current++;
       controller.abort();
       if (controllerRef.current === controller) controllerRef.current = null;
     };
   }, [isOpen, currentPhage, repository, parameters]);
 
   const cancelAnalysis = () => {
+    importGeneration.current++;
+    setImportLoading(false);
+    setImportError(null);
     controllerRef.current?.abort();
     setSequenceLoading(false);
     setAnalysisLoading(false);
@@ -127,6 +152,28 @@ export function RepeatsOverlay({
     setError(null);
     setExportError(null);
     setWasCancelled(true);
+  };
+
+  const restoreExperiment = async (file: File) => {
+    const generation = ++importGeneration.current;
+    setImportLoading(true);
+    setImportError(null);
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error('Analysis record exceeds the 10 MiB limit.');
+      const replay = await parseRepeatReplay(await file.text());
+      if (generation !== importGeneration.current) return;
+      setMinLengthInput(String(replay.options.minLength));
+      setMaxGapInput(String(replay.options.maxGap));
+      // Only validated settings are restored. The saved outputs are never
+      // installed as live results: the normal cancellable worker path reruns.
+      setParameters({ ...replay.options, replay });
+    } catch (cause) {
+      if (generation === importGeneration.current) {
+        setImportError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (generation === importGeneration.current) setImportLoading(false);
+    }
   };
 
   const direct = repeats.filter(r => r.type === 'direct');
@@ -148,6 +195,7 @@ export function RepeatsOverlay({
         <form aria-label="Repeat search parameters" onSubmit={event => {
           event.preventDefault();
           if (parameterError || !repository || !currentPhage) return;
+          importGeneration.current++;
           // A new parameter snapshot also allows retrying the same experiment.
           setParameters({ minLength, maxGap });
         }} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: '0.75rem' }}>
@@ -164,14 +212,35 @@ export function RepeatsOverlay({
           <button type="submit" disabled={!!parameterError || !repository || !currentPhage}>
             {sequenceLoading || analysisLoading ? 'Restart analysis' : 'Run analysis'}
           </button>
-          {(sequenceLoading || analysisLoading) && <button type="button" onClick={cancelAnalysis}>Cancel analysis</button>}
+          {(sequenceLoading || analysisLoading || importLoading) && <button type="button" onClick={cancelAnalysis}>Cancel analysis</button>}
           {parameterError && <p role="alert" style={{ width: '100%' }}>{parameterError}</p>}
         </form>
+        <label>
+          Restore repeat experiment (.json)
+          <input type="file" accept=".json,application/json" disabled={!repository || !currentPhage}
+            onChange={event => {
+              const file = event.currentTarget.files?.[0];
+              event.currentTarget.value = '';
+              if (file) void restoreExperiment(file);
+            }} />
+        </label>
+        {importLoading && <p role="status">Validating saved experiment...</p>}
+        {importError && <p role="alert">Could not restore repeat experiment: {importError}</p>}
         <p style={{ color: colors.textDim, margin: 0, fontSize: '0.85rem' }}>
           These settings control sampled repeat pairs; detailed palindrome and tandem limits are shown below.
           Editing settings does not change a completed result until you run the analysis again.
         </p>
         {wasCancelled && <p role="status">Analysis cancelled. Run analysis to try again.</p>}
+        {currentSnapshot?.replay && <div role={currentSnapshot.replay.matches ? 'status' : 'alert'}>
+          {currentSnapshot.replay.matches
+            ? 'Replay matched: repeat results, search limits and evidence fields agree.'
+            : `Replay differs: ${currentSnapshot.replay.differences.join('; ')}. Showing the newly computed result.`}
+          {!currentSnapshot.replay.implementationMatches && <p>The execution backend differs from the saved record.</p>}
+          {currentSnapshot.replay.matches && <p>{currentSnapshot.replay.exactRecord
+            ? 'The complete result identity also matches.'
+            : 'The complete record identity differs (explicit defaults, transport, backend or input metadata may have changed).'}</p>}
+          <p>Reproducing computed results does not establish biological accuracy.</p>
+        </div>}
 
         {(sequenceLoading || analysisLoading) && (
           <OverlayLoadingState message={sequenceLoading ? 'Loading sequence data...' : 'Analyzing repeats...'}>

@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
-import { parseAnalysisRecord } from '../../core/src/analysis-result';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 
 declare global {
   interface Window {
@@ -123,6 +123,7 @@ test('repeat controls preserve submitted provenance and cancel real worker/read 
     // Unsaved edits cannot relabel a completed result or its portable record.
     expect((await exported()).resultId).toBe(initial.resultId);
     await overlay.getByRole('button', { name: 'Run analysis', exact: true }).click();
+    await expect(overlay).toContainText('Pairs: 12 bp arms');
     const changed = await exported();
     expect(changed.parameters).toMatchObject({ minLength: 12, maxGap: 200 });
     expect(changed.cacheKey).not.toBe(initial.cacheKey);
@@ -147,6 +148,39 @@ test('repeat controls preserve submitted provenance and cancel real worker/read 
     await overlay.getByRole('button', { name: 'Run analysis', exact: true }).click();
     expect((await exported()).resultId).toBe(changed.resultId);
     expect(await page.evaluate(() => window.repeatControlFixture.workerCounts().created)).toBe(countsAfter.created + 1);
+
+    const restoreInput = overlay.getByLabel('Restore repeat experiment (.json)');
+    await restoreInput.setInputFiles({ name: 'original.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(initial)) });
+    await expect(overlay).toContainText('Replay matched: repeat results, search limits and evidence fields agree.');
+    await expect(overlay.getByLabel('Minimum pair arm length (bp)')).toHaveValue('8');
+    await expect(overlay.getByLabel('Maximum pair gap (bp)')).toHaveValue('5000');
+    expect((await exported()).resultId).toBe(initial.resultId);
+
+    // A valid checksum proves content identity, not that the saved outputs are
+    // correct. The UI must recompute and diagnose a disagreement.
+    const divergent = structuredClone(initial);
+    divergent.fields.repeats.value = [];
+    const rehashed = await createAnalysisRecord(divergent);
+    await restoreInput.setInputFiles({ name: 'divergent.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(rehashed)) });
+    await expect(overlay).toContainText('Replay differs: repeat results, search limits or evidence fields.');
+    expect((await exported()).resultId).toBe(initial.resultId);
+
+    const wrongInput = structuredClone(initial);
+    wrongInput.inputs[0].data = String(wrongInput.inputs[0].data) + 'A';
+    const wrongRecord = await createAnalysisRecord(wrongInput);
+    const beforeMismatch = await page.evaluate(() => window.repeatControlFixture.workerCounts());
+    await restoreInput.setInputFiles({ name: 'other-genome.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(wrongRecord)) });
+    await expect(overlay).toContainText('Saved experiment sequence does not match the selected genome.');
+    await expect(exportButton).toHaveCount(0);
+    expect(await page.evaluate(() => window.repeatControlFixture.workerCounts())).toEqual(beforeMismatch);
+
+    await restoreInput.setInputFiles({ name: 'original.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(initial)) });
+    await expect(overlay).toContainText('Replay matched:');
+    const tampered = structuredClone(initial);
+    tampered.inputs[0].data = 'ACGT';
+    await restoreInput.setInputFiles({ name: 'tampered.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(tampered)) });
+    await expect(overlay).toContainText('Could not restore repeat experiment: Analysis input checksum mismatch');
+    expect((await exported()).resultId).toBe(initial.resultId);
     expect(errors).toEqual([]);
   } finally {
     await page.close();
