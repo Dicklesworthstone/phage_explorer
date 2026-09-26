@@ -95,14 +95,18 @@ try {
 const stubPath = fileURLToPath(new URL("./react-devtools-stub.js", import.meta.url));
 
 const result = await Bun.build({
-  entrypoints: ["./packages/tui/src/index.tsx"],
+  // Worker entrypoints must be included explicitly in both build stages; they
+  // are not discovered automatically from new Worker() URLs by Bun compile.
+  entrypoints: ["./packages/tui/src/index.tsx", "./packages/tui/src/workers/abundance-worker.ts"],
   outdir: "./dist",
+  naming: "[name].js",
   // Bun.build() only accepts "browser", "bun", or "node" - NOT platform-specific targets
   // Platform targets (bun-darwin-arm64, etc.) are only for `bun build --compile --target`
   target: "bun",
   // Alias react-devtools-core to our stub
   external: [],
   define: {
+    PHAGE_ABUNDANCE_WORKER: JSON.stringify("./abundance-worker.js"),
     "process.env.DEV": "'false'",
     // React switches on NODE_ENV, not DEV. Without this the compiled binary
     // ships React's development build: every render pays for the dev-only
@@ -130,11 +134,11 @@ if (!result.success) {
   process.exit(1);
 }
 
-// Now compile the bundle
+// Now compile the bundle and its worker into the same executable.
 const bundlePath = "./dist/index.js";
 const compileArgs = [
   "bun", "build",
-  bundlePath,
+  bundlePath, "./dist/abundance-worker.js",
   "--compile",
   "--outfile", outfile,
 ];
@@ -146,7 +150,5 @@ if (target) {
 console.log(`Compiling to ${outfile}...`);
 await $`${compileArgs}`;
 
-// Clean up intermediate bundle
-await $`rm -f ${bundlePath}`;
-
+// Retain intermediate bundles for worker/build diagnostics.
 console.log(`✓ Built ${outfile}`);
