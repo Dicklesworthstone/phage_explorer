@@ -1,685 +1,211 @@
-/**
- * NicheNetworkOverlay - Metagenomic Co-Occurrence Network
- *
- * Visualizes ecological niche inference from compositional correlations.
- * Force-directed network layout with niche coloring from NMF decomposition.
- */
-
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { usePhageStore } from '@phage-explorer/state';
+/** Local abundance workspace. Analysis is explicit, worker-backed and never falls back to synthetic input. */
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { serializeAbundanceDataset, serializeAnalysisRecord, type AbundanceOptions, type AbundanceAnalysis } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
-import { AnalysisPanelSkeleton } from '../ui/Skeleton';
-import {
-  OverlayLoadingState,
-  OverlayEmptyState,
-  OverlayErrorState,
-} from './primitives';
-import {
-  analyzeNiches,
-  generateDemoAbundanceTable,
-  createSeededRng,
-  type NicheAnalysisResult,
-} from '@phage-explorer/core';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
+import { AbundanceSession } from '../../workers/AbundanceSession';
+import type { AbundanceRequest } from '../../workers/abundance-runtime';
 
-// =============================================================================
-// Force Layout Types
-// =============================================================================
-
-interface LayoutNode {
-  id: string;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  niche: number;
-  degree: number;
-  strength: number;
-}
-
-interface LayoutEdge {
-  source: number;
-  target: number;
-  weight: number;
-  type: 'positive' | 'negative';
-}
-
-// =============================================================================
-// Force-Directed Layout
-// =============================================================================
-
-function runForceLayout(
-  nodes: LayoutNode[],
-  edges: LayoutEdge[],
-  width: number,
-  height: number,
-  iterations = 100
-): LayoutNode[] {
-  const n = nodes.length;
-  if (n === 0) return nodes;
-
-  // Initialize positions in a circle
-  nodes.forEach((node, i) => {
-    const angle = (2 * Math.PI * i) / n;
-    const radius = Math.min(width, height) * 0.35;
-    node.x = width / 2 + radius * Math.cos(angle);
-    node.y = height / 2 + radius * Math.sin(angle);
-    node.vx = 0;
-    node.vy = 0;
-  });
-
-  const k = Math.sqrt((width * height) / n); // Optimal distance
-  const temperature = width / 10;
-  let t = temperature;
-
-  for (let iter = 0; iter < iterations; iter++) {
-    // Repulsive forces (all pairs)
-    for (let i = 0; i < n; i++) {
-      nodes[i].vx = 0;
-      nodes[i].vy = 0;
-    }
-
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        const dx = nodes[j].x - nodes[i].x;
-        const dy = nodes[j].y - nodes[i].y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        // Repulsive force
-        const force = (k * k) / dist;
-        const fx = (dx / dist) * force;
-        const fy = (dy / dist) * force;
-
-        nodes[i].vx -= fx;
-        nodes[i].vy -= fy;
-        nodes[j].vx += fx;
-        nodes[j].vy += fy;
-      }
-    }
-
-    // Attractive forces (edges)
-    for (const edge of edges) {
-      const ni = nodes[edge.source];
-      const nj = nodes[edge.target];
-      const dx = nj.x - ni.x;
-      const dy = nj.y - ni.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-      // Attractive force (stronger for higher correlation)
-      const force = (dist * dist) / k * Math.abs(edge.weight);
-      const fx = (dx / dist) * force;
-      const fy = (dy / dist) * force;
-
-      ni.vx += fx * 0.5;
-      ni.vy += fy * 0.5;
-      nj.vx -= fx * 0.5;
-      nj.vy -= fy * 0.5;
-    }
-
-    // Apply forces with cooling
-    for (const node of nodes) {
-      const mag = Math.sqrt(node.vx * node.vx + node.vy * node.vy) || 1;
-      const capped = Math.min(mag, t);
-      node.x += (node.vx / mag) * capped;
-      node.y += (node.vy / mag) * capped;
-
-      // Keep within bounds
-      const margin = 30;
-      node.x = Math.max(margin, Math.min(width - margin, node.x));
-      node.y = Math.max(margin, Math.min(height - margin, node.y));
-    }
-
-    // Cool down
-    t = t * 0.95;
-  }
-
-  return nodes;
-}
-
-// =============================================================================
-// Niche Colors
-// =============================================================================
-
-const NICHE_COLORS = [
-  '#FF6B6B', // Red
-  '#4ECDC4', // Teal
-  '#45B7D1', // Blue
-  '#96CEB4', // Green
-  '#FFEAA7', // Yellow
-  '#DDA0DD', // Plum
-  '#98D8C8', // Mint
-  '#F7DC6F', // Gold
+type NumericOption = Exclude<keyof AbundanceOptions, 'includeNegative'>;
+type Draft = Record<NumericOption, string> & { includeNegative: boolean };
+const CONTROLS: Array<{ id: NumericOption; label: string; min: number; max: number; step: number | 'any' }> = [
+  { id: 'pseudocount', label: 'Pseudocount (input units)', min: 0, max: 1e12, step: 'any' },
+  { id: 'numNiches', label: 'NMF factors', min: 1, max: 8, step: 1 },
+  { id: 'correlationThreshold', label: 'Minimum absolute correlation', min: 0, max: 1, step: 'any' },
+  { id: 'qvalueThreshold', label: 'Maximum BH-adjusted p-value', min: 0, max: 1, step: 'any' },
+  { id: 'permutations', label: 'Pairing permutations', min: 19, max: 999, step: 1 },
+  { id: 'seed', label: 'Abundance analysis seed', min: 0, max: 0xffffffff, step: 1 },
 ];
+const toDraft = (options: AbundanceOptions): Draft => ({ ...Object.fromEntries(CONTROLS.map(({ id }) => [id, String(options[id])])),
+  includeNegative: options.includeNegative }) as Draft;
+const fromDraft = (draft: Draft): AbundanceOptions => ({ ...Object.fromEntries(CONTROLS.map(({ id }) =>
+  [id, draft[id].trim() === '' ? NaN : Number(draft[id])])), includeNegative: draft.includeNegative }) as AbundanceOptions;
 
-function getNicheColor(niche: number): string {
-  return NICHE_COLORS[niche % NICHE_COLORS.length];
+function AssociationNetwork({ analysis }: { analysis: AbundanceAnalysis }): React.ReactElement {
+  const { theme } = useTheme();
+  const colors = theme.colors;
+  const positions = analysis.taxa.map((taxon, i) => ({ taxon, x: 250 + 175 * Math.cos(2 * Math.PI * i / analysis.taxa.length),
+    y: 210 + 175 * Math.sin(2 * Math.PI * i / analysis.taxa.length) }));
+  const byTaxon = new Map(positions.map(node => [node.taxon, node]));
+  const visibleEdges = analysis.edges.slice(0, 300);
+  return <figure style={{ margin: 0 }}>
+    <svg viewBox="0 0 500 420" style={{ width: '100%', maxHeight: 360 }} role="img" aria-label="Exploratory abundance association network">
+      {visibleEdges.map(edge => {
+        const source = byTaxon.get(edge.source)!, target = byTaxon.get(edge.target)!;
+        return <line key={`${edge.source}\0${edge.target}`} x1={source.x} y1={source.y} x2={target.x} y2={target.y}
+          stroke={edge.correlation > 0 ? colors.primary : colors.warning} strokeWidth={1 + Math.abs(edge.correlation)}
+          strokeDasharray={edge.correlation < 0 ? '5 4' : undefined} opacity={0.6} />;
+      })}
+      {positions.map((node, i) => <g key={node.taxon}>
+        <circle cx={node.x} cy={node.y} r={10} fill={colors.backgroundAlt} stroke={colors.primary} />
+        <text x={node.x} y={node.y + 4} textAnchor="middle" fontSize={11} fill={colors.text}>{i + 1}</text>
+        <title>{node.taxon}</title>
+      </g>)}
+    </svg>
+    <figcaption>Solid: positive CLR association. Dashed: negative. Neither establishes an ecological interaction.
+      {analysis.edges.length > visibleEdges.length && ` Showing ${visibleEdges.length}/${analysis.edges.length} edges; all are available in the table and export.`}
+    </figcaption>
+  </figure>;
 }
-
-// =============================================================================
-// Component
-// =============================================================================
 
 export function NicheNetworkOverlay(): React.ReactElement | null {
   const { theme } = useTheme();
-  const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-
-  /**
-   * The loaded phage, used to seed the simulation.
-   *
-   * This overlay ran `generateDemoAbundanceTable(25, 60, numNiches)` with the
-   * default `Math.random`, so its output was identical for every genome and
-   * different on every open. An educational simulation that ignores the user's
-   * selection and will not reproduce has no business in a genome browser: a
-   * user cannot compare two phages with it, and cannot return to a network they
-   * saw a minute ago.
-   *
-   * The NMF and bootstrap mathematics underneath are real and are kept. What
-   * changes is that the synthetic community is now a deterministic function of
-   * the phage and the parameters.
-   */
-  const currentPhage = usePhageStore(s => s.currentPhage);
-
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [analysisResult, setAnalysisResult] = useState<NicheAnalysisResult | null>(null);
-  const [selectedNode, setSelectedNode] = useState<string | null>(null);
-  const [numNiches, setNumNiches] = useState(4);
-  const [correlationThreshold, setCorrelationThreshold] = useState(0.3);
-  const [showNegative, setShowNegative] = useState(true);
-
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const layoutNodesRef = useRef<LayoutNode[]>([]);
-
-  // Hotkey to toggle overlay
-  useHotkey(
-    ActionIds.OverlayNicheNetwork,
-    () => toggle('nicheNetwork'),
-    { modes: ['NORMAL'] }
-  );
-
-  // Track overlay open state
-  const overlayIsOpen = isOpen('nicheNetwork');
-
-  // Run analysis when overlay opens or parameters change
+  const open = isOpen('nicheNetwork');
+  const session = useMemo(() => new AbundanceSession(() => new Worker(new URL('../../workers/abundance.worker.ts', import.meta.url), { type: 'module' })), []);
+  const { accepted, loading, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [taxon, setTaxon] = useState('');
+  const [page, setPage] = useState(0);
+  const [showAllPairs, setShowAllPairs] = useState(false);
+  useHotkey(ActionIds.OverlayNicheNetwork, () => toggle('nicheNetwork'), { modes: ['NORMAL'] });
+  useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open, session]);
   useEffect(() => {
-    if (!overlayIsOpen) return;
+    if (accepted) setDraft(toDraft(accepted.options));
+    setFileError(null); setPage(0); setTaxon(accepted?.analysis?.taxa[0] ?? '');
+  }, [accepted]);
+  useEffect(() => { setPage(0); }, [showAllPairs]);
+  if (!open) return null;
 
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    // Use setTimeout to avoid blocking UI
-    const timeoutId = setTimeout(() => {
-      if (cancelled) return;
-      try {
-        // Synthetic community, seeded from the phage and the parameters so the
-        // same inputs always produce the same network. In production this would
-        // come from a user upload or a real co-occurrence index.
-        const seed = `${currentPhage?.id ?? 'none'}:${numNiches}:${correlationThreshold}:${showNegative}`;
-        const abundanceTable = generateDemoAbundanceTable(
-          25,
-          60,
-          numNiches,
-          createSeededRng(seed)
-        );
-
-        const result = analyzeNiches(abundanceTable, undefined, {
-          numNiches,
-          correlationThreshold,
-          includeNegative: showNegative,
-          bootstrapIterations: 50, // Fewer for faster demo
-        });
-
-        if (cancelled) return;
-        setAnalysisResult(result);
-      } catch (error) {
-        if (cancelled) return;
-        setAnalysisResult(null);
-        setError(error instanceof Error ? error.message : 'Niche analysis failed.');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 50);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
-  }, [overlayIsOpen, numNiches, correlationThreshold, showNegative, currentPhage]);
-
-  // Build layout when network changes
-  const layoutData = useMemo(() => {
-    if (!analysisResult) return null;
-
-    const { network } = analysisResult;
-    const nodeIndexMap = new Map<string, number>();
-
-    const layoutNodes: LayoutNode[] = network.nodes.map((node, i) => {
-      nodeIndexMap.set(node.taxon, i);
-      return {
-        id: node.taxon,
-        x: 0,
-        y: 0,
-        vx: 0,
-        vy: 0,
-        niche: node.primaryNiche,
-        degree: node.degree,
-        strength: node.strength,
-      };
-    });
-
-	    const layoutEdges: LayoutEdge[] = [];
-	    for (const edge of network.edges) {
-	      const source = nodeIndexMap.get(edge.source);
-	      const target = nodeIndexMap.get(edge.target);
-	      if (source === undefined || target === undefined) continue;
-	      if (source === target) continue;
-	      layoutEdges.push({
-	        source,
-	        target,
-	        weight: edge.correlation,
-        type: edge.type,
+  const colors = theme.colors;
+  const analysis = accepted?.analysis;
+  const record = accepted?.record;
+  const pairs = analysis ? showAllPairs ? analysis.associations : analysis.edges : [];
+  const pageCount = Math.max(1, Math.ceil(pairs.length / 100));
+  const currentPage = Math.min(page, pageCount - 1);
+  const profile = analysis?.profiles.find(item => item.taxon === taxon);
+  const fieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '.3rem' };
+  const inputStyle: React.CSSProperties = { padding: '.5rem', minHeight: 44, width: '100%', color: colors.text,
+    background: colors.background, border: `1px solid ${colors.borderLight}`, borderRadius: 4 };
+  const draftChanged = draft && accepted && (CONTROLS.some(({ id }) => Number(draft[id]) !== accepted.options[id]) || draft.includeNegative !== accepted.options.includeNegative);
+  const loadFile = (file: File | undefined, metadata: boolean) => {
+    if (!file) return;
+    setFileError(null);
+    const prior = accepted;
+    const options = draft ? fromDraft(draft) : {};
+    const request: Promise<AbundanceRequest> = file.size > 10 * 1024 * 1024
+      ? Promise.reject(new Error('File exceeds the 10 MiB limit.'))
+      : file.text().then(content => {
+        if (metadata) {
+          if (!prior) throw new Error('Load an abundance dataset before its metadata.');
+          return { kind: 'metadata', content, dataset: prior.dataset, options };
+        }
+        return { kind: 'import', content, filename: file.name };
       });
-    }
+    void session.run(request);
+  };
+  const exportData = (result: boolean) => {
+    try {
+      if (!accepted) return;
+      const content = result && accepted.record ? serializeAnalysisRecord(accepted.record) : serializeAbundanceDataset(accepted.dataset);
+      downloadString(content, result ? 'abundance-analysis.json' : 'abundance-dataset.json', 'application/json');
+      setFileError(null);
+    } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Could not export abundance data.'); }
+  };
 
-    return { nodes: layoutNodes, edges: layoutEdges };
-  }, [analysisResult]);
-
-  // Draw network on canvas
-  const drawNetwork = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !layoutData) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-
-    canvas.width = width * dpr;
-    canvas.height = height * dpr;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    // Run layout if not done
-    if (layoutNodesRef.current.length !== layoutData.nodes.length) {
-      layoutNodesRef.current = runForceLayout(
-        [...layoutData.nodes],
-        layoutData.edges,
-        width,
-        height,
-        150
-      );
-    }
-
-    const nodes = layoutNodesRef.current;
-    const edges = layoutData.edges;
-
-    // Clear canvas
-    ctx.fillStyle = colors.background;
-    ctx.fillRect(0, 0, width, height);
-
-    // Draw edges
-    for (const edge of edges) {
-      const source = nodes[edge.source];
-      const target = nodes[edge.target];
-      if (!source || !target) continue;
-
-      ctx.beginPath();
-      ctx.moveTo(source.x, source.y);
-      ctx.lineTo(target.x, target.y);
-
-      // Color: positive = green, negative = red
-      const alpha = Math.min(1, Math.abs(edge.weight) * 1.5);
-      if (edge.type === 'positive') {
-        ctx.strokeStyle = `rgba(76, 175, 80, ${alpha * 0.5})`;
-      } else {
-        ctx.strokeStyle = `rgba(244, 67, 54, ${alpha * 0.5})`;
-      }
-      ctx.lineWidth = Math.abs(edge.weight) * 3;
-      ctx.stroke();
-    }
-
-    // Draw nodes
-    for (const node of nodes) {
-      const isSelected = node.id === selectedNode;
-      const radius = 6 + node.degree * 1.5;
-
-      // Node circle
-      ctx.beginPath();
-      ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = getNicheColor(node.niche);
-      ctx.fill();
-
-      // Border for selected node
-      if (isSelected) {
-        ctx.strokeStyle = colors.text;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = colors.borderLight;
-        ctx.lineWidth = 1;
-        ctx.stroke();
-      }
-
-      // Label for high-degree nodes or selected
-      if (node.degree > 3 || isSelected) {
-        ctx.fillStyle = colors.text;
-        ctx.font = '10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(node.id, node.x, node.y - radius - 4);
-      }
-    }
-
-    // Legend
-    const legendY = 20;
-    const nicheCount = analysisResult?.nmfResult.k ?? numNiches;
-    for (let i = 0; i < nicheCount; i++) {
-      const x = 20 + i * 80;
-      ctx.fillStyle = getNicheColor(i);
-      ctx.fillRect(x, legendY, 12, 12);
-      ctx.fillStyle = colors.textDim;
-      ctx.font = '10px sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText(`Niche ${i + 1}`, x + 16, legendY + 10);
-    }
-  }, [layoutData, colors, selectedNode, numNiches, analysisResult]);
-
-  // Handle canvas click
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    const nodes = layoutNodesRef.current;
-    for (const node of nodes) {
-      const radius = 6 + node.degree * 1.5;
-      const dx = x - node.x;
-      const dy = y - node.y;
-      if (dx * dx + dy * dy < radius * radius) {
-        setSelectedNode(node.id === selectedNode ? null : node.id);
-        return;
-      }
-    }
-    setSelectedNode(null);
-  }, [selectedNode]);
-
-  // Draw on layout changes
-  useEffect(() => {
-    drawNetwork();
-  }, [drawNetwork]);
-
-  // Redraw on window resize
-  useEffect(() => {
-    const handleResize = () => {
-      layoutNodesRef.current = []; // Force relayout
-      drawNetwork();
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [drawNetwork]);
-
-  if (!overlayIsOpen) {
-    return null;
-  }
-
-  // Get selected node profile
-  const selectedProfile = selectedNode
-    ? analysisResult?.nicheProfiles.find(p => p.taxon === selectedNode)
-    : null;
-
-  return (
-    <Overlay
-      id="nicheNetwork"
-      title="NICHE CO-OCCURRENCE NETWORK"
-      hotkey="Ctrl+Shift+N"
-      size="xl"
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {/* Educational simulation banner */}
-        <div
-          style={{
-            padding: '0.75rem',
-            backgroundColor: colors.info + '22',
-            border: `1px solid ${colors.info}`,
-            borderRadius: '4px',
-            color: colors.text,
-            fontSize: '0.85rem',
-          }}
-        >
-          <strong style={{ color: colors.info }}>EDUCATIONAL SIMULATION</strong>: This visualization
-          demonstrates NMF-based ecological niche inference using synthetic co-occurrence data.
-          Real niche analysis requires metagenomic abundance tables from environmental samples,
-          which are not available via public APIs.
-        </div>
-
-        {/* Description */}
-        <div
-          style={{
-            padding: '0.75rem',
-            backgroundColor: colors.backgroundAlt,
-            borderRadius: '4px',
-            color: colors.textDim,
-            fontSize: '0.9rem',
-          }}
-        >
-          <strong style={{ color: colors.primary }}>Ecological Niche Inference</strong>{' '}
-          from metagenomic co-occurrence. Nodes colored by NMF-derived niche assignments.
-          Green edges = positive correlation, red = negative (exclusion).
-        </div>
-
-        {/* Controls */}
-        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <label style={{ color: colors.textDim, fontSize: '0.85rem' }}>
-            Niches:
-            <select
-              value={numNiches}
-              onChange={e => {
-                setNumNiches(Number(e.target.value));
-                layoutNodesRef.current = [];
-              }}
-              style={{
-                marginLeft: '0.5rem',
-                padding: '0.25rem',
-                backgroundColor: colors.backgroundAlt,
-                color: colors.text,
-                border: `1px solid ${colors.borderLight}`,
-                borderRadius: '4px',
-              }}
-            >
-              {[2, 3, 4, 5, 6].map(k => (
-                <option key={k} value={k}>{k}</option>
-              ))}
-            </select>
-          </label>
-
-          <label style={{ color: colors.textDim, fontSize: '0.85rem' }}>
-            Corr. threshold:
-            <input
-              type="range"
-              min="0.1"
-              max="0.7"
-              step="0.05"
-              value={correlationThreshold}
-              onChange={e => {
-                setCorrelationThreshold(Number(e.target.value));
-                layoutNodesRef.current = [];
-              }}
-              style={{ marginLeft: '0.5rem', width: '80px' }}
-            />
-            <span style={{ marginLeft: '0.25rem', fontFamily: 'monospace' }}>
-              {correlationThreshold.toFixed(2)}
-            </span>
-          </label>
-
-          <label style={{ color: colors.textDim, fontSize: '0.85rem', display: 'flex', alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              checked={showNegative}
-              onChange={e => {
-                setShowNegative(e.target.checked);
-                layoutNodesRef.current = [];
-              }}
-              style={{ marginRight: '0.25rem' }}
-            />
-            Show negative
-          </label>
-        </div>
-
-        {loading ? (
-          <OverlayLoadingState message="Running NMF niche analysis...">
-            <AnalysisPanelSkeleton />
-          </OverlayLoadingState>
-        ) : error ? (
-          <OverlayErrorState
-            message="Niche analysis failed"
-            details={error}
-          />
-        ) : !analysisResult ? (
-          <OverlayEmptyState
-            message="No analysis data available"
-            hint="Adjust parameters or try again to generate niche network."
-          />
-        ) : (
-          <div style={{ display: 'flex', gap: '1rem' }}>
-            {/* Network Canvas */}
-            <div
-              style={{
-                flex: 2,
-                border: `1px solid ${colors.borderLight}`,
-                borderRadius: '4px',
-                overflow: 'hidden',
-              }}
-            >
-              <canvas
-                ref={canvasRef}
-                onClick={handleCanvasClick}
-                role="img"
-                aria-label="Metagenomic co-occurrence network showing ecological niche relationships with force-directed layout"
-                style={{
-                  width: '100%',
-                  height: '350px',
-                  display: 'block',
-                  cursor: 'pointer',
-                }}
-              />
+  return <Overlay id="nicheNetwork" title="ABUNDANCE ASSOCIATIONS & NICHE FACTORS" size="xl">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', color: colors.text, overflowWrap: 'anywhere' }}>
+      <section aria-label="Abundance data source" style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
+        <strong data-testid="abundance-source">{accepted ? accepted.dataset.source.kind === 'demo'
+          ? 'SYNTHETIC EXAMPLE — not observed community data' : 'LOCAL DATA — user-supplied, not independently verified' : 'NO DATA LOADED'}</strong>
+        <p>Files are processed locally in a worker and are not uploaded. This community dataset is independent of the selected catalog phage;
+          matching a taxon name does not establish a host or ecological relationship.</p>
+        <label style={fieldStyle}>Import abundance CSV, TSV, dataset JSON or saved analysis
+          <input type="file" accept=".csv,.tsv,.json,text/csv,text/tab-separated-values,application/json" disabled={loading}
+            onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadFile(file, false); }} />
+        </label>
+        <button type="button" disabled={loading} onClick={() => void session.run({ kind: 'demo', seed: 42 })}>Load synthetic example</button>
+        <button type="button" disabled={!loading} onClick={session.cancel}>Cancel abundance work</button>
+        {loading && <p role="status">{phase}. The last accepted dataset and result remain unchanged.</p>}
+        {notice && <p role="status">{notice}</p>}
+        {(error || fileError) && <p role="alert">{error ?? fileError}</p>}
+      </section>
+      <details>
+        <summary>Input layout, metadata and supported scope</summary>
+        <p>CSV/TSV header: <code>taxon,S1,S2,S3</code>. Subsequent rows: taxon identifier followed by finite nonnegative counts.
+          Quoted fields and Unicode identifiers are supported. Blank/NA measurements are not silently treated as zeros.</p>
+        <p>Load separate metadata with <code>sampleId,habitat,host,location</code> headers, or a JSON array of sampleId objects.
+          Metadata joins by sample ID, not row order. Missing optional fields may be left blank.</p>
+        <p>Dataset JSON preserves name, source description/reference, metadata and explicit units. Export a dataset to inspect the schema.
+          Units are counts or relative-abundance (each nonempty sample sums to one); CSV/TSV defaults to counts.</p>
+        <p>Limits: 100 taxa, 500 samples, 4 MiB per dataset, 10 MiB per saved analysis, and a bounded pairwise computation budget.
+          At least two nonempty taxa and three nonempty samples are needed. No reference index is bundled or queried.</p>
+      </details>
+      {accepted && <>
+        <h3 data-testid="abundance-dataset-name">{accepted.dataset.name}</h3>
+        <p>{accepted.dataset.source.description}{accepted.dataset.source.reference ? ` · ${accepted.dataset.source.reference}` : ' · No external reference supplied.'}</p>
+        <p>{accepted.dataset.table.taxa.length} taxa × {accepted.dataset.table.samples.length} samples; units: {accepted.dataset.units}.
+          {` ${accepted.dataset.metadata.length} sample metadata records.`}</p>
+        <label style={fieldStyle}>Attach sample metadata CSV, TSV or JSON
+          <input type="file" accept=".csv,.tsv,.json,text/csv,text/tab-separated-values,application/json" disabled={loading}
+            onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadFile(file, true); }} />
+        </label>
+        {draft && <form onSubmit={event => { event.preventDefault(); setFileError(null);
+          void session.run({ kind: 'analyze', dataset: accepted.dataset, options: fromDraft(draft) }); }}>
+          <fieldset disabled={loading} style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
+            <legend>Explicit analysis parameters</legend>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '.75rem' }}>
+              {CONTROLS.map(control => <label key={control.id} style={fieldStyle}>{control.label}
+                <input type="number" required min={control.min} max={control.max} step={control.step} value={draft[control.id]}
+                  style={inputStyle} onChange={event => setDraft({ ...draft, [control.id]: event.target.value })} />
+              </label>)}
             </div>
-
-            {/* Stats Panel */}
-            <div
-              style={{
-                flex: 1,
-                minWidth: '200px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.5rem',
-              }}
-            >
-              {/* Network Stats */}
-              {analysisResult && (
-                <div
-                  style={{
-                    padding: '0.75rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div style={{ color: colors.primary, fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-                    Network Statistics
-                  </div>
-                  <div style={{ color: colors.textDim, fontSize: '0.75rem' }}>
-                    <div>Nodes: {analysisResult.network.stats.nodeCount}</div>
-                    <div>Edges: {analysisResult.network.stats.edgeCount}</div>
-                    <div>Density: {(analysisResult.network.stats.density * 100).toFixed(1)}%</div>
-                    <div>Positive: {(analysisResult.network.stats.positiveRatio * 100).toFixed(0)}%</div>
-                    <div>NMF Error: {analysisResult.nmfResult.error.toFixed(2)}</div>
-                  </div>
-                </div>
-              )}
-
-              {/* Selected Node Profile */}
-              {selectedProfile && (
-                <div
-                  style={{
-                    padding: '0.75rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div style={{ color: colors.primary, fontSize: '0.8rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-                    {selectedProfile.taxon}
-                  </div>
-                  <div style={{ color: colors.textDim, fontSize: '0.75rem' }}>
-                    <div>
-                      Primary Niche:{' '}
-                      <span style={{ color: getNicheColor(selectedProfile.primaryNiche) }}>
-                        #{selectedProfile.primaryNiche + 1}
-                      </span>
-                      {' '}({(selectedProfile.nicheConfidence * 100).toFixed(0)}%)
-                    </div>
-                    <div style={{ marginTop: '0.5rem' }}>
-                      Niche Weights:
-                      <div style={{ display: 'flex', gap: '2px', marginTop: '2px' }}>
-                        {selectedProfile.nicheWeights.map((w, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              flex: w,
-                              height: '8px',
-                              backgroundColor: getNicheColor(i),
-                              borderRadius: '2px',
-                            }}
-                            title={`Niche ${i + 1}: ${(w * 100).toFixed(0)}%`}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                    {selectedProfile.coOccurringTaxa.length > 0 && (
-                      <div style={{ marginTop: '0.5rem' }}>
-                        Top co-occurring:
-                        {selectedProfile.coOccurringTaxa.slice(0, 5).map((t, i) => (
-                          <div
-                            key={i}
-                            style={{
-                              color: t.correlation > 0 ? colors.success : colors.error,
-                              fontSize: '0.7rem',
-                            }}
-                          >
-                            {t.taxon} ({t.correlation > 0 ? '+' : ''}{t.correlation.toFixed(2)})
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Instructions */}
-              <div
-                style={{
-                  padding: '0.5rem',
-                  backgroundColor: colors.backgroundAlt,
-                  borderRadius: '4px',
-                  color: colors.textMuted,
-                  fontSize: '0.7rem',
-                }}
-              >
-                Click nodes to inspect. Adjust threshold to filter edges.
-                Node size = degree. Colors = NMF niche assignment.
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </Overlay>
-  );
+            <label><input type="checkbox" checked={draft.includeNegative}
+              onChange={event => setDraft({ ...draft, includeNegative: event.target.checked })} /> Include negative associations</label>
+            <p>Seed controls the permutation draws and NMF initialization, not the input measurements.
+              {draftChanged && ' Edited values have not been applied; the displayed result and exports still use the last submitted parameters.'}</p>
+            <button type="submit">Run abundance analysis</button>
+          </fieldset>
+        </form>}
+        <div><button type="button" disabled={loading} onClick={() => exportData(false)}>Export abundance dataset</button>
+          <button type="button" disabled={loading || !record} onClick={() => exportData(true)}>Export abundance analysis</button></div>
+      </>}
+      {analysis && record && <section data-testid="abundance-result" data-result-id={record.resultId}>
+        <h3>Exploratory associations, not inferred interactions</h3>
+        <p data-testid="abundance-summary">{analysis.taxa.length} retained taxa; {analysis.samples.length} retained samples;
+          {` ${analysis.associations.length} tested pairs; ${analysis.edges.length} retained edges.`}</p>
+        <p>Computed with pseudocount {analysis.options.pseudocount}, {analysis.options.numNiches} NMF factors, seed {analysis.options.seed};
+          {` ${analysis.diagnostics.permutationMode} pairing test (${analysis.diagnostics.permutationsUsed} pairings); `}
+          |r| ≥ {analysis.options.correlationThreshold}, adjusted p ≤ {analysis.options.qvalueThreshold}.</p>
+        <p>Matched metadata: {analysis.diagnostics.metadataSamples}/{analysis.samples.length} retained samples.
+          Empty taxa excluded: {analysis.diagnostics.excludedTaxa.join(', ') || 'none'}.
+          Empty samples excluded: {analysis.diagnostics.excludedSamples.join(', ') || 'none'}.
+          Undefined constant CLR trajectories: {analysis.diagnostics.constantTaxa.join(', ') || 'none'}.</p>
+        <AssociationNetwork analysis={analysis} />
+        <label><input type="checkbox" checked={showAllPairs} onChange={event => setShowAllPairs(event.target.checked)} /> Show all tested pairs, including filtered associations</label>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Abundance association statistics" style={{ width: '100%' }}>
+          <thead><tr><th>Taxon A</th><th>Taxon B</th><th>Pearson r</th><th>Permutation p</th><th>BH-adjusted p</th></tr></thead>
+          <tbody>{pairs.slice(currentPage * 100, (currentPage + 1) * 100).map(pair => <tr key={`${pair.source}\0${pair.target}`} data-testid="abundance-association">
+            <td>{pair.source}</td><td>{pair.target}</td><td>{pair.correlation.toPrecision(6)}</td><td>{pair.pvalue.toPrecision(6)}</td><td>{pair.qvalue.toPrecision(6)}</td>
+          </tr>)}</tbody>
+        </table></div>
+        {pairs.length === 0 && <p>No associations pass the selected filters. This is not evidence that ecological interactions are absent.</p>}
+        {pageCount > 1 && <div><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous pairs</button>
+          <span> Page {currentPage + 1}/{pageCount} </span>
+          <button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>Next pairs</button></div>}
+        <h3>Descriptive NMF factors and sample-linked habitats</h3>
+        <label style={fieldStyle}>Inspect taxon
+          <select style={inputStyle} value={taxon} onChange={event => setTaxon(event.target.value)}>
+            {analysis.taxa.map((name, index) => <option value={name} key={name}>{index + 1}. {name}</option>)}
+          </select>
+        </label>
+        {profile && <div data-testid="abundance-profile">
+          <p>Factor weights: {profile.factorWeights.map((value, index) => `F${index + 1} ${(100 * value).toFixed(2)}%`).join(' · ')}.
+            These are descriptive memberships, not probabilities. Reconstruction residual: {analysis.nmfResult.error.toPrecision(6)}.</p>
+          <table aria-label="Sample-linked habitat summaries"><thead><tr><th>Habitat</th><th>Matched samples</th><th>Mean relative abundance</th></tr></thead>
+            <tbody>{profile.habitats.map(habitat => <tr key={habitat.habitat}><td>{habitat.habitat}</td><td>{habitat.samples}</td>
+              <td>{(100 * habitat.meanRelativeAbundance).toFixed(4)}%</td></tr>)}</tbody></table>
+          {profile.habitats.length === 0 && <p>No matched habitat metadata is available for this dataset.</p>}
+        </div>}
+        {analysis.diagnostics.warnings.map(warning => <p key={warning}>{warning}</p>)}
+        <AnalysisRecordDetails record={record} />
+      </section>}
+    </div>
+  </Overlay>;
 }
-
-export default NicheNetworkOverlay;

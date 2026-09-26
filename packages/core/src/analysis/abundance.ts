@@ -2,7 +2,7 @@
  * Rows are taxa; columns are samples. This is Pearson correlation of sample-wise
  * CLR coordinates, NOT SparCC or evidence of ecological/causal interaction.
  * CLR definition: https://scikit.bio/docs/dev/generated/skbio.stats.composition.clr.html
- * Pairing null: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.permutation_test.html
+ * Pairing null: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats/permutation_test.html
  */
 import { nmf, createSeededRng, type AbundanceTable, type SampleMetadata, type NMFResult } from './metagenomic-niche';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
@@ -112,13 +112,13 @@ export function validateAbundanceDataset(value: unknown): AbundanceDataset {
 }
 
 /** RFC-style quoted CSV/TSV, with a strict header and no silent numeric coercion. */
-function delimitedRows(content: string, delimiter: string): string[][] {
+function delimitedRows(content: string, delimiter: string, maxRows: number = ABUNDANCE_LIMITS.taxa + 1): string[][] {
   const rows: string[][] = [];
   let row: string[] = [], cell = '', quoted = false, closed = false;
   const finishCell = () => { row.push(cell); cell = ''; closed = false; };
   const finishRow = () => {
     finishCell(); rows.push(row); row = [];
-    if (rows.length > ABUNDANCE_LIMITS.taxa + 1) throw new Error('Abundance input has too many taxa.');
+    if (rows.length > maxRows) throw new Error('Abundance input has too many rows.');
   };
   for (let i = 0; i < content.length; i++) {
     const c = content[i];
@@ -164,6 +164,28 @@ export function serializeAbundanceDataset(dataset: AbundanceDataset): string {
   const content = JSON.stringify(validateAbundanceDataset(dataset), null, 2);
   checkBytes(content);
   return content;
+}
+
+/** Replace sample metadata by ID; never align it by row position or upload it. */
+export function importAbundanceMetadata(content: string, input: AbundanceDataset): AbundanceDataset {
+  checkBytes(content);
+  const dataset = validateAbundanceDataset(input);
+  const text = content.replace(/^\uFEFF/, '');
+  let metadata: unknown;
+  if (text.trimStart().startsWith('[')) metadata = JSON.parse(text);
+  else {
+    const firstLine = text.split(/[\r\n]/, 1)[0];
+    const rows = delimitedRows(text, firstLine.includes('\t') ? '\t' : ',', ABUNDANCE_LIMITS.samples + 1);
+    if (rows.length < 2 || !['sampleid', 'sample_id'].includes(rows[0][0]?.trim().toLowerCase())) {
+      throw new Error('Metadata requires sampleId,habitat,… headers or a JSON array of sampleId objects.');
+    }
+    const headers = names(['sampleId', ...rows[0].slice(1)], 'Metadata columns', 100);
+    metadata = rows.slice(1).map((row, i) => {
+      if (row.length !== headers.length) throw new Error(`Metadata row ${i + 2} has the wrong number of columns.`);
+      return Object.fromEntries(headers.flatMap((key, j) => row[j].trim() === '' && j > 0 ? [] : [[key, row[j]]]));
+    });
+  }
+  return validateAbundanceDataset({ ...dataset, metadata });
 }
 
 export function resolveAbundanceOptions(dataset: AbundanceDataset, options: Partial<AbundanceOptions> = {}): AbundanceOptions {
