@@ -65,6 +65,8 @@ interface OverlayProps {
   onClose?: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** Achieved input provenance for overlays with user-selected data sources. */
+  provenanceBadge?: ReactNode;
   className?: string;
 }
 
@@ -151,6 +153,7 @@ export function Overlay({
   onClose,
   children,
   footer,
+  provenanceBadge,
   className = '',
 }: OverlayProps): React.ReactElement | null {
   const { isOpen, close, stack, isMobile } = useOverlay();
@@ -428,6 +431,7 @@ export function Overlay({
         maxHeight={94}
       >
         <div ref={overlayRef} className={`overlay overlay-${id} ${className}`} data-testid={`overlay-${id}`}>
+          {provenanceBadge}
           {children}
         </div>
       </BottomSheet>
@@ -504,9 +508,9 @@ export function Overlay({
                 'measured' is deliberately not badged. It is the overwhelming
                 majority, and a badge on every panel is a badge nobody reads;
                 the signal has to be reserved for the cases that need it. */}
-            {provenance && provenance !== 'measured' && (
+            {provenanceBadge ?? (provenance && provenance !== 'measured' && (
               <OverlayProvenance level={provenance} />
-            )}
+            ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--chrome-gap-lg)' }}>
             <span style={{ color: 'var(--color-text-muted)', fontSize: 'var(--hotkey-font-size)' }}>

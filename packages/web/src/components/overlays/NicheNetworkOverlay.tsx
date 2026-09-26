@@ -109,7 +109,11 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
     } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Could not export abundance data.'); }
   };
 
-  return <Overlay id="nicheNetwork" title="ABUNDANCE ASSOCIATIONS & NICHE FACTORS" size="xl">
+  return <Overlay id="nicheNetwork" title="ABUNDANCE ASSOCIATIONS & NICHE FACTORS" size="xl"
+    provenanceBadge={<span data-testid="abundance-header-source" style={{ fontSize: '.75rem', color: colors.textDim }}
+      title="Input provenance applies to the accepted dataset. Statistical associations are not measured ecological interactions.">
+      {!accepted ? 'No input data' : accepted.dataset.source.kind === 'demo' ? 'Synthetic example' : 'User-supplied local data'}
+    </span>}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', color: colors.text, overflowWrap: 'anywhere' }}>
       <section aria-label="Abundance data source" style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
         <strong data-testid="abundance-source">{accepted ? accepted.dataset.source.kind === 'demo'

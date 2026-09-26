@@ -33,10 +33,14 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
           import { ScrollProvider } from './providers';
           import { getOrchestrator } from './workers/ComputeOrchestrator';
           import { SimulationSession } from './hooks/SimulationSession';
+          import { simulationStateJson } from './workers/simulation-runtime';
           import './styles/index.css';
           usePhageStore.setState({ currentPhage: null });
           // Exercise the actual model registry, Comlink transport and fresh workers.
           // No mock numeric result is used in these comparisons.
+          // JSON record parsing sorts parameter keys; insertion order is not
+          // numerical state. Preserve every value and typed-array type in the comparison.
+          const stateIdentity = state => JSON.stringify(simulationStateJson(state));
           window.checkSeededModels = async () => {
             const outcomes = [];
             for (const { id } of SIMULATION_METADATA) {
@@ -52,16 +56,18 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
               const session = new SimulationSession(id, null, getOrchestrator, {}, 42);
               await session.activate();
               await session.step();
-              const accepted = JSON.stringify(session.getSnapshot().state);
+              const accepted = stateIdentity(session.getSnapshot().state);
               const saved = await session.exportExperiment();
               await session.setSeed(999);
               await session.replayExperiment(saved);
               const replayed = session.getSnapshot().error === null && !!session.getSnapshot().replayMessage &&
-                JSON.stringify(session.getSnapshot().state) === accepted;
+                stateIdentity(session.getSnapshot().state) === accepted;
+              const replayError = session.getSnapshot().error;
+              const recordIdentical = replayed && JSON.parse(await session.exportExperiment()).resultId === JSON.parse(saved).resultId;
               session.deactivate();
-              outcomes.push({ id, first: JSON.stringify(first) === JSON.stringify(batch[0]),
-                second: JSON.stringify(second) === JSON.stringify(batch[1]),
-                checkpoint: second.randomState.algorithm === 'lcg32-v1', seed: second.randomState.seed, replayed });
+              outcomes.push({ id, first: stateIdentity(first) === stateIdentity(batch[0]),
+                second: stateIdentity(second) === stateIdentity(batch[1]),
+                checkpoint: second.randomState.algorithm === 'lcg32-v1', seed: second.randomState.seed, replayed, replayError, recordIdentical });
               manager.dispose();
             }
             return outcomes;
@@ -111,7 +117,7 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
     await expect.poll(() => page.evaluate(() => typeof (window as any).openSimulation)).toBe('function');
     const outcomes = await page.evaluate(() => (window as any).checkSeededModels());
     expect(outcomes).toHaveLength(7);
-    for (const outcome of outcomes) expect(outcome, outcome.id).toMatchObject({ first: true, second: true, checkpoint: true, seed: 42, replayed: true });
+    for (const outcome of outcomes) expect(outcome, outcome.id).toMatchObject({ first: true, second: true, checkpoint: true, seed: 42, replayed: true, replayError: null, recordIdentical: true });
 
     await page.evaluate(() => (window as any).openSimulation());
     const overlay = page.getByTestId('overlay-simulationView');

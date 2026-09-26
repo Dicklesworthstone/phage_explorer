@@ -156,7 +156,7 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report/pwa-science
         run: |
           bunx playwright test --project=chromium --project=chromium-pwa --workers=1 \
-            --output=test-results/pwa-science e2e/pwa.e2e.ts e2e/local-genome-import.e2e.ts e2e/scientific-results.e2e.ts e2e/repeat-controls.e2e.ts e2e/simulation-lifecycle.e2e.ts
+            --output=test-results/pwa-science e2e/pwa.e2e.ts e2e/local-genome-import.e2e.ts e2e/scientific-results.e2e.ts e2e/repeat-controls.e2e.ts e2e/simulation-lifecycle.e2e.ts e2e/local-abundance.e2e.ts
 
       - name: Upload report on failure
         if: failure()
