@@ -5,6 +5,7 @@ import { useOverlay } from './overlays/OverlayProvider';
 import { useTheme } from '../hooks/useTheme';
 import { TimeControls, ParameterPanel } from './simulations';
 import { useSimulation } from '../hooks/useSimulation';
+import { downloadString } from '../utils/export';
 import type { SimulationId, SimState } from '../workers/types';
 import {
   LysogenyVisualizer,
@@ -87,6 +88,8 @@ export default function SimulationView(): React.ReactElement | null {
   const autoStartedRef = useRef(false);
   const [vizSize, setVizSize] = useState({ width: 540, height: 300 });
   const [seedInput, setSeedInput] = useState('');
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileActionRef = useRef(0);
 
   // ALL hooks must be called unconditionally before any early return.
   const simId = useMemo(() => {
@@ -96,8 +99,14 @@ export default function SimulationView(): React.ReactElement | null {
   const isOpenSimView = isOpen('simulationView');
   const {
     state, isRunning, speed, avgStepMs, parameters, parameterValues,
-    metadata, controls, isLoading, isStepping, error, seed, completedSteps,
+    metadata, controls, isLoading, isStepping, error, seed, completedSteps, replayProgress, replayMessage,
   } = useSimulation(simId, isOpenSimView);
+  const controlsRef = useRef(controls);
+  const openRef = useRef(isOpenSimView);
+  controlsRef.current = controls;
+  openRef.current = isOpenSimView;
+
+  useEffect(() => { fileActionRef.current++; setFileError(null); }, [controls, isOpenSimView]);
 
   useEffect(() => { setSeedInput(String(seed)); }, [seed]);
 
@@ -121,11 +130,12 @@ export default function SimulationView(): React.ReactElement | null {
   // deliberately stay paused; errors/cancellation must not trigger retry loops.
   useEffect(() => { autoStartedRef.current = false; }, [controls, isOpenSimView]);
   useEffect(() => {
+    if (replayMessage) { autoStartedRef.current = true; return; }
     if (isOpenSimView && state && !isRunning && !isLoading && !error && !autoStartedRef.current) {
       autoStartedRef.current = true;
       controls.play();
     }
-  }, [controls, error, isLoading, isOpenSimView, isRunning, state]);
+  }, [controls, error, isLoading, isOpenSimView, isRunning, state, replayMessage]);
 
   if (!isOpenSimView) return null;
   const seedValue = Number(seedInput);
@@ -195,6 +205,35 @@ export default function SimulationView(): React.ReactElement | null {
             {(!state || error) && <button type="button" disabled={isLoading} onClick={() => void controls.init()}>
               Initialize / Retry
             </button>}
+            <button type="button" disabled={!state || isLoading || isStepping || isRunning} onClick={async () => {
+              const token = ++fileActionRef.current;
+              const owner = controls;
+              try {
+                const content = await owner.exportExperiment();
+                if (fileActionRef.current !== token || controlsRef.current !== owner || !openRef.current) return;
+                downloadString(content, `simulation-${simId}.json`, 'application/json');
+                setFileError(null);
+              } catch (cause) {
+                if (fileActionRef.current === token && controlsRef.current === owner && openRef.current) {
+                  setFileError(cause instanceof Error ? cause.message : String(cause));
+                }
+              }
+            }}>Export simulation experiment</button>
+            <label htmlFor="simulation-experiment">Restore and verify simulation experiment (.json)</label>
+            <input id="simulation-experiment" type="file" accept=".json,application/json" disabled={isLoading}
+              onChange={event => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (!file) return;
+                fileActionRef.current++;
+                setFileError(null);
+                void controls.replayExperiment(file.size > 10 * 1024 * 1024
+                  ? Promise.reject(new Error('Simulation experiment exceeds the 10 MiB limit.')) : file.text());
+              }} />
+            {replayProgress && <p role="status">Replaying {replayProgress.current}/{replayProgress.total} accepted steps.
+              The existing view is unchanged until verification succeeds.</p>}
+            {replayMessage && <p role="status">{replayMessage}</p>}
+            {fileError && <p role="alert">{fileError}</p>}
             <p style={{ color: colors.textDim, fontSize: '0.8rem' }}>
               Reset keeps seed {seed} and submitted parameters. Parameter edits rebuild the initial state.
               {' '}{completedSteps.toLocaleString()} accepted steps. Reproducibility does not establish biological accuracy.

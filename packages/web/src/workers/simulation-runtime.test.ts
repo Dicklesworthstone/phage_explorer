@@ -108,7 +108,7 @@ describe('worker-independent seeded simulations', () => {
     const state = await api.init({ simId: probe.id, seed: 1 });
     for (const randomState of [null, { algorithm: 'unknown', seed: 1, cursor: 1 },
       { algorithm: 'lcg32-v1', seed: 1, cursor: NaN }, { algorithm: 'lcg32-v1', seed: -1, cursor: 0 }]) {
-      await assert.rejects(api.step({ state: { ...state, randomState } as SimState, dt: 1 }), /checkpoint/);
+      await assert.rejects(api.step({ state: { ...state, randomState } as unknown as SimState, dt: 1 }), /checkpoint/);
     }
   });
   it('rejects invalid seeds, deltas and unbounded batches', async () => {

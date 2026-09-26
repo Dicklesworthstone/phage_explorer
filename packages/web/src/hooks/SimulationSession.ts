@@ -1,12 +1,13 @@
 /** One selected simulation's lifecycle, independent of React render timing. */
-import type { PhageFull } from '@phage-explorer/core';
+import { serializeAnalysisRecord, type PhageFull } from '@phage-explorer/core';
 import type { ComputeOrchestrator } from '../workers/ComputeOrchestrator';
 import type { SimParameter, SimState, SimulationId } from '../workers/types';
-import { getSimulationRandomState } from '../workers/simulation-runtime';
+import { getSimulationRandomState, createSimulationExperimentRecord, parseSimulationExperiment,
+  simulationStateJson, MAX_SIMULATION_EXPERIMENT_STEPS } from '../workers/simulation-runtime';
 
 type Parameters = Record<string, number | boolean | string>;
 type Backend = Pick<ComputeOrchestrator, 'initSimulation' | 'stepSimulation' | 'getSimulationMetadata'>;
-type Operation = { controller: AbortController; kind: 'init' | 'step' };
+type Operation = { controller: AbortController; kind: 'init' | 'step' | 'replay' };
 
 export interface SimulationSnapshot {
   state: SimState | null;
@@ -21,6 +22,8 @@ export interface SimulationSnapshot {
   error: string | null;
   seed: number;
   completedSteps: number;
+  replayProgress: { current: number; total: number } | null;
+  replayMessage: string | null;
 }
 
 /** Parameter changes rebuild initial conditions, rather than relabel an old state. */
@@ -45,6 +48,9 @@ export class SimulationSession {
   private readonly listeners = new Set<() => void>();
   private readonly phage: PhageFull | null;
   private overrides: Parameters = {};
+  private initialState: SimState | null = null;
+  private initialParameters: Parameters = {};
+  private acceptedDeltas: number[] = [];
   private snapshot: SimulationSnapshot;
 
   constructor(
@@ -58,6 +64,7 @@ export class SimulationSession {
     this.snapshot = {
       state: null, isRunning: false, speed: 1, avgStepMs: 0, parameters: [], parameterValues: {},
       metadata: null, isLoading: false, isStepping: false, error: null, seed, completedSteps: 0,
+      replayProgress: null, replayMessage: null,
     };
   }
 
@@ -94,9 +101,11 @@ export class SimulationSession {
     this.cancel();
   };
   cancel = (): void => {
+    const replaying = this.operation?.kind === 'replay';
     this.stopTimer();
     this.invalidate();
-    this.publish({ isRunning: false, isLoading: false, isStepping: false });
+    this.publish({ isRunning: false, isLoading: false, isStepping: false, replayProgress: null,
+      ...(replaying ? { replayMessage: 'Replay cancelled; the last accepted run was preserved.' } : {}) });
   };
 
   init = async (params: Parameters = {}): Promise<void> => {
@@ -107,7 +116,11 @@ export class SimulationSession {
     this.operation = operation;
     const submitted = structuredClone(params);
     const seed = this.snapshot.seed;
-    this.publish({ state: null, isRunning: false, isLoading: true, isStepping: false, error: null, avgStepMs: 0, completedSteps: 0 });
+    this.initialState = null;
+    this.initialParameters = {};
+    this.acceptedDeltas = [];
+    this.publish({ state: null, isRunning: false, isLoading: true, isStepping: false, error: null, avgStepMs: 0, completedSteps: 0,
+      replayProgress: null, replayMessage: null });
     try {
       if (!this.current(operation)) return;
       const backend = this.backend();
@@ -129,6 +142,8 @@ export class SimulationSession {
       if (!this.current(operation)) return;
       if (next.type !== this.simId) throw new Error('Simulation returned a different state type.');
       const random = getSimulationRandomState(next);
+      this.initialParameters = structuredClone(values);
+      this.initialState = structuredClone(next);
       this.publish({ state: next, parameterValues: { ...next.params }, seed: random.seed });
     } catch (cause) {
       if (this.current(operation)) this.publish({ error: `Failed to initialize simulation: ${cause instanceof Error ? cause.message : String(cause)}` });
@@ -142,6 +157,11 @@ export class SimulationSession {
 
   step = async (): Promise<void> => {
     if (!this.active || !this.snapshot.state || this.operation) return;
+    if (this.acceptedDeltas.length >= MAX_SIMULATION_EXPERIMENT_STEPS) {
+      this.pause();
+      this.publish({ error: `Run reached ${MAX_SIMULATION_EXPERIMENT_STEPS} recorded steps. Export it, then reset to start another run.` });
+      return;
+    }
     const operation: Operation = { controller: new AbortController(), kind: 'step' };
     this.operation = operation;
     const state = this.snapshot.state;
@@ -155,7 +175,8 @@ export class SimulationSession {
       if (next.type !== this.simId) throw new Error('Simulation returned a different state type.');
       getSimulationRandomState(next);
       const elapsed = performance.now() - start;
-      this.publish({ state: next, error: null, completedSteps: this.snapshot.completedSteps + 1,
+      this.acceptedDeltas.push(dt);
+      this.publish({ state: next, error: null, replayMessage: null, completedSteps: this.acceptedDeltas.length,
         avgStepMs: this.snapshot.avgStepMs === 0 ? elapsed : this.snapshot.avgStepMs * 0.8 + elapsed * 0.2 });
     } catch (cause) {
       if (this.current(operation)) {
@@ -206,6 +227,86 @@ export class SimulationSession {
       await this.init({ [id]: value });
     } catch (cause) {
       this.publish({ error: cause instanceof Error ? cause.message : String(cause) });
+    }
+  };
+
+  /** Capture the accepted run before hashing. No in-flight step can enter this export. */
+  exportExperiment = async (): Promise<string> => {
+    if (!this.active || !this.snapshot.state || !this.initialState || this.operation || this.snapshot.isRunning) {
+      throw new Error('Pause an initialized simulation before exporting its experiment.');
+    }
+    const record = await createSimulationExperimentRecord({ simId: this.simId, phage: this.phage,
+      seed: this.snapshot.seed, parameters: this.initialParameters, stepDeltas: this.acceptedDeltas,
+      initialState: this.initialState, finalState: this.snapshot.state });
+    return serializeAnalysisRecord(record);
+  };
+
+  /** Replay in scratch state and commit only a fully verified result. Failure/cancel preserves the current run. */
+  replayExperiment = async (content: string | Promise<string>): Promise<void> => {
+    if (!this.active) return;
+    this.cancel();
+    const operation: Operation = { controller: new AbortController(), kind: 'replay' };
+    this.operation = operation;
+    this.publish({ isLoading: true, error: null, replayMessage: null, replayProgress: { current: 0, total: 0 } });
+    let phase = 'read saved experiment';
+    try {
+      const text = await content;
+      if (!this.current(operation)) return;
+      phase = 'validate saved experiment';
+      const saved = await parseSimulationExperiment(text, this.simId, this.phage);
+      if (!this.current(operation)) return;
+      const backend = this.backend();
+      const metadata = await backend.getSimulationMetadata(this.simId, operation.controller.signal);
+      if (!this.current(operation)) return;
+      // Recorded initialization parameters are complete. Only a value derived
+      // from this exact phage may fall outside an interactive control's range.
+      for (const parameter of metadata.parameters) {
+        if (!Object.hasOwn(saved.parameters, parameter.id)) throw new Error(`Missing simulation parameter: ${parameter.id}`);
+      }
+      for (const [id, value] of Object.entries(saved.parameters)) {
+        if (Object.hasOwn(this.derivedDefaults, id) && this.derivedDefaults[id] === value) continue;
+        validateSimulationParameter(metadata.parameters.find(parameter => parameter.id === id), value);
+      }
+      if (!this.current(operation)) return;
+      phase = 'initialize replay';
+      const initial = await backend.initSimulation({ simId: this.simId, params: saved.parameters,
+        seed: saved.seed, phage: this.phage }, operation.controller.signal);
+      if (!this.current(operation)) return;
+      if (JSON.stringify(simulationStateJson(initial)) !== JSON.stringify(simulationStateJson(saved.record.fields.initialState.value))) {
+        throw new Error('Fresh initial simulation state differs from the saved experiment.');
+      }
+      let state = initial;
+      this.publish({ replayProgress: { current: 0, total: saved.stepDeltas.length } });
+      for (let i = 0; i < saved.stepDeltas.length; i++) {
+        if (!this.current(operation)) return;
+        phase = `replay step ${i + 1}`;
+        state = await backend.stepSimulation(state, saved.stepDeltas[i], operation.controller.signal);
+        if (!this.current(operation)) return;
+        if (state.type !== this.simId || getSimulationRandomState(state).seed !== saved.seed) {
+          throw new Error('Replayed state has a different model or seed.');
+        }
+        this.publish({ replayProgress: { current: i + 1, total: saved.stepDeltas.length } });
+      }
+      phase = 'verify replayed result';
+      const fresh = await createSimulationExperimentRecord({ simId: this.simId, phage: this.phage, seed: saved.seed,
+        parameters: saved.parameters, stepDeltas: saved.stepDeltas, initialState: initial, finalState: state });
+      if (!this.current(operation)) return;
+      if (fresh.resultId !== saved.record.resultId) throw new Error('Fresh simulation result or evidence differs from the saved experiment.');
+      this.initialState = structuredClone(initial);
+      this.initialParameters = structuredClone(saved.parameters);
+      this.overrides = { ...saved.parameters };
+      this.acceptedDeltas = [...saved.stepDeltas];
+      this.publish({ state, seed: saved.seed, parameterValues: { ...state.params }, parameters: metadata.parameters,
+        metadata: { name: metadata.name, description: metadata.description }, avgStepMs: 0,
+        completedSteps: saved.stepDeltas.length,
+        replayMessage: `Verified replay of ${saved.stepDeltas.length} accepted steps: initial state, final state and complete record identity match. This is reproducibility, not biological validation.` });
+    } catch (cause) {
+      if (this.current(operation)) this.publish({ error: `Could not ${phase}: ${cause instanceof Error ? cause.message : String(cause)}` });
+    } finally {
+      if (this.current(operation)) {
+        this.operation = null;
+        this.publish({ isLoading: false, replayProgress: null });
+      }
     }
   };
 }

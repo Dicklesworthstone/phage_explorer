@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { createServer as createViteServer, loadConfigFromFile, mergeConfig, type UserConfig, type InlineConfig } from 'vite';
 
 let fixtureConfig: UserConfig | undefined;
@@ -30,6 +32,7 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
           import { ToastProvider } from './components/ui/Toast';
           import { ScrollProvider } from './providers';
           import { getOrchestrator } from './workers/ComputeOrchestrator';
+          import { SimulationSession } from './hooks/SimulationSession';
           import './styles/index.css';
           usePhageStore.setState({ currentPhage: null });
           // Exercise the actual model registry, Comlink transport and fresh workers.
@@ -46,9 +49,19 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
               const first = await manager.stepSimulation(initial, 1);
               await manager.initSimulation({ simId: id, seed: 777 });
               const second = await manager.stepSimulation(first, 1);
+              const session = new SimulationSession(id, null, getOrchestrator, {}, 42);
+              await session.activate();
+              await session.step();
+              const accepted = JSON.stringify(session.getSnapshot().state);
+              const saved = await session.exportExperiment();
+              await session.setSeed(999);
+              await session.replayExperiment(saved);
+              const replayed = session.getSnapshot().error === null && !!session.getSnapshot().replayMessage &&
+                JSON.stringify(session.getSnapshot().state) === accepted;
+              session.deactivate();
               outcomes.push({ id, first: JSON.stringify(first) === JSON.stringify(batch[0]),
                 second: JSON.stringify(second) === JSON.stringify(batch[1]),
-                checkpoint: second.randomState.algorithm === 'lcg32-v1', seed: second.randomState.seed });
+                checkpoint: second.randomState.algorithm === 'lcg32-v1', seed: second.randomState.seed, replayed });
               manager.dispose();
             }
             return outcomes;
@@ -98,7 +111,7 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
     await expect.poll(() => page.evaluate(() => typeof (window as any).openSimulation)).toBe('function');
     const outcomes = await page.evaluate(() => (window as any).checkSeededModels());
     expect(outcomes).toHaveLength(7);
-    for (const outcome of outcomes) expect(outcome, outcome.id).toMatchObject({ first: true, second: true, checkpoint: true, seed: 42 });
+    for (const outcome of outcomes) expect(outcome, outcome.id).toMatchObject({ first: true, second: true, checkpoint: true, seed: 42, replayed: true });
 
     await page.evaluate(() => (window as any).openSimulation());
     const overlay = page.getByTestId('overlay-simulationView');
@@ -114,6 +127,14 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
     await expect(overlay).toContainText('1 accepted steps');
     const first = await state();
     expect(first.randomState.cursor).not.toBe(initial.randomState.cursor);
+    const exported = async () => {
+      const downloading = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export simulation experiment', exact: true }).click();
+      return readFile((await (await downloading).path())!, 'utf8');
+    };
+    const savedContent = await exported();
+    const savedRecord = await parseAnalysisRecord(savedContent);
+    expect(savedRecord.parameters.stepDeltas).toEqual([1]);
     await overlay.getByTitle('Reset (R)', { exact: true }).click();
     await expect.poll(async () => { try { return await state(); } catch { return null; } }).toEqual(initial);
     await overlay.getByTitle('Step Forward (.)', { exact: true }).click();
@@ -157,6 +178,23 @@ test('seeded simulations survive worker replacement, reset, parameter edits and 
     await expect(overlay.getByRole('button', { name: 'Initialize / Retry', exact: true })).toBeEnabled();
     await overlay.getByRole('button', { name: 'Initialize / Retry', exact: true }).click();
     await expect.poll(async () => { try { return await state(); } catch { return null; } }).toEqual(changed);
+    const restore = (content: string) => overlay.getByLabel('Restore and verify simulation experiment (.json)', { exact: true })
+      .setInputFiles({ name: 'simulation.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+    await restore(savedContent);
+    await expect(overlay).toContainText('Verified replay of 1 accepted steps');
+    expect(await state()).toEqual(first);
+    expect((await parseAnalysisRecord(await exported())).resultId).toBe(savedRecord.resultId);
+    const forged = await parseAnalysisRecord(savedContent);
+    (forged.fields.finalState.value as Record<string, unknown>).phageCount = 999;
+    const resigned = await createAnalysisRecord({ ...forged, inputs: forged.inputs.map(({ sha256: _sha, ...input }) => input) });
+    await restore(serializeAnalysisRecord(resigned));
+    await expect(overlay.getByRole('alert')).toContainText('Fresh simulation result or evidence differs');
+    expect(await state()).toEqual(first);
+    const tampered = JSON.parse(savedContent);
+    tampered.seed = 100;
+    await restore(JSON.stringify(tampered));
+    await expect(overlay.getByRole('alert')).toContainText('identity differs');
+    expect(await state()).toEqual(first);
     await page.evaluate(() => (window as any).closeSimulation());
     await expect(overlay).toHaveCount(0);
     expect(errors).toEqual([]);

@@ -22,6 +22,8 @@ export interface SimulationControls {
   setSeed: (seed: number) => void;
   /** Validate and rebuild initial conditions with the changed parameter. */
   setParam: (id: string, value: number | boolean | string) => void;
+  exportExperiment: () => Promise<string>;
+  replayExperiment: (content: string | Promise<string>) => Promise<void>;
 }
 
 export interface UseSimulationResult extends SimulationSnapshot {
@@ -43,6 +45,7 @@ export function useSimulation(simId: SimulationId, enabled = true): UseSimulatio
     init: session.init, play: session.play, pause: session.pause, cancel: session.cancel,
     toggle: session.toggle, step: session.step, reset: session.reset, setParam: session.setParam,
     setSeed: session.setSeed, setSpeed: session.setSpeed,
+    exportExperiment: session.exportExperiment, replayExperiment: session.replayExperiment,
     speedUp: () => session.setSpeed(nextSpeed(session.getSnapshot().speed)),
     speedDown: () => session.setSpeed(prevSpeed(session.getSnapshot().speed)),
   }), [session]);

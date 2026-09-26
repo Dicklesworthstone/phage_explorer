@@ -1,8 +1,8 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import type { PhageFull } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type PhageFull, type AnalysisRecord } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
-import { createSimulationAPI, getSimulationRandomState } from '../workers/simulation-runtime';
+import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
 import { SimulationSession } from './SimulationSession';
 
 function deferred<T>() {
@@ -262,5 +262,229 @@ describe('simulation session lifecycle', () => {
     assert.deepEqual(names, ['Original genome', 'Replacement genome']);
     assert.notStrictEqual(first.getSnapshot().state, second.getSnapshot().state);
     second.deactivate();
+  });
+});
+
+async function recordedRun(phage: PhageFull | null = null) {
+  const session = new SimulationSession(probe.id, phage, backend, {}, 0);
+  await session.activate();
+  await session.setParam('size', 5);
+  for (const delta of [1, 0.25, 2, 8]) { session.setSpeed(delta); await session.step(); }
+  return { session, content: await session.exportExperiment() };
+}
+async function rewriteRecord(content: string, change: (record: AnalysisRecord) => void) {
+  const record = await parseAnalysisRecord(content);
+  change(record);
+  return serializeAnalysisRecord(await createAnalysisRecord({ ...record,
+    inputs: record.inputs.map(({ sha256: _sha256, ...input }) => input) }));
+}
+
+describe('portable simulation experiment replay', () => {
+  it('records the exact accepted step partition and typed-array state', async () => {
+    const { session, content } = await recordedRun();
+    const record = await parseAnalysisRecord(content);
+    assert.deepEqual(record.parameters.stepDeltas, [1, 0.25, 2, 8]);
+    assert.equal(record.seed, 0);
+    assert.equal(record.inputs[0].source, 'demo');
+    assert.equal(record.fields.finalState.kind, 'simulation');
+    const initial = record.fields.initialState.value as Record<string, unknown>;
+    assert.deepEqual(initial.grid, { arrayType: 'Uint8Array', values: [0, 0, 0, 0, 0] });
+    assert.equal((record.fields.finalState.value as Record<string, unknown>).time, 11.25);
+    session.deactivate();
+  });
+  it('recomputes, restores and re-exports an identical run through fresh runtime instances', async () => {
+    const { session: source, content } = await recordedRun();
+    const target = new SimulationSession(probe.id, null, backend, {}, 999);
+    await target.activate();
+    await target.replayExperiment(content);
+    assert.equal(target.getSnapshot().error, null);
+    assert.match(target.getSnapshot().replayMessage!, /Verified replay of 4/);
+    assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+    assert.equal(target.getSnapshot().isRunning, false);
+    assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId,
+      (await parseAnalysisRecord(content)).resultId);
+    source.setSpeed(0.5); target.setSpeed(0.5);
+    await source.step(); await target.step();
+    assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+    assert.deepEqual((await parseAnalysisRecord(await target.exportExperiment())).parameters.stepDeltas, [1, 0.25, 2, 8, 0.5]);
+    await target.reset();
+    assert.equal(target.getSnapshot().state!.time, 0);
+    assert.equal(target.getSnapshot().seed, 0);
+    assert.equal(target.getSnapshot().parameterValues.size, 5);
+    source.deactivate(); target.deactivate();
+  });
+  it('rejects same-ID input metadata changes before initializing a replay', async () => {
+    const phage = { id: 1, accession: 'INPUT', name: 'Original', genes: [] } as unknown as PhageFull;
+    const { session: source, content } = await recordedRun(phage);
+    const service = backend();
+    const target = new SimulationSession(probe.id, { ...phage, name: 'Different annotation snapshot' }, () => service);
+    await target.activate();
+    const before = target.getSnapshot().state;
+    let computations = 0;
+    service.initSimulation = async () => { computations++; throw new Error('Must not compute'); };
+    await target.replayExperiment(content);
+    assert.equal(computations, 0);
+    assert.match(target.getSnapshot().error!, /input differs/);
+    assert.strictEqual(target.getSnapshot().state, before);
+    source.deactivate(); target.deactivate();
+  });
+  it('rejects changed checksums without starting model work', async () => {
+    const { session, content } = await recordedRun();
+    const changed = JSON.parse(content);
+    changed.seed = 2;
+    const before = session.getSnapshot().state;
+    await session.replayExperiment(JSON.stringify(changed));
+    assert.match(session.getSnapshot().error!, /identity differs|checksum/);
+    assert.strictEqual(session.getSnapshot().state, before);
+    session.deactivate();
+  });
+  it('rejects unsupported methods, implementation versions and references even with valid hashes', async () => {
+    const { session, content } = await recordedRun();
+    for (const change of [
+      (record: AnalysisRecord) => { record.method.id = 'simulation-infection-kinetics'; },
+      (record: AnalysisRecord) => { record.method.version = '999'; },
+      (record: AnalysisRecord) => { record.method.implementation = 'other implementation'; },
+      (record: AnalysisRecord) => { record.references[0].version = 'other reference'; },
+    ]) {
+      await session.replayExperiment(await rewriteRecord(content, change));
+      assert.match(session.getSnapshot().error!, /incompatible/);
+    }
+    session.deactivate();
+  });
+  it('rejects oversized histories, invalid deltas and unsupported RNG configuration', async () => {
+    const { session, content } = await recordedRun();
+    for (const change of [
+      (record: AnalysisRecord) => { record.parameters.stepDeltas = Array(MAX_SIMULATION_EXPERIMENT_STEPS + 1).fill(1); },
+      (record: AnalysisRecord) => { record.parameters.stepDeltas = [0]; },
+      (record: AnalysisRecord) => { record.parameters.randomAlgorithm = 'unknown'; },
+      (record: AnalysisRecord) => { record.seed = -1; },
+    ]) {
+      await session.replayExperiment(await rewriteRecord(content, change));
+      assert.match(session.getSnapshot().error!, /step deltas|parameters or seed/);
+    }
+    session.deactivate();
+  });
+  it('validates all recorded parameters before calling model initialization', async () => {
+    const { session: source, content } = await recordedRun();
+    const service = backend();
+    const target = new SimulationSession(probe.id, null, () => service);
+    await target.activate();
+    let initializations = 0;
+    service.initSimulation = async () => { initializations++; throw new Error('Unexpected initialization'); };
+    for (const parameters of [{ size: 999, flag: false, mode: 'a' }, { size: 5 },
+      { size: 5, flag: false, mode: 'a', injected: true }]) {
+      await target.replayExperiment(await rewriteRecord(content, record => { record.parameters.initialParameters = analysisJson(parameters); }));
+      assert.ok(target.getSnapshot().error);
+      assert.equal(initializations, 0);
+    }
+    source.deactivate(); target.deactivate();
+  });
+  it('does not install forged final values whose hashes are internally valid', async () => {
+    const { session, content } = await recordedRun();
+    const before = session.getSnapshot().state;
+    const changed = await rewriteRecord(content, record => {
+      (record.fields.finalState.value as Record<string, unknown>).phageCount = 99;
+    });
+    await session.replayExperiment(changed);
+    assert.match(session.getSnapshot().error!, /Fresh simulation result or evidence differs/);
+    assert.strictEqual(session.getSnapshot().state, before);
+    assert.equal(session.getSnapshot().completedSteps, 4);
+    session.deactivate();
+  });
+  it('checks freshly computed initial conditions before replaying later steps', async () => {
+    const { session, content } = await recordedRun();
+    const before = session.getSnapshot().state;
+    await session.replayExperiment(await rewriteRecord(content, record => {
+      (record.fields.initialState.value as Record<string, unknown>).time = 50;
+    }));
+    assert.match(session.getSnapshot().error!, /Fresh initial simulation state differs/);
+    assert.strictEqual(session.getSnapshot().state, before);
+    session.deactivate();
+  });
+  it('preserves the accepted run when a delayed file read is cancelled', async () => {
+    const { session, content } = await recordedRun();
+    const before = session.getSnapshot().state;
+    const file = deferred<string>();
+    const replaying = session.replayExperiment(file.promise);
+    assert.equal(session.getSnapshot().isLoading, true);
+    session.cancel();
+    file.resolve(content);
+    await replaying;
+    assert.equal(session.getSnapshot().isLoading, false);
+    assert.strictEqual(session.getSnapshot().state, before);
+    assert.match(session.getSnapshot().replayMessage!, /cancelled/);
+    session.deactivate();
+  });
+  it('aborts replay work and refuses its late result after a newer reset', async () => {
+    const { session: source, content } = await recordedRun();
+    const service = backend();
+    const actualStep = service.stepSimulation;
+    const started = deferred<void>();
+    const result = deferred<SimState>();
+    let signal: AbortSignal | undefined;
+    service.stepSimulation = (state, dt, activeSignal) => {
+      signal = activeSignal;
+      void actualStep(state, dt).then(result.resolve);
+      started.resolve();
+      return result.promise.then(async state => { await release.promise; return state; });
+    };
+    const release = deferred<void>();
+    const target = new SimulationSession(probe.id, null, () => service, {}, 19);
+    await target.activate();
+    const replaying = target.replayExperiment(content);
+    await started.promise;
+    await target.reset();
+    const resetState = target.getSnapshot().state;
+    assert.equal(signal?.aborted, true);
+    release.resolve();
+    await replaying;
+    assert.strictEqual(target.getSnapshot().state, resetState);
+    assert.equal(target.getSnapshot().seed, 19);
+    assert.equal(target.getSnapshot().completedSteps, 0);
+    assert.equal(target.getSnapshot().isLoading, false);
+    assert.equal(target.getSnapshot().error, null);
+    source.deactivate(); target.deactivate();
+  });
+  it('exports a snapshot, not changes made while its hashes are being computed', async () => {
+    const { session, content } = await recordedRun();
+    const exporting = session.exportExperiment();
+    await session.setSeed(18);
+    assert.equal((await parseAnalysisRecord(await exporting)).resultId, (await parseAnalysisRecord(content)).resultId);
+    session.deactivate();
+  });
+  it('rejects exporting an in-flight run and does not record a cancelled step', async () => {
+    const service = backend();
+    const session = new SimulationSession(probe.id, null, () => service, {}, 5);
+    await session.activate();
+    const pending = deferred<SimState>();
+    const before = session.getSnapshot().state!;
+    service.stepSimulation = () => pending.promise;
+    const stepping = session.step();
+    await assert.rejects(session.exportExperiment(), /Pause/);
+    session.pause();
+    pending.resolve(await backend().stepSimulation(before, 1));
+    await stepping;
+    const record = await parseAnalysisRecord(await session.exportExperiment());
+    assert.deepEqual(record.parameters.stepDeltas, []);
+    assert.deepEqual(record.fields.initialState.value, record.fields.finalState.value);
+    session.deactivate();
+  });
+  it('accepts a semantically identical record with reordered JSON properties', async () => {
+    const { session, content } = await recordedRun();
+    const record = JSON.parse(content);
+    record.fields.initialState.value = Object.fromEntries(Object.entries(record.fields.initialState.value).reverse());
+    await session.replayExperiment(JSON.stringify(record));
+    assert.equal(session.getSnapshot().error, null);
+    assert.match(session.getSnapshot().replayMessage!, /Verified replay/);
+    session.deactivate();
+  });
+  it('rejects nonfinite typed-array values instead of serializing them as null', () => {
+    assert.throws(() => simulationStateJson(new Float32Array([NaN])), /finite/);
+    assert.throws(() => simulationStateJson({ value: Infinity }), /finite/);
+    assert.throws(() => simulationStateJson(new DataView(new ArrayBuffer(4))), /DataView/);
+    const values = new Float32Array([0.25]);
+    const captured = simulationStateJson(values);
+    values[0] = 0.5;
+    assert.deepEqual(captured, { arrayType: 'Float32Array', values: [0.25] });
   });
 });
