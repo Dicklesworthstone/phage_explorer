@@ -86,70 +86,50 @@ export default function SimulationView(): React.ReactElement | null {
   const vizContainerRef = useRef<HTMLDivElement | null>(null);
   const autoStartedRef = useRef(false);
   const [vizSize, setVizSize] = useState({ width: 540, height: 300 });
+  const [seedInput, setSeedInput] = useState('');
 
-  // ALL hooks must be called unconditionally before any early return
+  // ALL hooks must be called unconditionally before any early return.
   const simId = useMemo(() => {
     const fromOverlay = overlayData['simulationView.simId'] as string | undefined;
     return normalizeSimId(fromOverlay);
   }, [overlayData]);
-
-  const {
-    state,
-    isRunning,
-    speed,
-    avgStepMs,
-    parameters,
-    metadata,
-    controls,
-    isLoading,
-    error,
-  } = useSimulation(simId);
-
   const isOpenSimView = isOpen('simulationView');
+  const {
+    state, isRunning, speed, avgStepMs, parameters, parameterValues,
+    metadata, controls, isLoading, isStepping, error, seed, completedSteps,
+  } = useSimulation(simId, isOpenSimView);
 
-  // Resize observer to keep visualizer responsive
+  useEffect(() => { setSeedInput(String(seed)); }, [seed]);
+
+  // Resize observer to keep visualizer responsive.
   useLayoutEffect(() => {
     const el = vizContainerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-
     const updateSize = () => {
       const rect = el.getBoundingClientRect();
       const width = Math.max(360, Math.min(780, rect.width));
       const height = Math.min(420, Math.max(220, Math.round(width * 0.52)));
       setVizSize({ width, height });
     };
-
     updateSize();
     const ro = new ResizeObserver(updateSize);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [isOpenSimView]);
 
-  // Auto-init when opened and no state yet
+  // A new selection gets a fresh session. Parameter edits and same-seed resets
+  // deliberately stay paused; errors/cancellation must not trigger retry loops.
+  useEffect(() => { autoStartedRef.current = false; }, [controls, isOpenSimView]);
   useEffect(() => {
-    if (!isOpenSimView || isLoading || state) return;
-    void controls.init();
-  }, [controls, isLoading, state, isOpenSimView]);
-
-  // Auto-play once initialized (parity with TUI sims)
-  useEffect(() => {
-    if (!isOpenSimView) {
-      autoStartedRef.current = false;
-      return;
-    }
-    if (state && !isRunning && !isLoading && !autoStartedRef.current) {
-      controls.play();
+    if (isOpenSimView && state && !isRunning && !isLoading && !error && !autoStartedRef.current) {
       autoStartedRef.current = true;
+      controls.play();
     }
-  }, [controls, isLoading, isOpenSimView, isRunning, state]);
+  }, [controls, error, isLoading, isOpenSimView, isRunning, state]);
 
-  // Early return AFTER all hooks have been called
-  if (!isOpenSimView) {
-    return null;
-  }
-
-  const paramValues = (state as any)?.params ?? {};
-  const simTime = (state as any)?.time ?? 0;
+  if (!isOpenSimView) return null;
+  const seedValue = Number(seedInput);
+  const validSeed = seedInput.trim() !== '' && Number.isInteger(seedValue) && seedValue >= 0 && seedValue <= 0xffffffff;
 
   return (
     <Overlay
@@ -170,18 +150,12 @@ export default function SimulationView(): React.ReactElement | null {
           ref={vizContainerRef}
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-            <div style={{ color: colors.text, fontWeight: 600 }}>
-              {metadata?.name ?? simId}
-            </div>
+            <div style={{ color: colors.text, fontWeight: 600 }}>{metadata?.name ?? simId}</div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               {isLoading && <Badge>Loading</Badge>}
               {error && <ErrorBadge>Error</ErrorBadge>}
               {isRunning && <SuccessBadge>Running</SuccessBadge>}
-              {!!avgStepMs && (
-                <Badge>
-                  {avgStepMs.toFixed(1)} ms/step
-                </Badge>
-              )}
+              {!!avgStepMs && <Badge>{avgStepMs.toFixed(1)} ms/step</Badge>}
             </div>
           </div>
           {metadata?.description && (
@@ -193,7 +167,7 @@ export default function SimulationView(): React.ReactElement | null {
             <VisualizerRouter simId={simId} state={state} width={vizSize.width} height={vizSize.height} />
           ) : (
             <div style={{ color: colors.textDim, padding: '1rem 0.5rem' }}>
-              {isLoading ? 'Initializing simulation…' : 'No simulation state yet.'}
+              {isLoading ? 'Initializing simulation…' : 'No simulation state yet. Use Initialize / Retry to start.'}
             </div>
           )}
         </div>
@@ -203,19 +177,37 @@ export default function SimulationView(): React.ReactElement | null {
             controls={controls}
             isRunning={isRunning}
             speed={speed}
-            time={simTime}
-            disabled={isLoading}
+            time={state?.time ?? 0}
+            disabled={isLoading || !state}
             statusText={error ?? undefined}
           />
-
+          <fieldset style={{ border: `1px solid ${colors.borderLight}`, padding: '0.75rem' }}>
+            <legend>Reproducible run</legend>
+            <label htmlFor="simulation-seed">Simulation seed</label>
+            <input id="simulation-seed" type="number" min={0} max={0xffffffff} step={1}
+              value={seedInput} onChange={event => setSeedInput(event.target.value)} disabled={isLoading} />
+            <button type="button" disabled={isLoading || !validSeed} onClick={() => controls.setSeed(seedValue)}>
+              Apply seed &amp; reset
+            </button>
+            <button type="button" disabled={!isLoading && !isStepping && !isRunning} onClick={controls.cancel}>
+              Cancel simulation work
+            </button>
+            {(!state || error) && <button type="button" disabled={isLoading} onClick={() => void controls.init()}>
+              Initialize / Retry
+            </button>}
+            <p style={{ color: colors.textDim, fontSize: '0.8rem' }}>
+              Reset keeps seed {seed} and submitted parameters. Parameter edits rebuild the initial state.
+              {' '}{completedSteps.toLocaleString()} accepted steps. Reproducibility does not establish biological accuracy.
+            </p>
+            {error && <p role="alert">{error}</p>}
+          </fieldset>
           <ParameterPanel
             parameters={parameters}
-            values={paramValues}
+            values={parameterValues}
             onChange={(id, value) => controls.setParam(id, value)}
             disabled={isLoading}
             compact={vizSize.width < 520}
           />
-
           <div
             style={{
               border: `1px solid ${colors.borderLight}`,
@@ -229,10 +221,8 @@ export default function SimulationView(): React.ReactElement | null {
               overflow: 'auto',
             }}
           >
-            <div style={{ fontWeight: 600, marginBottom: '0.25rem', color: colors.text }}>
-              State Snapshot
-            </div>
-            <pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.25rem', color: colors.text }}>State Snapshot</div>
+            <pre data-testid="simulation-state" style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
               {state ? JSON.stringify(state, null, 2) : '—'}
             </pre>
           </div>

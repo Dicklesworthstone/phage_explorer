@@ -1,319 +1,50 @@
-/**
- * useSimulation - React hook for running simulations
- *
- * Provides a clean interface for initializing, running, and controlling
- * simulations that run in Web Workers.
- */
-
-import { useState, useCallback, useRef, useEffect } from 'react';
+/** React binding for a selection-scoped, cancellable simulation session. */
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import { derivePhageSimDefaults } from '@phage-explorer/core';
+import { derivePhageSimDefaults, nextSpeed, prevSpeed } from '@phage-explorer/core';
 import { getOrchestrator } from '../workers';
-import type {
-  SimulationId,
-  SimState,
-  SimParameter,
-} from '../workers/types';
+import type { SimulationId } from '../workers/types';
+import { SimulationSession, type SimulationSnapshot } from './SimulationSession';
 
 export interface SimulationControls {
-  /** Initialize or reset the simulation */
   init: (params?: Record<string, number | boolean | string>) => Promise<void>;
-  /** Start/resume the simulation */
   play: () => void;
-  /** Pause the simulation */
   pause: () => void;
-  /** Toggle play/pause */
+  cancel: () => void;
   toggle: () => void;
-  /** Step forward by one frame */
   step: () => Promise<void>;
-  /** Reset simulation with current params */
+  /** Restart with the same seed and submitted parameters. */
   reset: () => Promise<void>;
-  /** Increase simulation speed */
   speedUp: () => void;
-  /** Decrease simulation speed */
   speedDown: () => void;
-  /** Set simulation speed directly */
   setSpeed: (speed: number) => void;
-  /** Update a parameter value */
+  /** Change the seed and rebuild the initial state. */
+  setSeed: (seed: number) => void;
+  /** Validate and rebuild initial conditions with the changed parameter. */
   setParam: (id: string, value: number | boolean | string) => void;
 }
 
-export interface UseSimulationResult {
-  /** Current simulation state */
-  state: SimState | null;
-  /** Whether simulation is running */
-  isRunning: boolean;
-  /** Current speed multiplier */
-  speed: number;
-  /** Rolling average step time (ms) */
-  avgStepMs: number;
-  /** Available parameters */
-  parameters: SimParameter[];
-  /** Simulation metadata */
-  metadata: { name: string; description: string } | null;
-  /** Controls object */
+export interface UseSimulationResult extends SimulationSnapshot {
   controls: SimulationControls;
-  /** Whether simulation is loading/initializing */
-  isLoading: boolean;
-  /** Error message if any */
-  error: string | null;
 }
 
-const SPEEDS = [0.25, 0.5, 1, 2, 4, 8];
-const DEFAULT_DT = 1;
-const FRAME_INTERVAL = 50; // 20 fps for simulation updates
-
-export function useSimulation(simId: SimulationId): UseSimulationResult {
-  // The simulations that model a specific genome need the phage the user has
-  // open. Held in a ref as well as read directly so `init` stays stable.
-  const currentPhage = usePhageStore(s => s.currentPhage);
-  const phageRef = useRef(currentPhage);
-  phageRef.current = currentPhage;
-
-  const [state, setState] = useState<SimState | null>(null);
-  const [isRunning, setIsRunning] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const [parameters, setParameters] = useState<SimParameter[]>([]);
-  const [metadata, setMetadata] = useState<{ name: string; description: string } | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [avgStepMs, setAvgStepMs] = useState(0);
-
-  const paramsRef = useRef<Record<string, number | boolean | string>>({});
-  const animationRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const stateRef = useRef<SimState | null>(null);
-  const speedRef = useRef<number>(1);
-  const stepInFlightRef = useRef(false);
-  const generationRef = useRef(0);
-  const mountedRef = useRef(true);
-
-  // Keep stateRef in sync
+export function useSimulation(simId: SimulationId, enabled = true): UseSimulationResult {
+  const currentPhage = usePhageStore(state => state.currentPhage);
+  const session = useMemo(() => new SimulationSession(
+    simId, currentPhage, getOrchestrator, derivePhageSimDefaults(simId, currentPhage),
+  ), [simId, currentPhage]);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   useEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  // Keep speedRef in sync for interval callbacks
-  useEffect(() => {
-    speedRef.current = speed;
-  }, [speed]);
-
-  // Load metadata on mount
-  useEffect(() => {
-    mountedRef.current = true;
-    generationRef.current += 1;
-    stepInFlightRef.current = false;
-    setState(null);
-    setIsRunning(false);
-    setAvgStepMs(0);
-    setMetadata(null);
-    setParameters([]);
-    setError(null);
-    setIsLoading(false);
-    const orchestrator = getOrchestrator();
-    orchestrator.getSimulationMetadata(simId)
-      .then(meta => {
-        // Check if component is still mounted before updating state
-        if (!mountedRef.current) return;
-        setMetadata({ name: meta.name, description: meta.description });
-        setParameters(meta.parameters);
-        // Initialize default params
-        const defaults: Record<string, number | boolean | string> = {};
-        for (const p of meta.parameters) {
-          defaults[p.id] = p.defaultValue;
-        }
-        // Generic defaults describe "some phage"; the loaded genome describes
-        // this one. Phage-derived values win here, user edits win later.
-        paramsRef.current = {
-          ...defaults,
-          ...derivePhageSimDefaults(simId, phageRef.current),
-        };
-      })
-      .catch(err => {
-        if (!mountedRef.current) return;
-        setError(`Failed to load simulation metadata: ${err.message}`);
-      });
-
-    // Cleanup on unmount
-    return () => {
-      mountedRef.current = false;
-      generationRef.current += 1;
-      stepInFlightRef.current = false;
-      if (animationRef.current) {
-        clearInterval(animationRef.current);
-        animationRef.current = null;
-      }
-    };
-  }, [simId]);
-
-  // Initialize simulation
-  const init = useCallback(async (params?: Record<string, number | boolean | string>) => {
-    setIsLoading(true);
-    setError(null);
-    const gen = generationRef.current + 1;
-    generationRef.current = gen;
-    stepInFlightRef.current = false;
-    try {
-      const orchestrator = getOrchestrator();
-      const mergedParams = { ...paramsRef.current, ...params };
-      paramsRef.current = mergedParams;
-
-      const newState = await orchestrator.initSimulation({
-        simId,
-        params: mergedParams,
-        seed: Date.now(),
-        phage: phageRef.current,
-      });
-      // Check if component is still mounted before updating state
-      if (!mountedRef.current || generationRef.current !== gen) return;
-      setState(newState);
-      setIsRunning(false);
-      if (animationRef.current) {
-        clearInterval(animationRef.current);
-        animationRef.current = null;
-      }
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(`Failed to initialize simulation: ${(err as Error).message}`);
-    } finally {
-      if (mountedRef.current) {
-        setIsLoading(false);
-      }
-    }
-  }, [simId]);
-
-  // Step simulation
-  const step = useCallback(async () => {
-    if (!stateRef.current) return;
-    if (stepInFlightRef.current) return;
-    stepInFlightRef.current = true;
-    const gen = generationRef.current;
-    try {
-      const orchestrator = getOrchestrator();
-      const start = performance.now();
-      const newState = await orchestrator.stepSimulation(
-        stateRef.current,
-        DEFAULT_DT * speedRef.current
-      );
-      if (mountedRef.current && generationRef.current === gen) {
-        stateRef.current = newState; // Immediate update to prevent stutter
-        setState(newState);
-        const elapsed = performance.now() - start;
-        setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
-      }
-    } catch (err) {
-      if (mountedRef.current && generationRef.current === gen) {
-        setError(`Simulation step failed: ${(err as Error).message}`);
-        setIsRunning(false);
-      }
-    } finally {
-      stepInFlightRef.current = false;
-    }
-  }, []);
-
-  // Play simulation
-  const play = useCallback(() => {
-    if (!stateRef.current || animationRef.current) return;
-    setIsRunning(true);
-
-    animationRef.current = setInterval(() => {
-      if (!stateRef.current || stepInFlightRef.current) return;
-      stepInFlightRef.current = true;
-      const gen = generationRef.current;
-      const orchestrator = getOrchestrator();
-      const start = performance.now();
-      orchestrator.stepSimulation(
-        stateRef.current,
-        DEFAULT_DT * speedRef.current
-      ).then((newState) => {
-        if (!mountedRef.current || generationRef.current !== gen) return;
-        stateRef.current = newState; // Immediate update to prevent stutter
-        setState(newState);
-        const elapsed = performance.now() - start;
-        setAvgStepMs(prev => (prev === 0 ? elapsed : prev * 0.8 + elapsed * 0.2));
-      }).catch((err) => {
-        if (animationRef.current) {
-          clearInterval(animationRef.current);
-          animationRef.current = null;
-        }
-        if (!mountedRef.current || generationRef.current !== gen) return;
-        setError(`Simulation failed: ${(err as Error).message}`);
-        setIsRunning(false);
-      }).finally(() => {
-        stepInFlightRef.current = false;
-      });
-    }, FRAME_INTERVAL);
-  }, []);
-
-  // Pause simulation
-  const pause = useCallback(() => {
-    if (animationRef.current) {
-      clearInterval(animationRef.current);
-      animationRef.current = null;
-    }
-    setIsRunning(false);
-  }, []);
-
-  // Toggle play/pause
-  const toggle = useCallback(() => {
-    if (isRunning) {
-      pause();
-    } else {
-      play();
-    }
-  }, [isRunning, play, pause]);
-
-  // Speed control
-  const speedUp = useCallback(() => {
-    setSpeed(prev => {
-      const idx = SPEEDS.findIndex(s => s >= prev);
-      if (idx === -1 || idx === SPEEDS.length - 1) return SPEEDS[SPEEDS.length - 1];
-      return SPEEDS[idx + 1];
-    });
-  }, []);
-
-  const speedDown = useCallback(() => {
-    setSpeed(prev => {
-      const idx = SPEEDS.findIndex(s => s >= prev);
-      if (idx <= 0) return SPEEDS[0];
-      return SPEEDS[idx - 1];
-    });
-  }, []);
-
-  // Set parameter
-  const setParam = useCallback((id: string, value: number | boolean | string) => {
-    paramsRef.current = { ...paramsRef.current, [id]: value };
-    // If simulation is already initialized, reinitialize with new params
-    if (stateRef.current) {
-      setState(prev => prev ? { ...prev, params: { ...prev.params, [id]: value } } : null);
-    }
-  }, []);
-
-  const reset = useCallback(async () => {
-    await init();
-  }, [init]);
-
-  const controls: SimulationControls = {
-    init,
-    play,
-    pause,
-    toggle,
-    step,
-    reset,
-    speedUp,
-    speedDown,
-    setSpeed,
-    setParam,
-  };
-
-  return {
-    state,
-    isRunning,
-    speed,
-    avgStepMs,
-    parameters,
-    metadata,
-    controls,
-    isLoading,
-    error,
-  };
+    if (enabled) void session.activate();
+    else session.deactivate();
+    return session.deactivate;
+  }, [session, enabled]);
+  const controls = useMemo<SimulationControls>(() => ({
+    init: session.init, play: session.play, pause: session.pause, cancel: session.cancel,
+    toggle: session.toggle, step: session.step, reset: session.reset, setParam: session.setParam,
+    setSeed: session.setSeed, setSpeed: session.setSpeed,
+    speedUp: () => session.setSpeed(nextSpeed(session.getSnapshot().speed)),
+    speedDown: () => session.setSpeed(prevSpeed(session.getSnapshot().speed)),
+  }), [session]);
+  return { ...snapshot, controls };
 }
