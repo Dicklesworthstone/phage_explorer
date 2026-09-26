@@ -7,16 +7,18 @@ import { Worker } from 'node:worker_threads';
 import {
   parseAbundanceDataset, importAbundanceMetadata, analyzeAbundanceDataset,
   createAbundanceAnalysisRecord, replayAbundanceAnalysis, serializeAbundanceDataset,
-  type AbundanceDataset, type AbundanceOptions,
+  resolveAbundanceOptions, validateAbundanceDataset, type AbundanceDataset, type AbundanceOptions,
 } from '../../../core/src/analysis/abundance';
-import { serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
+import { serializeAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 
 export const ABUNDANCE_COMMAND_HELP = `Abundance analysis (local files only; no catalog or network required)
 
+  phage-explorer abundance view [INPUT]
   phage-explorer abundance inspect INPUT [--metadata FILE] [--output NEW_FILE]
   phage-explorer abundance analyze INPUT [--metadata FILE] [--params FILE] [--output NEW_FILE]
   phage-explorer abundance replay SAVED_ANALYSIS [--output NEW_FILE]
 
+view opens an interactive terminal workspace (requires a TTY).
 INPUT is a taxa-by-sample CSV/TSV or a version-1 abundance dataset JSON.
 --metadata joins sampleId-keyed CSV/TSV/JSON to the dataset, not by row order.
 --params is a JSON object of the browser's analysis parameters (including seed).
@@ -37,7 +39,7 @@ export interface AbundanceCommand {
   output?: string;
 }
 export interface AbundanceJob {
-  operation: AbundanceOperation;
+  operation: AbundanceOperation | 'open';
   input: { name: string; text: string };
   metadata?: string;
   parameters?: string;
@@ -88,10 +90,16 @@ function requireText(value: unknown, limit: number, context: string): asserts va
 
 /** Worker boundary. Deliberate replay never accepts a stored output without recomputation. */
 export async function executeAbundanceJob(job: AbundanceJob, progress: (phase: AbundanceProgress) => void = () => {}): Promise<AbundanceJobResult> {
-  if (!job || !['inspect', 'analyze', 'replay'].includes(job.operation) || !job.input || typeof job.input.name !== 'string') {
+  if (!job || !['inspect', 'analyze', 'replay', 'open'].includes(job.operation) || !job.input || typeof job.input.name !== 'string') {
     throw new Error('Unsupported abundance job.');
   }
-  requireText(job.input.text, job.operation === 'replay' ? RECORD_LIMIT : INPUT_LIMIT, 'Input');
+  requireText(job.input.text, job.operation === 'replay' || job.operation === 'open' ? RECORD_LIMIT : INPUT_LIMIT, 'Input');
+  if (job.operation === 'open') {
+    if (job.metadata !== undefined || job.parameters !== undefined) throw new Error('Opening a file does not accept overrides.');
+    const text = job.input.text.replace(/^\uFEFF/, '');
+    const isRecord = text.trimStart().startsWith('{') && JSON.parse(text).format === 'phage-explorer-analysis';
+    return executeAbundanceJob({ ...job, operation: isRecord ? 'replay' : 'inspect' }, progress);
+  }
   if (job.operation === 'replay') {
     if (job.metadata !== undefined || job.parameters !== undefined) throw new Error('Replay does not accept input overrides.');
     progress('verifying-replay');
@@ -308,4 +316,145 @@ export async function runAbundanceProcess(args: string[]): Promise<void> {
     process.off('SIGINT', interrupt); process.off('SIGTERM', terminate);
     process.stdin.pause();
   }
+}
+
+export interface AbundanceWorkspaceSnapshot {
+  accepted: { dataset: AbundanceDataset; record: AnalysisRecord | null } | null;
+  options: AbundanceOptions | null;
+  busy: boolean;
+  publishing: boolean;
+  phase: string;
+  error: string | null;
+  notice: string | null;
+}
+
+/** File-aware interactive state. Replacements are transactional; stale replies never replace accepted data. */
+export class AbundanceWorkspace {
+  private active = true;
+  private operation: { controller: AbortController; committed: boolean } | null = null;
+  private readonly listeners = new Set<() => void>();
+  private snapshot: AbundanceWorkspaceSnapshot = { accepted: null, options: null,
+    busy: false, publishing: false, phase: 'Ready', error: null, notice: null };
+  constructor(private readonly execute: typeof runAbundanceJob = runAbundanceJob,
+    private readonly read: typeof readAbundanceFile = readAbundanceFile) {}
+  getSnapshot = (): AbundanceWorkspaceSnapshot => this.snapshot;
+  subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  private publish(update: Partial<AbundanceWorkspaceSnapshot>): void {
+    this.snapshot = { ...this.snapshot, ...update };
+    for (const listener of this.listeners) listener();
+  }
+  activate = (): void => { this.active = true; };
+  deactivate = (): void => { this.active = false; this.cancel(); };
+  cancel = (): void => {
+    if (this.operation?.committed) return; // Finish the already-authorized exclusive write.
+    const previous = this.operation;
+    this.operation = null;
+    previous?.controller.abort();
+    this.publish({ busy: false, publishing: false, phase: 'Ready',
+      ...(previous ? { notice: 'Cancelled; the last accepted dataset and result were preserved.' } : {}) });
+  };
+  private async task(work: (signal: AbortSignal, report: (phase: AbundanceProgress) => void,
+    commit: () => void) => Promise<Partial<AbundanceWorkspaceSnapshot>>): Promise<void> {
+    if (!this.active || this.operation?.committed) return;
+    this.cancel();
+    const operation = { controller: new AbortController(), committed: false };
+    this.operation = operation;
+    const current = () => this.active && this.operation === operation && !operation.controller.signal.aborted;
+    this.publish({ busy: true, publishing: false, phase: 'reading-inputs', error: null, notice: null });
+    try {
+      const update = await work(operation.controller.signal, phase => {
+        if (current()) this.publish({ phase });
+      }, () => {
+        checkAbort(operation.controller.signal);
+        operation.committed = true;
+        if (current()) this.publish({ publishing: true, phase: 'publishing' });
+      });
+      if (current()) this.publish(update);
+    } catch (cause) {
+      if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      if (this.operation === operation) {
+        this.operation = null;
+        this.publish({ busy: false, publishing: false, phase: 'Ready' });
+      }
+    }
+  }
+  private async accepted(result: AbundanceJobResult): Promise<Partial<AbundanceWorkspaceSnapshot>> {
+    if (result.identity === null) {
+      const dataset = parseAbundanceDataset(result.content);
+      return { accepted: { dataset, record: null }, options: resolveAbundanceOptions(dataset), notice: 'Dataset loaded. Press Enter to analyze.' };
+    }
+    const record = await parseAnalysisRecord(result.content, { methodId: 'abundance-clr-nmf', methodVersion: '1' });
+    if (record.resultId !== result.identity) throw new Error('Worker result identity differs from its record.');
+    const dataset = validateAbundanceDataset(record.inputs[0].data);
+    return { accepted: { dataset, record }, options: resolveAbundanceOptions(dataset, record.parameters as Partial<AbundanceOptions>),
+      notice: result.verified ? 'Verified replay: freshly recomputed result and evidence match.' : 'Analysis complete. Exports use these submitted parameters.' };
+  }
+  load = (filename: string): Promise<void> => this.task(async (signal, report) => {
+    const text = await this.read(filename, RECORD_LIMIT, signal);
+    checkAbort(signal);
+    const result = await this.execute({ operation: 'open', input: { name: basename(filename), text } }, signal, report);
+    checkAbort(signal);
+    return this.accepted(result);
+  });
+  attachMetadata = (filename: string): Promise<void> => {
+    const prior = this.snapshot.accepted;
+    if (!prior) { this.publish({ error: 'Load a dataset before attaching metadata.' }); return Promise.resolve(); }
+    const text = serializeAbundanceDataset(prior.dataset);
+    return this.task(async (signal, report) => {
+      const metadata = await this.read(filename, INPUT_LIMIT, signal);
+      checkAbort(signal);
+      const result = await this.execute({ operation: 'inspect', input: { name: prior.dataset.name, text }, metadata }, signal, report);
+      checkAbort(signal);
+      const update = await this.accepted(result);
+      // Keep explicit parameter choices, but discard the old result whose metadata changed.
+      return { ...update, options: this.snapshot.options, notice: 'Metadata attached by sample ID. Run again to update the analysis.' };
+    });
+  };
+  setParameters = (text: string): void => {
+    if (!this.active || this.operation?.committed) return;
+    try {
+      if (!this.snapshot.accepted) throw new Error('Load a dataset before editing parameters.');
+      requireText(text, PARAMETER_LIMIT, 'Parameters');
+      const value: unknown = JSON.parse(text);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Parameters must be a JSON object.');
+      const options = resolveAbundanceOptions(this.snapshot.accepted.dataset, { ...this.snapshot.options, ...value });
+      this.cancel();
+      this.publish({ options, error: null, notice: 'Parameters edited. Press Enter to apply; existing exports still describe the accepted result.' });
+    } catch (cause) { this.publish({ error: cause instanceof Error ? cause.message : String(cause) }); }
+  };
+  analyze = (): Promise<void> => {
+    const prior = this.snapshot.accepted, options = this.snapshot.options;
+    if (!prior || !options) { this.publish({ error: 'Load a dataset before running an analysis.' }); return Promise.resolve(); }
+    const job: AbundanceJob = { operation: 'analyze', input: { name: prior.dataset.name, text: serializeAbundanceDataset(prior.dataset) },
+      parameters: JSON.stringify(options) };
+    return this.task(async (signal, report) => {
+      const result = await this.execute(job, signal, report);
+      checkAbort(signal);
+      return this.accepted(result);
+    });
+  };
+  save = (filename: string, kind: 'dataset' | 'analysis'): Promise<void> => {
+    if (this.snapshot.busy) return Promise.resolve();
+    const prior = this.snapshot.accepted;
+    if (!prior || kind === 'analysis' && !prior.record) {
+      this.publish({ error: kind === 'analysis' ? 'Run an analysis before exporting its record.' : 'Load a dataset before exporting.' });
+      return Promise.resolve();
+    }
+    const content = kind === 'analysis' ? serializeAnalysisRecord(prior.record!) : serializeAbundanceDataset(prior.dataset);
+    return this.task(async (signal, _report, commit) => {
+      if (!filename.trim() || filename === '-') throw new Error('Choose a new file path for an interactive export.');
+      const destination = resolve(filename);
+      await assertNewOutput(destination);
+      checkAbort(signal);
+      commit();
+      await writeFile(destination, content + '\n', { encoding: 'utf8', flag: 'wx' });
+      return { notice: `Saved ${kind} to ${destination}` };
+    });
+  };
+}
+
+/** Sanitize display only. The exact original labels remain in checksummed exports. */
+export function abundanceTerminalLabel(value: string): string {
+  return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '�');
 }

@@ -119,8 +119,13 @@ async function warnIfShadowedDatabase(inUse: string): Promise<void> {
 async function main() {
   // Headless scientific workflows must not require a catalog or initialize Ink.
   if (Bun.argv[2] === 'abundance') {
-    const { runAbundanceProcess } = await import('./commands/abundance');
-    await runAbundanceProcess(Bun.argv.slice(3));
+    if (Bun.argv[3] === 'view') {
+      const { launchAbundanceView } = await import('./components/AbundanceView');
+      await launchAbundanceView(Bun.argv.slice(4));
+    } else {
+      const { runAbundanceProcess } = await import('./commands/abundance');
+      await runAbundanceProcess(Bun.argv.slice(3));
+    }
     return;
   }
   const { values } = parseArgs({ args: Bun.argv.slice(2), strict: true, allowPositionals: false, options: {
@@ -140,7 +145,7 @@ async function main() {
       'explicit --allow-accession-collisions decision; existing records are never replaced.\n' +
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
       'The destination must not exist. Full analysis-action replay is not included.\n\n' +
-      'Local community analysis: phage-explorer abundance inspect|analyze|replay FILE\n' +
+      'Local community analysis: phage-explorer abundance view|inspect|analyze|replay FILE\n' +
       'See phage-explorer abundance --help for metadata, parameters, stdin and exports.\n');
     return;
   }

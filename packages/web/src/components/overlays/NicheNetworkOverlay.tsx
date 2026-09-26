@@ -194,11 +194,12 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
           <span> Page {currentPage + 1}/{pageCount} </span>
           <button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>Next pairs</button></div>}
         <h3>Descriptive NMF factors and sample-linked habitats</h3>
-        <label style={fieldStyle}>Inspect taxon
-          <select style={inputStyle} value={taxon} onChange={event => setTaxon(event.target.value)}>
+        <div style={fieldStyle}>
+          <label htmlFor="abundance-inspect-taxon">Inspect taxon</label>
+          <select id="abundance-inspect-taxon" style={inputStyle} value={taxon} onChange={event => setTaxon(event.target.value)}>
             {analysis.taxa.map((name, index) => <option value={name} key={name}>{index + 1}. {name}</option>)}
           </select>
-        </label>
+        </div>
         {profile && <div data-testid="abundance-profile">
           <p>Factor weights: {profile.factorWeights.map((value, index) => `F${index + 1} ${(100 * value).toFixed(2)}%`).join(' · ')}.
             These are descriptive memberships, not probabilities. Reconstruction residual: {analysis.nmfResult.error.toPrecision(6)}.</p>
