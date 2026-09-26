@@ -4,7 +4,7 @@
  * Displays direct repeats, inverted repeats, and palindromic sequences.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { serializeAnalysisRecord, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -37,47 +37,56 @@ export function RepeatsOverlay({
   const { isOpen, toggle } = useOverlay();
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [minLengthInput, setMinLengthInput] = useState('8');
+  const [maxGapInput, setMaxGapInput] = useState('5000');
+  const [parameters, setParameters] = useState({ minLength: 8, maxGap: 5000 });
+  const controllerRef = useRef<AbortController | null>(null);
+  const [wasCancelled, setWasCancelled] = useState(false);
   const [snapshot, setSnapshot] = useState<{
     phage: PhageFull; repository: PhageRepository | null; sequence: string;
+    parameters: { minLength: number; maxGap: number };
     data: Extract<AnalysisResult, { type: 'repeats' }>;
   } | null>(null);
-  const currentSnapshot = snapshot?.phage === currentPhage && snapshot?.repository === repository ? snapshot : null;
+  const currentSnapshot = snapshot?.phage === currentPhage && snapshot?.repository === repository && snapshot?.parameters === parameters ? snapshot : null;
   const result = currentSnapshot?.data ?? null;
   const sequence = currentSnapshot?.sequence ?? '';
   const repeats = result?.repeats ?? [];
   const search = result?.search;
   const [error, setError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
+  const minLength = Number(minLengthInput);
+  const maxGap = Number(maxGapInput);
+  const parameterError = !/^\d+$/.test(minLengthInput) || !Number.isSafeInteger(minLength) || minLength < 4 || minLength > 256
+    ? 'Minimum arm length must be a whole number from 4 to 256 bp.'
+    : !/^\d+$/.test(maxGapInput) || !Number.isSafeInteger(maxGap) || maxGap < 0 || maxGap > 100000
+      ? 'Maximum pair gap must be a whole number from 0 to 100,000 bp.' : null;
 
-  // Hotkey to toggle overlay
-  useHotkey(
-    ActionIds.OverlayRepeats,
-    () => toggle('repeats'),
-    { modes: ['NORMAL'] }
-  );
+  useHotkey(ActionIds.OverlayRepeats, () => toggle('repeats'), { modes: ['NORMAL'] });
 
-  // Keep reading and computing in one selection-scoped request. Numeric IDs
-  // can be reused by another repository; retaining a separate ID-only sequence
-  // cache can relabel old bases as a result for the new repository.
+  // Reading and computing share one selection/parameter-scoped cancellation.
+  // Repository reads may not be interruptible, but an abandoned read must never
+  // launch a worker or publish a result under a newer selection.
   useEffect(() => {
     if (!isOpen('repeats')) return;
     setError(null);
     setExportError(null);
     setSnapshot(null);
+    setWasCancelled(false);
     setAnalysisLoading(false);
     if (!repository || !currentPhage) {
       setSequenceLoading(false);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
+    controllerRef.current = controller;
     let reading = true;
     setSequenceLoading(true);
     (async () => {
       try {
         const length = await repository.getFullGenomeLength(currentPhage.id);
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         const sequence = await repository.getSequenceWindow(currentPhage.id, 0, length);
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         reading = false;
         setSequenceLoading(false);
         if (!sequence) return;
@@ -86,62 +95,84 @@ export function RepeatsOverlay({
           currentPhage.id,
           sequence,
           'repeats',
-          { minLength: 8, maxGap: 5000 },
-          { accession: currentPhage.accession, source: currentPhage.localGenome ? 'local' : 'catalog' }
+          parameters,
+          { accession: currentPhage.accession, source: currentPhage.localGenome ? 'local' : 'catalog' },
+          controller.signal,
         );
-
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         if (result.type !== 'repeats') throw new Error('Unexpected analysis result');
-        setSnapshot({ phage: currentPhage, repository, sequence, data: result });
+        setSnapshot({ phage: currentPhage, repository, sequence, parameters, data: result });
       } catch (cause: unknown) {
-        if (cancelled) return;
+        if (controller.signal.aborted) return;
         setSnapshot(null);
         setError(`${reading ? 'Could not load sequence' : 'Repeat analysis failed'}: ${cause instanceof Error ? cause.message : String(cause)}`);
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setSequenceLoading(false);
           setAnalysisLoading(false);
         }
       }
     })();
-
     return () => {
-      cancelled = true;
+      controller.abort();
+      if (controllerRef.current === controller) controllerRef.current = null;
     };
-  }, [isOpen, currentPhage, repository]);
+  }, [isOpen, currentPhage, repository, parameters]);
+
+  const cancelAnalysis = () => {
+    controllerRef.current?.abort();
+    setSequenceLoading(false);
+    setAnalysisLoading(false);
+    setSnapshot(null);
+    setError(null);
+    setExportError(null);
+    setWasCancelled(true);
+  };
 
   const direct = repeats.filter(r => r.type === 'direct');
   const inverted = repeats.filter(r => r.type === 'inverted');
   const palindromes = repeats.filter(r => r.type === 'palindrome');
   const tandem = repeats.filter(r => r.type === 'tandem');
 
-  if (!isOpen('repeats')) {
-    return null;
-  }
+  if (!isOpen('repeats')) return null;
 
   const typeColors = {
-    direct: colors.primary,
-    inverted: colors.warning,
-    palindrome: colors.accent,
-    tandem: colors.info,
+    direct: colors.primary, inverted: colors.warning,
+    palindrome: colors.accent, tandem: colors.info,
   };
-
-  const typeIcons = {
-    direct: '→→',
-    inverted: '→←',
-    palindrome: '↔',
-    tandem: '⟲',
-  };
+  const typeIcons = { direct: '→→', inverted: '→←', palindrome: '↔', tandem: '⟲' };
 
   return (
-    <Overlay
-      id="repeats"
-      title="REPEATS & PALINDROMES"
-      hotkey="r"
-      size="lg"
-    >
+    <Overlay id="repeats" title="REPEATS & PALINDROMES" hotkey="r" size="lg">
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {/* Loading State */}
+        <form aria-label="Repeat search parameters" onSubmit={event => {
+          event.preventDefault();
+          if (parameterError || !repository || !currentPhage) return;
+          // A new parameter snapshot also allows retrying the same experiment.
+          setParameters({ minLength, maxGap });
+        }} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: '0.75rem' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Minimum pair arm length (bp)
+            <input type="number" min={4} max={256} step={1} required value={minLengthInput}
+              onChange={event => setMinLengthInput(event.target.value)} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Maximum pair gap (bp)
+            <input type="number" min={0} max={100000} step={1} required value={maxGapInput}
+              onChange={event => setMaxGapInput(event.target.value)} />
+          </label>
+          <button type="submit" disabled={!!parameterError || !repository || !currentPhage}>
+            {sequenceLoading || analysisLoading ? 'Restart analysis' : 'Run analysis'}
+          </button>
+          {(sequenceLoading || analysisLoading) && <button type="button" onClick={cancelAnalysis}>Cancel analysis</button>}
+          {parameterError && <p role="alert" style={{ width: '100%' }}>{parameterError}</p>}
+        </form>
+        <p style={{ color: colors.textDim, margin: 0, fontSize: '0.85rem' }}>
+          These settings control sampled repeat pairs; detailed palindrome and tandem limits are shown below.
+          Editing settings does not change a completed result until you run the analysis again.
+        </p>
+        {wasCancelled && <p role="status">Analysis cancelled. Run analysis to try again.</p>}
+
         {(sequenceLoading || analysisLoading) && (
           <OverlayLoadingState message={sequenceLoading ? 'Loading sequence data...' : 'Analyzing repeats...'}>
             <AnalysisPanelSkeleton rows={3} />
@@ -159,15 +190,8 @@ export function RepeatsOverlay({
         </>}
         {(result?.evidenceError || exportError) && <p role="alert">{result?.evidenceError ?? exportError}</p>}
 
-        {/* Description */}
         {!sequenceLoading && !analysisLoading && (
-          <div style={{
-            padding: '0.75rem',
-            backgroundColor: colors.backgroundAlt,
-            borderRadius: '4px',
-            color: colors.textDim,
-            fontSize: '0.9rem',
-          }}>
+          <div style={{ padding: '0.75rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px', color: colors.textDim, fontSize: '0.9rem' }}>
             <strong style={{ color: colors.primary }}>Repeat Analysis</strong> finds exact sequence
             matches, not experimentally confirmed structures or regulatory functions. Positions are
             1-based arm starts; lengths give the reported span (or matched arm for sampled pairs).
@@ -183,13 +207,8 @@ export function RepeatsOverlay({
           </div>
         )}
 
-        {/* Stats */}
         {result && !error && !sequenceLoading && !analysisLoading && sequence.length > 0 && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: '1rem',
-          }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
             <div style={{ textAlign: 'center', padding: '0.75rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
               <div style={{ color: colors.primary, fontSize: '0.75rem' }}>Direct Repeats</div>
               <div style={{ color: colors.text, fontFamily: 'monospace', fontSize: '1.5rem' }}>{direct.length}</div>
@@ -209,14 +228,8 @@ export function RepeatsOverlay({
           </div>
         )}
 
-        {/* Repeats table */}
         {result && !error && !sequenceLoading && !analysisLoading && sequence.length > 0 && (
-          <div style={{
-            maxHeight: '300px',
-            overflowY: 'auto',
-            border: `1px solid ${colors.borderLight}`,
-            borderRadius: '4px',
-          }}>
+          <div style={{ maxHeight: '300px', overflowY: 'auto', border: `1px solid ${colors.borderLight}`, borderRadius: '4px' }}>
             <table aria-label="Repeat matches" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.9rem' }}>
               <thead>
                 <tr style={{ backgroundColor: colors.backgroundAlt, position: 'sticky', top: 0 }}>
@@ -228,13 +241,7 @@ export function RepeatsOverlay({
               </thead>
               <tbody>
                 {repeats.map((repeat, idx) => (
-                  <tr
-                    key={idx}
-                    style={{
-                      borderTop: `1px solid ${colors.borderLight}`,
-                      backgroundColor: idx % 2 === 0 ? 'transparent' : colors.backgroundAlt,
-                    }}
-                  >
+                  <tr key={idx} style={{ borderTop: `1px solid ${colors.borderLight}`, backgroundColor: idx % 2 === 0 ? 'transparent' : colors.backgroundAlt }}>
                     <td style={{ padding: '0.5rem' }}>
                       <span style={{ color: typeColors[repeat.type], fontWeight: 'bold' }}>
                         {typeIcons[repeat.type]} {repeat.type.charAt(0).toUpperCase() + repeat.type.slice(1)}
@@ -253,32 +260,19 @@ export function RepeatsOverlay({
                         {repeat.copies} copies of {repeat.sequence.length} bp
                       </div>}
                     </td>
-                    <td style={{ padding: '0.5rem', textAlign: 'right', color: colors.textDim }}>
-                      {repeat.length} bp
-                    </td>
+                    <td style={{ padding: '0.5rem', textAlign: 'right', color: colors.textDim }}>{repeat.length} bp</td>
                   </tr>
                 ))}
                 {repeats.length === 0 && (
-                  <tr>
-                    <td colSpan={4} style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>
-                      No repeats found within these search limits
-                    </td>
-                  </tr>
+                  <tr><td colSpan={4} style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>No repeats found within these search limits</td></tr>
                 )}
               </tbody>
             </table>
           </div>
         )}
 
-        {/* Legend */}
         {!error && !sequenceLoading && !analysisLoading && sequence.length > 0 && (
-          <div style={{
-            display: 'flex',
-            justifyContent: 'center',
-            gap: '2rem',
-            color: colors.textMuted,
-            fontSize: '0.85rem',
-          }}>
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '2rem', color: colors.textMuted, fontSize: '0.85rem' }}>
             <span><span style={{ color: colors.primary }}>→→</span> Direct (same strand)</span>
             <span><span style={{ color: colors.warning }}>→←</span> Inverted (reverse complement)</span>
             <span><span style={{ color: colors.accent }}>↔</span> Palindrome (self-complementary)</span>
@@ -286,11 +280,8 @@ export function RepeatsOverlay({
           </div>
         )}
 
-        {!error && !sequenceLoading && !analysisLoading && sequence.length === 0 && (
-          <OverlayEmptyState
-            message="No sequence data available"
-            hint="Select a phage to analyze repeats and palindromes."
-          />
+        {!wasCancelled && !error && !sequenceLoading && !analysisLoading && sequence.length === 0 && (
+          <OverlayEmptyState message="No sequence data available" hint="Select a phage to analyze repeats and palindromes." />
         )}
       </div>
     </Overlay>
