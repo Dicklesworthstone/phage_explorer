@@ -92,6 +92,7 @@ export * from './analysis/epistasis';
 
 // Metagenomic Niche Analysis
 export * from './analysis/metagenomic-niche';
+export * from './analysis/abundance';
 
 // Phylodynamic Trajectory analysis
 export * from './analysis/phylodynamics';
