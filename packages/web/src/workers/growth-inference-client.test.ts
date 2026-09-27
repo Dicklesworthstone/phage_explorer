@@ -116,3 +116,19 @@ describe('growth import and fit worker operations', () => {
     await assert.rejects(executeGrowthRequest({...request,content:' '.repeat(10*1024*1024+1)}),/limit/);
   });
 });
+
+it('profiles an accepted fit, replays its separate record and rejects altered fit identity', async()=>{
+  const data=await executeGrowthRequest(request);
+  const options=resolveGrowthOptions({starts:1,freeParameters:['burstSize']});
+  const fit=await executeGrowthRequest({kind:'fit',dataset:data.dataset,options});
+  const profileRequest:GrowthRequest={kind:'profile',dataset:data.dataset,options,parameter:'burstSize',baselineResultId:fit.record!.resultId};
+  const profiled=await executeGrowthRequest(profileRequest);
+  assert.equal(profiled.record!.resultId,fit.record!.resultId);
+  assert.equal(profiled.profile!.parameter,'burstSize');
+  assert.ok(profiled.profileRecord);
+  const replayed=await executeGrowthRequest({...request,content:serializeAnalysisRecord(profiled.profileRecord!)});
+  assert.equal(replayed.verified,true);
+  assert.equal(replayed.profileRecord!.resultId,profiled.profileRecord!.resultId);
+  await assert.rejects(executeGrowthRequest({...profileRequest,baselineResultId:'not-a-digest'}),/identity/);
+  await assert.rejects(executeGrowthRequest({...profileRequest,baselineResultId:'0'.repeat(64)}),/differ from the accepted fit/);
+});

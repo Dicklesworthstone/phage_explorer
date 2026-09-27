@@ -2,6 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { DEFAULT_GROWTH_CONDITIONS, GROWTH_BOUNDS, GROWTH_PARAMETERS, resolveGrowthOptions,
   type GrowthConditions, type GrowthParameter, type GrowthMeasurement, type GrowthFitOptions } from '../../../../core/src/analysis/growth-inference';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
+import type { GrowthProfileResult } from '../../../../core/src/analysis/growth-profile';
 import type { GrowthRequest, GrowthWorkResult } from '../../workers/growth-inference.worker';
 import { runGrowthWork } from '../../workers/growth-inference-client';
 import { downloadString } from '../../utils/export';
@@ -51,6 +52,53 @@ function GrowthPlot({ accepted, measurement }: { accepted: GrowthWorkResult; mea
   </figure>;
 }
 
+/** Gaps denote failed candidates; never draw a line through missing evidence. */
+function ProfileDetails({ profile }: { profile: GrowthProfileResult }): React.ReactElement {
+  const { theme } = useTheme();
+  const points = profile.points;
+  const minimum = Math.log(points[0].value), maximum = Math.log(points.at(-1)!.value);
+  const span = Math.max(1e-8, maximum - minimum);
+  const top = Math.max(profile.cutoff * 1.3, ...points.filter(p => p.converged).map(p => p.delta ?? 0));
+  const x = (value: number) => 60 + 590 * (Math.log(value) - minimum) / span;
+  const y = (delta: number) => 220 - 180 * Math.max(0, delta) / top;
+  const paths: string[] = [];
+  let path = '';
+  for (const point of points) {
+    if (!point.converged || point.delta === null) { if (path) paths.push(path); path = ''; continue; }
+    path += `${path ? 'L' : 'M'}${x(point.value)},${y(point.delta)} `;
+  }
+  if (path) paths.push(path);
+  return <section aria-label="Growth profile likelihood">
+    <h4>Profile likelihood: {LABELS[profile.parameter]}</h4>
+    <p data-testid="growth-profile-interval">{profile.interval95
+      ? `Individual asymptotic 95% profile interval: ${profile.interval95.map(value => value.toPrecision(6)).join(' – ')}`
+      : 'Profile interval unavailable. The traced values are descriptive, not a bounded confidence claim.'}</p>
+    <svg viewBox="0 0 700 265" role="img" aria-label="Nuisance-refitted growth profile likelihood" style={{width:'100%',maxHeight:300}}>
+      <path d="M60 30V220H660" fill="none" stroke={theme.colors.textDim} />
+      <path d={`M60 ${y(profile.cutoff)}H660`} fill="none" stroke={theme.colors.warning} strokeDasharray="5 4" />
+      {paths.map((value,i)=><path key={i} d={value} fill="none" stroke={theme.colors.primary} strokeWidth={2} />)}
+      {points.filter(p=>p.converged&&p.delta!==null).map((p,i)=><circle key={i} cx={x(p.value)} cy={y(p.delta!)} r={3} fill={theme.colors.accent}>
+        <title>{`${p.value}: delta objective ${p.delta}`}</title>
+      </circle>)}
+      <text x={60} y={245} fontSize={11} fill={theme.colors.text}>{points[0].value.toPrecision(4)}</text>
+      <text x={560} y={245} fontSize={11} fill={theme.colors.text}>{points.at(-1)!.value.toPrecision(4)}</text>
+      <text x={5} y={35} fontSize={11} fill={theme.colors.text}>{top.toPrecision(3)}</text>
+      <text x={5} y={y(profile.cutoff)-5} fontSize={11} fill={theme.colors.text}>3.84146</text>
+    </svg>
+    <p>Horizontal axis: parameter value on a log scale. Vertical axis: increase in weighted residual sum of squares after refitting the other estimated parameters.
+      Dashed line: the individual 95% asymptotic likelihood-ratio cutoff. Failed candidates are gaps, not excluded parameter values.</p>
+    <table aria-label="Growth profile endpoints"><thead><tr><th>Side</th><th>Candidate</th><th>Delta objective</th><th>Resolution</th></tr></thead>
+      <tbody>{(['lower','upper'] as const).map(side=><tr key={side}><th>{side}</th><td>{profile[side].value?.toPrecision(6)??'Unavailable'}</td>
+        <td>{profile[side].delta?.toPrecision(6)??'Unavailable'}</td><td>{profile[side].status}: {profile[side].reason}</td></tr>)}</tbody></table>
+    <details><summary>All evaluated profile candidates and nuisance refits</summary>
+      <div style={{overflowX:'auto'}}><table aria-label="Growth profile candidates"><thead><tr><th>Candidate</th><th>Profile objective</th><th>Fixed-nuisance objective</th><th>Refitted parameters / failure</th></tr></thead>
+        <tbody>{points.map((point,i)=><tr key={i}><td>{point.value.toPrecision(6)}</td><td>{point.objective?.toPrecision(6)??'Unavailable'}</td>
+          <td>{point.conditionalObjective?.toPrecision(6)??'Unavailable'}</td><td>{point.reason??(point.parameters?GROWTH_PARAMETERS.map(key=>`${key}: ${point.parameters![key].toPrecision(6)}`).join('; '):'Unavailable')}</td></tr>)}</tbody></table></div>
+    </details>
+    {profile.warnings.map(warning=><p key={warning}>{warning}</p>)}
+  </section>;
+}
+
 /** Private observations are independent of the selected catalog genome and forward simulation. */
 export function GrowthInferencePanel(): React.ReactElement {
   const id = useId();
@@ -62,6 +110,7 @@ export function GrowthInferencePanel(): React.ReactElement {
   const [starts, setStarts] = useState('3'), [iterations, setIterations] = useState('80');
   const [busy, setBusy] = useState(false), [status, setStatus] = useState('No experimental data loaded.');
   const [error, setError] = useState<string | null>(null);
+  const [profileParameter, setProfileParameter] = useState<GrowthParameter>('burstSize');
   const [measurement, setMeasurement] = useState<GrowthMeasurement>('PFU');
   const [confirmed, setConfirmed] = useState(false);
   const controller = useRef<AbortController | null>(null);
@@ -75,12 +124,12 @@ export function GrowthInferencePanel(): React.ReactElement {
       const result = await runGrowthWork(request, owner.signal, message => { if (controller.current === owner) setStatus(message); });
       if (owner.signal.aborted || controller.current !== owner) return;
       setAccepted(result); setConditions(strings(result.dataset.conditions)); setInitial(strings(result.options.initial));
-      setFree(result.options.freeParameters); setSeed(String(result.options.seed));
+      setFree(result.options.freeParameters); setProfileParameter(result.profile?.parameter ?? result.options.freeParameters[0]); setSeed(String(result.options.seed));
       setStarts(String(result.options.starts)); setIterations(String(result.options.maxIterations));
       setMeasurement(result.dataset.observations[0].type);
       setConfirmed(result.result !== null);
-      setStatus(result.verified ? 'Verified: fresh fit and complete result identity match the saved experiment.'
-        : result.result ? 'Fit finished. Check identifiability, convergence and residuals before interpreting parameters.' : 'Data loaded. Confirm conditions, select parameters and run the fit.');
+      setStatus(result.verified ? result.profile ? 'Verified: fresh fit, nuisance-refitted profile and complete result identities match.' : 'Verified: fresh fit and complete result identity match the saved experiment.'
+        : result.profile ? 'Profile complete. Inspect crossings, nuisance fits and limitations before interpreting intervals.' : result.result ? 'Fit finished. Check identifiability, convergence and residuals before interpreting parameters.' : 'Data loaded. Confirm conditions, select parameters and run the fit.');
     } catch (cause) {
       if (owner.signal.aborted || controller.current !== owner) return;
       setError(cause instanceof Error ? cause.message : String(cause)); setStatus('Operation failed; the previous accepted dataset and fit were preserved.');
@@ -174,6 +223,25 @@ export function GrowthInferencePanel(): React.ReactElement {
         <tbody>{result.residuals.filter(row=>row.type===measurement).map((row,i)=><tr key={i}><td>{row.timeMin}</td><td>{row.type}</td><td>{row.value.toPrecision(6)}</td>
           <td>{row.predicted.toPrecision(6)}</td><td>{row.standardizedResidual.toPrecision(5)}</td></tr>)}</tbody></table></div>
       {result.warnings.map(warning=><p key={warning}>{warning}</p>)}
+      <fieldset disabled={busy}>
+        <legend>Profile likelihood of the accepted fit</legend>
+        <p>Use the last accepted observations and fit settings, not unsubmitted edits. The other estimated parameters are reoptimized at every candidate.
+          Local intervals above are approximations; this separate diagnostic can expose parameter tradeoffs and unsupported confidence limits.</p>
+        <label htmlFor={`${id}-profile`}>Profile parameter</label>
+        <select id={`${id}-profile`} value={profileParameter} onChange={event=>setProfileParameter(event.target.value as GrowthParameter)}>
+          {accepted.options.freeParameters.map(key=><option key={key} value={key}>{LABELS[key]}</option>)}
+        </select>
+        <button type="button" onClick={()=>void perform({kind:'profile',dataset:accepted.dataset,options:accepted.options,
+          parameter:profileParameter,baselineResultId:accepted.record!.resultId})}>Compute profile likelihood</button>
+      </fieldset>
+      {accepted.profile && accepted.profileRecord && <div data-testid="growth-profile" data-result-id={accepted.profileRecord.resultId}>
+        <ProfileDetails profile={accepted.profile} />
+        <button type="button" disabled={busy} onClick={()=>{
+          try { downloadString(serializeAnalysisRecord(accepted.profileRecord!),'growth-profile.json','application/json'); }
+          catch(cause) { setError(cause instanceof Error?cause.message:String(cause)); }
+        }}>Export growth profile</button>
+        <AnalysisRecordDetails record={accepted.profileRecord} />
+      </div>}
       <AnalysisRecordDetails record={accepted.record} />
     </section>}
   </section>;

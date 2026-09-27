@@ -130,15 +130,52 @@ test('growth observations reach real workers, verifiable fit exports and cancell
     await expect(panel.getByRole('alert')).toContainText('Fresh growth fit differs');
     await expect(result).toHaveAttribute('data-result-id',record.resultId);
 
+    // Profile the accepted fit, not the draft settings; nuisance parameters
+    // must move and dramatically improve on the fixed-nuisance likelihood slice.
+    await panel.getByLabel('Fit initialization seed',{exact:true}).fill('123');
+    await panel.getByLabel('Profile parameter',{exact:true}).selectOption('burstSize');
+    await panel.getByRole('button',{name:'Compute profile likelihood',exact:true}).click();
+    const profileView=panel.getByTestId('growth-profile');
+    await expect(profileView).toBeVisible();
+    await expect(panel.getByTestId('growth-profile-interval')).toContainText('Individual asymptotic 95% profile interval');
+    await expect(result).toHaveAttribute('data-result-id',record.resultId);
+    const profileDownload=page.waitForEvent('download');
+    await panel.getByRole('button',{name:'Export growth profile',exact:true}).click();
+    const profileText=await readFile((await (await profileDownload).path())!,'utf8');
+    const profileRecord=await parseAnalysisRecord(profileText);
+    const profile=profileRecord.fields.profile.value as {
+      baselineResultId:string; interval95:[number,number];
+      points:Array<{value:number;objective:number;conditionalObjective:number}>;
+    };
+    expect(profile.baselineResultId).toBe(record.resultId);
+    expect(profile.interval95[0]).toBeCloseTo(29.6045,2);
+    expect(profile.interval95[1]).toBeCloseTo(42.0487,2);
+    const edge=profile.points.find(point=>point.value===profile.interval95[1])!;
+    expect(edge.objective).toBeLessThan(4);
+    expect(edge.conditionalObjective).toBeGreaterThan(2000);
+    await page.reload();
+    await overlay.getByRole('button',{name:'Experimental growth fit',exact:true}).click();
+    await load(profileText,'saved-profile.json');
+    await expect(panel.getByTestId('growth-status')).toContainText('Verified: fresh fit, nuisance-refitted profile');
+    await expect(profileView).toHaveAttribute('data-result-id',profileRecord.resultId);
+    await expect(result).toHaveAttribute('data-result-id',record.resultId);
+    const forgedProfile=await parseAnalysisRecord(profileText);
+    (forgedProfile.fields.profile.value as Record<string,AnalysisJson>).interval95=[34.999,35.001];
+    const signedProfile=await createAnalysisRecord({...forgedProfile,inputs:forgedProfile.inputs.map(({sha256:_sha,...input})=>input)});
+    await load(serializeAnalysisRecord(signedProfile),'forged-profile.json');
+    await expect(panel.getByRole('alert')).toContainText('Fresh growth profile differs');
+    await expect(profileView).toHaveAttribute('data-result-id',profileRecord.resultId);
+
     // A delayed actual worker module load, not a fake numeric response.
     let requested=false;
     const gate=new Promise<void>(resolve=>{releaseWorker=resolve;});
     await page.route(/growth-inference\.worker\.ts/,async route=>{requested=true;await gate;await route.continue().catch(()=>{});});
-    await load(content,'cancelled-growth.json');
+    await load(profileText,'cancelled-profile.json');
     await expect.poll(()=>requested).toBe(true);
     await panel.getByRole('button',{name:'Cancel growth work',exact:true}).click();
     releaseWorker?.();
     await expect(panel.getByTestId('growth-status')).toContainText('Growth work cancelled');
+    await expect(profileView).toHaveAttribute('data-result-id',profileRecord.resultId);
     await expect(result).toHaveAttribute('data-result-id',record.resultId);
     await page.unroute(/growth-inference\.worker\.ts/);
     await load(CSV.replace('100000,.03','0,.03'),'censored.csv');

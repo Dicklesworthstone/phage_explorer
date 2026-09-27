@@ -1,17 +1,22 @@
 /** No network access: local observation import, mechanistic fitting and verified replay. */
 import { parseGrowthData, resolveGrowthOptions, validateGrowthDataset, fitGrowthDataset, createGrowthRecord, replayGrowthRecord,
   type GrowthConditions, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult } from '../../../core/src/analysis/growth-inference';
+import { profileGrowthDataset, replayGrowthProfile, type GrowthProfileResult } from '../../../core/src/analysis/growth-profile';
+import type { GrowthParameter } from '../../../core/src/analysis/growth-inference';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
 export type GrowthRequest =
   | { kind: 'load'; content: string; name: string; conditions: GrowthConditions }
-  | { kind: 'fit'; dataset: GrowthDataset; options: GrowthFitOptions };
+  | { kind: 'fit'; dataset: GrowthDataset; options: GrowthFitOptions }
+  | { kind: 'profile'; dataset: GrowthDataset; options: GrowthFitOptions; parameter: GrowthParameter; baselineResultId: string };
 export interface GrowthWorkResult {
   dataset: GrowthDataset;
   options: GrowthFitOptions;
   result: GrowthFitResult | null;
   record: AnalysisRecord | null;
   verified: boolean;
+  profile?: GrowthProfileResult;
+  profileRecord?: AnalysisRecord;
 }
 export type GrowthMessage = { kind: 'progress'; message: string } | { kind: 'result'; value: GrowthWorkResult } | { kind: 'error'; message: string };
 export async function executeGrowthRequest(request: GrowthRequest, report: (message: string) => void = () => {}): Promise<GrowthWorkResult> {
@@ -20,10 +25,20 @@ export async function executeGrowthRequest(request: GrowthRequest, report: (mess
     if (typeof request.content !== 'string' || new TextEncoder().encode(request.content).length > 10 * 1024 * 1024) throw new Error('Growth input exceeds the 10 MiB saved-record limit. Datasets are limited to 2 MiB.');
     const content = request.content.replace(/^\uFEFF/, '').trim();
     if (content.startsWith('{') && JSON.parse(content).format === 'phage-explorer-analysis') {
+      if (JSON.parse(content).method?.id === 'mechanistic-growth-profile') {
+        report('Recomputing and verifying saved likelihood profile');
+        return { ...await replayGrowthProfile(content, report), verified: true };
+      }
       report('Recomputing and verifying saved growth fit');
       return { ...await replayGrowthRecord(content, report), verified: true };
     }
     return { dataset: parseGrowthData(content, request.name, request.conditions), options: resolveGrowthOptions(), result: null, record: null, verified: false };
+  }
+  if (request.kind === 'profile') {
+    if (typeof request.baselineResultId !== 'string' || !/^[a-f0-9]{64}$/.test(request.baselineResultId)) {
+      throw new Error('Profile requires the accepted fit identity.');
+    }
+    return { ...await profileGrowthDataset(request.dataset, request.options, request.parameter, report, request.baselineResultId), verified: false };
   }
   if (request.kind !== 'fit') throw new Error('Unsupported growth operation.');
   const dataset = validateGrowthDataset(request.dataset), options = resolveGrowthOptions(request.options);
