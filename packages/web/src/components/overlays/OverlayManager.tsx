@@ -317,7 +317,7 @@ export function OverlayManager({ repository, currentPhage, reloadDatabase, datab
     .map((id) => {
       return {
         id,
-        element: renderLazyOverlay(id, repository, currentPhage),
+        element: renderLazyOverlay(id, repository, currentPhage, onSelectPhage),
       };
     })
     .filter((entry): entry is { id: OverlayId; element: React.ReactElement } => Boolean(entry.element));
@@ -353,14 +353,15 @@ export default OverlayManager;
 function renderLazyOverlay(
   id: OverlayId,
   repository: PhageRepository | null,
-  currentPhage: PhageFull | null
+  currentPhage: PhageFull | null,
+  onSelectPhage: (index: number) => Promise<void>
 ): React.ReactElement | null {
   if (currentPhage?.localGenome && (id === 'phylodynamics' || id === 'environmentalProvenance')) {
     return <Overlay id={id} title={formatOverlayTitle(id)} size="lg"><p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p></Overlay>;
   }
   switch (id) {
     case 'genomeImport':
-      return <GenomeImportOverlay />;
+      return <GenomeImportOverlay onSelectPhage={onSelectPhage} />;
     // Simulation & comparison
     case 'simulationHub':
       return <SimulationHub />;

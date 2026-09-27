@@ -5,8 +5,9 @@ import { useLocalGenomes } from '../../db/local-genomes';
 import { useFileSystem } from '../../hooks/useFileSystem';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { ResearchWorkflowPanel } from './ResearchWorkflowPanel';
 
-export function GenomeImportOverlay(): React.ReactElement {
+export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index: number) => Promise<void> }): React.ReactElement {
   const { close } = useOverlay();
   const { save } = useFileSystem();
   const genomes = useLocalGenomes(state => state.genomes);
@@ -132,6 +133,7 @@ export function GenomeImportOverlay(): React.ReactElement {
           <button type="button" className="btn btn-primary" onClick={commit}>Add records to explorer</button>
         </>}
         {genomes.length > 0 && <p>{genomes.length} local records in this session. Deposited structures, protein embeddings and host-reference annotations are unavailable for imported records unless supplied by a future reference workflow.</p>}
+        <ResearchWorkflowPanel onSelectPhage={onSelectPhage} />
       </div>
     </Overlay>
   );

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { executeAbundanceJob, runAbundanceJob, readAbundanceFile, AbundanceWorkspace, abundanceTerminalLabel, type AbundanceJob } from './abundance';
+import { executeAbundanceJob, runAbundanceJob, type readAbundanceFile, AbundanceWorkspace, abundanceTerminalLabel, type AbundanceJob } from './abundance';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisJson } from '../../../core/src/analysis-result';
 
 const text = 'taxon,S1,S2,S3\nA,1,4,16\nB,16,4,1\n';
