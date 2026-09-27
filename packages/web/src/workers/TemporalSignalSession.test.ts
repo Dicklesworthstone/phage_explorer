@@ -111,3 +111,87 @@ describe('private temporal workspace lifecycle',()=>{
     assert.equal(f.workers[0].terminated,true);assert.equal(f.session.getSnapshot().accepted,null);
   });
 });
+
+async function acceptRequest(f:ReturnType<typeof sessionFixture>,request:TemporalRequest) {
+  const task=f.session.run(request);await flush();
+  const value=await executeTemporalRequest(request);f.workers.at(-1)!.send({kind:'result',value});await task;return value;
+}
+describe('strict-clock worker and workspace integration',()=>{
+  it('fits the supplied branch chronology and keeps it distinct from a regression result',async()=>{
+    const loaded=await executeTemporalRequest({kind:'example'});
+    const work=await executeTemporalRequest({kind:'date',dataset:loaded.dataset,options:{}});
+    assert.equal(work.record,null);assert.equal(work.result,null);
+    assert.equal(work.dating!.status,'fitted');assert.ok(Math.abs(work.dating!.rate-.01)<1e-12);
+    assert.ok(Math.abs(work.dating!.rootDate!-1998)<1e-8);assert.equal(work.dating!.nodes.length,7);
+    assert.equal(work.datingRecord!.method.id,'fixed-root-strict-clock-dating');assert.equal(work.datingRecord!.fields.dating.kind,'demo');
+  });
+  it('replays a standalone dated-tree record through the real solver and preserves identity',async()=>{
+    const loaded=await executeTemporalRequest({kind:'example'});loaded.dataset.source.kind='local';
+    loaded.dataset.samples[1].collectionDate={lower:2000.5,upper:2002.5};
+    const original=await executeTemporalRequest({kind:'date',dataset:loaded.dataset,options:{}});
+    const replay=await executeTemporalRequest({kind:'import',content:serializeAnalysisRecord(original.datingRecord!)});
+    assert.equal(replay.verified,true);assert.deepEqual(replay.dating,original.dating);
+    assert.equal(replay.datingRecord!.resultId,original.datingRecord!.resultId);
+    assert.ok(Math.abs(replay.dating!.nodes.find(n=>n.label==='B')!.date-2001)<1e-8);
+  });
+  it('rejects internally rehashed false dated evidence rather than installing it',async()=>{
+    const loaded=await executeTemporalRequest({kind:'example'});
+    const fit=await executeTemporalRequest({kind:'date',dataset:loaded.dataset,options:{}});
+    const forged=structuredClone(fit.datingRecord!);
+    (forged.fields.dating.value as Record<string,unknown>).rootDate=1234;
+    const signed=await createAnalysisRecord({...forged,inputs:forged.inputs.map(({sha256:_sha,...input})=>input)});
+    await assert.rejects(executeTemporalRequest({kind:'import',content:serializeAnalysisRecord(signed)}),/Fresh strict-clock dating differs/);
+  });
+  it('retains separate diagnostics and dating evidence only for identical full input datasets',async()=>{
+    const f=sessionFixture(),loaded=await acceptExample(f.session,f.workers);
+    const diagnostic=await acceptRequest(f,{kind:'analyze',dataset:loaded.dataset,options:{seed:7,excludedSamples:['D']}});
+    const dated=await acceptRequest(f,{kind:'date',dataset:loaded.dataset,options:{}});
+    assert.equal(f.session.getSnapshot().accepted!.record!.resultId,diagnostic.record!.resultId);
+    assert.equal(f.session.getSnapshot().accepted!.options.seed,7);
+    assert.equal(f.session.getSnapshot().accepted!.dating!.exactTips,4,'diagnostic exclusions must not prune the dated tree');
+    await acceptRequest(f,{kind:'analyze',dataset:loaded.dataset,options:{seed:12}});
+    assert.equal(f.session.getSnapshot().accepted!.datingRecord!.resultId,dated.datingRecord!.resultId);
+    const different=structuredClone(loaded.dataset);different.name='A different input identity';
+    await acceptRequest(f,{kind:'analyze',dataset:different,options:{}});
+    assert.equal(f.session.getSnapshot().accepted!.dating,undefined);
+    await acceptRequest(f,{kind:'date',dataset:loaded.dataset,options:{}});
+    assert.equal(f.session.getSnapshot().accepted!.record,null);
+    f.session.deactivate();
+  });
+  it('explicit replacement input clears both result families, even when input contents are identical',async()=>{
+    const f=sessionFixture(),loaded=await acceptExample(f.session,f.workers);
+    await acceptRequest(f,{kind:'date',dataset:loaded.dataset,options:{}});
+    await acceptRequest(f,{kind:'import',content:JSON.stringify(loaded.dataset)});
+    assert.equal(f.session.getSnapshot().accepted!.dating,undefined);assert.equal(f.session.getSnapshot().accepted!.record,null);
+    f.session.deactivate();
+  });
+  it('cancels pending dating and ignores a late computed tree without changing accepted evidence',async()=>{
+    const f=sessionFixture(),loaded=await acceptExample(f.session,f.workers);
+    const dated=await acceptRequest(f,{kind:'date',dataset:loaded.dataset,options:{}}),before=f.session.getSnapshot().accepted;
+    const task=f.session.run({kind:'date',dataset:loaded.dataset,options:{minimumRate:.02}});await flush();
+    const worker=f.workers.at(-1)!;f.session.cancel();await task;
+    worker.send({kind:'result',value:dated});worker.send({kind:'progress',phase:'Obsolete fit'});
+    assert.strictEqual(f.session.getSnapshot().accepted,before);assert.equal(worker.terminated,true);
+    assert.equal(f.session.getSnapshot().busy,false);f.session.deactivate();
+  });
+  it('snapshots submitted dating constraints and rejects missing-date replacement fits',async()=>{
+    const f=sessionFixture(),loaded=await acceptExample(f.session,f.workers);
+    const request:TemporalRequest={kind:'date',dataset:loaded.dataset,options:{minimumRate:.001}};
+    const task=f.session.run(request);request.options.minimumRate=.02;await flush();
+    assert.equal((f.workers.at(-1)!.request as Extract<TemporalRequest,{kind:'date'}>).options.minimumRate,.001);
+    f.session.cancel();await task;
+    const invalid=structuredClone(loaded.dataset);invalid.samples[0].collectionDate=null;
+    await assert.rejects(executeTemporalRequest({kind:'date',dataset:invalid,options:{}}),/Every dated-tree tip/);
+    f.session.deactivate();
+  });
+  it('keeps rate-bound and unresolved outcomes explicit through saved-record replay',async()=>{
+    const loaded=await executeTemporalRequest({kind:'example'});
+    const bound=await executeTemporalRequest({kind:'date',dataset:loaded.dataset,options:{minimumRate:.02}});
+    assert.equal(bound.dating!.status,'rate-boundary');assert.deepEqual(bound.dating!.nodes,[]);
+    const restored=await executeTemporalRequest({kind:'import',content:serializeAnalysisRecord(bound.datingRecord!)});
+    assert.equal(restored.dating!.rootDate,null);assert.equal(restored.verified,true);
+    loaded.dataset.tree.newick='((A:.001,B:.001):.001,(C:.1,D:.5):.001);';
+    const incomplete=await executeTemporalRequest({kind:'date',dataset:loaded.dataset,options:{maxIterations:1}});
+    assert.equal(incomplete.dating!.status,'unresolved');assert.equal(incomplete.dating!.certificate.converged,false);
+  });
+});

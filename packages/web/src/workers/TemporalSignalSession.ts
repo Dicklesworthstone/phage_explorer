@@ -2,13 +2,16 @@
 import { analyzeTemporalSignal, createTemporalRecord, parseTemporalSampleTable, replayTemporalRecord,
   resolveTemporalOptions, validateTemporalDataset, type TemporalDataset, type TemporalOptions, type TemporalResult } from '../../../core/src/analysis/temporal-signal';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import { fitDatedTree, createDatedTreeRecord, replayDatedTreeRecord, type DatingOptions, type DatedTreeResult } from '../../../core/src/analysis/strict-clock';
 
 export type TemporalRequest =
   | { kind: 'import'; content: string }
   | { kind: 'prepare'; dataset: Omit<TemporalDataset, 'samples'>; sampleTable: string }
   | { kind: 'analyze'; dataset: TemporalDataset; options: Partial<TemporalOptions> }
+  | { kind: 'date'; dataset: TemporalDataset; options: Partial<DatingOptions> }
   | { kind: 'example' };
-export interface TemporalWorkResult { dataset: TemporalDataset; options: TemporalOptions; result: TemporalResult | null; record: AnalysisRecord | null; verified: boolean }
+export interface TemporalWorkResult { dataset: TemporalDataset; options: TemporalOptions; result: TemporalResult | null; record: AnalysisRecord | null; verified: boolean;
+  dating?: DatedTreeResult; datingRecord?: AnalysisRecord }
 export type TemporalMessage = { kind: 'progress'; phase: string } | { kind: 'result'; value: TemporalWorkResult } | { kind: 'error'; message: string };
 
 export async function executeTemporalRequest(request: TemporalRequest, progress: (phase: string) => void = () => {}): Promise<TemporalWorkResult> {
@@ -19,6 +22,12 @@ export async function executeTemporalRequest(request: TemporalRequest, progress:
     if (typeof request.content !== 'string' || new TextEncoder().encode(request.content).length > 10 * 1024 * 1024) throw new Error('Saved temporal file exceeds the 10 MiB limit.');
     const parsed: unknown = JSON.parse(request.content.replace(/^\uFEFF/, ''));
     if (parsed && typeof parsed === 'object' && 'format' in parsed && parsed.format === 'phage-explorer-analysis') {
+      const method = 'method' in parsed ? parsed.method : null;
+      if (method && typeof method === 'object' && 'id' in method && method.id === 'fixed-root-strict-clock-dating') {
+        progress('Verifying saved inputs and recomputing constrained strict-clock dating');
+        const replay = await replayDatedTreeRecord(request.content.replace(/^\uFEFF/, ''));
+        return {...replay,options:resolveTemporalOptions(),result:null,record:null,verified:true};
+      }
       progress('Verifying saved input hashes and recomputing temporal diagnostics');
       const replay = await replayTemporalRecord(request.content.replace(/^\uFEFF/, ''));
       return { ...replay, options: replay.result.options, verified: true };
@@ -33,6 +42,12 @@ export async function executeTemporalRequest(request: TemporalRequest, progress:
         method: 'Analytical teaching fixture', rooting: 'Fixed synthetic root', alignmentProvenance: 'Synthetic branch lengths; no measured sequence alignment' },
       samples: ['A','B','C','D'].map((id,i) => ({ id, accession: null, collectionDate: 2000+i,
         dateSource: 'Synthetic decimal year', permutationGroup: i<2?'one':'two' })) });
+  } else if (request.kind === 'date') {
+    dataset = validateTemporalDataset(request.dataset);
+    progress('Fitting branch lengths under chronological and collection-date constraints');
+    const dating = fitDatedTree(dataset,request.options,progress);
+    const datingRecord = await createDatedTreeRecord(dataset,dating);
+    return {dataset,options:resolveTemporalOptions(),result:null,record:null,dating,datingRecord,verified:false};
   } else if (request.kind === 'analyze') {
     dataset = validateTemporalDataset(request.dataset);
     progress('Computing fixed-root regression, sensitivity and date-label permutations');
@@ -104,8 +119,21 @@ export class TemporalSignalSession {
         worker.onmessageerror=()=>finish(undefined,new Error('Temporal worker response could not be read.'));
         try { if(owner.signal.aborted)cancel();else worker.postMessage(request); } catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}
       });
-      if(current())this.publish({accepted:value,notice:value.verified?'Verified temporal replay: fresh diagnostics and complete evidence identity match.'
-        :value.result?'Temporal diagnostics computed. Review exclusions, residuals and assumptions.':'Dataset loaded. Review inputs and select Run temporal diagnostics.'});
+      if(current()) {
+        // Independent diagnostic and dating results may coexist only for exact
+        // matching inputs. Explicit imports still replace the entire workspace.
+        const previous=this.snapshot.accepted;
+        let accepted=value;
+        if(previous&&JSON.stringify(previous.dataset)===JSON.stringify(value.dataset)) {
+          if(request.kind==='date')accepted={...value,options:previous.options,result:previous.result,record:previous.record};
+          else if(request.kind==='analyze'&&previous.dating&&previous.datingRecord)accepted={...value,dating:previous.dating,datingRecord:previous.datingRecord};
+        }
+        this.publish({accepted,notice:value.verified?value.dating?'Verified strict-clock replay: fresh fit and complete evidence identity match.'
+          :'Verified temporal replay: fresh diagnostics and complete evidence identity match.'
+          :value.dating?value.dating.status==='fitted'?'Conditional strict-clock dating computed. Review branch residuals and model assumptions.'
+            :'Strict-clock dates unavailable. Inspect the numerical certificate and rate-bound explanation.'
+          :value.result?'Temporal diagnostics computed. Review exclusions, residuals and assumptions.':'Dataset loaded. Review inputs and select Run temporal diagnostics.'});
+      }
     } catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});}
     finally {if(current()){this.operation=null;this.publish({busy:false,phase:''});}}
   };

@@ -9,6 +9,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { StrictClockPanel } from './StrictClockPanel';
 
 const CatalogPhylodynamics = lazy(() => import('./PhylodynamicsOverlay').then(module => ({default:module.PhylodynamicsOverlay})));
 
@@ -72,7 +73,7 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
     {!accepted?'No input data':accepted.dataset.source.kind==='demo'?'Synthetic example':'User-supplied local phylogram'}</span>}>
     <section aria-label="Private dated-tree diagnostics" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
       <p>Inspect collection dates against a rooted, date-independent phylogram. Input stays local; this cohort is independent of the selected catalog genome.
-        No molecular-clock calibration, population skyline or selection estimate is generated. Export before closing this workspace.</p>
+        Exploratory diagnostics and optional conditional strict-clock dating are separate operations. No population skyline or selection estimate is generated. Export before closing this workspace.</p>
       {localGenome&&<p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p>}
       <details><summary>Existing catalog search and method scope</summary>
         <p>The existing NCBI sequence search and alignment-free Mash/UPGMA tree viewer remain available separately. They do not supply this workflow's date-independent rooted phylogram.
@@ -141,6 +142,7 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
         <div><button type="button" disabled={busy} onClick={()=>save(false)}>Export dated-tree dataset</button>{' '}
           <button type="button" disabled={busy||!accepted.record} onClick={()=>save(true)}>Export temporal diagnostics</button></div>
       </>}
+      {accepted&&<StrictClockPanel accepted={accepted} busy={busy} onFit={options=>run({kind:'date',dataset:accepted.dataset,options})}/>}
       {result&&accepted?.record&&<section data-testid="temporal-result" data-result-id={accepted.record.resultId}>
         <h3>Fixed-root exploratory diagnostics</h3>
         <p>{result.tips.filter(tip=>!tip.exclusion).length}/{result.tips.length} tips retained. Root fixed; branch lengths in substitutions/site. No clock-calibrated tree.</p>
