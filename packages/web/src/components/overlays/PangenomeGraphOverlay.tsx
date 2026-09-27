@@ -1,805 +1,242 @@
-import React, { useEffect, useMemo, useState } from 'react';
+/** Private sequence-graph workspace, with the existing annotation illustration kept explicitly separate. */
+import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { constructPangenomeGraph, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
+  type AlignmentGraphOptions, type AlignmentPangenome, type AlignmentVariant } from '@phage-explorer/core';
 import { useHotkey } from '../../hooks';
+import { usePhageStore } from '@phage-explorer/state';
 import { useTheme } from '../../hooks/useTheme';
 import { ActionIds } from '../../keyboard';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
-import { usePhageStore } from '../../store';
-import {
-  constructPangenomeGraph,
-  type PangenomeGraphResult,
-  type VariantCard,
-  type VariantBubbleType,
-} from '@phage-explorer/core';
-import {
-  OverlayDescription,
-  OverlayEmptyState,
-  OverlaySection,
-  OverlaySectionHeader,
-  OverlayStack,
-  OverlayStatCard,
-  OverlayStatGrid,
-} from './primitives';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
+import { PangenomeSession, type PangenomeRequest } from '../../workers/PangenomeSession';
 
-const BUBBLE_TYPE_COLORS: Record<VariantBubbleType, string> = {
-  insertion: '#10b981',             // Emerald
-  deletion: '#ef4444',              // Rose
-  hypervariable_cassette: '#f59e0b', // Amber
-  inversion: '#8b5cf6',             // Purple
-  complex_recombination: '#06b6d4', // Cyan
-  snv: '#64748b',                   // Slate
-};
+// Memory only, retained across panel close/reopen. Closing still cancels work.
+const session = new PangenomeSession(() => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
+const BLOCKS_PER_PAGE = 24;
+const shortSequence = (sequence: string) => sequence ? sequence.length > 240 ? `${sequence.slice(0, 240)}… (${sequence.length} bases; full allele in export)` : sequence : '∅';
 
-const BUBBLE_TYPE_LABELS: Record<VariantBubbleType, string> = {
-  insertion: 'Insertion',
-  deletion: 'Deletion',
-  hypervariable_cassette: 'Hypervariable Cassette',
-  inversion: 'Inversion',
-  complex_recombination: 'Complex Recomb',
-  snv: 'SNV Cluster',
-};
-
-const IMPACT_COLORS: Record<string, string> = {
-  novel_insertion: '#10b981',
-  modified: '#f59e0b',
-  disrupted: '#ef4444',
-  deleted: '#94a3b8',
-};
+function SequenceGraph({ graph, pathId, page, inspect }: {
+  graph: AlignmentPangenome; pathId: string; page: number; inspect: (id: string) => void;
+}): React.ReactElement {
+  const { theme } = useTheme(), colors = theme.colors;
+  const start = page * BLOCKS_PER_PAGE;
+  const visible = graph.nodes.filter(n => n.block >= start && n.block < start + BLOCKS_PER_PAGE);
+  const levels = new Map<number, number>();
+  const positions = new Map(visible.map(node => {
+    const level = levels.get(node.block) ?? 0; levels.set(node.block, level + 1);
+    return [node.id, { x: 50 + (node.block - start) * 84, y: 40 + level * 42 }];
+  }));
+  const width = Math.max(320, Math.min(BLOCKS_PER_PAGE, graph.diagnostics.blocks - start) * 84 + 20);
+  const height = Math.max(130, Math.max(1, ...levels.values()) * 42 + 30);
+  return <figure style={{ margin: 0 }}>
+    <div style={{ overflow: 'auto', maxHeight: 520, border: `1px solid ${colors.borderLight}` }}>
+      <svg width={width} height={height} role="img" aria-label="Alignment-derived sequence graph">
+        <title>Exact sequence segments and input paths; horizontal spacing is by alignment block, not genomic distance.</title>
+        {graph.edges.map(edge => {
+          const from = positions.get(edge.from), to = positions.get(edge.to);
+          if (!from || !to) return null;
+          const selected = edge.pathIds.includes(pathId);
+          return <line key={`${edge.from}:${edge.to}`} x1={from.x + 25} y1={from.y} x2={to.x - 25} y2={to.y}
+            stroke={selected ? colors.accent : colors.textDim} strokeWidth={selected ? 3 : 1} opacity={selected ? 1 : 0.4} />;
+        })}
+        {visible.map(node => {
+          const position = positions.get(node.id)!;
+          return <g key={node.id} role="button" tabIndex={0} aria-label={`Inspect node ${node.id}`} onClick={() => inspect(node.id)}
+            onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); inspect(node.id); } }}>
+            <rect x={position.x - 25} y={position.y - 13} width={50} height={26} rx={4}
+              fill={colors.backgroundAlt} stroke={node.pathIds.includes(pathId) ? colors.accent : node.core ? colors.primary : colors.textDim}
+              strokeWidth={node.pathIds.includes(pathId) ? 3 : 1} strokeDasharray={node.ambiguous ? '3 2' : undefined} />
+            <text x={position.x} y={position.y + 4} textAnchor="middle" fontSize={11} fill={colors.text}>{node.id}</text>
+            <title>{node.sequence.length} bases; {node.pathIds.length} input paths; {node.core ? 'shared unambiguous' : node.ambiguous ? 'contains ambiguity' : 'variable membership'}</title>
+          </g>;
+        })}
+      </svg>
+    </div>
+    <figcaption>Highlighted links follow the selected input sequence. Dashed nodes contain ambiguity. Only links with both ends on this page are drawn;
+      exports contain the complete graph. A path skipping a node is not automatically a biological deletion.</figcaption>
+  </figure>;
+}
 
 export function PangenomeGraphOverlay(): React.ReactElement | null {
-  const { isOpen, toggle } = useOverlay();
-  const { theme } = useTheme();
-  const colors = theme.colors;
-  const phage = usePhageStore((s) => s.currentPhage);
-  const setSelectedGeneId = usePhageStore((s) => s.setSelectedGeneId);
-
-  // Keyboard shortcut toggle: Shift+P
+  const { isOpen, toggle } = useOverlay(), { theme } = useTheme(), colors = theme.colors;
+  const open = isOpen('pangenomeGraph');
+  const phage = usePhageStore(state => state.currentPhage);
+  const [illustratedPhageId, setIllustratedPhageId] = useState<number | null>(null);
+  const illustration = useMemo(() => phage && phage.id === illustratedPhageId
+    ? constructPangenomeGraph(phage, [], { demonstration: true }) : null, [phage, illustratedPhageId]);
+  useEffect(() => { setIllustratedPhageId(null); }, [phage?.id]);
   useHotkey(ActionIds.OverlayPangenomeGraph, () => toggle('pangenomeGraph'));
-
-  const [activeTypeFilter, setActiveTypeFilter] = useState<VariantBubbleType | 'all'>('all');
-  const [hgtOnly, setHgtOnly] = useState<boolean>(false);
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [demoPhageId, setDemoPhageId] = useState<number | null>(null);
-  const demonstration = phage !== null && demoPhageId === phage.id;
-  useEffect(() => { setDemoPhageId(null); setSelectedCardId(null); }, [phage?.id]);
-
-  // Build variation pangenome graph
-  const graphResult: PangenomeGraphResult | null = useMemo(() => {
-    if (!phage || !demonstration) return null;
-    return constructPangenomeGraph(phage, [], { demonstration: true });
-  }, [phage, demonstration]);
-
-  // Filter variant cards
-  const filteredCards: VariantCard[] = useMemo(() => {
-    if (!graphResult) return [];
-    let list = graphResult.variantCards;
-
-    if (activeTypeFilter !== 'all') {
-      list = list.filter((c) => c.type === activeTypeFilter);
-    }
-
-    if (hgtOnly) {
-      list = list.filter((c) => c.isHgtCandidate);
-    }
-
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
-      list = list.filter(
-        (c) =>
-          c.id.toLowerCase().includes(q) ||
-          c.functionalSignificance.toLowerCase().includes(q) ||
-          c.donorLineageHints.some(
-            (d) => d.genomeName.toLowerCase().includes(q) || d.possibleLineage.toLowerCase().includes(q)
-          ) ||
-          c.overlappedGenes.some((g) => g.name.toLowerCase().includes(q) || g.product.toLowerCase().includes(q))
-      );
-    }
-
-    return list;
-  }, [graphResult, activeTypeFilter, hgtOnly, searchQuery]);
-
-  // Active selected card
-  const selectedCard: VariantCard | null = useMemo(() => {
-    if (filteredCards.length === 0) return null;
-    if (selectedCardId) {
-      const hit = filteredCards.find((c) => c.id === selectedCardId);
-      if (hit) return hit;
-    }
-    return filteredCards[0] ?? null;
-  }, [filteredCards, selectedCardId]);
-
-  if (!isOpen('pangenomeGraph')) return null;
-
-  if (!phage) {
-    return (
-      <Overlay
-        id="pangenomeGraph"
-        title="Pan-Phage Variation Graph Pangenome"
-        size="lg"
-      >
-        <OverlayEmptyState
-          message="Select a bacteriophage from the sidebar or catalog to view its variation graph pangenome."
-        />
-      </Overlay>
-    );
-  }
-
-  if (!graphResult || graphResult.variantCards.length === 0) {
-    return (
-      <Overlay
-        id="pangenomeGraph"
-        title={`Pangenome Graph: ${phage.name}`}
-        size="lg"
-      >
-        <OverlayDescription title="Pan-Phage Graph Pangenome & Variant Cards">
-          A real variation graph requires comparative nucleotide sequences and their alignments. The available annotation templates cannot identify variants, donors or recombination breakpoints.
-        </OverlayDescription>
-        <OverlayEmptyState
-          message={`${phage.genes.length} annotated genes are available for ${phage.name}. Comparative sequence evidence has not been supplied to this panel.`}
-        />
-        <button type="button" onClick={() => toggle('comparison')}>Open sequence comparison</button>
-        <button type="button" onClick={() => setDemoPhageId(phage.id)}>Show illustrative pangenome</button>
-      </Overlay>
-    );
-  }
-
-  const { metrics } = graphResult;
-
-  return (
-    <Overlay
-      id="pangenomeGraph"
-      title={`DEMONSTRATION — Pangenome templates: ${phage.name}`}
-      size="lg"
-    >
-      <OverlayStack gap="md">
-        <p role="note" aria-label="Demonstration assumptions">{graphResult.assumptions}</p>
-        <button type="button" onClick={() => setDemoPhageId(null)}>Return to available data</button>
-        <OverlayDescription title="Variation Graph Pangenome & Recombination Mosaicism">
-          {graphResult.summary}
-        </OverlayDescription>
-
-        {/* High-Level Pangenome Metrics Stat Grid */}
-        <OverlayStatGrid columns={4}>
-          <OverlayStatCard
-            label="Core Genome Ratio"
-            value={
-              <div>
-                <div>{(metrics.coreFraction * 100).toFixed(1)}%</div>
-                <div style={{ fontSize: '0.65rem', color: colors.textDim, fontWeight: 'normal' }}>
-                  {Math.round(metrics.coreGenomeLengthBp / 1000)} kb core / {Math.round(metrics.panGenomeLengthBp / 1000)} kb pan
-                </div>
-              </div>
-            }
-          />
-          <OverlayStatCard
-            label="Heaps' Law Openness (α)"
-            value={
-              <div>
-                <div>α = {metrics.opennessAlpha.toFixed(2)}</div>
-                <div style={{ fontSize: '0.65rem', color: colors.success, fontWeight: 'normal' }}>
-                  Open pangenome (high flux)
-                </div>
-              </div>
-            }
-          />
-          <OverlayStatCard
-            label="Variation Bubbles"
-            value={
-              <div>
-                <div>{metrics.totalBubbles}</div>
-                <div style={{ fontSize: '0.65rem', color: colors.textDim, fontWeight: 'normal' }}>
-                  {metrics.bubblesByType.hypervariable_cassette} cassette · {metrics.bubblesByType.insertion} ins · {metrics.bubblesByType.deletion} del
-                </div>
-              </div>
-            }
-          />
-          <OverlayStatCard
-            label="Recombination Hotspots"
-            value={
-              <div>
-                <div>{metrics.recombinationHotspots.length}</div>
-                <div style={{ fontSize: '0.65rem', color: colors.textDim, fontWeight: 'normal' }}>
-                  Tail adhesin & anti-defense islands
-                </div>
-              </div>
-            }
-          />
-        </OverlayStatGrid>
-
-        {/* Interactive Variation Graph Ribbon */}
-        <OverlaySection>
-          <OverlaySectionHeader
-            title="Variation Graph Genome Topology Ribbon"
-            description="Visual representation of sequence graph paths. Core segments form the stable backbone; colored bubbles represent structural variations, cassettes, and HGT introgression events."
-          />
-
-          <div
-            style={{
-              padding: '0.75rem',
-              backgroundColor: colors.backgroundAlt,
-              borderRadius: '8px',
-              border: `1px solid ${colors.borderLight}`,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.5rem',
-            }}
-          >
-            {/* Graph Ribbon visualization */}
-            <div
-              style={{
-                display: 'flex',
-                height: '38px',
-                width: '100%',
-                borderRadius: '6px',
-                overflow: 'hidden',
-                backgroundColor: `${colors.borderLight}40`,
-                position: 'relative',
-              }}
-            >
-              {graphResult.segments.map((seg) => {
-                const isCore = seg.isCore;
-                // Find matching card if branch
-                const matchingCard = graphResult.variantCards.find(
-                  (c) => seg.startCoordRef !== undefined && c.locusStartBp === seg.startCoordRef
-                );
-                const bubbleType = matchingCard ? matchingCard.type : 'insertion';
-                const isSelected = matchingCard && selectedCard && matchingCard.id === selectedCard.id;
-                const segColor = isCore
-                  ? colors.primary
-                  : BUBBLE_TYPE_COLORS[bubbleType] || colors.warning;
-
-                const flexGrow = Math.max(1, Math.round(seg.lengthBp / 500));
-
-                return (
-                  <button
-                    key={seg.id}
-                    type="button"
-                    title={`${seg.name} (${seg.lengthBp} bp, GC: ${seg.gcContent}%)${matchingCard ? ` - Bubble #${matchingCard.bubbleIndex}: ${matchingCard.type}` : ''}`}
-                    onClick={() => {
-                      if (matchingCard) {
-                        setSelectedCardId(matchingCard.id);
-                      }
-                    }}
-                    style={{
-                      flex: `${flexGrow} 0 auto`,
-                      minWidth: isCore ? '8px' : '14px',
-                      backgroundColor: segColor,
-                      opacity: isCore ? 0.85 : isSelected ? 1.0 : 0.65,
-                      border: isSelected ? '2px solid #ffffff' : `1px solid ${colors.background}`,
-                      cursor: matchingCard ? 'pointer' : 'default',
-                      padding: 0,
-                      outline: 'none',
-                      transition: 'opacity 0.15s ease, transform 0.15s ease',
-                      position: 'relative',
-                    }}
-                  />
-                );
-              })}
-            </div>
-
-            {/* Legend for Graph Ribbon */}
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                gap: '0.85rem',
-                fontSize: '0.72rem',
-                color: colors.textMuted,
-                paddingTop: '0.2rem',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <span style={{ width: '10px', height: '10px', backgroundColor: colors.primary, borderRadius: '2px' }} />
-                <span>Core Backbone</span>
-              </div>
-              {(['insertion', 'deletion', 'hypervariable_cassette', 'inversion', 'complex_recombination'] as VariantBubbleType[]).map((type) => (
-                <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-                  <span style={{ width: '10px', height: '10px', backgroundColor: BUBBLE_TYPE_COLORS[type], borderRadius: '2px' }} />
-                  <span>{BUBBLE_TYPE_LABELS[type]}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </OverlaySection>
-
-        {/* Filter Controls Bar */}
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '0.6rem',
-            padding: '0.6rem 0.8rem',
-            backgroundColor: colors.backgroundAlt,
-            borderRadius: '6px',
-            border: `1px solid ${colors.borderLight}`,
-          }}
-        >
-          {/* Type Filter Buttons */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-            <button
-              type="button"
-              onClick={() => setActiveTypeFilter('all')}
-              style={{
-                padding: '4px 10px',
-                fontSize: '0.75rem',
-                fontWeight: activeTypeFilter === 'all' ? 700 : 500,
-                backgroundColor: activeTypeFilter === 'all' ? colors.primary : 'transparent',
-                color: activeTypeFilter === 'all' ? '#fff' : colors.textMuted,
-                border: `1px solid ${activeTypeFilter === 'all' ? colors.primary : colors.borderLight}`,
-                borderRadius: '4px',
-                cursor: 'pointer',
-              }}
-            >
-              All Types ({graphResult.variantCards.length})
-            </button>
-
-            {(['insertion', 'deletion', 'hypervariable_cassette', 'inversion', 'complex_recombination'] as VariantBubbleType[]).map((type) => {
-              const count = metrics.bubblesByType[type] || 0;
-              if (count === 0) return null;
-              return (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setActiveTypeFilter(type)}
-                  style={{
-                    padding: '4px 10px',
-                    fontSize: '0.75rem',
-                    fontWeight: activeTypeFilter === type ? 700 : 500,
-                    backgroundColor: activeTypeFilter === type ? `${BUBBLE_TYPE_COLORS[type]}25` : 'transparent',
-                    color: activeTypeFilter === type ? BUBBLE_TYPE_COLORS[type] : colors.textMuted,
-                    border: `1px solid ${activeTypeFilter === type ? BUBBLE_TYPE_COLORS[type] : colors.borderLight}`,
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {BUBBLE_TYPE_LABELS[type]} ({count})
-                </button>
-              );
-            })}
-          </div>
-
-          {/* HGT Toggle and Search Filter */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.8rem' }}>
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.4rem',
-                fontSize: '0.75rem',
-                color: colors.textMuted,
-                cursor: 'pointer',
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={hgtOnly}
-                onChange={(e) => setHgtOnly(e.target.checked)}
-              />
-              <span>HGT Candidates Only (|ΔGC| ≥ 4%)</span>
-            </label>
-
-            <input
-              type="text"
-              placeholder="Search variants / genes / donors..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{
-                padding: '3px 8px',
-                fontSize: '0.75rem',
-                backgroundColor: colors.background,
-                color: colors.text,
-                border: `1px solid ${colors.borderLight}`,
-                borderRadius: '4px',
-                width: '180px',
-              }}
-            />
-          </div>
-        </div>
-
-        {/* Master-Detail Two Column View: Variant Cards & Card Inspector */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.35fr', gap: '0.9rem' }}>
-          {/* Left Column: Variant Card List */}
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.45rem',
-              maxHeight: '440px',
-              overflowY: 'auto',
-              paddingRight: '4px',
-            }}
-          >
-            {filteredCards.length === 0 ? (
-              <div
-                style={{
-                  padding: '1.5rem',
-                  textAlign: 'center',
-                  color: colors.textDim,
-                  fontSize: '0.8rem',
-                  backgroundColor: colors.backgroundAlt,
-                  borderRadius: '6px',
-                  border: `1px solid ${colors.borderLight}`,
-                }}
-              >
-                No variant cards match the current filters.
-              </div>
-            ) : (
-              filteredCards.map((card) => {
-                const isSelected = selectedCard?.id === card.id;
-                const typeColor = BUBBLE_TYPE_COLORS[card.type] || colors.primary;
-
-                return (
-                  <button
-                    key={card.id}
-                    type="button"
-                    onClick={() => setSelectedCardId(card.id)}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '0.3rem',
-                      padding: '0.6rem 0.8rem',
-                      borderRadius: '6px',
-                      backgroundColor: isSelected ? `${typeColor}15` : colors.backgroundAlt,
-                      border: `1px solid ${isSelected ? typeColor : colors.borderLight}`,
-                      cursor: 'pointer',
-                      textAlign: 'left',
-                      transition: 'all 0.15s ease',
-                      outline: 'none',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <span
-                          style={{
-                            fontSize: '0.65rem',
-                            fontWeight: 700,
-                            padding: '1px 6px',
-                            borderRadius: '3px',
-                            backgroundColor: `${typeColor}25`,
-                            color: typeColor,
-                          }}
-                        >
-                          #{card.bubbleIndex} {BUBBLE_TYPE_LABELS[card.type]}
-                        </span>
-                        {card.isHgtCandidate && (
-                          <span
-                            style={{
-                              fontSize: '0.62rem',
-                              fontWeight: 700,
-                              padding: '1px 5px',
-                              borderRadius: '3px',
-                              backgroundColor: '#f59e0b25',
-                              color: '#f59e0b',
-                            }}
-                          >
-                            HGT
-                          </span>
-                        )}
-                      </div>
-
-                      <span style={{ fontSize: '0.7rem', color: colors.textDim }}>
-                        {card.locusStartBp.toLocaleString()} – {card.locusEndBp.toLocaleString()} bp
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem' }}>
-                      <span style={{ color: colors.textMuted }}>
-                        Span: <strong>{card.spanBp.toLocaleString()} bp</strong>
-                      </span>
-                      <span style={{ color: card.netLengthDeltaBp >= 0 ? colors.success : colors.error }}>
-                        ΔL: {card.netLengthDeltaBp >= 0 ? `+${card.netLengthDeltaBp}` : card.netLengthDeltaBp} bp
-                      </span>
-                      <span style={{ color: card.gcShift >= 0 ? colors.primary : colors.warning }}>
-                        ΔGC: {card.gcShift >= 0 ? `+${card.gcShift}` : card.gcShift}%
-                      </span>
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: '0.7rem',
-                        color: colors.textDim,
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {card.functionalSignificance}
-                    </div>
-                  </button>
-                );
-              })
-            )}
-          </div>
-
-          {/* Right Column: Detailed Variant Card Inspector */}
-          {selectedCard ? (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.65rem',
-                padding: '0.85rem',
-                backgroundColor: colors.backgroundAlt,
-                borderRadius: '8px',
-                border: `1px solid ${colors.borderLight}`,
-                maxHeight: '440px',
-                overflowY: 'auto',
-              }}
-            >
-              {/* Header Title & Locus */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span
-                      style={{
-                        fontSize: '0.75rem',
-                        fontWeight: 700,
-                        padding: '2px 8px',
-                        borderRadius: '4px',
-                        backgroundColor: `${BUBBLE_TYPE_COLORS[selectedCard.type]}25`,
-                        color: BUBBLE_TYPE_COLORS[selectedCard.type],
-                      }}
-                    >
-                      Variant Bubble #{selectedCard.bubbleIndex}: {BUBBLE_TYPE_LABELS[selectedCard.type]}
-                    </span>
-                    {selectedCard.isHgtCandidate && (
-                      <span
-                        style={{
-                          fontSize: '0.7rem',
-                          fontWeight: 700,
-                          padding: '2px 6px',
-                          borderRadius: '4px',
-                          backgroundColor: '#f59e0b25',
-                          color: '#f59e0b',
-                        }}
-                      >
-                        HGT Introgression Candidate
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ fontSize: '0.72rem', color: colors.textDim, marginTop: '4px' }}>
-                    Coordinates: <strong>{selectedCard.locusStartBp.toLocaleString()} bp</strong> to{' '}
-                    <strong>{selectedCard.locusEndBp.toLocaleString()} bp</strong> (Span: {selectedCard.spanBp.toLocaleString()} bp)
-                  </div>
-                </div>
-
-                {/* Jump to Locus action */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    const firstGene = phage.genes?.find(
-                      (g) => g.startPos >= selectedCard.locusStartBp && g.startPos <= selectedCard.locusEndBp
-                    );
-                    if (firstGene) {
-                      setSelectedGeneId(firstGene.id);
-                    }
-                  }}
-                  style={{
-                    padding: '3px 8px',
-                    fontSize: '0.72rem',
-                    backgroundColor: colors.background,
-                    color: colors.primary,
-                    border: `1px solid ${colors.borderLight}`,
-                    borderRadius: '4px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Inspect Locus
-                </button>
-              </div>
-
-              {/* Path Traversals Comparison */}
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: '1fr 1fr',
-                  gap: '0.5rem',
-                  padding: '0.5rem 0.65rem',
-                  backgroundColor: colors.background,
-                  borderRadius: '6px',
-                  border: `1px solid ${colors.borderLight}`,
-                  fontSize: '0.72rem',
-                }}
-              >
-                <div>
-                  <div style={{ fontWeight: 600, color: colors.textMuted }}>Reference Path</div>
-                  <div style={{ color: colors.text }}>Length: {selectedCard.referenceLengthBp} bp</div>
-                  <div style={{ color: colors.textDim, fontSize: '0.68rem' }}>{selectedCard.referencePathDescription}</div>
-                </div>
-                <div>
-                  <div style={{ fontWeight: 600, color: colors.textMuted }}>Alternative Branch</div>
-                  <div style={{ color: colors.text }}>Length: {selectedCard.variantLengthBp} bp</div>
-                  <div style={{ color: colors.textDim, fontSize: '0.68rem' }}>{selectedCard.variantPathDescription}</div>
-                </div>
-              </div>
-
-              {/* Recombination Breakpoints Box */}
-              <div
-                style={{
-                  padding: '0.5rem 0.65rem',
-                  backgroundColor: colors.background,
-                  borderRadius: '6px',
-                  border: `1px solid ${colors.borderLight}`,
-                  fontSize: '0.72rem',
-                }}
-              >
-                <div style={{ fontWeight: 600, color: colors.text, marginBottom: '2px' }}>
-                  Recombination Breakpoint Junctions
-                </div>
-                <div style={{ display: 'flex', gap: '1rem', color: colors.textMuted, fontSize: '0.7rem' }}>
-                  <div>Left: <strong>{selectedCard.recombinationBreakpoints.leftBreakpointBp} bp</strong></div>
-                  <div>Right: <strong>{selectedCard.recombinationBreakpoints.rightBreakpointBp} bp</strong></div>
-                  {selectedCard.recombinationBreakpoints.microhomologySequence && (
-                    <div>Microhomology: <code style={{ color: colors.primary }}>{selectedCard.recombinationBreakpoints.microhomologySequence}</code></div>
-                  )}
-                  {selectedCard.recombinationBreakpoints.invertedRepeatDetected && (
-                    <div style={{ color: '#8b5cf6', fontWeight: 600 }}>Inverted Repeat Loop</div>
-                  )}
-                </div>
-              </div>
-
-              {/* Overlapped Gene Impacts */}
-              <div
-                style={{
-                  padding: '0.5rem 0.65rem',
-                  backgroundColor: colors.background,
-                  borderRadius: '6px',
-                  border: `1px solid ${colors.borderLight}`,
-                }}
-              >
-                <div style={{ fontWeight: 600, color: colors.text, fontSize: '0.72rem', marginBottom: '4px' }}>
-                  Overlapped Gene Impacts ({selectedCard.overlappedGenes.length})
-                </div>
-                {selectedCard.overlappedGenes.length === 0 ? (
-                  <div style={{ fontSize: '0.7rem', color: colors.textDim }}>No annotated gene intersections in this intergenic bubble.</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                    {selectedCard.overlappedGenes.map((g, idx) => (
-                      <div
-                        key={`${g.name}-${idx}`}
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                          fontSize: '0.7rem',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <span style={{ fontWeight: 600, color: colors.text }}>{g.name}</span>
-                          <span style={{ color: colors.textDim, fontSize: '0.67rem' }}>{g.product}</span>
-                        </div>
-                        <span
-                          style={{
-                            fontSize: '0.62rem',
-                            fontWeight: 700,
-                            padding: '1px 5px',
-                            borderRadius: '3px',
-                            backgroundColor: `${IMPACT_COLORS[g.impact] || colors.primary}20`,
-                            color: IMPACT_COLORS[g.impact] || colors.primary,
-                          }}
-                        >
-                          {g.impact}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Donor Lineage Hints */}
-              {selectedCard.donorLineageHints.length > 0 && (
-                <div
-                  style={{
-                    padding: '0.5rem 0.65rem',
-                    backgroundColor: colors.background,
-                    borderRadius: '6px',
-                    border: `1px solid ${colors.borderLight}`,
-                    fontSize: '0.72rem',
-                  }}
-                >
-                  <div style={{ fontWeight: 600, color: colors.text, marginBottom: '2px' }}>
-                    Suspected Donor Lineage & Homology
-                  </div>
-                  {selectedCard.donorLineageHints.map((donor, idx) => (
-                    <div key={`${donor.genomeName}-${idx}`} style={{ fontSize: '0.7rem', color: colors.textMuted }}>
-                      <div>
-                        Donor: <strong>{donor.genomeName}</strong> ({donor.possibleLineage})
-                      </div>
-                      <div style={{ color: colors.textDim, fontSize: '0.68rem', marginTop: '1px' }}>
-                        Evidence: {donor.evidence}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Evolutionary Rationale / Biological Narrative */}
-              <div style={{ fontSize: '0.72rem', color: colors.textMuted, fontStyle: 'italic', lineHeight: 1.4 }}>
-                {selectedCard.functionalSignificance}
-              </div>
-            </div>
-          ) : (
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: colors.backgroundAlt,
-                border: `1px solid ${colors.borderLight}`,
-                borderRadius: '8px',
-                padding: '2rem',
-                color: colors.textDim,
-                fontSize: '0.85rem',
-              }}
-            >
-              Select a variant bubble on the left to inspect its genomic architecture.
-            </div>
-          )}
-        </div>
-
-        {/* Recombination Hotspots Section */}
-        {metrics.recombinationHotspots.length > 0 && (
-          <OverlaySection>
-            <OverlaySectionHeader
-              title="Genomic Mosaicism & Recombination Hotspots"
-              description="High-frequency recombination modules identified by clustering variant bubbles and nucleotide divergence across the pangenome."
-            />
-
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-                gap: '0.6rem',
-              }}
-            >
-              {metrics.recombinationHotspots.map((hotspot) => (
-                <div
-                  key={hotspot.id}
-                  style={{
-                    padding: '0.65rem 0.8rem',
-                    borderRadius: '6px',
-                    backgroundColor: colors.backgroundAlt,
-                    border: `1px solid ${colors.borderLight}`,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.35rem',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.8rem', color: colors.text }}>
-                      {hotspot.locusStartBp.toLocaleString()} – {hotspot.locusEndBp.toLocaleString()} bp
-                    </span>
-                    <span
-                      style={{
-                        fontSize: '0.7rem',
-                        fontWeight: 700,
-                        color: colors.warning,
-                        backgroundColor: `${colors.warning}20`,
-                        padding: '1px 6px',
-                        borderRadius: '3px',
-                      }}
-                    >
-                      Diversity Score: {hotspot.diversityScore} / 100
-                    </span>
-                  </div>
-
-                  <div style={{ fontSize: '0.72rem', color: colors.textMuted }}>
-                    {hotspot.associatedFunctionalModule}
-                  </div>
-
-                  <div style={{ fontSize: '0.68rem', color: colors.textDim }}>
-                    Dominant variation: <strong>{BUBBLE_TYPE_LABELS[hotspot.dominantVariantType]}</strong> ({hotspot.bubbleCount} bubbles in cluster)
-                  </div>
-                </div>
-              ))}
-            </div>
-          </OverlaySection>
-        )}
-      </OverlayStack>
-    </Overlay>
-  );
+  const { accepted, busy, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [pasted, setPasted] = useState('');
+  const [draft, setDraft] = useState<AlignmentGraphOptions | null>(null);
+  const [pathId, setPathId] = useState('');
+  const [blockPage, setBlockPage] = useState(0);
+  const [nodeId, setNodeId] = useState('');
+  const [variantId, setVariantId] = useState('');
+  const [variantPage, setVariantPage] = useState(0);
+  const [typeFilter, setTypeFilter] = useState<AlignmentVariant['type'] | 'all'>('all');
+  const [pathOnly, setPathOnly] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open]);
+  useEffect(() => {
+    if (accepted) setDraft({ ...accepted.options });
+    setPathId(accepted?.graph?.paths.find(p => p.sequenceId === accepted.options.referenceId)?.id ?? '');
+    setNodeId(''); setVariantId(''); setBlockPage(0); setVariantPage(0); setExportError(null);
+  }, [accepted]);
+  useEffect(() => { setVariantPage(0); }, [typeFilter, pathOnly, pathId]);
+  const graph = accepted?.graph, record = accepted?.record;
+  const variants = useMemo(() => graph?.variants.filter(v => (typeFilter === 'all' || v.type === typeFilter) &&
+    (!pathOnly || v.pathIds.includes(pathId))) ?? [], [graph, typeFilter, pathOnly, pathId]);
+  if (!open) return null;
+  const selectedNode = graph?.nodes.find(n => n.id === nodeId);
+  const selectedVariant = graph?.variants.find(v => v.id === variantId);
+  const pathName = (id: string) => graph?.paths.find(p => p.id === id)?.sequenceId ?? id;
+  const changed = !!draft && !!accepted && (Object.keys(draft) as Array<keyof AlignmentGraphOptions>).some(key => draft[key] !== accepted.options[key]);
+  const blockPages = Math.max(1, Math.ceil((graph?.diagnostics.blocks ?? 0) / BLOCKS_PER_PAGE));
+  const variantPages = Math.max(1, Math.ceil(variants.length / 100)), currentVariantPage = Math.min(variantPage, variantPages - 1);
+  const loadFile = (file: File | undefined) => {
+    if (!file) return;
+    const request: Promise<PangenomeRequest> = file.size > 10 * 1024 * 1024 ? Promise.reject(new Error('Pangenome file exceeds 10 MiB.'))
+      : file.text().then(content => ({ kind: 'import', content, filename: file.name }));
+    void session.run(request);
+  };
+  const save = (kind: 'input' | 'record' | 'gfa' | 'alignment') => {
+    if (!accepted) return;
+    try {
+      if (kind === 'input') downloadString(serializePangenomeInput(accepted.input), 'pangenome-input.json', 'application/json');
+      else if (kind === 'record' && record) downloadString(serializeAnalysisRecord(record), 'pangenome-analysis.json', 'application/json');
+      else if (kind === 'gfa' && graph) downloadString(exportAlignmentGfa(graph), 'pangenome.gfa', 'text/plain');
+      else if (kind === 'alignment' && graph) downloadString(exportPangenomeAlignment(graph), 'pangenome-alignment.fasta', 'text/plain');
+      setExportError(null);
+    } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  return <Overlay id="pangenomeGraph" title="SEQUENCE PANGENOME & VARIANTS" size="xl"
+    provenanceBadge={<span data-testid="pangenome-source">{!accepted ? 'No sequence input' : accepted.input.source === 'demo' ? 'Synthetic sequence example' : 'Local sequence input'}</span>}>
+    <div style={{ display: 'grid', gap: '1rem', color: colors.text, overflowWrap: 'anywhere', minWidth: 0 }}>
+      <p>Build graphs from your own sequences, not annotation templates. Inputs remain in browser memory and are not uploaded by this tool.
+        This workspace is independent of the catalog selection. Export the dataset or analysis before reloading.</p>
+      {!accepted && <p>Comparative sequence evidence has not been supplied. Import sequences below to construct a real graph.</p>}
+      <label htmlFor="pangenome-input">Import pangenome FASTA, dataset JSON or saved analysis</label>
+      <input id="pangenome-input" type="file" accept=".fa,.fasta,.fna,.aln,.json,text/plain,application/json" disabled={busy}
+        onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadFile(file); }} />
+      <details><summary>Paste sequences or inspect supported input</summary>
+        <p>Supply 2–24 DNA FASTA records with unique identifiers. Existing alignments may use - for gaps; IUPAC ambiguity is retained.
+          For unaligned loci, choose global alignment after loading. RNA, protein sequences, dots and question marks are rejected.</p>
+        <label htmlFor="pangenome-paste">Paste pangenome FASTA</label>
+        <textarea id="pangenome-paste" rows={5} value={pasted} disabled={busy} onChange={event => setPasted(event.target.value)} style={{ width: '100%' }} />
+        <button type="button" disabled={busy || !pasted.trim()} onClick={() => void session.run({ kind: 'import', content: pasted, filename: 'Pasted sequence input' })}>Load pasted sequences</button>
+        <p>Sequence datasets: 4 MiB, 250,000 columns, 4,000,000 total cells. Global alignment: 12,000,000 total dynamic-programming cells;
+          use a supplied alignment for whole genomes. Graphs are bounded to 4,000 blocks and 12,000 nodes. Saved analyses: 10 MiB.</p>
+      </details>
+      <div><button type="button" disabled={busy} onClick={() => void session.run({ kind: 'demo' })}>Load synthetic sequence example</button>
+        <button type="button" disabled={!busy} onClick={session.cancel}>Cancel pangenome work</button></div>
+      {busy && <p role="status">{phase}. The last accepted input and result remain unchanged.</p>}
+      {notice && <p role="status">{notice}</p>}
+      {(error || exportError) && <p role="alert">{error ?? exportError}</p>}
+      {accepted && draft && <>
+        <h3 data-testid="pangenome-input-name">{accepted.input.name}</h3>
+        <p>{accepted.input.sequences.length} sequences loaded; {accepted.input.source === 'demo' ? 'synthetic example, not observations' : 'user-supplied data, not independently validated'}.</p>
+        <form onSubmit={event => { event.preventDefault(); void session.run({ kind: 'analyze', input: accepted.input, options: draft }); }}>
+          <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem', border: `1px solid ${colors.borderLight}` }}>
+            <legend>Explicit graph construction settings</legend>
+            <label htmlFor="pangenome-reference">Pangenome reference sequence</label>
+            <select id="pangenome-reference" value={draft.referenceId} onChange={event => setDraft({ ...draft, referenceId: event.target.value })}>
+              {accepted.input.sequences.map(s => <option key={s.id} value={s.id}>{s.id}</option>)}
+            </select>
+            <label htmlFor="pangenome-alignment">Pangenome alignment mode</label>
+            <select id="pangenome-alignment" value={draft.alignment} onChange={event => setDraft({ ...draft, alignment: event.target.value as AlignmentGraphOptions['alignment'] })}>
+              <option value="provided">Use supplied multiple-sequence alignment</option><option value="global">Align ungapped loci (exact global unit-edit alignment)</option>
+            </select>
+            <label htmlFor="pangenome-terminals">Terminal gap interpretation</label>
+            <select id="pangenome-terminals" value={draft.terminalGaps} onChange={event => setDraft({ ...draft, terminalGaps: event.target.value as AlignmentGraphOptions['terminalGaps'] })}>
+              <option value="missing">Missing coverage: exclude terminal differences</option><option value="alleles">Complete sequences: treat terminal gaps as alleles</option>
+            </select>
+            <p>Equal lengths do not establish homology. Global mode is a bounded locus aligner, not a rearrangement-aware whole-genome method.
+              {changed && ' Edited settings are not applied: existing results and exports retain their submitted parameters.'}</p>
+            <button type="submit">Build sequence graph</button>
+          </fieldset>
+        </form>
+        <div><button type="button" disabled={busy} onClick={() => save('input')}>Export pangenome dataset</button>
+          <button type="button" disabled={busy || !record} onClick={() => save('record')}>Export pangenome analysis</button>
+          <button type="button" disabled={busy || !graph} onClick={() => save('gfa')}>Export sequence graph GFA</button>
+          <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button></div>
+      </>}
+      {phage && <section aria-label="Annotation illustration" style={{ border: `1px solid ${colors.borderLight}`, padding: '.75rem' }}>
+        <h3>Separate educational illustration</h3>
+        <p>The legacy annotation-template illustration is not a graph computed from your sequence input. Opening it never replaces or exports evidence from the sequence workspace.</p>
+        {!illustration ? <button type="button" onClick={() => setIllustratedPhageId(phage.id)}>Show illustrative pangenome</button> : <>
+          <strong>DEMONSTRATION — invented companion variants, not sequence evidence</strong>
+          <p role="note" aria-label="Demonstration assumptions">{illustration.assumptions}</p>
+          <p>{illustration.summary}</p>
+          <div style={{ overflowX: 'auto' }}><table aria-label="Illustrative variant examples"><thead><tr><th>Illustration</th><th>Template type</th><th>Invented interval</th></tr></thead>
+            <tbody>{illustration.variantCards.map(card => <tr key={card.id}><td>{card.id}</td><td>{card.type}</td><td>[{card.locusStartBp}, {card.locusEndBp})</td></tr>)}</tbody></table></div>
+          <button type="button" onClick={() => setIllustratedPhageId(null)}>Return to available data</button>
+        </>}
+      </section>}
+      {graph && record && <section data-testid="pangenome-result" data-result-id={record.resultId} style={{ minWidth: 0 }}>
+        <h3>Sequence-derived graph</h3>
+        <p data-testid="pangenome-summary">{graph.nodes.length} sequence nodes; {graph.edges.length} links; {graph.paths.length} exact input paths;
+          {` ${graph.variants.length} reference-relative variants.`}</p>
+        <p data-testid="pangenome-reference-used">Submitted reference: {graph.options.referenceId} ({graph.referenceLength} bases).
+          Alignment: {graph.options.alignment}. Terminal gaps: {graph.options.terminalGaps}.</p>
+        <p>{graph.diagnostics.sharedUnambiguousBases} unambiguous bases shared by every input path; {graph.diagnostics.allGapColumns} all-gap columns omitted.
+          These are properties of this input set, not species-wide core/accessory estimates.</p>
+        <label htmlFor="pangenome-path">Highlight input sequence path</label>
+        <select id="pangenome-path" value={pathId} onChange={event => setPathId(event.target.value)}>
+          {graph.paths.map(p => <option key={p.id} value={p.id}>{p.sequenceId} ({p.length} bases)</option>)}
+        </select>
+        <SequenceGraph graph={graph} pathId={pathId} page={blockPage} inspect={setNodeId} />
+        <div><button type="button" disabled={blockPage === 0} onClick={() => setBlockPage(blockPage - 1)}>Previous graph blocks</button>
+          <span> Blocks page {blockPage + 1}/{blockPages} </span>
+          <button type="button" disabled={blockPage + 1 >= blockPages} onClick={() => setBlockPage(blockPage + 1)}>Next graph blocks</button></div>
+        <label htmlFor="pangenome-node">Inspect sequence node</label>
+        <select id="pangenome-node" value={selectedNode && Math.floor(selectedNode.block / BLOCKS_PER_PAGE) === blockPage ? nodeId : ''} onChange={event => setNodeId(event.target.value)}>
+          <option value="">Select a node in this graph page</option>
+          {graph.nodes.filter(node => Math.floor(node.block / BLOCKS_PER_PAGE) === blockPage).map(node => <option key={node.id} value={node.id}>{node.id} · {node.sequence.length} bases</option>)}
+        </select>
+        {selectedNode && <aside aria-label="Sequence node details">
+          <h4>{selectedNode.id}: {selectedNode.sequence.length} bases</h4>
+          <p>Alignment columns [{selectedNode.alignmentStart}, {selectedNode.alignmentEnd}); reference span [{selectedNode.referenceStart}, {selectedNode.referenceEnd}).
+            Traversed by: {selectedNode.pathIds.map(pathName).join(', ')}.</p>
+          <code>{shortSequence(selectedNode.sequence)}</code>
+        </aside>}
+        <h3>Reference-relative variant cards</h3>
+        <p>Coordinates are 0-based, half-open [start, end). Insertions have start = end at the reference boundary; ∅ is an empty allele.
+          These are sequence differences, not inferred structural rearrangements, gene impacts or donor assignments.</p>
+        <label htmlFor="pangenome-variant-type">Variant type</label>
+        <select id="pangenome-variant-type" value={typeFilter} onChange={event => setTypeFilter(event.target.value as typeof typeFilter)}>
+          {['all', 'snv', 'substitution', 'insertion', 'deletion', 'replacement'].map(type => <option key={type} value={type}>{type}</option>)}
+        </select>
+        <label><input type="checkbox" checked={pathOnly} onChange={event => setPathOnly(event.target.checked)} /> Only differences for the highlighted sequence</label>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Reference-relative variants" style={{ width: '100%' }}>
+          <thead><tr><th>Variant</th><th>Type</th><th>Reference interval</th><th>Reference allele</th><th>Alternate allele</th><th>Input sequences</th></tr></thead>
+          <tbody>{variants.slice(currentVariantPage * 100, (currentVariantPage + 1) * 100).map(v => <tr key={v.id} data-testid="pangenome-variant">
+            <td><button type="button" onClick={() => {
+              setVariantId(v.id);
+              const node = graph.nodes.find(n => n.referenceStart <= v.referenceStart && n.referenceEnd >= v.referenceStart);
+              if (node) { setBlockPage(Math.floor(node.block / BLOCKS_PER_PAGE)); setNodeId(node.id); }
+            }}>{v.id}</button></td><td>{v.type}</td><td>[{v.referenceStart}, {v.referenceEnd})</td>
+            <td><code>{v.reference.length > 30 ? `${v.reference.slice(0, 30)}…` : v.reference || '∅'}</code></td>
+            <td><code>{v.alternate.length > 30 ? `${v.alternate.slice(0, 30)}…` : v.alternate || '∅'}</code></td>
+            <td>{v.pathIds.map(pathName).join(', ')}</td>
+          </tr>)}</tbody>
+        </table></div>
+        {variants.length === 0 && <p>No callable differences pass the display filter. Missing or ambiguous sequence is not evidence of biological identity.</p>}
+        {variantPages > 1 && <div><button type="button" disabled={currentVariantPage === 0} onClick={() => setVariantPage(currentVariantPage - 1)}>Previous variants</button>
+          <span> {currentVariantPage + 1}/{variantPages} </span><button type="button" disabled={currentVariantPage + 1 >= variantPages} onClick={() => setVariantPage(currentVariantPage + 1)}>Next variants</button></div>}
+        {selectedVariant && <aside aria-label="Variant allele details"><h4>{selectedVariant.id}: exact allele evidence</h4>
+          <p>Reference: <code>{shortSequence(selectedVariant.reference)}</code></p><p>Alternate: <code>{shortSequence(selectedVariant.alternate)}</code></p>
+          <p>Net length change: {selectedVariant.alternate.length - selectedVariant.reference.length} bases. Supporting input sequences: {selectedVariant.pathIds.map(pathName).join(', ')}.</p>
+        </aside>}
+        <h3>Comparison coverage</h3>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Pangenome comparison coverage"><thead><tr><th>Sequence</th><th>Comparable columns</th><th>Ambiguous columns</th><th>Missing terminal columns</th></tr></thead>
+          <tbody>{graph.diagnostics.comparisons.map(c => <tr key={c.pathId}><td>{pathName(c.pathId)}</td><td>{c.comparableColumns}</td><td>{c.ambiguousColumns}</td><td>{c.missingTerminalColumns}</td></tr>)}</tbody>
+        </table></div>
+        <details><summary>Method assumptions and limitations</summary>{graph.diagnostics.limitations.map(limit => <p key={limit}>{limit}</p>)}</details>
+        <AnalysisRecordDetails record={record} />
+      </section>}
+    </div>
+  </Overlay>;
 }
