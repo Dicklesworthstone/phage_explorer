@@ -51,6 +51,14 @@ describe('private sequence graph workspace', () => {
       [['snv', 1, 'T'], ['insertion', 4, 'GG'], ['deletion', 6, '']]);
     assert.equal(f.workers[1].terminated, 1); f.session.deactivate();
   });
+  it('preserves known shared bases on either side of ambiguous sequence through the worker record', async () => {
+    const loaded = await executePangenomeRequest({ kind: 'import', filename: 'ambiguity.fa', content: '>a\nACNNGT\n>b\nACNNGT' });
+    const result = await executePangenomeRequest({ kind: 'analyze', input: loaded.input, options: loaded.options });
+    assert.equal(result.graph!.diagnostics.sharedUnambiguousBases, 4);
+    assert.deepEqual(result.graph!.nodes.map(node => [node.sequence, node.core, node.ambiguous]),
+      [['AC', true, false], ['NN', false, true], ['GT', true, false]]);
+    assert.equal((result.record!.fields.diagnostics.value as Record<string, unknown>).sharedUnambiguousBases, 4);
+  });
   it('does not load demo data unless explicitly requested', async () => {
     const f = fixture(); assert.equal(f.session.getSnapshot().accepted, null);
     await f.session.run({ ...request, content: 'broken' });

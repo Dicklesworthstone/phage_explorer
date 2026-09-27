@@ -13,7 +13,8 @@ const text = 'taxon,S1,S2,S3\nA,1,4,16\nB,16,4,1\n';
 const params = '{"pseudocount":0,"numNiches":1,"seed":0,"permutations":19,"qvalueThreshold":1}';
 async function run(args: string[], cwd: string, input?: string) {
   const child = Bun.spawn(args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
-  child.stdin.end(input ?? '');
+  child.stdin.write(input ?? '');
+  child.stdin.end();
   const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   return { code, stdout, stderr };
 }

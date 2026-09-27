@@ -157,7 +157,7 @@ test('global locus alignment, local errors and actual worker cancellation remain
       const { created, terminated } = (window as unknown as { pangenomeWorkerCounts: () => { created: number; terminated: number } }).pangenomeWorkerCounts();
       return created - terminated;
     })).toBe(0);
-    release();
+    release?.();
     await page.unroute(/pangenome\.worker-.*\.js/);
     await panel.getByRole('button', { name: 'Build sequence graph', exact: true }).click();
     await expect(panel).toContainText('Sequence graph computed');

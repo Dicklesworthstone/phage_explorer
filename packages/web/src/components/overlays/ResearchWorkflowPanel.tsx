@@ -4,6 +4,7 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { interruptsResearchNavigation, type ResearchNavigationTarget } from '../../keyboard/ResearchNavigation';
 import { getOrchestrator } from '../../workers/ComputeOrchestrator';
 import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/research-workflow.worker';
 import { downloadString } from '../../utils/export';
@@ -37,6 +38,7 @@ function currentView(): ResearchView | null {
 }
 export function createBrowserResearchWorkflow(selectPhage: (index: number) => Promise<void>): { workflow: ResearchWorkflow; activate: () => void; dispose: () => void } {
   let navigating = false;
+  let navigationOwner: ResearchNavigationTarget | null = null;
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation }, {
     genomes: () => useLocalGenomes.getState().genomes,
@@ -53,24 +55,32 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       const genome = useLocalGenomes.getState().genomes.find(g => g.phage.localGenome?.contentId === view.contentId);
       const index = usePhageStore.getState().phages.findIndex(p => p.id === genome?.phage.id);
       if (!genome || index < 0) throw new Error('Add the workflow genomes to the explorer before replay.');
-      // onSelectPhage is the same loader used by the catalog and palette; an
-      // index write alone does not load sequence/annotations in this app.
-      let selection: Promise<void>;
-      navigating = true;
-      try { selection = selectPhage(index); } finally { navigating = false; }
-      await selection;
-      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-      const state = usePhageStore.getState();
-      if (state.isLoadingPhage || state.currentPhageIndex !== index || state.currentPhage?.localGenome?.contentId !== view.contentId) {
-        throw new Error('Genome selection changed or failed before the saved view could be applied.');
-      }
-      navigating = true;
+      // Keep the target through the asynchronous loader's gene/scroll resets,
+      // without suppressing navigation toward a different target or user view.
+      const owner: ResearchNavigationTarget = { index, view, signal };
+      navigationOwner = owner;
       try {
-        state.setViewMode(view.viewMode); state.setReadingFrame(view.readingFrame); state.setSelectedGeneId(view.geneId); state.setScrollPosition(view.scrollPosition);
-      } finally { navigating = false; }
-      // Let React/the renderer accept the view before marking a command done.
-      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        let selection: Promise<void>;
+        navigating = true;
+        try { selection = selectPhage(index); } finally { navigating = false; }
+        await selection;
+        // Let the loaded genome's queued selection-reset effects run before
+        // applying the requested CDS/view. The exact view is checked afterward.
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        const state = usePhageStore.getState();
+        if (state.isLoadingPhage || state.currentPhageIndex !== index || state.currentPhage?.localGenome?.contentId !== view.contentId) {
+          throw new Error('Genome selection changed or failed before the saved view could be applied.');
+        }
+        navigating = true;
+        try {
+          state.setViewMode(view.viewMode); state.setReadingFrame(view.readingFrame); state.setSelectedGeneId(view.geneId); state.setScrollPosition(view.scrollPosition);
+        } finally { navigating = false; }
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      } finally {
+        if (navigationOwner === owner) navigationOwner = null;
+      }
     },
     repeats: async (genome, options, signal) => {
       const result = await getOrchestrator().runAnalysisWithSharedBuffer(genome.phage.id, genome.sequence, 'repeats', options,
@@ -89,9 +99,8 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   const activate = () => {
     if (unsubscribe) return;
     unsubscribe = usePhageStore.subscribe((next, previous) => {
-      const changed = next.currentPhageIndex !== previous.currentPhageIndex || next.selectedGeneId !== previous.selectedGeneId ||
-        next.viewMode !== previous.viewMode || next.readingFrame !== previous.readingFrame || next.scrollPosition !== previous.scrollPosition;
-      if (!navigating && changed && !['idle', 'recording'].includes(workflow.commands.getSnapshot().mode)) workflow.commands.cancel();
+      if (!navigating && interruptsResearchNavigation(next, previous, navigationOwner) &&
+        !['idle', 'recording'].includes(workflow.commands.getSnapshot().mode)) workflow.commands.cancel();
     });
   };
   return { workflow, activate, dispose: () => { unsubscribe?.(); unsubscribe = null; workflow.commands.cancel(); } };

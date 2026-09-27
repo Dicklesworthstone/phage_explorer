@@ -227,7 +227,8 @@ export function buildAlignmentPangenome(value: PangenomeInput, settings: Partial
     const chars = rows.map(row => row.sequence[c]);
     if (chars.every(char => char === '-')) { flush(c); lastKey = ''; start = c + 1; allGapColumns++; continue; }
     const first = new Map<string, number>();
-    const key = chars.map((char, i) => {
+    // Do not merge a shared unknown base into a known shared sequence node.
+    const key = `${chars.some(char => !known(char)) ? 'ambiguous' : 'known'}:` + chars.map((char, i) => {
       if (!first.has(char)) first.set(char, i);
       return char === '-' ? 'gap' : first.get(char);
     }).join(',');
@@ -308,7 +309,7 @@ export function exportAlignmentGfa(graph: AlignmentPangenome): string {
 export function exportPangenomeAlignment(graph: AlignmentPangenome): string {
   return graph.alignment.map(s => `>${s.id}${s.description ? ` ${s.description}` : ''}\n${s.sequence.match(/.{1,80}/g)!.join('\n')}\n`).join('');
 }
-const METHOD = { id: 'alignment-pangenome', version: '1', implementation: 'column-partition sequence DAG; exact reference-relative alleles; optional unit-edit global star alignment' };
+const METHOD = { id: 'alignment-pangenome', version: '2', implementation: 'column-partition sequence DAG; exact reference-relative alleles; optional unit-edit global star alignment' };
 const REFERENCES = [{ id: 'gfa', version: '1.0', description: 'Sequence segments S, zero-overlap links L and fully spelled input paths P; ASCII path names.' }];
 export async function createAlignmentPangenomeRecord(input: PangenomeInput, graph: AlignmentPangenome): Promise<AnalysisRecord> {
   const data = validatePangenomeInput(input);
