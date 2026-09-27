@@ -1,5 +1,7 @@
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { createHash } from 'node:crypto';
+import { parseAnalysisRecord } from '../../core/src/analysis-result';
+import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 const GENBANK = `LOCUS       PRIVATE1                  24 bp    DNA     circular
@@ -238,4 +240,188 @@ test('cancel a large input while its actual parser worker is pending', async ({ 
     expect(bundle.inputs).toEqual([{ name: 'large.fa', text: input }]);
     expect(pageErrors).toEqual([]);
   } finally { await finalize(); }
+});
+
+
+// Independently checked CDS: RC(CCATGA)+RC(ACGTTT), offset one base,
+// is CAT GGA AAC GT: three sense codons, with the last two bases incomplete.
+const WORKFLOW_INPUT = `LOCUS       WORKFLOW_ALPHA            18 bp    DNA     linear
+DEFINITION  Workflow alpha.
+ACCESSION   WORKFLOW_ALPHA
+FEATURES             Location/Qualifiers
+     CDS             complement(join(1..6,13..18))
+                     /locus_tag="joined"
+                     /codon_start=2
+     CDS             1..6
+                     /locus_tag="other"
+ORIGIN
+        1 acgtttggggggccatga
+//
+`;
+const WORKFLOW_INPUTS = WORKFLOW_INPUT + WORKFLOW_INPUT.replaceAll('WORKFLOW_ALPHA', 'WORKFLOW_BETA')
+  .replace('Workflow alpha.', 'Workflow beta.').replace('acgtttggggggccatga', 'ggccccttttttatgcca');
+
+test('recorded private-genome workflow reopens, navigates, recomputes and rejects changed evidence with real workers', async ({ page }, info) => {
+  test.setTimeout(180000);
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  const requests: string[] = [];
+  page.on('request', request => requests.push(`${request.url()} ${request.postData() ?? ''}`));
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    let created = 0, terminated = 0;
+    window.Worker = class extends NativeWorker {
+      private tracked: boolean;
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options); this.tracked = String(url).includes('research-workflow.worker');
+        if (this.tracked) created++;
+      }
+      terminate() { if (this.tracked) { terminated++; this.tracked = false; } super.terminate(); }
+    };
+    (window as unknown as { researchWorkerStats: () => { created: number; terminated: number } }).researchWorkerStats = () => ({ created, terminated });
+  });
+  let releaseWorker: (() => void) | undefined;
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    let overlay = await importPanel(page);
+    await parseInput(overlay, WORKFLOW_INPUTS);
+    await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow alpha.');
+    overlay = await importPanel(page);
+    const panel = page.getByRole('region', { name: 'Saved research workflows', exact: true });
+    const button = (name: string) => panel.getByRole('button', { name, exact: true });
+    const status = panel.getByTestId('workflow-status');
+    const activate = async (name: string) => { await button(name).focus(); await button(name).press('Enter'); };
+    await panel.getByLabel('Workflow name', { exact: true }).fill('jkafv — private CDS workflow');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow alpha.');
+    await activate('Start workflow recording');
+    await panel.getByLabel('Workflow CDS', { exact: true }).selectOption('1');
+    await panel.getByLabel('Workflow view mode', { exact: true }).selectOption('dual');
+    await panel.getByLabel('Workflow reading frame', { exact: true }).selectOption('-2');
+    await panel.getByLabel('Workflow position (0-based view coordinate)', { exact: true }).fill('0');
+    await activate('Apply and record view');
+    await expect(status).toContainText('1 recorded commands');
+    await activate('Run and record CDS analysis');
+    await expect(status).toContainText('2 recorded commands');
+    const firstCds = await parseAnalysisRecord(await downloadText(page, () => button('Export workflow analysis').click()));
+    expect(firstCds.fields.codingSequences.value).toEqual([{ geneId: 1, codonCount: 3, sequence: 'CATGGAAACGT' }]);
+    expect(firstCds.fields.codingSequences.kind).toBe('sequence-score');
+    expect(firstCds.fields.hostRankings.kind).toBe('demo');
+    expect(firstCds.inputs.find(input => input.id === 'sequence')?.data).toBe('ACGTTTGGGGGGCCATGA');
+    await panel.getByLabel('Workflow minimum repeat arm', { exact: true }).fill('4');
+    await panel.getByLabel('Workflow maximum repeat gap', { exact: true }).fill('18');
+    await activate('Run and record repeats');
+    await expect(status).toContainText('3 recorded commands');
+    await expect(panel.getByTestId('workflow-result')).not.toHaveAttribute('data-result-id', firstCds.resultId);
+
+    // These must use the actual application loader, not simply change an index.
+    const genomeSelect = panel.getByLabel('Workflow genome', { exact: true });
+    await genomeSelect.selectOption({ label: 'Workflow beta.' });
+    await activate('Apply and record view');
+    await expect(status).toContainText('4 recorded commands');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow beta.');
+    await genomeSelect.selectOption({ label: 'Workflow alpha.' });
+    await panel.getByLabel('Workflow CDS', { exact: true }).selectOption('1');
+    await activate('Apply and record view');
+    await expect(status).toContainText('5 recorded commands');
+    await activate('Undo workflow view');
+    await expect(status).toContainText('6 recorded commands');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow beta.');
+    await activate('Redo workflow view');
+    await expect(status).toContainText('7 recorded commands');
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow alpha.');
+    await activate('Run and record CDS analysis');
+    await expect(status).toContainText('8 recorded commands');
+    await expect(panel.getByTestId('workflow-result')).toHaveAttribute('data-result-id', firstCds.resultId);
+    await activate('Stop workflow recording');
+    const saved = await downloadText(page, () => button('Export research workflow').click());
+    const tape = parseCommandTape(saved);
+    expect(tape.commands.map(command => command.actionId)).toEqual(['nav.goto', 'overlay.codonAdaptation', 'overlay.repeats', 'nav.goto', 'nav.goto', 'nav.goto', 'nav.goto', 'overlay.codonAdaptation']);
+    expect(tape.commands[0].parameters).toMatchObject({ viewMode: 'dual', readingFrame: -2, geneId: 1, scrollPosition: 0 });
+    expect(tape.commands[2].parameters).toMatchObject({ minLength: 4, maxGap: 18 });
+    expect(JSON.parse((tape.context as { bundle: string }).bundle).inputs).toEqual([{ name: 'pasted-genomes.txt', text: WORKFLOW_INPUTS }]);
+    const viewBundle = JSON.parse(await downloadText(page, () => overlay.getByRole('button', { name: 'Export local genome bundle', exact: true }).click()));
+    expect(viewBundle.view).toMatchObject({ viewMode: 'dual', readingFrame: -2, scrollPosition: 0 });
+
+    await page.reload();
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+    overlay = await importPanel(page);
+    const loadTape = (content: string) => panel.getByLabel('Load research workflow JSON', { exact: true })
+      .setInputFiles({ name: 'workflow.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+    await loadTape(saved);
+    await expect(panel).toContainText('2 bundled genomes validated');
+    await expect(panel.getByTestId('workflow-result')).toHaveCount(0);
+    await button('Replay research workflow').click();
+    await expect(panel.getByRole('alert')).toContainText('Step 1');
+    await expect(panel.getByRole('alert')).toContainText('Missing local genome');
+    await button('Add workflow genomes').click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Workflow alpha.');
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(26);
+    await button('Replay research workflow').click();
+    await expect(status).toContainText('Verified 8 commands');
+    await expect(panel.getByTestId('workflow-view')).toContainText('dual · frame -2 · position 0 · CDS 1');
+    const fresh = await parseAnalysisRecord(await downloadText(page, () => button('Export workflow analysis').click()));
+    expect(fresh.resultId).toBe(firstCds.resultId);
+    expect(fresh.fields.codingSequences.value).toEqual(firstCds.fields.codingSequences.value);
+
+    const forged = parseCommandTape(saved);
+    (forged.commands[7].expected as { resultId: string }).resultId = '0'.repeat(64);
+    await loadTape(serializeCommandTape(forged));
+    await expect(button('Replay research workflow')).toBeEnabled();
+    await button('Replay research workflow').click();
+    await expect(panel.getByRole('alert')).toContainText('Step 8 (overlay.codonAdaptation)');
+    await expect(panel.getByRole('alert')).toContainText('differs');
+    await expect(panel.getByTestId('workflow-result')).toHaveCount(0);
+    const changed = parseCommandTape(saved);
+    const changedBundle = JSON.parse((changed.context as { bundle: string }).bundle) as { inputs: Array<{ name: string; text: string }> };
+    changedBundle.inputs[0].text = changedBundle.inputs[0].text.replace('acgtttggggggccatga', 'tcgtttggggggccatga');
+    changed.context = { bundle: JSON.stringify(changedBundle) };
+    await loadTape(serializeCommandTape(changed));
+    await expect(button('Replay research workflow')).toBeEnabled();
+    await button('Replay research workflow').click();
+    await expect(panel.getByRole('alert')).toContainText('Missing local genome');
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(26);
+
+    await loadTape(saved);
+    await expect(button('Replay research workflow')).toBeEnabled();
+    await button('Replay research workflow').click();
+    await expect(status).toContainText('Verified 8 commands');
+    const workerUrl = /research-workflow\.worker(?:-[^/]+\.js|\.ts)/;
+    let workerRequested = false;
+    const holdWorker = async () => {
+      workerRequested = false;
+      const gate = new Promise<void>(resolve => { releaseWorker = resolve; });
+      await page.route(workerUrl, async route => { workerRequested = true; await gate; await route.continue().catch(() => {}); });
+    };
+    await holdWorker();
+    await button('Replay research workflow').click();
+    await expect.poll(() => workerRequested).toBe(true);
+    await button('Pause workflow').click();
+    releaseWorker!();
+    await expect(status).toContainText('paused');
+    await expect(status).toContainText('2/8 replay commands complete');
+    await page.unroute(workerUrl);
+    await button('Resume workflow').click();
+    await expect(status).toContainText('Verified 8 commands');
+
+    const before = await page.evaluate(() => (window as unknown as { researchWorkerStats: () => { created: number; terminated: number } }).researchWorkerStats());
+    await holdWorker();
+    await button('Replay research workflow').click();
+    await expect.poll(() => workerRequested).toBe(true);
+    await button('Cancel workflow').click();
+    await expect(status).toContainText('Cancelled');
+    releaseWorker!();
+    await page.unroute(workerUrl);
+    await expect(button('Replay research workflow')).toBeEnabled();
+    await expect(status).toContainText('1/8 replay commands complete');
+    await expect(panel.getByTestId('workflow-result')).toHaveCount(0);
+    const after = await page.evaluate(() => (window as unknown as { researchWorkerStats: () => { created: number; terminated: number } }).researchWorkerStats());
+    expect(after.created).toBeGreaterThan(before.created);
+    expect(after.terminated).toBeGreaterThan(before.terminated);
+    expect(requests.some(request => request.includes('ACGTTTGGGGGGCCATGA') || request.includes('acgtttggggggccatga') || request.includes('Workflow alpha'))).toBe(false);
+    expect(pageErrors).toEqual([]);
+    await info.attach('workflow-verification-identities', { body: JSON.stringify({ commands: tape.commands.map(c => c.actionId), resultId: fresh.resultId, acceptedCdsCount: 1 }), contentType: 'application/json' });
+  } finally { releaseWorker?.(); await finalize(); }
 });

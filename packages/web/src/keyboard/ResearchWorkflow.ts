@@ -59,13 +59,18 @@ export class ResearchWorkflow {
         const historyTarget = this.historyTarget;
         const genome = await this.genome(view.contentId, signal);
         this.checkSelection(genome, view.geneId, false);
-        if (view.scrollPosition >= genome.sequence.length) throw new Error('Saved position lies outside the exact genome.');
+        const viewLength = view.viewMode === 'aa' ? Math.ceil(genome.sequence.length / 3) : genome.sequence.length;
+        if (view.scrollPosition >= viewLength) throw new Error('Saved position lies outside the exact genome view.');
         return { output: analysisJson({ view, sequenceSha256: genome.phage.localGenome!.sequenceSha256 }),
           apply: async activeSignal => {
             abort(activeSignal);
             const before = this.environment.currentView();
             await this.environment.applyView(structuredClone(view), activeSignal);
             abort(activeSignal);
+            const accepted = this.environment.currentView();
+            if (!accepted || !commandValuesEqual(analysisJson(accepted), analysisJson(view))) {
+              throw new Error('The explorer did not accept the exact saved view. No navigation command was recorded.');
+            }
             if (historyTarget !== null) this.historyIndex = historyTarget;
             else {
               const next = this.history.slice(0, this.historyIndex + 1);
@@ -142,7 +147,9 @@ export class ResearchWorkflow {
   start = (name: string): void => {
     if (!this.environment.genomes().length) throw new Error('Add local genomes before recording a workflow.');
     this.commands.start(name, { bundle: this.environment.bundle() });
-    this.expectedBundle = null;
+    this.expectedBundle = null; this.expectedGenomes = [];
+    this.history = []; this.historyIndex = -1;
+    this.publish({ view: null, result: null });
   };
   /** Import remains declarative. Adding bundled genomes is a separate, explicit user action. */
   load = (content: string): void => {

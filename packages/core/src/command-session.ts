@@ -157,7 +157,7 @@ export class CommandSession {
   };
   private async gate(operation: Operation): Promise<void> {
     check(operation.controller.signal);
-    if (operation.paused) await cancellable(new Promise<void>(resolve => { operation.wake = resolve; }), operation.controller.signal);
+    while (operation.paused) await cancellable(new Promise<void>(resolve => { operation.wake = resolve; }), operation.controller.signal);
     check(operation.controller.signal);
   }
   private async prepare(command: Pick<RecordedCommand, 'actionId' | 'parameters'>, operation: Operation): Promise<PreparedCommand> {

@@ -174,3 +174,32 @@ it('failed and cancelled private input review preserve the previously accepted t
   await assert.rejects(f.workflow.loadAndReview(tape, new AbortController().signal), /invalid genome/);
   assert.strictEqual(f.workflow.getSnapshot().result, previous);
 });
+
+
+it('starting a new recording clears prior results and navigation history without altering the explorer', async () => {
+  const f = fixture();
+  await navigate(f.workflow, 2); await codons(f.workflow); f.workflow.commands.stop();
+  assert.ok(f.workflow.getSnapshot().result);
+  f.workflow.start('New experiment');
+  assert.equal(f.workflow.getSnapshot().result, null);
+  assert.equal(f.workflow.getSnapshot().undoAvailable, false);
+  assert.equal(f.workflow.commands.getSnapshot().tape.commands.length, 0);
+  assert.equal(f.view().scrollPosition, 2);
+});
+
+it('a host that ignores a saved view cannot record or verify successful navigation', async () => {
+  const f = fixture();
+  f.env.applyView = async () => {};
+  await assert.rejects(navigate(f.workflow, 2), /did not accept/);
+  assert.equal(f.workflow.commands.getSnapshot().tape.commands.length, 0);
+  assert.equal(f.workflow.getSnapshot().view, null);
+  assert.equal(f.workflow.getSnapshot().undoAvailable, false);
+});
+
+
+it('amino-acid view bounds use residue positions rather than nucleotide positions', async () => {
+  const f = fixture();
+  await assert.rejects(f.workflow.commands.dispatch(ids.view, analysisJson({ ...initialView, viewMode: 'aa', scrollPosition: 6 })), /outside/);
+  await f.workflow.commands.dispatch(ids.view, analysisJson({ ...initialView, viewMode: 'aa', scrollPosition: 5 }));
+  assert.equal(f.view().scrollPosition, 5);
+});

@@ -215,3 +215,19 @@ describe('declarative command sessions', () => {
     await task;
   });
 });
+
+
+it('a rapid resume then pause still blocks the next unstarted command', async () => {
+  const f = await record();
+  const task = f.session.replay();
+  f.session.pause();
+  await flush();
+  f.session.resume();
+  f.session.pause();
+  await flush();
+  assert.deepEqual(f.applied, [10, 20]);
+  assert.equal(f.session.getSnapshot().mode, 'paused');
+  f.session.resume();
+  await task;
+  assert.deepEqual(f.applied, [10, 20, 10, 20]);
+});

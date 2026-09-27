@@ -26,7 +26,7 @@ export function runResearchWorker(request: ResearchWorkerRequest, signal: AbortS
       else if (event.data.type === 'error') finish(undefined, new Error(event.data.message));
       else finish(undefined, new Error('Unexpected research worker response.'));
     };
-    worker.onerror = () => finish(undefined, new Error('Research worker failed.'));
+    worker.onerror = event => { event.preventDefault(); finish(undefined, new Error('Research worker failed.')); };
     worker.onmessageerror = () => finish(undefined, new Error('Research worker response could not be read.'));
     try { if (signal.aborted) cancel(); else worker.postMessage(request); } catch (cause) { finish(undefined, cause instanceof Error ? cause : new Error(String(cause))); }
   });
@@ -68,6 +68,9 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       try {
         state.setViewMode(view.viewMode); state.setReadingFrame(view.readingFrame); state.setSelectedGeneId(view.geneId); state.setScrollPosition(view.scrollPosition);
       } finally { navigating = false; }
+      // Let React/the renderer accept the view before marking a command done.
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
     },
     repeats: async (genome, options, signal) => {
       const result = await getOrchestrator().runAnalysisWithSharedBuffer(genome.phage.id, genome.sequence, 'repeats', options,
@@ -128,7 +131,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const active = state.mode === 'recording';
   const invoke = (action: () => void | Promise<void>) => {
     setError(null);
-    void Promise.resolve().then(action).catch(cause => { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(cause instanceof Error ? cause.message : String(cause)); });
+    void Promise.resolve().then(action).catch(cause => { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(workflow.commands.getSnapshot().error ?? (cause instanceof Error ? cause.message : String(cause))); });
   };
   const cancel = () => { inputOperation.current?.abort(); inputOperation.current = null; setInputBusy(false); workflow.commands.cancel(); };
   const load = async (file: File | undefined) => {
@@ -161,10 +164,10 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         {genomes.map(g => <option key={g.phage.id} value={g.phage.localGenome!.contentId}>{g.phage.name}</option>)}</select>
       <label htmlFor="workflow-cds">Workflow CDS</label><select id="workflow-cds" value={gene} onChange={event => { setGene(event.target.value); const g = genome?.phage.genes.find(g => g.id === Number(event.target.value)); if (g) setPosition(String(mode === 'aa' ? Math.floor(g.startPos / 3) : g.startPos)); }}>
         <option value="all">All supported CDS</option>{genome?.phage.genes.filter(g => g.type === 'CDS').map(g => <option key={g.id} value={g.id}>{g.locusTag ?? g.name ?? `CDS ${g.id}`} · {g.qualifiers?._location ? String(g.qualifiers._location) : `${g.startPos}–${g.endPos}`}</option>)}</select>
-      <label>Workflow position (0-based view coordinate) <input type="number" min={0} max={Math.max(0, (genome?.sequence.length ?? 1) - 1)} value={position} onChange={event => setPosition(event.target.value)} /></label>
+      <label>Workflow position (0-based view coordinate) <input type="number" min={0} max={Math.max(0, (mode === 'aa' ? Math.ceil((genome?.sequence.length ?? 1) / 3) : genome?.sequence.length ?? 1) - 1)} value={position} onChange={event => setPosition(event.target.value)} /></label>
       <p>Positions are base offsets in DNA/dual views and residue offsets in amino-acid view. CDS extraction uses the recorded annotation, independently of the displayed frame.</p>
-      <label>Workflow view mode <select value={mode} onChange={event => setMode(event.target.value as ResearchView['viewMode'])}><option value="dna">DNA</option><option value="aa">Amino acids</option><option value="dual">Dual</option></select></label>
-      <label>Workflow reading frame <select value={frame} onChange={event => setFrame(Number(event.target.value) as ResearchView['readingFrame'])}>{[0, 1, 2, -1, -2, -3].map(value => <option key={value} value={value}>{value}</option>)}</select></label>
+      <label htmlFor="workflow-mode">Workflow view mode</label><select id="workflow-mode" value={mode} onChange={event => setMode(event.target.value as ResearchView['viewMode'])}><option value="dna">DNA</option><option value="aa">Amino acids</option><option value="dual">Dual</option></select>
+      <label htmlFor="workflow-frame">Workflow reading frame</label><select id="workflow-frame" value={frame} onChange={event => setFrame(Number(event.target.value) as ResearchView['readingFrame'])}>{[0, 1, 2, -1, -2, -3].map(value => <option key={value} value={value}>{value}</option>)}</select>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.NavGoto, analysisJson(view())))}>Apply and record view</button>
       <label>Workflow minimum repeat arm <input type="number" min={4} max={256} value={minimum} onChange={event => setMinimum(event.target.value)} /></label>
       <label>Workflow maximum repeat gap <input type="number" min={0} max={100000} value={gap} onChange={event => setGap(event.target.value)} /></label>
