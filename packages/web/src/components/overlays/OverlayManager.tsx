@@ -123,7 +123,7 @@ const GpuWasmBenchmarkOverlay = lazy(() => import('./GpuWasmBenchmarkOverlay').t
 const NicheNetworkOverlay = lazy(() => import('./NicheNetworkOverlay').then(m => ({ default: m.NicheNetworkOverlay })));
 
 // Phylodynamic trajectory analysis
-const PhylodynamicsOverlay = lazy(() => import('./PhylodynamicsOverlay').then(m => ({ default: m.PhylodynamicsOverlay })));
+const PhylodynamicsOverlay = lazy(() => import('./DatedPhylogenyOverlay').then(m => ({ default: m.DatedPhylogenyOverlay })));
 
 // Environmental provenance analysis
 const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvenanceOverlay').then(m => ({ default: m.EnvironmentalProvenanceOverlay })));
@@ -356,7 +356,7 @@ function renderLazyOverlay(
   currentPhage: PhageFull | null,
   onSelectPhage: (index: number) => Promise<void>
 ): React.ReactElement | null {
-  if (currentPhage?.localGenome && (id === 'phylodynamics' || id === 'environmentalProvenance')) {
+  if (currentPhage?.localGenome && id === 'environmentalProvenance') {
     return <Overlay id={id} title={formatOverlayTitle(id)} size="lg"><p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p></Overlay>;
   }
   switch (id) {
