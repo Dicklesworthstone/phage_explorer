@@ -6,6 +6,7 @@ import { useTheme } from '../hooks/useTheme';
 import { TimeControls, ParameterPanel } from './simulations';
 import { useSimulation } from '../hooks/useSimulation';
 import { downloadString } from '../utils/export';
+import { GrowthInferencePanel } from './simulations/GrowthInferencePanel';
 import type { SimulationId, SimState } from '../workers/types';
 import {
   LysogenyVisualizer,
@@ -88,6 +89,7 @@ export default function SimulationView(): React.ReactElement | null {
   const autoStartedRef = useRef(false);
   const [vizSize, setVizSize] = useState({ width: 540, height: 300 });
   const [seedInput, setSeedInput] = useState('');
+  const [fitRequested, setFitRequested] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const fileActionRef = useRef(0);
 
@@ -97,10 +99,12 @@ export default function SimulationView(): React.ReactElement | null {
     return normalizeSimId(fromOverlay);
   }, [overlayData]);
   const isOpenSimView = isOpen('simulationView');
+  const showFit = fitRequested && simId === 'infection-kinetics';
+  useEffect(() => { setFitRequested(false); }, [simId]);
   const {
     state, isRunning, speed, avgStepMs, parameters, parameterValues,
     metadata, controls, isLoading, isStepping, error, seed, completedSteps, replayProgress, replayMessage,
-  } = useSimulation(simId, isOpenSimView);
+  } = useSimulation(simId, isOpenSimView && !showFit);
   const controlsRef = useRef(controls);
   const openRef = useRef(isOpenSimView);
   controlsRef.current = controls;
@@ -124,18 +128,18 @@ export default function SimulationView(): React.ReactElement | null {
     const ro = new ResizeObserver(updateSize);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [isOpenSimView]);
+  }, [isOpenSimView, showFit]);
 
   // A new selection gets a fresh session. Parameter edits and same-seed resets
   // deliberately stay paused; errors/cancellation must not trigger retry loops.
   useEffect(() => { autoStartedRef.current = false; }, [controls, isOpenSimView]);
   useEffect(() => {
     if (replayMessage) { autoStartedRef.current = true; return; }
-    if (isOpenSimView && state && !isRunning && !isLoading && !error && !autoStartedRef.current) {
+    if (!showFit && isOpenSimView && state && !isRunning && !isLoading && !error && !autoStartedRef.current) {
       autoStartedRef.current = true;
       controls.play();
     }
-  }, [controls, error, isLoading, isOpenSimView, isRunning, state, replayMessage]);
+  }, [controls, error, isLoading, isOpenSimView, isRunning, state, replayMessage, showFit]);
 
   if (!isOpenSimView) return null;
   const seedValue = Number(seedInput);
@@ -144,11 +148,15 @@ export default function SimulationView(): React.ReactElement | null {
   return (
     <Overlay
       id="simulationView"
-      title={`SIMULATION: ${metadata?.name ?? simId}`}
+      title={showFit ? 'EXPERIMENTAL GROWTH INFERENCE' : `SIMULATION: ${metadata?.name ?? simId}`}
       size="xl"
       onClose={() => close('simulationView')}
     >
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
+      {simId === 'infection-kinetics' && <div style={{ display: 'flex', gap: '.75rem', marginBottom: '1rem' }}>
+        <button type="button" aria-pressed={!showFit} onClick={() => setFitRequested(false)}>Forward simulation</button>
+        <button type="button" aria-pressed={showFit} onClick={() => setFitRequested(true)}>Experimental growth fit</button>
+      </div>}
+      {showFit ? <GrowthInferencePanel /> : <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
         <div
           style={{
             border: `1px solid ${colors.borderLight}`,
@@ -266,7 +274,7 @@ export default function SimulationView(): React.ReactElement | null {
             </pre>
           </div>
         </div>
-      </div>
+      </div>}
     </Overlay>
   );
 }
