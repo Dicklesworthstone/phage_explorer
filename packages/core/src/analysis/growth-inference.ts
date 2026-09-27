@@ -265,14 +265,15 @@ function eigenvalues(matrix: number[][]): number[] {
   return a.map((row, i) => Math.max(0, row[i])).sort((a, b) => b - a);
 }
 
-export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions, progress: (message: string) => void = () => {}): GrowthFitResult {
+export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions, progress: (message: string) => void = () => {}, sharedBudget?: { steps: number }): GrowthFitResult {
   const dataset = validateGrowthDataset(input), config = resolveGrowthOptions(options), names = config.freeParameters;
   const n = names.length, lower = names.map(k => Math.log(GROWTH_BOUNDS[k][0])), upper = names.map(k => Math.log(GROWTH_BOUNDS[k][1]));
   const clip = (v: number[]) => v.map((x, i) => Math.max(lower[i], Math.min(upper[i], x)));
   const decode = (v: number[]) => ({ ...config.initial, ...Object.fromEntries(names.map((key, i) =>
     [key, Math.max(GROWTH_BOUNDS[key][0], Math.min(GROWTH_BOUNDS[key][1], Math.exp(v[i])))])) });
   let evaluations = 0, rejectedEvaluations = 0;
-  const budget = { steps: 0 };
+  // A profile may share the same finite integration budget across nuisance refits.
+  const budget = sharedBudget ?? { steps: 0 };
   const evaluate = (v: number[]): { r: number[]; cost: number } => {
     evaluations++;
     try {
