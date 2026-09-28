@@ -118,6 +118,11 @@ async function warnIfShadowedDatabase(inUse: string): Promise<void> {
 
 async function main() {
   // Headless scientific workflows must not require a catalog or initialize Ink.
+  if (Bun.argv[2] === 'host-metabolism') {
+    const { runHostMetabolismProcess } = await import('./commands/host-metabolism');
+    await runHostMetabolismProcess(Bun.argv.slice(3));
+    return;
+  }
   if (Bun.argv[2] === 'abundance') {
     if (Bun.argv[3] === 'view') {
       const { launchAbundanceView } = await import('./components/AbundanceView');
@@ -146,7 +151,9 @@ async function main() {
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
       'The destination must not exist. Full analysis-action replay is not included.\n\n' +
       'Local community analysis: phage-explorer abundance view|inspect|analyze|replay FILE\n' +
-      'See phage-explorer abundance --help for metadata, parameters, stdin and exports.\n');
+      'See phage-explorer abundance --help for metadata, parameters, stdin and exports.\n' +
+      'Host-model scenarios: phage-explorer host-metabolism reference|inspect|analyze|replay INPUT\n' +
+      'See phage-explorer host-metabolism --help for published references and offline replay.\n');
     return;
   }
   if (!values.import && (values['no-catalog'] || values['export-bundle'] || values['allow-accession-collisions'])) {
@@ -182,7 +189,7 @@ async function main() {
     console.error('  - If you installed via install.sh: re-run with `--with-database` to download it.');
     console.error(`  - Or place a database file at: ${getDefaultDbPath()}`);
     console.error('  - If working from source: run `bun run build:db` from the repo root.');
-    console.error('  - Or set `PHAGE_EXPLORER_DB_PATH` to point to your `phage.db`.');
+    console.error('  - Or set PHAGE_EXPLORER_DB_PATH to point to your `phage.db`.');
     process.exit(1);
   }
 

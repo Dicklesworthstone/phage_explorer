@@ -12,6 +12,10 @@ on:
       - 'packages/web/src/components/overlays/HostMetabolismPanel.tsx'
       - 'packages/web/src/main.tsx'
       - 'packages/web/e2e/host-metabolism.e2e.ts'
+      - 'packages/tui/src/commands/host-metabolism*'
+      - 'packages/tui/src/workers/host-metabolism-worker.ts'
+      - 'packages/tui/src/index.tsx'
+      - 'scripts/build.ts'
       - 'scripts/verify-host-metabolism-reference.ts'
       - '.github/workflows/host-metabolism.yml'
       - 'bun.lock'
@@ -31,7 +35,11 @@ jobs:
           bun-version: '1.4.0'
       - run: bun install --frozen-lockfile
       - name: Verify model and session tests
-        run: bun test packages/core/src/analysis/host-metabolism.test.ts packages/core/src/analysis/host-metabolism-reference.test.ts packages/web/src/workers/HostMetabolismSession.test.ts
+        run: bun test --timeout 30000 packages/core/src/analysis/host-metabolism.test.ts packages/core/src/analysis/host-metabolism-reference.test.ts packages/web/src/workers/HostMetabolismSession.test.ts packages/tui/src/commands/host-metabolism.test.ts
+      - name: Build and exercise the compiled terminal worker without a catalog
+        run: |
+          bun run build
+          PHAGE_HOST_TEST_BINARY="$PWD/dist/phage-explorer" bun test --timeout 30000 packages/tui/src/commands/host-metabolism.test.ts
       - name: Build the real web application
         run: bun run build:web
       - name: Install Chromium
