@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { OverlayProvider } from './components/overlays/OverlayProvider';
@@ -17,6 +17,10 @@ import './styles/selected-gene-dock.css';
 import './styles/selected-gene-desktop.css';
 import { queryClient } from './queryClient';
 import { initializeStorePersistence } from './store';
+
+// This private workspace does not need the catalog database or selection bridge.
+const HostMetabolismPanel = lazy(() => import('./components/overlays/HostMetabolismPanel').then(module => ({ default: module.HostMetabolismPanel })));
+const hostWorkspace = new URLSearchParams(window.location.search).get('workspace') === 'host-metabolism';
 
 function ServiceWorkerUpdates(): null {
   const { toast } = useToast();
@@ -162,11 +166,20 @@ if (container) {
             <ToastProvider>
               <ServiceWorkerUpdates />
               <OverlayProvider>
-                <App />
-                <GeneSelectionBridge />
-                <SelectedGeneLifecycleController />
-                <SelectedGeneDock />
-                <ShareStateController />
+                {hostWorkspace ? (
+                  <main aria-label="Host metabolism workspace" style={{ height: 'var(--visual-viewport-height, 100dvh)', overflowY: 'auto', padding: '1.5rem', boxSizing: 'border-box' }}>
+                    <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+                      <a href={window.location.pathname}>Return to genome explorer (export your model first)</a>
+                      <Suspense fallback={<p role="status">Loading the local host-model workspace…</p>}><HostMetabolismPanel /></Suspense>
+                    </div>
+                  </main>
+                ) : <>
+                  <App />
+                  <GeneSelectionBridge />
+                  <SelectedGeneLifecycleController />
+                  <SelectedGeneDock />
+                  <ShareStateController />
+                </>}
               </OverlayProvider>
             </ToastProvider>
           </ScrollProvider>

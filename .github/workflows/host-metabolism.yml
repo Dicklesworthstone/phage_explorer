@@ -1,0 +1,48 @@
+name: Host metabolism workflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/src/analysis/host-metabolism*'
+      - 'packages/core/src/analysis/amg-flux.ts'
+      - 'packages/core/src/analysis-result.ts'
+      - 'packages/web/src/workers/HostMetabolismSession*'
+      - 'packages/web/src/workers/host-metabolism.worker.ts'
+      - 'packages/web/src/components/overlays/HostMetabolismPanel.tsx'
+      - 'packages/web/src/main.tsx'
+      - 'packages/web/e2e/host-metabolism.e2e.ts'
+      - '.github/workflows/host-metabolism.yml'
+      - 'bun.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-metabolism:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun install --frozen-lockfile
+      - name: Verify model and session tests
+        run: bun test packages/core/src/analysis/host-metabolism.test.ts packages/web/src/workers/HostMetabolismSession.test.ts
+      - name: Build the real web application
+        run: bun run build:web
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Verify model import, computation, export and replay
+        working-directory: packages/web
+        run: bunx playwright test --project=chromium --workers=1 e2e/host-metabolism.e2e.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: host-metabolism-browser-report
+          path: |
+            packages/web/playwright-report/
+            packages/web/test-results/
+          retention-days: 7
