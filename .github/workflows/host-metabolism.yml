@@ -12,6 +12,7 @@ on:
       - 'packages/web/src/components/overlays/HostMetabolismPanel.tsx'
       - 'packages/web/src/main.tsx'
       - 'packages/web/e2e/host-metabolism.e2e.ts'
+      - 'scripts/verify-host-metabolism-reference.ts'
       - '.github/workflows/host-metabolism.yml'
       - 'bun.lock'
   workflow_dispatch:
@@ -30,7 +31,7 @@ jobs:
           bun-version: '1.4.0'
       - run: bun install --frozen-lockfile
       - name: Verify model and session tests
-        run: bun test packages/core/src/analysis/host-metabolism.test.ts packages/web/src/workers/HostMetabolismSession.test.ts
+        run: bun test packages/core/src/analysis/host-metabolism.test.ts packages/core/src/analysis/host-metabolism-reference.test.ts packages/web/src/workers/HostMetabolismSession.test.ts
       - name: Build the real web application
         run: bun run build:web
       - name: Install Chromium
@@ -45,4 +46,60 @@ jobs:
           path: |
             packages/web/playwright-report/
             packages/web/test-results/
+          retention-days: 7
+
+  published-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun install --frozen-lockfile
+      - name: Download the pinned published model and verify real scenarios
+        run: bun scripts/verify-host-metabolism-reference.ts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install scipy==1.14.1
+      - name: Independently compare objectives and flux ranges with HiGHS
+        shell: python
+        run: |
+          import json
+          import numpy as np
+          from scipy.optimize import linprog
+          with open('.host-reference-verification/evidence.json') as f:
+              data = json.load(f)
+          model, result = data['input']['cobra'], data['result']
+          reactions = model['reactions']
+          ids = [r['id'] for r in reactions]
+          S = np.array([[r['metabolites'].get(m['id'], 0) for r in reactions] for m in model['metabolites']])
+          c = np.array([r.get('objective_coefficient', 0) for r in reactions])
+          for name in ['baseline', 'perturbed']:
+              scenario = result[name]
+              edits = {} if name == 'baseline' else {b['reactionId']: b for b in result['options']['changes']}
+              bounds = [(edits[r['id']]['lowerBound'], edits[r['id']]['upperBound']) if r['id'] in edits else (r['lower_bound'], r['upper_bound']) for r in reactions]
+              assert [(b['lowerBound'], b['upperBound']) for b in scenario['bounds']] == bounds
+              optimum = linprog(-c, A_eq=S, b_eq=np.zeros(len(S)), bounds=bounds, method='highs')
+              assert optimum.success, optimum.message
+              assert abs(-optimum.fun - scenario['objective']) < 1e-6
+              v = np.array([scenario['fluxes'][i] for i in ids])
+              assert np.max(np.abs(S @ v)) < 1e-6
+              assert abs(c @ v - scenario['objective']) < 1e-6
+              assert all(lo - 1e-6 <= x <= hi + 1e-6 for x, (lo, hi) in zip(v, bounds))
+              floor = scenario['objectiveFloor']
+              for flux_range in scenario['ranges']:
+                  unit = np.zeros(len(ids)); unit[ids.index(flux_range['reactionId'])] = 1
+                  for endpoint, sign in [('minimum', 1), ('maximum', -1)]:
+                      solved = linprog(sign * unit, A_eq=S, b_eq=np.zeros(len(S)), A_ub=-c.reshape(1,-1), b_ub=[-floor], bounds=bounds, method='highs')
+                      assert solved.success, solved.message
+                      assert abs(sign * solved.fun - flux_range[endpoint]['value']) < 1e-5
+              print(name, 'HiGHS objective', -optimum.fun, 'all selected flux ranges agree')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-host-reference-evidence
+          path: .host-reference-verification/
+          include-hidden-files: true
           retention-days: 7
