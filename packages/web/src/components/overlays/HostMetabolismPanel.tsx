@@ -4,6 +4,7 @@ import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { HostMetabolismSession, type HostMetabolismRequest } from '../../workers/HostMetabolismSession';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
+import { HostGeneKnockoutPanel } from './HostGeneKnockoutPanel';
 
 const SOURCE_LABELS: Record<Exclude<keyof HostModelSource, 'kind'>, string> = {
   name: 'Host model name', version: 'Host model version', organism: 'Host organism', strain: 'Host strain',
@@ -141,6 +142,7 @@ export function HostMetabolismPanel(): React.ReactElement {
       <div><button type="button" disabled={busy} onClick={() => save(false)}>Export accepted host model</button>{' '}
         <button type="button" disabled={busy || !accepted.record} onClick={() => save(true)}>Export accepted host experiment</button></div>
     </>}
+    {accepted && <HostGeneKnockoutPanel accepted={accepted} session={session} busy={busy} />}
     {result && accepted?.record && <section data-testid="host-model-result" data-result-id={accepted.record.resultId}>
       <h4>Conditional model results</h4>
       <p data-testid="host-model-objectives">Baseline: {result.baseline.status} / {number(result.baseline.objective)}. Scenario: {result.perturbed?.status ?? 'Not requested'} / {number(result.perturbed?.objective)}.

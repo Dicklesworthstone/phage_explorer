@@ -2,14 +2,16 @@
 import { analyzeHostMetabolism, createHostFluxRecord, parseCobraHostModel, replayHostFluxRecord,
   resolveHostFluxOptions, validateHostModelInput, type HostFluxOptions, type HostFluxResult,
   type HostModelInput, type HostModelSource, type HostNetwork } from '../../../core/src/analysis/host-metabolism';
-import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import { parseAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
+import { analyzeHostGeneKnockouts, createHostGeneRecord, replayHostGeneRecord, HOST_KNOCKOUT_METHOD, type HostGeneResult } from '../../../core/src/analysis/host-gene-knockout';
 
 export type HostMetabolismRequest =
   | { kind: 'import'; content: string }
   | { kind: 'prepare'; content: string; source: HostModelSource; medium: HostModelInput['medium'] }
-  | { kind: 'analyze'; input: HostModelInput; options: Partial<HostFluxOptions> };
+  | { kind: 'analyze'; input: HostModelInput; options: Partial<HostFluxOptions> }
+  | { kind: 'knockout'; input: HostModelInput; options: unknown };
 export interface HostMetabolismWork { input: HostModelInput; network: HostNetwork; options: HostFluxOptions;
-  result: HostFluxResult | null; record: AnalysisRecord | null; verified: boolean }
+  result: HostFluxResult | null; record: AnalysisRecord | null; verified: boolean; geneResult?: HostGeneResult }
 export type HostMetabolismMessage = { kind: 'progress'; phase: string } | { kind: 'result'; value: HostMetabolismWork } | { kind: 'error'; message: string };
 
 export async function executeHostMetabolismRequest(request: HostMetabolismRequest, progress: (phase: string) => void = () => {}): Promise<HostMetabolismWork> {
@@ -23,6 +25,12 @@ export async function executeHostMetabolismRequest(request: HostMetabolismReques
     const decoded: unknown = JSON.parse(content);
     if (request.kind === 'import' && decoded && typeof decoded === 'object' && 'format' in decoded && decoded.format === 'phage-explorer-analysis') {
       progress('Verifying saved identities and recomputing model scenarios');
+      const saved = await parseAnalysisRecord(content);
+      if (saved.method.id === HOST_KNOCKOUT_METHOD.id) {
+        const replay = await replayHostGeneRecord(content, progress);
+        return { input: replay.input, network: parseCobraHostModel(replay.input.cobra), options: resolveHostFluxOptions(),
+          result: null, geneResult: replay.result, record: replay.record, verified: true };
+      }
       const replay = await replayHostFluxRecord(content, progress);
       return { ...replay, network: parseCobraHostModel(replay.input.cobra), options: replay.result.options, verified: true };
     }
@@ -34,6 +42,11 @@ export async function executeHostMetabolismRequest(request: HostMetabolismReques
     progress('Binding source model, medium, mappings and numerical results');
     return { input, network: parseCobraHostModel(input.cobra), options: result.options, result,
       record: await createHostFluxRecord(input, result), verified: false };
+  } else if (request.kind === 'knockout') {
+    input = validateHostModelInput(request.input);
+    const geneResult = analyzeHostGeneKnockouts(input, request.options, progress);
+    return { input, network: parseCobraHostModel(input.cobra), options: resolveHostFluxOptions(),
+      result: null, geneResult, record: await createHostGeneRecord(input, geneResult), verified: false };
   } else throw new Error('Unsupported host-model operation.');
   return { input, network: parseCobraHostModel(input.cobra), options: resolveHostFluxOptions(), result: null, record: null, verified: false };
 }
@@ -98,7 +111,7 @@ export class HostMetabolismSession {
       });
       if (current()) this.publish({ accepted: value, notice: value.verified
         ? 'Verified host-model replay: fresh scenarios, flux ranges and complete evidence identity match.'
-        : value.result ? 'Host-model scenarios computed. Inspect each solver status and the recorded assumptions.' : 'Host model loaded. Review source and medium, then run the model.' });
+        : value.record ? 'Host-model scenarios computed. Inspect each solver status and the recorded assumptions.' : 'Host model loaded. Review source and medium, then run the model.' });
     } catch (cause) { if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) }); }
     finally { if (current()) { this.owner = null; this.publish({ busy: false, phase: '' }); } }
   };

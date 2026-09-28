@@ -5,14 +5,19 @@ on:
     branches: [main]
     paths:
       - 'packages/core/src/analysis/host-metabolism*'
+      - 'packages/core/src/analysis/host-gene-knockout*'
       - 'packages/core/src/analysis/amg-flux.ts'
       - 'packages/core/src/analysis-result.ts'
       - 'packages/web/src/workers/HostMetabolismSession*'
+      - 'packages/web/src/workers/HostGeneWorkflow.test.ts'
       - 'packages/web/src/workers/host-metabolism.worker.ts'
       - 'packages/web/src/components/overlays/HostMetabolismPanel.tsx'
+      - 'packages/web/src/components/overlays/HostGeneKnockoutPanel.tsx'
       - 'packages/web/src/main.tsx'
       - 'packages/web/e2e/host-metabolism.e2e.ts'
+      - 'packages/web/e2e/host-gene-knockout.e2e.ts'
       - 'packages/tui/src/commands/host-metabolism*'
+      - 'packages/tui/src/commands/host-gene-knockout*'
       - 'packages/tui/src/workers/host-metabolism-worker.ts'
       - 'packages/tui/src/index.tsx'
       - 'scripts/build.ts'
@@ -35,18 +40,18 @@ jobs:
           bun-version: '1.4.0'
       - run: bun install --frozen-lockfile
       - name: Verify model and session tests
-        run: bun test --timeout 30000 packages/core/src/analysis/host-metabolism.test.ts packages/core/src/analysis/host-metabolism-reference.test.ts packages/web/src/workers/HostMetabolismSession.test.ts packages/tui/src/commands/host-metabolism.test.ts
+        run: bun test --timeout 30000 packages/core/src/analysis/host-metabolism.test.ts packages/core/src/analysis/host-metabolism-reference.test.ts packages/core/src/analysis/host-gene-knockout.test.ts packages/web/src/workers/HostMetabolismSession.test.ts packages/web/src/workers/HostGeneWorkflow.test.ts packages/tui/src/commands/host-metabolism.test.ts packages/tui/src/commands/host-gene-knockout.test.ts packages/tui/src/commands/host-gene-knockout.native.test.ts
       - name: Build and exercise the compiled terminal worker without a catalog
         run: |
           bun run build
-          PHAGE_HOST_TEST_BINARY="$PWD/dist/phage-explorer" bun test --timeout 30000 packages/tui/src/commands/host-metabolism.test.ts
+          PHAGE_HOST_TEST_BINARY="$PWD/dist/phage-explorer" bun test --timeout 30000 packages/tui/src/commands/host-metabolism.test.ts packages/tui/src/commands/host-gene-knockout.native.test.ts
       - name: Build the real web application
         run: bun run build:web
       - name: Install Chromium
         run: bunx playwright install --with-deps chromium
       - name: Verify model import, computation, export and replay
         working-directory: packages/web
-        run: bunx playwright test --project=chromium --workers=1 e2e/host-metabolism.e2e.ts
+        run: bunx playwright test --project=chromium --workers=1 e2e/host-metabolism.e2e.ts e2e/host-gene-knockout.e2e.ts
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
