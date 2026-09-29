@@ -11,6 +11,8 @@ import { useOverlay } from './OverlayProvider';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { StrictClockPanel } from './StrictClockPanel';
 
+const AncestralReconstructionPanel = lazy(() => import('./AncestralReconstructionPanel').then(module => ({default:module.AncestralReconstructionPanel})));
+
 const CatalogPhylodynamics = lazy(() => import('./PhylodynamicsOverlay').then(module => ({default:module.PhylodynamicsOverlay})));
 
 /** Retain the NCBI/Mash tree workflow, but require an explicit transition into external search. */
@@ -51,6 +53,7 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
   const [method,setMethod]=useState(''),[rooting,setRooting]=useState(''),[alignment,setAlignment]=useState(''),[confirmed,setConfirmed]=useState(false);
   const [permutations,setPermutations]=useState('999'),[seed,setSeed]=useState('42');
   const [scheme,setScheme]=useState<TemporalOptions['permutationScheme']>('unrestricted'),[excluded,setExcluded]=useState<string[]>([]);
+  const [ancestralOpen,setAncestralOpen]=useState(false);
   const [exportError,setExportError]=useState<string|null>(null),[page,setPage]=useState(0);
   useEffect(()=>{session.activate();return session.deactivate;},[session]);
   useEffect(()=>{
@@ -74,6 +77,10 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
     <section aria-label="Private dated-tree diagnostics" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
       <p>Inspect collection dates against a rooted, date-independent phylogram. Input stays local; this cohort is independent of the selected catalog genome.
         Exploratory diagnostics and optional conditional strict-clock dating are separate operations. No population skyline or selection estimate is generated. Export before closing this workspace.</p>
+      <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>setAncestralOpen(!ancestralOpen)}>
+        {ancestralOpen?'Close ancestral reconstruction (export first)':'Open ancestral nucleotide reconstruction'}
+      </button>
+      {ancestralOpen&&<Suspense fallback={<p>Loading alignment-based reconstruction…</p>}><AncestralReconstructionPanel temporalInput={accepted?.dataset}/></Suspense>}
       {localGenome&&<p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p>}
       <details><summary>Existing catalog search and method scope</summary>
         <p>The existing NCBI sequence search and alignment-free Mash/UPGMA tree viewer remain available separately. They do not supply this workflow's date-independent rooted phylogram.

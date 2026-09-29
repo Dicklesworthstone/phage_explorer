@@ -1,0 +1,65 @@
+name: Ancestral reconstruction workflow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/src/analysis/ancestral-reconstruction*'
+      - 'packages/core/src/analysis/temporal-signal*'
+      - 'packages/core/src/analysis-result.ts'
+      - 'packages/web/src/workers/AncestralSession*'
+      - 'packages/web/src/workers/ancestral.worker.ts'
+      - 'packages/web/src/components/overlays/AncestralReconstructionPanel.tsx'
+      - 'packages/web/src/components/overlays/DatedPhylogenyOverlay.tsx'
+      - 'packages/web/e2e/ancestral-reconstruction.e2e.ts'
+      - 'packages/web/e2e/temporal-signal.e2e.ts'
+      - '.github/workflows/ancestral-reconstruction.yml'
+      - 'bun.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ancestral-reconstruction:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun install --frozen-lockfile
+      - name: Check ancestral source and integration lint
+        run: >-
+          bunx eslint --max-warnings=0 --no-warn-ignored
+          packages/core/src/analysis/ancestral-reconstruction.ts
+          packages/core/src/analysis/ancestral-reconstruction.test.ts
+          packages/web/src/workers/AncestralSession.ts
+          packages/web/src/workers/AncestralSession.test.ts
+          packages/web/src/workers/AncestralSession.native.test.ts
+          packages/web/src/workers/ancestral.worker.ts
+          packages/web/src/components/overlays/AncestralReconstructionPanel.tsx
+          packages/web/src/components/overlays/DatedPhylogenyOverlay.tsx
+      - name: Verify independent likelihood oracles and actual native workers
+        run: >-
+          bun test --timeout 30000
+          packages/core/src/analysis/ancestral-reconstruction.test.ts
+          packages/core/src/analysis/temporal-signal.test.ts
+          packages/web/src/workers/AncestralSession.test.ts
+          packages/web/src/workers/AncestralSession.native.test.ts
+      - name: Build the real web application
+        run: bun run build:web
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Verify the new workflow and preserve dated-tree behavior
+        working-directory: packages/web
+        run: bunx playwright test --project=chromium --workers=1 e2e/ancestral-reconstruction.e2e.ts e2e/temporal-signal.e2e.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ancestral-reconstruction-browser-report
+          path: |
+            packages/web/playwright-report/
+            packages/web/test-results/
+          retention-days: 7

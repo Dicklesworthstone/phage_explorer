@@ -67,7 +67,7 @@ export function parseAncestralFasta(content: string): Array<{ id: string; sequen
     } else {
       if (!rows.length) throw new Error('Alignment sequences require FASTA headers.');
       const sequence = line.replace(/\s/g, '').toUpperCase();
-      if (!/^[ACGTRYSWKMBDHVN?\-]+$/.test(sequence)) throw new Error('Alignment must contain DNA IUPAC bases, ? or -; RNA/protein symbols are not silently converted.');
+      if (!/^[ACGTRYSWKMBDHVN?-]+$/.test(sequence)) throw new Error('Alignment must contain DNA IUPAC bases, ? or -; RNA/protein symbols are not silently converted.');
       length += sequence.length; cells += sequence.length;
       if (length > ANCESTRAL_LIMITS.columns || cells > ANCESTRAL_LIMITS.inputCells) throw new Error('Alignment exceeds the column/cell budget.');
       parts.push(sequence);
