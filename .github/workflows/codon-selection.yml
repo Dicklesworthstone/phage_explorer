@@ -1,0 +1,47 @@
+name: Aligned codon comparison
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/src/analysis/codon-selection*'
+      - 'packages/core/src/analysis-result.ts'
+      - 'packages/web/src/workers/CodonSelectionSession*'
+      - 'packages/web/src/workers/codon-selection.worker.ts'
+      - 'packages/web/src/components/overlays/CodonSelectionPanel.tsx'
+      - 'packages/web/src/components/overlays/SelectionPressureOverlay.tsx'
+      - 'packages/web/e2e/codon-selection.e2e.ts'
+      - '.github/workflows/codon-selection.yml'
+      - 'bun.lock'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codon-comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun install --frozen-lockfile
+      - name: Verify counting, exact replay and actual cancellable workers
+        run: bun test --timeout 30000 packages/core/src/analysis/codon-selection.test.ts packages/web/src/workers/CodonSelectionSession.test.ts packages/web/src/workers/CodonSelectionSession.native.test.ts
+      - name: Build the actual web application
+        run: bun run build:web
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+      - name: Verify private input, numerical results, exports and reload
+        working-directory: packages/web
+        run: bunx playwright test --project=chromium --workers=1 e2e/codon-selection.e2e.ts
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: codon-comparison-browser-report
+          path: |
+            packages/web/playwright-report/
+            packages/web/test-results/
+          retention-days: 7
