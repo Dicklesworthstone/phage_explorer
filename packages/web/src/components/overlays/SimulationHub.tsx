@@ -12,6 +12,7 @@ import { useHotkey } from '../../hooks';
 import { ActionIds, getKeyboardManager, type HotkeyDefinition } from '../../keyboard';
 import { detectShortcutPlatform, formatActionShortcutForSurface } from '../../keyboard/actionSurfaces';
 import { Overlay } from './Overlay';
+import { GrowthCurveExperimentPanel } from './GrowthCurveExperimentPanel';
 import { useIsTopOverlay, useOverlay } from './OverlayProvider';
 import { SIMULATION_METADATA } from '@phage-explorer/core';
 
@@ -129,9 +130,11 @@ export function SimulationHub(): React.ReactElement | null {
   const colors = theme.colors;
   const { isOpen, toggle, close, open, setOverlayData } = useOverlay();
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [experimentExpanded, setExperimentExpanded] = useState(false);
   const isTopmost = useIsTopOverlay('simulationHub');
   const overlayOpen = isOpen('simulationHub');
-  const shouldCaptureHotkeys = overlayOpen && isTopmost;
+  // Numeric fields and Enter in the experiment form must never launch a simulation.
+  const shouldCaptureHotkeys = overlayOpen && isTopmost && !experimentExpanded;
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const overlayHotkey = useMemo(
     () => formatActionShortcutForSurface(ActionIds.OverlaySimulationHub, shortcutPlatform) ?? undefined,
@@ -260,9 +263,19 @@ export function SimulationHub(): React.ReactElement | null {
       hotkey={overlayHotkey}
       size="xl"
     >
+      <details
+        open={experimentExpanded}
+        onToggle={event => setExperimentExpanded(event.currentTarget.open)}
+        style={{ border: `1px solid ${colors.borderLight}`, borderRadius: 4, marginBottom: '1rem' }}
+      >
+        <summary style={{ padding: '1rem', color: colors.accent, cursor: 'pointer', fontWeight: 'bold' }}>
+          Analyze measured growth curves — import, fit, replay, compare
+        </summary>
+        <GrowthCurveExperimentPanel />
+      </details>
       <div style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 400px), 1fr))',
         gap: '1rem',
       }}>
         {Object.entries(grouped).map(([category, sims]) => (
@@ -401,8 +414,7 @@ export function SimulationHub(): React.ReactElement | null {
           color: colors.textMuted,
           fontSize: '0.75rem',
         }}>
-          <span>↑↓ Navigate</span>
-          <span>Enter or number key to launch</span>
+          {experimentExpanded ? <span>Collapse the experiment panel to restore simulation shortcuts</span> : <><span>↑↓ Navigate</span><span>Enter or number key to launch</span></>}
           <span>ESC to close</span>
         </div>
         <div style={{
