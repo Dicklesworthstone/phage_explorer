@@ -1,5 +1,6 @@
 /**
- * Descriptive analysis of user-supplied, dilution-corrected one-step growth data.
+ * Descriptive analysis of dilution-corrected EXTRACELLULAR phage PFU/mL data.
+ * Total infective-center titers are a different assay and must not be mixed in.
  *
  * Fits a nonnegative baseline + linear rise + plateau by least squares. Knots
  * are restricted to observed times; this is NOT a mechanistic infection model.
@@ -24,6 +25,7 @@ export interface GrowthFitOptions {
 export interface GrowthCurveExperiment {
   schemaVersion: 'one-step-growth-v1';
   method: typeof GROWTH_CURVE_METHOD;
+  measurement: 'extracellular-pfu-per-ml';
   title: string;
   provenance: { kind: 'user-supplied' | 'synthetic'; source: string };
   observations: GrowthObservation[];
@@ -120,6 +122,7 @@ interface Design {
   fractions: number[];
   sum: number;
   squares: number;
+  variance: number;
 }
 interface Ramp { baseline: number; increase: number; loss: number; design: Design }
 
@@ -129,9 +132,11 @@ function designsFor(times: number[], counts: number[]): Design[] {
   for (let start = 1; start < times.length - 3; start++) {
     for (let end = start + 2; end < times.length - 1; end++) {
       const fractions = times.map(time => Math.max(0, Math.min(1, (time - times[start]) / (times[end] - times[start]))));
-      designs.push({ start: times[start], end: times[end], fractions,
-        sum: fractions.reduce((sum, f, i) => sum + f * counts[i], 0),
-        squares: fractions.reduce((sum, f, i) => sum + f * f * counts[i], 0) });
+      const sum = fractions.reduce((total, f, i) => total + f * counts[i], 0);
+      const mean = sum / counts.reduce((total, count) => total + count, 0);
+      designs.push({ start: times[start], end: times[end], fractions, sum,
+        squares: fractions.reduce((total, f, i) => total + f * f * counts[i], 0),
+        variance: fractions.reduce((total, f, i) => total + (f - mean) ** 2 * counts[i], 0) });
     }
   }
   return designs;
@@ -139,22 +144,30 @@ function designsFor(times: number[], counts: number[]): Design[] {
 
 /** Solve the two-variable nonnegative least-squares problem, including edges. */
 function fitRamp(values: number[], groups: number[], designs: Design[], timeCount: number): Ramp {
-  const sums = Array<number>(timeCount).fill(0);
-  let sumY = 0;
-  let sumYY = 0;
-  values.forEach((value, i) => { sums[groups[i]] += value; sumY += value; sumYY += value * value; });
   const n = values.length;
+  const meanY = values.reduce((sum, value) => sum + value, 0) / n;
+  const centeredSums = Array<number>(timeCount).fill(0);
+  let centeredYY = 0;
+  values.forEach((value, i) => {
+    const centered = value - meanY;
+    centeredSums[groups[i]] += centered;
+    centeredYY += centered * centered;
+  });
   let best: Ramp | undefined;
   for (const design of designs) {
-    const sumFY = design.fractions.reduce((sum, f, i) => sum + f * sums[i], 0);
-    const variance = design.squares - design.sum * design.sum / n;
-    const increase = (sumFY - design.sum * sumY / n) / variance;
-    const baseline = (sumY - increase * design.sum) / n;
-    const candidates = [[Math.max(0, sumY / n), 0], [0, Math.max(0, sumFY / design.squares)]];
+    const meanF = design.sum / n;
+    const covariance = design.fractions.reduce((sum, f, i) => sum + (f - meanF) * centeredSums[i], 0);
+    const increase = covariance / design.variance;
+    const baseline = meanY - increase * meanF;
+    const sumFY = covariance + meanY * design.sum;
+    const candidates = [[Math.max(0, meanY), 0], [0, Math.max(0, sumFY / design.squares)]];
     if (baseline >= 0 && increase >= 0) candidates.push([baseline, increase]);
     for (const [a, b] of candidates) {
-      const loss = Math.max(0, sumYY - 2 * a * sumY - 2 * b * sumFY + n * a * a + 2 * a * b * design.sum + b * b * design.squares);
-      if (!best || loss < best.loss - 1e-12 * Math.max(1, best.loss)) best = { baseline: a, increase: b, loss, design };
+      // Center before squaring: raw sum-of-squares subtraction loses small rises
+      // on a large background (e.g. 1e9 baseline with a 100 PFU/mL increase).
+      const loss = Math.max(0, centeredYY - 2 * b * covariance + b * b * design.variance + n * (meanY - a - b * meanF) ** 2);
+      const tolerance = Number.EPSILON * 64 * Math.max(centeredYY, best?.loss ?? 0, Number.MIN_VALUE);
+      if (!best || loss < best.loss - tolerance) best = { baseline: a, increase: b, loss, design };
     }
   }
   if (!best) throw new Error('No supported baseline/rise/plateau design.');
@@ -167,8 +180,8 @@ function estimatesFor(ramp: Ramp, scale: number, centers: number | null): Growth
     baselinePFUPerMl: ramp.baseline * scale,
     plateauPFUPerMl: (ramp.baseline + ramp.increase) * scale,
     increasePFUPerMl: increase,
-    riseStartMin: ramp.increase > 1e-10 ? ramp.design.start : null,
-    riseEndMin: ramp.increase > 1e-10 ? ramp.design.end : null,
+    riseStartMin: ramp.increase > 0 ? ramp.design.start : null,
+    riseEndMin: ramp.increase > 0 ? ramp.design.end : null,
     infectiousYieldPerInfectedCenter: centers === null ? null : increase / centers,
   };
   if (Object.values(estimates).some(value => value !== null && !Number.isFinite(value))) {
@@ -223,6 +236,7 @@ export function fitOneStepGrowth(input: readonly GrowthObservation[], suppliedOp
   const warnings = [
     'Descriptive population-curve fit, not a validated mechanistic inference of latency, adsorption, or single-cell burst size.',
     'Knot times are restricted to sampled times; at least two baseline and two plateau times and one interior rise sample are assumed.',
+    'Only extracellular free-phage PFU/mL is supported, not total infective-center counts. Net increase is not total production when phage losses or secondary infection occur.',
     'Rows are weighted equally. Replicate rows must be independent; correlated technical replicates can understate uncertainty.',
   ];
   if (estimates.riseStartMin === null) warnings.push('No positive rise was fitted; rise timing is unidentified.');
@@ -265,6 +279,7 @@ export function parseGrowthCurveExperiment(text: string): GrowthCurveExperiment 
   if (typeof text !== 'string' || text.length > GROWTH_CURVE_LIMITS.bytes) throw new Error('Experiment input is too large.');
   const value = objectFor(JSON.parse(text), 'Experiment');
   if (value.schemaVersion !== 'one-step-growth-v1' || value.method !== GROWTH_CURVE_METHOD) throw new Error('Unsupported experiment schema or fitting method version.');
+  if (value.measurement !== 'extracellular-pfu-per-ml') throw new Error('Only explicitly identified extracellular PFU/mL assays are supported; total infective-center titers use different yield accounting.');
   const provenance = objectFor(value.provenance, 'Provenance');
   if (typeof value.title !== 'string' || !value.title.trim() || value.title.length > 200) throw new Error('Provide a title of 1–200 characters.');
   if ((provenance.kind !== 'user-supplied' && provenance.kind !== 'synthetic') || typeof provenance.source !== 'string' || !provenance.source.trim() || provenance.source.length > 2000) {
@@ -273,7 +288,7 @@ export function parseGrowthCurveExperiment(text: string): GrowthCurveExperiment 
   const options = objectFor(value.options, 'Options');
   // Require explicit saved options so replay cannot silently inherit changed defaults.
   for (const key of Object.keys(DEFAULT_OPTIONS)) if (!(key in options)) throw new Error(`Saved experiment is missing option ${key}.`);
-  return { schemaVersion: 'one-step-growth-v1', method: GROWTH_CURVE_METHOD, title: value.title.trim(),
+  return { schemaVersion: 'one-step-growth-v1', method: GROWTH_CURVE_METHOD, measurement: 'extracellular-pfu-per-ml', title: value.title.trim(),
     provenance: { kind: provenance.kind, source: provenance.source.trim() },
     observations: observationsFor(value.observations as GrowthObservation[]),
     options: optionsFor({ infectedCentersPerMl: options.infectedCentersPerMl as number | null,
