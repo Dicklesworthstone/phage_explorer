@@ -41,6 +41,10 @@ describe('measured growth-curve ingestion', () => {
     assert.throws(() => parseGrowthCurveCSV(csv + '\n-1,10'), /nonnegative/);
   });
   test('rejects numeric overflow', () => assert.throws(() => parseGrowthCurveCSV(csv + '\n60,1e999'), /finite/));
+  test('rejects sparse arrays instead of silently skipping observations', () => {
+    const sparse = [...rows]; sparse.length += 1;
+    assert.throws(() => fitOneStepGrowth(sparse), /Observation 12/);
+  });
   test('requires six distinct times, not just six replicates', () => assert.throws(() => fitOneStepGrowth(Array(6).fill(rows[0])), /distinct/));
   test('bounds file size, rows, and unique time count', () => {
     assert.throws(() => parseGrowthCurveCSV('x'.repeat(GROWTH_CURVE_LIMITS.bytes + 1)), /large/);
@@ -138,6 +142,9 @@ describe('versioned experiments and replay', () => {
     for (const changed of [{ ...experiment, method: 'future-v99' }, { ...experiment, schemaVersion: 'future-v99' }, { ...experiment, provenance: {} }, { ...experiment, options: { seed: 0 } }, { ...experiment, observations: [null, ...rows] }, { ...experiment, title: ' ' }, null, []]) {
       assert.throws(() => parseGrowthCurveExperiment(JSON.stringify(changed)));
     }
+  });
+  test('rejects invalid denominators before JSON can coerce them to null', () => {
+    for (const invalid of [Infinity, -Infinity, NaN]) assert.throws(() => serializeGrowthCurveExperiment({ ...experiment, options: { ...experiment.options, infectedCentersPerMl: invalid } }), /Infected centers/);
   });
   test('changing saved data or denominator actually changes the replay', () => {
     const changed = { ...experiment, options: { ...experiment.options, infectedCentersPerMl: 4 } };
