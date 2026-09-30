@@ -121,6 +121,9 @@ export * from './analysis/capsid-energetics';
 // Burst Kinetics & Latency Inference from Growth Curves
 export * from './analysis/burst-kinetics';
 
+// Measured extracellular growth curves, descriptive fits, and reproducible experiments
+export * from './analysis/one-step-growth';
+
 // Host-Phage Protein Interaction & Effector Docking Map
 export * from './analysis/host-interactions';
 
