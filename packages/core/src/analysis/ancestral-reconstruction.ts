@@ -1,10 +1,11 @@
 /** Conditional nucleotide reconstruction on an explicitly homologous alignment.
- * JC69, fixed supplied tree/lengths, uniform root prior; no branch fitting or mutation dating.
+ * JC69 or supplied reversible DNA models/site-rate mixtures; fixed tree/lengths.
  * Felsenstein (1981), doi:10.1007/BF01734359. Two-pass sum-product gives marginal
  * node states AND joint edge endpoints; multiplying marginal states is not equivalent.
  */
 import { parseTemporalNewick, type TemporalNode } from './temporal-signal';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { createNucleotideKernel, resolveNucleotideModel, type NucleotideModel } from './nucleotide-model';
 
 export const ANCESTRAL_LIMITS = { bytes: 2 * 1024 * 1024, tips: 128, columns: 100000,
   inputCells: 2000000, window: 4096, patternNodes: 16000 } as const;
@@ -19,6 +20,8 @@ export interface AncestralDataset {
 }
 export interface AncestralOptions {
   startColumn: number; endColumn: number; gapPolicy: 'missing' | 'exclude-column'; minPosterior: number;
+  /** Omitted means the original fixed JC69 contract; supplied models retain their source. */
+  substitution?: NucleotideModel;
 }
 export interface AncestralNode { id: string; label: string | null; parent: number | null; length: number; children: number[] }
 export interface AncestralPattern {
@@ -28,6 +31,8 @@ export interface AncestralPattern {
   nodes: number[][] | null;
   /** Entry i corresponds to result.nodes[i+1]'s incoming edge. Row-major parent/child A,C,G,T. */
   edges: number[][] | null;
+  /** Whole-site rate-category probabilities conditional on all tip observations. */
+  categoryPosterior?: number[] | null;
 }
 export interface AncestralSite {
   column: number; resolvedTips: number; ambiguousTips: number; missingTips: number;
@@ -105,12 +110,13 @@ export function validateAncestralDataset(value: unknown): AncestralDataset {
 }
 export function resolveAncestralOptions(columns: number, settings: unknown = {}): AncestralOptions {
   if (!object(settings)) throw new Error('Ancestral settings must be an object.');
-  keys(settings, ['startColumn','endColumn','gapPolicy','minPosterior'], 'ancestral parameter');
+  keys(settings, ['startColumn','endColumn','gapPolicy','minPosterior','substitution'], 'ancestral parameter');
   const startColumn = settings.startColumn ?? 1, endColumn = settings.endColumn ?? Math.min(columns, ANCESTRAL_LIMITS.window);
   const gapPolicy = settings.gapPolicy ?? 'missing', minPosterior = settings.minPosterior ?? 0.9;
   if (!Number.isSafeInteger(startColumn) || !Number.isSafeInteger(endColumn) || Number(startColumn) < 1 || Number(endColumn) > columns || Number(endColumn) < Number(startColumn) || Number(endColumn)-Number(startColumn)+1 > ANCESTRAL_LIMITS.window) throw new Error('Select an inclusive, 1-based alignment window of at most 4096 columns.');
   if (!['missing','exclude-column'].includes(String(gapPolicy)) || typeof minPosterior !== 'number' || !Number.isFinite(minPosterior) || minPosterior < 0.25 || minPosterior > 1) throw new Error('Use a supported gap policy and a posterior threshold between 0.25 and 1.');
-  return { startColumn:Number(startColumn), endColumn:Number(endColumn), gapPolicy:gapPolicy as AncestralOptions['gapPolicy'], minPosterior };
+  return { startColumn:Number(startColumn), endColumn:Number(endColumn), gapPolicy:gapPolicy as AncestralOptions['gapPolicy'], minPosterior,
+    ...(settings.substitution === undefined ? {} : { substitution: resolveNucleotideModel(settings.substitution) }) };
 }
 function logSum(values: number[]): number {
   const m = Math.max(...values); if (m === -Infinity) return m;
@@ -126,23 +132,23 @@ function transition(length: number): number[] {
   const different = -Math.expm1(-4 * length / 3) / 4, same = 1 - 3 * different;
   return Array.from({ length:16 }, (_, i) => Math.log(Math.floor(i / 4) === i % 4 ? same : different));
 }
-function reconstructPattern(nodes: AncestralNode[], tips: number[], observations: string, transitions: number[][]): AncestralPattern {
+function reconstructPattern(nodes: AncestralNode[], tips: number[], observations: string, transitions: number[][],
+  prior: number[] = [0.25,0.25,0.25,0.25]): AncestralPattern {
   const up = nodes.map(() => [0,0,0,0]), messages = nodes.map(() => [0,0,0,0]);
   tips.forEach((index, i) => { const mask = parseInt(observations[i],16); up[index] = NUCLEOTIDES.map((_, s) => mask & (1 << s) ? 0 : -Infinity); });
   for (let n = nodes.length - 1; n >= 0; n--) {
     if (nodes[n].children.length) up[n] = NUCLEOTIDES.map((_, s) => nodes[n].children.reduce((sum,c) => sum + messages[c][s],0));
     if (n) messages[n] = NUCLEOTIDES.map((_, s) => logSum(up[n].map((v,t) => transitions[n][s*4+t]+v)));
   }
-  const logLikelihood = logSum(up[0].map(v => v - Math.log(4)));
+  const rootPrior = prior.map(Math.log);
+  const logLikelihood = logSum(up[0].map((v,s) => v + rootPrior[s]));
   if (logLikelihood === -Infinity) return { observations, logLikelihood:null, nodes:null, edges:null };
   if (!Number.isFinite(logLikelihood)) throw new Error('Nonfinite alignment likelihood.');
-  const down = nodes.map(() => [0,0,0,0]); down[0].fill(-Math.log(4));
+  const down = nodes.map(() => [0,0,0,0]); down[0] = rootPrior;
   const posteriors: number[][] = [], edges: number[][] = new Array(nodes.length - 1);
   for (let n = 0; n < nodes.length; n++) {
     posteriors[n] = probabilities(up[n].map((v,s) => v + down[n][s]));
     const children = nodes[n].children;
-    // Prefix/suffix products in log space avoid 0/0 when excluding a child's
-    // evidence and avoid O(degree^2) work on large polytomies.
     const prefix = [[0,0,0,0]], suffix: number[][] = new Array(children.length + 1);
     suffix[children.length] = [0,0,0,0];
     children.forEach((child,i) => { prefix.push(prefix[i].map((v,s) => v + messages[child][s])); });
@@ -155,11 +161,32 @@ function reconstructPattern(nodes: AncestralNode[], tips: number[], observations
   }
   return { observations, logLikelihood, nodes:posteriors, edges };
 }
+
+function reconstructMixture(nodes: AncestralNode[], tips: number[], observations: string,
+  transitions: number[][][], prior: number[], weights: number[]): AncestralPattern {
+  const categories = transitions.map(matrix => reconstructPattern(nodes, tips, observations, matrix, prior));
+  const weighted = categories.map((category, i) => category.logLikelihood === null ? -Infinity : Math.log(weights[i]) + category.logLikelihood);
+  const logLikelihood = logSum(weighted);
+  if (logLikelihood === -Infinity) return { observations, logLikelihood: null, nodes: null, edges: null, categoryPosterior: null };
+  const categoryPosterior = probabilities(weighted);
+  const average = (kind: 'nodes' | 'edges', count: number, states: number): number[][] =>
+    Array.from({ length: count }, (_, n) => Array.from({ length: states }, (_, s) =>
+      categories.reduce((sum, category, i) => sum + categoryPosterior[i] * (category[kind]?.[n][s] ?? 0), 0)));
+  return { observations, logLikelihood, nodes: average('nodes', nodes.length, 4),
+    edges: average('edges', nodes.length - 1, 16), categoryPosterior };
+}
 export function reconstructAncestors(value: AncestralDataset, settings: unknown = {}, progress: (phase: string) => void = () => {}): AncestralResult {
   const input = validateAncestralDataset(value), rows = parseAncestralFasta(input.alignment.fasta);
   const options = resolveAncestralOptions(rows[0].sequence.length,settings), nodes = flatten(parseTemporalNewick(input.tree.newick));
   const tips = nodes.flatMap((n,i) => n.children.length ? [] : [i]), tipOrder=tips.map(i=>nodes[i].label!);
-  const aligned = tipOrder.map(id=>rows.find(r=>r.id===id)!.sequence), transitions=nodes.map(n=>transition(n.length));
+  const aligned = tipOrder.map(id=>rows.find(r=>r.id===id)!.sequence);
+  const model = options.substitution, kernel = model ? createNucleotideKernel(model) : null;
+  const categories = model?.siteRates ?? [{ rate: 1, weight: 1 }];
+  const transitions = categories.map(category => nodes.map(n => {
+    const length = n.length * category.rate;
+    if (n.length > 0 && category.rate > 0 && length === 0) throw new Error('Effective branch length underflow; no zero-length branch is substituted.');
+    return kernel ? kernel.logTransition(length) : transition(length);
+  }));
   const sites: AncestralSite[]=[], patterns: AncestralPattern[]=[], cache=new Map<string,number>();
   let analyzedColumns=0, impossibleColumns=0, logLikelihood=0;
   for (let column=options.startColumn; column<=options.endColumn; column++) {
@@ -172,8 +199,10 @@ export function reconstructAncestors(value: AncestralDataset, settings: unknown 
     else {
       const key=masks.map(m=>m.toString(16)).join(''); let index=cache.get(key);
       if (index===undefined) {
-        if ((patterns.length+1)*nodes.length>ANCESTRAL_LIMITS.patternNodes) throw new Error('Ancestral posterior output exceeds the pattern/node budget. Select a narrower alignment window; no partial result is published.');
-        index=patterns.length; cache.set(key,index); patterns.push(reconstructPattern(nodes,tips,key,transitions));
+        if ((patterns.length+1)*nodes.length*categories.length>ANCESTRAL_LIMITS.patternNodes) throw new Error('Ancestral posterior output exceeds the pattern/node budget (including rate categories). Select a narrower alignment window; no partial result is published.');
+        index=patterns.length; cache.set(key,index);
+        patterns.push(kernel ? reconstructMixture(nodes,tips,key,transitions,kernel.frequencies,categories.map(c=>c.weight))
+          : reconstructPattern(nodes,tips,key,transitions[0]));
       }
       site.pattern=index;
       if (patterns[index].logLikelihood===null) { site.exclusion='zero-likelihood'; impossibleColumns++; }
@@ -184,7 +213,11 @@ export function reconstructAncestors(value: AncestralDataset, settings: unknown 
   return { options,nodes,tipOrder,alignmentColumns:rows[0].sequence.length,sites,patterns,analyzedColumns,
     excludedColumns:sites.length-analyzedColumns-impossibleColumns,impossibleColumns,
     logLikelihood:impossibleColumns || !analyzedColumns ? null : logLikelihood,warnings:[
-      'JC69 assumes equal stationary base frequencies and equal substitution rates, independent sites, and fixed supplied topology/root/branch lengths. Model adequacy and tree/alignment uncertainty are not estimated.',
+      ...(model ? [
+        `${model.model} uses the supplied stationary reversible DNA model and its stationary root prior. The generator has mean rate one; supplied branch lengths remain expected substitutions/site.`,
+        'A rate category is shared across all branches of each site and integrated using its full-site likelihood. Supplied weights are priors, not site-posterior weights. A zero rate is an invariant category, not a zero branch in every category.',
+        `Model and site-rate source/assumption: ${model.source}. Parameters are fixed, not estimated or independently verified. Sites are independent; no empirical confidence, topology search or model-adequacy test is supplied.`,
+      ] : ['JC69 assumes equal stationary base frequencies and equal substitution rates, independent sites, and fixed supplied topology/root/branch lengths. Model adequacy and tree/alignment uncertainty are not estimated.']),
       'Posteriors are conditional state probabilities under this model, not empirical confidence or biological validation. No branch lengths or parameters are fitted.',
       'IUPAC ambiguity constrains allowed observed bases; N and ? are missing. Gaps follow the recorded policy and are not a fifth evolutionary state or an indel model.',
       'Edge probabilities describe joint parent/child endpoint states. Endpoint differences are not substitution counts, event dates, selection scores or a reconstructed mutation history.',
@@ -192,7 +225,6 @@ export function reconstructAncestors(value: AncestralDataset, settings: unknown 
       ...(input.source.kind==='demo'?['Explicit synthetic example; no empirical reference accuracy is claimed.']:[]),
     ] };
 }
-/** Display/export the accepted result's threshold, never silently reinterpret it using draft settings. */
 export function ancestralConsensus(result: AncestralResult, nodeId: string): string {
   const index=result.nodes.findIndex(n=>n.id===nodeId); if(index<0)throw new Error('Unknown ancestral node.');
   return result.sites.map(site=>{
@@ -202,20 +234,24 @@ export function ancestralConsensus(result: AncestralResult, nodeId: string): str
   }).join('');
 }
 export function ancestralFasta(result: AncestralResult): string {
-  return result.nodes.filter(n=>n.children.length).map(node=>`>${node.id} conditional-JC69 columns=${result.options.startColumn}-${result.options.endColumn} threshold=${result.options.minPosterior}\n${ancestralConsensus(result,node.id).match(/.{1,80}/g)?.join('\n')??''}`).join('\n')+'\n';
+  return result.nodes.filter(n=>n.children.length).map(node=>`>${node.id} conditional-${result.options.substitution?.model??'JC69'}${result.options.substitution?` rate-categories=${result.options.substitution.siteRates.length}`:''} columns=${result.options.startColumn}-${result.options.endColumn} threshold=${result.options.minPosterior}\n${ancestralConsensus(result,node.id).match(/.{1,80}/g)?.join('\n')??''}`).join('\n')+'\n';
 }
 const METHOD={id:'ancestral-jc69',version:'1',implementation:'Log-space two-pass sum-product; fixed rooted substitution-length tree; IUPAC observation masks; joint edge endpoints'};
+const REVERSIBLE_METHOD={id:'ancestral-reversible-dna',version:'1',implementation:'Mean-rate-one JC69/HKY85/GTR; nonnegative uniformization; stationary root prior; whole-site rate mixture; two-pass joint edge endpoints'};
 export function createAncestralRecord(input: AncestralDataset, result: AncestralResult): Promise<AnalysisRecord> {
-  const dataset=validateAncestralDataset(input);
-  return createAnalysisRecord({method:METHOD,inputs:[{id:'alignmentTree',accession:null,source:dataset.source.kind,description:dataset.name,data:analysisJson(dataset)}],
+  const dataset=validateAncestralDataset(input), model=result.options.substitution;
+  if(model)resolveNucleotideModel(model);
+  return createAnalysisRecord({method:model?REVERSIBLE_METHOD:METHOD,inputs:[{id:'alignmentTree',accession:null,source:dataset.source.kind,description:dataset.name,data:analysisJson(dataset)}],
     parameters:analysisJson(result.options) as AnalysisRecord['parameters'],seed:null,
     references:[{id:'likelihood-pruning',version:'Felsenstein-1981',description:'doi:10.1007/BF01734359; fixed-tree likelihood by summing ancestral states.'},
-      {id:'substitution-model',version:'JC69',description:'P_same(t)=1/4+3/4 exp(-4t/3); P_different(t)=1/4-1/4 exp(-4t/3); t is substitutions/site, uniform root prior.'}],
+      model?{id:'substitution-model',version:model.model,description:`Q_ij=r_ij*pi_j, normalized by -sum(pi_i*Q_ii); shared site-rate categories with mean one. Supplied source/assumption: ${model.source}`}
+        :{id:'substitution-model',version:'JC69',description:'P_same(t)=1/4+3/4 exp(-4t/3); P_different(t)=1/4-1/4 exp(-4t/3); t is substitutions/site, uniform root prior.'}],
     fields:{reconstruction:{label:'Conditional ancestral states and joint branch endpoints',kind:dataset.source.kind==='demo'?'demo':'simulation',units:'records',value:analysisJson(result),
-      coverage:{available:result.analyzedColumns,total:result.sites.length,unit:'bases'},assumptions:['Exact recorded homologous alignment, JC69, fixed tree and branch lengths; no estimated alignment or model-parameter uncertainty.'],limitations:result.warnings}}});
+      coverage:{available:result.analyzedColumns,total:result.sites.length,unit:'bases'},assumptions:[model?'Exact recorded homologous alignment, supplied reversible DNA model and site-rate mixture, fixed tree and branch lengths; no estimated alignment or model-parameter uncertainty.':'Exact recorded homologous alignment, JC69, fixed tree and branch lengths; no estimated alignment or model-parameter uncertainty.'],limitations:result.warnings}}});
 }
 export async function replayAncestralRecord(content: string, progress: (phase:string)=>void=()=>{}): Promise<{input:AncestralDataset;result:AncestralResult;record:AnalysisRecord}> {
-  const saved=await parseAnalysisRecord(content,{methodId:METHOD.id,methodVersion:METHOD.version});
+  const saved=await parseAnalysisRecord(content);
+  if(![METHOD,REVERSIBLE_METHOD].some(method=>method.id===saved.method.id&&method.version===saved.method.version))throw new Error('Analysis method/version is incompatible.');
   if(saved.inputs.length!==1||saved.inputs[0].id!=='alignmentTree')throw new Error('Unsupported ancestral input contract.');
   const input=validateAncestralDataset(saved.inputs[0].data), result=reconstructAncestors(input,saved.parameters,progress), record=await createAncestralRecord(input,result);
   if(record.resultId!==saved.resultId||record.cacheKey!==saved.cacheKey)throw new Error('Fresh ancestral evidence differs from the saved experiment.');
