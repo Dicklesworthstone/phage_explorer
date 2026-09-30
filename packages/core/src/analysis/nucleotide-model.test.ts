@@ -7,6 +7,8 @@ const close = (a:number,b:number,tolerance=2e-12) => assert.ok(Math.abs(a-b)<=to
 
 describe('supplied reversible nucleotide model',()=>{
   it('matches an independent SciPy expm result for a fully unequal GTR matrix',()=>{
+    // SciPy 1.17.0 scipy.linalg.expm, independently assembled symmetric rates * diag(pi).
+    // pi=(.1,.2,.3,.4), AC/AG/AT/CG/CT/GT=(1,4,2,3,5,6), t=.7, mean Q rate=1.
     const expected=[.6142307892851753,.05201616221535,.17736209382662144,.15639095467285338,
       .026008081107675007,.5409010198892537,.1565621886862551,.2765287103168162,
       .05912069794220717,.10437479245750343,.5322425924296514,.304261917170638,
