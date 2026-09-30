@@ -2,7 +2,6 @@ import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from
 import { ancestralConsensus, ancestralFasta, NUCLEOTIDES,
   type AncestralOptions, type AncestralResult } from '../../../../core/src/analysis/ancestral-reconstruction';
 import type { TemporalDataset } from '../../../../core/src/analysis/temporal-signal';
-import '../../../../core/src/analysis/nucleotide-model';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { AncestralSession, type AncestralRequest } from '../../workers/AncestralSession';
 import { downloadString } from '../../utils/export';
