@@ -78,7 +78,7 @@ function observationsFor(input: readonly GrowthObservation[]): GrowthObservation
   if (!Array.isArray(input) || input.length < 6 || input.length > GROWTH_CURVE_LIMITS.rows) {
     throw new Error(`Provide 6–${GROWTH_CURVE_LIMITS.rows} observations.`);
   }
-  const rows = input.map((point, index) => {
+  const rows = Array.from(input, (point, index) => {
     if (!point || !Number.isFinite(point.timeMin) || point.timeMin < 0 || !Number.isFinite(point.pfuPerMl) || point.pfuPerMl < 0) {
       throw new Error(`Observation ${index + 1}: time and PFU/mL must be finite nonnegative numbers.`);
     }
@@ -107,6 +107,7 @@ export function parseGrowthCurveCSV(text: string): GrowthObservation[] {
   if (header.length !== 2 || header[0] !== 'time_min' || header[1] !== 'pfu_per_ml') {
     throw new Error('Expected exactly two columns: time_min,pfu_per_ml (minutes and dilution-corrected PFU/mL).');
   }
+  if (lines.length - 1 > GROWTH_CURVE_LIMITS.rows) throw new Error(`Provide at most ${GROWTH_CURVE_LIMITS.rows} observations.`);
   return observationsFor(lines.slice(1).map(({ line, number }) => {
     const values = cells(line);
     if (values.length !== 2 || !values.every(value => NUMBER_CELL.test(value))) {
@@ -297,6 +298,10 @@ export function parseGrowthCurveExperiment(text: string): GrowthCurveExperiment 
 
 /** Self-contained inputs + recomputed result; deterministic for the same input. */
 export function serializeGrowthCurveExperiment(experiment: GrowthCurveExperiment): string {
+  // Validate before JSON encoding: JSON turns Infinity/NaN into null, which is
+  // a valid 'denominator not measured' value and must not mask invalid inputs.
+  observationsFor(experiment.observations);
+  optionsFor(experiment.options);
   const validated = parseGrowthCurveExperiment(JSON.stringify(experiment));
   return JSON.stringify({ ...validated, result: fitOneStepGrowth(validated.observations, validated.options) }, null, 2);
 }
