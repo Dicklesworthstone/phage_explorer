@@ -149,6 +149,8 @@ function reconstructPattern(nodes: AncestralNode[], tips: number[], observations
   for (let n = 0; n < nodes.length; n++) {
     posteriors[n] = probabilities(up[n].map((v,s) => v + down[n][s]));
     const children = nodes[n].children;
+    // Prefix/suffix products in log space avoid 0/0 when excluding a child's
+    // evidence and avoid O(degree^2) work on large polytomies.
     const prefix = [[0,0,0,0]], suffix: number[][] = new Array(children.length + 1);
     suffix[children.length] = [0,0,0,0];
     children.forEach((child,i) => { prefix.push(prefix[i].map((v,s) => v + messages[child][s])); });
@@ -162,6 +164,10 @@ function reconstructPattern(nodes: AncestralNode[], tips: number[], observations
   return { observations, logLikelihood, nodes:posteriors, edges };
 }
 
+/** Integrate a single latent rate category shared by ALL branches at this site.
+ * Prior-weight averaging of posteriors or of edge transition matrices is wrong:
+ * the observed tips change category probabilities via the full-site likelihood.
+ */
 function reconstructMixture(nodes: AncestralNode[], tips: number[], observations: string,
   transitions: number[][][], prior: number[], weights: number[]): AncestralPattern {
   const categories = transitions.map(matrix => reconstructPattern(nodes, tips, observations, matrix, prior));
@@ -225,6 +231,7 @@ export function reconstructAncestors(value: AncestralDataset, settings: unknown 
       ...(input.source.kind==='demo'?['Explicit synthetic example; no empirical reference accuracy is claimed.']:[]),
     ] };
 }
+/** Display/export the accepted result's threshold, never silently reinterpret it using draft settings. */
 export function ancestralConsensus(result: AncestralResult, nodeId: string): string {
   const index=result.nodes.findIndex(n=>n.id===nodeId); if(index<0)throw new Error('Unknown ancestral node.');
   return result.sites.map(site=>{
