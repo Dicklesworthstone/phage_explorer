@@ -110,7 +110,11 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   const revision = useRef(0);
   useEffect(() => () => { revision.current++; }, []);
   useEffect(() => {
-    try { window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(draft)); setStorageError(false); }
+    try {
+      const saved = JSON.stringify(draft);
+      if (saved.length > GROWTH_CURVE_LIMITS.bytes) throw new Error('Draft exceeds browser restore limit.');
+      window.sessionStorage.setItem(STORAGE_KEY, saved); setStorageError(false);
+    }
     catch { setStorageError(true); }
   }, [draft]);
 
