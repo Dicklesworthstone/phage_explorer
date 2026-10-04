@@ -4,7 +4,45 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## [Unreleased] — post-v1.4.1 (2025-12-16 through 2026-09-05)
+## [v1.6.0] — 2026-10-04
+
+[Compare: v1.5.0...v1.6.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.5.0...v1.6.0)
+
+This release includes the changes after the existing v1.5.0 source tag, which
+had no GitHub Release. The v1.5.0 tag is preserved. The previous published binary
+release was v1.4.1; the raw binary, database and SHA-256 download format is retained.
+
+### Changes
+
+- Private FASTA/GenBank import and genome bundles preserve original files,
+  joined CDS segments and selected sequence views. Imported gene identifiers
+  no longer select unrelated catalog Fold references.
+- Scientific workflows accept explicit inputs and support checksum-validated,
+  recomputed replay, including host-model gene knockout, abundance analysis,
+  aligned-CDS selection, dated-tree diagnostics and measured growth fitting.
+  These workflows distinguish measured evidence from teaching models and
+  unavailable results.
+- The terminal cancels stale analysis during navigation and shutdown. The
+  previous source tag's closed-database error on quit is avoided.
+- `--version` and `-V` report the binary version without a database or terminal.
+- Restored calculation details in the aligned-CDS selection panel. Retained
+  legacy compression matching for compression-based scientific scores.
+
+### Known limitations
+
+- Optional WASM regeneration/toolchain verification needs a reproducible
+  tracked version contract and standard producer-metadata parsing:
+  [issue #6](https://github.com/Dicklesworthstone/phage_explorer/issues/6).
+  This release retains the committed baseline and SIMD artifacts.
+- The unused OG developer dependency stays at exact 1.0.1 because newer
+  published bundles omit a required WASM file:
+  [upstream issue #801](https://github.com/vercel/satori/issues/801).
+- Pre-existing transitive build-tool advisories remain in brace-expansion,
+  fast-uri and serialize-javascript. Their lint/PWA-build dependency paths need
+  compatible patch updates and qualification:
+  [issue #7](https://github.com/Dicklesworthstone/phage_explorer/issues/7).
+
+## Historical development notes — post-v1.4.1 (2025-12-16 through 2026-09-05)
 
 Over 550 commits of active development since v1.4.1, spanning annotation pipelines, ESM2 embeddings, Pfam domain architectures, WASM acceleration, WebGL rendering, mobile discovery, and rigorous test coverage.
 

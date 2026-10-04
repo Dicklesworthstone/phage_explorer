@@ -11,8 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "ignoreDeprecations": "5.0",
-    "types": ["vite/client", "bun"],
+    "ignoreDeprecations": "6.0",
+    "types": ["vite/client", "bun", "@webgpu/types"],
     "baseUrl": ".",
     "paths": {
       "@phage-explorer/core": ["../../packages/core/src"],

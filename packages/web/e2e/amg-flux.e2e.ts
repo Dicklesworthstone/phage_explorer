@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { setupTestHarness } from './e2e-harness';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 
-test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
+test.use({ userAgent: 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)' });
 
 test('flux sandbox changes assumptions, imports real LP inputs, exports raw fluxes and exposes infeasibility', async ({ page }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);

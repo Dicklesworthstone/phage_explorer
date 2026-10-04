@@ -1000,7 +1000,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`GC skew experiment 
   } finally { await finalize(); }
 });
 
-test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
+test.use({ userAgent: 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)' });
 
 async function catalog(page: Page, baseURL: string) {
   await page.addInitScript(() => {

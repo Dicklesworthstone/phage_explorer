@@ -37,6 +37,19 @@ import { Box, Text, useStdout } from 'ink';
 export const MIN_COLUMNS = 80;
 export const MIN_ROWS = 24;
 
+/** Read dimensions only when the output stream actually supplies them. */
+export function readTerminalSize(stdout: object | undefined): {
+  columns: number | undefined;
+  rows: number | undefined;
+} {
+  return {
+    columns: stdout && 'columns' in stdout && typeof stdout.columns === 'number'
+      ? stdout.columns : undefined,
+    rows: stdout && 'rows' in stdout && typeof stdout.rows === 'number'
+      ? stdout.rows : undefined,
+  };
+}
+
 /**
  * Clamp an overlay's designed width to what the terminal can actually show.
  *
@@ -60,7 +73,7 @@ export function clampOverlayWidth(designed: number, columns: number | undefined)
  */
 export function useOverlayWidth(designed: number): number {
   const { stdout } = useStdout();
-  return clampOverlayWidth(designed, stdout?.columns);
+  return clampOverlayWidth(designed, readTerminalSize(stdout).columns);
 }
 
 export interface TerminalSizeGateProps {
@@ -80,8 +93,7 @@ export function TerminalSizeGate({ children }: TerminalSizeGateProps): React.Rea
   // CI capture, a test harness. Treat that as "big enough" rather than blocking:
   // refusing to render because the size is unknown would break every non-TTY
   // use, and there is no user there to resize anything.
-  const columns = stdout?.columns;
-  const rows = stdout?.rows;
+  const { columns, rows } = readTerminalSize(stdout);
   const known = typeof columns === 'number' && typeof rows === 'number';
 
   if (known && (columns < MIN_COLUMNS || rows < MIN_ROWS)) {

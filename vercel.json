@@ -1,5 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "main": false,
+      "master": false
+    }
+  },
   "buildCommand": "cd packages/web && bun run ../../scripts/build-web-db.ts --source public/phage.db --output public && bun run build",
   "outputDirectory": "packages/web/dist",
   "installCommand": "bun install",

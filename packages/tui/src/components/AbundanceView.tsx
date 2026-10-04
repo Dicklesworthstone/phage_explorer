@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Box, Text, render, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import { TerminalSizeGate, useOverlayWidth, MIN_COLUMNS, MIN_ROWS } from './terminal-size';
+import { TerminalSizeGate, useOverlayWidth, readTerminalSize, MIN_COLUMNS, MIN_ROWS } from './terminal-size';
 import { AbundanceWorkspace, abundanceTerminalLabel } from '../commands/abundance';
 import type { AbundanceAnalysis, AbundanceAssociation } from '../../../core/src/analysis/abundance';
 
@@ -23,7 +23,7 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
   const [tab, setTab] = useState<'pairs' | 'profiles'>('pairs');
   const { exit } = useApp(), { stdout } = useStdout();
   const width = useOverlayWidth(110);
-  const pageSize = Math.max(2, Math.min(12, (stdout.rows ?? 24) - 17));
+  const pageSize = Math.max(2, Math.min(12, (readTerminalSize(stdout).rows ?? 24) - 17));
   const record = accepted?.record;
   const pairs = (record?.fields.associations.value ?? []) as unknown as AbundanceAssociation[];
   const factors = record?.fields.factors.value as unknown as { profiles: AbundanceAnalysis['profiles']; nmf: AbundanceAnalysis['nmfResult'] } | undefined;
@@ -109,8 +109,9 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
 
 function AbundanceShell(props: { workspace: AbundanceWorkspace; initialPath?: string }): React.ReactElement {
   const { stdout } = useStdout(), { exit } = useApp();
-  const small = typeof stdout.columns === 'number' && typeof stdout.rows === 'number' &&
-    (stdout.columns < MIN_COLUMNS || stdout.rows < MIN_ROWS);
+  const { columns, rows } = readTerminalSize(stdout);
+  const small = typeof columns === 'number' && typeof rows === 'number' &&
+    (columns < MIN_COLUMNS || rows < MIN_ROWS);
   useInput((input, key) => { if (small && (input === 'q' || key.ctrl && input === 'c')) exit(); });
   return <TerminalSizeGate><AbundanceView {...props} /></TerminalSizeGate>;
 }

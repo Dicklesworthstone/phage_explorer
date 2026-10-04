@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { FoldEmbedding } from '@phage-explorer/core';
+import { readTerminalSize } from './terminal-size';
 import {
   buildEmbeddingMap,
   computeNovelty,
@@ -119,7 +120,7 @@ export function FoldQuickview({
   const window = genesWithEmbeddings.slice(windowStart, windowStart + 8);
 
   const colors = theme.colors;
-  const width = stdout.columns ?? 80;
+  const width = readTerminalSize(stdout).columns ?? 80;
 
   return (
     <Box

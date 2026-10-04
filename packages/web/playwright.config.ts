@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const REQUEST_USER_AGENT = 'OpenAI File Downloader, XaiImageApiFetch/1.0';
+const REQUEST_USER_AGENT = 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)';
 const configuredBaseURL = process.env.PLAYWRIGHT_BASE_URL;
 if (process.env.PLAYWRIGHT_LIVE === '1' && !configuredBaseURL) {
   throw new Error('PLAYWRIGHT_LIVE=1 requires an explicit PLAYWRIGHT_BASE_URL.');

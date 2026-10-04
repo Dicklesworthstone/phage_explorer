@@ -427,6 +427,19 @@ describe('scanForAnomalies - threshold calculation', () => {
 });
 
 describe('scanForAnomalies - compression ratio', () => {
+  test('retains the scientific compression score from pako 2', () => {
+    let seed = 0x13579bdf;
+    const sequence = Array.from({ length: 12000 }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return 'ACGT'[(seed >>> 16) & 3];
+    }).join('');
+    // Independently recorded with pako 2.2.0: this sequence deflates to 3,800
+    // bytes. A compressor upgrade must not silently redefine anomaly scores.
+    const result = scanForAnomalies(sequence, sequence.length, sequence.length, 4);
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0].compressionRatio).toBe(12000 / 3800);
+  });
+
   test('highly repetitive sequences have high compression ratio', () => {
     const repetitive = 'A'.repeat(1000);
     const result = scanForAnomalies(repetitive, 200, 100, 4);

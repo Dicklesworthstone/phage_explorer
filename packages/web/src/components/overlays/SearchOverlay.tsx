@@ -382,7 +382,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
         const res = (await workerRef.current.runSearch(req)) as SearchResponse;
         if (searchSeqRef.current !== seq) return;
         setHits(res.hits);
-        const truncated = (req.options?.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500) ?? 500;
+        const truncated = req.options?.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
         setSummary(
           `${res.hits.length}/${truncated} results for "${res.query}" in ${res.mode} mode${res.hits.length === truncated ? ' (truncated)' : ''}`
         );

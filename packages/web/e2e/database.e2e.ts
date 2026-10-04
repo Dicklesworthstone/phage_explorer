@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer } from 'node:http';
 
-test.use({ userAgent: 'OpenAI File Downloader, XaiImageApiFetch/1.0' });
+test.use({ userAgent: 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)' });
 
 async function cachedIdentity(page: Page) {
   return page.evaluate(async () => {

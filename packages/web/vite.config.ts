@@ -130,7 +130,7 @@ export default defineConfig({
   },
   worker: {
     format: 'es',
-    rollupOptions: {
+    rolldownOptions: {
       output: {
         // Force .js extension for workers to avoid MIME type issues on CDNs
         // (.ts is interpreted as MPEG-2 Transport Stream, not JavaScript)
@@ -142,16 +142,20 @@ export default defineConfig({
     target: 'es2022',
     sourcemap: true,
     chunkSizeWarningLimit: 1000,
-    rollupOptions: {
+    rolldownOptions: {
       output: {
-        manualChunks: {
-          'vendor-react': ['react', 'react-dom'],
-          'vendor-state': ['zustand', 'immer'],
-          'vendor-worker': ['comlink'],
-          'phage-core': ['@phage-explorer/core'],
-          'phage-state': ['@phage-explorer/state'],
-          // Group remaining smaller dependencies
-          'vendor-utils': [],
+        codeSplitting: {
+          groups: [{
+            name(id) {
+              const normalized = id.replaceAll('\\', '/');
+              if (/\/node_modules\/(react|react-dom)\//.test(normalized)) return 'vendor-react';
+              if (/\/node_modules\/(zustand|immer)\//.test(normalized)) return 'vendor-state';
+              if (/\/node_modules\/comlink\//.test(normalized)) return 'vendor-worker';
+              if (normalized.includes('/packages/core/src/')) return 'phage-core';
+              if (normalized.includes('/packages/state/src/')) return 'phage-state';
+              return undefined;
+            },
+          }],
         },
       },
     },

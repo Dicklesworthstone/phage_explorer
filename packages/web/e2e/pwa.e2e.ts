@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { setupTestHarness } from './e2e-harness';
 
-const USER_AGENT = 'OpenAI File Downloader, XaiImageApiFetch/1.0';
+const USER_AGENT = 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)';
 const buildDirectory = resolve(process.env.PLAYWRIGHT_BUILD_DIR ?? 'dist');
 interface AssetServer {
   origin: string;

@@ -82,7 +82,9 @@ test('private homologous alignments reach actual workers, node and joint-edge pr
     let requested=false;const gate=new Promise<void>(resolve=>{release=resolve;});
     await page.route(/ancestral\.worker[^/]*\.(?:js|ts)/,async route=>{requested=true;await gate;await route.continue().catch(()=>{});});
     await load(saved);await expect.poll(()=>requested).toBe(true);
-    await panel.getByRole('button',{name:'Cancel ancestral work',exact:true}).click();release();
+    await panel.getByRole('button',{name:'Cancel ancestral work',exact:true}).click();
+    if (!release) throw new Error('Ancestral worker gate was not initialized');
+    release();
     await expect(panel.getByTestId('ancestral-status')).toContainText('Ancestral work cancelled');
     await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id',record.resultId);
     await page.unroute(/ancestral\.worker[^/]*\.(?:js|ts)/);

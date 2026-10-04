@@ -118,7 +118,7 @@ async function loadEmbeddingCorpus(args: {
 
   // 1) Prefer DB-backed embeddings when present.
   if (repository.getFoldEmbeddings) {
-    const phages = await repository.listPhages();
+    const phages = (await repository.listPhages()).filter((phage) => !phage.localGenome);
     const byDb = await Promise.all(phages.map((p) => repository.getFoldEmbeddings?.(p.id, model) ?? Promise.resolve([])));
     const flattened = byDb.flat();
     if (flattened.length > 0) {
@@ -127,7 +127,7 @@ async function loadEmbeddingCorpus(args: {
   }
 
   // 2) Fallback: compute lightweight embeddings on demand from sequences.
-  const phages = await repository.listPhages();
+  const phages = (await repository.listPhages()).filter((phage) => !phage.localGenome);
   const computed = await Promise.all(phages.map((p) => computeEmbeddingsForPhage({ repository, phageId: p.id, model })));
   return { embeddings: computed.flat(), source: 'computed' };
 }
@@ -177,7 +177,7 @@ export function FoldQuickviewOverlay({
   // Load embeddings when opened.
   useEffect(() => {
     if (!isOpen('foldQuickview')) return;
-    if (!repository || !currentPhage) {
+    if (!repository || !currentPhage || currentPhage.localGenome) {
       setCorpus([]);
       setError(null);
       setLoading(false);
@@ -217,12 +217,12 @@ export function FoldQuickviewOverlay({
     return () => {
       cancelled = true;
     };
-  }, [currentPhage?.id, isOpen, repository]);
+  }, [currentPhage?.id, currentPhage?.localGenome, isOpen, repository]);
 
   // Load current genome for contact-like thumbnail.
   useEffect(() => {
     if (!isOpen('foldQuickview')) return;
-    if (!repository || !currentPhage) {
+    if (!repository || !currentPhage || currentPhage.localGenome) {
       setGenome('');
       setGenomeError(null);
       setGenomeLoading(false);
@@ -261,7 +261,7 @@ export function FoldQuickviewOverlay({
     return () => {
       cancelled = true;
     };
-  }, [currentPhage?.id, isOpen, repository]);
+  }, [currentPhage?.id, currentPhage?.localGenome, isOpen, repository]);
 
   // Reset selection when phage changes or overlay opens.
   useEffect(() => {
@@ -271,12 +271,12 @@ export function FoldQuickviewOverlay({
 
   const genesWithEmbeddings = useMemo(() => {
     const phageGenes = currentPhage?.genes ?? [];
-    if (phageGenes.length === 0 || corpus.length === 0) return [];
+    if (currentPhage?.localGenome || phageGenes.length === 0 || corpus.length === 0) return [];
     const map = buildEmbeddingMap(corpus);
     return phageGenes
       .filter((g) => map.has(g.id))
       .map((g) => ({ gene: g, embedding: map.get(g.id)! }));
-  }, [currentPhage?.genes, corpus]);
+  }, [currentPhage?.genes, currentPhage?.localGenome, corpus]);
 
   const selected = genesWithEmbeddings[clampIndex(selectedGeneIdx, genesWithEmbeddings.length)];
   const novelty = useMemo(() => {
@@ -341,7 +341,7 @@ export function FoldQuickviewOverlay({
           ↑/↓ selects a gene. Novelty is mean cosine distance to the nearest neighbors (higher = more novel).
         </div>
 
-        {corpusSource === 'computed' && (
+        {!currentPhage?.localGenome && corpusSource === 'computed' && (
           <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
             Using lightweight on-the-fly embeddings ({FALLBACK_EMBEDDING_MODEL}). Run `bun run build:esm2` to add ESM2 embeddings to the database.
           </div>
@@ -353,7 +353,11 @@ export function FoldQuickviewOverlay({
           </div>
         )}
 
-        {loading ? (
+        {currentPhage?.localGenome ? (
+          <div style={{ color: colors.textMuted, fontFamily: 'monospace' }}>
+            Reference embeddings unavailable for this local genome. Imported gene IDs are local to the record and cannot identify catalog embeddings.
+          </div>
+        ) : loading ? (
           <div style={{ color: colors.textMuted, fontFamily: 'monospace' }}>Loading embeddings…</div>
         ) : genesWithEmbeddings.length === 0 ? (
           <div style={{ color: colors.textMuted, fontFamily: 'monospace' }}>

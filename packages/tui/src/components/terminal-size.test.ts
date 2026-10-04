@@ -1,7 +1,20 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { clampOverlayWidth, MIN_COLUMNS, MIN_ROWS } from './terminal-size';
+import { PassThrough } from 'node:stream';
+import { clampOverlayWidth, readTerminalSize, MIN_COLUMNS, MIN_ROWS } from './terminal-size';
+
+describe('readTerminalSize', () => {
+  it('keeps dimensions unknown for a real pipe', () => {
+    expect(readTerminalSize(new PassThrough())).toEqual({ columns: undefined, rows: undefined });
+    expect(readTerminalSize(undefined)).toEqual({ columns: undefined, rows: undefined });
+  });
+
+  it('accepts numeric dimensions and ignores nonnumeric properties', () => {
+    expect(readTerminalSize({ columns: 160, rows: 48 })).toEqual({ columns: 160, rows: 48 });
+    expect(readTerminalSize({ columns: '80', rows: null })).toEqual({ columns: undefined, rows: undefined });
+  });
+});
 
 /**
  * The TUI must not fall apart in a narrow window.

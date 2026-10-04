@@ -10,6 +10,7 @@ import { SequenceGrid } from './SequenceGrid';
 import { Model3DView } from './Model3DView';
 import { GeneMap } from './GeneMap';
 import { Footer } from './Footer';
+import { readTerminalSize } from './terminal-size';
 import { HelpOverlay } from './HelpOverlay';
 import { AAKeyOverlay } from './AAKeyOverlay';
 import { SearchOverlay } from './SearchOverlay';
@@ -376,9 +377,10 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       // `??` only substitutes for null/undefined, so a pty reporting 0 columns
       // (no controlling terminal, some CI harnesses) used to pass 0 straight
       // through and take the layout negative. Validate instead of coalescing.
+      const { columns, rows } = readTerminalSize(stdout);
       setTerminalSize(
-        sanitizeTerminalDimension(stdout.columns, DEFAULT_TERMINAL_COLS),
-        sanitizeTerminalDimension(stdout.rows, DEFAULT_TERMINAL_ROWS),
+        sanitizeTerminalDimension(columns, DEFAULT_TERMINAL_COLS),
+        sanitizeTerminalDimension(rows, DEFAULT_TERMINAL_ROWS),
       );
     };
 

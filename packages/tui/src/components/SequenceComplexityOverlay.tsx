@@ -25,7 +25,8 @@ const MAX_COMPLEXITY_CACHE = 12;
 
 function compressionRatio(seq: string): number {
   if (!seq.length) return 0;
-  const compressed = gzip(seq);
+  // Retain the compression scores used before pako 3 changed its hash strategy.
+  const compressed = gzip(seq, { legacyHash: true });
   return compressed.length / seq.length;
 }
 

@@ -1311,16 +1311,13 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     const zoomIn = () => {
       const refs = getReadyRefs();
       if (!refs) return;
-      // dollyIn/dollyOut are internal OrbitControls methods, not in public typings
-      (refs.controls as OrbitControls & { dollyIn?: (scale: number) => void }).dollyIn?.(1.1);
-      refs.controls.update();
+      refs.controls.dollyIn(1 / 1.1);
       requestRender();
     };
     const zoomOut = () => {
       const refs = getReadyRefs();
       if (!refs) return;
-      (refs.controls as OrbitControls & { dollyOut?: (scale: number) => void }).dollyOut?.(1.1);
-      refs.controls.update();
+      refs.controls.dollyOut(1 / 1.1);
       requestRender();
     };
 

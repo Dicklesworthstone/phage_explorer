@@ -10,6 +10,6 @@
   "dependencies": {
     "@phage-explorer/db-schema": "workspace:*",
     "@phage-explorer/core": "workspace:*",
-    "drizzle-orm": "^0.38.2"
+    "drizzle-orm": "^0.45.3"
   }
 }

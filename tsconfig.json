@@ -11,7 +11,8 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "ignoreDeprecations": "5.0",
+    "ignoreDeprecations": "6.0",
+    "types": ["bun"],
     "baseUrl": ".",
     "paths": {
       "@phage-explorer/core": ["packages/core/src"],

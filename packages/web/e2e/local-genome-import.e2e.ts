@@ -65,6 +65,11 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     await expectExplorerIdentity(page, info);
     const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
     if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    // Warm the real catalog corpus before importing genes whose IDs start at 1.
+    await palette(page, 'Fold quickview');
+    const fold = page.getByTestId('overlay-foldQuickview');
+    await expect(fold).toContainText('Nearest neighbors');
+    await page.keyboard.press('Escape');
     let overlay = await importPanel(page);
     await overlay.getByLabel('Choose genome file').setInputFiles({ name: 'private.gb', mimeType: 'text/plain', buffer: Buffer.from(GENBANK) });
     await expect(overlay.getByRole('status')).toContainText('File loaded locally');
@@ -98,6 +103,11 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     await page.keyboard.press('Control+Shift+y');
     await expect(page.getByTestId('overlay-phylodynamics')).toContainText('Reference data unavailable for this local genome');
     expect(requests.slice(requestsBeforeReference).some(request => /ncbi|serratus/.test(request.url))).toBe(false);
+    await page.keyboard.press('Escape');
+    await palette(page, 'Fold quickview');
+    await expect(fold).toContainText('Reference embeddings unavailable for this local genome');
+    await expect(fold).not.toContainText('Nearest neighbors');
+    await expect(fold).not.toContainText('Novelty:');
     await page.keyboard.press('Escape');
     await page.keyboard.press('v');
     await page.getByRole('button', { name: 'Export local data: genome bundle' }).click();

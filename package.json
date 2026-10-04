@@ -1,6 +1,6 @@
 {
   "name": "phage-explorer",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Terminal UI for browsing, visualizing, and analyzing bacteriophage genetic data with color-coded sequences and 3D ASCII models.",
   "license": "MIT",
   "bin": {
@@ -46,21 +46,18 @@
     "wasm:test": "cd packages/wasm-compute && RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release"
   },
   "devDependencies": {
-    "@huggingface/transformers": "4.2.0",
-    "@types/bun": "^1.3.6",
-    "@types/pako": "^2.0.4",
-    "@types/react": "^19.2.8",
-    "@types/three": "^0.182.0",
-    "@vercel/og": "^0.6.2",
-    "eslint": "^9.39.2",
-    "playwright": "^1.57.0",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
-    "sharp": "^0.34.5",
-    "typescript": "^5.9.3",
-    "typescript-eslint": "^8.53.0"
+    "@huggingface/transformers": "4.3.0",
+    "@types/bun": "^1.4.2",
+    "@types/react": "^19.3.0",
+    "@types/three": "^0.186.0",
+    "@vercel/og": "1.0.1",
+    "eslint": "^10.12.0",
+    "playwright": "^1.63.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "sharp": "^0.35.5",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.0"
   },
-  "patchedDependencies": {
-    "ink@6.8.0": "patches/ink@6.8.0.patch"
-  }
+  "patchedDependencies": {}
 }

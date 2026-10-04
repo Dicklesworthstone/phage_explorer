@@ -219,7 +219,8 @@ function calculateKLDivergenceDense(p: Float32Array, q: Float32Array): number {
 function calculateCompressionRatio(sequence: string): number {
   if (sequence.length === 0) return 1;
   try {
-    const compressed = deflate(sequence);
+    // Compression length is a scientific score. Preserve pako 2's hash strategy.
+    const compressed = deflate(sequence, { legacyHash: true });
     // Guard against empty compressed output (shouldn't happen, but defensive)
     if (compressed.length === 0) return 1;
     return sequence.length / compressed.length;

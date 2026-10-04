@@ -25,6 +25,6 @@
     "test": "RCH_CARGO_WRAPPER_BYPASS=1 cargo test --release"
   },
   "devDependencies": {
-    "wasm-pack": "^0.13.1"
+    "wasm-pack": "^0.15.0"
   }
 }

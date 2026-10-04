@@ -12,6 +12,7 @@ import { parseArgs, stripVTControlCharacters } from 'node:util';
 import { lstat, writeFile } from 'node:fs/promises';
 import path from 'path';
 import { homedir } from 'os';
+import { version } from '../../../package.json';
 
 function terminalLabel(value: string): string {
   return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '�');
@@ -117,6 +118,10 @@ async function warnIfShadowedDatabase(inUse: string): Promise<void> {
 }
 
 async function main() {
+  if (Bun.argv[2] === '--version' || Bun.argv[2] === '-V') {
+    process.stdout.write(`phage-explorer ${version}\n`);
+    return;
+  }
   // Headless scientific workflows must not require a catalog or initialize Ink.
   if (Bun.argv[2] === 'host-metabolism') {
     const { runHostMetabolismProcess } = await import('./commands/host-metabolism');
@@ -144,6 +149,7 @@ async function main() {
     process.stdout.write('Phage Explorer\n\n' +
       'Usage: phage-explorer [--import FILE] [--no-catalog]\n' +
       '                      [--allow-accession-collisions] [--export-bundle NEW_FILE]\n\n' +
+      'phage-explorer --version prints the release version without opening a catalog.\n\n' +
       'Import DNA FASTA, GenBank or a version 1 local genome bundle (up to 10 MiB).\n' +
       'Local records stay in session memory; the curated database is read-only during import.\n' +
       '--no-catalog opens only the imported records. Conflicting accessions require an\n' +

@@ -15,7 +15,7 @@ export function datingFixture(): TemporalDataset {
 }
 const close = (actual: number, expected: number, tolerance = 1e-8) => assert.ok(Math.abs(actual-expected)<=tolerance,`${actual} != ${expected}`);
 function chronological(result: DatedTreeResult) {
-  assert.equal(result.status,'fitted',result.reason??undefined);
+  assert.equal(result.status,'fitted',result.reason??'Expected a fitted chronology');
   const byId = new Map(result.nodes.map(n=>[n.id,n]));
   for(const node of result.nodes) {
     if(node.parentId)assert.ok(node.date>=byId.get(node.parentId)!.date);
