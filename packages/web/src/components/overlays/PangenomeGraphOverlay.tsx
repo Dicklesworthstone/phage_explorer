@@ -1,6 +1,7 @@
 /** Private sequence-graph workspace, with the existing annotation illustration kept explicitly separate. */
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { constructPangenomeGraph, exportPangenomeOriginalFasta, mapPangenomeNodeToOriginal, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
+  DEFAULT_AFFINE_PENALTIES, resolveAffinePenalties, type AffinePenalties,
   type AlignmentGraphOptions, type AlignmentPangenome, type AlignmentVariant } from '@phage-explorer/core';
 import { useHotkey } from '../../hooks';
 import { usePhageStore } from '@phage-explorer/state';
@@ -103,7 +104,13 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
   const originalSegments = graph && selectedNode?.pathIds.includes(pathId)
     ? mapPangenomeNodeToOriginal(graph, pathId, selectedNode.id) : null;
   const pathName = (id: string) => graph?.paths.find(p => p.id === id)?.sequenceId ?? id;
-  const changed = !!draft && !!accepted && (['referenceId', 'alignment', 'terminalGaps', 'normalization'] as const).some(key => draft[key] !== accepted.options[key]);
+  const changed = !!draft && !!accepted && ((['referenceId', 'alignment', 'terminalGaps', 'normalization'] as const).some(key => draft[key] !== accepted.options[key]) ||
+    (['mismatch', 'gapOpen', 'gapExtend'] as const).some(key => draft.affinePenalties?.[key] !== accepted.options.affinePenalties?.[key]));
+  let penaltyError: string | null = null;
+  if (draft?.alignment === 'affine') {
+    try { resolveAffinePenalties(draft.affinePenalties); }
+    catch (cause) { penaltyError = cause instanceof Error ? cause.message : String(cause); }
+  }
   const blockPages = Math.max(1, Math.ceil((graph?.diagnostics.blocks ?? 0) / BLOCKS_PER_PAGE));
   const variantPages = Math.max(1, Math.ceil(variants.length / 100)), currentVariantPage = Math.min(variantPage, variantPages - 1);
   const loadFile = (file: File | undefined) => {
@@ -180,7 +187,7 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       {accepted && draft && <>
         <h3 data-testid="pangenome-input-name">{accepted.input.name}</h3>
         <p>{accepted.input.sequences.length} sequences loaded; {accepted.input.source === 'demo' ? 'synthetic example, not observations' : 'user-supplied data, not independently validated'}.</p>
-        <form onSubmit={event => { event.preventDefault(); void session.run({ kind: 'analyze', input: accepted.input, options: draft }); }}>
+        <form onSubmit={event => { event.preventDefault(); if (!penaltyError) void session.run({ kind: 'analyze', input: accepted.input, options: draft }); }}>
           <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem', border: `1px solid ${colors.borderLight}` }}>
             <legend>Explicit graph construction settings</legend>
             <label htmlFor="pangenome-reference">Pangenome reference sequence</label>
@@ -190,13 +197,31 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
             <label htmlFor="pangenome-alignment">Pangenome alignment mode</label>
             <select id="pangenome-alignment" value={draft.alignment} onChange={event => {
               const alignment = event.target.value as AlignmentGraphOptions['alignment'];
-              const { normalization: _normalization, ...base } = draft;
-              setDraft(alignment === 'wavefront' ? { ...draft, alignment } : { ...base, alignment });
+              const { normalization: _normalization, affinePenalties: _penalties, ...base } = draft;
+              setDraft({ ...base, alignment,
+                ...(['wavefront', 'affine'].includes(alignment) && draft.normalization ? { normalization: draft.normalization } : {}),
+                ...(alignment === 'affine' ? { affinePenalties: { ...(draft.affinePenalties ?? DEFAULT_AFFINE_PENALTIES) } } : {}),
+              });
             }}>
               <option value="provided">Use supplied multiple-sequence alignment</option><option value="global">Align ungapped loci (exact global unit-edit alignment)</option>
-              <option value="wavefront">Align related collinear genomes (exact wavefront)</option>
+              <option value="wavefront">Align related collinear genomes (exact unit-edit wavefront)</option>
+              <option value="affine">Align with separate gap opening and extension costs (exact affine)</option>
             </select>
-            {draft.alignment === 'wavefront' && <>
+            {draft.alignment === 'affine' && <>
+              <p>Matches cost 0; substitutions cost mismatch; a gap of L bases costs opening + L × extension.
+                These are explicit model choices, not calibrated biological probabilities.</p>
+              {([['mismatch', 'Mismatch cost'], ['gapOpen', 'Gap opening cost'], ['gapExtend', 'Gap extension cost']] as const).map(([key, label]) =>
+                <label key={key} htmlFor={`pangenome-affine-${key}`}>{label}
+                  <input id={`pangenome-affine-${key}`} type="number" min={key === 'gapOpen' ? 0 : 1} max={64} step={1}
+                    value={Number.isFinite(draft.affinePenalties?.[key]) ? draft.affinePenalties![key] : ''}
+                    onChange={event => setDraft({ ...draft, affinePenalties: {
+                      ...(draft.affinePenalties ?? DEFAULT_AFFINE_PENALTIES),
+                      [key]: event.target.value.trim() ? Number(event.target.value) : NaN,
+                    } as AffinePenalties })} />
+                </label>)}
+              {penaltyError && <p role="alert">{penaltyError}</p>}
+            </>}
+            {['wavefront', 'affine'].includes(draft.alignment) && <>
               <label htmlFor="pangenome-normalization">Strand and origin handling</label>
               <select id="pangenome-normalization" value={draft.normalization ?? ''} onChange={event => {
                 const { normalization: _normalization, ...base } = draft;
@@ -217,11 +242,11 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
               <option value="missing">Missing coverage: exclude terminal differences</option><option value="alleles">Complete sequences: treat terminal gaps as alleles</option>
             </select>
             <p>Equal lengths do not establish homology. Global mode is a bounded locus aligner, not a rearrangement-aware whole-genome method.
-              Wavefront mode computes an exact unit-edit alignment conditional on the selected normalization. Internal inversions and rearrangements remain unsupported.
-              It permits 4 million frontier entries and 50 million symbol comparisons per pair, with dataset totals of 12 million and 100 million.
-              Divergent inputs exceeding these budgets require an external alignment, not an approximate fallback.
+              Wavefront mode uses unit-edit costs; affine mode uses the submitted mismatch/opening/extension costs. Both are exact conditional on the selected normalization. Internal inversions and rearrangements remain unsupported.
+              Each permits 4 million frontier entries and 50 million symbol comparisons per pair, with dataset totals of 12 million and 100 million.
+              Affine search also caps score layers at 100,000 per pair and 300,000 per dataset. Inputs exceeding budgets require an external alignment, not an approximate fallback.
               {changed && ' Edited settings are not applied: existing results and exports retain their submitted parameters.'}</p>
-            <button type="submit" disabled={draft.normalization === 'circular' && draft.terminalGaps !== 'alleles'}>Build sequence graph</button>
+            <button type="submit" disabled={!!penaltyError || draft.normalization === 'circular' && draft.terminalGaps !== 'alleles'}>Build sequence graph</button>
           </fieldset>
         </form>
         <div><button type="button" disabled={busy} onClick={() => save('input')}>Export pangenome dataset</button>
@@ -229,7 +254,7 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           <button type="button" disabled={busy || !graph} onClick={() => save('gfa')}>Export sequence graph GFA</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('original')}>Export original sequence FASTA</button></div>
-        <PangenomeCdsPanel accepted={accepted} options={draft} localGenomes={localGenomes} busy={busy} run={session.run} />
+        <PangenomeCdsPanel accepted={accepted} options={draft} localGenomes={localGenomes} busy={busy || !!penaltyError} run={session.run} />
       </>}
       {phage && <section aria-label="Annotation illustration" style={{ border: `1px solid ${colors.borderLight}`, padding: '.75rem' }}>
         <h3>Separate educational illustration</h3>
@@ -261,6 +286,20 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
             </tr>)}</tbody>
           </table>
         </details>}
+        {graph.diagnostics.affine && <section aria-label="Affine alignment scores">
+          <h4>Gap-affine model costs and work</h4>
+          <p>Submitted mismatch/opening/extension: {graph.diagnostics.affine.penalties.mismatch} / {graph.diagnostics.affine.penalties.gapOpen} / {graph.diagnostics.affine.penalties.gapExtend}.
+            {' '}{graph.diagnostics.affine.states.toLocaleString()} frontier entries, {graph.diagnostics.affine.comparisons.toLocaleString()} symbol comparisons,
+            {' '}{graph.diagnostics.affine.scoreLayers.toLocaleString()} score layers. Scores are costs, not edit distances or event counts.</p>
+          <p>Search cost is optimal at the chosen strand/origin. Restoring a circular reference origin may split a gap between the sequence ends;
+            the reference-origin cost explicitly includes that change. Neither score asserts an exhaustive circular optimum or a jointly optimal multiple alignment.</p>
+          <div style={{ overflowX: 'auto' }}><table aria-label="Affine alignment costs"><thead><tr><th>Sequence</th><th>Search cost</th><th>Reference-origin cost</th><th>Frontier entries</th></tr></thead>
+            <tbody>{graph.diagnostics.affine.pairs.map(pair => <tr key={pair.sequenceId}>
+              <td>{accepted?.input.sequences.find(row => row.id === pair.sequenceId)?.description || pair.sequenceId}</td>
+              <td>{pair.score}</td><td>{pair.representationScore}</td><td>{pair.states.toLocaleString()}</td>
+            </tr>)}</tbody>
+          </table></div>
+        </section>}
         {graph.diagnostics.normalization && <section aria-label="Sequence normalization evidence">
           <h4>Submitted-to-aligned coordinate transforms</h4>
           <p>The reference retains its submitted origin. For each query, reverse-complement when strand is −, then rotate left by the

@@ -5,7 +5,7 @@ import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { ALIGNMENT_GRAPH_LIMITS, buildAlignmentPangenome, createAlignmentPangenomeRecord, exportAlignmentGfa,
   exportPangenomeAlignment, exportPangenomeOriginalFasta, parsePangenomeInput, replayAlignmentPangenome, serializePangenomeInput,
-  createAnnotatedAlignmentPangenome, type PangenomeCdsSelection,
+  createAnnotatedAlignmentPangenome, DEFAULT_AFFINE_PENALTIES, resolveAffinePenalties, type PangenomeCdsSelection,
   type AlignmentGraphOptions, type AlignmentPangenome } from '../packages/core/src/analysis/alignment-pangenome';
 import { serializeAnalysisRecord, type AnalysisRecord } from '../packages/core/src/analysis-result';
 import { GENOME_IMPORT_LIMITS, importLocalGenomes, type GenomeInput } from '../packages/core/src/genome-import';
@@ -17,7 +17,8 @@ export const PANGENOME_HELP = `Local pangenome graphs, coding consequences and v
 bun scripts/pangenome.ts inspect --input genomes.fasta
 bun scripts/pangenome.ts inspect-annotations --annotation reference.gb
 bun scripts/pangenome.ts build --input genomes.fasta --reference SEQUENCE_ID
-  --alignment provided|global|wavefront --output experiment.json [--terminal-gaps missing|alleles]
+  --alignment provided|global|wavefront|affine --output experiment.json [--terminal-gaps missing|alleles]
+  [--mismatch 4 --gap-open 6 --gap-extend 1] (affine mode only)
   [--normalization none|strand|circular] [--annotation reference.gb]
   [--annotation-record ACCESSION_OR_CONTENT_ID] [--gene-ids 1,2,3]
 bun scripts/pangenome.ts annotate --experiment experiment.json --annotation reference.gb
@@ -30,7 +31,10 @@ Input: 2-24 DNA sequences in FASTA or pangenome dataset JSON (not GenBank).
 provided: use an existing multiple-sequence alignment; equal lengths alone do not establish homology.
 global: exact quadratic unit-edit locus alignment, capped at 12 million DP cells.
 wavefront: exact unit-edit alignment for closely related collinear genomes with bounded work.
-Computed modes retain supplied strands/origins unless wavefront normalization is requested.
+affine: exact gap-affine alignment; a length-L gap costs gap-open + L * gap-extend.
+Mismatch/extension must be integers 1-64, opening 0-64. Affine costs are not edit distances
+or calibrated biological likelihoods. Both wavefront and affine support normalization.
+Computed modes retain supplied strands/origins unless normalization is requested.
 strand: orient whole sequences; circular: normalize strand/origin of complete circular inputs.
 Circular mode requires --terminal-gaps alleles. Anchor-based normalization is not exhaustive
 circular optimization or internal inversion detection; weak/conflicting anchors are rejected.
@@ -66,7 +70,7 @@ export function parsePangenomeCommand(args: readonly string[]): PangenomeCommand
   if (!['inspect', 'inspect-annotations', 'build', 'annotate', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, inspect-annotations, build, annotate, verify or export. Use --help for usage.');
   const annotationFlags = ['--annotation', '--annotation-record', '--gene-ids'];
   const allowed = type === 'inspect' ? ['--input'] : type === 'inspect-annotations' ? ['--annotation'] : type === 'build'
-    ? ['--input', '--reference', '--alignment', '--output', '--terminal-gaps', '--normalization', ...annotationFlags]
+    ? ['--input', '--reference', '--alignment', '--output', '--terminal-gaps', '--normalization', '--mismatch', '--gap-open', '--gap-extend', ...annotationFlags]
     : type === 'annotate' ? ['--experiment', '--output', ...annotationFlags]
       : type === 'verify' ? ['--experiment', '--output'] : ['--experiment', '--format', '--output'];
   const values = new Map<string, string>();
@@ -97,15 +101,28 @@ export function parsePangenomeCommand(args: readonly string[]): PangenomeCommand
   }
   if (!values.has('--annotation') && (values.has('--annotation-record') || values.has('--gene-ids'))) throw new Error('CDS selection requires --annotation.');
   const alignment = required('--alignment'), terminalGaps = values.get('--terminal-gaps') ?? 'missing';
-  if (alignment !== 'provided' && alignment !== 'global' && alignment !== 'wavefront') throw new Error('--alignment must be provided, global or wavefront.');
+  if (alignment !== 'provided' && alignment !== 'global' && alignment !== 'wavefront' && alignment !== 'affine') throw new Error('--alignment must be provided, global, wavefront or affine.');
   if (terminalGaps !== 'missing' && terminalGaps !== 'alleles') throw new Error('--terminal-gaps must be missing or alleles.');
   const rawNormalization = values.get('--normalization');
   const normalization = rawNormalization === 'none' ? undefined : rawNormalization;
   if (normalization !== undefined && normalization !== 'strand' && normalization !== 'circular') throw new Error('--normalization must be none, strand or circular.');
-  if (normalization && alignment !== 'wavefront') throw new Error('Normalization requires --alignment wavefront.');
+  if (normalization && alignment !== 'wavefront' && alignment !== 'affine') throw new Error('Normalization requires --alignment wavefront or affine.');
   if (normalization === 'circular' && terminalGaps !== 'alleles') throw new Error('Complete circular inputs require --terminal-gaps alleles.');
+  const penaltyFlags = ['--mismatch', '--gap-open', '--gap-extend'];
+  if (alignment !== 'affine' && penaltyFlags.some(flag => values.has(flag))) throw new Error('Penalty flags require --alignment affine.');
+  const penalty = (flag: string, fallback: number) => {
+    const value = values.get(flag);
+    if (value !== undefined && !/^\d+$/.test(value)) throw new Error(`${flag} must be an integer.`);
+    return value === undefined ? fallback : Number(value);
+  };
+  const affinePenalties = alignment === 'affine' ? resolveAffinePenalties({
+    mismatch: penalty('--mismatch', DEFAULT_AFFINE_PENALTIES.mismatch),
+    gapOpen: penalty('--gap-open', DEFAULT_AFFINE_PENALTIES.gapOpen),
+    gapExtend: penalty('--gap-extend', DEFAULT_AFFINE_PENALTIES.gapExtend),
+  }) : undefined;
   return { type: 'build', inputPath: required('--input'), outputPath: required('--output'),
-    options: { referenceId: required('--reference'), alignment, terminalGaps, ...(normalization ? { normalization } : {}) },
+    options: { referenceId: required('--reference'), alignment, terminalGaps, ...(normalization ? { normalization } : {}),
+      ...(affinePenalties ? { affinePenalties } : {}) },
     ...(values.has('--annotation') ? { annotation: annotation() } : {}) };
 }
 
@@ -143,6 +160,7 @@ function summarize(graph: AlignmentPangenome, record: AnalysisRecord, verified: 
     options: graph.options, sequences: graph.paths.length, referenceLength: graph.referenceLength,
     columns: graph.diagnostics.columns, nodes: graph.nodes.length, edges: graph.edges.length, variants: graph.variants.length,
     ...(graph.diagnostics.wavefront ? { wavefront: graph.diagnostics.wavefront } : {}),
+    ...(graph.diagnostics.affine ? { affine: graph.diagnostics.affine } : {}),
     ...(graph.diagnostics.normalization ? { normalization: graph.diagnostics.normalization } : {}),
     ...(cds ? { coding: { ...cds.summary, annotationAccession: cds.reference.accession, annotationContentId: cds.reference.contentId,
       cdsResultId: cds.record.resultId, effects: Object.fromEntries(effects), interpretation: 'Whole-CDS sequence consequences; effect labels may overlap. No functional or phenotype inference.' } } : {}),
