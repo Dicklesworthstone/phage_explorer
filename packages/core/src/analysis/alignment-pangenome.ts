@@ -3,10 +3,12 @@
  * Input orientation/homology is supplied by the alignment, not inferred from graph topology.
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { alignWavefront, WAVEFRONT_LIMITS } from './wavefront-alignment';
 
 export const ALIGNMENT_GRAPH_LIMITS = {
   bytes: 4 * 1024 * 1024, sequences: 24, columns: 250000, cells: 4000000,
   alignmentCells: 12000000, blocks: 4000, nodes: 12000, edges: 24000, variants: 12000,
+  wavefrontStates: 12000000, wavefrontComparisons: 100000000,
 } as const;
 export interface PangenomeSequence { id: string; description: string; sequence: string }
 export interface PangenomeInput {
@@ -15,7 +17,7 @@ export interface PangenomeInput {
 }
 export interface AlignmentGraphOptions {
   referenceId: string;
-  alignment: 'provided' | 'global';
+  alignment: 'provided' | 'global' | 'wavefront';
   terminalGaps: 'missing' | 'alleles';
 }
 export interface AlignmentGraphNode {
@@ -36,6 +38,8 @@ export interface AlignmentPangenome {
   diagnostics: {
     columns: number; blocks: number; allGapColumns: number; sharedUnambiguousBases: number;
     alignmentCells: number;
+    wavefront?: { states: number; comparisons: number;
+      pairs: Array<{ sequenceId: string; distance: number; states: number; comparisons: number }> };
     comparisons: Array<{ pathId: string; comparableColumns: number; ambiguousColumns: number; missingTerminalColumns: number }>;
     limitations: string[];
   };
@@ -111,7 +115,7 @@ export function resolveAlignmentGraphOptions(input: PangenomeInput, options: Par
     throw new Error('Unsupported pangenome parameters.');
   }
   const result = { referenceId: input.sequences[0].id, alignment: 'provided', terminalGaps: 'missing', ...options };
-  if (!input.sequences.some(s => s.id === result.referenceId) || !['provided', 'global'].includes(result.alignment) ||
+  if (!input.sequences.some(s => s.id === result.referenceId) || !['provided', 'global', 'wavefront'].includes(result.alignment) ||
     !['missing', 'alleles'].includes(result.terminalGaps)) throw new Error('Invalid reference, alignment mode or terminal-gap policy.');
   return result as AlignmentGraphOptions;
 }
@@ -148,19 +152,35 @@ export function alignPangenomePair(reference: string, query: string): { referenc
   }
   return { reference: a.reverse().join(''), query: b.reverse().join(''), distance };
 }
-function prepareAlignment(input: PangenomeInput, options: AlignmentGraphOptions): { rows: PangenomeSequence[]; cells: number } {
+function prepareAlignment(input: PangenomeInput, options: AlignmentGraphOptions): {
+  rows: PangenomeSequence[]; cells: number; wavefront?: AlignmentPangenome['diagnostics']['wavefront'];
+} {
   if (options.alignment === 'provided') {
     if (input.sequences.some(s => s.sequence.length !== input.sequences[0].sequence.length)) {
       throw new Error('A supplied alignment requires equal column counts. Choose global locus alignment for unaligned input.');
     }
     return { rows: input.sequences, cells: 0 };
   }
-  if (input.sequences.some(s => s.sequence.includes('-'))) throw new Error('Global locus alignment accepts ungapped sequences only.');
+  if (input.sequences.some(s => s.sequence.includes('-'))) throw new Error('Computed alignment accepts ungapped sequences only.');
   const reference = input.sequences.find(s => s.id === options.referenceId)!.sequence;
-  const cells = input.sequences.reduce((n, s) => n + (s.sequence === reference ? 0 : (reference.length + 1) * (s.sequence.length + 1)), 0);
+  const wavefront: AlignmentPangenome['diagnostics']['wavefront'] = options.alignment === 'wavefront'
+    ? { states: 0, comparisons: 0, pairs: [] } : undefined;
+  const cells = wavefront ? 0 : input.sequences.reduce((n, s) => n + (s.sequence === reference ? 0 : (reference.length + 1) * (s.sequence.length + 1)), 0);
   if (cells > ALIGNMENT_GRAPH_LIMITS.alignmentCells) throw new Error('Global locus alignment exceeds the total 12,000,000 DP-cell budget. Import a supplied alignment instead.');
   const pairs = input.sequences.map(row => {
-    const pair = alignPangenomePair(reference, row.sequence);
+    let pair: { reference: string; query: string; distance: number };
+    if (wavefront) {
+      const result = row.sequence === reference
+        ? { reference, query: row.sequence, distance: 0, states: 0, comparisons: 0 }
+        : alignWavefront(reference, row.sequence, {
+          maxStates: Math.min(WAVEFRONT_LIMITS.states, ALIGNMENT_GRAPH_LIMITS.wavefrontStates - wavefront.states),
+          maxComparisons: Math.min(WAVEFRONT_LIMITS.comparisons, ALIGNMENT_GRAPH_LIMITS.wavefrontComparisons - wavefront.comparisons),
+        });
+      wavefront.states += result.states; wavefront.comparisons += result.comparisons;
+      if (row.id !== options.referenceId) wavefront.pairs.push({ sequenceId: row.id,
+        distance: result.distance, states: result.states, comparisons: result.comparisons });
+      pair = result;
+    } else pair = alignPangenomePair(reference, row.sequence);
     const insertions = Array<string>(reference.length + 1).fill(''), bases: string[] = [];
     let at = 0;
     for (let column = 0; column < pair.reference.length; column++) {
@@ -174,7 +194,7 @@ function prepareAlignment(input: PangenomeInput, options: AlignmentGraphOptions)
   if (columns > ALIGNMENT_GRAPH_LIMITS.columns || columns * pairs.length > ALIGNMENT_GRAPH_LIMITS.cells) throw new Error('The merged alignment exceeds column/cell limits.');
   // Independent insertions at the same reference boundary are left-justified.
   // This deterministic display convention does NOT assert their mutual homology.
-  return { cells, rows: pairs.map(({ row, insertions, bases }) => ({ ...row,
+  return { cells, ...(wavefront ? { wavefront } : {}), rows: pairs.map(({ row, insertions, bases }) => ({ ...row,
     sequence: widths.map((width, at) => insertions[at].padEnd(width, '-') + (bases[at] ?? '')).join('') })) };
 }
 const known = (base: string) => base === 'A' || base === 'C' || base === 'G' || base === 'T' || base === '-';
@@ -190,7 +210,7 @@ function bounds(sequence: string): [number, number] {
  */
 export function buildAlignmentPangenome(value: PangenomeInput, settings: Partial<AlignmentGraphOptions> = {}): AlignmentPangenome {
   const input = validatePangenomeInput(value), options = resolveAlignmentGraphOptions(input, settings);
-  const { rows, cells } = prepareAlignment(input, options);
+  const { rows, cells, wavefront } = prepareAlignment(input, options);
   const ref = rows.find(s => s.id === options.referenceId)!.sequence, columns = ref.length;
   const referenceOffsets = new Uint32Array(columns + 1);
   for (let c = 0; c < columns; c++) referenceOffsets[c + 1] = referenceOffsets[c] + (ref[c] === '-' ? 0 : 1);
@@ -285,14 +305,16 @@ export function buildAlignmentPangenome(value: PangenomeInput, settings: Partial
   const sorted = [...variants.values()].sort((a, b) => a.referenceStart - b.referenceStart || a.referenceEnd - b.referenceEnd || order(a.alternate, b.alternate));
   sorted.forEach((variant, i) => { variant.id = `v${i + 1}`; variant.pathIds = [...new Set(variant.pathIds)]; });
   return { options, alignment: rows, referenceLength: referenceOffsets[columns], nodes, edges: [...edges.values()], paths, variants: sorted,
-    diagnostics: { columns, blocks, allGapColumns, alignmentCells: cells, comparisons,
+    diagnostics: { columns, blocks, allGapColumns, alignmentCells: cells, comparisons, ...(wavefront ? { wavefront } : {}),
       sharedUnambiguousBases: nodes.filter(node => node.core).reduce((n, node) => n + node.sequence.length, 0),
       limitations: [
         'Sequence differences are conditional on the supplied orientation/alignment. No donors, gene impacts, inversions, recombination breakpoints or population frequencies are inferred.',
         'Adjacent unequal alignment columns form one local allele; alleles are not repeat-aware left-normalized or a VCF representation. Input sample counts are not prevalence estimates.',
         'IUPAC ambiguity is retained in graph paths but excluded from variant calls. A gap is not an ambiguous nucleotide.',
         options.terminalGaps === 'missing' ? 'Terminal gaps are treated as missing coverage and excluded from variant calls.' : 'Terminal gaps are treated as alleles by explicit user choice; incomplete assemblies can create false terminal differences.',
-        options.alignment === 'global' ? 'Exact unit-cost global locus alignment with deterministic tie-breaking; independent insertion slots are left-justified, without asserting insertion homology. Not a whole-genome rearrangement aligner.' : 'The input is interpreted as an existing multiple-sequence alignment; equal column counts alone do not establish biological homology.',
+        options.alignment === 'wavefront'
+          ? 'Exact unit-edit wavefront alignment for closely related collinear sequences in the supplied orientation and origin. No affine-gap model, reverse-strand search, circular-origin normalization or rearrangement inference. Optimal ties use a deterministic wavefront rule; insertion slots are left-justified without asserting mutual homology. Work budgets fail explicitly, never approximate.'
+          : options.alignment === 'global' ? 'Exact unit-cost global locus alignment with deterministic tie-breaking; independent insertion slots are left-justified, without asserting insertion homology. Not a whole-genome rearrangement aligner.' : 'The input is interpreted as an existing multiple-sequence alignment; equal column counts alone do not establish biological homology.',
         'Shared bases are exact unambiguous nodes traversed by every supplied sequence, not a universal species core genome.',
       ] } };
 }
@@ -310,6 +332,7 @@ export function exportPangenomeAlignment(graph: AlignmentPangenome): string {
   return graph.alignment.map(s => `>${s.id}${s.description ? ` ${s.description}` : ''}\n${s.sequence.match(/.{1,80}/g)!.join('\n')}\n`).join('');
 }
 const METHOD = { id: 'alignment-pangenome', version: '2', implementation: 'column-partition sequence DAG; exact reference-relative alleles; optional unit-edit global star alignment' };
+const WAVEFRONT_METHOD = { id: 'alignment-pangenome', version: '3', implementation: 'column-partition sequence DAG; exact reference-relative alleles; bounded unit-edit wavefront star alignment' };
 const REFERENCES = [{ id: 'gfa', version: '1.0', description: 'Sequence segments S, zero-overlap links L and fully spelled input paths P; ASCII path names.' }];
 export async function createAlignmentPangenomeRecord(input: PangenomeInput, graph: AlignmentPangenome): Promise<AnalysisRecord> {
   const data = validatePangenomeInput(input);
@@ -318,7 +341,7 @@ export async function createAlignmentPangenomeRecord(input: PangenomeInput, grap
     ? { label, value: analysisJson(value), kind: 'demo' as const, units: 'records' as const, coverage,
       limitations: graph.diagnostics.limitations, assumptions: ['Explicit synthetic sequence fixture, not catalog-derived evidence.'] }
     : { label, value: analysisJson(value), kind: 'sequence-score' as const, units: 'records' as const, coverage, limitations: graph.diagnostics.limitations };
-  return createAnalysisRecord({ method: METHOD, references: REFERENCES, seed: null,
+  return createAnalysisRecord({ method: graph.options.alignment === 'wavefront' ? WAVEFRONT_METHOD : METHOD, references: REFERENCES, seed: null,
     inputs: [{ id: 'sequences', accession: null, source: data.source, description: data.name, data: analysisJson(data) }],
     parameters: { ...graph.options }, fields: {
       graph: field('Alignment-derived sequence graph and exact input paths', { nodes: graph.nodes, edges: graph.edges, paths: graph.paths }),
@@ -327,8 +350,9 @@ export async function createAlignmentPangenomeRecord(input: PangenomeInput, grap
     } });
 }
 export async function replayAlignmentPangenome(content: string): Promise<{ input: PangenomeInput; graph: AlignmentPangenome; record: AnalysisRecord }> {
-  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id, methodVersion: METHOD.version });
-  if (saved.method.implementation !== METHOD.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(REFERENCES)) ||
+  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id });
+  const method = saved.parameters.alignment === 'wavefront' ? WAVEFRONT_METHOD : METHOD;
+  if (saved.method.version !== method.version || saved.method.implementation !== method.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(REFERENCES)) ||
     saved.seed !== null || saved.inputs.length !== 1 || saved.inputs[0].id !== 'sequences') throw new Error('Pangenome method, reference or input contract differs.');
   const input = validatePangenomeInput(saved.inputs[0].data);
   const graph = buildAlignmentPangenome(input, saved.parameters as Partial<AlignmentGraphOptions>);
