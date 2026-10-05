@@ -4,7 +4,8 @@
  * ACGT 15-mers select a strand/anchor; WFA is exact conditional on that anchor,
  * not an exhaustive optimum over all circular rotations or rearrangements.
  */
-import { alignWavefront, WAVEFRONT_LIMITS, type WavefrontAlignment, type WavefrontOptions } from './wavefront-alignment';
+import { alignWavefront, alignAffineWavefront, WAVEFRONT_LIMITS, type WavefrontAlignment, type WavefrontOptions,
+  type AffineWavefrontAlignment, type AffineWavefrontOptions } from './wavefront-alignment';
 
 export type SequenceNormalization = 'strand' | 'circular';
 /** normalized = rotateLeft(strand === '-' ? reverseComplement(original) : original, offset). */
@@ -130,6 +131,27 @@ function anchors(reference: Map<number, number>, query: Map<number, number>, ref
 
 export function alignNormalizedWavefront(reference: string, query: string, mode: SequenceNormalization,
   options: WavefrontOptions = {}): NormalizedWavefrontAlignment {
+  return normalizeAlignment(reference, query, mode, (a, b) => alignWavefront(a, b, options));
+}
+export interface NormalizedAffineWavefrontAlignment extends AffineWavefrontAlignment {
+  transform: SequenceTransform; normalization: NormalizationEvidence;
+  /** Linear cost after restoring the submitted reference origin. Rotating an
+   * alignment can split a gap across the ends, unlike the anchored search cost. */
+  representationScore: number;
+}
+export function alignNormalizedAffineWavefront(reference: string, query: string, mode: SequenceNormalization,
+  options: AffineWavefrontOptions = {}): NormalizedAffineWavefrontAlignment {
+  const out = normalizeAlignment(reference, query, mode, (a, b) => alignAffineWavefront(a, b, options));
+  let representationScore = 0, previous = '';
+  for (let at = 0; at < out.reference.length; at++) {
+    const a = out.reference[at], b = out.query[at], gap = a === '-' ? 'I' : b === '-' ? 'D' : '';
+    representationScore += gap ? out.penalties.gapExtend + (gap === previous ? 0 : out.penalties.gapOpen) : a === b ? 0 : out.penalties.mismatch;
+    previous = gap;
+  }
+  return { ...out, representationScore };
+}
+function normalizeAlignment<T extends { reference: string; query: string }>(reference: string, query: string,
+  mode: SequenceNormalization, align: (a: string, b: string) => T): T & { transform: SequenceTransform; normalization: NormalizationEvidence } {
   validateSequence(reference); validateSequence(query);
   if (mode !== 'strand' && mode !== 'circular') throw new Error('Unsupported sequence normalization mode.');
   const circular = mode === 'circular', rc = reverse(query);
@@ -159,7 +181,7 @@ export function alignNormalizedWavefront(reference: string, query: string, mode:
     evidence.limitations.push('Unique 15-mer support selects a heuristic strand/anchor, not a confidence value or an exhaustive optimum over orientations/origins. Internal inversions and rearrangements are unsupported.');
   }
   const oriented = strand === '+' ? query : rc;
-  const aligned = alignWavefront(rotate(reference, referenceStart), rotate(oriented, queryStart), options);
+  const aligned = align(rotate(reference, referenceStart), rotate(oriented, queryStart));
   // Restore the submitted reference origin by rotating ALIGNMENT COLUMNS, not
   // subtracting anchor coordinates. This accounts for indels before the origin.
   let split = 0, queryBeforeSplit = 0;
@@ -172,9 +194,9 @@ export function alignNormalizedWavefront(reference: string, query: string, mode:
       split++;
     }
   }
-  const result: NormalizedWavefrontAlignment = {
+  const result = {
     ...aligned, reference: rotate(aligned.reference, split), query: rotate(aligned.query, split),
-    transform: { strand, offset: (queryStart + queryBeforeSplit) % query.length }, normalization: evidence,
+    transform: { strand, offset: (queryStart + queryBeforeSplit) % query.length } as SequenceTransform, normalization: evidence,
   };
   if (result.reference.replaceAll('-', '') !== reference ||
       result.query.replaceAll('-', '') !== transformSequence(query, result.transform)) {
