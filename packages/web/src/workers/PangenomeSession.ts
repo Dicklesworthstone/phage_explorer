@@ -6,6 +6,7 @@ import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
 export type PangenomeRequest =
   | { kind: 'import'; content: string; filename: string }
+  | { kind: 'local-genomes'; input: PangenomeInput }
   | { kind: 'analyze'; input: PangenomeInput; options: AlignmentGraphOptions }
   | { kind: 'demo' };
 export interface PangenomeAccepted {
@@ -16,7 +17,33 @@ export type PangenomeMessage = { kind: 'progress'; phase: string } | { kind: 're
 export interface PangenomeSnapshot { accepted: PangenomeAccepted | null; busy: boolean; phase: string; error: string | null; notice: string | null }
 export type PangenomeWorker = Pick<Worker, 'postMessage' | 'terminate' | 'onmessage' | 'onerror' | 'onmessageerror'>;
 
+/** Snapshot chosen private sequences without catalog lookups or accession-based merging.
+ * Validation of full sequence payloads remains off-thread in executePangenomeRequest.
+ */
+export function pangenomeRequestFromLocalGenomes(genomes: readonly {
+  sequence: string; phage: { name: string; accession: string; localGenome?: { contentId: string } };
+}[], contentIds: readonly string[]): PangenomeRequest {
+  if (contentIds.length < 2 || contentIds.length > 24 || new Set(contentIds).size !== contentIds.length) {
+    throw new Error('Choose 2–24 distinct imported genomes.');
+  }
+  const sequences = contentIds.map(contentId => {
+    if (!/^[a-f0-9]{64}$/.test(contentId)) throw new Error('Invalid local genome content identity.');
+    const matches = genomes.filter(g => g.phage.localGenome?.contentId === contentId);
+    if (matches.length !== 1) throw new Error('A selected local genome is missing or duplicated. Choose the current inputs again.');
+    const genome = matches[0];
+    return { id: `local-${contentId}`, description: `${genome.phage.name} (${genome.phage.accession})`, sequence: genome.sequence };
+  });
+  return { kind: 'local-genomes', input: { format: 'phage-explorer-pangenome', version: 1,
+    name: 'Imported genome comparison', source: 'local', sequences } };
+}
+
 export async function executePangenomeRequest(request: PangenomeRequest, report: (phase: string) => void = () => {}): Promise<PangenomeAccepted> {
+  if (request.kind === 'local-genomes') {
+    report('Validating selected local genomes');
+    const input = validatePangenomeInput(request.input);
+    if (input.source !== 'local' || input.sequences.some(s => s.sequence.includes('-'))) throw new Error('Imported genomes must be local ungapped DNA.');
+    return { input, options: resolveAlignmentGraphOptions(input, { alignment: 'wavefront' }), graph: null, record: null, verified: false };
+  }
   if (request.kind === 'analyze') {
     const input = validatePangenomeInput(request.input);
     report('Aligning sequences and constructing exact graph paths');

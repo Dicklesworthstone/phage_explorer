@@ -10,7 +10,8 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
-import { PangenomeSession, type PangenomeRequest } from '../../workers/PangenomeSession';
+import { PangenomeSession, pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../../workers/PangenomeSession';
+import { useLocalGenomes } from '../../db/local-genomes';
 
 // Memory only, retained across panel close/reopen. Closing still cancels work.
 const session = new PangenomeSession(() => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
@@ -63,6 +64,9 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
   const { isOpen, toggle } = useOverlay(), { theme } = useTheme(), colors = theme.colors;
   const open = isOpen('pangenomeGraph');
   const phage = usePhageStore(state => state.currentPhage);
+  const localGenomes = useLocalGenomes(state => state.genomes);
+  const [localIds, setLocalIds] = useState<string[]>([]);
+  useEffect(() => { setLocalIds(ids => ids.filter(id => localGenomes.some(g => g.phage.localGenome?.contentId === id))); }, [localGenomes]);
   const [illustratedPhageId, setIllustratedPhageId] = useState<number | null>(null);
   const illustration = useMemo(() => phage && phage.id === illustratedPhageId
     ? constructPangenomeGraph(phage, [], { demonstration: true }) : null, [phage, illustratedPhageId]);
@@ -118,17 +122,34 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       <p>Build graphs from your own sequences, not annotation templates. Inputs remain in browser memory and are not uploaded by this tool.
         This workspace is independent of the catalog selection. Export the dataset or analysis before reloading.</p>
       {!accepted && <p>Comparative sequence evidence has not been supplied. Import sequences below to construct a real graph.</p>}
+      {localGenomes.length > 0 && <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem' }}>
+        <legend>Compare genomes already imported into the explorer</legend>
+        <p>Choose 2–24 genomes. Content IDs keep different records with the same accession separate. This takes a private sequence snapshot;
+          no annotations, catalog data or current sequence selection are modified.</p>
+        <div style={{ maxHeight: 220, overflowY: 'auto' }}>{localGenomes.map(genome => {
+          const id = genome.phage.localGenome!.contentId;
+          return <label key={id} style={{ display: 'block' }}><input type="checkbox" checked={localIds.includes(id)}
+            disabled={!localIds.includes(id) && localIds.length >= 24}
+            onChange={event => setLocalIds(ids => event.target.checked ? [...ids, id] : ids.filter(value => value !== id))} />
+            {genome.phage.name} · {genome.phage.accession} · {genome.sequence.length.toLocaleString()} bases · {id.slice(0, 12)}
+          </label>;
+        })}</div>
+        <button type="button" disabled={localIds.length < 2} onClick={() => {
+          try { setExportError(null); void session.run(pangenomeRequestFromLocalGenomes(localGenomes, localIds)); }
+          catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
+        }}>Load selected genomes into pangenome workspace</button>
+      </fieldset>}
       <label htmlFor="pangenome-input">Import pangenome FASTA, dataset JSON or saved analysis</label>
       <input id="pangenome-input" type="file" accept=".fa,.fasta,.fna,.aln,.json,text/plain,application/json" disabled={busy}
         onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadFile(file); }} />
       <details><summary>Paste sequences or inspect supported input</summary>
         <p>Supply 2–24 DNA FASTA records with unique identifiers. Existing alignments may use - for gaps; IUPAC ambiguity is retained.
-          For unaligned loci, choose global alignment after loading. RNA, protein sequences, dots and question marks are rejected.</p>
+          For unaligned input, choose global locus or related-genome wavefront alignment after loading. RNA, protein sequences, dots and question marks are rejected.</p>
         <label htmlFor="pangenome-paste">Paste pangenome FASTA</label>
         <textarea id="pangenome-paste" rows={5} value={pasted} disabled={busy} onChange={event => setPasted(event.target.value)} style={{ width: '100%' }} />
         <button type="button" disabled={busy || !pasted.trim()} onClick={() => void session.run({ kind: 'import', content: pasted, filename: 'Pasted sequence input' })}>Load pasted sequences</button>
         <p>Sequence datasets: 4 MiB, 250,000 columns, 4,000,000 total cells. Global alignment: 12,000,000 total dynamic-programming cells;
-          use a supplied alignment for whole genomes. Graphs are bounded to 4,000 blocks and 12,000 nodes. Saved analyses: 10 MiB.</p>
+          wavefront mode handles related collinear genomes within explicit work budgets. Graphs are bounded to 4,000 blocks and 12,000 nodes. Saved analyses: 10 MiB.</p>
       </details>
       <div><button type="button" disabled={busy} onClick={() => void session.run({ kind: 'demo' })}>Load synthetic sequence example</button>
         <button type="button" disabled={!busy} onClick={session.cancel}>Cancel pangenome work</button></div>
@@ -143,17 +164,21 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
             <legend>Explicit graph construction settings</legend>
             <label htmlFor="pangenome-reference">Pangenome reference sequence</label>
             <select id="pangenome-reference" value={draft.referenceId} onChange={event => setDraft({ ...draft, referenceId: event.target.value })}>
-              {accepted.input.sequences.map(s => <option key={s.id} value={s.id}>{s.id}</option>)}
+              {accepted.input.sequences.map(s => <option key={s.id} value={s.id}>{s.description || s.id} · {s.id}</option>)}
             </select>
             <label htmlFor="pangenome-alignment">Pangenome alignment mode</label>
             <select id="pangenome-alignment" value={draft.alignment} onChange={event => setDraft({ ...draft, alignment: event.target.value as AlignmentGraphOptions['alignment'] })}>
               <option value="provided">Use supplied multiple-sequence alignment</option><option value="global">Align ungapped loci (exact global unit-edit alignment)</option>
+              <option value="wavefront">Align related collinear genomes (exact wavefront)</option>
             </select>
             <label htmlFor="pangenome-terminals">Terminal gap interpretation</label>
             <select id="pangenome-terminals" value={draft.terminalGaps} onChange={event => setDraft({ ...draft, terminalGaps: event.target.value as AlignmentGraphOptions['terminalGaps'] })}>
               <option value="missing">Missing coverage: exclude terminal differences</option><option value="alleles">Complete sequences: treat terminal gaps as alleles</option>
             </select>
             <p>Equal lengths do not establish homology. Global mode is a bounded locus aligner, not a rearrangement-aware whole-genome method.
+              Wavefront mode computes an exact unit-edit alignment in the supplied strand and origin; it does not search inversions or rotate circular genomes.
+              It permits 4 million frontier entries and 50 million symbol comparisons per pair, with dataset totals of 12 million and 100 million.
+              Divergent inputs exceeding these budgets require an external alignment, not an approximate fallback.
               {changed && ' Edited settings are not applied: existing results and exports retain their submitted parameters.'}</p>
             <button type="submit">Build sequence graph</button>
           </fieldset>
@@ -183,6 +208,16 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           Alignment: {graph.options.alignment}. Terminal gaps: {graph.options.terminalGaps}.</p>
         <p>{graph.diagnostics.sharedUnambiguousBases} unambiguous bases shared by every input path; {graph.diagnostics.allGapColumns} all-gap columns omitted.
           These are properties of this input set, not species-wide core/accessory estimates.</p>
+        {graph.diagnostics.wavefront && <details><summary>Exact alignment distances and work</summary>
+          <p>{graph.diagnostics.wavefront.states.toLocaleString()} frontier entries; {graph.diagnostics.wavefront.comparisons.toLocaleString()} symbol comparisons.
+            Edit distance counts literal symbol substitutions, insertions and deletions, not biological events or evolutionary time.</p>
+          <table aria-label="Wavefront alignment distances"><thead><tr><th>Sequence</th><th>Edit distance</th><th>Frontier entries</th></tr></thead>
+            <tbody>{graph.diagnostics.wavefront.pairs.map(pair => <tr key={pair.sequenceId}>
+              <td>{accepted?.input.sequences.find(s => s.id === pair.sequenceId)?.description || pair.sequenceId}</td>
+              <td>{pair.distance}</td><td>{pair.states.toLocaleString()}</td>
+            </tr>)}</tbody>
+          </table>
+        </details>}
         <label htmlFor="pangenome-path">Highlight input sequence path</label>
         <select id="pangenome-path" value={pathId} onChange={event => setPathId(event.target.value)}>
           {graph.paths.map(p => <option key={p.id} value={p.id}>{p.sequenceId} ({p.length} bases)</option>)}
