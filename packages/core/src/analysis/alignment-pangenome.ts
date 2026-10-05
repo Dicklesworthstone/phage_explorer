@@ -3,6 +3,8 @@
  * Input orientation/homology is supplied by the alignment, not inferred from graph topology.
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { createCdsConsequenceExperiment, CDS_CONSEQUENCE_METHOD, type CdsConsequenceExperiment, type CdsConsequenceOptions } from './cds-consequences';
+import type { GenomeInput } from '../genome-import';
 import { alignWavefront, WAVEFRONT_LIMITS, type WavefrontAlignment } from './wavefront-alignment';
 import { alignNormalizedWavefront, mapNormalizedInterval, restoreSequence, type SequenceNormalization,
   type SequenceTransform, type NormalizationEvidence, type NormalizedWavefrontAlignment } from './sequence-normalization';
@@ -421,8 +423,21 @@ export async function createAlignmentPangenomeRecord(input: PangenomeInput, grap
       diagnostics: field('Alignment, comparison coverage and supported interpretation', { referenceLength: graph.referenceLength, ...graph.diagnostics }),
     } });
 }
-export async function replayAlignmentPangenome(content: string): Promise<{ input: PangenomeInput; graph: AlignmentPangenome; record: AnalysisRecord }> {
+export async function replayAlignmentPangenome(content: string): Promise<{ input: PangenomeInput; graph: AlignmentPangenome; record: AnalysisRecord; cds?: CdsConsequenceExperiment }> {
   const saved = await parseAnalysisRecord(content, { methodId: METHOD.id });
+  if (saved.method.version === ANNOTATED_METHOD.version) {
+    if (saved.method.implementation !== ANNOTATED_METHOD.implementation || saved.seed !== null || saved.inputs.length !== 2
+      || !isObject(saved.parameters.graph) || Object.keys(saved.parameters).some(key => !['graph', 'annotationRecord', 'geneIds'].includes(key))) {
+      throw new Error('Annotated pangenome method or parameter contract differs.');
+    }
+    const data = saved.inputs.find(i => i.id === 'sequences')?.data;
+    const annotation = saved.inputs.find(i => i.id === 'genbank')?.data;
+    const fresh = await createAnnotatedAlignmentPangenome(validatePangenomeInput(data), saved.parameters.graph as Partial<AlignmentGraphOptions>,
+      annotation as unknown as GenomeInput, { annotationRecord: saved.parameters.annotationRecord as string | null,
+        geneIds: saved.parameters.geneIds as number[] | null });
+    if (fresh.record.resultId !== saved.resultId || fresh.record.cacheKey !== saved.cacheKey) throw new Error('Recomputed annotated graph, transcripts or coding consequences differ from the saved result.');
+    return fresh;
+  }
   const method = saved.parameters.normalization ? NORMALIZED_METHOD : saved.parameters.alignment === 'wavefront' ? WAVEFRONT_METHOD : METHOD;
   if (saved.method.version !== method.version || saved.method.implementation !== method.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(REFERENCES)) ||
     saved.seed !== null || saved.inputs.length !== 1 || saved.inputs[0].id !== 'sequences') throw new Error('Pangenome method, reference or input contract differs.');
@@ -431,4 +446,36 @@ export async function replayAlignmentPangenome(content: string): Promise<{ input
   const record = await createAlignmentPangenomeRecord(input, graph);
   if (record.resultId !== saved.resultId || record.cacheKey !== saved.cacheKey) throw new Error('Recomputed pangenome graph or variants differ from the saved result.');
   return { input, graph, record };
+}
+
+
+const ANNOTATED_METHOD = { id: 'alignment-pangenome', version: '5',
+  implementation: 'reproducible sequence graph and reference-GenBank whole-haplotype CDS consequences' };
+export type PangenomeCdsSelection = Pick<CdsConsequenceOptions, 'annotationRecord' | 'geneIds'>;
+/** Compose the complete producer pipeline; never annotate a caller-supplied stale graph.
+ * Unannotated v2/v3/v4 methods retain their existing identities and replay behavior.
+ */
+export async function createAnnotatedAlignmentPangenome(value: PangenomeInput, settings: Partial<AlignmentGraphOptions>,
+  annotation: GenomeInput, selection: PangenomeCdsSelection = {}): Promise<{
+    input: PangenomeInput; graph: AlignmentPangenome; record: AnalysisRecord; cds: CdsConsequenceExperiment;
+  }> {
+  if (!isObject(selection) || Object.keys(selection).some(key => !['annotationRecord', 'geneIds'].includes(key))) throw new Error('Unsupported CDS selection.');
+  const input = validatePangenomeInput(value), graph = buildAlignmentPangenome(input, settings);
+  const cds = await createCdsConsequenceExperiment({ name: input.name, source: input.source, sequences: graph.alignment }, annotation,
+    { ...selection, referenceId: graph.options.referenceId, terminalGaps: graph.options.terminalGaps });
+  const base = await createAlignmentPangenomeRecord(input, graph);
+  const codingFields = Object.fromEntries(Object.entries(cds.record.fields).map(([key, field]) => [
+    `coding${key[0].toUpperCase()}${key.slice(1)}`, { ...field, limitations: field.limitations.map(limit =>
+      limit.startsWith('Replay recomputes CDS projection')
+        ? 'This integrated experiment replays normalization/alignment, graph construction and CDS consequences from original sequence input and GenBank.' : limit) },
+  ]));
+  const record = await createAnalysisRecord({ method: ANNOTATED_METHOD, seed: null,
+    inputs: [...base.inputs, cds.record.inputs.find(i => i.id === 'genbank')!],
+    parameters: { graph: analysisJson(graph.options), annotationRecord: cds.reference.contentId,
+      geneIds: cds.record.parameters.geneIds },
+    references: [...base.references, ...cds.record.references,
+      { id: 'sequence-graph-method', version: base.method.version, description: base.method.implementation },
+      { id: CDS_CONSEQUENCE_METHOD.id, version: CDS_CONSEQUENCE_METHOD.version, description: CDS_CONSEQUENCE_METHOD.implementation }],
+    fields: { ...base.fields, ...codingFields } });
+  return { input, graph, record, cds };
 }

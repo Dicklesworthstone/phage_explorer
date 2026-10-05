@@ -1,17 +1,21 @@
 /** Private sequence-graph workspace. Only accepted results replace the visible experiment. */
 import { buildAlignmentPangenome, createAlignmentPangenomeRecord, parsePangenomeInput, replayAlignmentPangenome,
   resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions, type AlignmentPangenome,
-  type PangenomeInput } from '../../../core/src/analysis/alignment-pangenome';
+  createAnnotatedAlignmentPangenome, type PangenomeCdsSelection, type PangenomeInput } from '../../../core/src/analysis/alignment-pangenome';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import type { CdsConsequenceExperiment } from '../../../core/src/analysis/cds-consequences';
+import type { GenomeInput } from '../../../core/src/genome-import';
 
 export type PangenomeRequest =
   | { kind: 'import'; content: string; filename: string }
   | { kind: 'local-genomes'; input: PangenomeInput }
   | { kind: 'analyze'; input: PangenomeInput; options: AlignmentGraphOptions }
+  | { kind: 'annotate'; input: PangenomeInput; options: AlignmentGraphOptions; annotation: GenomeInput; selection?: PangenomeCdsSelection }
   | { kind: 'demo' };
 export interface PangenomeAccepted {
   input: PangenomeInput; options: AlignmentGraphOptions;
   graph: AlignmentPangenome | null; record: AnalysisRecord | null; verified: boolean;
+  cds?: CdsConsequenceExperiment;
 }
 export type PangenomeMessage = { kind: 'progress'; phase: string } | { kind: 'result'; result: PangenomeAccepted } | { kind: 'error'; message: string };
 export interface PangenomeSnapshot { accepted: PangenomeAccepted | null; busy: boolean; phase: string; error: string | null; notice: string | null }
@@ -43,6 +47,11 @@ export async function executePangenomeRequest(request: PangenomeRequest, report:
     const input = validatePangenomeInput(request.input);
     if (input.source !== 'local' || input.sequences.some(s => s.sequence.includes('-'))) throw new Error('Imported genomes must be local ungapped DNA.');
     return { input, options: resolveAlignmentGraphOptions(input, { alignment: 'wavefront' }), graph: null, record: null, verified: false };
+  }
+  if (request.kind === 'annotate') {
+    report('Rebuilding the sequence graph and comparing annotated coding transcripts');
+    const result = await createAnnotatedAlignmentPangenome(request.input, request.options, request.annotation, request.selection);
+    return { ...result, options: result.graph.options, graph: result.graph, verified: false };
   }
   if (request.kind === 'analyze') {
     const input = validatePangenomeInput(request.input);
@@ -134,7 +143,8 @@ export class PangenomeSession {
         try { if (!current()) cancel(); else worker.postMessage(value); } catch (cause) { finish(undefined, cause); }
       });
       if (current()) this.publish({ accepted: result,
-        notice: result.verified ? 'Verified pangenome replay: recomputed graph, paths, variants and complete result identity match.'
+        notice: result.verified ? `Verified pangenome replay: recomputed graph, paths, variants${result.cds ? ', coding transcripts and consequences' : ''} and complete result identity match.`
+          : result.cds ? 'Sequence graph and CDS consequences computed from the submitted genomes and exact-matched GenBank reference.'
           : result.graph ? 'Sequence graph computed from the submitted inputs and settings.' : 'Input loaded locally. Choose the reference and alignment settings, then build the graph.' });
     } catch (cause) {
       if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) });
