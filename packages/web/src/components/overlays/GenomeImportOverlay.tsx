@@ -6,6 +6,7 @@ import { useFileSystem } from '../../hooks/useFileSystem';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { ResearchWorkflowPanel } from './ResearchWorkflowPanel';
+import { CodonReferencePanel } from './CodonReferencePanel';
 
 export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index: number) => Promise<void> }): React.ReactElement {
   const { close } = useOverlay();
@@ -132,7 +133,8 @@ export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index:
           <label><input type="checkbox" checked={allowCollisions} onChange={event => setAllowCollisions(event.target.checked)} /> Keep different records separately when accessions match. Existing records are never replaced.</label>
           <button type="button" className="btn btn-primary" onClick={commit}>Add records to explorer</button>
         </>}
-        {genomes.length > 0 && <p>{genomes.length} local records in this session. Deposited structures, protein embeddings and host-reference annotations are unavailable for imported records unless supplied by a future reference workflow.</p>}
+        {genomes.length > 0 && <p>{genomes.length} local records in this session. Deposited structures, protein embeddings and pre-computed host-reference annotations are unavailable for imported records. Supply your own codon-count reference below for reference-relative CDS scoring.</p>}
+        <CodonReferencePanel />
         <ResearchWorkflowPanel onSelectPhage={onSelectPhage} />
       </div>
     </Overlay>
