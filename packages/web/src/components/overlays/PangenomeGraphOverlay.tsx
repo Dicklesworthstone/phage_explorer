@@ -12,6 +12,7 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
 import { PangenomeSession, pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../../workers/PangenomeSession';
 import { useLocalGenomes } from '../../db/local-genomes';
+import { PangenomeCdsPanel } from './PangenomeCdsPanel';
 import { SavedResearchPanel } from './SavedResearchPanel';
 
 // Memory only, retained across panel close/reopen. Closing still cancels work.
@@ -228,6 +229,7 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           <button type="button" disabled={busy || !graph} onClick={() => save('gfa')}>Export sequence graph GFA</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('original')}>Export original sequence FASTA</button></div>
+        <PangenomeCdsPanel accepted={accepted} options={draft} localGenomes={localGenomes} busy={busy} run={session.run} />
       </>}
       {phage && <section aria-label="Annotation illustration" style={{ border: `1px solid ${colors.borderLight}`, padding: '.75rem' }}>
         <h3>Separate educational illustration</h3>
