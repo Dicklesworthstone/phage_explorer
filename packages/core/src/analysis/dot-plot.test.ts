@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { computeDotPlot } from './dot-plot';
+import { computeDotPlot, getDotPlotWindowRange, type DotPlotConfig } from './dot-plot';
+
+const resolved = (sequence: string, config: DotPlotConfig = {}) =>
+  computeDotPlot(sequence, { ...config, ambiguity: 'exclude' });
 
 describe('Dot plot', () => {
   it('computeDotPlot > empty sequence returns empty grid', () => {
@@ -26,7 +29,7 @@ describe('Dot plot', () => {
 
   it('does not invent direct or inverted matches from unresolved bases', () => {
     for (const sequence of ['NNNN', 'RYRY', 'SSWW', '----', 'uuuu', '????']) {
-      const result = computeDotPlot(sequence, { bins: 3, window: 2 });
+      const result = resolved(sequence, { bins: 3, window: 2 });
       for (const row of result.grid) {
         for (const cell of row) expect(cell).toEqual({ direct: 0, inverted: 0 });
       }
@@ -36,7 +39,7 @@ describe('Dot plot', () => {
   it('keeps unresolved positions in the denominator and preserves lowercase matches', () => {
     // AN vs NT: the direct diagonal has one observed base out of two;
     // RC(AN) vs NT has one resolved complementary match, not two N matches.
-    const result = computeDotPlot('anNt', { bins: 2, window: 2 });
+    const result = resolved('anNt', { bins: 2, window: 2 });
     expect(result.grid[0]![0]).toEqual({ direct: 0.5, inverted: 0 });
     expect(result.grid[0]![1]).toEqual({ direct: 0, inverted: 0.5 });
     expect(result.grid[1]![0]).toEqual(result.grid[0]![1]);
@@ -45,7 +48,7 @@ describe('Dot plot', () => {
 
   it('uses overlapping windows including the terminal base without compressing unknowns', () => {
     // Starts 0,1,2,3: AC, CN, NG, GT. The middle windows are not CG.
-    const result = computeDotPlot('ACNGT', { bins: 4, window: 2 });
+    const result = resolved('ACNGT', { bins: 4, window: 2 });
     expect(result.grid[0]![3]).toEqual({ direct: 0, inverted: 1 });
     expect(result.grid[1]![1].direct).toBe(0.5);
     expect(result.grid[2]![2].direct).toBe(0.5);
@@ -54,7 +57,7 @@ describe('Dot plot', () => {
 
   it('preserves coordinates for non-ASCII input rather than expanding uppercase characters', () => {
     // Uppercasing the entire input would expand ß into SS and shift the last window.
-    const result = computeDotPlot('AßT', { bins: 3, window: 1 });
+    const result = resolved('AßT', { bins: 3, window: 1 });
     expect(result.grid[0]![2].inverted).toBe(1);
     expect(result.grid[1]![1]).toEqual({ direct: 0, inverted: 0 });
   });
@@ -91,7 +94,7 @@ describe('Dot plot', () => {
       }
       // Three length-two windows have independently known starts 0, 1, 2.
       const windows = [sequence.slice(0, 2), sequence.slice(1, 3), sequence.slice(2, 4)];
-      const result = computeDotPlot(sequence, { bins: 3, window: 2 });
+      const result = resolved(sequence, { bins: 3, window: 2 });
       for (let i = 0; i < 3; i++) {
         for (let j = 0; j < 3; j++) {
           const a = windows[i];
@@ -105,6 +108,31 @@ describe('Dot plot', () => {
           expect(result.grid[i]![j]).toEqual({ direct: direct / 2, inverted: inverted / 2 });
         }
       }
+    }
+  });
+  it('preserves the existing literal IUPAC matching contract independently of resolved evidence', () => {
+    const literal = computeDotPlot('rY', { bins: 2, window: 1 });
+    expect(literal.grid).toEqual([
+      [{ direct: 1, inverted: 0 }, { direct: 0, inverted: 1 }],
+      [{ direct: 0, inverted: 1 }, { direct: 1, inverted: 0 }],
+    ]);
+    expect(computeDotPlot('NN', { bins: 1, window: 2 }).grid[0]![0])
+      .toEqual({ direct: 1, inverted: 1 });
+    expect(resolved('NN', { bins: 1, window: 2 }).grid[0]![0])
+      .toEqual({ direct: 0, inverted: 0 });
+    expect(() => computeDotPlot('ACGT', { ambiguity: 'invalid' as 'literal' })).toThrow(RangeError);
+  });
+
+  it('reports exact half-open sampled windows including the final base', () => {
+    expect(Array.from({ length: 4 }, (_, i) => getDotPlotWindowRange(101, 4, 20, i)))
+      .toEqual([{ start: 0, end: 20 }, { start: 27, end: 47 }, { start: 54, end: 74 }, { start: 81, end: 101 }]);
+    expect(getDotPlotWindowRange(5, 4, 2, 1)).toEqual({ start: 1, end: 3 });
+    expect(getDotPlotWindowRange(4, 1, 4, 0)).toEqual({ start: 0, end: 4 });
+  });
+
+  it('rejects window coordinates outside the actual matrix or sequence', () => {
+    for (const args of [[0, 1, 1, 0], [5, 0, 2, 0], [5, 2, 6, 0], [5, 2, 2, -1], [5, 2, 2, 2], [5, 2, 2, NaN]]) {
+      expect(() => getDotPlotWindowRange(args[0], args[1], args[2], args[3])).toThrow(RangeError);
     }
   });
 });
