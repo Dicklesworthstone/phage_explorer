@@ -285,3 +285,82 @@ export async function replayCdsConsequenceExperiment(content: string): Promise<C
   if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Recomputed CDS inputs, method, transcripts or consequences differ from the saved result.');
   return fresh;
 }
+
+/** Shared UI/CLI selection syntax; blank explicitly means all mapped CDS. */
+export function parseCdsGeneIds(value: string): number[] | null {
+  if (typeof value !== 'string') throw new Error('CDS selection must be comma-separated IDs.');
+  if (!value.trim()) return null;
+  if (value.length > CDS_CONSEQUENCE_LIMITS.comparisons * 17) throw new Error('Too many CDS IDs.');
+  const parts = value.split(',').map(part => part.trim());
+  if (parts.length > CDS_CONSEQUENCE_LIMITS.comparisons || parts.some(part => !/^[1-9]\d*$/.test(part))) {
+    throw new Error('CDS IDs must be comma-separated positive integers.');
+  }
+  const ids = parts.map(Number);
+  if (ids.some(id => !Number.isSafeInteger(id)) || new Set(ids).size !== ids.length) throw new Error('CDS IDs must be distinct safe integers.');
+  return ids.sort((a, b) => a - b);
+}
+
+/** Tabular report over a freshly computed/verified experiment, including every unavailable row.
+ * Escape controls/backslashes, and prefix spreadsheet formula-like text with an apostrophe.
+ * Exact unescaped annotations and sequences remain in the experiment JSON.
+ */
+export function exportCdsConsequenceTable(experiment: CdsConsequenceExperiment): string {
+  const cell = (value: unknown): string => {
+    if (value === null || value === undefined) return '';
+    const text = String(value).replace(/\\/g, '\\\\').replace(/[\u0000-\u001f\u007f-\u009f]/g,
+      character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return /^[\s]*[=+@-]/.test(text) ? `'${text}` : text;
+  };
+  const genes = new Map(experiment.genes.map(gene => [gene.geneId, gene]));
+  const source = experiment.record.inputs.find(input => input.id === 'alignment')?.source ?? 'unknown';
+  const header = ['cds_result_id', 'source', 'reference_sequence', 'annotation_accession', 'annotation_content_id',
+    'gene_id', 'gene_name', 'product', 'genetic_code', 'codon_start', 'reference_segments_0based_half_open',
+    'query_sequence', 'status', 'effects', 'reasons', 'reference_cds_bases', 'query_cds_bases',
+    'reference_protein_symbols', 'query_protein_symbols', 'first_protein_difference_0based',
+    'inserted_bases', 'deleted_bases', 'missing_reference_bases', 'ambiguous_query_bases', 'query_trailing_bases'];
+  const rows = experiment.consequences.map(row => {
+    const gene = genes.get(row.geneId);
+    if (!gene) throw new Error('CDS report refers to a missing reference gene.');
+    return [experiment.record.resultId, source, experiment.reference.sequenceId, experiment.reference.accession,
+      experiment.reference.contentId, gene.geneId, gene.name, gene.product, gene.geneticCode, gene.codonStart,
+      gene.segments.map(segment => `${segment.start}:${segment.end}:${segment.strand}`).join(';'),
+      row.sequenceId, row.status, row.effects.join(';'), row.reasons.join(' | '), gene.cds?.length, row.queryCds?.length,
+      gene.protein?.length, row.queryProtein?.length, row.firstProteinDifference, row.insertedBases,
+      row.deletedBases, row.missingReferenceBases, row.ambiguousQueryBases, row.queryTrailingBases].map(cell).join('\t');
+  });
+  return [header.join('\t'), ...rows, ''].join('\n');
+}
+
+/** Export supported reference sequences and nonempty, available projected query sequences.
+ * Includes complete conceptual protein translations with '*' stop symbols; these are not
+ * deposited/query-annotated proteins. Unavailable or deleted sequences are never invented.
+ * Call only with a freshly computed/verified experiment; this formatter is not a verifier.
+ */
+export function exportCdsConsequenceFasta(experiment: CdsConsequenceExperiment, molecule: 'cds' | 'protein'): string {
+  if (molecule !== 'cds' && molecule !== 'protein') throw new Error('Choose CDS or protein FASTA.');
+  const source = experiment.record.inputs.find(input => input.id === 'alignment')?.source ?? 'unknown';
+  const blocks: string[] = [];
+  // Percent-encoded metadata cannot inject FASTA records or whitespace-delimited fields.
+  const encoded = (text: string): string => Array.from(new TextEncoder().encode(text), byte =>
+    byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte >= 48 && byte <= 57 || byte === 45 || byte === 95 || byte === 46
+      ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, '0')}`).join('');
+  const add = (id: string, sequence: string | null, sequenceId: string, gene: CdsReference, role: string, effects: string[]) => {
+    if (!sequence) return;
+    const lines: string[] = [];
+    for (let i = 0; i < sequence.length; i += 80) lines.push(sequence.slice(i, i + 80));
+    blocks.push(`>${id} molecule=${molecule} role=${role} source=${source} sequence=${encoded(sequenceId)} gene_id=${gene.geneId} gene=${encoded(gene.name)} effects=${effects.join(',')} cds_result=${experiment.record.resultId}\n${lines.join('\n')}\n`);
+  };
+  const genes = new Map(experiment.genes.map(gene => [gene.geneId, gene]));
+  for (const gene of experiment.genes) {
+    if (!gene.reasons.length) add(`reference_g${gene.geneId}`, molecule === 'cds' ? gene.cds : gene.protein,
+      experiment.reference.sequenceId, gene, 'reference', []);
+  }
+  experiment.consequences.forEach((row, index) => {
+    const gene = genes.get(row.geneId);
+    if (!gene) throw new Error('CDS FASTA refers to a missing reference gene.');
+    if (row.status === 'available' && !gene.reasons.length) add(`query_${index + 1}_g${gene.geneId}`,
+      molecule === 'cds' ? row.queryCds : row.queryProtein, row.sequenceId, gene, 'projected-query', row.effects);
+  });
+  if (!blocks.length) throw new Error('No supported nonempty sequences are available for this FASTA export. Export the consequence table for unavailable reasons.');
+  return blocks.join('');
+}
