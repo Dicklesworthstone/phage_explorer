@@ -1,6 +1,6 @@
 /** Private sequence-graph workspace, with the existing annotation illustration kept explicitly separate. */
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { constructPangenomeGraph, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
+import { constructPangenomeGraph, exportPangenomeOriginalFasta, mapPangenomeNodeToOriginal, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
   type AlignmentGraphOptions, type AlignmentPangenome, type AlignmentVariant } from '@phage-explorer/core';
 import { useHotkey } from '../../hooks';
 import { usePhageStore } from '@phage-explorer/state';
@@ -96,8 +96,10 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
   if (!open) return null;
   const selectedNode = graph?.nodes.find(n => n.id === nodeId);
   const selectedVariant = graph?.variants.find(v => v.id === variantId);
+  const originalSegments = graph && selectedNode?.pathIds.includes(pathId)
+    ? mapPangenomeNodeToOriginal(graph, pathId, selectedNode.id) : null;
   const pathName = (id: string) => graph?.paths.find(p => p.id === id)?.sequenceId ?? id;
-  const changed = !!draft && !!accepted && (Object.keys(draft) as Array<keyof AlignmentGraphOptions>).some(key => draft[key] !== accepted.options[key]);
+  const changed = !!draft && !!accepted && (['referenceId', 'alignment', 'terminalGaps', 'normalization'] as const).some(key => draft[key] !== accepted.options[key]);
   const blockPages = Math.max(1, Math.ceil((graph?.diagnostics.blocks ?? 0) / BLOCKS_PER_PAGE));
   const variantPages = Math.max(1, Math.ceil(variants.length / 100)), currentVariantPage = Math.min(variantPage, variantPages - 1);
   const loadFile = (file: File | undefined) => {
@@ -106,13 +108,14 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       : file.text().then(content => ({ kind: 'import', content, filename: file.name }));
     void session.run(request);
   };
-  const save = (kind: 'input' | 'record' | 'gfa' | 'alignment') => {
+  const save = (kind: 'input' | 'record' | 'gfa' | 'alignment' | 'original') => {
     if (!accepted) return;
     try {
       if (kind === 'input') downloadString(serializePangenomeInput(accepted.input), 'pangenome-input.json', 'application/json');
       else if (kind === 'record' && record) downloadString(serializeAnalysisRecord(record), 'pangenome-analysis.json', 'application/json');
       else if (kind === 'gfa' && graph) downloadString(exportAlignmentGfa(graph), 'pangenome.gfa', 'text/plain');
       else if (kind === 'alignment' && graph) downloadString(exportPangenomeAlignment(graph), 'pangenome-alignment.fasta', 'text/plain');
+      else if (kind === 'original' && graph) downloadString(exportPangenomeOriginalFasta(graph), 'pangenome-original.fasta', 'text/plain');
       setExportError(null);
     } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
   };
@@ -167,26 +170,47 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
               {accepted.input.sequences.map(s => <option key={s.id} value={s.id}>{s.description || s.id} · {s.id}</option>)}
             </select>
             <label htmlFor="pangenome-alignment">Pangenome alignment mode</label>
-            <select id="pangenome-alignment" value={draft.alignment} onChange={event => setDraft({ ...draft, alignment: event.target.value as AlignmentGraphOptions['alignment'] })}>
+            <select id="pangenome-alignment" value={draft.alignment} onChange={event => {
+              const alignment = event.target.value as AlignmentGraphOptions['alignment'];
+              const { normalization: _normalization, ...base } = draft;
+              setDraft(alignment === 'wavefront' ? { ...draft, alignment } : { ...base, alignment });
+            }}>
               <option value="provided">Use supplied multiple-sequence alignment</option><option value="global">Align ungapped loci (exact global unit-edit alignment)</option>
               <option value="wavefront">Align related collinear genomes (exact wavefront)</option>
             </select>
+            {draft.alignment === 'wavefront' && <>
+              <label htmlFor="pangenome-normalization">Strand and origin handling</label>
+              <select id="pangenome-normalization" value={draft.normalization ?? ''} onChange={event => {
+                const { normalization: _normalization, ...base } = draft;
+                const normalization = event.target.value as AlignmentGraphOptions['normalization'];
+                setDraft(normalization ? { ...base, normalization } : base);
+              }}>
+                <option value="">Keep submitted strand and origin</option>
+                <option value="strand">Normalize whole-sequence strand (linear or partial input)</option>
+                <option value="circular">Normalize strand and origin (all inputs are complete circles)</option>
+              </select>
+              <p>Exact equivalent representations are recognized first. Otherwise unique 15-mer anchors select a strand/origin;
+                this is not exhaustive circular optimization or internal inversion detection. Weak or conflicting anchors stop the analysis.</p>
+              {draft.normalization === 'circular' && <p role="note">You are asserting that every input is a complete circular molecule.
+                Choose complete-sequence terminal alleles below; do not use this mode for linear or partial assemblies.</p>}
+            </>}
             <label htmlFor="pangenome-terminals">Terminal gap interpretation</label>
             <select id="pangenome-terminals" value={draft.terminalGaps} onChange={event => setDraft({ ...draft, terminalGaps: event.target.value as AlignmentGraphOptions['terminalGaps'] })}>
               <option value="missing">Missing coverage: exclude terminal differences</option><option value="alleles">Complete sequences: treat terminal gaps as alleles</option>
             </select>
             <p>Equal lengths do not establish homology. Global mode is a bounded locus aligner, not a rearrangement-aware whole-genome method.
-              Wavefront mode computes an exact unit-edit alignment in the supplied strand and origin; it does not search inversions or rotate circular genomes.
+              Wavefront mode computes an exact unit-edit alignment conditional on the selected normalization. Internal inversions and rearrangements remain unsupported.
               It permits 4 million frontier entries and 50 million symbol comparisons per pair, with dataset totals of 12 million and 100 million.
               Divergent inputs exceeding these budgets require an external alignment, not an approximate fallback.
               {changed && ' Edited settings are not applied: existing results and exports retain their submitted parameters.'}</p>
-            <button type="submit">Build sequence graph</button>
+            <button type="submit" disabled={draft.normalization === 'circular' && draft.terminalGaps !== 'alleles'}>Build sequence graph</button>
           </fieldset>
         </form>
         <div><button type="button" disabled={busy} onClick={() => save('input')}>Export pangenome dataset</button>
           <button type="button" disabled={busy || !record} onClick={() => save('record')}>Export pangenome analysis</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('gfa')}>Export sequence graph GFA</button>
-          <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button></div>
+          <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button>
+          <button type="button" disabled={busy || !graph} onClick={() => save('original')}>Export original sequence FASTA</button></div>
       </>}
       {phage && <section aria-label="Annotation illustration" style={{ border: `1px solid ${colors.borderLight}`, padding: '.75rem' }}>
         <h3>Separate educational illustration</h3>
@@ -202,10 +226,10 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       </section>}
       {graph && record && <section data-testid="pangenome-result" data-result-id={record.resultId} style={{ minWidth: 0 }}>
         <h3>Sequence-derived graph</h3>
-        <p data-testid="pangenome-summary">{graph.nodes.length} sequence nodes; {graph.edges.length} links; {graph.paths.length} exact input paths;
+        <p data-testid="pangenome-summary">{graph.nodes.length} sequence nodes; {graph.edges.length} links; {graph.paths.length} {graph.diagnostics.normalization ? 'reversibly normalized paths' : 'exact input paths'};
           {` ${graph.variants.length} reference-relative variants.`}</p>
         <p data-testid="pangenome-reference-used">Submitted reference: {graph.options.referenceId} ({graph.referenceLength} bases).
-          Alignment: {graph.options.alignment}. Terminal gaps: {graph.options.terminalGaps}.</p>
+          Alignment: {graph.options.alignment}. Terminal gaps: {graph.options.terminalGaps}. Normalization: {graph.options.normalization ?? 'none'}.</p>
         <p>{graph.diagnostics.sharedUnambiguousBases} unambiguous bases shared by every input path; {graph.diagnostics.allGapColumns} all-gap columns omitted.
           These are properties of this input set, not species-wide core/accessory estimates.</p>
         {graph.diagnostics.wavefront && <details><summary>Exact alignment distances and work</summary>
@@ -218,6 +242,22 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
             </tr>)}</tbody>
           </table>
         </details>}
+        {graph.diagnostics.normalization && <section aria-label="Sequence normalization evidence">
+          <h4>Submitted-to-aligned coordinate transforms</h4>
+          <p>The reference retains its submitted origin. For each query, reverse-complement when strand is −, then rotate left by the
+            0-based offset shown below. These transforms are included in the experiment and GFA; original FASTA reverses them.</p>
+          <div style={{ overflowX: 'auto' }}><table aria-label="Sequence strand and origin transforms">
+            <thead><tr><th>Sequence</th><th>Strand</th><th>Offset</th><th>Evidence</th></tr></thead>
+            <tbody>{graph.diagnostics.normalization.sequences.map(entry => <tr key={entry.sequenceId}>
+              <td>{entry.sequenceId}</td><td>{entry.transform.strand}</td><td>{entry.transform.offset}</td>
+              <td>{!entry.evidence ? 'Submitted reference (unchanged)' : entry.evidence.method === 'exact-equivalence'
+                ? `Exact symbol equivalence; ${entry.evidence.equivalentForwardOrigins} forward / ${entry.evidence.equivalentReverseOrigins} reverse origins`
+                : `Unique non-overlapping 15-mers: ${entry.evidence.forwardSupport} forward / ${entry.evidence.reverseSupport} reverse`}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <p>Anchor support is not a confidence probability. Multiple exact transforms do not identify a biological origin.
+            GFA/alignment FASTA paths use the normalized representation, not necessarily the original strand or start.</p>
+        </section>}
         <label htmlFor="pangenome-path">Highlight input sequence path</label>
         <select id="pangenome-path" value={pathId} onChange={event => setPathId(event.target.value)}>
           {graph.paths.map(p => <option key={p.id} value={p.id}>{p.sequenceId} ({p.length} bases)</option>)}
@@ -236,6 +276,10 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           <p>Alignment columns [{selectedNode.alignmentStart}, {selectedNode.alignmentEnd}); reference span [{selectedNode.referenceStart}, {selectedNode.referenceEnd}).
             Traversed by: {selectedNode.pathIds.map(pathName).join(', ')}.</p>
           <code>{shortSequence(selectedNode.sequence)}</code>
+          {originalSegments && <p aria-label="Original input node coordinates">Original coordinates on {pathName(pathId)}:
+            {' '}{originalSegments.map(segment => `[${segment.start}, ${segment.end}) strand ${segment.strand}`).join(' then ')}.
+            {' '}Coordinates are 0-based, half-open and listed in path traversal order; reverse-strand segments are reverse-complemented.</p>}
+          {!originalSegments && <p>The highlighted path does not traverse this node. Choose a supporting input path to inspect its original coordinates.</p>}
         </aside>}
         <h3>Reference-relative variant cards</h3>
         <p>Coordinates are 0-based, half-open [start, end). Insertions have start = end at the reference boundary; ∅ is an empty allele.
