@@ -2,12 +2,17 @@
 import { importLocalGenomes, analyzePhageHostCodonAdaptation, createCodonAdaptationRecord,
   type GenomeInput, type LocalGenome, type GenomeImportResult, type AnalysisRecord } from '@phage-explorer/core';
 
+import { createExactRepeatRecord, type ExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
+
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
-  { type: 'codons'; genome: LocalGenome; geneId: number | null };
+  { type: 'codons'; genome: LocalGenome; geneId: number | null } |
+  { type: 'exact-repeats'; genome: LocalGenome; options: Required<ExactRepeatOptions> };
 export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord };
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'exact-repeats') return { type: 'analysis', record: await createExactRepeatRecord(
+    request.genome.sequence, request.options, { accession: request.genome.phage.accession, source: 'local' }) };
   if (request.type !== 'codons') throw new Error('Unsupported research worker operation.');
   const phage = structuredClone(request.genome.phage);
   phage.genes = phage.genes.filter(gene => gene.type === 'CDS' && (request.geneId === null || gene.id === request.geneId));

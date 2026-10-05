@@ -1,6 +1,7 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson } from '../../../core/src/analysis-result';
+import { EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
@@ -21,8 +22,24 @@ export interface ResearchEnvironment {
   currentView: () => ResearchView | null;
   applyView: (view: ResearchView, signal: AbortSignal) => Promise<void>;
   repeats: (genome: LocalGenome, options: { minLength: number; maxGap: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
+  exactRepeats?: (genome: LocalGenome, options: Required<ExactRepeatOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+export interface ResearchExactRepeatParameters extends Required<ExactRepeatOptions> { contentId: string; method: 'exact-pairs' }
+/** An explicit discriminator prevents old backend-bound tapes from being reinterpreted. */
+export function validateResearchRepeats(value: CommandValue): void {
+  if (object(value) && Object.hasOwn(value, 'method')) {
+    fields(value, ['contentId', 'method', 'armLength', 'maxGap', 'maxPairs']);
+    if (value.method !== 'exact-pairs') throw new Error('Unsupported repeat method.');
+    contentId(value.contentId);
+    // Values must be explicit numbers, not null/default requests in a saved tape.
+    integer(value.armLength, 4, 256); integer(value.maxGap, 0, 100000); integer(value.maxPairs, 1, 20000);
+    resolveExactRepeatOptions({ armLength: value.armLength as number, maxGap: value.maxGap as number, maxPairs: value.maxPairs as number });
+  } else {
+    fields(value, ['contentId', 'minLength', 'maxGap']); contentId(value.contentId);
+    integer(value.minLength, 4, 256); integer(value.maxGap, 0, 100000);
+  }
 }
 export interface ResearchSnapshot {
   view: ResearchView | null;
@@ -119,8 +136,25 @@ export class ResearchWorkflow {
       },
     });
     adapters.set(ids.repeats, {
-      validate(parameters) { fields(parameters, ['contentId', 'minLength', 'maxGap']); contentId(parameters.contentId); integer(parameters.minLength, 4, 256); integer(parameters.maxGap, 0, 100000); },
+      validate(parameters) {
+        validateResearchRepeats(parameters);
+        if (object(parameters) && parameters.method === 'exact-pairs' && !environment.exactRepeats) throw new Error('This host cannot run exact repeat pairs.');
+      },
       prepare: async (parameters, signal) => {
+        if (object(parameters) && parameters.method === 'exact-pairs') {
+          const values = parameters as unknown as ResearchExactRepeatParameters;
+          const genome = await this.genome(values.contentId, signal);
+          const options = { armLength: values.armLength, maxGap: values.maxGap, maxPairs: values.maxPairs };
+          const record = await environment.exactRepeats!(structuredClone(genome), structuredClone(options), signal);
+          abort(signal);
+          if (!commandValuesEqual(analysisJson(record.method), analysisJson(EXACT_REPEAT_METHOD)) || record.inputs.length !== 1
+            || record.inputs[0].id !== 'sequence' || record.inputs[0].data !== genome.sequence
+            || record.inputs[0].accession !== genome.phage.accession || record.inputs[0].source !== 'local'
+            || !commandValuesEqual(analysisJson(record.parameters), analysisJson(options))) {
+            throw new Error('Exact repeat evidence does not match the submitted input, method or settings.');
+          }
+          return this.result(record, [genome], signal);
+        }
         const values = parameters as { contentId: string; minLength: number; maxGap: number };
         const genome = await this.genome(values.contentId, signal);
         const record = await environment.repeats(genome, { minLength: values.minLength, maxGap: values.maxGap }, signal);
