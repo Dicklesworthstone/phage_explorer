@@ -1,10 +1,19 @@
-/** Adapters for canonical navigation, repeat and CDS-analysis actions; not a second keyboard registry. */
+/** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson } from '../../../core/src/analysis-result';
 import { CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
+import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
+import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string }
+export interface ResearchPangenomeParameters {
+  contentIds: string[];
+  options: AlignmentGraphOptions;
+  /** Annotation input is another content-bound member of the same private bundle. */
+  annotation: { contentId: string; geneIds: number[] | null } | null;
+}
+export type ResearchPangenomeRequest = Extract<PangenomeRequest, { kind: 'analyze' | 'annotate' }>;
 export interface ResearchEnvironment {
   genomes: () => readonly LocalGenome[];
   bundle: () => string;
@@ -13,6 +22,7 @@ export interface ResearchEnvironment {
   applyView: (view: ResearchView, signal: AbortSignal) => Promise<void>;
   repeats: (genome: LocalGenome, options: { minLength: number; maxGap: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
+  pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
 }
 export interface ResearchSnapshot {
   view: ResearchView | null;
@@ -31,6 +41,32 @@ function integer(value: CommandValue, min: number, max: number): void {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max) throw new Error(`Expected an integer from ${min} to ${max}.`);
 }
 function geneId(value: CommandValue): void { if (value !== null) integer(value, 1, 50000); }
+/** Resolve all model defaults when recording, rather than letting a future default change replay. */
+export function researchPangenomeParameters(contentIds: readonly string[], options: AlignmentGraphOptions,
+  annotation: ResearchPangenomeParameters['annotation'] = null): ResearchPangenomeParameters {
+  if (contentIds.length < 2 || contentIds.length > 24) throw new Error('Choose 2–24 distinct content-bound genomes.');
+  const value = { contentIds: [...contentIds].sort(),
+    options: resolveAlignmentGraphOptions({ sequences: contentIds.map(id => ({ id: `local-${id}` })) }, options),
+    annotation: annotation ? { contentId: annotation.contentId, geneIds: annotation.geneIds ? [...annotation.geneIds].sort((a, b) => a - b) : null } : null };
+  validateResearchPangenome(analysisJson(value));
+  return value;
+}
+export function validateResearchPangenome(value: CommandValue): void {
+  fields(value, ['contentIds', 'options', 'annotation']);
+  if (!Array.isArray(value.contentIds) || value.contentIds.length < 2 || value.contentIds.length > 24
+    || new Set(value.contentIds).size !== value.contentIds.length) throw new Error('Choose 2–24 distinct content-bound genomes.');
+  value.contentIds.forEach(contentId);
+  if (!object(value.options) || !Object.hasOwn(value.options, 'referenceId') || !Object.hasOwn(value.options, 'alignment')
+    || !Object.hasOwn(value.options, 'terminalGaps')) throw new Error('Explicit reference, alignment and terminal-gap settings are required.');
+  const resolved = resolveAlignmentGraphOptions({ sequences: value.contentIds.map(id => ({ id: `local-${id}` })) }, value.options);
+  if (!commandValuesEqual(analysisJson(resolved), value.options)) throw new Error('Record all resolved alignment penalties explicitly.');
+  if (value.annotation !== null) {
+    fields(value.annotation, ['contentId', 'geneIds']); contentId(value.annotation.contentId);
+    const ids = value.annotation.geneIds;
+    if (ids !== null && (!Array.isArray(ids) || !ids.length || ids.length > 12000 || new Set(ids).size !== ids.length)) throw new Error('Choose distinct positive CDS IDs or all CDS.');
+    if (Array.isArray(ids)) ids.forEach(id => integer(id, 1, 50000));
+  }
+}
 export function validateResearchView(value: CommandValue): asserts value is unknown & ResearchView & CommandValue {
   fields(value, ['contentId', 'geneId', 'viewMode', 'readingFrame', 'scrollPosition']);
   contentId(value.contentId); geneId(value.geneId);
@@ -88,7 +124,7 @@ export class ResearchWorkflow {
         const values = parameters as { contentId: string; minLength: number; maxGap: number };
         const genome = await this.genome(values.contentId, signal);
         const record = await environment.repeats(genome, { minLength: values.minLength, maxGap: values.maxGap }, signal);
-        return this.result(record, genome, signal);
+        return this.result(record, [genome], signal);
       },
     });
     adapters.set(ids.codons, {
@@ -98,10 +134,45 @@ export class ResearchWorkflow {
         const genome = await this.genome(values.contentId, signal);
         this.checkSelection(genome, values.geneId);
         const record = await environment.codons(genome, values.geneId, signal);
-        return this.result(record, genome, signal);
+        return this.result(record, [genome], signal);
       },
     });
-    if (adapters.size !== 3) throw new Error('Research actions must use distinct canonical IDs.');
+    if ((ids.pangenome === undefined) !== (environment.pangenome === undefined)) throw new Error('Pangenome action and executor must be supplied together.');
+    if (ids.pangenome !== undefined) adapters.set(ids.pangenome, {
+      validate: validateResearchPangenome,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchPangenomeParameters;
+        const genomes = await this.selectedGenomes(values.contentIds, signal);
+        const input = validatePangenomeInput(pangenomeRequestFromLocalGenomes(genomes, values.contentIds).input);
+        const options = resolveAlignmentGraphOptions(input, values.options);
+        let request: ResearchPangenomeRequest = { kind: 'analyze', input, options };
+        if (values.annotation) {
+          const annotation = await this.genome(values.annotation.contentId, signal);
+          if (annotation.phage.localGenome?.format !== 'genbank') throw new Error('Coding consequences require a bundled GenBank annotation.');
+          const reference = input.sequences.find(row => row.id === options.referenceId)!;
+          if (annotation.sequence !== reference.sequence) throw new Error('Annotation bases and origin must exactly match the recorded reference.');
+          values.annotation.geneIds?.forEach(id => this.checkSelection(annotation, id));
+          genomes.push(annotation);
+          request = { kind: 'annotate', input, options, annotation: annotation.original,
+            selection: { annotationRecord: values.annotation.contentId, geneIds: values.annotation.geneIds } };
+        }
+        // The execution backend receives its own copy, not our publication guard.
+        const record = await environment.pangenome!(structuredClone(request), signal);
+        abort(signal);
+        if (record.method.id !== 'alignment-pangenome' || record.inputs.length !== (values.annotation ? 2 : 1)
+          || !commandValuesEqual(record.inputs.find(i => i.id === 'sequences')?.data, analysisJson(input))
+          || !commandValuesEqual(values.annotation ? record.parameters.graph : record.parameters, analysisJson(options))) {
+          throw new Error('Pangenome worker result does not match the submitted inputs or settings.');
+        }
+        if (request.kind === 'annotate' && (!commandValuesEqual(record.inputs.find(i => i.id === 'genbank')?.data, analysisJson(request.annotation))
+          || record.parameters.annotationRecord !== request.selection!.annotationRecord
+          || !commandValuesEqual(record.parameters.geneIds, request.selection!.geneIds === null ? null : [...request.selection!.geneIds!].sort((a, b) => a - b)))) {
+          throw new Error('Coding evidence does not match the recorded annotation or CDS selection.');
+        }
+        return this.result(record, genomes, signal);
+      },
+    });
+    if (adapters.size !== (ids.pangenome === undefined ? 3 : 4)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
   }
   getSnapshot = (): ResearchSnapshot => this.snapshot;
@@ -110,11 +181,11 @@ export class ResearchWorkflow {
     this.snapshot = { ...this.snapshot, ...change, undoAvailable: this.historyIndex > 0, redoAvailable: this.historyIndex < this.history.length - 1 };
     for (const listener of this.listeners) listener();
   }
-  private result(record: AnalysisRecord, genome: LocalGenome, signal: AbortSignal) {
+  private result(record: AnalysisRecord, genomes: readonly LocalGenome[], signal: AbortSignal) {
     abort(signal);
     const copy = structuredClone(record);
     return { output: analysisJson({ method: copy.method, cacheKey: copy.cacheKey, resultId: copy.resultId }),
-      apply: (activeSignal: AbortSignal) => { abort(activeSignal); this.matchLoaded(genome); this.publish({ result: copy }); } };
+      apply: (activeSignal: AbortSignal) => { abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome)); this.publish({ result: copy }); } };
   }
   private checkSelection(genome: LocalGenome, selected: number | null, requireCDS = true): void {
     if (selected !== null && !genome.phage.genes.some(gene => gene.id === selected && (!requireCDS || gene.type === 'CDS'))) throw new Error('The selected CDS is unavailable in this exact annotation snapshot.');
@@ -133,16 +204,24 @@ export class ResearchWorkflow {
   }
   private matchLoaded(expected: LocalGenome): LocalGenome {
     const id = expected.phage.localGenome!.contentId;
-    const loaded = this.environment.genomes().find(item => item.phage.localGenome?.contentId === id);
+    const matches = this.environment.genomes().filter(item => item.phage.localGenome?.contentId === id);
+    if (matches.length > 1) throw new Error('Duplicate loaded genome content identity.');
+    const loaded = matches[0];
     if (!loaded) throw new Error(`Missing local genome ${id.slice(0, 12)}. Add the workflow's bundled genomes before replay.`);
-    if (loaded.sequence !== expected.sequence || !commandValuesEqual(analysisJson(loaded.phage), analysisJson(expected.phage))) throw new Error(`Local genome ${id.slice(0, 12)} has changed sequence or annotations.`);
+    if (loaded.sequence !== expected.sequence || !commandValuesEqual(analysisJson(loaded.phage), analysisJson(expected.phage))
+      || !commandValuesEqual(analysisJson(loaded.original), analysisJson(expected.original))) throw new Error(`Local genome ${id.slice(0, 12)} has changed sequence or annotations.`);
     return structuredClone(loaded);
   }
   private async genome(id: string, signal: AbortSignal): Promise<LocalGenome> {
+    return (await this.selectedGenomes([id], signal))[0];
+  }
+  private async selectedGenomes(ids: readonly string[], signal: AbortSignal): Promise<LocalGenome[]> {
     await this.validateContext(this.commands.getSnapshot().tape.context, signal);
-    const expected = this.expectedGenomes.find(item => item.phage.localGenome?.contentId === id);
-    if (!expected) throw new Error('The command refers to a genome outside the recorded input bundle.');
-    return this.matchLoaded(expected);
+    return ids.map(id => {
+      const expected = this.expectedGenomes.find(item => item.phage.localGenome?.contentId === id);
+      if (!expected) throw new Error('The command refers to a genome outside the recorded input bundle.');
+      return this.matchLoaded(expected);
+    });
   }
   start = (name: string): void => {
     if (!this.environment.genomes().length) throw new Error('Add local genomes before recording a workflow.');

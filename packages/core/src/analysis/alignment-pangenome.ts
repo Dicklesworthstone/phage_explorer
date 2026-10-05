@@ -125,7 +125,8 @@ export function parsePangenomeInput(content: string, name = 'Local pangenome seq
 export function serializePangenomeInput(input: PangenomeInput): string {
   const result = JSON.stringify(validatePangenomeInput(input), null, 2); size(result); return result;
 }
-export function resolveAlignmentGraphOptions(input: PangenomeInput, options: Partial<AlignmentGraphOptions> = {}): AlignmentGraphOptions {
+/** Parameter validation needs identifiers only; command tapes can be checked before loading private sequences. */
+export function resolveAlignmentGraphOptions(input: { sequences: readonly { id: string }[] }, options: Partial<AlignmentGraphOptions> = {}): AlignmentGraphOptions {
   if (!isObject(options) || Object.keys(options).some(key => !['referenceId', 'alignment', 'terminalGaps', 'normalization', 'affinePenalties'].includes(key))) {
     throw new Error('Unsupported pangenome parameters.');
   }

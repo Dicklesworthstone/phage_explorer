@@ -26,7 +26,7 @@ export type PangenomeWorker = Pick<Worker, 'postMessage' | 'terminate' | 'onmess
  */
 export function pangenomeRequestFromLocalGenomes(genomes: readonly {
   sequence: string; phage: { name: string; accession: string; localGenome?: { contentId: string } };
-}[], contentIds: readonly string[]): PangenomeRequest {
+}[], contentIds: readonly string[]): Extract<PangenomeRequest, { kind: 'local-genomes' }> {
   if (contentIds.length < 2 || contentIds.length > 24 || new Set(contentIds).size !== contentIds.length) {
     throw new Error('Choose 2–24 distinct imported genomes.');
   }
