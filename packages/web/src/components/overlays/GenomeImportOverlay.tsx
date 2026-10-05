@@ -5,8 +5,9 @@ import { useLocalGenomes } from '../../db/local-genomes';
 import { useFileSystem } from '../../hooks/useFileSystem';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
-import { ResearchWorkflowPanel } from './ResearchWorkflowPanel';
+import { ResearchWorkflowPanel, runResearchWorker } from './ResearchWorkflowPanel';
 import { CodonReferencePanel } from './CodonReferencePanel';
+import { SavedResearchPanel } from './SavedResearchPanel';
 
 export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index: number) => Promise<void> }): React.ReactElement {
   const { close } = useOverlay();
@@ -20,14 +21,18 @@ export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index:
   const [result, setResult] = useState<GenomeImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [importBusy, setBusy] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const busy = importBusy || libraryBusy;
   const [allowCollisions, setAllowCollisions] = useState(false);
   const workerRef = useRef<Worker | null>(null);
+  const savedImport = useRef<AbortController | null>(null);
   const generation = useRef(0);
-  useEffect(() => () => { generation.current++; workerRef.current?.terminate(); }, []);
+  useEffect(() => () => { generation.current++; workerRef.current?.terminate(); savedImport.current?.abort(); }, []);
 
   const cancel = () => {
     generation.current++;
+    savedImport.current?.abort();
     workerRef.current?.terminate();
     workerRef.current = null;
     setBusy(false);
@@ -91,14 +96,38 @@ export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index:
     try { add(result, allowCollisions, phages); close('genomeImport'); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Import failed'); }
   };
-  const exportBundle = async () => {
+  const captureBundle = () => {
     const state = usePhageStore.getState();
+    const snapshot = useLocalGenomes.getState().genomes;
+    if (!snapshot.length) throw new Error('No imported genomes are available to save.');
     const contentId = state.currentPhage?.localGenome?.contentId;
     const view: LocalGenomeView | undefined = contentId ? {
       contentId, viewMode: state.viewMode, readingFrame: state.readingFrame, scrollPosition: state.scrollPosition,
     } : undefined;
+    return exportLocalGenomeBundle(snapshot, view);
+  };
+  const restoreBundle = async (content: string, signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    workerRef.current?.terminate(); workerRef.current = null; savedImport.current?.abort();
+    const controller = new AbortController(), current = ++generation.current;
+    savedImport.current = controller;
+    const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true });
+    setBusy(true); setError(null); setResult(null); setStatus('Parsing saved local workspace…');
     try {
-      await save(new Blob([exportLocalGenomeBundle(genomes, view)], { type: 'application/json' }), { suggestedName: 'phage-local-genomes.json' });
+      const response = await runResearchWorker({ type: 'parse', input: { name: 'saved-local-genomes.json', text: content } }, controller.signal);
+      if (controller.signal.aborted || generation.current !== current) throw new DOMException('Cancelled', 'AbortError');
+      if (response.type !== 'parsed') throw new Error('Expected parsed saved genomes.');
+      setText(content); setFilePreview(content.length > 2000); setName('saved-local-genomes.json');
+      setAllowCollisions(false); setResult(response.result); setStatus('Saved workspace parsed. Review the records before adding them.');
+    } finally {
+      signal.removeEventListener('abort', abort);
+      if (savedImport.current === controller) savedImport.current = null;
+      if (generation.current === current) setBusy(false);
+    }
+  };
+  const exportBundle = async () => {
+    try {
+      await save(new Blob([captureBundle()], { type: 'application/json' }), { suggestedName: 'phage-local-genomes.json' });
       setStatus('Exported original inputs and the selected local sequence view. Analysis results are exported from their own panels.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Export failed'); }
   };
@@ -106,7 +135,9 @@ export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index:
   return (
     <Overlay id="genomeImport" title="Local genomes" size="lg">
       <div style={{ display: 'grid', gap: 'var(--space-3)', minWidth: 0, overflowWrap: 'anywhere' }}>
-        <p>Open your own DNA sequences in the sequence viewer, gene map, comparisons and sequence analyses. Input stays in this browser session. Export a bundle before reloading; a share URL does not contain local sequences.</p>
+        <p>Open your own DNA sequences in the sequence viewer, gene map, comparisons and sequence analyses. Input is session-only unless you explicitly save a local snapshot below. Export JSON for a separate backup; a share URL does not contain local sequences.</p>
+        <SavedResearchPanel kind="genomes" suggestedName="Local genome workspace" disabled={importBusy}
+          capture={genomes.length ? captureBundle : null} restore={restoreBundle} onActivityChange={setLibraryBusy} />
         <p>FASTA, GenBank or a local genome bundle; up to 10 MiB, 100 records and 5,000,000 bases. IUPAC ambiguity codes are retained. FASTA topology is unknown unless the header contains [topology=circular] or [topology=linear].</p>
         <label>Choose genome file <input aria-label="Choose genome file" type="file" accept=".fa,.fasta,.fna,.gb,.gbk,.genbank,.json,.txt" disabled={busy} onChange={event => void chooseFile(event.target.files?.[0])} /></label>
         {filePreview ? <>
@@ -119,7 +150,7 @@ export function GenomeImportOverlay({ onSelectPhage }: { onSelectPhage?: (index:
         </>}
         <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
           <button type="button" className="btn btn-primary" disabled={busy || !text.trim()} onClick={parse}>Parse records</button>
-          {busy && <button type="button" className="btn" onClick={cancel}>Cancel import</button>}
+          {importBusy && <button type="button" className="btn" onClick={cancel}>Cancel import</button>}
           {genomes.length > 0 && <button type="button" className="btn" disabled={busy} onClick={() => void exportBundle()}>Export local genome bundle</button>}
         </div>
         <p role="status">{status}</p>

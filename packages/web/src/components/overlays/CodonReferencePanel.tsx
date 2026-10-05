@@ -5,6 +5,7 @@ import { useLocalGenomes } from '../../db/local-genomes';
 import { runCodonReferenceTask } from '../../workers/codon-reference.worker';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
 
 /** The existing local-genome workflow supplies query data; references are never uploaded. */
 export function CodonReferencePanel(): React.ReactElement {
@@ -13,7 +14,9 @@ export function CodonReferencePanel(): React.ReactElement {
   const [geneId, setGeneId] = useState('all');
   const [referenceText, setReferenceText] = useState('');
   const [zeroPolicy, setZeroPolicy] = useState<ZeroCountReplacement>(0.5);
-  const [busy, setBusy] = useState(false);
+  const [analysisBusy, setBusy] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const busy = analysisBusy || libraryBusy;
   const [status, setStatus] = useState('Choose an imported annotated genome and supply your reference counts.');
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
@@ -95,6 +98,20 @@ export function CodonReferencePanel(): React.ReactElement {
     operation.current?.abort(); operation.current = null;
     setBusy(false); setCompleted(null); setStatus('Cancelled. No late result will replace the current input.');
   };
+  const restoreLocal = async (content: string, signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    const controller = begin(), abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    setStatus('Recomputing the locally saved reference experiment…');
+    try {
+      const experiment = await runCodonReferenceTask(
+        () => new Worker(new URL('../../workers/codon-reference.worker.ts', import.meta.url), { type: 'module' }),
+        { type: 'verify', content }, controller.signal);
+      if (operation.current !== controller || controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      setCompleted({ input, experiment, verified: true });
+      setStatus('Local experiment recomputed and verified against its saved inputs and scores.');
+    } finally { signal.removeEventListener('abort', abort); end(controller); }
+  };
   const exportResult = () => {
     if (!result) return;
     try { downloadString(serializeAnalysisRecord(result.experiment.record), 'codon-reference-experiment.json', 'application/json'); }
@@ -107,6 +124,8 @@ export function CodonReferencePanel(): React.ReactElement {
   return <section aria-label="Reference-backed codon adaptation" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.75rem' }}>
     <h3>Reference-backed codon adaptation</h3>
     <p>Analyze annotated CDS against your own codon-count reference, independently of the illustrative host models. Original inputs remain local. CAI measures relative codon usage—not expression, host range or infection probability.</p>
+    <SavedResearchPanel kind="codon-reference" suggestedName={`${resultGenome?.name ?? 'Reference'} experiment`} disabled={analysisBusy}
+      capture={result ? () => serializeAnalysisRecord(result.experiment.record) : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem' }}><legend>Query and reference</legend>
       <label>Reference-analysis genome <select value={selected} onChange={event => { setSelected(event.target.value); setGeneId('all'); }}>
         {!genomes.length && <option value="">Import an annotated GenBank genome above</option>}
@@ -138,7 +157,7 @@ export function CodonReferencePanel(): React.ReactElement {
       <button type="button" className="btn btn-primary" disabled={!genome || !reference?.value} onClick={() => void run()}>Analyze against reference</button>
     </fieldset>
     <label>Reopen and verify reference experiment <input type="file" accept=".json,application/json" disabled={busy} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void load(file, 'experiment'); }} /></label>
-    {busy && <button type="button" className="btn" onClick={cancel}>Cancel reference analysis</button>}
+    {analysisBusy && <button type="button" className="btn" onClick={cancel}>Cancel reference analysis</button>}
     <p role="status" aria-live="polite">{status}</p>
     {error && <p role="alert">{error}</p>}
     {analysis && result && <>

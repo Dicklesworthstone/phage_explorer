@@ -12,6 +12,7 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
 import { PangenomeSession, pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../../workers/PangenomeSession';
 import { useLocalGenomes } from '../../db/local-genomes';
+import { SavedResearchPanel } from './SavedResearchPanel';
 
 // Memory only, retained across panel close/reopen. Closing still cancels work.
 const session = new PangenomeSession(() => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
@@ -72,7 +73,9 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
     ? constructPangenomeGraph(phage, [], { demonstration: true }) : null, [phage, illustratedPhageId]);
   useEffect(() => { setIllustratedPhageId(null); }, [phage?.id]);
   useHotkey(ActionIds.OverlayPangenomeGraph, () => toggle('pangenomeGraph'));
-  const { accepted, busy, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const { accepted, busy: computeBusy, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const busy = computeBusy || libraryBusy;
   const [pasted, setPasted] = useState('');
   const [draft, setDraft] = useState<AlignmentGraphOptions | null>(null);
   const [pathId, setPathId] = useState('');
@@ -119,11 +122,25 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       setExportError(null);
     } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
   };
+  const restoreLocal = async (content: string, signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    const previous = session.getSnapshot().accepted;
+    const cancel = () => session.cancel(); signal.addEventListener('abort', cancel, { once: true });
+    try {
+      await session.run({ kind: 'import', content, filename: 'saved-pangenome-analysis.json' });
+      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      const next = session.getSnapshot();
+      if (next.error) throw new Error(next.error);
+      if (next.accepted === previous || !next.accepted?.verified) throw new DOMException('Pangenome restore cancelled', 'AbortError');
+    } finally { signal.removeEventListener('abort', cancel); }
+  };
   return <Overlay id="pangenomeGraph" title="SEQUENCE PANGENOME & VARIANTS" size="xl"
     provenanceBadge={<span data-testid="pangenome-source">{!accepted ? 'No sequence input' : accepted.input.source === 'demo' ? 'Synthetic sequence example' : 'Local sequence input'}</span>}>
     <div style={{ display: 'grid', gap: '1rem', color: colors.text, overflowWrap: 'anywhere', minWidth: 0 }}>
       <p>Build graphs from your own sequences, not annotation templates. Inputs remain in browser memory and are not uploaded by this tool.
-        This workspace is independent of the catalog selection. Export the dataset or analysis before reloading.</p>
+        This workspace is independent of the catalog selection. Save a completed experiment locally or export JSON before reloading.</p>
+      <SavedResearchPanel kind="pangenome" suggestedName={accepted?.input.name ?? 'Pangenome experiment'} disabled={computeBusy}
+        capture={record ? () => serializeAnalysisRecord(record) : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
       {!accepted && <p>Comparative sequence evidence has not been supplied. Import sequences below to construct a real graph.</p>}
       {localGenomes.length > 0 && <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem' }}>
         <legend>Compare genomes already imported into the explorer</legend>
@@ -155,8 +172,8 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           wavefront mode handles related collinear genomes within explicit work budgets. Graphs are bounded to 4,000 blocks and 12,000 nodes. Saved analyses: 10 MiB.</p>
       </details>
       <div><button type="button" disabled={busy} onClick={() => void session.run({ kind: 'demo' })}>Load synthetic sequence example</button>
-        <button type="button" disabled={!busy} onClick={session.cancel}>Cancel pangenome work</button></div>
-      {busy && <p role="status">{phase}. The last accepted input and result remain unchanged.</p>}
+        <button type="button" disabled={!computeBusy} onClick={session.cancel}>Cancel pangenome work</button></div>
+      {computeBusy && <p role="status">{phase}. The last accepted input and result remain unchanged.</p>}
       {notice && <p role="status">{notice}</p>}
       {(error || exportError) && <p role="alert">{error ?? exportError}</p>}
       {accepted && draft && <>

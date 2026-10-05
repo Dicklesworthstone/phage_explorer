@@ -9,6 +9,7 @@ import { getOrchestrator } from '../../workers/ComputeOrchestrator';
 import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/research-workflow.worker';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
 
 export function runResearchWorker(request: ResearchWorkerRequest, signal: AbortSignal): Promise<ResearchWorkerResult> {
   return new Promise((resolve, reject) => {
@@ -127,6 +128,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [repetitions, setRepetitions] = useState('1');
   const [error, setError] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const [review, setReview] = useState<GenomeImportResult | null>(null);
   const [collisions, setCollisions] = useState(false);
   const inputOperation = useRef<AbortController | null>(null);
@@ -136,7 +138,8 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   }, [binding]);
   useEffect(() => { if (!genomes.some(g => g.phage.localGenome?.contentId === selected)) { setSelected(genomes[0]?.phage.localGenome?.contentId ?? ''); setGene('all'); } }, [genomes, selected]);
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
-  const busy = inputBusy || !['idle', 'recording'].includes(state.mode);
+  const commandBusy = inputBusy || !['idle', 'recording'].includes(state.mode);
+  const busy = commandBusy || libraryBusy;
   const active = state.mode === 'recording';
   const invoke = (action: () => void | Promise<void>) => {
     setError(null);
@@ -157,9 +160,25 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
   };
   const view = (): ResearchView => ({ contentId: selected, geneId: gene === 'all' ? null : Number(gene), scrollPosition: position.trim() ? Number(position) : NaN, viewMode: mode, readingFrame: frame });
+  const restoreLocal = async (content: string, signal: AbortSignal) => {
+    if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    const abort = () => controller.abort(); signal.addEventListener('abort', abort, { once: true });
+    setInputBusy(true); setError(null); setReview(null);
+    try {
+      const parsed = await workflow.loadAndReview(content, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      setName(workflow.commands.getSnapshot().tape.name); setCollisions(false); setReview(parsed);
+    } finally {
+      signal.removeEventListener('abort', abort);
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    }
+  };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
     <p>Record explicit commands below, save their private input bundle, and replay with fresh result verification. Only these three supported commands are recorded—not arbitrary actions in other panels. Nothing is uploaded.</p>
+    <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
+      capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
     <div><button type="button" disabled={busy || active || !genomes.length} onClick={() => invoke(() => workflow.start(name))}>Start workflow recording</button>
       <button type="button" disabled={busy || !active} onClick={() => invoke(workflow.commands.stop)}>Stop workflow recording</button>
@@ -189,7 +208,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     <div><button type="button" disabled={busy || active || !state.tape.commands.length} onClick={() => invoke(() => workflow.commands.replay(Number(repetitions)))}>Replay research workflow</button>
       <button type="button" disabled={state.mode !== 'replaying'} onClick={workflow.commands.pause}>Pause workflow</button>
       <button type="button" disabled={state.mode !== 'paused'} onClick={workflow.commands.resume}>Resume workflow</button>
-      <button type="button" disabled={!busy} onClick={cancel}>Cancel workflow</button></div>
+      <button type="button" disabled={!commandBusy} onClick={cancel}>Cancel workflow</button></div>
     <p aria-live="polite" data-testid="workflow-status">{state.mode} · {state.tape.commands.length} recorded commands · {state.completed}/{state.total} replay commands complete. {state.notice}</p>
     {(error || state.error) && <p role="alert">{error ?? state.error}</p>}
     <ol aria-label="Recorded workflow commands">{state.tape.commands.map((command, index) => <li key={index}>{ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId} <code>{JSON.stringify(command.parameters)}</code></li>)}</ol>
@@ -200,6 +219,6 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <details><summary>Computed values (first 12,000 characters)</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto' }}>{JSON.stringify(Object.fromEntries(Object.entries(research.result.fields).map(([key, field]) => [key, field.value])), null, 2).slice(0, 12000)}</pre></details>
       <AnalysisRecordDetails record={research.result} />
     </div>}
-    <p>Limits: 128 recorded commands, 256 replay executions, 10 repetitions, 10 MiB including private inputs. Reference or execution-backend changes stop verification. Closing this panel cancels active work; export before closing to keep the recording.</p>
+    <p>Limits: 128 recorded commands, 256 replay executions, 10 repetitions, 10 MiB including private inputs. Reference or execution-backend changes stop verification. Closing this panel cancels active work; stop recording and save a local snapshot or export JSON before closing to keep it.</p>
   </section>;
 }
