@@ -40,12 +40,14 @@ and the existing numerical producers. It does not maintain a second command engi
 | `nav.goto` | Validate the exact genome, gene, reading frame, view mode and position; apply headless view state. No screen is rendered. |
 | `overlay.pangenomeGraph` | Recompute the sequence graph with supplied/global/unit-wavefront/affine settings, optional strand/circular normalization, and optional GenBank CDS consequences. |
 | `overlay.codonAdaptation` | Recompute the existing single-genome illustrative host-model command. This is not the separate reference-backed codon-count workflow. |
-| `overlay.repeats` | Explicitly unsupported here: existing recordings bind a browser transport and backend implementation. The terminal does not relabel another engine or ignore an identity mismatch. |
+| `overlay.repeats` with `method: "exact-pairs"` | Recompute unsampled fixed-length direct/inverted pairs with the portable method, including its explicit completeness and output limit. |
+| Legacy `overlay.repeats` without that method | Browser-only transport/backend identity; the terminal does not relabel another engine or ignore an identity mismatch. |
 
-Unknown actions and repeat commands reject the **whole replay before its first
+Unknown actions and legacy repeat commands reject the **whole replay before its first
 command**. Known command parameters are also validated before computation. `inspect`
 reports unsupported steps; `canReplay` indicates supported actions and accepted
 input/parameter shape, not that numerical verification has already succeeded.
+New exact-pair recordings are described in `EXACT_REPEAT_WORKFLOWS.md`.
 No commands are skipped, no shell fragments are executed, and no remote references
 are fetched. A tape containing unsupported actions should be replayed in the browser.
 

@@ -4,6 +4,7 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
@@ -93,6 +94,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (result.type !== 'repeats' || !result.evidenceRecord) throw new Error('Repeat evidence is unavailable.');
       return result.evidenceRecord;
     },
+    exactRepeats: async (genome, options, signal) => {
+      const response = await runResearchWorker({ type: 'exact-repeats', genome, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected exact repeat evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -136,6 +142,16 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [frame, setFrame] = useState<ResearchView['readingFrame']>(0);
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
   const [repetitions, setRepetitions] = useState('1');
+  const [pairLimit, setPairLimit] = useState('2000');
+  const exactRepeatDraft = useMemo(() => {
+    try {
+      if (![minimum, gap, pairLimit].every(value => value.trim())) throw new Error('Enter an arm length, gap and pair limit.');
+      return { options: resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit) }), error: null };
+    } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [minimum, gap, pairLimit]);
+  const exactRepeatResult = research.result?.method.id === EXACT_REPEAT_METHOD.id && research.result.method.version === EXACT_REPEAT_METHOD.version
+    ? { record: research.result, pairs: research.result.fields.pairs.value as unknown as ExactRepeatScan['pairs'],
+      search: research.result.fields.search.value as unknown as ExactRepeatScan['search'] } : null;
   const [graphIds, setGraphIds] = useState<string[]>([]);
   const [graphReference, setGraphReference] = useState('');
   const [graphAlignment, setGraphAlignment] = useState<AlignmentGraphOptions['alignment']>('wavefront');
@@ -233,6 +249,16 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <label>Workflow minimum repeat arm <input type="number" min={4} max={256} value={minimum} onChange={event => setMinimum(event.target.value)} /></label>
       <label>Workflow maximum repeat gap <input type="number" min={0} max={100000} value={gap} onChange={event => setGap(event.target.value)} /></label>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayRepeats, { contentId: selected, minLength: minimum.trim() ? Number(minimum) : NaN, maxGap: gap.trim() ? Number(gap) : NaN }))}>Run and record repeats</button>
+      <label>Workflow exact pair limit <input type="number" min={1} max={20000} value={pairLimit} onChange={event => setPairLimit(event.target.value)} /></label>
+      <p>Exact pairs use the chosen arm length as a fixed length and visit every eligible direct/inverted partner. Arms cannot overlap; ambiguous bases can occur only in the spacer. Result limits return an explicitly marked prefix. Legacy repeat overview above remains sampled and browser-bound.</p>
+      {exactRepeatDraft.error && <p>{exactRepeatDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !genome || !exactRepeatDraft.options} onClick={() => {
+        if (busy || !active || !genome || !exactRepeatDraft.options) return;
+        const parameters = { contentId: selected, method: 'exact-pairs', ...exactRepeatDraft.options };
+        // Claim execution immediately: unmount/cancel cannot race a queued start.
+        const task = workflow.commands.dispatch(ActionIds.OverlayRepeats, parameters);
+        invoke(() => task);
+      }}>Run and record exact repeat pairs</button>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId: selected, geneId: gene === 'all' ? null : Number(gene) }))}>Run and record CDS analysis</button>
     </fieldset>
     <fieldset disabled={busy || !active} style={{ display: 'grid', gap: '.5rem' }}><legend>Record a real pangenome experiment</legend>
@@ -292,6 +318,23 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     {research.result && <div data-testid="workflow-result" data-result-id={research.result.resultId}>
       <p>Accepted result: {research.result.method.id}. Reproducibility is not biological validation.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(research.result!), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {exactRepeatResult && <section aria-label="Exact repeat-pair results">
+        <h4>Exact repeat pairs</h4>
+        <p role="status">{exactRepeatResult.pairs.length.toLocaleString()} pairs retained. {exactRepeatResult.search.complete
+          ? 'Complete for the submitted fixed-arm, linear gap search.'
+          : `Incomplete ordered prefix: the pair limit stopped enumeration at right-arm start ${exactRepeatResult.search.stoppedAtRightStart}.`}</p>
+        <p>Submitted arm length: {exactRepeatResult.search.options.armLength} bases; maximum spacer: {exactRepeatResult.search.options.maxGap};
+          pair limit: {exactRepeatResult.search.options.maxPairs}. Resolved bases: {exactRepeatResult.search.resolvedBases.toLocaleString()}/{exactRepeatResult.search.sequenceLength.toLocaleString()}.
+          This does not search circular-origin crossings or maximal repeat families.</p>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(exportExactRepeatPairsTsv(exactRepeatResult.record), 'exact-repeat-pairs.tsv', 'text/tab-separated-values'))}>Export exact repeat pairs TSV</button>
+        <p>Both arm intervals are 0-based and half-open. Showing the first {Math.min(50, exactRepeatResult.pairs.length)} retained pairs; TSV contains the entire retained set and its completeness flag.</p>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Exact repeat-pair coordinates">
+          <thead><tr><th>Type</th><th>Left arm</th><th>Right arm</th><th>Spacer</th></tr></thead>
+          <tbody>{exactRepeatResult.pairs.slice(0, 50).map((pair, index) => <tr key={index}>
+            <td>{pair.type}</td><td>[{pair.leftStart}, {pair.leftEnd})</td><td>[{pair.rightStart}, {pair.rightEnd})</td><td>{pair.gap}</td>
+          </tr>)}</tbody>
+        </table></div>
+      </section>}
       <details><summary>Computed values (first 12,000 characters)</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto' }}>{JSON.stringify(Object.fromEntries(Object.entries(research.result.fields).map(([key, field]) => [key, field.value])), null, 2).slice(0, 12000)}</pre></details>
       <AnalysisRecordDetails record={research.result} />
     </div>}
