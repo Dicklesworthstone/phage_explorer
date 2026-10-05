@@ -1,8 +1,8 @@
 /**
  * DotPlotOverlay - Self-Similarity Matrix Visualization
  *
- * Visualizes genome self-similarity through dot plot matrix analysis,
- * revealing repeats, palindromes, and internal duplications.
+ * Explores sampled genome windows for direct and reverse-complement similarity.
+ * Patterns nominate candidates; this is not an exhaustive repeat annotation.
  *
  * Features:
  * - Direct repeat detection (forward matches)
@@ -12,7 +12,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import { getDotPlotWindowRange, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
@@ -74,10 +74,19 @@ export function DotPlotOverlay({
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
   const input = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
   const sequence = input?.sequence ?? '';
   const loading = sequenceLoading || computeLoading;
+  const resolvedBaseCount = useMemo(() => {
+    let count = 0;
+    for (let i = 0; i < sequence.length; i++) {
+      const code = sequence.charCodeAt(i) | 32;
+      if (code === 97 || code === 99 || code === 103 || code === 116) count++;
+    }
+    return count;
+  }, [sequence]);
 
   // UI state
   const [viewMode, setViewMode] = useState<ViewMode>('combined');
@@ -89,7 +98,12 @@ export function DotPlotOverlay({
   const invertedValues = response?.invertedValues ?? null;
   const bins = response?.bins ?? 0;
   const windowSize = response?.window ?? 0;
-  const [hoverInfo, setHoverInfo] = useState<HeatmapHover | null>(null);
+  const [hovered, setHovered] = useState<{ response: DotPlotWorkerResponse; hover: HeatmapHover } | null>(null);
+  // A preview's queued pointer event must not be reinterpreted on a newer matrix.
+  const hoverInfo = hovered && hovered.response === response ? hovered.hover : null;
+  const handleHover = useCallback((hover: HeatmapHover | null) => {
+    setHovered(hover && response ? { response, hover } : null);
+  }, [response]);
   const viewSelectId = 'dotplot-view';
   const resolutionSelectId = 'dotplot-resolution';
 
@@ -116,7 +130,7 @@ export function DotPlotOverlay({
     }
     setLoaded(null);
     setError(null);
-    setHoverInfo(null);
+    setHovered(null);
     if (!repository || !currentPhage) {
       setSequenceLoading(false);
       setComputeLoading(false);
@@ -152,12 +166,12 @@ export function DotPlotOverlay({
       cancelled = true;
       setSequenceLoading(false);
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isOpen, repository, currentPhage, retryCount]);
 
   // Run dot plot analysis when sequence or resolution changes
   useEffect(() => {
     setComputed(null);
-    setHoverInfo(null);
+    setHovered(null);
     if (!isOpen('dotPlot')) {
       setComputeLoading(false);
       return;
@@ -194,7 +208,7 @@ export function DotPlotOverlay({
 
     const handleMessage = (event: MessageEvent<DotPlotWorkerResponse>) => {
       const response = event.data;
-      if (cancelled || response.requestId !== requestId) return;
+      if (cancelled || !response || response.requestId !== requestId) return;
       setComputeLoading(false);
 
       if (!response.ok) {
@@ -203,33 +217,53 @@ export function DotPlotOverlay({
         return;
       }
 
-      if (response.directValues && response.invertedValues) {
+      const outBins = response.bins ?? 0;
+      const outWindow = response.window ?? 0;
+      const expectedResolution = outBins === request.resolution || (request.resolution >= 80 && outBins === 40);
+      if (expectedResolution && outBins > 0 && Number.isSafeInteger(outWindow) && outWindow > 0
+          && outWindow <= selected.sequence.length
+          && response.directValues instanceof Float32Array && response.invertedValues instanceof Float32Array
+          && response.directValues.length === outBins * outBins && response.invertedValues.length === outBins * outBins) {
         setComputed({ request, response });
       } else {
         setComputed(null);
-        setError('Dot plot worker returned no matrix');
+        setError('Dot plot worker returned an invalid matrix');
       }
     };
 
-    worker.onmessage = handleMessage;
-    worker.onerror = (event) => {
+    const failWorker = (message: string) => {
       if (cancelled) return;
       setComputed(null);
       setComputeLoading(false);
-      setError(event.message || 'Dot plot worker failed');
+      setError(message);
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
     };
+    worker.onmessage = handleMessage;
+    worker.onerror = (event) => failWorker(event.message || 'Dot plot worker failed');
+    worker.onmessageerror = () => failWorker('Could not decode dot plot worker response');
+    const config = { bins: request.resolution, ambiguity: 'exclude' as const };
     try {
-      const { ref: sequenceRef, transfer } = SharedSequencePool.getInstance().getOrCreateRef(selected.phage.id, selected.sequence);
-      worker.postMessage({ requestId, sequenceRef, config: { bins: request.resolution } }, transfer);
+      if (/^[ACGT]+$/i.test(selected.sequence)) {
+        try {
+          const { ref: sequenceRef, transfer } = SharedSequencePool.getInstance().getOrCreateRef(selected.phage.id, selected.sequence);
+          worker.postMessage({ requestId, sequenceRef, config }, transfer);
+        } catch {
+          worker.postMessage({ requestId, sequence: selected.sequence, config });
+        }
+      } else {
+        // Preserve unresolved symbols/coordinates rather than using a lossy base encoding.
+        worker.postMessage({ requestId, sequence: selected.sequence, config });
+      }
     } catch (cause: unknown) {
-      setComputeLoading(false);
-      setError(cause instanceof Error ? cause.message : String(cause));
+      failWorker(cause instanceof Error ? cause.message : String(cause));
     }
 
     return () => {
       cancelled = true;
       worker.onmessage = null;
       worker.onerror = null;
+      worker.onmessageerror = null;
       setComputeLoading(false);
     };
   }, [isOpen, request]);
@@ -289,14 +323,19 @@ export function DotPlotOverlay({
     }
   }, [viewMode, combinedColorScale]);
 
-  // Position from bin index
-  const binToPosition = useCallback(
-    (binIndex: number): number => {
-      if (!sequence || bins === 0) return 0;
-      return Math.floor((binIndex / bins) * sequence.length);
-    },
-    [sequence, bins]
-  );
+  const hoverDetails = useMemo(() => {
+    if (!hoverInfo || !directValues || !invertedValues || !sequence || bins < 1 || windowSize < 1) return null;
+    const { row, col } = hoverInfo;
+    if (!Number.isSafeInteger(row) || !Number.isSafeInteger(col) || row < 0 || col < 0 || row >= bins || col >= bins) return null;
+    return {
+      x: getDotPlotWindowRange(sequence.length, bins, windowSize, col),
+      y: getDotPlotWindowRange(sequence.length, bins, windowSize, row),
+      direct: directValues[row * bins + col],
+      inverted: invertedValues[row * bins + col],
+      coverageX: directValues[col * bins + col],
+      coverageY: directValues[row * bins + row],
+    };
+  }, [hoverInfo, directValues, invertedValues, sequence, bins, windowSize]);
 
   if (!isOpen('dotPlot')) return null;
 
@@ -318,9 +357,10 @@ export function DotPlotOverlay({
             />
           ) : undefined}
         >
-          Self-similarity matrix showing direct repeats (diagonal patterns) and inverted repeats
-          (off-diagonal). The main diagonal represents self-identity. Parallel diagonals indicate
-          tandem repeats, while perpendicular patterns suggest palindromes or inversions.
+          Sampled windows are compared in direct and reverse-complement orientations.
+          Scores count resolved A/C/G/T matches divided by the full window length;
+          unknown and IUPAC ambiguity symbols never count as matching evidence.
+          Combined view shows the larger of the two scores, not an average or an exact repeat call.
         </OverlayDescription>
 
         {/* Controls */}
@@ -363,7 +403,7 @@ export function DotPlotOverlay({
               <InfoButton
                 size="sm"
                 label="What does resolution mean?"
-                tooltip="Higher resolution uses more bins (smaller windows), showing finer structure but taking longer to compute."
+                tooltip="Higher resolution samples more positions. Windows can overlap; preview and final views keep the same window size."
                 onClick={() => showContextFor('sliding-window')}
               />
             )}
@@ -402,7 +442,12 @@ export function DotPlotOverlay({
 
         {/* Error State */}
         {error && !loading && (
-          <OverlayErrorState message={error} />
+          <>
+            <OverlayErrorState message={error} />
+            <button type="button" className="btn btn-secondary" onClick={() => setRetryCount(count => count + 1)}>
+              Retry analysis
+            </button>
+          </>
         )}
 
         {/* Empty State */}
@@ -440,6 +485,11 @@ export function DotPlotOverlay({
                         : 'Combined View'}{' '}
                     ({bins}x{bins}, window: {windowSize} bp)
                   </div>
+                  <div role="status" aria-live="polite" style={{ fontSize: '0.75rem', marginBottom: '0.5rem' }}>
+                    {bins < resolution ? `Preview; refining to ${resolution}x${resolution}. ` : 'Analysis complete. '}
+                    Resolved bases: {resolvedBaseCount.toLocaleString()} / {sequence.length.toLocaleString()}
+                    {' '}({((resolvedBaseCount / sequence.length) * 100).toFixed(1)}%).
+                  </div>
                   <HeatmapCanvas
                     width={Math.min(450, bins * 4)}
                     height={Math.min(450, bins * 4)}
@@ -451,8 +501,8 @@ export function DotPlotOverlay({
                       max: 1,
                     }}
                     colorScale={currentColorScale}
-                    onHover={setHoverInfo}
-                    ariaLabel={`Dot plot ${viewMode} view`}
+                    onHover={handleHover}
+                    ariaLabel={`Dot plot ${viewMode} view, resolved matches per full window`}
                   />
                 </div>
 
@@ -466,7 +516,7 @@ export function DotPlotOverlay({
                     marginTop: '1.5rem',
                   }}
                 >
-                  <div style={{ color: 'var(--color-text-muted)', marginBottom: '0.25rem' }}>Identity</div>
+                  <div style={{ color: 'var(--color-text-muted)', marginBottom: '0.25rem' }}>Score</div>
                   {viewMode === 'inverted' ? (
                     <>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -510,7 +560,7 @@ export function DotPlotOverlay({
               </div>
 
               {/* Hover info */}
-              {hoverInfo && (
+              {hoverDetails && (
                 <div
                   style={{
                     marginTop: '0.5rem',
@@ -521,12 +571,19 @@ export function DotPlotOverlay({
                   }}
                 >
                   <span style={{ color: 'var(--color-text-muted)' }}>
-                    Position X: {binToPosition(hoverInfo.col).toLocaleString()} bp | Position Y:{' '}
-                    {binToPosition(hoverInfo.row).toLocaleString()} bp
+                    Window X: {(hoverDetails.x.start + 1).toLocaleString()}–{hoverDetails.x.end.toLocaleString()} bp
+                    {' | '}Window Y: {(hoverDetails.y.start + 1).toLocaleString()}–{hoverDetails.y.end.toLocaleString()} bp
+                    {' '}(1-based, inclusive)
                   </span>
                   <span style={{ marginLeft: '1rem', fontWeight: 'bold' }}>
-                    Identity: {(hoverInfo.value * 100).toFixed(1)}%
+                    Direct score: {(hoverDetails.direct * 100).toFixed(1)}%
+                    {' | '}Inverted score: {(hoverDetails.inverted * 100).toFixed(1)}%
                   </span>
+                  <div style={{ marginTop: '0.25rem', color: 'var(--color-text-muted)' }}>
+                    Resolved coverage: X {(hoverDetails.coverageX * 100).toFixed(1)}%
+                    {' | '}Y {(hoverDetails.coverageY * 100).toFixed(1)}%.
+                    {' '}Scores retain the full window denominator, not only the observed bases.
+                  </div>
                 </div>
               )}
             </div>
@@ -538,17 +595,17 @@ export function DotPlotOverlay({
                 <InfoButton
                   size="sm"
                   label="Dot plot interpretation tips"
-                  tooltip="Use the diagonal as a reference; parallel lines indicate repeats and off-diagonals can indicate inversions."
+                  tooltip="Patterns suggest candidates. Confirm them with exact sequence alignment or repeat search."
                   onClick={() => showContextFor('dot-plot')}
                 />
               ) : undefined}
               style={{ fontSize: '0.75rem' }}
             >
               <ul style={{ margin: '0.5rem 0 0 1rem', padding: 0 }}>
-                <li><strong>Main diagonal</strong>: Self-identity (always bright)</li>
-                <li><strong>Parallel diagonals</strong>: Direct repeats (tandem duplications)</li>
-                <li><strong>Perpendicular lines</strong>: Inverted repeats (palindromes)</li>
-                <li><strong>Terminal patterns</strong>: May indicate terminal repeats for packaging</li>
+                <li><strong>Direct main diagonal</strong>: Resolved-base coverage; unknown positions reduce brightness.</li>
+                <li><strong>Parallel patterns</strong>: Candidates for direct repeats, not confirmed duplications.</li>
+                <li><strong>Reverse-complement patterns</strong>: Candidates for inverted similarity or palindromes.</li>
+                <li><strong>Sampling limits</strong>: Windows can overlap or skip positions. This is not an exhaustive repeat search or a packaging-mechanism prediction.</li>
               </ul>
             </OverlayDescription>
           </>
