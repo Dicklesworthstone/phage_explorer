@@ -75,8 +75,9 @@ bun run pangenome export --experiment workflow-analysis.json --format protein-fa
 ```
 
 Protein export requires an annotated result. These commands consume the exported
-**analysis**, not the command tape. General terminal command-tape replay is not
-added here. Opening an analysis in the graph workspace verifies it before display;
+**analysis**, not the command tape. For explicit headless replay of supported
+commands in the complete tape, use `bun run workflow inspect/replay --input workflow.json`;
+see `TERMINAL_RESEARCH_REPLAY.md` for the supported actions and interrupt behavior. Opening an analysis in the graph workspace verifies it before display;
 executing a recording never replaces an independent active graph workspace.
 
 Each execution owns its own worker. Cancelling a recorded job cannot cancel a
