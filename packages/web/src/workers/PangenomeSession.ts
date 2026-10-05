@@ -81,6 +81,40 @@ export async function executePangenomeRequest(request: PangenomeRequest, report:
 }
 
 function aborted(): DOMException { return new DOMException('Pangenome work cancelled.', 'AbortError'); }
+/** One owned worker job, shared by the interactive workspace and command playback.
+ * Returning evidence does not install it in either UI; the caller verifies ownership first.
+ */
+export function runPangenomeWorker(request: PangenomeRequest, signal: AbortSignal,
+  createWorker: () => PangenomeWorker, report: (phase: string) => void = () => {}): Promise<PangenomeAccepted> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(aborted()); return; }
+    const submitted = structuredClone(request);
+    const worker = createWorker();
+    let settled = false;
+    const finish = (outcome: { result: PangenomeAccepted } | { error: unknown }) => {
+      if (settled) return; settled = true;
+      signal.removeEventListener('abort', cancel);
+      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
+      try { worker.terminate(); } catch { /* Cleanup must not conceal the computation outcome. */ }
+      if ('error' in outcome) reject(outcome.error); else resolve(outcome.result);
+    };
+    const cancel = () => finish({ error: aborted() });
+    signal.addEventListener('abort', cancel, { once: true });
+    worker.onmessage = event => {
+      if (settled) return;
+      if (signal.aborted) { cancel(); return; }
+      const message = event.data as PangenomeMessage | null;
+      try {
+        if (message?.kind === 'progress' && typeof message.phase === 'string') report(message.phase);
+        else if (message?.kind === 'result' && message.result?.input?.format === 'phage-explorer-pangenome' && message.result.options) finish({ result: message.result });
+        else finish({ error: new Error(message?.kind === 'error' ? message.message : 'Unexpected pangenome worker response.') });
+      } catch (cause) { finish({ error: cause }); }
+    };
+    worker.onerror = event => { event.preventDefault(); finish({ error: new Error('Pangenome worker failed. Retry the operation.') }); };
+    worker.onmessageerror = () => finish({ error: new Error('Pangenome worker response could not be read.') });
+    try { if (signal.aborted) cancel(); else worker.postMessage(submitted); } catch (cause) { finish({ error: cause }); }
+  });
+}
 function cancellable<T>(value: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise((resolve, reject) => {
     const cancel = () => reject(aborted());
@@ -120,27 +154,8 @@ export class PangenomeSession {
       const submitted = request instanceof Promise ? request.then(value => structuredClone(value)) : Promise.resolve(structuredClone(request));
       const value = await cancellable(submitted, operation.signal);
       if (!current()) return;
-      const result = await new Promise<PangenomeAccepted>((resolve, reject) => {
-        const worker = this.createWorker();
-        let settled = false;
-        const finish = (result?: PangenomeAccepted, cause?: unknown) => {
-          if (settled) return; settled = true;
-          operation.signal.removeEventListener('abort', cancel);
-          worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null; worker.terminate();
-          if (cause) reject(cause); else resolve(result!);
-        };
-        const cancel = () => finish(undefined, aborted());
-        operation.signal.addEventListener('abort', cancel, { once: true });
-        worker.onmessage = event => {
-          if (!current()) { cancel(); return; }
-          const message = event.data as PangenomeMessage | null;
-          if (message?.kind === 'progress' && typeof message.phase === 'string') this.publish({ phase: message.phase });
-          else if (message?.kind === 'result' && message.result?.input?.format === 'phage-explorer-pangenome' && message.result.options) finish(message.result);
-          else finish(undefined, new Error(message?.kind === 'error' ? message.message : 'Unexpected pangenome worker response.'));
-        };
-        worker.onerror = event => { event.preventDefault(); finish(undefined, new Error('Pangenome worker failed. Retry the operation.')); };
-        worker.onmessageerror = () => finish(undefined, new Error('Pangenome worker response could not be read.'));
-        try { if (!current()) cancel(); else worker.postMessage(value); } catch (cause) { finish(undefined, cause); }
+      const result = await runPangenomeWorker(value, operation.signal, () => this.createWorker(), phase => {
+        if (current()) this.publish({ phase });
       });
       if (current()) this.publish({ accepted: result,
         notice: result.verified ? `Verified pangenome replay: recomputed graph, paths, variants${result.cds ? ', coding transcripts and consequences' : ''} and complete result identity match.`

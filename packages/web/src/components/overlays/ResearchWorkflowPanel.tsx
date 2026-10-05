@@ -3,7 +3,10 @@ import { usePhageStore } from '@phage-explorer/state';
 import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type GenomeImportResult } from '@phage-explorer/core';
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
-import { ResearchWorkflow, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { ResearchWorkflow, researchPangenomeParameters, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
+import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
+import { runPangenomeWorker } from '../../workers/PangenomeSession';
 import { interruptsResearchNavigation, type ResearchNavigationTarget } from '../../keyboard/ResearchNavigation';
 import { getOrchestrator } from '../../workers/ComputeOrchestrator';
 import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/research-workflow.worker';
@@ -41,7 +44,8 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let navigating = false;
   let navigationOwner: ResearchNavigationTarget | null = null;
   let unsubscribe: (() => void) | null = null;
-  const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation }, {
+  const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
+    pangenome: ActionIds.OverlayPangenomeGraph }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -94,6 +98,12 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
       return response.record;
     },
+    pangenome: async (request, signal) => {
+      const result = await runPangenomeWorker(request, signal,
+        () => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
+      if (!result.record) throw new Error('The pangenome worker did not produce analysis evidence.');
+      return result.record;
+    },
   });
   // Subscribe from the React effect, not render. StrictMode may discard a render
   // or run setup/cleanup/setup on the same binding.
@@ -126,6 +136,13 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [frame, setFrame] = useState<ResearchView['readingFrame']>(0);
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
   const [repetitions, setRepetitions] = useState('1');
+  const [graphIds, setGraphIds] = useState<string[]>([]);
+  const [graphReference, setGraphReference] = useState('');
+  const [graphAlignment, setGraphAlignment] = useState<AlignmentGraphOptions['alignment']>('wavefront');
+  const [graphNormalization, setGraphNormalization] = useState<'none' | 'strand' | 'circular'>('none');
+  const [graphTerminals, setGraphTerminals] = useState<AlignmentGraphOptions['terminalGaps']>('missing');
+  const [graphMismatch, setGraphMismatch] = useState('4'), [graphOpening, setGraphOpening] = useState('6'), [graphExtension, setGraphExtension] = useState('1');
+  const [graphAnnotate, setGraphAnnotate] = useState(false), [graphGeneIds, setGraphGeneIds] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
@@ -137,6 +154,22 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     return () => { inputOperation.current?.abort(); binding.dispose(); };
   }, [binding]);
   useEffect(() => { if (!genomes.some(g => g.phage.localGenome?.contentId === selected)) { setSelected(genomes[0]?.phage.localGenome?.contentId ?? ''); setGene('all'); } }, [genomes, selected]);
+  useEffect(() => { setGraphIds(ids => ids.filter(id => genomes.some(g => g.phage.localGenome?.contentId === id))); }, [genomes]);
+  const graphGenomes = useMemo(() => genomes.filter(g => graphIds.includes(g.phage.localGenome!.contentId)), [genomes, graphIds]);
+  useEffect(() => { if (!graphGenomes.some(g => g.phage.localGenome?.contentId === graphReference)) setGraphReference(graphGenomes[0]?.phage.localGenome?.contentId ?? ''); }, [graphGenomes, graphReference]);
+  const annotationGenome = graphGenomes.find(g => g.phage.localGenome?.contentId === graphReference);
+  const graphDraft = useMemo(() => {
+    try {
+      if (graphAnnotate && annotationGenome?.phage.localGenome?.format !== 'genbank') throw new Error('Choose an annotated GenBank reference for coding consequences.');
+      const number = (value: string) => value.trim() ? Number(value) : NaN;
+      const parameters = researchPangenomeParameters(graphIds, {
+        referenceId: `local-${graphReference}`, alignment: graphAlignment, terminalGaps: graphTerminals,
+        ...(graphNormalization === 'none' ? {} : { normalization: graphNormalization }),
+        ...(graphAlignment === 'affine' ? { affinePenalties: { mismatch: number(graphMismatch), gapOpen: number(graphOpening), gapExtend: number(graphExtension) } } : {}),
+      }, graphAnnotate ? { contentId: graphReference, geneIds: parseCdsGeneIds(graphGeneIds) } : null);
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [graphIds, graphReference, graphAlignment, graphTerminals, graphNormalization, graphMismatch, graphOpening, graphExtension, graphAnnotate, graphGeneIds, annotationGenome]);
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
   const commandBusy = inputBusy || !['idle', 'recording'].includes(state.mode);
   const busy = commandBusy || libraryBusy;
@@ -176,7 +209,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit commands below, save their private input bundle, and replay with fresh result verification. Only these three supported commands are recorded—not arbitrary actions in other panels. Nothing is uploaded.</p>
+    <p>Record explicit navigation, repeats, single-genome CDS or multi-genome pangenome commands below, save their private input bundle, and replay with fresh result verification. Actions in other panels are not recorded. Import every required genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -201,6 +234,49 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <label>Workflow maximum repeat gap <input type="number" min={0} max={100000} value={gap} onChange={event => setGap(event.target.value)} /></label>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayRepeats, { contentId: selected, minLength: minimum.trim() ? Number(minimum) : NaN, maxGap: gap.trim() ? Number(gap) : NaN }))}>Run and record repeats</button>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId: selected, geneId: gene === 'all' ? null : Number(gene) }))}>Run and record CDS analysis</button>
+    </fieldset>
+    <fieldset disabled={busy || !active} style={{ display: 'grid', gap: '.5rem' }}><legend>Record a real pangenome experiment</legend>
+      <p>Select 2–24 imported genomes by content identity. Each run records its exact reference, alignment model and optional GenBank CDS subset; the original inputs are stored once in the workflow bundle.</p>
+      <div style={{ maxHeight: 180, overflowY: 'auto' }}>{genomes.map(g => {
+        const id = g.phage.localGenome!.contentId;
+        return <label key={id} style={{ display: 'block' }}><input type="checkbox" aria-label={`Workflow graph genome ${g.phage.name} ${id.slice(0, 12)}`}
+          checked={graphIds.includes(id)} disabled={!graphIds.includes(id) && graphIds.length >= 24}
+          onChange={event => setGraphIds(ids => event.target.checked ? [...ids, id] : ids.filter(value => value !== id))} />
+          {g.phage.name} · {g.phage.accession} · {id.slice(0, 12)}</label>;
+      })}</div>
+      <label>Workflow graph reference <select id="workflow-graph-reference" value={graphReference} onChange={event => { setGraphReference(event.target.value); setGraphGeneIds(''); }}>
+        {!graphGenomes.length && <option value="">Select genomes above</option>}
+        {graphGenomes.map(g => <option key={g.phage.id} value={g.phage.localGenome!.contentId}>{g.phage.name} · {g.phage.localGenome!.contentId.slice(0, 12)}</option>)}
+      </select></label>
+      <label>Workflow alignment <select id="workflow-graph-alignment" value={graphAlignment} onChange={event => {
+        const alignment = event.target.value as AlignmentGraphOptions['alignment']; setGraphAlignment(alignment);
+        if (alignment !== 'wavefront' && alignment !== 'affine') setGraphNormalization('none');
+      }}><option value="wavefront">Exact unit-edit wavefront</option><option value="affine">Exact affine-gap wavefront</option>
+        <option value="global">Bounded global locus alignment</option><option value="provided">Treat equal columns as a supplied alignment</option></select></label>
+      {graphAlignment === 'affine' && <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
+        <label>Workflow mismatch cost <input id="workflow-graph-mismatch" type="number" min={1} max={64} value={graphMismatch} onChange={event => setGraphMismatch(event.target.value)} /></label>
+        <label>Workflow gap opening <input id="workflow-graph-opening" type="number" min={0} max={64} value={graphOpening} onChange={event => setGraphOpening(event.target.value)} /></label>
+        <label>Workflow gap extension <input id="workflow-graph-extension" type="number" min={1} max={64} value={graphExtension} onChange={event => setGraphExtension(event.target.value)} /></label>
+      </div>}
+      {(graphAlignment === 'wavefront' || graphAlignment === 'affine') && <label>Workflow strand and origin <select id="workflow-graph-normalization" value={graphNormalization} onChange={event => setGraphNormalization(event.target.value as typeof graphNormalization)}>
+        <option value="none">Keep submitted representation</option><option value="strand">Normalize whole-sequence strand</option><option value="circular">Normalize complete circular inputs</option></select></label>}
+      <label>Workflow terminal gaps <select id="workflow-graph-terminals" value={graphTerminals} onChange={event => setGraphTerminals(event.target.value as typeof graphTerminals)}>
+        <option value="missing">Missing sequence coverage</option><option value="alleles">Alleles at complete sequence ends</option></select></label>
+      <p>Equal lengths do not establish homology. Circular normalization asserts every input is a complete circle and requires terminal alleles. Non-identical normalization uses heuristic anchors; alignment scores are not biological likelihoods. All existing work limits apply.</p>
+      <label><input id="workflow-graph-annotate" type="checkbox" checked={graphAnnotate} onChange={event => setGraphAnnotate(event.target.checked)} /> Include the reference's GenBank coding consequences</label>
+      {graphAnnotate && <>
+        <label>Workflow graph CDS IDs (blank means all) <input id="workflow-graph-genes" value={graphGeneIds} onChange={event => setGraphGeneIds(event.target.value)} /></label>
+        <details><summary>Reference mapped CDS identifiers</summary><p>{annotationGenome?.phage.genes.filter(g => g.type === 'CDS').map(g => `${g.id}: ${g.locusTag ?? g.name ?? 'CDS'}`).join('; ') || 'No mapped CDS in this reference.'}</p></details>
+      </>}
+      {graphDraft.error && <p>{graphDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !graphDraft.parameters} onClick={() => {
+        if (busy || !active || !graphDraft.parameters) return;
+        const parameters = analysisJson(graphDraft.parameters);
+        // Start within the click so an immediate close/unmount cancels this job.
+        const task = workflow.commands.dispatch(ActionIds.OverlayPangenomeGraph, parameters);
+        invoke(() => task);
+      }}>Run and record pangenome</button>
+      <p>The result appears below and exports as a complete pangenome experiment for the graph viewer or CLI. This command does not overwrite an open pangenome workspace. The separate single-genome CDS command above retains its illustrative host model.</p>
     </fieldset>
     <div><button type="button" disabled={busy || !research.undoAvailable} onClick={() => invoke(() => workflow.moveHistory(-1))}>Undo workflow view</button>
       <button type="button" disabled={busy || !research.redoAvailable} onClick={() => invoke(() => workflow.moveHistory(1))}>Redo workflow view</button></div>
