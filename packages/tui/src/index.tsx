@@ -144,6 +144,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     process.exitCode = await codonReferenceMain(args.slice(1), text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, 'phage-explorer codon-reference');
     return;
   }
+  if (args[0] === 'workflow') {
+    const { runResearchWorkflowCli } = await import('../../../scripts/research-workflow');
+    await runResearchWorkflowCli(args.slice(1), 'phage-explorer workflow');
+    return;
+  }
   const { values } = parseArgs({ args: [...args], strict: true, allowPositionals: false, options: {
     import: { type: 'string' },
     'allow-accession-collisions': { type: 'boolean', default: false },
@@ -167,7 +172,8 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
-      'Use phage-explorer COMMAND --help for options.\n\n' +
+      '  phage-explorer workflow inspect|replay ...\n' +
+      'Use phage-explorer COMMAND --help for options. Workflow replay executes only supported recorded actions.\n\n' +
       'Local community analysis: phage-explorer abundance view|inspect|analyze|replay FILE\n' +
       'See phage-explorer abundance --help for metadata, parameters, stdin and exports.\n' +
       'Host-model scenarios: phage-explorer host-metabolism reference|inspect|analyze|replay INPUT\n' +

@@ -10,6 +10,9 @@ import type { TerminalResearchRequest, TerminalResearchResult,
   TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
 
+// Build-time path only; never supplied by an input file or environment variable.
+declare const PHAGE_RESEARCH_WORKER: string | undefined;
+
 export const RESEARCH_WORKFLOW_HELP = `Replay recorded research locally, without a database or browser
 
 bun run workflow inspect --input workflow.json [--timeout-ms 300000]
@@ -79,7 +82,8 @@ export interface WorkflowRuntime {
  */
 export function runTerminalResearchWorker(request: TerminalResearchRequest, signal: AbortSignal,
   onProgress: (progress: ReplayProgress) => void = () => {},
-  createWorker: () => TerminalWorker = () => new Worker(new URL('../packages/tui/src/research-replay.worker.ts', import.meta.url))): Promise<TerminalResearchResult> {
+  createWorker: () => TerminalWorker = () => new Worker(new URL(
+    typeof PHAGE_RESEARCH_WORKER === 'string' ? PHAGE_RESEARCH_WORKER : '../packages/tui/src/research-replay.worker.ts', import.meta.url))): Promise<TerminalResearchResult> {
   return new Promise((resolve, reject) => {
     abort(signal);
     const submitted = structuredClone(request), tape = parseCommandTape(submitted.content);
@@ -186,10 +190,10 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   }
 }
 export async function researchWorkflowMain(args: readonly string[], output: (text: string) => void,
-  error: (text: string) => void, runtime: WorkflowRuntime = {}): Promise<number> {
+  error: (text: string) => void, runtime: WorkflowRuntime = {}, invocation = 'bun run workflow'): Promise<number> {
   try {
     const command = parseWorkflowCommand(args);
-    if (command.type === 'help') output(RESEARCH_WORKFLOW_HELP);
+    if (command.type === 'help') output(RESEARCH_WORKFLOW_HELP.replaceAll('bun run workflow', invocation));
     else {
       const report = await executeWorkflowCommand(command, { ...runtime, onProgress: progress => {
         runtime.onProgress?.(progress);
@@ -203,13 +207,13 @@ export async function researchWorkflowMain(args: readonly string[], output: (tex
     return cause instanceof Error && cause.name === 'TimeoutError' ? 124 : cause instanceof Error && cause.name === 'AbortError' ? 130 : 1;
   }
 }
-export async function runResearchWorkflowCli(args = process.argv.slice(2)): Promise<void> {
+export async function runResearchWorkflowCli(args = process.argv.slice(2), invocation = 'bun run workflow'): Promise<void> {
   const controller = new AbortController(); let interrupted = 0;
   const sigint = () => { interrupted = 130; controller.abort(new DOMException('Research workflow interrupted.', 'AbortError')); };
   const sigterm = () => { interrupted = 143; controller.abort(new DOMException('Research workflow terminated.', 'AbortError')); };
   process.on('SIGINT', sigint); process.on('SIGTERM', sigterm);
   try {
-    const code = await researchWorkflowMain(args, text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, { signal: controller.signal });
+    const code = await researchWorkflowMain(args, text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, { signal: controller.signal }, invocation);
     process.exitCode = interrupted || code;
   } finally { process.off('SIGINT', sigint); process.off('SIGTERM', sigterm); }
 }

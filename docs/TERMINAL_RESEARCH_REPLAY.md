@@ -1,9 +1,53 @@
 # Replay browser research workflows from the terminal
 
 A stopped **Local genomes → Saved research workflows** recording can be replayed
-from the source checkout with Bun and the project's dependencies. This is an
-explicit, database-free command; it does not start the graphical terminal viewer,
-modify the browser's saved library, or require a new published binary.
+with `phage-explorer workflow` in a newly built executable, or from the source
+checkout with Bun and the project's dependencies. This is an explicit, database-free
+command; it does not start the graphical terminal viewer or modify the browser's
+saved library. These source changes do not publish a release or update an older
+installed executable. The existing `bun run workflow` entrypoint remains supported.
+
+## Main executable commands
+
+The main launcher now exposes the same pangenome, reference-count codon and workflow
+implementations as the checkout scripts. Argument validation, model defaults, record
+identities and exclusive-create output rules are shared, not reimplemented. No shell
+or second Bun executable is launched to run these commands. Headless dispatch occurs
+before loading the explorer UI, state store or catalog; no `--no-catalog` flag is needed.
+
+```bash
+phage-explorer pangenome build --input genomes.fasta --reference ref \
+  --alignment affine --output graph.json
+phage-explorer pangenome verify --experiment graph.json
+phage-explorer codon-reference analyze --genome query.gb --reference counts.json \
+  --output codons.json
+phage-explorer workflow inspect --input workflow.json
+phage-explorer workflow replay --input workflow.json --output analysis.json --progress
+```
+
+Use `phage-explorer pangenome --help`, `codon-reference --help` or `workflow --help`
+for the complete options. Each command's help names the actual executable invocation;
+help formatting never rewrites user metadata in JSON reports. Source equivalents are
+`bun run pangenome`, `bun run codon:reference` and `bun run workflow` with the same
+remaining arguments. Existing abundance/host-metabolism and interactive-import paths
+remain separate and available.
+
+The build's worker manifest now supplies the first-stage source entries, their
+runtime URL definitions and the second-stage embedded entries together. This includes
+the research replay worker alongside abundance, host metabolism and local import.
+The runtime chooses a build-time embedded worker path in a compiled build, or a
+module-relative TypeScript path in a source checkout. Neither depends on the working
+directory nor accepts a worker path from user data or environment variables.
+The compiled executable does not require adjacent worker files or a source checkout.
+
+`packages/tui/src/commands/scientific-entrypoint.test.ts` includes real-process
+entrypoint tests and a native two-stage compile/relocation test. The latter moves
+staging artifacts away and runs the copied executable with an empty tool search
+path, then verifies a recorded circular-repeat analysis. Native Bun and compiled
+checks must actually run before claiming platform packaging validation; an auxiliary
+Node/TypeScript execution is not a replacement for that test.
+
+## Source checkout examples
 
 ```bash
 # Reparse the bundled inputs and inspect supported actions without calculating.
