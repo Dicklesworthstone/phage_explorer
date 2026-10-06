@@ -217,10 +217,11 @@ export async function executePangenomeCommand(command: Exclude<PangenomeCommand,
   await writeNew(command.outputPath, serializeAnalysisRecord(record));
   return summarize(graph, record, false);
 }
-export async function pangenomeMain(args: readonly string[], output: (text: string) => void, error: (text: string) => void): Promise<number> {
+export async function pangenomeMain(args: readonly string[], output: (text: string) => void, error: (text: string) => void,
+  invocation = 'bun scripts/pangenome.ts'): Promise<number> {
   try {
     const command = parsePangenomeCommand(args);
-    output(command.type === 'help' ? PANGENOME_HELP : JSON.stringify(await executePangenomeCommand(command), null, 2) + '\n');
+    output(command.type === 'help' ? PANGENOME_HELP.replaceAll('bun scripts/pangenome.ts', invocation) : JSON.stringify(await executePangenomeCommand(command), null, 2) + '\n');
     return 0;
   } catch (cause) {
     error((cause instanceof Error ? cause.message : 'Pangenome operation failed.').replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ') + '\n');

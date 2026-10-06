@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** Database-free reference analysis. All computation shares the browser's core implementation. */
+import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { GENOME_IMPORT_LIMITS, importLocalGenomes } from '../packages/core/src/genome-import';
@@ -66,7 +67,8 @@ export function parseCodonReferenceCommand(args: readonly string[]): CodonRefere
 
 /** Read at most the limit plus one byte, including when a file grows during reading. */
 export async function readCodonInput(path: string, maximum: number): Promise<string> {
-  const handle = await open(path, 'r');
+  // A blocking open would hang on a FIFO before stat() can reject it.
+  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const stat = await handle.stat();
     if (!stat.isFile()) throw new Error('Inputs must be regular files.');
@@ -119,10 +121,11 @@ export async function executeCodonReferenceCommand(command: Exclude<CodonReferen
   await writeExperiment(command.outputPath, experiment);
   return summarize(experiment, false);
 }
-export async function codonReferenceMain(args: readonly string[], output: (text: string) => void, error: (text: string) => void): Promise<number> {
+export async function codonReferenceMain(args: readonly string[], output: (text: string) => void, error: (text: string) => void,
+  invocation = 'bun scripts/codon-reference.ts'): Promise<number> {
   try {
     const command = parseCodonReferenceCommand(args);
-    if (command.type === 'help') output(CODON_REFERENCE_HELP);
+    if (command.type === 'help') output(CODON_REFERENCE_HELP.replaceAll('bun scripts/codon-reference.ts', invocation));
     else output(JSON.stringify(await executeCodonReferenceCommand(command), null, 2) + '\n');
     return 0;
   } catch (cause) {

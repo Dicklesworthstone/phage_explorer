@@ -1,19 +1,16 @@
 #!/usr/bin/env bun
 
-import React from 'react';
-import { render } from 'ink';
-import { LocalGenomeApp, currentTerminalGenomeView, installTerminalGenomes } from './components/LocalGenomeApp';
-import { TerminalGenomeSession, loadTerminalGenomeFile, terminalGenomeLabel as terminalLabel } from './local-genome-session';
-import { TerminalSizeGate } from './components/terminal-size';
-import { BunSqliteRepository } from '@phage-explorer/db-runtime';
-import { mergeLocalGenomes } from '@phage-explorer/db-runtime/local-genomes';
+// Keep the launcher free of UI, catalog and analysis initialization. In particular,
+// JSX here would inject an eager react/jsx-runtime import even with lazy React below.
 import type { LocalGenome } from '@phage-explorer/core';
-import { usePhageStore } from '@phage-explorer/state';
-import { parseArgs } from 'node:util';
+import { parseArgs, stripVTControlCharacters } from 'node:util';
 import { lstat } from 'node:fs/promises';
 import path from 'path';
 import { homedir } from 'os';
 import { version } from '../../../package.json';
+
+const terminalLabel = (value: string): string =>
+  stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '�');
 
 function getDefaultDbPath(): string | null {
   // Matches install.sh (DATA_DIR="$HOME/.phage-explorer")
@@ -114,28 +111,40 @@ async function warnIfShadowedDatabase(inUse: string): Promise<void> {
   );
 }
 
-async function main() {
-  if (Bun.argv[2] === '--version' || Bun.argv[2] === '-V') {
+export async function main(args: readonly string[] = process.argv.slice(2)): Promise<void> {
+  if (args[0] === '--version' || args[0] === '-V') {
     process.stdout.write(`phage-explorer ${version}\n`);
     return;
   }
   // Headless scientific workflows must not require a catalog or initialize Ink.
-  if (Bun.argv[2] === 'host-metabolism') {
+  if (args[0] === 'host-metabolism') {
     const { runHostMetabolismProcess } = await import('./commands/host-metabolism');
-    await runHostMetabolismProcess(Bun.argv.slice(3));
+    await runHostMetabolismProcess(args.slice(1));
     return;
   }
-  if (Bun.argv[2] === 'abundance') {
-    if (Bun.argv[3] === 'view') {
+  if (args[0] === 'abundance') {
+    if (args[1] === 'view') {
       const { launchAbundanceView } = await import('./components/AbundanceView');
-      await launchAbundanceView(Bun.argv.slice(4));
+      await launchAbundanceView(args.slice(2));
     } else {
       const { runAbundanceProcess } = await import('./commands/abundance');
-      await runAbundanceProcess(Bun.argv.slice(3));
+      await runAbundanceProcess(args.slice(1));
     }
     return;
   }
-  const { values } = parseArgs({ args: Bun.argv.slice(2), strict: true, allowPositionals: false, options: {
+  // These are the SAME command implementations as the source-checkout scripts;
+  // no child `bun` executable, source path lookup, shell or second parser is used.
+  if (args[0] === 'pangenome') {
+    const { pangenomeMain } = await import('../../../scripts/pangenome');
+    process.exitCode = await pangenomeMain(args.slice(1), text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, 'phage-explorer pangenome');
+    return;
+  }
+  if (args[0] === 'codon-reference') {
+    const { codonReferenceMain } = await import('../../../scripts/codon-reference');
+    process.exitCode = await codonReferenceMain(args.slice(1), text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, 'phage-explorer codon-reference');
+    return;
+  }
+  const { values } = parseArgs({ args: [...args], strict: true, allowPositionals: false, options: {
     import: { type: 'string' },
     'allow-accession-collisions': { type: 'boolean', default: false },
     'no-catalog': { type: 'boolean', default: false },
@@ -154,7 +163,11 @@ async function main() {
       'Conflicting startup accessions require an\n' +
       'explicit --allow-accession-collisions decision; existing records are never replaced.\n' +
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
-      'The destination must not exist. Full analysis-action replay is not included.\n\n' +
+      'The destination must not exist. Input/view bundles are separate from command recordings.\n\n' +
+      'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
+      '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
+      '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
+      'Use phage-explorer COMMAND --help for options.\n\n' +
       'Local community analysis: phage-explorer abundance view|inspect|analyze|replay FILE\n' +
       'See phage-explorer abundance --help for metadata, parameters, stdin and exports.\n' +
       'Host-model scenarios: phage-explorer host-metabolism reference|inspect|analyze|replay INPUT\n' +
@@ -172,6 +185,9 @@ async function main() {
     });
     if (existing) throw new Error(`Export destination already exists; refusing to overwrite ${exportPath}`);
   }
+  const { TerminalGenomeSession, loadTerminalGenomeFile } = await import('./local-genome-session');
+  const { mergeLocalGenomes } = await import('@phage-explorer/db-runtime/local-genomes');
+  const { usePhageStore } = await import('@phage-explorer/state');
   const imported = values.import
     ? await loadTerminalGenomeFile(path.resolve(values.import), new AbortController().signal)
     : null;
@@ -194,7 +210,7 @@ async function main() {
   }
 
   // Create repository
-  const base = dbPath ? new BunSqliteRepository(dbPath, { readonly: imported !== null }) : null;
+  const base = dbPath ? new (await import('@phage-explorer/db-runtime')).BunSqliteRepository(dbPath, { readonly: imported !== null }) : null;
   let localGenomes: LocalGenome[] = [];
   try {
     if (imported) {
@@ -209,6 +225,10 @@ async function main() {
   }
   const session = new TerminalGenomeSession(base, localGenomes);
   try {
+    const { default: React } = await import('react');
+    const { render } = await import('ink');
+    const { LocalGenomeApp, currentTerminalGenomeView, installTerminalGenomes } = await import('./components/LocalGenomeApp');
+    const { TerminalSizeGate } = await import('./components/terminal-size');
     const repository = session.getSnapshot().repository;
     const list = await repository.listPhages();
     usePhageStore.getState().setPhages(list);
@@ -225,9 +245,8 @@ async function main() {
     // The manager temporarily owns the screen and input; App remounts with the
     // accepted repository so no old analysis cache can leak into a new session.
     const { waitUntilExit } = render(
-      <TerminalSizeGate>
-        <LocalGenomeApp session={session} initiallyOpen={list.length === 0} />
-      </TerminalSizeGate>,
+      React.createElement(TerminalSizeGate, null,
+        React.createElement(LocalGenomeApp, { session, initiallyOpen: list.length === 0 })),
       { exitOnCtrlC: true, patchConsole: false }
     );
     await waitUntilExit();
