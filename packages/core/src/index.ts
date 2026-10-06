@@ -112,6 +112,7 @@ export * from './analysis/amg-flux';
 // Phage-Host Codon/Codon-Pair Adaptation Lens
 export * from './analysis/codon-pair-adaptation';
 export * from './analysis/codon-reference';
+export * from './analysis/codon-reference-corpus';
 
 // Structural Epitope Clash Map / Tail Fiber Host Range Analyzer
 export * from './analysis/tail-fiber-structure';

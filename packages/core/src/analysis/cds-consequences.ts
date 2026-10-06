@@ -97,7 +97,8 @@ function protein(cds: string, code: number, initiation: boolean): string {
   const translated = translateSequence(cds);
   return initiation && STARTS[code]?.includes(cds.slice(0, 3)) ? 'M' + translated.slice(1) : translated;
 }
-function codingReference(gene: GeneInfo, genome: string): CdsReference {
+/** Reconstruct a validated transcript without changing its original coordinate system. */
+export function reconstructCdsReference(gene: GeneInfo, genome: string): CdsReference {
   const q = gene.qualifiers ?? {}, reasons: string[] = [];
   // Zero is an explicit unsupported sentinel; never export NaN from malformed qualifiers.
   const table = Number(q.transl_table ?? 1), start = Number(q.codon_start ?? 1);
@@ -243,7 +244,7 @@ export async function createCdsConsequenceExperiment(input: CdsAlignment, annota
   let work = 0;
   const referenceWork = chosen.reduce((sum, gene) => sum + getGeneMapSegments(gene).reduce((n, s) => n + s.end - s.start, 0), 0);
   if (referenceWork * (queries.length + 1) > CDS_CONSEQUENCE_LIMITS.projectedColumns) throw new Error('CDS projection exceeds 8,000,000 bases; select fewer CDS or sequences.');
-  const genes = chosen.map(gene => codingReference(gene, refSequence)), consequences: CdsConsequence[] = [];
+  const genes = chosen.map(gene => reconstructCdsReference(gene, refSequence)), consequences: CdsConsequence[] = [];
   for (const gene of genes) {
     const ranges = transcriptRanges(gene.segments, positions, ref.sequence.length, genome.phage.localGenome!.topology === 'circular');
     work += ranges.reduce((sum, range) => sum + range.end - range.start, 0) * queries.length;
