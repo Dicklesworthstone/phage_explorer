@@ -18,6 +18,13 @@ coverage, both arm intervals and an explicit complete/incomplete message. The ta
 shows the first 50 retained pairs; **Export exact repeat pairs TSV** contains every
 retained pair and the completeness flag. Draft edits never relabel this result.
 
+**Exact repeat input topology** defaults to linear. To search across the origin,
+explicitly select **I assert this input is a complete circular molecule**. Do not
+use this for linear molecules or partial assemblies. Changing the selected genome
+resets the choice to linear, even when the imported annotation says circular;
+replay instead uses the topology explicitly stored in each command. Accepted
+results display their submitted topology, independently of current draft controls.
+
 Stop recording before exporting the workflow JSON or saving an on-device workflow
 snapshot. The last analysis can also be exported as its own AnalysisRecord JSON.
 Reopening a workflow reviews bundled inputs without adding them or running anything.
@@ -37,8 +44,8 @@ bun run workflow replay --input repeat-workflow.json --output repeat-analysis.js
 
 No new command engine or backend identity substitution is used. Browser and
 terminal invoke the same core producer with a method identity independent of
-transport. The original source bundle, content IDs and all three resolved search
-parameters are retained in the recording. Terminal output-file, timeout, signal,
+transport. The original source bundle, content IDs, all three resolved search
+parameters and any explicit circular topology are retained in the recording. Terminal output-file, timeout, signal,
 privacy and no-overwrite rules remain those in `TERMINAL_RESEARCH_REPLAY.md`.
 The command consumes a workflow tape, not a standalone analysis JSON.
 
@@ -51,8 +58,8 @@ new method. Editing a legacy expected identity is not verification.
 ## Exact scope, order and limits
 
 Both arms have the requested length (4–256 bases), contain only A/C/G/T, and do
-not overlap. The spacer is `rightStart - leftEnd`, from zero through the configured
-maximum (0–100,000). IUPAC ambiguity is preserved at its original coordinates and
+not overlap. In linear mode the spacer is `rightStart - leftEnd`, from zero through
+the configured maximum (0–100,000); circular arcs are described below. IUPAC ambiguity is preserved at its original coordinates and
 may occur in the spacer but never supplies arm matches. Input is case-insensitive
 DNA for computation; original case remains part of input identity. RNA, gaps and
 formatting characters are rejected by the core scanner rather than silently removed.
@@ -63,6 +70,38 @@ direct pairs precede inverted pairs, each with left starts ascending. A pair who
 arms satisfy both orientations appears twice, once per orientation. Overlapping
 occurrences and nested fixed-length windows across different pairs are not merged.
 Coordinates are 0-based, half-open, including in the TSV.
+
+### Complete circular molecules
+
+Circular mode considers all n starts, including arms crossing the sequence origin.
+Two length-L arms must not share any base on the circle, so no pair exists when
+n < 2L. For each unordered pair, the shorter of the two intervening spacer arcs
+must be within `maxGap`. The first arm is the one preceding that shorter arc;
+equal-length arcs choose the numerically lower first start. Each physical pair is
+therefore retained once per matching orientation, not once per circle traversal.
+This still permits one direct and one inverted entry for self-complementary arms.
+
+First/second are traversal labels, not numerical left/right order. The scalar
+`leftStart` and `rightStart` fields stay in [0,n), while their unrolled ends equal
+start + L and may exceed n. The interface splits a wrapped arm into original
+half-open intervals in traversal order: for example, a four-base arm starting at
+18 on a 20-base circle is `[18,20);[0,2)`. Concatenate these slices to reconstruct
+that arm. The new TSV includes both the unrolled endpoints and `left_segments` /
+`right_segments`; it also records topology and sequence length in its header.
+
+Order is second start ascending, direct before inverted, then first-arm starts
+along the predecessor arc (possibly across zero). A complete pair set is invariant
+under rotating/reverse-complementing the input after coordinates are transformed;
+the canonical orientation of a tied pair, output order, and truncated prefix need
+not be. No circle is duplicated in the input record or allocated as a second genome:
+the existing bounded index tracks only the eligible predecessor arc.
+
+Circular records use exact-repeat-pairs method version 2 and explicit
+`topology: "circular"`. Linear records and recordings keep their version-1 identities;
+the core API accepts `topology: "linear"` as equivalent to omission. Saved commands
+use the canonical omission for linear input. Both methods can be mixed in one
+workflow and replayed in the existing terminal worker. Changing topology without
+recomputing the expected result is rejected, not treated as a migration.
 
 The default output limit is 2,000; the supported range is 1–20,000. One additional
 actual match proves that the limit truncates the enumeration. Reaching the limit
@@ -81,11 +120,12 @@ The normal 10 MiB analysis and workflow export limits still apply.
 
 A complete zero-pair scan means no eligible observed pairs for these exact
 parameters. It does not establish absence of repeats at other lengths, beyond the
-gap bound, across a circular origin, or in unresolved bases. No maximal-extension,
-circularity, mismatch tolerance, statistical significance or physical folding
+gap bound, in unresolved bases, or across a circular origin when linear mode was
+selected. No maximal-extension, topology inference, mismatch tolerance, statistical significance or physical folding
 claim is added. Checksums establish content identity, not biological validation.
 
 Core APIs live in `packages/core/src/analysis/exact-repeat-pairs.ts`:
 `scanExactRepeatPairs`, `createExactRepeatRecord`, `replayExactRepeatRecord`, and
-`exportExactRepeatPairsTsv`. Standalone record replay recomputes coordinates and
+`exportExactRepeatPairsTsv`. `exactRepeatArmSegments` converts unrolled endpoints
+to original intervals. Standalone record replay recomputes coordinates and
 coverage; recalculated checksums cannot make forged results match the computation.

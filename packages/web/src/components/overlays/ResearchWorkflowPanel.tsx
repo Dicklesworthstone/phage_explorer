@@ -4,7 +4,7 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, type ResearchView } from '../../keyboard/ResearchWorkflow';
-import { EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
+import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
@@ -143,15 +143,19 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
   const [repetitions, setRepetitions] = useState('1');
   const [pairLimit, setPairLimit] = useState('2000');
+  const [repeatTopology, setRepeatTopology] = useState<'linear' | 'circular'>('linear');
   const exactRepeatDraft = useMemo(() => {
     try {
       if (![minimum, gap, pairLimit].every(value => value.trim())) throw new Error('Enter an arm length, gap and pair limit.');
-      return { options: resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit) }), error: null };
+      return { options: resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit), topology: repeatTopology }), error: null };
     } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : String(cause) }; }
-  }, [minimum, gap, pairLimit]);
-  const exactRepeatResult = research.result?.method.id === EXACT_REPEAT_METHOD.id && research.result.method.version === EXACT_REPEAT_METHOD.version
+  }, [minimum, gap, pairLimit, repeatTopology]);
+  const exactRepeatResult = research.result?.method.id === EXACT_REPEAT_METHOD.id && [EXACT_REPEAT_METHOD.version, CIRCULAR_EXACT_REPEAT_METHOD.version].includes(research.result.method.version)
     ? { record: research.result, pairs: research.result.fields.pairs.value as unknown as ExactRepeatScan['pairs'],
       search: research.result.fields.search.value as unknown as ExactRepeatScan['search'] } : null;
+  const circularResult = exactRepeatResult?.search.options.topology === 'circular';
+  const armLabel = (start: number, end: number) => exactRepeatArmSegments(exactRepeatResult!.search.sequenceLength, start, end)
+    .map(segment => `[${segment.start}, ${segment.end})`).join(' → ');
   const [graphIds, setGraphIds] = useState<string[]>([]);
   const [graphReference, setGraphReference] = useState('');
   const [graphAlignment, setGraphAlignment] = useState<AlignmentGraphOptions['alignment']>('wavefront');
@@ -169,7 +173,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     binding.activate();
     return () => { inputOperation.current?.abort(); binding.dispose(); };
   }, [binding]);
-  useEffect(() => { if (!genomes.some(g => g.phage.localGenome?.contentId === selected)) { setSelected(genomes[0]?.phage.localGenome?.contentId ?? ''); setGene('all'); } }, [genomes, selected]);
+  useEffect(() => { if (!genomes.some(g => g.phage.localGenome?.contentId === selected)) { setSelected(genomes[0]?.phage.localGenome?.contentId ?? ''); setGene('all'); setRepeatTopology('linear'); } }, [genomes, selected]);
   useEffect(() => { setGraphIds(ids => ids.filter(id => genomes.some(g => g.phage.localGenome?.contentId === id))); }, [genomes]);
   const graphGenomes = useMemo(() => genomes.filter(g => graphIds.includes(g.phage.localGenome!.contentId)), [genomes, graphIds]);
   useEffect(() => { if (!graphGenomes.some(g => g.phage.localGenome?.contentId === graphReference)) setGraphReference(graphGenomes[0]?.phage.localGenome?.contentId ?? ''); }, [graphGenomes, graphReference]);
@@ -237,7 +241,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <label><input type="checkbox" checked={collisions} onChange={event => setCollisions(event.target.checked)} /> Keep distinct records with matching accessions</label>
       <button type="button" disabled={busy || active} onClick={() => invoke(() => { useLocalGenomes.getState().add(review, collisions, usePhageStore.getState().phages); setReview(null); })}>Add workflow genomes</button></div>}
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record content-bound commands</legend>
-      <label htmlFor="workflow-genome">Workflow genome</label><select id="workflow-genome" value={selected} onChange={event => { setSelected(event.target.value); setGene('all'); setPosition('0'); }}>
+      <label htmlFor="workflow-genome">Workflow genome</label><select id="workflow-genome" value={selected} onChange={event => { setSelected(event.target.value); setGene('all'); setPosition('0'); setRepeatTopology('linear'); }}>
         {genomes.map(g => <option key={g.phage.id} value={g.phage.localGenome!.contentId}>{g.phage.name}</option>)}</select>
       <label htmlFor="workflow-cds">Workflow CDS</label><select id="workflow-cds" value={gene} onChange={event => { setGene(event.target.value); const g = genome?.phage.genes.find(g => g.id === Number(event.target.value)); if (g) setPosition(String(mode === 'aa' ? Math.floor(g.startPos / 3) : g.startPos)); }}>
         <option value="all">All supported CDS</option>{genome?.phage.genes.filter(g => g.type === 'CDS').map(g => <option key={g.id} value={g.id}>{g.locusTag ?? g.name ?? `CDS ${g.id}`} · {g.qualifiers?._location ? String(g.qualifiers._location) : `${g.startPos}–${g.endPos}`}</option>)}</select>
@@ -250,6 +254,13 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <label>Workflow maximum repeat gap <input type="number" min={0} max={100000} value={gap} onChange={event => setGap(event.target.value)} /></label>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayRepeats, { contentId: selected, minLength: minimum.trim() ? Number(minimum) : NaN, maxGap: gap.trim() ? Number(gap) : NaN }))}>Run and record repeats</button>
       <label>Workflow exact pair limit <input type="number" min={1} max={20000} value={pairLimit} onChange={event => setPairLimit(event.target.value)} /></label>
+      <label htmlFor="workflow-repeat-topology">Exact repeat input topology</label>
+      <select id="workflow-repeat-topology" value={repeatTopology} onChange={event => setRepeatTopology(event.target.value as typeof repeatTopology)}>
+        <option value="linear">Linear or partial sequence (do not join ends)</option>
+        <option value="circular">I assert this input is a complete circular molecule</option>
+      </select>
+      <p>Circular mode joins the sequence ends and searches origin-crossing arms using the shorter spacer arc. Do not use it for a linear molecule or a partial assembly.
+        This choice applies only to exact pairs, is recorded explicitly, and resets when the selected genome changes.</p>
       <p>Exact pairs use the chosen arm length as a fixed length and visit every eligible direct/inverted partner. Arms cannot overlap; ambiguous bases can occur only in the spacer. Result limits return an explicitly marked prefix. Legacy repeat overview above remains sampled and browser-bound.</p>
       {exactRepeatDraft.error && <p>{exactRepeatDraft.error}</p>}
       <button type="button" disabled={busy || !active || !genome || !exactRepeatDraft.options} onClick={() => {
@@ -321,17 +332,21 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       {exactRepeatResult && <section aria-label="Exact repeat-pair results">
         <h4>Exact repeat pairs</h4>
         <p role="status">{exactRepeatResult.pairs.length.toLocaleString()} pairs retained. {exactRepeatResult.search.complete
-          ? 'Complete for the submitted fixed-arm, linear gap search.'
+          ? `Complete for the submitted fixed-arm, ${circularResult ? 'circular shortest-spacer' : 'linear gap'} search.`
           : `Incomplete ordered prefix: the pair limit stopped enumeration at right-arm start ${exactRepeatResult.search.stoppedAtRightStart}.`}</p>
         <p>Submitted arm length: {exactRepeatResult.search.options.armLength} bases; maximum spacer: {exactRepeatResult.search.options.maxGap};
           pair limit: {exactRepeatResult.search.options.maxPairs}. Resolved bases: {exactRepeatResult.search.resolvedBases.toLocaleString()}/{exactRepeatResult.search.sequenceLength.toLocaleString()}.
-          This does not search circular-origin crossings or maximal repeat families.</p>
+          {' '}Submitted topology: {circularResult ? 'complete circular molecule (user asserted)' : 'linear'}.
+          {' '}{circularResult ? 'Origin-crossing arms are included; each physical pair is counted once per orientation.' : 'Circular-origin crossings are not searched.'}
+          {' '}This is not maximal-repeat annotation.</p>
         <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(exportExactRepeatPairsTsv(exactRepeatResult.record), 'exact-repeat-pairs.tsv', 'text/tab-separated-values'))}>Export exact repeat pairs TSV</button>
         <p>Both arm intervals are 0-based and half-open. Showing the first {Math.min(50, exactRepeatResult.pairs.length)} retained pairs; TSV contains the entire retained set and its completeness flag.</p>
+        {circularResult && <p>Wrapped arms are split at the sequence origin and listed in traversal order (→). First and second follow the shorter circular spacer,
+          not numerical left-to-right order; equal spacer arcs choose the lower first start. TSV retains unrolled ends and explicit original-coordinate segments.</p>}
         <div style={{ overflowX: 'auto' }}><table aria-label="Exact repeat-pair coordinates">
-          <thead><tr><th>Type</th><th>Left arm</th><th>Right arm</th><th>Spacer</th></tr></thead>
+          <thead><tr><th>Type</th><th>First arm</th><th>Second arm</th><th>Spacer</th></tr></thead>
           <tbody>{exactRepeatResult.pairs.slice(0, 50).map((pair, index) => <tr key={index}>
-            <td>{pair.type}</td><td>[{pair.leftStart}, {pair.leftEnd})</td><td>[{pair.rightStart}, {pair.rightEnd})</td><td>{pair.gap}</td>
+            <td>{pair.type}</td><td>{armLabel(pair.leftStart, pair.leftEnd)}</td><td>{armLabel(pair.rightStart, pair.rightEnd)}</td><td>{pair.gap}</td>
           </tr>)}</tbody>
         </table></div>
       </section>}
