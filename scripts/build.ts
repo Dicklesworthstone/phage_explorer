@@ -97,7 +97,7 @@ const stubPath = fileURLToPath(new URL("./react-devtools-stub.js", import.meta.u
 const result = await Bun.build({
   // Worker entrypoints must be included explicitly in both build stages; they
   // are not discovered automatically from new Worker() URLs by Bun compile.
-  entrypoints: ["./packages/tui/src/index.tsx", "./packages/tui/src/workers/abundance-worker.ts", "./packages/tui/src/workers/host-metabolism-worker.ts"],
+  entrypoints: ["./packages/tui/src/index.tsx", "./packages/tui/src/workers/abundance-worker.ts", "./packages/tui/src/workers/host-metabolism-worker.ts", "./packages/tui/src/local-genome-import.worker.ts"],
   outdir: "./dist",
   naming: "[name].js",
   // Bun.build() only accepts "browser", "bun", or "node" - NOT platform-specific targets
@@ -106,6 +106,7 @@ const result = await Bun.build({
   // Alias react-devtools-core to our stub
   external: [],
   define: {
+    PHAGE_LOCAL_GENOME_WORKER: JSON.stringify("./local-genome-import.worker.js"),
     PHAGE_ABUNDANCE_WORKER: JSON.stringify("./abundance-worker.js"),
     PHAGE_HOST_METABOLISM_WORKER: JSON.stringify("./host-metabolism-worker.js"),
     "process.env.DEV": "'false'",
@@ -139,7 +140,7 @@ if (!result.success) {
 const bundlePath = "./dist/index.js";
 const compileArgs = [
   "bun", "build",
-  bundlePath, "./dist/abundance-worker.js", "./dist/host-metabolism-worker.js",
+  bundlePath, "./dist/abundance-worker.js", "./dist/host-metabolism-worker.js", "./dist/local-genome-import.worker.js",
   "--compile",
   "--outfile", outfile,
 ];

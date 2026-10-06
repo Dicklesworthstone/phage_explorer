@@ -2,21 +2,18 @@
 
 import React from 'react';
 import { render } from 'ink';
-import { App } from './components/App';
+import { LocalGenomeApp, currentTerminalGenomeView, installTerminalGenomes } from './components/LocalGenomeApp';
+import { TerminalGenomeSession, loadTerminalGenomeFile, terminalGenomeLabel as terminalLabel } from './local-genome-session';
 import { TerminalSizeGate } from './components/terminal-size';
 import { BunSqliteRepository } from '@phage-explorer/db-runtime';
-import { createLocalGenomeRepository, mergeLocalGenomes } from '@phage-explorer/db-runtime/local-genomes';
-import { exportLocalGenomeBundle, importLocalGenomes, GENOME_IMPORT_LIMITS, type LocalGenome } from '@phage-explorer/core';
+import { mergeLocalGenomes } from '@phage-explorer/db-runtime/local-genomes';
+import type { LocalGenome } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
-import { parseArgs, stripVTControlCharacters } from 'node:util';
-import { lstat, writeFile } from 'node:fs/promises';
+import { parseArgs } from 'node:util';
+import { lstat } from 'node:fs/promises';
 import path from 'path';
 import { homedir } from 'os';
 import { version } from '../../../package.json';
-
-function terminalLabel(value: string): string {
-  return stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '�');
-}
 
 function getDefaultDbPath(): string | null {
   // Matches install.sh (DATA_DIR="$HOME/.phage-explorer")
@@ -152,7 +149,9 @@ async function main() {
       'phage-explorer --version prints the release version without opening a catalog.\n\n' +
       'Import DNA FASTA, GenBank or a version 1 local genome bundle (up to 10 MiB).\n' +
       'Local records stay in session memory; the curated database is read-only during import.\n' +
-      '--no-catalog opens only the imported records. Conflicting accessions require an\n' +
+      '--no-catalog opens a private workspace, even without a startup --import file.\n' +
+      'Open Ctrl+P and choose Local genomes to import, restore or export without restarting.\n' +
+      'Conflicting startup accessions require an\n' +
       'explicit --allow-accession-collisions decision; existing records are never replaced.\n' +
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
       'The destination must not exist. Full analysis-action replay is not included.\n\n' +
@@ -162,8 +161,8 @@ async function main() {
       'See phage-explorer host-metabolism --help for published references and offline replay.\n');
     return;
   }
-  if (!values.import && (values['no-catalog'] || values['export-bundle'] || values['allow-accession-collisions'])) {
-    throw new Error('--no-catalog, --export-bundle and --allow-accession-collisions require --import FILE');
+  if (!values.import && values['allow-accession-collisions']) {
+    throw new Error('--allow-accession-collisions requires --import FILE; in-app imports have their own explicit decision.');
   }
   const exportPath = values['export-bundle'] ? path.resolve(values['export-bundle']) : undefined;
   if (exportPath) {
@@ -173,17 +172,12 @@ async function main() {
     });
     if (existing) throw new Error(`Export destination already exists; refusing to overwrite ${exportPath}`);
   }
-  const imported = values.import ? await (async () => {
-    const file = Bun.file(values.import!);
-    if (!(await file.exists())) throw new Error(`Genome file not found: ${values.import}`);
-    if (file.size > GENOME_IMPORT_LIMITS.bytes) throw new Error('Input exceeds the 10 MiB limit.');
-    return importLocalGenomes({ name: path.basename(values.import!), text: await file.text() }, (completed, total) => {
-      process.stderr.write(`Parsed ${completed} of ${total} local records\n`);
-    });
-  })() : null;
+  const imported = values.import
+    ? await loadTerminalGenomeFile(path.resolve(values.import), new AbortController().signal)
+    : null;
   const dbPath = values['no-catalog'] ? null : await resolveDbPath();
   if (dbPath) await warnIfShadowedDatabase(dbPath);
-  if (!dbPath && !imported) {
+  if (!dbPath && !imported && !values['no-catalog']) {
     const candidates = getCandidateDbPaths();
     console.error('Phage Explorer database not found.');
     console.error('Tried the following paths:');
@@ -204,70 +198,48 @@ async function main() {
   let localGenomes: LocalGenome[] = [];
   try {
     if (imported) {
-      localGenomes = mergeLocalGenomes([], imported, await base?.listPhages() ?? [], values['allow-accession-collisions']).map(genome => ({
-        ...genome,
-        // Ink interprets terminal escape sequences. Sanitize display labels,
-        // keeping the exact original input and content identity for export.
-        phage: { ...genome.phage, name: terminalLabel(genome.phage.name), accession: terminalLabel(genome.phage.accession),
-          genes: genome.phage.genes.map(gene => ({ ...gene,
-            name: gene.name === null ? null : terminalLabel(gene.name),
-            locusTag: gene.locusTag === null ? null : terminalLabel(gene.locusTag),
-            product: gene.product === null ? null : terminalLabel(gene.product),
-          })),
-        },
-      }));
+      localGenomes = mergeLocalGenomes([], imported, await base?.listPhages() ?? [], values['allow-accession-collisions']);
       for (const genome of localGenomes) for (const warning of genome.warnings) {
-        process.stderr.write(`${genome.phage.accession}: ${terminalLabel(warning)}\n`);
+        process.stderr.write(`${terminalLabel(genome.phage.accession)}: ${terminalLabel(warning)}\n`);
       }
     }
   } catch (error) {
     await base?.close();
     throw error;
   }
-  const repository = imported ? createLocalGenomeRepository(base, localGenomes) : base!;
-  if (imported) {
-    const list = await repository.listPhages();
-    const selected = localGenomes.find(genome => genome.phage.localGenome?.contentId === imported.view?.contentId) ?? localGenomes[0];
-    const state = usePhageStore.getState();
-    state.setPhages(list);
-    state.setCurrentPhageIndex(list.findIndex(phage => phage.id === selected.phage.id));
-    if (imported.view) {
-      state.setViewMode(imported.view.viewMode);
-      state.setReadingFrame(imported.view.readingFrame);
-      state.setScrollPosition(imported.view.scrollPosition);
-    }
-  }
-
-  // Render the TUI
-  // patchConsole: false prevents Ink from intercepting console output which can cause flickering
-  // We don't use console.log during normal operation anyway
-  // Gate on terminal size before mounting the app. Overlays declare widths up
-  // to 92 columns, so a narrow window produced unreadable wrapping with no
-  // explanation, while the README promised graceful degradation.
-  const { waitUntilExit } = render(
-    <TerminalSizeGate>
-      <App repository={repository} />
-    </TerminalSizeGate>,
-    {
-      exitOnCtrlC: true,
-      patchConsole: false,
-    }
-  );
-
-  // Wait for exit
+  const session = new TerminalGenomeSession(base, localGenomes);
   try {
+    const repository = session.getSnapshot().repository;
+    const list = await repository.listPhages();
+    usePhageStore.getState().setPhages(list);
+    if (imported) {
+      const selected = localGenomes.find(genome => genome.phage.localGenome?.contentId === imported.view?.contentId) ?? localGenomes[0];
+      const view = imported.view ?? { contentId: selected.phage.localGenome!.contentId,
+        viewMode: 'dna' as const, readingFrame: 0 as const, scrollPosition: 0 };
+      session.exportBundle(view); // validate the exact view before changing the store
+      const displayed = await repository.getPhageById(selected.phage.id);
+      if (!displayed) throw new Error('The imported selection is unavailable.');
+      installTerminalGenomes({ repository, phages: list, selected: displayed, view });
+    }
+
+    // The manager temporarily owns the screen and input; App remounts with the
+    // accepted repository so no old analysis cache can leak into a new session.
+    const { waitUntilExit } = render(
+      <TerminalSizeGate>
+        <LocalGenomeApp session={session} initiallyOpen={list.length === 0} />
+      </TerminalSizeGate>,
+      { exitOnCtrlC: true, patchConsole: false }
+    );
     await waitUntilExit();
     if (exportPath) {
-      const state = usePhageStore.getState();
-      const contentId = state.currentPhage?.localGenome?.contentId;
-      const view = contentId ? { contentId, viewMode: state.viewMode, readingFrame: state.readingFrame, scrollPosition: state.scrollPosition } : undefined;
-      // Exclusive creation also protects against a destination appearing after
-      // the startup check. Existing code, input and data are never overwritten.
-      await writeFile(exportPath, exportLocalGenomeBundle(localGenomes, view), { encoding: 'utf8', flag: 'wx' });
-      process.stderr.write(`Saved local genome bundle: ${exportPath}\n`);
+      // This includes records added IN the running app, not just startup input.
+      if (!await session.save(exportPath, currentTerminalGenomeView())) {
+        throw new Error(session.getSnapshot().error ?? 'Local genome bundle was not saved.');
+      }
+      process.stderr.write(`Saved local genome bundle: ${terminalLabel(exportPath)}\n`);
     }
   } finally {
-    await repository.close();
+    await session.close();
   }
 }
 

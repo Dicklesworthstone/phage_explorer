@@ -7,6 +7,8 @@ import type { PhageFull, PhageSummary } from '../../core/src/types';
 import { createLocalGenomeRepository, mergeLocalGenomes } from '../../db-runtime/src/local-genomes';
 import type { PhageRepository } from '../../db-runtime/src/types';
 
+declare const PHAGE_LOCAL_GENOME_WORKER: string | undefined;
+
 export const terminalGenomeLabel = (value: string): string =>
   stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '�');
 function displayGenome(genome: LocalGenome): LocalGenome {
@@ -29,7 +31,7 @@ export function loadTerminalGenomeFile(path: string, signal: AbortSignal): Promi
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new DOMException('Local genome operation cancelled.', 'AbortError')); return; }
     let worker: Worker;
-    try { worker = new Worker(new URL('./local-genome-import.worker.ts', import.meta.url), { workerData: { path } }); }
+    try { worker = new Worker(new URL(typeof PHAGE_LOCAL_GENOME_WORKER === 'string' ? PHAGE_LOCAL_GENOME_WORKER : './local-genome-import.worker.ts', import.meta.url), { workerData: { path } }); }
     catch (cause) { reject(cause); return; }
     let settled = false;
     const finish = (result?: GenomeImportResult, cause?: unknown) => {
