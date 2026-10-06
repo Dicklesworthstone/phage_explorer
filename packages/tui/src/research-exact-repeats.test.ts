@@ -8,12 +8,12 @@ import { executeResearchRequest } from '../../web/src/workers/research-workflow.
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
 import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
-import { replayExactRepeatRecord, type ExactRepeatPair } from '../../core/src/analysis/exact-repeat-pairs';
+import { replayExactRepeatRecord, exportExactRepeatPairsTsv, type ExactRepeatPair } from '../../core/src/analysis/exact-repeat-pairs';
 import { inspectResearchTape, replayResearchTape } from './research-replay';
 import { executeWorkflowCommand } from '../../../scripts/research-workflow';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation' };
-async function fixture(sequence = 'ACGTNNACGTACGT', maxPairs = 2000) {
+async function fixture(sequence = 'ACGTNNACGTACGT', maxPairs = 2000, topology?: 'circular') {
   const { genomes } = await importLocalGenomes({ name: 'repeat.fa', text: `>repeat\n${sequence}\n` });
   const env: ResearchEnvironment = {
     genomes: () => genomes, bundle: () => exportLocalGenomeBundle(genomes),
@@ -29,7 +29,8 @@ async function fixture(sequence = 'ACGTNNACGTACGT', maxPairs = 2000) {
     },
   };
   const workflow = new ResearchWorkflow(ids, env);
-  const parameters = { contentId: genomes[0].phage.localGenome!.contentId, method: 'exact-pairs', armLength: 4, maxGap: 20, maxPairs };
+  const parameters = { contentId: genomes[0].phage.localGenome!.contentId, method: 'exact-pairs', armLength: 4, maxGap: 20, maxPairs,
+    ...(topology ? { topology } : {}) };
   workflow.start('Portable repeat workflow');
   await workflow.commands.dispatch(ids.repeats, parameters);
   workflow.commands.stop();
@@ -114,5 +115,63 @@ describe('portable unsampled repeat recordings', () => {
     assert.equal(report.verified, true);
     assert.deepEqual(await replayExactRepeatRecord(await readFile(output, 'utf8')), f.record);
     await assert.rejects(executeWorkflowCommand({ type: 'replay', input, output, repetitions: 1, timeoutMs: 30000, progress: false }), /EEXIST/);
+  });
+});
+
+describe('circular repeat workflow topology and portable replay', () => {
+  const sequence = 'GA' + 'N'.repeat(4) + 'ACGA' + 'N'.repeat(8) + 'AC';
+  it('records explicit circular topology with wrapped arms and freshly replays the same v2 evidence', async () => {
+    const f = await fixture(sequence, 2000, 'circular');
+    assert.equal(f.record.method.version, '2');
+    assert.equal((parseCommandTape(f.content).commands[0].parameters as Record<string, unknown>).topology, 'circular');
+    assert.deepEqual(f.record.fields.pairs.value, [{ type: 'direct', leftStart: 18, leftEnd: 22, rightStart: 6, rightEnd: 10, gap: 4 }]);
+    assert.equal((await inspectResearchTape(f.content)).canReplay, true);
+    const fresh = await replayResearchTape(f.content, { repetitions: 2 });
+    assert.equal(fresh.report.completed, 2); assert.deepEqual(fresh.lastAnalysis, f.record);
+    assert.match(exportExactRepeatPairsTsv(fresh.lastAnalysis!), /\[18,20\);\[0,2\)/);
+  });
+  it('rejects topology substitution by a worker or edited tape without replacing accepted evidence', async () => {
+    const f = await fixture(sequence, 2000, 'circular'), linear = await fixture(sequence);
+    f.env.exactRepeats = async () => linear.record;
+    await assert.rejects(f.workflow.commands.dispatch(ids.repeats, f.parameters), /does not match/);
+    assert.strictEqual(f.workflow.getSnapshot().result, f.record);
+    const tape = parseCommandTape(f.content);
+    delete (tape.commands[0].parameters as Record<string, unknown>).topology;
+    await assert.rejects(replayResearchTape(serializeCommandTape(tape)), /differs/);
+    for (const topology of ['linear', 'auto', null, false]) {
+      assert.throws(() => validateResearchRepeats(analysisJson({ ...f.parameters, topology })), /topology/);
+      const malformed = parseCommandTape(f.content);
+      malformed.commands.push({ ...malformed.commands[0], parameters: analysisJson({ ...f.parameters, topology }) });
+      const progress: unknown[] = [];
+      await assert.rejects(replayResearchTape(serializeCommandTape(malformed), { onProgress: p => progress.push(p) }), /topology/);
+      assert.deepEqual(progress, [], 'full-tape validation must precede even the valid first command');
+    }
+  });
+  it('mixes old linear and new circular commands in one unchanged command format and verifies through an owned terminal worker', async () => {
+    const f = await fixture(sequence, 2000, 'circular');
+    f.workflow.start('Mixed topologies');
+    const { topology: _topology, ...linearParameters } = f.parameters;
+    await f.workflow.commands.dispatch(ids.repeats, linearParameters);
+    assert.equal(f.workflow.getSnapshot().result!.method.version, '1');
+    assert.deepEqual(f.workflow.getSnapshot().result!.fields.pairs.value, []);
+    await f.workflow.commands.dispatch(ids.repeats, f.parameters); f.workflow.commands.stop();
+    const directory = await mkdtemp(join(tmpdir(), 'phage-circular-repeats-'));
+    const input = join(directory, 'mixed.json'), output = join(directory, 'verified.json');
+    await writeFile(input, f.workflow.commands.export());
+    const report = await executeWorkflowCommand({ type: 'replay', input, output, repetitions: 2, timeoutMs: 30000, progress: false }) as { verified: boolean; completed: number };
+    assert.equal(report.verified, true); assert.equal(report.completed, 4);
+    assert.deepEqual(await replayExactRepeatRecord(await readFile(output, 'utf8')), f.record);
+  });
+  it('does not publish a cancelled circular result or a result whose source changes during the computation', async () => {
+    for (const changed of [false, true]) {
+      const f = await fixture(sequence, 2000, 'circular'), pending = deferred<AnalysisRecord>(), started = deferred<void>();
+      f.env.exactRepeats = () => { started.resolve(); return pending.promise; };
+      const task = f.workflow.commands.dispatch(ids.repeats, f.parameters);
+      const rejected = assert.rejects(task, changed ? /changed sequence/ : { name: 'AbortError' });
+      await started.promise;
+      if (changed) f.genomes[0].sequence = 'N'.repeat(sequence.length); else f.workflow.commands.cancel();
+      pending.resolve(f.record); await rejected;
+      assert.strictEqual(f.workflow.getSnapshot().result, f.record);
+    }
   });
 });

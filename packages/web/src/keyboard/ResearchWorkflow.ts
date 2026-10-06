@@ -1,7 +1,7 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson } from '../../../core/src/analysis-result';
-import { EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
+import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
@@ -22,16 +22,19 @@ export interface ResearchEnvironment {
   currentView: () => ResearchView | null;
   applyView: (view: ResearchView, signal: AbortSignal) => Promise<void>;
   repeats: (genome: LocalGenome, options: { minLength: number; maxGap: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
-  exactRepeats?: (genome: LocalGenome, options: Required<ExactRepeatOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
+  exactRepeats?: (genome: LocalGenome, options: ResolvedExactRepeatOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
 }
-export interface ResearchExactRepeatParameters extends Required<ExactRepeatOptions> { contentId: string; method: 'exact-pairs' }
+export interface ResearchExactRepeatParameters extends ResolvedExactRepeatOptions { contentId: string; method: 'exact-pairs' }
 /** An explicit discriminator prevents old backend-bound tapes from being reinterpreted. */
 export function validateResearchRepeats(value: CommandValue): void {
   if (object(value) && Object.hasOwn(value, 'method')) {
-    fields(value, ['contentId', 'method', 'armLength', 'maxGap', 'maxPairs']);
+    fields(value, ['contentId', 'method', 'armLength', 'maxGap', 'maxPairs', ...(Object.hasOwn(value, 'topology') ? ['topology'] : [])]);
     if (value.method !== 'exact-pairs') throw new Error('Unsupported repeat method.');
+    // Existing linear tapes omit this field. Presence must assert a complete
+    // circle explicitly; never infer it from imported metadata during replay.
+    if (Object.hasOwn(value, 'topology') && value.topology !== 'circular') throw new Error('Recorded exact repeat topology must be circular or omitted for linear input.');
     contentId(value.contentId);
     // Values must be explicit numbers, not null/default requests in a saved tape.
     integer(value.armLength, 4, 256); integer(value.maxGap, 0, 100000); integer(value.maxPairs, 1, 20000);
@@ -144,10 +147,12 @@ export class ResearchWorkflow {
         if (object(parameters) && parameters.method === 'exact-pairs') {
           const values = parameters as unknown as ResearchExactRepeatParameters;
           const genome = await this.genome(values.contentId, signal);
-          const options = { armLength: values.armLength, maxGap: values.maxGap, maxPairs: values.maxPairs };
+          const options = resolveExactRepeatOptions({ armLength: values.armLength, maxGap: values.maxGap, maxPairs: values.maxPairs,
+            ...(values.topology ? { topology: values.topology } : {}) });
           const record = await environment.exactRepeats!(structuredClone(genome), structuredClone(options), signal);
           abort(signal);
-          if (!commandValuesEqual(analysisJson(record.method), analysisJson(EXACT_REPEAT_METHOD)) || record.inputs.length !== 1
+          const method = options.topology === 'circular' ? CIRCULAR_EXACT_REPEAT_METHOD : EXACT_REPEAT_METHOD;
+          if (!commandValuesEqual(analysisJson(record.method), analysisJson(method)) || record.inputs.length !== 1
             || record.inputs[0].id !== 'sequence' || record.inputs[0].data !== genome.sequence
             || record.inputs[0].accession !== genome.phage.accession || record.inputs[0].source !== 'local'
             || !commandValuesEqual(analysisJson(record.parameters), analysisJson(options))) {

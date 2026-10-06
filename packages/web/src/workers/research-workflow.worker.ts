@@ -2,11 +2,11 @@
 import { importLocalGenomes, analyzePhageHostCodonAdaptation, createCodonAdaptationRecord,
   type GenomeInput, type LocalGenome, type GenomeImportResult, type AnalysisRecord } from '@phage-explorer/core';
 
-import { createExactRepeatRecord, type ExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
+import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
-  { type: 'exact-repeats'; genome: LocalGenome; options: Required<ExactRepeatOptions> };
+  { type: 'exact-repeats'; genome: LocalGenome; options: ResolvedExactRepeatOptions };
 export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord };
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
