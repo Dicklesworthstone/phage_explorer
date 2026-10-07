@@ -95,6 +95,13 @@ function host(bundle: string) {
       const record = await createCodonAdaptationRecord(phage, genome.sequence, analysis);
       abort(signal); return record;
     },
+    referenceCodons: async (genome, referenceText, options, signal) => {
+      abort(signal);
+      const { createReferenceCodonExperiment, referenceGenomeFromPhage } = await import('../../core/src/analysis/codon-reference');
+      abort(signal);
+      const result = await createReferenceCodonExperiment(referenceGenomeFromPhage(genome.phage), genome.sequence, referenceText, options);
+      abort(signal); return result.record;
+    },
     pangenome: async (request, signal) => {
       abort(signal);
       const result = await executePangenomeRequest(request);

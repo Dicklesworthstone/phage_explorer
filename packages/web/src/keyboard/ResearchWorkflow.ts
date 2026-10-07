@@ -1,8 +1,11 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson } from '../../../core/src/analysis-result';
+import { CODON_REFERENCE_METHOD, parseCodonReference, referenceGenomeFromPhage,
+  type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
+import { CODON_CORPUS_METHOD } from '../../../core/src/analysis/codon-reference-corpus';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
-import { CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
+import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
@@ -24,9 +27,46 @@ export interface ResearchEnvironment {
   repeats: (genome: LocalGenome, options: { minLength: number; maxGap: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   exactRepeats?: (genome: LocalGenome, options: ResolvedExactRepeatOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
+  referenceCodons?: (genome: LocalGenome, referenceText: string, options: Required<ReferenceCodonOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
 }
 export interface ResearchExactRepeatParameters extends ResolvedExactRepeatOptions { contentId: string; method: 'exact-pairs' }
+export interface ResearchReferenceCodonParameters {
+  method: 'reference-cai'; contentId: string; referenceText: string;
+  geneIds: number[] | null; zeroCountReplacement: ZeroCountReplacement;
+}
+/** References are values inside the command, never filenames or ambient host defaults.
+ * Source experiments are checked against their own inputs by fresh recounting
+ * in the numerical worker; this synchronous check validates only their envelope.
+ */
+export function validateResearchCodons(value: CommandValue): void {
+  if (!object(value) || !Object.hasOwn(value, 'method')) {
+    fields(value, ['contentId', 'geneId']); contentId(value.contentId); geneId(value.geneId); return;
+  }
+  fields(value, ['method', 'contentId', 'referenceText', 'geneIds', 'zeroCountReplacement']);
+  if (value.method !== 'reference-cai') throw new Error('Unsupported recorded codon method.');
+  contentId(value.contentId);
+  const ids = value.geneIds;
+  if (ids !== null && (!Array.isArray(ids) || !ids.length || ids.length > 20000 || new Set(ids).size !== ids.length)) {
+    throw new Error('Select distinct positive CDS IDs or all CDS.');
+  }
+  if (Array.isArray(ids)) ids.forEach(id => integer(id, 1, 50000));
+  if (value.zeroCountReplacement !== 0 && value.zeroCountReplacement !== 0.5) throw new Error('Record an explicit zero-count policy of 0 or 0.5.');
+  if (typeof value.referenceText !== 'string' || !value.referenceText.trim() || value.referenceText.length > COMMAND_LIMITS.bytes
+    || new TextEncoder().encode(value.referenceText).length > COMMAND_LIMITS.bytes) throw new Error('Supply bounded reference JSON, not a reference path.');
+  const reference: unknown = JSON.parse(value.referenceText);
+  if (reference && typeof reference === 'object' && 'format' in reference && reference.format === 'phage-explorer-analysis') {
+    const method = 'method' in reference ? reference.method : null;
+    if (!method || typeof method !== 'object' || !('id' in method) || method.id !== CODON_CORPUS_METHOD.id
+      || !('version' in method) || method.version !== CODON_CORPUS_METHOD.version) throw new Error('A source reference must be a supported GenBank codon corpus experiment.');
+  } else parseCodonReference(value.referenceText);
+}
+export function researchReferenceCodonParameters(id: string, referenceText: string, geneIds: number[] | null,
+  zeroCountReplacement: ZeroCountReplacement): ResearchReferenceCodonParameters {
+  const value: ResearchReferenceCodonParameters = { method: 'reference-cai', contentId: id, referenceText,
+    geneIds: geneIds === null ? null : [...geneIds].sort((a, b) => a - b), zeroCountReplacement };
+  validateResearchCodons(analysisJson(value)); return value;
+}
 /** An explicit discriminator prevents old backend-bound tapes from being reinterpreted. */
 export function validateResearchRepeats(value: CommandValue): void {
   if (object(value) && Object.hasOwn(value, 'method')) {
@@ -167,8 +207,31 @@ export class ResearchWorkflow {
       },
     });
     adapters.set(ids.codons, {
-      validate(parameters) { fields(parameters, ['contentId', 'geneId']); contentId(parameters.contentId); geneId(parameters.geneId); },
+      validate(parameters) {
+        validateResearchCodons(parameters);
+        if (object(parameters) && parameters.method === 'reference-cai' && !environment.referenceCodons) throw new Error('This host cannot run reference-backed codon commands.');
+      },
       prepare: async (parameters, signal) => {
+        if (object(parameters) && parameters.method === 'reference-cai') {
+          const values = parameters as unknown as ResearchReferenceCodonParameters;
+          const genome = await this.genome(values.contentId, signal);
+          values.geneIds?.forEach(id => this.checkSelection(genome, id));
+          const options = { geneIds: values.geneIds === null ? null : [...values.geneIds].sort((a, b) => a - b), zeroCountReplacement: values.zeroCountReplacement };
+          const record = await environment.referenceCodons!(structuredClone(genome), values.referenceText, structuredClone(options), signal);
+          abort(signal);
+          const sourceBacked = JSON.parse(values.referenceText).format === 'phage-explorer-analysis';
+          const queryInput = record.inputs.find(i => i.id === 'genome'), annotationInput = record.inputs.find(i => i.id === 'annotations');
+          const referenceInput = record.inputs.find(i => i.id === 'reference');
+          if (record.method.id !== CODON_REFERENCE_METHOD.id || record.method.version !== (sourceBacked ? '2' : CODON_REFERENCE_METHOD.version)
+            || record.inputs.length !== 3 || !commandValuesEqual(analysisJson(record.parameters), analysisJson(options))
+            || queryInput?.data !== genome.sequence || queryInput.accession !== genome.phage.accession || queryInput.source !== 'local'
+            || !commandValuesEqual(annotationInput?.data, analysisJson(referenceGenomeFromPhage(genome.phage)))
+            || annotationInput?.accession !== genome.phage.accession || annotationInput.source !== 'local'
+            || referenceInput?.data !== values.referenceText || referenceInput.accession !== null || referenceInput.source !== 'local') {
+            throw new Error('Reference codon evidence does not match the submitted query, reference, selection or policy.');
+          }
+          return this.result(record, [genome], signal);
+        }
         const values = parameters as { contentId: string; geneId: number | null };
         const genome = await this.genome(values.contentId, signal);
         this.checkSelection(genome, values.geneId);

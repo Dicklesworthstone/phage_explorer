@@ -1,19 +1,25 @@
 /** Private input parsing and CDS analysis stay off the UI thread. No network operations. */
-import { importLocalGenomes, analyzePhageHostCodonAdaptation, createCodonAdaptationRecord,
-  type GenomeInput, type LocalGenome, type GenomeImportResult, type AnalysisRecord } from '@phage-explorer/core';
+import { importLocalGenomes, type GenomeInput, type LocalGenome, type GenomeImportResult } from '../../../core/src/genome-import';
+import { createReferenceCodonExperiment, referenceGenomeFromPhage, type ReferenceCodonOptions } from '../../../core/src/analysis/codon-reference';
+import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
 import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
+  { type: 'reference-codons'; genome: LocalGenome; referenceText: string; options: ReferenceCodonOptions } |
   { type: 'exact-repeats'; genome: LocalGenome; options: ResolvedExactRepeatOptions };
 export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord };
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'reference-codons') return { type: 'analysis', record: (await createReferenceCodonExperiment(
+    referenceGenomeFromPhage(request.genome.phage), request.genome.sequence, request.referenceText, request.options)).record };
   if (request.type === 'exact-repeats') return { type: 'analysis', record: await createExactRepeatRecord(
     request.genome.sequence, request.options, { accession: request.genome.phage.accession, source: 'local' }) };
   if (request.type !== 'codons') throw new Error('Unsupported research worker operation.');
+  // Reference-backed runs must not initialize or substitute the illustrative model.
+  const { analyzePhageHostCodonAdaptation, createCodonAdaptationRecord } = await import('../../../core/src/analysis/codon-pair-adaptation');
   const phage = structuredClone(request.genome.phage);
   phage.genes = phage.genes.filter(gene => gene.type === 'CDS' && (request.geneId === null || gene.id === request.geneId));
   if (!phage.genes.length) throw new Error('No supported CDS annotations are available for this command.');
