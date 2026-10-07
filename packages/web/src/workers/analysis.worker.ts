@@ -1119,9 +1119,12 @@ async function computeKmerVectorImpl(request: KmerVectorRequest) {
   const frequencies = computeKmerFrequencies(sequence, options);
 
   const wasm = await getWasmCompute();
+  // KmerVector uses a fraction; the WASM helper returns a percentage. Its
+  // RNA-U policy also differs from the DNA signature reference, which excludes
+  // U just like other unresolved characters, so use the reference in that case.
   const gcContent =
-    wasm && typeof wasm.calculate_gc_content === 'function'
-      ? wasm.calculate_gc_content(sequence)
+    wasm && typeof wasm.calculate_gc_content === 'function' && !/[Uu]/.test(sequence)
+      ? wasm.calculate_gc_content(sequence) / 100
       : computeGcContent(sequence);
 
   return {

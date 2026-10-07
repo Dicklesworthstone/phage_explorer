@@ -9,7 +9,7 @@
  * - Amelioration timing (recent/intermediate/ancient)
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -252,25 +252,26 @@ export function HGTOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('hgt');
   const windowSelectId = 'hgt-window-size';
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const genesCache = useRef<Map<number, GeneInfo[]>>(new Map());
-
-  const [sequence, setSequence] = useState<string>('');
-  const [genes, setGenes] = useState<GeneInfo[]>([]);
+  const genomeCache = useMemo(() => new Map<number, { sequence: string; genes: GeneInfo[] }>(), [repository]);
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string; genes: GeneInfo[] } | null>(null);
+  const currentInput = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded : null;
+  const sequence = currentInput?.sequence ?? '';
+  const genes = currentInput?.genes;
   const [loading, setLoading] = useState(false);
   // Donor reference panel: the rest of the catalogue, keyed by a readable label.
-  const [references, setReferences] = useState<Record<string, string>>({});
+  const [referencePanel, setReferencePanel] = useState<{ repository: PhageRepository; phageId: number; phages: typeof phages; sequences: Record<string, string> } | null>(null);
+  const references = useMemo(() => referencePanel?.repository === repository && referencePanel?.phageId === currentPhage?.id && referencePanel?.phages === phages
+    ? referencePanel.sequences : {}, [referencePanel, repository, currentPhage, phages]);
   const [referencesLoading, setReferencesLoading] = useState(false);
-  const referencePanelPhageId = useRef<number | null>(null);
 
   // Analysis parameters
   const [windowSize, setWindowSize] = useState(2000);
 
   // Selected stamp for details
-  const [selectedStamp, setSelectedStamp] = useState<PassportStamp | null>(null);
+  const [selected, setSelected] = useState<{ analysis: HGTAnalysis; stamp: PassportStamp } | null>(null);
 
   // Hover state
-  const [hoverInfo, setHoverInfo] = useState<GenomeTrackInteraction | null>(null);
+  const [hovered, setHovered] = useState<{ analysis: HGTAnalysis; info: GenomeTrackInteraction } | null>(null);
 
   // Hotkey to toggle overlay (Alt+H)
   useHotkey(
@@ -283,8 +284,7 @@ export function HGTOverlay({
   useEffect(() => {
     if (!isOpen('hgt')) return;
     if (!repository || !currentPhage) {
-      setSequence('');
-      setGenes([]);
+      setLoaded(null);
       setLoading(false);
       return;
     }
@@ -292,9 +292,9 @@ export function HGTOverlay({
     const phageId = currentPhage.id;
 
     // Check cache first
-    if (sequenceCache.current.has(phageId) && genesCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setGenes(genesCache.current.get(phageId) ?? []);
+    const cached = genomeCache.get(phageId);
+    if (cached) {
+      setLoaded({ repository, phageId, ...cached });
       setLoading(false);
       return;
     }
@@ -302,20 +302,18 @@ export function HGTOverlay({
     let cancelled = false;
     setLoading(true);
     Promise.all([
-      repository.getFullGenomeLength(phageId).then((length: number) => repository.getSequenceWindow(phageId, 0, length)),
+      repository.getFullGenomeLength(phageId).then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length)),
       repository.getGenes(phageId),
     ])
       .then(([seq, geneList]) => {
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        genesCache.current.set(phageId, geneList);
-        setSequence(seq);
-        setGenes(geneList);
+        const genome = { sequence: seq, genes: geneList };
+        genomeCache.set(phageId, genome);
+        setLoaded({ repository, phageId, ...genome });
       })
       .catch(() => {
         if (cancelled) return;
-        setSequence('');
-        setGenes([]);
+        setLoaded(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -324,7 +322,7 @@ export function HGTOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isOpen, repository, currentPhage, genomeCache]);
 
   // Build the donor reference panel from the rest of the catalogue.
   //
@@ -334,10 +332,14 @@ export function HGTOverlay({
   // under analysis so it cannot be reported as its own donor.
   useEffect(() => {
     if (!isOpen('hgt')) return;
-    if (!repository || !currentPhage || phages.length === 0) return;
+    if (!repository || !currentPhage || phages.length === 0) {
+      setReferencesLoading(false);
+      return;
+    }
 
     const excludeId = currentPhage.id;
-    if (referencePanelPhageId.current === excludeId && Object.keys(references).length > 0) {
+    if (referencePanel?.repository === repository && referencePanel.phageId === excludeId && referencePanel.phages === phages) {
+      setReferencesLoading(false);
       return;
     }
 
@@ -353,13 +355,12 @@ export function HGTOverlay({
       .then(() => buildReferencePanel(repository, phages, excludeId, { signal }))
       .then(panel => {
         if (signal.aborted) return;
-        referencePanelPhageId.current = excludeId;
-        setReferences(panel);
+        setReferencePanel({ repository, phageId: excludeId, phages, sequences: panel });
       })
       .catch(() => {
         // A missing panel degrades donor inference; it must not break the
         // island/GC analysis, which needs no references.
-        if (!signal.aborted) setReferences({});
+        if (!signal.aborted) setReferencePanel({ repository, phageId: excludeId, phages, sequences: {} });
       })
       .finally(() => {
         if (!signal.aborted) setReferencesLoading(false);
@@ -368,18 +369,20 @@ export function HGTOverlay({
     return () => {
       signal.aborted = true;
     };
-  }, [isOpen, repository, currentPhage, phages, references]);
+  }, [isOpen, repository, currentPhage, phages, referencePanel]);
 
   const referenceCount = Object.keys(references).length;
 
   // Run enhanced HGT provenance analysis
   const provenanceAnalysis = useMemo((): HGTAnalysis | null => {
-    if (!sequence || sequence.length < windowSize * 2) return null;
+    if (!sequence || !genes || sequence.length < windowSize * 2) return null;
     return analyzeHGTProvenance(sequence, genes, references, {
       window: windowSize,
       step: windowSize / 2,
     });
   }, [sequence, genes, windowSize, references]);
+  const selectedStamp = selected?.analysis === provenanceAnalysis ? selected.stamp : null;
+  const hoverInfo = hovered?.analysis === provenanceAnalysis ? hovered.info : null;
 
   // Convert stamps to track segments (colored by amelioration)
   const islandSegments = useMemo((): GenomeTrackSegment[] => {
@@ -418,8 +421,8 @@ export function HGTOverlay({
 
   // Handle track hover
   const handleHover = useCallback((info: GenomeTrackInteraction | null) => {
-    setHoverInfo(info);
-  }, []);
+    setHovered(info && provenanceAnalysis ? { analysis: provenanceAnalysis, info } : null);
+  }, [provenanceAnalysis]);
 
   // Handle track click
   const handleClick = useCallback((info: GenomeTrackInteraction) => {
@@ -427,10 +430,10 @@ export function HGTOverlay({
     if (!data || typeof data !== 'object') return;
     if (!('stamp' in data)) return;
     const stamp = (data as { stamp?: PassportStamp }).stamp;
-    if (stamp) {
-      setSelectedStamp(stamp);
+    if (stamp && provenanceAnalysis) {
+      setSelected({ analysis: provenanceAnalysis, stamp });
     }
-  }, []);
+  }, [provenanceAnalysis]);
 
   if (!isOpen('hgt')) return null;
 
@@ -622,7 +625,7 @@ export function HGTOverlay({
               <PassportStampCard
                 stamp={selectedStamp}
                 colors={colors}
-                onClose={() => setSelectedStamp(null)}
+                onClose={() => setSelected(null)}
               />
             )}
 

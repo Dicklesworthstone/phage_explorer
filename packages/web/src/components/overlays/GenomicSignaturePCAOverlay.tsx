@@ -7,7 +7,7 @@
  * phylogenetic comparison.
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import type { PhageFull, PhageSummary } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -57,6 +57,21 @@ interface GenomicSignaturePCAOverlayProps {
   currentPhage: PhageFull | null;
 }
 
+interface SignatureInput {
+  repository: PhageRepository;
+  kmerSize: number;
+  includeReverseComplement: boolean;
+}
+
+interface SignatureRun {
+  input: SignatureInput;
+  stage: 'frequencies' | 'pca' | 'ready' | 'error';
+  progress: number;
+  phages: PhageSummary[];
+  result: PCAResult | null;
+  error: string | null;
+}
+
 // Tooltip component
 function TooltipContent({
   projection,
@@ -103,16 +118,10 @@ export function GenomicSignaturePCAOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  // Cache for computed vectors
-  const vectorCache = useRef<Map<string, KmerVector>>(new Map());
-
-  const [kmerVectors, setKmerVectors] = useState<KmerVector[]>([]);
-  const [phageSummaries, setPhageSummaries] = useState<PhageSummary[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [pcaLoading, setPcaLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [pcaResult, setPcaResult] = useState<PCAResult | null>(null);
+  // A numeric id belongs to its repository. Replacing the dataset must never
+  // pair cached frequencies from its predecessor with new names or annotations.
+  const vectorCache = useMemo(() => new Map<string, KmerVector>(), [repository]);
+  const [run, setRun] = useState<SignatureRun | null>(null);
 
   // Hover state for tooltip
   const [hoveredPoint, setHoveredPoint] = useState<ScatterHover | null>(null);
@@ -124,7 +133,17 @@ export function GenomicSignaturePCAOverlay({
   const [kmerSize, setKmerSize] = useState(4);
   const [includeReverseComplement, setIncludeReverseComplement] = useState(true);
 
+  const input = useMemo<SignatureInput | null>(() => repository
+    ? { repository, kmerSize, includeReverseComplement }
+    : null, [repository, kmerSize, includeReverseComplement]);
+  const currentRun = run?.input === input ? run : null;
+  const pcaResult = currentRun?.result ?? null;
+  const progress = currentRun?.progress ?? 0;
+  const error = input ? currentRun?.error ?? null : 'No repository available';
+
   const overlayOpen = isOpen('genomicSignaturePCA');
+  const loading = overlayOpen && input !== null && (!currentRun || currentRun.stage === 'frequencies');
+  const pcaLoading = currentRun?.stage === 'pca';
   const isTopmost = useIsTopOverlay('genomicSignaturePCA');
   const kmerDims = 4 ** kmerSize;
 
@@ -145,48 +164,43 @@ export function GenomicSignaturePCAOverlay({
     { modes: ['NORMAL'], enabled: overlayOpen && isTopmost }
   );
 
-  // Load all phages and compute k-mer vectors when overlay opens
+  // Reading, vector computation and PCA share one cancellable input snapshot.
+  // Do not leave a previous projection visible while the replacement is loading.
   useEffect(() => {
-    if (!overlayOpen) return;
-    if (!repository) {
-      setKmerVectors([]);
-      setPhageSummaries([]);
-      setError('No repository available');
-      setLoading(false);
-      setProgress(0);
+    if (!overlayOpen || !input) {
+      setRun(null);
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
+    const { repository, kmerSize, includeReverseComplement } = input;
+    const initial: SignatureRun = { input, stage: 'frequencies', progress: 0, phages: [], result: null, error: null };
+    setRun(initial);
+    setHoveredPoint(null);
 
     async function loadAndCompute() {
-      setLoading(true);
-      setError(null);
-      setProgress(0);
-
       try {
-        // Get all phage metadata
-        const allPhages = await repository!.listPhages();
-
-        if (cancelled) return;
-        setPhageSummaries(allPhages);
+        const allPhages = await repository.listPhages();
+        if (controller.signal.aborted) return;
+        const snapshot = { ...initial, phages: allPhages };
+        setRun(snapshot);
 
         const vectors: KmerVector[] = [];
         const total = allPhages.length;
 
         for (let i = 0; i < allPhages.length; i++) {
-          if (cancelled) return;
+          if (controller.signal.aborted) return;
 
           const phage = allPhages[i];
-
-          // Check cache first
           const cacheKey = `${phage.id}:${kmerSize}:${includeReverseComplement ? 1 : 0}`;
-          if (vectorCache.current.has(cacheKey)) {
-            vectors.push(vectorCache.current.get(cacheKey)!);
+          const cached = vectorCache.get(cacheKey);
+          if (cached) {
+            vectors.push(cached);
           } else {
-            // Fetch sequence and compute
-            const length = await repository!.getFullGenomeLength(phage.id);
-            const sequence = await repository!.getSequenceWindow(phage.id, 0, length);
+            const length = await repository.getFullGenomeLength(phage.id);
+            if (controller.signal.aborted) return;
+            const sequence = await repository.getSequenceWindow(phage.id, 0, length);
+            if (controller.signal.aborted) return;
             const vectorFromWorker = await ComputeOrchestrator.getInstance().computeKmerVectorWithSharedBuffer(
               phage.id,
               phage.name,
@@ -195,8 +209,10 @@ export function GenomicSignaturePCAOverlay({
                 k: kmerSize,
                 normalize: true,
                 includeReverseComplement,
-              }
+              },
+              controller.signal,
             );
+            if (controller.signal.aborted) return;
 
             const vector: KmerVector = {
               ...vectorFromWorker,
@@ -204,75 +220,35 @@ export function GenomicSignaturePCAOverlay({
               genomeLength: length,
             };
 
-            if (cancelled) return;
-            vectorCache.current.set(cacheKey, vector);
+            vectorCache.set(cacheKey, vector);
             vectors.push(vector);
           }
 
-          if (cancelled) return;
-          setProgress(Math.round(((i + 1) / total) * 100));
+          setRun({ ...snapshot, progress: Math.round(((i + 1) / total) * 100) });
         }
 
-        if (cancelled) return;
-
-        setKmerVectors(vectors);
+        if (controller.signal.aborted) return;
+        setRun({ ...snapshot, stage: 'pca', progress: 100 });
+        const result = vectors.length < 3 ? null : await ComputeOrchestrator.getInstance()
+          .computeGenomicSignaturePca(vectors, { numComponents: 3 }, controller.signal);
+        if (controller.signal.aborted) return;
+        // The metadata and projection are published together under the exact
+        // same repository and parameters that produced the frequency matrix.
+        setRun({ ...snapshot, stage: 'ready', progress: 100, result });
       } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to compute signatures');
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (controller.signal.aborted) return;
+        setRun({ ...initial, stage: 'error', error: err instanceof Error ? err.message : 'Failed to compute signatures' });
       }
     }
 
-    loadAndCompute();
+    void loadAndCompute();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [includeReverseComplement, kmerSize, overlayOpen, repository]);
+    return () => controller.abort();
+  }, [input, overlayOpen, vectorCache]);
 
   const phageMetaById = useMemo(() => {
-    return new Map(phageSummaries.map(p => [p.id, p] as const));
-  }, [phageSummaries]);
-
-  // Perform PCA off the main thread (worker)
-  useEffect(() => {
-    if (!overlayOpen) return;
-    if (kmerVectors.length < 3) {
-      setPcaResult(null);
-      setPcaLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setPcaLoading(true);
-    // Clear any stale errors so successful PCA results aren't masked.
-    setError(null);
-
-    ComputeOrchestrator
-      .getInstance()
-      .computeGenomicSignaturePca(kmerVectors, { numComponents: 3 })
-      .then((result) => {
-        if (cancelled) return;
-        setPcaResult(result);
-        setError(null);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setPcaResult(null);
-        setError(err instanceof Error ? err.message : 'Failed to compute PCA');
-      })
-      .finally(() => {
-        if (!cancelled) setPcaLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [kmerVectors, overlayOpen]);
+    return new Map(currentRun?.phages.map(p => [p.id, p] as const) ?? []);
+  }, [currentRun]);
 
   useEffect(() => {
     if (!overlayOpen) return;
@@ -763,7 +739,7 @@ export function GenomicSignaturePCAOverlay({
                 color: colors.textMuted,
               }}
             >
-              {colorBy === 'gc' ? (
+              {colorBy === 'gc' ? ( // ubs:ignore — compares a public display mode, not credentials.
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ color: '#3b82f6' }}>Low GC</span>
                   <div

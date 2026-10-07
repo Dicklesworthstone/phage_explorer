@@ -5,7 +5,7 @@
  * set of controls (k-mer depth, hotkey toggle) and basic stats.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as Comlink from 'comlink';
 import type { PhageFull } from '@phage-explorer/core';
 import { computeCGR } from '@phage-explorer/core';
@@ -122,15 +122,18 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  // Numeric IDs are meaningful only within the repository that supplied them.
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
   const workerRef = useRef<Worker | null>(null);
   const workerApiRef = useRef<Comlink.Remote<HilbertWorkerAPI> | null>(null);
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded.sequence : '';
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [k, setK] = useState<number>(DEFAULT_K);
-  const [cgrResult, setCgrResult] = useState<CgrRenderResult | null>(null);
+  const [computed, setComputed] = useState<{ input: typeof loaded; k: number; result: CgrRenderResult } | null>(null);
+  const cgrResult = sequence && computed?.input === loaded && computed.k === k ? computed.result : null;
 
   const loading = sequenceLoading || computeLoading;
 
@@ -176,16 +179,16 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
   useEffect(() => {
     if (!isOpen('cgr')) return;
     if (!repository || !currentPhage) {
-      setSequence('');
+      setLoaded(null);
       setSequenceLoading(false);
       return;
     }
 
     let cancelled = false;
     const phageId = currentPhage.id;
-    const cached = sequenceCache.current.get(phageId);
-    if (cached) {
-      setSequence(cached);
+    const cached = sequenceCache.get(phageId);
+    if (cached !== undefined) {
+      setLoaded({ repository, phageId, sequence: cached });
       setSequenceLoading(false);
       return;
     }
@@ -195,16 +198,17 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
     void (async () => {
       try {
         const length = await repository.getFullGenomeLength(phageId);
+        if (cancelled) return;
         const seq = await repository.getSequenceWindow(phageId, 0, length);
         if (!cancelled) {
-          sequenceCache.current.set(phageId, seq);
-          setSequence(seq);
+          sequenceCache.set(phageId, seq);
+          setLoaded({ repository, phageId, sequence: seq });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to load sequence';
         if (!cancelled) {
           setError(message);
-          setSequence('');
+          setLoaded(null);
         }
       } finally {
         if (!cancelled) {
@@ -216,12 +220,12 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isOpen, repository, currentPhage, sequenceCache]);
 
   // Compute CGR (worker preferred, WASM fallback, JS fallback)
   useEffect(() => {
     if (!isOpen('cgr') || !sequence) {
-      setCgrResult(null);
+      setComputed(null);
       setComputeLoading(false);
       return;
     }
@@ -239,13 +243,13 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
           result = await computeCgrWasm(sequence, k).catch(() => computeCGR(sequence, k));
         }
         if (!cancelled) {
-          setCgrResult(result);
+          setComputed({ input: loaded, k, result });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to compute CGR';
         if (!cancelled) {
           setError(message);
-          setCgrResult(null);
+          setComputed(null);
         }
       } finally {
         if (!cancelled) {
@@ -257,15 +261,22 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
     return () => {
       cancelled = true;
     };
-  }, [isOpen, sequence, k]);
+  }, [isOpen, sequence, loaded, k]);
 
   // Draw density map when data changes
   useEffect(() => {
-    if (!isOpen('cgr') || !canvasRef.current || !cgrResult) return;
+    if (!isOpen('cgr') || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    // The canvas survives input changes; discard the old image while a new
+    // repository or parameter choice is waiting for its own result.
+    if (!cgrResult) {
+      ctx.resetTransform();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
 
     const displaySize = canvas.clientWidth || 420;
     const dpr = window.devicePixelRatio || 1;
@@ -381,7 +392,7 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
                 ref={canvasRef}
                 role="img"
                 aria-label="Chaos Game Representation showing nucleotide sequence patterns"
-                style={{ width: '100%', height: 'auto', aspectRatio: '1 / 1', display: 'block' }}
+                style={{ width: '100%', height: 'auto', aspectRatio: '1 / 1', display: 'block', visibility: cgrResult ? 'visible' : 'hidden' }}
               />
               <div
                 style={{
@@ -462,9 +473,9 @@ export function CGROverlay({ repository, currentPhage }: CGROverlayProps): React
               }}
             >
               <StatCard label="Genome length" value={`${length.toLocaleString()} bp`} colors={colors} />
-              <StatCard label="GC content" value={`${gcContent.toFixed(2)}%`} colors={colors} />
+              <StatCard label="GC content" value={sequence ? `${gcContent.toFixed(2)}%` : '—'} colors={colors} />
               <StatCard label="Resolution" value={`${resolution} × ${resolution}`} colors={colors} />
-              <StatCard label="Shannon entropy" value={entropy.toFixed(3)} colors={colors} />
+              <StatCard label="Shannon entropy" value={cgrResult ? entropy.toFixed(3) : '—'} colors={colors} />
             </div>
 
             <div

@@ -6,7 +6,7 @@
  * across the translated genome, revealing functional domains and potential HGT events.
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -80,20 +80,23 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   const overlayOpen = isOpen('phasePortrait');
   const viewMode = usePhageStore((s) => s.viewMode);
   const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded.sequence : '';
   const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState<PhasePortraitResult | null>(null);
+  const [computed, setComputed] = useState<{ input: typeof loaded; windowSize: number; stepSize: number; result: PhasePortraitResult } | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   // Hover state for tooltip
-  const [hoveredPoint, setHoveredPoint] = useState<ScatterHover | null>(null);
+  const [hovered, setHovered] = useState<{ analysis: PhasePortraitResult; point: ScatterHover } | null>(null);
 
   // Analysis parameters
   const [windowSize, setWindowSize] = useState(30);
   const [stepSize] = useState(5);
   const [colorBy, setColorBy] = useState<'dominant' | 'hydropathy' | 'disorder'>('dominant');
+  const analysis = sequence && computed?.input === loaded && computed.windowSize === windowSize && computed.stepSize === stepSize ? computed.result : null;
+  const hoveredPoint = hovered?.analysis === analysis ? hovered.point : null;
 
   // Hotkey to toggle overlay (Alt+Shift+P)
   useHotkey(
@@ -106,7 +109,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   useEffect(() => {
     if (!overlayOpen) return;
     if (!repository || !currentPhage) {
-      setSequence('');
+      setLoaded(null);
       setLoading(false);
       return;
     }
@@ -114,8 +117,8 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
     const phageId = currentPhage.id;
 
     // Check cache first
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
+    if (sequenceCache.has(phageId)) {
+      setLoaded({ repository, phageId, sequence: sequenceCache.get(phageId) ?? '' });
       setLoading(false);
       return;
     }
@@ -124,15 +127,15 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+      .then((length: number) => cancelled ? null : repository.getSequenceWindow(phageId, 0, length))
+      .then((seq: string | null) => {
+        if (cancelled || seq === null) return;
+        sequenceCache.set(phageId, seq);
+        setLoaded({ repository, phageId, sequence: seq });
       })
       .catch(() => {
         if (cancelled) return;
-        setSequence('');
+        setLoaded(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -141,21 +144,17 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
     return () => {
       cancelled = true;
     };
-  }, [overlayOpen, repository, currentPhage]);
+  }, [overlayOpen, repository, currentPhage, sequenceCache]);
 
   // Compute phase portrait off the main thread (worker)
   useEffect(() => {
     if (!overlayOpen) return;
     if (!currentPhage || !sequence) {
-      setAnalysis(null);
+      setComputed(null);
       setAnalysisLoading(false);
       setAnalysisError(null);
       return;
     }
-    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
-      return;
-    }
-
     let cancelled = false;
     setAnalysisLoading(true);
     setAnalysisError(null);
@@ -165,11 +164,11 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
       .computePhasePortraitWithSharedBuffer(currentPhage.id, sequence, windowSize, stepSize)
       .then((result) => {
         if (cancelled) return;
-        setAnalysis(result);
+        setComputed(result ? { input: loaded, windowSize, stepSize, result } : null);
       })
       .catch((err) => {
         if (cancelled) return;
-        setAnalysis(null);
+        setComputed(null);
         setAnalysisError(err instanceof Error ? err.message : 'Failed to compute phase portrait');
       })
       .finally(() => {
@@ -179,7 +178,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
     return () => {
       cancelled = true;
     };
-  }, [overlayOpen, currentPhage, sequence, windowSize, stepSize]);
+  }, [overlayOpen, currentPhage, sequence, loaded, windowSize, stepSize]);
 
   // Convert portrait points to scatter points for visualization
   const scatterPoints = useMemo((): ScatterPoint[] => {
@@ -219,8 +218,8 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
 
   // Handle hover
   const handleHover = useCallback((hover: ScatterHover | null) => {
-    setHoveredPoint(hover);
-  }, []);
+    setHovered(hover && analysis ? { analysis, point: hover } : null);
+  }, [analysis]);
 
   // Handle click - could navigate to position in main viewer
   const handleClick = useCallback((hover: ScatterHover | null) => {

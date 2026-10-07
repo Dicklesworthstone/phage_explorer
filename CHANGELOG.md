@@ -19,8 +19,8 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   unavailable. Version-2 censored records replay through fresh computation while
   exact-only version-1 identities remain stable. Independent numerical oracles
   and a real-worker browser import/export/reload journey cover the implementation.
-  See [the likelihood](packages/core/src/analysis/growth-inference.ts) and
-  [browser regression](packages/web/e2e/growth-inference.e2e.ts).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/dd9da76b7409f51c95285428a11c9c5c5fd19080)
+  and [browser regression](packages/web/e2e/growth-inference.e2e.ts).
 
 ### Analysis correctness
 
@@ -28,6 +28,15 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   longer substitute another genome in shared-memory or transferable workers.
   Cache hits now compare the actual bases while preserving existing worker-held
   buffers. [Fix](https://github.com/Dicklesworthstone/phage_explorer/commit/308f0f07cbacf229024bfbe8ab3b2dc99d6d4b3d).
+- **Repository-owned analysis results** — PCA, CGR, Hilbert, anomaly detection,
+  amino-acid phase portraits and HGT now bind cached inputs and rendered results
+  to their source repository. Reused numeric IDs and delayed old reads/replies
+  cannot relabel an old analysis as the replacement genome. HGT donor panels
+  refresh with the source; user-selected analysis parameters are preserved.
+- **PCA GC units** — normalize the WASM GC percentage to the vector contract's
+  0–1 fraction, preventing a pure-G sequence from displaying 10,000% GC. Both
+  WASM and JavaScript browser paths are checked against independently counted
+  resolved, ambiguous, lowercase and U-containing sequences.
 
 ## [v1.6.0] — 2026-10-04
 

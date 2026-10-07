@@ -6,7 +6,7 @@
  * spotting GC/AT domains, repeats, and abrupt transitions.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as Comlink from 'comlink';
 import type { PhageFull, Theme } from '@phage-explorer/core';
 import { getNucleotideColor } from '@phage-explorer/core';
@@ -128,15 +128,17 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
   const workerRef = useRef<Worker | null>(null);
   const workerApiRef = useRef<Comlink.Remote<HilbertWorkerAPI> | null>(null);
-  const [sequence, setSequence] = useState<string>('');
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded.sequence : '';
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [renderResult, setRenderResult] = useState<HilbertRender | null>(null);
+  const [computed, setComputed] = useState<{ input: typeof loaded; colorMode: ColorMode; theme: typeof theme; result: HilbertRender } | null>(null);
   const [colorMode, setColorMode] = useState<ColorMode>('nucleotide');
+  const renderResult = sequence && computed?.input === loaded && computed.colorMode === colorMode && computed.theme === theme ? computed.result : null;
   const loading = sequenceLoading || computeLoading;
 
   useHotkey(
@@ -184,7 +186,7 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
       return;
     }
     if (!repository || !currentPhage) {
-      setSequence('');
+      setLoaded(null);
       setSequenceLoading(false);
       setComputeLoading(false);
       return;
@@ -192,9 +194,9 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
 
     let cancelled = false;
     const phageId = currentPhage.id;
-    const cached = sequenceCache.current.get(phageId);
-    if (cached) {
-      setSequence(cached);
+    const cached = sequenceCache.get(phageId);
+    if (cached !== undefined) {
+      setLoaded({ repository, phageId, sequence: cached });
       setSequenceLoading(false);
       return;
     }
@@ -204,16 +206,17 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
     void (async () => {
       try {
         const length = await repository.getFullGenomeLength(phageId);
+        if (cancelled) return;
         const seq = await repository.getSequenceWindow(phageId, 0, length);
         if (!cancelled) {
-          sequenceCache.current.set(phageId, seq);
-          setSequence(seq);
+          sequenceCache.set(phageId, seq);
+          setLoaded({ repository, phageId, sequence: seq });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Failed to load sequence';
         if (!cancelled) {
           setError(message);
-          setSequence('');
+          setLoaded(null);
         }
       } finally {
         if (!cancelled) {
@@ -226,12 +229,12 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
       cancelled = true;
       setSequenceLoading(false);
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isOpen, repository, currentPhage, sequenceCache]);
 
   // Compute Hilbert render (worker preferred, fallback to main thread)
   useEffect(() => {
     if (!isOpen('hilbert') || !sequence) {
-      setRenderResult(null);
+      setComputed(null);
       setComputeLoading(false);
       return;
     }
@@ -268,17 +271,17 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
               img.data.set(result.buffer);
               return img;
             })();
-        setRenderResult({
+        setComputed({ input: loaded, colorMode, theme, result: {
           order: result.order,
           size: result.size,
           coverage: result.coverage,
           image,
-        });
+        } });
       } catch (err) {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Failed to compute Hilbert curve';
         setError(message);
-        setRenderResult(null);
+        setComputed(null);
       } finally {
         if (!cancelled) {
           setComputeLoading(false);
@@ -292,14 +295,19 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
       cancelled = true;
       setComputeLoading(false);
     };
-  }, [isOpen, sequence, theme, colorMode]);
+  }, [isOpen, sequence, loaded, theme, colorMode]);
 
   useEffect(() => {
-    if (!isOpen('hilbert') || !renderResult || !canvasRef.current) return;
+    if (!isOpen('hilbert') || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    if (!renderResult) {
+      ctx.resetTransform();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
 
     const displaySize = canvas.clientWidth || 420;
     const dpr = window.devicePixelRatio || 1;
@@ -391,7 +399,7 @@ export function HilbertOverlay({ repository, currentPhage }: HilbertOverlayProps
                 ref={canvasRef}
                 role="img"
                 aria-label="Hilbert curve visualization showing genome sequence as a space-filling curve"
-                style={{ width: '100%', height: 'auto', aspectRatio: '1 / 1', display: 'block' }}
+                style={{ width: '100%', height: 'auto', aspectRatio: '1 / 1', display: 'block', visibility: renderResult ? 'visible' : 'hidden' }}
               />
               <div
                 style={{

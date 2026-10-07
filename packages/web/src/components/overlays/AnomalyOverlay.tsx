@@ -57,12 +57,14 @@ export function AnomalyOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-  const sequenceCache = useRef<Map<number, string>>(new Map());
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
   const workerRef = useRef<Worker | null>(null);
   const workerApiRef = useRef<Comlink.Remote<AnomalyWorkerAPI> | null>(null);
 
-  const [sequence, setSequence] = useState<string>('');
-  const [analysis, setAnalysis] = useState<AnomalyWorkerResult | null>(null);
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const sequence = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded.sequence : '';
+  const [computed, setComputed] = useState<{ input: typeof loaded; result: AnomalyWorkerResult } | null>(null);
+  const analysis = sequence && computed?.input === loaded ? computed.result : null;
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,8 +117,8 @@ export function AnomalyOverlay({
       return;
     }
     if (!repository || !currentPhage) {
-      setSequence('');
-      setAnalysis(null);
+      setLoaded(null);
+      setComputed(null);
       setSequenceLoading(false);
       setAnalysisLoading(false);
       setError(null);
@@ -125,9 +127,9 @@ export function AnomalyOverlay({
 
     let cancelled = false;
     const phageId = currentPhage.id;
-    const cached = sequenceCache.current.get(phageId);
-    if (cached) {
-      setSequence(cached);
+    const cached = sequenceCache.get(phageId);
+    if (cached !== undefined) {
+      setLoaded({ repository, phageId, sequence: cached });
       setSequenceLoading(false);
       return;
     }
@@ -137,16 +139,17 @@ export function AnomalyOverlay({
     void (async () => {
       try {
         const length = await repository.getFullGenomeLength(phageId);
+        if (cancelled) return;
         const seq = await repository.getSequenceWindow(phageId, 0, length);
         if (!cancelled) {
-          sequenceCache.current.set(phageId, seq);
-          setSequence(seq);
+          sequenceCache.set(phageId, seq);
+          setLoaded({ repository, phageId, sequence: seq });
         }
       } catch (err) {
         if (!cancelled) {
           const message = err instanceof Error ? err.message : 'Failed to load sequence';
           setError(message);
-          setSequence('');
+          setLoaded(null);
         }
       } finally {
         if (!cancelled) setSequenceLoading(false);
@@ -157,17 +160,17 @@ export function AnomalyOverlay({
       cancelled = true;
       setSequenceLoading(false);
     };
-  }, [currentPhage, isOpen, repository]);
+  }, [currentPhage, isOpen, repository, sequenceCache]);
 
   // Run analysis when sequence is available
   useEffect(() => {
     if (!isOpen('anomaly')) {
-      setAnalysis(null);
+      setComputed(null);
       setAnalysisLoading(false);
       return;
     }
     if (!sequence) {
-      setAnalysis(null);
+      setComputed(null);
       setAnalysisLoading(false);
       return;
     }
@@ -182,7 +185,7 @@ export function AnomalyOverlay({
           stepSize: 250,
         });
         if (cancelled) return;
-        setAnalysis(result);
+        setComputed({ input: loaded, result });
         setThreshold(prev => prev ?? result.summary.threshold);
         if (result.summary.topRegions.length > 0) {
           const top = result.summary.topRegions[0];
@@ -195,7 +198,7 @@ export function AnomalyOverlay({
         if (!cancelled) {
           const message = err instanceof Error ? err.message : 'Anomaly analysis failed';
           setError(message);
-          setAnalysis(null);
+          setComputed(null);
         }
       } finally {
         if (!cancelled) setAnalysisLoading(false);
@@ -206,7 +209,7 @@ export function AnomalyOverlay({
       cancelled = true;
       setAnalysisLoading(false);
     };
-  }, [isOpen, sequence]);
+  }, [isOpen, sequence, loaded]);
 
   const effectiveThreshold = threshold ?? analysis?.summary.threshold ?? 70;
 
