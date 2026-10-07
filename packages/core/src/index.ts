@@ -132,3 +132,5 @@ export * from './analysis/host-interactions';
 // Pan-Phage Graph Pangenome & Variant Cards
 export * from './analysis/pangenome-graph';
 export * from './analysis/alignment-pangenome';
+
+export * from './analysis/pangenome-vcf';

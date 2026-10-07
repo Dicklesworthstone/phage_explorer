@@ -1,6 +1,6 @@
 /** Private sequence-graph workspace, with the existing annotation illustration kept explicitly separate. */
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { constructPangenomeGraph, exportPangenomeOriginalFasta, mapPangenomeNodeToOriginal, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
+import { exportPangenomeVcf, exportPangenomeReferenceFasta, constructPangenomeGraph, exportPangenomeOriginalFasta, mapPangenomeNodeToOriginal, exportAlignmentGfa, exportPangenomeAlignment, serializePangenomeInput, serializeAnalysisRecord,
   DEFAULT_AFFINE_PENALTIES, resolveAffinePenalties, type AffinePenalties,
   type AlignmentGraphOptions, type AlignmentPangenome, type AlignmentVariant } from '@phage-explorer/core';
 import { useHotkey } from '../../hooks';
@@ -119,7 +119,7 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       : file.text().then(content => ({ kind: 'import', content, filename: file.name }));
     void session.run(request);
   };
-  const save = (kind: 'input' | 'record' | 'gfa' | 'alignment' | 'original') => {
+  const save = (kind: 'input' | 'record' | 'gfa' | 'alignment' | 'original' | 'vcf' | 'reference') => {
     if (!accepted) return;
     try {
       if (kind === 'input') downloadString(serializePangenomeInput(accepted.input), 'pangenome-input.json', 'application/json');
@@ -127,6 +127,8 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
       else if (kind === 'gfa' && graph) downloadString(exportAlignmentGfa(graph), 'pangenome.gfa', 'text/plain');
       else if (kind === 'alignment' && graph) downloadString(exportPangenomeAlignment(graph), 'pangenome-alignment.fasta', 'text/plain');
       else if (kind === 'original' && graph) downloadString(exportPangenomeOriginalFasta(graph), 'pangenome-original.fasta', 'text/plain');
+      else if (kind === 'vcf' && graph && record) downloadString(exportPangenomeVcf(graph, record.resultId), 'pangenome.vcf', 'text/plain');
+      else if (kind === 'reference' && graph) downloadString(exportPangenomeReferenceFasta(graph), 'pangenome-reference.fasta', 'text/plain');
       setExportError(null);
     } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
   };
@@ -253,7 +255,15 @@ export function PangenomeGraphOverlay(): React.ReactElement | null {
           <button type="button" disabled={busy || !record} onClick={() => save('record')}>Export pangenome analysis</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('gfa')}>Export sequence graph GFA</button>
           <button type="button" disabled={busy || !graph} onClick={() => save('alignment')}>Export graph alignment FASTA</button>
-          <button type="button" disabled={busy || !graph} onClick={() => save('original')}>Export original sequence FASTA</button></div>
+          <button type="button" disabled={busy || !graph} onClick={() => save('original')}>Export original sequence FASTA</button>
+          <button type="button" disabled={busy || !graph || !record} onClick={() => save('vcf')}>Export haploid variants VCF</button>
+          <button type="button" disabled={busy || !graph} onClick={() => save('reference')}>Export VCF reference FASTA</button></div>
+        <p>VCF exports every query from the accepted alignment, regardless of graph/table filters or draft settings.
+          Use the matching reference FASTA from this same experiment: its contig is named reference and retains the submitted reference origin.
+          Haploid calls are alignment-conditional; unresolved or uncovered loci use a missing genotype, not reference.
+          QUAL and FILTER are unspecified, not confidence or PASS. No read depth, gVCF coverage or repeat-left-normalization is provided.
+          Sample headers map safe query identifiers back to the original names. Overlapping padded indels form combined loci;
+          if a resolved reference anchor or fully observed alternate cannot be represented, export fails without a partial file.</p>
         <PangenomeCdsPanel accepted={accepted} options={draft} localGenomes={localGenomes} busy={busy || !!penaltyError} run={session.run} />
       </>}
       {phage && <section aria-label="Annotation illustration" style={{ border: `1px solid ${colors.borderLight}`, padding: '.75rem' }}>

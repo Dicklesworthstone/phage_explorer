@@ -7,6 +7,7 @@ import { ALIGNMENT_GRAPH_LIMITS, buildAlignmentPangenome, createAlignmentPangeno
   exportPangenomeAlignment, exportPangenomeOriginalFasta, parsePangenomeInput, replayAlignmentPangenome, serializePangenomeInput,
   createAnnotatedAlignmentPangenome, DEFAULT_AFFINE_PENALTIES, resolveAffinePenalties, type PangenomeCdsSelection,
   type AlignmentGraphOptions, type AlignmentPangenome } from '../packages/core/src/analysis/alignment-pangenome';
+import { exportPangenomeVcf, exportPangenomeReferenceFasta } from '../packages/core/src/analysis/pangenome-vcf';
 import { serializeAnalysisRecord, type AnalysisRecord } from '../packages/core/src/analysis-result';
 import { GENOME_IMPORT_LIMITS, importLocalGenomes, type GenomeInput } from '../packages/core/src/genome-import';
 import { exportCdsConsequenceFasta, exportCdsConsequenceTable, parseCdsGeneIds,
@@ -25,7 +26,11 @@ bun scripts/pangenome.ts annotate --experiment experiment.json --annotation refe
   --output annotated.json [--annotation-record ACCESSION_OR_CONTENT_ID] [--gene-ids 1,2,3]
 bun scripts/pangenome.ts verify --experiment experiment.json [--output verified-copy.json]
 bun scripts/pangenome.ts export --experiment experiment.json --format FORMAT --output PATH
-  FORMAT: gfa|fasta|original-fasta|dataset|consequences-tsv|cds-fasta|protein-fasta
+  FORMAT: gfa|fasta|original-fasta|reference-fasta|vcf|dataset|consequences-tsv|cds-fasta|protein-fasta
+
+VCF: alignment-derived haploid calls; missing coverage is not a reference call. No QUAL,
+read depth or filter PASS is invented. Export reference-fasta from the same experiment
+for the matching reference contig. Alleles are not repeat-left-normalized; no gVCF.
 
 Input: 2-24 DNA sequences in FASTA or pangenome dataset JSON (not GenBank).
 provided: use an existing multiple-sequence alignment; equal lengths alone do not establish homology.
@@ -55,7 +60,7 @@ are never overwritten. A failed disk write can leave a partial new file; use a n
 Summaries contain metadata and counts, not genome bases or variant alleles. No network or database.
 `;
 interface AnnotationSource { annotationPath: string; selection: PangenomeCdsSelection }
-export type PangenomeExportFormat = 'gfa' | 'fasta' | 'original-fasta' | 'dataset' | 'consequences-tsv' | 'cds-fasta' | 'protein-fasta';
+export type PangenomeExportFormat = 'gfa' | 'fasta' | 'original-fasta' | 'reference-fasta' | 'vcf' | 'dataset' | 'consequences-tsv' | 'cds-fasta' | 'protein-fasta';
 export type PangenomeCommand = { type: 'help' }
   | { type: 'inspect'; inputPath: string }
   | { type: 'inspect-annotations'; annotationPath: string }
@@ -94,8 +99,8 @@ export function parsePangenomeCommand(args: readonly string[]): PangenomeCommand
     ...(values.has('--output') ? { outputPath: values.get('--output')! } : {}) };
   if (type === 'export') {
     const format = required('--format');
-    if (!['gfa', 'fasta', 'original-fasta', 'dataset', 'consequences-tsv', 'cds-fasta', 'protein-fasta'].includes(format)) {
-      throw new Error('--format must be gfa, fasta, original-fasta, dataset, consequences-tsv, cds-fasta or protein-fasta.');
+    if (!['gfa', 'fasta', 'original-fasta', 'reference-fasta', 'vcf', 'dataset', 'consequences-tsv', 'cds-fasta', 'protein-fasta'].includes(format)) {
+      throw new Error('--format must be gfa, fasta, original-fasta, reference-fasta, vcf, dataset, consequences-tsv, cds-fasta or protein-fasta.');
     }
     return { type, experimentPath: required('--experiment'), outputPath: required('--output'), format: format as PangenomeExportFormat };
   }
@@ -191,7 +196,9 @@ export async function executePangenomeCommand(command: Exclude<PangenomeCommand,
         if (!cds) throw new Error('This experiment has no coding consequences. Run annotate with a matching GenBank reference first.');
         content = command.format === 'consequences-tsv' ? exportCdsConsequenceTable(cds)
           : exportCdsConsequenceFasta(cds, command.format === 'cds-fasta' ? 'cds' : 'protein');
-      } else content = command.format === 'gfa' ? exportAlignmentGfa(graph)
+      } else content = command.format === 'vcf' ? exportPangenomeVcf(graph, record.resultId)
+        : command.format === 'reference-fasta' ? exportPangenomeReferenceFasta(graph)
+          : command.format === 'gfa' ? exportAlignmentGfa(graph)
         : command.format === 'fasta' ? exportPangenomeAlignment(graph)
           : command.format === 'original-fasta' ? exportPangenomeOriginalFasta(graph) : serializePangenomeInput(input);
       await writeNew(command.outputPath, content);
