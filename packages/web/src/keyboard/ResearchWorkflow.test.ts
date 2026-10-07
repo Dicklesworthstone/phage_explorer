@@ -4,6 +4,7 @@ import type { AnalysisRecord, LocalGenome } from '@phage-explorer/core';
 import { analysisJson } from '../../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
 import { ResearchWorkflow, validateResearchView, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
+import { createGCSkewRecord } from '../../../core/src/analysis/gc-skew';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation' };
 const id = 'a'.repeat(64);
@@ -33,6 +34,69 @@ function fixture() {
 }
 const navigate = (workflow: ResearchWorkflow, position: number) => workflow.commands.dispatch(ids.view, analysisJson({ ...initialView, scrollPosition: position, geneId: 1 }));
 const codons = (workflow: ResearchWorkflow) => workflow.commands.dispatch(ids.codons, { contentId: id, geneId: 1 });
+
+describe('recorded portable GC skew', () => {
+  const action = 'overlay.gcSkew';
+  function gcFixture() {
+    const base = fixture();
+    base.env.gcSkew = (genome, options) => createGCSkewRecord(genome.sequence, options, { accession: genome.phage.accession, source: 'local' });
+    const workflow = new ResearchWorkflow({ ...ids, gcSkew: action }, base.env); workflow.start('Portable GC');
+    return { ...base, workflow, parameters: { contentId: id, windowSize: 4, stepSize: 3 } };
+  }
+  it('records explicit parameters and recomputes the same result after loading the tape', async () => {
+    const f = gcFixture(); await f.workflow.commands.dispatch(action, f.parameters);
+    const result = f.workflow.getSnapshot().result!; f.workflow.commands.stop();
+    const saved = f.workflow.commands.export(); f.workflow.load(saved);
+    assert.equal(f.workflow.getSnapshot().result, null);
+    await f.workflow.commands.replay();
+    assert.deepEqual(f.workflow.getSnapshot().result, result);
+    assert.deepEqual(parseCommandTape(saved).commands[0].parameters, f.parameters);
+  });
+  it('retains accepted evidence after navigation and history without assigning it to navigation outputs', async () => {
+    const f = gcFixture(); await f.workflow.commands.dispatch(action, f.parameters);
+    const accepted = f.workflow.getSnapshot().result;
+    await navigate(f.workflow, 2); await navigate(f.workflow, 4);
+    await f.workflow.moveHistory(-1); await f.workflow.moveHistory(1);
+    assert.equal(f.workflow.getSnapshot().result, null);
+    assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, accepted);
+    f.workflow.commands.stop(); const tape = f.workflow.commands.export();
+    f.workflow.load(tape);
+    assert.equal(f.workflow.getSnapshot().lastAnalysis, null, 'loading a tape must not present a previous tape result');
+    await f.workflow.commands.replay(2);
+    assert.equal(f.workflow.getSnapshot().result, null, 'navigation remains a non-analysis command for native attribution');
+    assert.deepEqual(f.workflow.getSnapshot().lastAnalysis, accepted);
+    assert.notStrictEqual(f.workflow.getSnapshot().lastAnalysis, accepted, 'retained replay evidence must be freshly computed');
+    f.workflow.start('New experiment');
+    assert.equal(f.workflow.getSnapshot().lastAnalysis, null);
+  });
+  it('rejects substituted inputs/settings and stale completion before publishing an accepted result', async () => {
+    const f = gcFixture(); await f.workflow.commands.dispatch(action, f.parameters);
+    const accepted = f.workflow.getSnapshot().result;
+    const execute = f.env.gcSkew!;
+    f.env.gcSkew = (genome, options, signal) => execute(genome, { ...options, stepSize: 1 }, signal);
+    await assert.rejects(f.workflow.commands.dispatch(action, f.parameters), /does not match/);
+    assert.strictEqual(f.workflow.getSnapshot().result, accepted);
+    const pending = deferred<AnalysisRecord>(); let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    f.env.gcSkew = () => { entered(); return pending.promise; };
+    const task = f.workflow.commands.dispatch(action, f.parameters); await started;
+    f.workflow.commands.cancel(); await assert.rejects(task, { name: 'AbortError' });
+    pending.resolve(await execute(f.loaded[0], { windowSize: f.parameters.windowSize, stepSize: f.parameters.stepSize }, new AbortController().signal)); await flush();
+    assert.strictEqual(f.workflow.getSnapshot().result, accepted);
+    assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, accepted);
+    assert.equal(f.workflow.commands.getSnapshot().tape.commands.length, 1);
+  });
+  it('rejects missing parameters and altered live genomes without running the GC producer', async () => {
+    const f = gcFixture(); let computations = 0;
+    const execute = f.env.gcSkew!; f.env.gcSkew = (...args) => { computations++; return execute(...args); };
+    for (const parameters of [{ contentId: id, windowSize: 4 }, { ...f.parameters, stepSize: 0 }, { ...f.parameters, windowSize: 2.5 }, { ...f.parameters, circular: true }]) {
+      await assert.rejects(f.workflow.commands.dispatch(action, parameters));
+    }
+    f.loaded[0].sequence = 'G'.repeat(f.loaded[0].sequence.length);
+    await assert.rejects(f.workflow.commands.dispatch(action, f.parameters), /changed sequence/);
+    assert.equal(computations, 0);
+  });
+});
 
 describe('content-bound research command adapters', () => {
   it('records original inputs and absolute genome/CDS/frame/position commands', async () => {

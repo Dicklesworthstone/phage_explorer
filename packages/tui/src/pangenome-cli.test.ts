@@ -31,8 +31,14 @@ describe('pangenome command-line workflow', () => {
       ['build', '--alignment', 'global', '--input', 'a', '--output', 'b'],
       [...build('a', 'b'), '--alignment', 'global'], [...build('a', 'b'), '--terminal-gaps', 'infer'],
       ['inspect', '--input'], ['inspect', '--input', 'a', '--force', 'true'], ['inspect', '--input', 'x\u001b[31m'],
-      ['export', '--experiment', 'a', '--format', 'vcf', '--output', 'b'], ['verify', '--experiment', '--output'],
+      ['export', '--experiment', 'a', '--format', 'unsupported', '--output', 'b'], ['verify', '--experiment', '--output'],
     ]) assert.throws(() => parsePangenomeCommand(args));
+    // VCF and its exact reference FASTA are supported exports since 4286c84.
+    // Keep the unknown-format negative control above; reject neither real format.
+    for (const format of ['vcf', 'reference-fasta'] as const) {
+      assert.deepEqual(parsePangenomeCommand(['export', '--experiment', 'a', '--format', format, '--output', 'b']),
+        { type: 'export', experimentPath: 'a', outputPath: 'b', format });
+    }
   });
   it('builds, verifies and exports a genome-scale graph using actual local files and safe summaries', async () => {
     const a = 'ACGT'.repeat(5000), b = a.slice(0, 10000) + 'T' + a.slice(10001);

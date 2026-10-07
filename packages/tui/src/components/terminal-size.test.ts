@@ -85,8 +85,13 @@ describe('the size gate is wired and states the documented floor', () => {
   });
 
   it('wraps the app, so the guard cannot be bypassed by mounting App directly', () => {
-    expect(entry).toContain('TerminalSizeGate');
-    expect(entry).toMatch(/<TerminalSizeGate>[\s\S]*<App[\s\S]*<\/TerminalSizeGate>/);
+    // The lazy launcher deliberately uses createElement to avoid an eager JSX
+    // runtime import. Both explorer and local-import views share this outer gate.
+    const guardedRender = /render\(\s*React\.createElement\(TerminalSizeGate,\s*null,\s*React\.createElement\(LocalGenomeApp,/;
+    expect(entry).toMatch(guardedRender);
+    expect(entry.replace('React.createElement(TerminalSizeGate,', 'React.createElement(React.Fragment,')).not.toMatch(guardedRender);
+    const localApp = readFileSync(join(import.meta.dir, 'LocalGenomeApp.tsx'), 'utf8');
+    expect(localApp).toMatch(/return open\s*\? <TerminalGenomeView[\s\S]*: <App repository=/);
   });
 
   it('tells the user the actual size and the required size', () => {

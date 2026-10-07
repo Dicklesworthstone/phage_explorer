@@ -943,18 +943,41 @@ genome and recomputes the model. Copy/export preserve the same record; changing 
 parameter changes its identity. Missing solver results remain explicitly unavailable.
 
 The **GC skew** overlay exports the consumed sequence, window parameters, worker
-backend and numerical results in the same format. Its cumulative curve is a
+backend and numerical results in the same format. Set the window and step sizes,
+then run the analysis; changing the selected genome cancels obsolete work.
+**Restore GC-skew experiment** checks the exact selected sequence and freshly
+recomputes either an accelerated viewer record or a portable workflow record.
+Its cumulative curve is a
 per-base G-minus-C count sampled at each window start, including that base;
 JavaScript fallback and WASM use the same convention. Genomes without G or C show
 an undefined result. The candidate coordinates are sequence heuristics, not
 experimentally identified replication sites.
 
+In **Research workflow**, import the required local genomes, start recording and
+choose **Run and record GC skew** with explicit window and step sizes. The
+portable experiment retains per-window G/C counts, resolved-base coverage and
+null skew for windows without G or C. Export the analysis JSON, the window-count
+TSV or the complete workflow. Reloaded workflows recompute the same results in
+the browser or through the native replay command:
+
+```bash
+bun run workflow inspect --input research-workflow.json
+bun run workflow replay --input research-workflow.json --output verified-gc-skew.json
+```
+
+Only complete linear windows are sampled, including for circular genomes.
+GC-skew inputs are bounded at 5,000,000 bases and 20,000 output windows; increase
+the step size if a dense scan exceeds that limit. Window sizes are positive
+integers up to 1,000,000 bases. Workflow files contain the private input sequences.
+
 Record SHA-256 values identify canonical JSON content; they do not certify the
 underlying biology or authenticate the author. Records are limited to 10 MiB.
 The shared contract can describe observations, sequence scores, fitted estimates,
-simulations, demonstrations and unavailable values. Browser export is currently
-wired to AMG and GC skew; restoring an experiment is currently supported for AMG.
-Other overlays, TUI evidence display and complete action replay remain open work.
+simulations, demonstrations and unavailable values. AMG and GC-skew viewers both
+support export and recomputed restoration. Research workflows record only the
+explicit actions in their panel; actions in other panels are not recorded.
+Broader overlay coverage, TUI evidence display and complete action replay remain
+open work.
 
 ### Composable UI Primitives
 

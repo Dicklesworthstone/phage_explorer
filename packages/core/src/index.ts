@@ -134,3 +134,4 @@ export * from './analysis/pangenome-graph';
 export * from './analysis/alignment-pangenome';
 
 export * from './analysis/pangenome-vcf';
+export * from './analysis/gc-skew';

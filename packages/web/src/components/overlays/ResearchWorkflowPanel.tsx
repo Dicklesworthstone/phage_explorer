@@ -8,6 +8,7 @@ import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonPa
 import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
+import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
@@ -51,7 +52,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let navigationOwner: ResearchNavigationTarget | null = null;
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
-    pangenome: ActionIds.OverlayPangenomeGraph }, {
+    pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -104,6 +105,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected exact repeat evidence.');
       return response.record;
     },
+    gcSkew: async (genome, options, signal) => {
+      const response = await runResearchWorker({ type: 'gc-skew', genome, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected portable GC-skew evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -143,6 +149,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   }), []), workflow = binding.workflow;
   const state = useSyncExternalStore(workflow.commands.subscribe, workflow.commands.getSnapshot, workflow.commands.getSnapshot);
   const research = useSyncExternalStore(workflow.subscribe, workflow.getSnapshot, workflow.getSnapshot);
+  const acceptedAnalysis = research.lastAnalysis;
   const genomes = useLocalGenomes(s => s.genomes);
   const [name, setName] = useState('Private genome workflow');
   const [selected, setSelected] = useState('');
@@ -151,6 +158,15 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [mode, setMode] = useState<ResearchView['viewMode']>('dna');
   const [frame, setFrame] = useState<ResearchView['readingFrame']>(0);
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
+  const [gcWindow, setGcWindow] = useState('500'), [gcStep, setGcStep] = useState('125');
+  const gcDraft = useMemo(() => {
+    try {
+      if (!gcWindow.trim() || !gcStep.trim()) throw new Error('Enter the GC-skew window and step sizes.');
+      return { options: resolveGCSkewOptions({ windowSize: Number(gcWindow), stepSize: Number(gcStep) }), error: null };
+    } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [gcWindow, gcStep]);
+  const gcResult = acceptedAnalysis?.method.id === GC_SKEW_METHOD.id && acceptedAnalysis.method.version === GC_SKEW_METHOD.version
+    ? { record: acceptedAnalysis, windows: acceptedAnalysis.fields.windows.value as unknown as GCSkewWindow[] } : null;
   const [repetitions, setRepetitions] = useState('1');
   const [pairLimit, setPairLimit] = useState('2000');
   const [repeatTopology, setRepeatTopology] = useState<'linear' | 'circular'>('linear');
@@ -160,9 +176,9 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       return { options: resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit), topology: repeatTopology }), error: null };
     } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [minimum, gap, pairLimit, repeatTopology]);
-  const exactRepeatResult = research.result?.method.id === EXACT_REPEAT_METHOD.id && [EXACT_REPEAT_METHOD.version, CIRCULAR_EXACT_REPEAT_METHOD.version].includes(research.result.method.version)
-    ? { record: research.result, pairs: research.result.fields.pairs.value as unknown as ExactRepeatScan['pairs'],
-      search: research.result.fields.search.value as unknown as ExactRepeatScan['search'] } : null;
+  const exactRepeatResult = acceptedAnalysis?.method.id === EXACT_REPEAT_METHOD.id && [EXACT_REPEAT_METHOD.version, CIRCULAR_EXACT_REPEAT_METHOD.version].includes(acceptedAnalysis.method.version)
+    ? { record: acceptedAnalysis, pairs: acceptedAnalysis.fields.pairs.value as unknown as ExactRepeatScan['pairs'],
+      search: acceptedAnalysis.fields.search.value as unknown as ExactRepeatScan['search'] } : null;
   const circularResult = exactRepeatResult?.search.options.topology === 'circular';
   const armLabel = (start: number, end: number) => exactRepeatArmSegments(exactRepeatResult!.search.sequenceLength, start, end)
     .map(segment => `[${segment.start}, ${segment.end})`).join(' → ');
@@ -176,14 +192,14 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [selected, gene, codonReference, referenceZeroPolicy]);
   const referenceResult = useMemo(() => {
-    const record = research.result;
+    const record = acceptedAnalysis;
     if (!record || record.method.id !== CODON_REFERENCE_METHOD.id
       || ![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version].includes(record.method.version)) return null;
     return { record, sourceBacked: record.method.version === CODON_REFERENCE_SOURCE_METHOD.version,
       summary: record.fields.summary.value as unknown as ReferenceCodonAnalysis['summary'],
       genes: record.fields.geneScores.value as unknown as ReferenceCodonAnalysis['genes'],
       reference: record.references[1], corpus: record.references.find(item => item.id === 'genbank-codon-reference') };
-  }, [research.result]);
+  }, [acceptedAnalysis]);
   const [graphIds, setGraphIds] = useState<string[]>([]);
   const [graphReference, setGraphReference] = useState('');
   const [graphAlignment, setGraphAlignment] = useState<AlignmentGraphOptions['alignment']>('wavefront');
@@ -275,7 +291,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -318,6 +334,19 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       }}>Run and record exact repeat pairs</button>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId: selected, geneId: gene === 'all' ? null : Number(gene) }))}>Run and record CDS analysis</button>
       <p>The CDS button above uses the existing illustrative host model. It is not the reference-backed command below.</p>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable GC skew</legend>
+      <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Complete linear windows only; topology is not inferred from a circular annotation.</p>
+      <label>Workflow GC-skew window (bp) <input type="number" min={1} max={1000000} value={gcWindow} onChange={event => setGcWindow(event.target.value)} /></label>
+      <label>Workflow GC-skew step (bp) <input type="number" min={1} max={5000000} value={gcStep} onChange={event => setGcStep(event.target.value)} /></label>
+      {gcDraft.error && <p>{gcDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !genome || !gcDraft.options} onClick={() => {
+        if (busy || !active || !genome || !gcDraft.options) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayGCSkew, { contentId: selected, ...gcDraft.options });
+        invoke(() => task);
+      }}>Run and record GC skew</button>
+      <p>Portable experiments retain exact nucleotide counts and replay in the browser or CLI. At most 20,000 windows are retained; an excessive request fails before computation.
+        Zero-GC windows remain unavailable. Sampled cumulative extrema are sequence-composition candidates, not experimentally identified replication sites.</p>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record reference-backed codon adaptation</legend>
       <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}; CDS: {gene === 'all' ? 'all supported annotations' : gene}.
@@ -403,9 +432,24 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       return <li key={index}>{ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId} <code>{JSON.stringify(preview)}</code></li>;
     })}</ol>
     {research.view && <p data-testid="workflow-view">Saved view: {research.view.contentId.slice(0, 12)} · {research.view.viewMode} · frame {research.view.readingFrame} · position {research.view.scrollPosition} · CDS {research.view.geneId ?? 'all'}</p>}
-    {research.result && <div data-testid="workflow-result" data-result-id={research.result.resultId}>
-      <p>Accepted result: {research.result.method.id}. Reproducibility is not biological validation.</p>
-      <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(research.result!), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+    {acceptedAnalysis && <div data-testid="workflow-result" data-result-id={acceptedAnalysis.resultId}>
+      <p>Accepted result: {acceptedAnalysis.method.id}. Reproducibility is not biological validation.</p>
+      {!research.result && <p role="status">The latest command changed the view. The last accepted analysis remains available with its original inputs and parameters.</p>}
+      <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
+      <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {gcResult && <section aria-label="Recorded GC-skew results">
+        <h4>Accepted GC-skew experiment</h4>
+        <p>{gcResult.windows.length.toLocaleString()} complete sampled windows; {gcResult.windows.filter(row => row.skew !== null).length.toLocaleString()} with defined skew.
+          {' '}Accepted window: {String(gcResult.record.parameters.windowSize)} bp; step: {String(gcResult.record.parameters.stepSize)} bp.</p>
+        <p>Cumulative values count G minus C through each window start, inclusive. Undefined skew is shown as unavailable.
+          Draft parameters above do not change the accepted result. The preview shows at most 50 rows; JSON and TSV retain every sampled window.</p>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(exportGCSkewTsv(gcResult.record), 'gc-skew-windows.tsv', 'text/tab-separated-values'))}>Export GC-skew windows TSV</button>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded GC-skew window counts">
+          <thead><tr><th>Interval [start, end)</th><th>G</th><th>C</th><th>Skew</th><th>Cumulative G−C</th></tr></thead>
+          <tbody>{gcResult.windows.slice(0, 50).map(row => <tr key={row.start}><td>[{row.start}, {row.end})</td><td>{row.g}</td><td>{row.c}</td>
+            <td>{row.skew === null ? 'Unavailable' : row.skew.toFixed(6)}</td><td>{row.cumulative}</td></tr>)}</tbody>
+        </table></div>
+      </section>}
       {referenceResult && <section aria-label="Recorded reference-codon results">
         <h4>Accepted reference-backed CDS analysis</h4>
         <p>Reference: {referenceResult.reference.id} · {referenceResult.reference.version}. {referenceResult.reference.description}</p>
@@ -444,8 +488,8 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
           </tr>)}</tbody>
         </table></div>
       </section>}
-      <details><summary>Computed values (first 12,000 characters)</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto' }}>{JSON.stringify(Object.fromEntries(Object.entries(research.result.fields).map(([key, field]) => [key, field.value])), null, 2).slice(0, 12000)}</pre></details>
-      <AnalysisRecordDetails record={research.result} />
+      <details><summary>Computed values (first 12,000 characters)</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 300, overflow: 'auto' }}>{JSON.stringify(Object.fromEntries(Object.entries(acceptedAnalysis.fields).map(([key, field]) => [key, field.value])), null, 2).slice(0, 12000)}</pre></details>
+      <AnalysisRecordDetails record={acceptedAnalysis} />
     </div>}
     <p>Limits: 128 recorded commands, 256 replay executions, 10 repetitions, 10 MiB including private inputs. Reference or execution-backend changes stop verification. Closing this panel cancels active work; stop recording and save a local snapshot or export JSON before closing to keep it.</p>
   </section>;

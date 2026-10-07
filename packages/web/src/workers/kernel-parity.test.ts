@@ -11,6 +11,7 @@ import {
   type TandemRepeatHit,
 } from '@phage-explorer/core';
 import { countKmersDenseJS } from '@phage-explorer/core';
+import { analyzeGCSkew } from '../../../core/src/analysis/gc-skew';
 import { levenshteinDistance } from '@phage-explorer/comparison';
 import {
   minHashJaccard,
@@ -378,10 +379,17 @@ for (const { name, wasm } of variants) {
     });
   });
 
-  describe(`GC skew is internally consistent [${name}]`, () => {
-    // There is no JS `computeGCSkew` in this repository to compare against, so
-    // this checks the kernel's own invariants rather than claiming a parity it
-    // cannot demonstrate. Saying which is which is the point.
+  describe(`GC skew matches portable exact counts [${name}]`, () => {
+    it('matches exact G/C counts and inclusive prefixes at explicit sample coordinates', () => {
+      for (const sequence of [SEQ, 'NNNNGGCC', 'ggCCRYnnAGCT', 'G'.repeat(111) + 'C'.repeat(103)]) {
+        for (const windowSize of [1, 4, 51, 1000]) for (const stepSize of [1, 7, 80]) {
+          const expected = analyzeGCSkew(sequence, { windowSize, stepSize });
+          expect(Array.from(wasm.compute_gc_skew(sequence, windowSize, stepSize))).toEqual(expected.windows.map(row => row.skew ?? 0));
+          const cumulative = wasm.compute_cumulative_gc_skew(sequence);
+          expect(expected.windows.map(row => cumulative[row.start])).toEqual(expected.windows.map(row => row.cumulative));
+        }
+      }
+    });
     it('produces one value per window', () => {
       const windowSize = 100;
       const stepSize = 50;

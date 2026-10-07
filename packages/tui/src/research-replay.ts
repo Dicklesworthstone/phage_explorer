@@ -8,11 +8,12 @@ import { executePangenomeRequest } from '../../web/src/workers/PangenomeSession'
 import { COMMAND_LIMITS, parseCommandTape, type CommandTape } from '../../core/src/command-session';
 import { importLocalGenomes, type LocalGenome, type GenomeImportResult } from '../../core/src/genome-import';
 import { createExactRepeatRecord } from '../../core/src/analysis/exact-repeat-pairs';
+import { createGCSkewRecord } from '../../core/src/analysis/gc-skew';
 import type { AnalysisRecord } from '../../core/src/analysis-result';
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
-  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome];
+  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew };
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -76,6 +77,11 @@ function host(bundle: string) {
     genomes: () => genomes, bundle: () => bundle, parseBundle: parse, currentView: () => view,
     applyView: async (next, signal) => { abort(signal); view = structuredClone(next); },
     repeats: async () => { throw new Error(REPEAT_LIMIT); },
+    gcSkew: async (genome, options, signal) => {
+      abort(signal);
+      const record = await createGCSkewRecord(genome.sequence, options, { accession: genome.phage.accession, source: 'local' });
+      abort(signal); return record;
+    },
     exactRepeats: async (genome, options, signal) => {
       abort(signal);
       const record = await createExactRepeatRecord(genome.sequence, options, { accession: genome.phage.accession, source: 'local' });

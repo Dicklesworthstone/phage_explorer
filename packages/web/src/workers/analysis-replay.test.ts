@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '@phage-explorer/core';
-import { createWorkerAnalysisRecord, parseRepeatReplay, compareRepeatReplay } from './analysis-evidence';
+import { createWorkerAnalysisRecord, parseRepeatReplay, compareRepeatReplay, parseGCSkewReplay, compareGCSkewReplay } from './analysis-evidence';
 import type { RepeatResult } from './types';
 
 const sequence = 'ACGTACGTNNNNACGTACGT';
@@ -21,6 +21,55 @@ async function changed(edit: (record: AnalysisRecord) => void): Promise<Analysis
   return createAnalysisRecord(record);
 }
 const restore = (record: AnalysisRecord) => parseRepeatReplay(serializeAnalysisRecord(record));
+
+describe('accelerated viewer GC-skew replay', () => {
+  const fixture = () => createWorkerAnalysisRecord({ type: 'gc-skew', engine: 'wasm-simd', skew: [0, -1, 1, 1 / 3], cumulative: [1, 1, 0, 0],
+    originPosition: 4, terminusPosition: 0 }, 'GGCCNATGGCC', { windowSize: 4, stepSize: 2 }, { accession: 'PRIVATE', source: 'local' }, 'shared');
+  it('retains the old method and exact explicit spacing without installing stored output', async () => {
+    const record = await fixture(), parsed = await parseGCSkewReplay(serializeAnalysisRecord(record));
+    assert.equal(parsed.sequence, 'GGCCNATGGCC'); assert.deepEqual(parsed.options, { windowSize: 4, stepSize: 2 });
+    assert.deepEqual(parsed.record, record);
+    assert.equal(compareGCSkewReplay(record, await fixture()).exactRecord, true);
+  });
+  it('reports backend/transport metadata changes separately from equal biological input and numeric evidence', async () => {
+    const record = await fixture(), changed = structuredClone(record);
+    changed.method.implementation = 'js'; changed.parameters.route = 'string'; changed.inputs[0].accession = 'RENAMED';
+    const fresh = await createAnalysisRecord(changed);
+    assert.deepEqual(compareGCSkewReplay(record, fresh), { matches: true, differences: [], implementationMatches: false, exactRecord: false });
+    assert.equal((await parseGCSkewReplay(serializeAnalysisRecord(fresh))).record.resultId, fresh.resultId);
+  });
+  it('refuses inconsistent parameters and forged interpretation even after their checksums are recalculated', async () => {
+    for (const edit of [
+      (record: AnalysisRecord) => { record.parameters.stepSize = 1; },
+      (record: AnalysisRecord) => { record.parameters.circular = true; },
+      (record: AnalysisRecord) => { record.parameters.requestedOptions = { windowSize: 4, stepSize: null }; },
+      (record: AnalysisRecord) => { record.fields.originPosition.label = 'Measured origin'; },
+      (record: AnalysisRecord) => { record.fields.skew.limitations = ['Experimentally validated']; },
+      (record: AnalysisRecord) => { record.references[0].version = 'different'; },
+      (record: AnalysisRecord) => { record.inputs[0].source = 'demo'; },
+      (record: AnalysisRecord) => { record.fields.cumulative.value = []; },
+      (record: AnalysisRecord) => { record.method.version = '2'; },
+    ]) {
+      const record = await fixture(); edit(record);
+      await assert.rejects(parseGCSkewReplay(serializeAnalysisRecord(await createAnalysisRecord(record))));
+    }
+  });
+  it('detects numeric forgery even with a valid envelope and checksum', async () => {
+    const record = await fixture(), changed = structuredClone(record); changed.fields.skew.value = [0, -1, 0, 0];
+    const forged = await createAnalysisRecord(changed);
+    const parsed = await parseGCSkewReplay(serializeAnalysisRecord(forged));
+    assert.deepEqual(compareGCSkewReplay(parsed.record, record).differences, ['GC-skew values, coverage or evidence']);
+  });
+  it('restores implicit legacy spacing and unavailable output without manufacturing measurements', async () => {
+    for (const sequence of ['GC', 'NNNNNNNN', 'AAAAAAAA']) {
+      const record = await createWorkerAnalysisRecord({ type: 'gc-skew', engine: 'js', skew: [], cumulative: [], originPosition: 0, terminusPosition: 0 },
+        sequence, {}, { accession: null, source: 'catalog' }, 'string');
+      const parsed = await parseGCSkewReplay(serializeAnalysisRecord(record));
+      assert.deepEqual(parsed.options, { windowSize: 1000, stepSize: 250 });
+      assert.equal(parsed.record.fields.originPosition.kind, 'unavailable');
+    }
+  });
+});
 
 describe('repeat experiment replay', () => {
   it('round-trips exact inputs and explicit settings from the real record writer', async () => {

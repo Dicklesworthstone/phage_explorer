@@ -29,6 +29,7 @@ import {
 import { gpuCompute } from './gpu/GPUCompute';
 import { getWasmCompute, getWasmComputeVariant } from '../lib/wasm-loader';
 import { createWorkerAnalysisRecord } from './analysis-evidence';
+import { resolveGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import type {
   AnalysisRequest,
   AnalysisResult,
@@ -252,9 +253,12 @@ function calculateGCSkewJS(seq: string, windowSize: number, stepSize: number): G
  * Calculate GC skew along the sequence
  * Uses WASM acceleration when available, falls back to JS.
  */
-async function calculateGCSkewWasm(sequence: string, windowSize = 1000): Promise<GCSkewResult> {
+async function calculateGCSkewWasm(sequence: string, windowSize = 1000, explicitStep?: number): Promise<GCSkewResult> {
   const seq = sequence.toUpperCase();
-  const stepSize = Math.max(1, Math.floor(windowSize / 4));
+  const { stepSize } = resolveGCSkewOptions({ windowSize, stepSize: explicitStep });
+  if (seq.length > 5000000 || (seq.length < windowSize ? 0 : Math.floor((seq.length - windowSize) / stepSize) + 1) > 20000) {
+    throw new Error('GC-skew input exceeds 5,000,000 bases or 20,000 sampled windows. Increase the step size.');
+  }
 
   try {
     const wasm = await getWasmCompute();
@@ -809,7 +813,7 @@ async function calculateKmerSpectrum(sequence: string, k = 6): Promise<KmerSpect
   };
 }
 
-function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSkewResult {
+function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000, explicitStep?: number): GCSkewResult {
   const bytes = getSequenceBytesView(ref);
   const skew: number[] = [];
   const cumulative: number[] = [];
@@ -817,7 +821,7 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
   let cumulativeIndex = 0;
 
   const winSize = Math.max(1, Math.floor(windowSize));
-  const stepSize = Math.max(1, Math.floor(winSize / 4));
+  const { stepSize } = resolveGCSkewOptions({ windowSize: winSize, stepSize: explicitStep });
 
   for (let i = 0; i <= bytes.length - winSize; i += stepSize) {
     const end = Math.min(bytes.length, i + winSize);
@@ -882,7 +886,12 @@ function calculateGCSkewFromRef(ref: SequenceBytesRef, windowSize = 1000): GCSke
   };
 }
 
-async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 1000): Promise<GCSkewResult> {
+async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 1000, explicitStep?: number): Promise<GCSkewResult> {
+  const { stepSize } = resolveGCSkewOptions({ windowSize, stepSize: explicitStep });
+  const sequenceLength = getSequenceBytesView(ref).length;
+  if (sequenceLength > 5000000 || (sequenceLength < windowSize ? 0 : Math.floor((sequenceLength - windowSize) / stepSize) + 1) > 20000) {
+    throw new Error('GC-skew input exceeds 5,000,000 bases or 20,000 sampled windows. Increase the step size.');
+  }
   const wasm = await getWasmCompute();
   if (wasm?.SequenceHandle && ref.encoding === 'ascii') {
     try {
@@ -890,7 +899,6 @@ async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 10
       const handle = new wasm.SequenceHandle(bytes);
       try {
         const winSize = Math.max(1, Math.floor(windowSize));
-        const stepSize = Math.max(1, Math.floor(winSize / 4));
         const skew = Array.from(handle.gc_skew(winSize, stepSize));
         const cumulative = handle.cumulative_gc_skew();
         const cumulativeSampled: number[] = [];
@@ -935,7 +943,7 @@ async function calculateGCSkewFromRefWasm(ref: SequenceBytesRef, windowSize = 10
       }
     }
   }
-  return calculateGCSkewFromRef(ref, windowSize);
+  return calculateGCSkewFromRef(ref, windowSize, stepSize);
 }
 
 async function calculateKmerSpectrumFromRefWasm(ref: SequenceBytesRef, k = 6): Promise<KmerSpectrumResult> {
@@ -1032,7 +1040,7 @@ async function computeAnalysisResult(request: AnalysisRequest): Promise<Analysis
 
   switch (type) {
     case 'gc-skew':
-      return await calculateGCSkewWasm(sequence, options.windowSize || 1000);
+      return await calculateGCSkewWasm(sequence, options.windowSize ?? 1000, options.stepSize);
     case 'complexity':
       return await calculateComplexity(sequence, options.windowSize || 100);
     case 'bendability':
@@ -1222,7 +1230,7 @@ const workerAPI: SharedAnalysisWorkerAPI = {
   async runAnalysisShared(request: SharedAnalysisRequest): Promise<AnalysisResult> {
     let result: AnalysisResult;
     if (request.type === 'gc-skew') {
-      result = await calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize || 1000);
+      result = await calculateGCSkewFromRefWasm(request.sequenceRef, request.options?.windowSize ?? 1000, request.options?.stepSize);
     } else if (request.type === 'kmer-spectrum') {
       result = await calculateKmerSpectrumFromRefWasm(request.sequenceRef, request.options?.kmerSize ?? 6);
     } else if (request.type === 'complexity') {

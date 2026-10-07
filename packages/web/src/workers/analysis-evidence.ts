@@ -54,7 +54,7 @@ export async function createWorkerAnalysisRecord(result: AnalysisResult, sequenc
   context: NonNullable<AnalysisRequest['evidenceContext']>, route: 'string' | 'shared'): Promise<AnalysisRecord> {
   const type = result.type;
   const parameters = analysisJson({ route, requestedOptions: options,
-    ...(type === 'gc-skew' ? { windowSize: Math.max(1, Math.floor(options.windowSize || 1000)), stepSize: Math.max(1, Math.floor((options.windowSize || 1000) / 4)), cumulativeConvention: 'inclusive per-base G-C prefix sampled at each window start' } : {}),
+    ...(type === 'gc-skew' ? { windowSize: Math.max(1, Math.floor(options.windowSize || 1000)), stepSize: options.stepSize ?? Math.max(1, Math.floor((options.windowSize || 1000) / 4)), cumulativeConvention: 'inclusive per-base G-C prefix sampled at each window start' } : {}),
     ...(type === 'complexity' ? { windowSize: options.windowSize || 100, entropyNormalization: 'Shannon bits / 2; U treated as T' } : {}),
     ...(type === 'bendability' ? { windowSize: options.windowSize || 50 } : {}),
     ...(type === 'repeats' ? { minLength: options.minLength ?? 8, maxGap: options.maxGap ?? 5000 } : {}),
@@ -156,4 +156,63 @@ export function compareRepeatReplay(saved: AnalysisRecord, fresh: AnalysisRecord
     implementationMatches: saved.method.implementation === fresh.method.implementation,
     exactRecord: differences.length === 0 && saved.resultId === fresh.resultId,
   };
+}
+
+export interface GCSkewReplay { record: AnalysisRecord; sequence: string; options: { windowSize: number; stepSize: number } }
+/** Restore the original accelerated viewer format without silently changing its
+ * method version to the portable counted-window format used by new workflows.
+ */
+export async function parseGCSkewReplay(content: string): Promise<GCSkewReplay> {
+  const record = await parseAnalysisRecord(content, { methodId: 'sequence-gc-skew', methodVersion: '1' });
+  const input = record.inputs[0], params = record.parameters, requested = params.requestedOptions;
+  if (record.inputs.length !== 1 || input.id !== 'sequence' || typeof input.data !== 'string' || !input.data.length
+    || input.data.length > 5000000 || /[^ACGTURYSWKMBDHVN]/i.test(input.data) || !['catalog', 'local'].includes(input.source)) {
+    throw new Error('GC-skew replay requires one bounded exact local or catalog nucleotide sequence.');
+  }
+  if (record.seed !== null || canonical(record.references) !== canonical([WORKER_METHOD_REFERENCE])) throw new Error('GC-skew reference versions or seed are incompatible.');
+  if (Object.keys(params).sort().join('|') !== ['route', 'requestedOptions', 'windowSize', 'stepSize', 'cumulativeConvention'].sort().join('|')
+    || !['string', 'shared'].includes(String(params.route)) || !jsonObject(requested)
+    || Object.keys(requested).some(key => !['windowSize', 'stepSize'].includes(key))
+    || Object.values(requested).some(value => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1)
+    || params.cumulativeConvention !== 'inclusive per-base G-C prefix sampled at each window start'
+    || (requested.windowSize ?? 1000) !== params.windowSize
+    || (requested.stepSize ?? Math.max(1, Math.floor(Number(params.windowSize) / 4))) !== params.stepSize) {
+    throw new Error('GC-skew parameters are inconsistent or contain unsupported options.');
+  }
+  const windowSize = params.windowSize, stepSize = params.stepSize;
+  if (typeof windowSize !== 'number' || !Number.isSafeInteger(windowSize) || windowSize < 1 || windowSize > 1000000
+    || typeof stepSize !== 'number' || !Number.isSafeInteger(stepSize) || stepSize < 1 || stepSize > 5000000) throw new Error('GC-skew parameters exceed supported replay bounds.');
+  const count = input.data.length < windowSize ? 0 : Math.floor((input.data.length - windowSize) / stepSize) + 1;
+  if (count > 20000) throw new Error('GC-skew replay exceeds 20,000 windows.');
+  const missing = count === 0 || !/[GC]/i.test(input.data);
+  const implementation = record.method.implementation;
+  if (!['js', 'wasm-baseline', 'wasm-simd', 'unreported worker path'].includes(implementation)) throw new Error('Unsupported GC-skew execution backend.');
+  const { skew, cumulative, originPosition, terminusPosition } = record.fields;
+  if (Object.keys(record.fields).sort().join('|') !== ['skew', 'cumulative', 'originPosition', 'terminusPosition'].sort().join('|')
+    || ![skew, cumulative, originPosition, terminusPosition].every(field => field?.kind === (missing ? 'unavailable' : 'sequence-score'))
+    || !missing && (!Array.isArray(skew.value) || skew.value.length !== count || !Array.isArray(cumulative.value) || cumulative.value.length !== count
+      || skew.value.some(value => typeof value !== 'number' || !Number.isFinite(value) || value < -1 || value > 1)
+      || cumulative.value.some(value => typeof value !== 'number' || !Number.isSafeInteger(value)))) {
+    throw new Error('Saved GC-skew result is missing complete window evidence.');
+  }
+  // Reconstruct known evidence labels, coverage, units and limitations before
+  // accepting the envelope. The actual numbers are recomputed by the worker.
+  const normalized = await createWorkerAnalysisRecord({ type: 'gc-skew', engine: implementation === 'unreported worker path' ? undefined : implementation as 'js' | 'wasm-baseline' | 'wasm-simd',
+    skew: missing ? [] : skew.value as number[], cumulative: missing ? [] : cumulative.value as number[],
+    originPosition: missing ? 0 : originPosition.value as number, terminusPosition: missing ? 0 : terminusPosition.value as number },
+  input.data, requested as AnalysisOptions, { accession: input.accession, source: input.source as 'local' | 'catalog' }, params.route as 'string' | 'shared');
+  if (normalized.resultId !== record.resultId) throw new Error('Saved GC-skew evidence does not match the supported method contract.');
+  return { record, sequence: input.data, options: { windowSize, stepSize } };
+}
+export function compareGCSkewReplay(saved: AnalysisRecord, fresh: AnalysisRecord): RepeatReplayComparison {
+  const differences: string[] = [];
+  if (saved.method.id !== fresh.method.id || saved.method.version !== fresh.method.version) differences.push('method/version');
+  if (canonical(saved.inputs.map(input => ({ id: input.id, data: input.data }))) !== canonical(fresh.inputs.map(input => ({ id: input.id, data: input.data })))) differences.push('exact sequence input');
+  if (saved.parameters.windowSize !== fresh.parameters.windowSize || saved.parameters.stepSize !== fresh.parameters.stepSize
+    || saved.parameters.cumulativeConvention !== fresh.parameters.cumulativeConvention || saved.seed !== fresh.seed) differences.push('window parameters/seed');
+  if (canonical(saved.references) !== canonical(fresh.references)) differences.push('reference versions');
+  if (canonical(saved.fields) !== canonical(fresh.fields)) differences.push('GC-skew values, coverage or evidence');
+  return { matches: differences.length === 0, differences,
+    implementationMatches: saved.method.implementation === fresh.method.implementation,
+    exactRecord: differences.length === 0 && saved.resultId === fresh.resultId };
 }

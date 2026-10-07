@@ -59,6 +59,35 @@ export async function recordedTerminalFixture(includeCodons = false) {
 }
 
 describe('terminal replay of browser research tapes', () => {
+  it('replays browser GC-skew recordings through the actual native worker and keeps the analysis across later navigation', async () => {
+    const { executeResearchRequest } = await import('../../web/src/workers/research-workflow.worker');
+    const parsed = await importLocalGenomes({ name: 'private.fa', text: '>GC_NATIVE\nNNNNGGCCGGGG' });
+    const genome = parsed.genomes[0], contentId = genome.phage.localGenome!.contentId;
+    let view: ResearchView | null = null;
+    const workflow = new ResearchWorkflow({ view: ids.view, repeats: ids.repeats, codons: ids.codons, gcSkew: ActionIds.OverlayGCSkew }, {
+      genomes: () => parsed.genomes, bundle: () => exportLocalGenomeBundle(parsed.genomes),
+      parseBundle: text => importLocalGenomes({ name: 'bundle.json', text }), currentView: () => view,
+      applyView: async next => { view = next; }, repeats: async () => { throw new Error('Unexpected repeats'); },
+      codons: async () => { throw new Error('Unexpected codons'); },
+      gcSkew: async (genome, options) => {
+        const output = await executeResearchRequest({ type: 'gc-skew', genome, options });
+        if (output.type !== 'analysis') throw new Error('Expected GC evidence'); return output.record;
+      },
+    });
+    workflow.start('GC browser to native');
+    await workflow.commands.dispatch(ActionIds.OverlayGCSkew, { contentId, windowSize: 4, stepSize: 4 });
+    const expected = workflow.getSnapshot().result!;
+    await workflow.commands.dispatch(ids.view, { contentId, viewMode: 'dna', readingFrame: 0, scrollPosition: 4, geneId: null });
+    workflow.commands.stop();
+    const tape = workflow.commands.export();
+    assert.equal((await inspectResearchTape(tape)).canReplay, true);
+    const result = await runTerminalResearchWorker({ type: 'replay', content: tape, repetitions: 2, exportAnalysis: true }, new AbortController().signal);
+    if (result.type !== 'replayed') throw new Error('Expected replay');
+    assert.equal(result.report.completed, 4); assert.equal(result.report.lastAnalysisExecution, 3);
+    assert.equal(result.analysisJson, serializeAnalysisRecord(expected));
+    const forged = parseCommandTape(tape); forged.commands[0].expected = { cacheKey: 'a'.repeat(64), resultId: 'b'.repeat(64), method: analysisJson(expected.method) };
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay', content: serializeCommandTape(forged), repetitions: 1, exportAnalysis: true }, new AbortController().signal), /Step 1.*differs/);
+  });
   it('legacy codon worker parity uses the unchanged illustrative producer', async () => {
     const f = await recordedTerminalFixture(true), result = await replayResearchTape(f.content);
     assert.equal(result.report.completed, 4); assert.equal(result.report.lastAnalysisExecution, 3);

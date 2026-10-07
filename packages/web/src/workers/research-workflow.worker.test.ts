@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { serializeAnalysisRecord, parseAnalysisRecord } from '@phage-explorer/core';
+import { serializeAnalysisRecord, parseAnalysisRecord, createAnalysisRecord } from '@phage-explorer/core';
 import { executeResearchRequest } from './research-workflow.worker';
 
 // Hand-checked transcript: reverse-complement(CCATGA) + reverse-complement(ACGTTT)
@@ -19,6 +19,17 @@ ORIGIN
 `;
 
 describe('research worker real CDS pipeline', () => {
+  it('counts private GC windows and verifies a portable experiment using freshly recomputed evidence', async () => {
+    const parsed = await executeResearchRequest({ type: 'parse', input: { name: 'private.fa', text: '>GC_FIXTURE\nNNNNGGCCGGGG' } });
+    if (parsed.type !== 'parsed') throw new Error('Expected genomes');
+    const output = await executeResearchRequest({ type: 'gc-skew', genome: parsed.result.genomes[0], options: { windowSize: 4, stepSize: 4 } });
+    if (output.type !== 'analysis') throw new Error('Expected GC evidence');
+    assert.deepEqual((output.record.fields.windows.value as unknown as Array<{ skew: number | null }>).map(row => row.skew), [null, 0, 1]);
+    const replay = await executeResearchRequest({ type: 'gc-skew-replay', content: serializeAnalysisRecord(output.record) });
+    assert.deepEqual(replay, output);
+    const forged = structuredClone(output.record); forged.fields.originPosition.value = 7;
+    await assert.rejects(executeResearchRequest({ type: 'gc-skew-replay', content: serializeAnalysisRecord(await createAnalysisRecord(forged)) }), /differ/);
+  });
   it('parses original GenBank and computes only the selected joined/complement transcript', async () => {
     const parsed = await executeResearchRequest({ type: 'parse', input: { name: 'private.gb', text: WORKFLOW_GENBANK } });
     assert.equal(parsed.type, 'parsed'); if (parsed.type !== 'parsed') throw new Error('Expected parse');

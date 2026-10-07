@@ -22,7 +22,7 @@ bun run workflow replay --input workflow.json [--repetitions 1] [--output analys
 inspect reparses embedded inputs and reports action support; no analyses run.
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
-pangenome/CDS experiments and exact-pairs repeats. Source-corpus references are freshly
+pangenome/CDS experiments, portable GC-skew counts and exact-pairs repeats. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 

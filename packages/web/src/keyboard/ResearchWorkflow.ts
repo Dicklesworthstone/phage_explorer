@@ -5,12 +5,13 @@ import { CODON_REFERENCE_METHOD, parseCodonReference, referenceGenomeFromPhage,
   type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
 import { CODON_CORPUS_METHOD } from '../../../core/src/analysis/codon-reference-corpus';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
+import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -29,6 +30,13 @@ export interface ResearchEnvironment {
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
   referenceCodons?: (genome: LocalGenome, referenceText: string, options: Required<ReferenceCodonOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
+  gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+export interface ResearchGCSkewParameters extends ResolvedGCSkewOptions { contentId: string }
+export function validateResearchGCSkew(value: CommandValue): void {
+  fields(value, ['contentId', 'windowSize', 'stepSize']); contentId(value.contentId);
+  integer(value.windowSize, 1, 1000000); integer(value.stepSize, 1, 5000000);
+  resolveGCSkewOptions({ windowSize: value.windowSize as number, stepSize: value.stepSize as number });
 }
 export interface ResearchExactRepeatParameters extends ResolvedExactRepeatOptions { contentId: string; method: 'exact-pairs' }
 export interface ResearchReferenceCodonParameters {
@@ -86,7 +94,10 @@ export function validateResearchRepeats(value: CommandValue): void {
 }
 export interface ResearchSnapshot {
   view: ResearchView | null;
+  /** Output of the latest accepted command; navigation has no analysis output. */
   result: AnalysisRecord | null;
+  /** Retained for inspection/export across navigation; never relabeled as its output. */
+  lastAnalysis: AnalysisRecord | null;
   undoAvailable: boolean;
   redoAvailable: boolean;
 }
@@ -143,7 +154,7 @@ export class ResearchWorkflow {
   private historyIndex = -1;
   private historyTarget: number | null = null;
   private listeners = new Set<() => void>();
-  private snapshot: ResearchSnapshot = { view: null, result: null, undoAvailable: false, redoAvailable: false };
+  private snapshot: ResearchSnapshot = { view: null, result: null, lastAnalysis: null, undoAvailable: false, redoAvailable: false };
 
   constructor(readonly ids: ResearchActionIds, private readonly environment: ResearchEnvironment) {
     const adapters = new Map<string, CommandAdapter>();
@@ -274,7 +285,25 @@ export class ResearchWorkflow {
         return this.result(record, genomes, signal);
       },
     });
-    if (adapters.size !== (ids.pangenome === undefined ? 3 : 4)) throw new Error('Research actions must use distinct canonical IDs.');
+    if ((ids.gcSkew === undefined) !== (environment.gcSkew === undefined)) throw new Error('GC-skew action and executor must be supplied together.');
+    if (ids.gcSkew !== undefined) adapters.set(ids.gcSkew, {
+      validate: validateResearchGCSkew,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchGCSkewParameters;
+        const genome = await this.genome(values.contentId, signal);
+        const options = resolveGCSkewOptions({ windowSize: values.windowSize, stepSize: values.stepSize });
+        const record = await environment.gcSkew!(structuredClone(genome), { ...options }, signal);
+        abort(signal);
+        if (!commandValuesEqual(analysisJson(record.method), analysisJson(GC_SKEW_METHOD)) || record.inputs.length !== 1
+          || record.inputs[0].id !== 'sequence' || record.inputs[0].data !== genome.sequence
+          || record.inputs[0].accession !== genome.phage.accession || record.inputs[0].source !== 'local'
+          || !commandValuesEqual(analysisJson(record.parameters), analysisJson(options))) {
+          throw new Error('GC-skew evidence does not match the submitted input, method or settings.');
+        }
+        return this.result(record, [genome], signal);
+      },
+    });
+    if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
   }
   getSnapshot = (): ResearchSnapshot => this.snapshot;
@@ -287,7 +316,7 @@ export class ResearchWorkflow {
     abort(signal);
     const copy = structuredClone(record);
     return { output: analysisJson({ method: copy.method, cacheKey: copy.cacheKey, resultId: copy.resultId }),
-      apply: (activeSignal: AbortSignal) => { abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome)); this.publish({ result: copy }); } };
+      apply: (activeSignal: AbortSignal) => { abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome)); this.publish({ result: copy, lastAnalysis: copy }); } };
   }
   private checkSelection(genome: LocalGenome, selected: number | null, requireCDS = true): void {
     if (selected !== null && !genome.phage.genes.some(gene => gene.id === selected && (!requireCDS || gene.type === 'CDS'))) throw new Error('The selected CDS is unavailable in this exact annotation snapshot.');
@@ -330,7 +359,7 @@ export class ResearchWorkflow {
     this.commands.start(name, { bundle: this.environment.bundle() });
     this.expectedBundle = null; this.expectedGenomes = [];
     this.history = []; this.historyIndex = -1;
-    this.publish({ view: null, result: null });
+    this.publish({ view: null, result: null, lastAnalysis: null });
   };
   /** Import remains declarative. Adding bundled genomes is a separate, explicit user action. */
   load = (content: string): void => {
@@ -340,7 +369,7 @@ export class ResearchWorkflow {
     this.commands.load(content);
     this.expectedBundle = null; this.expectedGenomes = [];
     this.history = []; this.historyIndex = -1;
-    this.publish({ view: null, result: null });
+    this.publish({ view: null, result: null, lastAnalysis: null });
   };
   /** Parse private inputs before replacing an accepted tape or result. */
   loadAndReview = async (content: string, signal: AbortSignal): Promise<GenomeImportResult> => {

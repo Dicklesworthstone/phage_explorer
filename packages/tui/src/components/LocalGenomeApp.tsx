@@ -5,9 +5,10 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
 import type { LocalGenomeView } from '../../../core/src/genome-import';
-import { TerminalGenomeSession, terminalGenomeLabel, type TerminalGenomeAccepted } from '../local-genome-session';
+import { terminalGenomeLabel, type TerminalGenomeSession, type TerminalGenomeAccepted } from '../local-genome-session';
 import { registerCommand, unregisterCommand } from '../commands/registry';
 import { App } from './App';
+import { readTerminalSize } from './terminal-size';
 
 const IMPORT_COMMAND = 'overlay.genomeImport';
 /** Literal filesystem paths only; neither shell commands nor environment variables are evaluated. */
@@ -71,11 +72,11 @@ export function TerminalGenomeView({ session, onReturn }: {
   const [allowCollisions, setAllowCollisions] = useState(false);
   const [page, setPage] = useState(0);
   const [formError, setFormError] = useState<string | null>(null);
-  const [rows, setRows] = useState(stdout.rows || 24);
+  const [rows, setRows] = useState(readTerminalSize(stdout).rows || 24);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
-    const resize = () => setRows(stdout.rows || 24);
+    const resize = () => setRows(readTerminalSize(stdout).rows || 24);
     stdout.on?.('resize', resize);
     return () => { mounted.current = false; stdout.off?.('resize', resize); session.cancel(); };
   }, [session, stdout]);

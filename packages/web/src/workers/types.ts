@@ -151,6 +151,8 @@ export interface AnalysisRequest {
  */
 export interface AnalysisOptions {
   windowSize?: number;
+  /** Explicit GC-skew spacing; omitted uses floor(windowSize / 4), at least 1. */
+  stepSize?: number;
   minLength?: number;
   maxGap?: number;
   kmerSize?: number;

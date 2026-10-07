@@ -1,8 +1,8 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { importLocalGenomes, referenceGenomeFromPhage, serializeAnalysisRecord, type ReferenceCodonExperiment } from '@phage-explorer/core';
+import { importLocalGenomes, referenceGenomeFromPhage, serializeAnalysisRecord } from '@phage-explorer/core';
 import { executeCodonReferenceRequest, runCodonReferenceTask, type CodonReferenceRequest,
-  type CodonReferenceResponse, type CodonReferenceWorkerPort } from './codon-reference.worker';
+  type CodonReferenceResponse, type CodonReferenceResult, type CodonReferenceWorkerPort } from './codon-reference.worker';
 
 const source = `LOCUS       WORKER_QUERY 6 bp DNA linear
 FEATURES             Location/Qualifiers
@@ -26,12 +26,13 @@ class Port implements CodonReferenceWorkerPort {
   sent: CodonReferenceRequest | null = null;
   postMessage(value: CodonReferenceRequest) { this.sent = value; }
   terminate() { this.terminated++; }
-  result(experiment: ReferenceCodonExperiment) { this.onmessage?.({ data: { type: 'result', experiment } } as MessageEvent<CodonReferenceResponse>); }
+  result(experiment: CodonReferenceResult) { this.onmessage?.({ data: { type: 'result', experiment } } as MessageEvent<CodonReferenceResponse>); }
 }
 
 describe('reference-analysis worker and client boundary', () => {
   it('executes actual import-to-score-to-saved-replay requests', async () => {
     const result = await executeCodonReferenceRequest(await request());
+    assert('analysis' in result, 'An analyze request must return a codon analysis, not a reference corpus.');
     assert.equal(result.analysis.genes[0].cai, 0.5);
     assert.equal(result.record.inputs.find(input => input.id === 'reference')!.data, referenceText);
     const replay = await executeCodonReferenceRequest({ type: 'verify', content: serializeAnalysisRecord(result.record) });
@@ -52,7 +53,9 @@ describe('reference-analysis worker and client boundary', () => {
     const task = runCodonReferenceTask(() => port, input, new AbortController().signal);
     assert.deepEqual(port.sent, input);
     port.result(await executeCodonReferenceRequest(port.sent!));
-    assert.equal((await task).analysis.summary.cai, 0.5);
+    const result = await task;
+    assert('analysis' in result, 'The worker must transport the requested codon analysis.');
+    assert.equal(result.analysis.summary.cai, 0.5);
     assert.equal(port.terminated, 1); assert.equal(port.onmessage, null);
   });
   it('does not create a worker for already cancelled work', async () => {
