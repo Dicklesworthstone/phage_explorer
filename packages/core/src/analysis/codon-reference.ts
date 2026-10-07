@@ -5,6 +5,7 @@
  * The optional 0.5 replacement applies to REPORTED zero counts, never missing data.
  */
 import { CODON_TABLE } from '../codons';
+import { replayCodonReferenceCorpus, type CodonReferenceCorpus } from './codon-reference-corpus';
 import { extractGeneSequence } from './codon-pair-adaptation';
 import { getGeneMapSegments } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
@@ -230,37 +231,58 @@ const limitations = [
   'Met, Trp and terminal stop codons are excluded. Ambiguous triplets, partial terminal codons, internal stops and unsupported CDS prevent a full gene score.',
   'The pooled value is a codon-weighted geometric mean over fully scorable CDS only; overlapping CDS may count the same genomic bases more than once.',
 ];
+/** Count-only JSON retains its existing contract. A corpus experiment is freshly
+ * replayed before its counts can enter a score; its original source travels with
+ * the query experiment, not a path that could change on another machine.
+ */
+export async function resolveCodonReferenceInput(content: string): Promise<{ reference: CodonReference; corpus?: CodonReferenceCorpus }> {
+  if (typeof content !== 'string' || content.length > 10 * 1024 * 1024 || new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error('Reference input exceeds 10 MiB.');
+  const value: unknown = JSON.parse(content);
+  if (object(value) && value.format === 'phage-explorer-analysis') {
+    const corpus = await replayCodonReferenceCorpus(content);
+    return { reference: corpus.reference, corpus };
+  }
+  return { reference: parseCodonReference(content) };
+}
+const SOURCE_BACKED_METHOD = { ...CODON_REFERENCE_METHOD, version: '2',
+  implementation: 'reference-count CAI after fresh original-GenBank corpus replay' };
 export async function createReferenceCodonExperiment(genome: ReferenceCodonGenome, sequence: string, referenceText: string,
   options: ReferenceCodonOptions = {}): Promise<ReferenceCodonExperiment> {
   // Snapshot before any hashing awaits; a changed reference/selection cannot relabel results.
   const captured = analysisJson({ genome, sequence, referenceText, options: normalizeOptions(options) }) as unknown as {
     genome: ReferenceCodonGenome; sequence: string; referenceText: string; options: ReturnType<typeof normalizeOptions>;
   };
-  const reference = parseCodonReference(captured.referenceText);
+  const { reference, corpus } = await resolveCodonReferenceInput(captured.referenceText);
+  const evidenceLimits = corpus ? [
+    'Reference counts are recomputed from the embedded original GenBank corpus. Attribution and selection suitability remain author assertions.',
+    ...limitations.slice(1), 'Corpus exclusions and overlapping-CDS policies remain those in the embedded source experiment.',
+  ] : limitations;
   const analysis = analyze(captured.genome, captured.sequence, reference, captured.options);
   const coverage = { available: analysis.summary.scoredGenes, total: analysis.summary.totalGenes, unit: 'genes' as const };
-  const record = await createAnalysisRecord({ method: CODON_REFERENCE_METHOD, seed: null,
+  const record = await createAnalysisRecord({ method: corpus ? SOURCE_BACKED_METHOD : CODON_REFERENCE_METHOD, seed: null,
     inputs: [
       { id: 'genome', accession: captured.genome.accession, source: captured.genome.source, description: 'Exact genome used for annotated CDS extraction.', data: captured.sequence },
       { id: 'annotations', accession: captured.genome.accession, source: captured.genome.source, description: 'Genome identity and original CDS annotations, including joined segments and translation qualifiers.', data: analysisJson(captured.genome) },
-      { id: 'reference', accession: null, source: 'local', description: 'Exact user-supplied codon-count reference JSON; citation and version are asserted by its author.', data: captured.referenceText },
+      { id: 'reference', accession: null, source: 'local', description: corpus ? 'Original source-backed reference experiment; source, selections and counts are recomputed before scoring.' : 'Exact user-supplied codon-count reference JSON; citation and version are asserted by its author.', data: captured.referenceText },
     ], parameters: captured.options,
     references: [{ id: '10.1093/nar/15.3.1281', version: '1987', description: 'Sharp and Li: synonymous-family relative adaptiveness and geometric-mean CAI.' },
-      { id: reference.name, version: reference.source.version, description: reference.source.citation }],
+      { id: reference.name, version: reference.source.version, description: reference.source.citation },
+      ...(corpus ? [{ id: corpus.record.method.id, version: corpus.record.resultId, description: 'Exact freshly recomputed source-corpus result identity.' }] : [])],
     fields: {
-      geneScores: { label: 'Reference-relative CAI and per-CDS coverage', kind: 'sequence-score', units: 'records', coverage, limitations, value: analysisJson(analysis.genes) },
+      geneScores: { label: 'Reference-relative CAI and per-CDS coverage', kind: 'sequence-score', units: 'records', coverage, limitations: evidenceLimits, value: analysisJson(analysis.genes) },
       referenceWeights: { label: 'Weights derived from reported counts', kind: 'sequence-score', units: 'records',
-        coverage: { available: analysis.referenceCoverage.coveredFamilies.length, total: families.size, unit: 'records' }, limitations, value: analysisJson(analysis.referenceCoverage) },
+        coverage: { available: analysis.referenceCoverage.coveredFamilies.length, total: families.size, unit: 'records' }, limitations: evidenceLimits, value: analysisJson(analysis.referenceCoverage) },
       pooledCai: analysis.summary.cai === null
-        ? { label: 'Pooled CAI', kind: 'unavailable', units: null, coverage, limitations, value: null, missingInputs: ['At least one fully resolved supported CDS and complete nonempty reference families for all of its eligible codons.'] }
-        : { label: 'Pooled CAI over fully scorable CDS', kind: 'sequence-score', units: 'fraction', coverage, limitations, value: analysis.summary.cai },
-      summary: { label: 'Scored CDS and codon totals', kind: 'sequence-score', units: 'records', coverage, limitations, value: analysisJson(analysis.summary) },
+        ? { label: 'Pooled CAI', kind: 'unavailable', units: null, coverage, limitations: evidenceLimits, value: null, missingInputs: ['At least one fully resolved supported CDS and complete nonempty reference families for all of its eligible codons.'] }
+        : { label: 'Pooled CAI over fully scorable CDS', kind: 'sequence-score', units: 'fraction', coverage, limitations: evidenceLimits, value: analysis.summary.cai },
+      summary: { label: 'Scored CDS and codon totals', kind: 'sequence-score', units: 'records', coverage, limitations: evidenceLimits, value: analysisJson(analysis.summary) },
     } });
   return { analysis, record };
 }
 /** Re-run extraction and scoring from original inputs; never trust imported displayed scores. */
 export async function replayReferenceCodonExperiment(content: string): Promise<ReferenceCodonExperiment> {
-  const record = await parseAnalysisRecord(content, { methodId: CODON_REFERENCE_METHOD.id, methodVersion: CODON_REFERENCE_METHOD.version });
+  const record = await parseAnalysisRecord(content, { methodId: CODON_REFERENCE_METHOD.id });
+  if (![CODON_REFERENCE_METHOD.version, SOURCE_BACKED_METHOD.version].includes(record.method.version)) throw new Error('Unsupported reference-analysis method version.');
   if (record.inputs.length !== 3) throw new Error('Unexpected reference-analysis inputs.');
   const sequence = record.inputs.find(input => input.id === 'genome')?.data;
   const genome = record.inputs.find(input => input.id === 'annotations')?.data;
