@@ -5,8 +5,8 @@
  * and gene coherence with quality grading and actionable suggestions.
  */
 
-import React, { useMemo, useState, useEffect, useRef } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import React, { useMemo, useState, useEffect } from 'react';
+import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -313,6 +313,16 @@ interface ModuleOverlayProps {
   currentPhage: PhageFull | null;
 }
 
+interface ModuleInput {
+  repository: PhageRepository;
+  phageId: number;
+}
+
+interface ModuleData {
+  sequence: string;
+  genes: GeneInfo[];
+}
+
 export function ModuleOverlay({
   repository,
   currentPhage,
@@ -321,9 +331,16 @@ export function ModuleOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
-  const [loading, setLoading] = useState(false);
+  const sequenceCache = useMemo(() => new Map<number, ModuleData>(), [repository]);
+  const phageId = currentPhage?.id;
+  const input = useMemo<ModuleInput | null>(
+    () => repository && phageId !== undefined ? { repository, phageId } : null,
+    [repository, phageId]
+  );
+  const [loaded, setLoaded] = useState<{ input: ModuleInput; data: ModuleData } | null>(null);
+  const data = loaded?.input === input ? loaded.data : null;
+  const isActive = isOpen('modules');
+  const loading = isActive && input !== null && data === null;
   const [viewMode, setViewMode] = useState<'overview' | 'stoichiometry' | 'suggestions'>('overview');
 
   // Hotkey to toggle overlay
@@ -333,54 +350,45 @@ export function ModuleOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Fetch sequence when overlay opens
+  // Sequence and annotations must come from the same repository snapshot.
   useEffect(() => {
-    if (!isOpen('modules')) return;
-    if (!repository || !currentPhage) {
-      setSequence('');
-      setLoading(false);
-      return;
-    }
-
-    const phageId = currentPhage.id;
-
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
+    if (!isActive || !input) return;
+    const cached = sequenceCache.get(input.phageId);
+    if (cached) {
+      setLoaded({ input, data: cached });
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    repository
-      .getFullGenomeLength(phageId)
-      .then(length => repository.getSequenceWindow(phageId, 0, length))
-      .then(seq => {
+    void (async () => {
+      try {
+        const length = await input.repository.getFullGenomeLength(input.phageId);
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
-      })
-      .catch(() => {
+        const [sequence, genes] = await Promise.all([
+          input.repository.getSequenceWindow(input.phageId, 0, length),
+          input.repository.getGenes(input.phageId),
+        ]);
         if (cancelled) return;
-        setSequence('');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        const next = { sequence, genes };
+        sequenceCache.set(input.phageId, next);
+        setLoaded({ input, data: next });
+      } catch {
+        if (!cancelled) setLoaded({ input, data: { sequence: '', genes: [] } });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isActive, input, sequenceCache]);
 
   // Compute module analysis
   const report = useMemo((): ModuleReport | null => {
-    if (!currentPhage?.genes || currentPhage.genes.length === 0) return null;
-    return computeModuleCoherence(currentPhage.genes, sequence || undefined);
-  }, [currentPhage, sequence]);
+    if (!isActive || !data || data.genes.length === 0) return null;
+    return computeModuleCoherence(data.genes, data.sequence || undefined);
+  }, [isActive, data]);
 
-  if (!isOpen('modules')) return null;
+  if (!isActive) return null;
 
   return (
     <Overlay
@@ -436,7 +444,7 @@ export function ModuleOverlay({
                 </div>
               </div>
               <div style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
-                {currentPhage.genes.length} genes
+                {report.classifiedGenes.length} genes
               </div>
             </div>
 

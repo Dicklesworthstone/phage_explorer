@@ -29,14 +29,22 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   Cache hits now compare the actual bases while preserving existing worker-held
   buffers. [Fix](https://github.com/Dicklesworthstone/phage_explorer/commit/308f0f07cbacf229024bfbe8ab3b2dc99d6d4b3d).
 - **Repository-owned analysis results** — PCA, CGR, Hilbert, anomaly detection,
-  amino-acid phase portraits and HGT now bind cached inputs and rendered results
-  to their source repository. Reused numeric IDs and delayed old reads/replies
-  cannot relabel an old analysis as the replacement genome. HGT donor panels
-  refresh with the source; user-selected analysis parameters are preserved.
+  amino-acid phase portraits, HGT, Mosaic Radar, bias decomposition, k-mer
+  anomalies, module coherence and RNA analysis now bind cached inputs and
+  rendered results to their source repository. Reused numeric IDs and delayed
+  old reads/replies cannot relabel an old analysis as the replacement genome.
+  Reference panels and gene annotations refresh with the source; user-selected
+  analysis parameters are preserved. [Initial fixes](https://github.com/Dicklesworthstone/phage_explorer/commit/5080116531240c94b1f9bacccb9f641d175db991).
 - **PCA GC units** — normalize the WASM GC percentage to the vector contract's
   0–1 fraction, preventing a pure-G sequence from displaying 10,000% GC. Both
   WASM and JavaScript browser paths are checked against independently counted
   resolved, ambiguous, lowercase and U-containing sequences.
+- **RNA coding-sequence analysis** — gene mode now follows transcript order,
+  reverse-complements negative-strand segments, excludes gaps between joined
+  segments, and applies `codon_start` once to the assembled coding sequence.
+  Clearing or replacing the selected gene clears its analysis and hover details.
+  Independent browser checks verify both a reverse-strand gene and a joined
+  reverse-strand CDS with an offset. [Regression coverage](packages/web/e2e/gene-analysis-identity.e2e.ts).
 
 ## [v1.6.0] — 2026-10-04
 

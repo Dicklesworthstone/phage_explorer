@@ -6,7 +6,7 @@
  * host adaptation signals, and potential HGT events.
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -80,20 +80,30 @@ export function BiasDecompositionOverlay({
   const overlayOpen = isOpen('biasDecomposition');
   const viewMode = usePhageStore((s) => s.viewMode);
   const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const input = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded : null;
+  const sequence = input?.sequence ?? '';
   const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState<BiasDecompositionWorkerResult | null>(null);
+  const [computed, setComputed] = useState<{
+    input: NonNullable<typeof loaded>; windowSize: number; stepSize: number;
+    result: BiasDecompositionWorkerResult | null; error: string | null;
+  } | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
-  const [analysisError, setAnalysisError] = useState<string | null>(null);
 
   // Hover state for tooltip
-  const [hoveredPoint, setHoveredPoint] = useState<ScatterHover | null>(null);
+  const [hovered, setHovered] = useState<{ analysis: BiasDecompositionWorkerResult; point: ScatterHover } | null>(null);
 
   // Analysis parameters
   const [windowSize, setWindowSize] = useState(1000);
   const [stepSize] = useState(500);
   const [colorBy, setColorBy] = useState<'gc' | 'position'>('gc');
+  // Bind visible results before effects run: equal numeric IDs do not make
+  // different repositories, pending requests or parameter choices equivalent.
+  const current = input && computed?.input === input && computed.windowSize === windowSize && computed.stepSize === stepSize ? computed : null;
+  const analysis = current?.result ?? null;
+  const analysisError = current?.error ?? null;
+  const hoveredPoint = hovered?.analysis === analysis ? hovered.point : null;
 
   // Hotkey to toggle overlay (Alt+B)
   useHotkey(
@@ -106,7 +116,7 @@ export function BiasDecompositionOverlay({
   useEffect(() => {
     if (!overlayOpen) return;
     if (!repository || !currentPhage) {
-      setSequence('');
+      setLoaded(null);
       setLoading(false);
       return;
     }
@@ -114,8 +124,8 @@ export function BiasDecompositionOverlay({
     const phageId = currentPhage.id;
 
     // Check cache first
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
+    if (sequenceCache.has(phageId)) {
+      setLoaded({ repository, phageId, sequence: sequenceCache.get(phageId) ?? '' });
       setLoading(false);
       return;
     }
@@ -124,15 +134,15 @@ export function BiasDecompositionOverlay({
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+      .then((length: number) => cancelled ? null : repository.getSequenceWindow(phageId, 0, length))
+      .then((seq: string | null) => {
+        if (cancelled || seq === null) return;
+        sequenceCache.set(phageId, seq);
+        setLoaded({ repository, phageId, sequence: seq });
       })
       .catch(() => {
         if (cancelled) return;
-        setSequence('');
+        setLoaded(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -141,36 +151,33 @@ export function BiasDecompositionOverlay({
     return () => {
       cancelled = true;
     };
-  }, [overlayOpen, repository, currentPhage]);
+  }, [overlayOpen, repository, currentPhage, sequenceCache]);
 
   // Compute bias decomposition off the main thread (worker)
   useEffect(() => {
     if (!overlayOpen) return;
-    if (!currentPhage || !sequence) {
-      setAnalysis(null);
+    if (!input || !sequence) {
+      setComputed(null);
       setAnalysisLoading(false);
-      setAnalysisError(null);
-      return;
-    }
-    if (sequenceCache.current.get(currentPhage.id) !== sequence) {
       return;
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     setAnalysisLoading(true);
-    setAnalysisError(null);
+    setComputed(null);
 
     ComputeOrchestrator
       .getInstance()
-      .computeBiasDecompositionWithSharedBuffer(currentPhage.id, sequence, windowSize, stepSize)
+      .computeBiasDecompositionWithSharedBuffer(input.phageId, sequence, windowSize, stepSize, controller.signal)
       .then((result) => {
         if (cancelled) return;
-        setAnalysis(result);
+        setComputed({ input, windowSize, stepSize, result, error: null });
       })
       .catch((err) => {
         if (cancelled) return;
-        setAnalysis(null);
-        setAnalysisError(err instanceof Error ? err.message : 'Failed to compute bias decomposition');
+        setComputed({ input, windowSize, stepSize, result: null,
+          error: err instanceof Error ? err.message : 'Failed to compute bias decomposition' });
       })
       .finally(() => {
         if (!cancelled) setAnalysisLoading(false);
@@ -178,8 +185,9 @@ export function BiasDecompositionOverlay({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [overlayOpen, currentPhage, sequence, windowSize, stepSize]);
+  }, [overlayOpen, input, sequence, windowSize, stepSize]);
 
   // Convert to scatter points
   const scatterPoints = useMemo((): ScatterPoint[] => {
@@ -219,8 +227,8 @@ export function BiasDecompositionOverlay({
 
   // Handle hover
   const handleHover = useCallback((hover: ScatterHover | null) => {
-    setHoveredPoint(hover);
-  }, []);
+    setHovered(hover && analysis ? { analysis, point: hover } : null);
+  }, [analysis]);
 
   // Handle click - could navigate to position
   const handleClick = useCallback((hover: ScatterHover | null) => {

@@ -5,7 +5,7 @@
  * against reference genomes and identifying recombination breakpoints.
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -46,33 +46,54 @@ interface MosaicRadarOverlayProps {
   currentPhage: PhageFull | null;
 }
 
-// Build reference list from phage database
-function buildReferenceList(
-  repository: PhageRepository | null,
-  currentPhageId: number | undefined
-): Promise<ReferenceSketch[]> {
-  if (!repository) return Promise.resolve([]);
+interface MosaicInputs {
+  repository: PhageRepository;
+  phage: PhageFull;
+  sequence: string;
+  references: ReferenceSketch[];
+}
 
-  // Get all phages except current
-  return repository.listPhages().then((phages) => {
-    const filtered = phages.filter((p) => p.id !== currentPhageId);
-    // Limit to 30 references for performance
-    const limited = filtered.slice(0, 30);
-    // Fetch downsampled sequences for each
-    return Promise.all(
-      limited.map(async (p) => {
-        try {
-          const length = await repository.getFullGenomeLength(p.id);
-          // Get up to 150kb to cover most standard phage genomes fully
-          // (Prefix-only sampling misses downstream homology)
-          const seq = await repository.getSequenceWindow(p.id, 0, Math.min(length, 150000));
-          return { label: p.name || `Phage #${p.id}`, sequence: seq };
-        } catch {
-          return null;
-        }
-      })
-    ).then((results) => results.filter((r): r is ReferenceSketch => r !== null));
-  });
+function requireActiveRead(signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException('Mosaic input read cancelled', 'AbortError');
+}
+
+async function readSequence(
+  repository: PhageRepository,
+  phageId: number,
+  signal: AbortSignal,
+  maxLength = Infinity
+): Promise<string> {
+  requireActiveRead(signal);
+  const length = await repository.getFullGenomeLength(phageId);
+  requireActiveRead(signal);
+  const sequence = await repository.getSequenceWindow(phageId, 0, Math.min(length, maxLength));
+  requireActiveRead(signal);
+  return sequence;
+}
+
+// Build reference list from phage database
+async function buildReferenceList(
+  repository: PhageRepository,
+  currentPhageId: number,
+  signal: AbortSignal
+): Promise<ReferenceSketch[]> {
+  requireActiveRead(signal);
+  const phages = await repository.listPhages();
+  requireActiveRead(signal);
+  // Preserve the bounded panel: at most 30 other genomes, up to 150kb each.
+  const limited = phages.filter((p) => p.id !== currentPhageId).slice(0, 30);
+  const results = await Promise.all(limited.map(async (p) => {
+    try {
+      const sequence = await readSequence(repository, p.id, signal, 150000);
+      return { label: p.name || `Phage #${p.id}`, sequence };
+    } catch {
+      // A failed reference can be skipped, but a superseded panel must stop reading.
+      requireActiveRead(signal);
+      return null;
+    }
+  }));
+  requireActiveRead(signal);
+  return results.filter((r): r is ReferenceSketch => r !== null);
 }
 
 // Get donor statistics from result
@@ -119,14 +140,14 @@ export function MosaicRadarOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('mosaicRadar');
 
-  // Cache
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const referencesCache = useRef<Map<number, ReferenceSketch[]>>(new Map());
-
-  // State
-  const [sequence, setSequence] = useState<string>('');
-  const [references, setReferences] = useState<ReferenceSketch[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Query and donor panel must be accepted together from the exact current source.
+  // Numeric phage IDs are reused by replacement private repositories.
+  const [inputSnapshot, setInputSnapshot] = useState<MosaicInputs | null>(null);
+  const inputs = overlayOpen && inputSnapshot?.repository === repository &&
+    inputSnapshot?.phage === currentPhage ? inputSnapshot : null;
+  const sequence = inputs?.sequence ?? '';
+  const references = inputs?.references ?? [];
+  const loading = overlayOpen && !!repository && !!currentPhage && !inputs;
 
   // Analysis parameters
   const [k, setK] = useState(5);
@@ -134,9 +155,14 @@ export function MosaicRadarOverlay({
   const [minSimilarity, setMinSimilarity] = useState(0.05);
   const [showBreakpoints, setShowBreakpoints] = useState(true);
 
-  // Hover state
-  const [hoverInfo, setHoverInfo] = useState<GenomeTrackInteraction | null>(null);
-  const [selectedSegment, setSelectedSegment] = useState<MosaicSegment | null>(null);
+  const [hoverSnapshot, setHoverSnapshot] = useState<{
+    analysis: MosaicRadarResult;
+    info: GenomeTrackInteraction;
+  } | null>(null);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<{
+    analysis: MosaicRadarResult;
+    segment: MosaicSegment;
+  } | null>(null);
 
   // Hotkey to toggle overlay (Alt+M to avoid conflict with StructureConstraint)
   useHotkey(
@@ -235,66 +261,41 @@ export function MosaicRadarOverlay({
 
   // Fetch sequence and references when overlay opens
   useEffect(() => {
-    if (!isOpen('mosaicRadar')) return;
-    if (!repository || !currentPhage) {
-      setSequence('');
-      setReferences([]);
-      setLoading(false);
-      return;
-    }
+    setInputSnapshot(null);
+    if (!overlayOpen || !repository || !currentPhage) return;
 
-    const phageId = currentPhage.id;
-
-    // Check cache first
-    const cachedSequence = sequenceCache.current.get(phageId);
-    const cachedRefs = referencesCache.current.get(phageId);
-    if (cachedSequence && cachedRefs && cachedRefs.length > 0) {
-      setSequence(cachedSequence);
-      setReferences(cachedRefs);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
+    const controller = new AbortController();
+    const { signal } = controller;
 
     Promise.all([
-      repository
-        .getFullGenomeLength(phageId)
-        .then((length: number) => repository.getSequenceWindow(phageId, 0, length)),
-      buildReferenceList(repository, phageId),
+      readSequence(repository, currentPhage.id, signal),
+      buildReferenceList(repository, currentPhage.id, signal),
     ])
-      .then(([seq, refs]) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        referencesCache.current.set(phageId, refs);
-        setSequence(seq);
-        setReferences(refs);
+      .then(([sequence, references]) => {
+        if (signal.aborted) return;
+        setInputSnapshot({ repository, phage: currentPhage, sequence, references });
       })
       .catch(() => {
-        if (cancelled) return;
-        setSequence('');
-        setReferences([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (signal.aborted) return;
+        setInputSnapshot({ repository, phage: currentPhage, sequence: '', references: [] });
+        controller.abort();
       });
 
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, repository, currentPhage]);
+    return () => controller.abort();
+  }, [overlayOpen, repository, currentPhage]);
 
   // Run mosaic analysis
   const analysis = useMemo<MosaicRadarResult | null>(() => {
-    if (!sequence || references.length === 0) return null;
-    return computeMosaicRadar(sequence, references, {
+    if (!inputs?.sequence || inputs.references.length === 0) return null;
+    return computeMosaicRadar(inputs.sequence, inputs.references, {
       k,
       window: windowSize,
       step: Math.floor(windowSize / 2),
       minSimilarity,
     });
-  }, [sequence, references, k, windowSize, minSimilarity]);
+  }, [inputs, k, windowSize, minSimilarity]);
+  const hoverInfo = hoverSnapshot?.analysis === analysis ? hoverSnapshot.info : null;
+  const selectedSegment = selectedSnapshot?.analysis === analysis ? selectedSnapshot.segment : null;
 
   // Get donor statistics
   const donorStats = useMemo(() => {
@@ -337,16 +338,19 @@ export function MosaicRadarOverlay({
 
   // Handle track hover
   const handleHover = useCallback((info: GenomeTrackInteraction | null) => {
-    setHoverInfo(info);
-  }, []);
+    if (!analysis || !info || (info.segment && !analysis.segments.some((seg) => seg === info.segment?.data))) {
+      setHoverSnapshot(null);
+      return;
+    }
+    setHoverSnapshot({ analysis, info });
+  }, [analysis]);
 
   // Handle track click
   const handleClick = useCallback((info: GenomeTrackInteraction) => {
-    const data = info.segment?.data;
-    if (data && typeof data === 'object' && 'donor' in data) {
-      setSelectedSegment(data as MosaicSegment);
-    }
-  }, []);
+    if (!analysis) return;
+    const segment = analysis.segments.find((seg) => seg === info.segment?.data);
+    if (segment) setSelectedSnapshot({ analysis, segment });
+  }, [analysis]);
 
   if (!isOpen('mosaicRadar')) return null;
 
@@ -546,7 +550,7 @@ export function MosaicRadarOverlay({
                     </div>
                   </div>
                   <button
-                    onClick={() => setSelectedSegment(null)}
+                    onClick={() => setSelectedSnapshot(null)}
                     style={{
                       background: 'none',
                       border: 'none',

@@ -102,12 +102,16 @@ export function KmerAnomalyOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
+  const overlayOpen = isOpen('kmerAnomaly');
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
+  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
+  const input = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded : null;
+  const sequence = input?.sequence ?? '';
   const [loading, setLoading] = useState(false);
-  const [selectedPoint, setSelectedPoint] = useState<KmerResult | null>(null);
+  const [selected, setSelected] = useState<{ input: NonNullable<typeof loaded>; kSize: number; point: KmerResult } | null>(null);
   const [kSize, setKSize] = useState(4);
+  const selectedPoint = input && selected?.input === input && selected.kSize === kSize ? selected.point : null;
   const colorScale = useMemo(
     () => createLinearColorScale(['#0b4dd8', '#22c55e', '#ef4444']),
     []
@@ -122,9 +126,9 @@ export function KmerAnomalyOverlay({
 
   // Fetch sequence when overlay opens
   useEffect(() => {
-    if (!isOpen('kmerAnomaly')) return;
+    if (!overlayOpen) return;
     if (!repository || !currentPhage) {
-      setSequence('');
+      setLoaded(null);
       setLoading(false);
       return;
     }
@@ -132,8 +136,8 @@ export function KmerAnomalyOverlay({
     const phageId = currentPhage.id;
 
     // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
+    if (sequenceCache.has(phageId)) {
+      setLoaded({ repository, phageId, sequence: sequenceCache.get(phageId) ?? '' });
       setLoading(false);
       return;
     }
@@ -142,15 +146,15 @@ export function KmerAnomalyOverlay({
     setLoading(true);
     repository
       .getFullGenomeLength(phageId)
-      .then((length: number) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
-        if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
+      .then((length: number) => cancelled ? null : repository.getSequenceWindow(phageId, 0, length))
+      .then((seq: string | null) => {
+        if (cancelled || seq === null) return;
+        sequenceCache.set(phageId, seq);
+        setLoaded({ repository, phageId, sequence: seq });
       })
       .catch(() => {
         if (cancelled) return;
-        setSequence('');
+        setLoaded(null);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -159,14 +163,14 @@ export function KmerAnomalyOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [overlayOpen, repository, currentPhage, sequenceCache]);
 
   const results = useMemo(() => calculateKmerAnomalies(sequence, kSize), [sequence, kSize]);
 
   // Draw heatmap
   useEffect(() => {
     // Need at least 2 data points to draw lines and avoid division by zero
-    if (!isOpen('kmerAnomaly') || !canvasRef.current || results.length < 2) return;
+    if (!overlayOpen || !canvasRef.current || results.length < 2) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -216,20 +220,20 @@ export function KmerAnomalyOverlay({
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
-  }, [colorScale, colors, isOpen, results]);
+  }, [colorScale, colors, overlayOpen, results]);
 
   // Handle canvas click
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current || results.length === 0) return;
+    if (!input || !canvasRef.current || results.length === 0) return;
     const rect = canvasRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const idx = Math.floor((x / rect.width) * results.length);
     if (idx >= 0 && idx < results.length) {
-      setSelectedPoint(results[idx]);
+      setSelected({ input, kSize, point: results[idx] });
     }
   };
 
-  if (!isOpen('kmerAnomaly')) {
+  if (!overlayOpen) {
     return null;
   }
 

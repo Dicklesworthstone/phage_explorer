@@ -5,7 +5,7 @@
  * Identifies structure-constrained segments and potential regulatory elements.
  */
 
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -21,6 +21,7 @@ import {
 } from './primitives';
 import {
   analyzeRNAStructure,
+  extractGeneSequence,
   type RNAStructureAnalysis,
   type CodonStress,
   type RegulatoryHypothesis,
@@ -393,6 +394,16 @@ interface RNAStructureOverlayProps {
   currentPhage: PhageFull | null;
 }
 
+interface RNAInput {
+  repository: PhageRepository;
+  phageId: number;
+}
+
+interface RNAData {
+  sequence: string;
+  genes: GeneInfo[];
+}
+
 export function RNAStructureOverlay({
   repository,
   currentPhage,
@@ -401,13 +412,25 @@ export function RNAStructureOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  const sequenceCache = useRef<Map<number, { sequence: string; genes: GeneInfo[] }>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
-  const [genes, setGenes] = useState<GeneInfo[]>([]);
-  const [loading, setLoading] = useState(false);
+  const sequenceCache = useMemo(() => new Map<number, RNAData>(), [repository]);
+  const phageId = currentPhage?.id;
+  const input = useMemo<RNAInput | null>(
+    () => repository && phageId !== undefined ? { repository, phageId } : null,
+    [repository, phageId]
+  );
+  const [loaded, setLoaded] = useState<{ input: RNAInput; data: RNAData } | null>(null);
+  const data = loaded?.input === input ? loaded.data : null;
+  const sequence = data?.sequence ?? '';
+  const genes = data?.genes ?? [];
+  const isActive = isOpen('rnaStructure');
+  const loading = isActive && input !== null && data === null;
 
-  const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
-  const [hoveredCodon, setHoveredCodon] = useState<CodonStress | null>(null);
+  const [geneSelection, setGeneSelection] = useState<{ input: RNAInput; key: string } | null>(null);
+  const selectedGene = useMemo(() => {
+    if (!data || geneSelection?.input !== input) return null;
+    return data.genes.find(gene => (gene.locusTag ?? String(gene.id)) === geneSelection.key) ?? null;
+  }, [data, input, geneSelection]);
+  const [hover, setHover] = useState<{ analysis: RNAStructureAnalysis; codon: CodonStress } | null>(null);
   const [viewMode, setViewMode] = useState<'genome' | 'gene'>('genome');
 
   // Hotkey to toggle overlay (Alt+R for RNA)
@@ -419,62 +442,52 @@ export function RNAStructureOverlay({
 
   // Fetch sequence and genes when overlay opens
   useEffect(() => {
-    if (!isOpen('rnaStructure')) return;
-    if (!repository || !currentPhage) {
-      setSequence('');
-      setGenes([]);
-      setLoading(false);
-      return;
-    }
-
-    const phageId = currentPhage.id;
-    const cached = sequenceCache.current.get(phageId);
+    if (!isActive || !input) return;
+    const cached = sequenceCache.get(input.phageId);
     if (cached) {
-      setSequence(cached.sequence);
-      setGenes(cached.genes.length > 0 ? cached.genes : (currentPhage.genes ?? []));
-      setLoading(false);
+      setLoaded({ input, data: cached });
       return;
     }
 
     let cancelled = false;
-    setLoading(true);
-    Promise.all([
-      repository.getFullGenomeLength(phageId).then(length => repository.getSequenceWindow(phageId, 0, length)),
-      repository.getGenes(phageId),
-    ])
-      .then(([seq, geneList]) => {
+    void (async () => {
+      try {
+        const length = await input.repository.getFullGenomeLength(input.phageId);
         if (cancelled) return;
-        sequenceCache.current.set(phageId, { sequence: seq, genes: geneList });
-        setSequence(seq);
-        setGenes(geneList);
-      })
-      .catch(() => {
+        const [sequence, genes] = await Promise.all([
+          input.repository.getSequenceWindow(input.phageId, 0, length),
+          input.repository.getGenes(input.phageId),
+        ]);
         if (cancelled) return;
-        setSequence('');
-        setGenes([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        const next = { sequence, genes };
+        sequenceCache.set(input.phageId, next);
+        setLoaded({ input, data: next });
+      } catch {
+        if (!cancelled) setLoaded({ input, data: { sequence: '', genes: [] } });
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isActive, input, sequenceCache]);
 
   // Compute RNA structure analysis
   const analysis = useMemo((): RNAStructureAnalysis | null => {
-    if (!sequence || sequence.length < 300) return null;
+    if (!isActive || !data?.sequence) return null;
 
-    if (viewMode === 'gene' && selectedGene) {
-      const geneSeq = sequence.slice(selectedGene.startPos, selectedGene.endPos);
+    if (viewMode === 'gene') {
+      if (!selectedGene) return null;
+      const geneSeq = extractGeneSequence(selectedGene, data.sequence);
       if (geneSeq.length < 60) return null;
       return analyzeRNAStructure(geneSeq, { windowSize: 60, stepSize: 15 });
     }
 
     // Genome-wide analysis with larger windows
-    return analyzeRNAStructure(sequence, { windowSize: 200, stepSize: 50 });
-  }, [sequence, viewMode, selectedGene]);
+    if (data.sequence.length < 300) return null;
+    return analyzeRNAStructure(data.sequence, { windowSize: 200, stepSize: 50 });
+  }, [isActive, data, viewMode, selectedGene]);
+  const hoveredCodon = hover?.analysis === analysis ? hover.codon : null;
 
   // Compute summary stats
   const summary = useMemo(() => {
@@ -494,7 +507,7 @@ export function RNAStructureOverlay({
     };
   }, [analysis]);
 
-  if (!isOpen('rnaStructure')) return null;
+  if (!isActive) return null;
 
   return (
     <Overlay
@@ -548,9 +561,8 @@ export function RNAStructureOverlay({
               <select
                 value={selectedGene ? (selectedGene.locusTag ?? String(selectedGene.id)) : ''}
                 onChange={(e) => {
-                  const value = e.target.value;
-                  const gene = genes.find((g) => (g.locusTag ?? String(g.id)) === value);
-                  setSelectedGene(gene ?? null);
+                  const key = e.target.value;
+                  setGeneSelection(input && key ? { input, key } : null);
                 }}
                 style={{
                   marginLeft: '0.5rem',
@@ -584,14 +596,18 @@ export function RNAStructureOverlay({
                 ? 'No sequence loaded'
                 : viewMode === 'gene' && !selectedGene
                   ? 'Select a gene to analyze'
-                  : 'Sequence too short for analysis'
+                  : viewMode === 'gene'
+                    ? 'Gene sequence unavailable or too short'
+                    : 'Sequence too short for analysis'
             }
             hint={
               !sequence
                 ? 'Select a phage to analyze.'
                 : viewMode === 'gene' && !selectedGene
                   ? 'Choose a gene from the dropdown above.'
-                  : 'RNA structure analysis requires at least 300 bp.'
+                  : viewMode === 'gene'
+                    ? 'Gene analysis requires at least 60 coding bases and supported CDS coordinates, strand, and codon_start.'
+                    : 'RNA structure analysis requires at least 300 bp.'
             }
           />
         ) : (
@@ -657,7 +673,7 @@ export function RNAStructureOverlay({
                   stressData={analysis.codonStress}
                   width={560}
                   height={24}
-                  onHover={setHoveredCodon}
+                  onHover={codon => setHover(codon ? { analysis, codon } : null)}
                   colors={colors}
                 />
               </div>
