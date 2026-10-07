@@ -244,7 +244,7 @@ export async function resolveCodonReferenceInput(content: string): Promise<{ ref
   }
   return { reference: parseCodonReference(content) };
 }
-const SOURCE_BACKED_METHOD = { ...CODON_REFERENCE_METHOD, version: '2',
+export const CODON_REFERENCE_SOURCE_METHOD = { ...CODON_REFERENCE_METHOD, version: '2',
   implementation: 'reference-count CAI after fresh original-GenBank corpus replay' };
 export async function createReferenceCodonExperiment(genome: ReferenceCodonGenome, sequence: string, referenceText: string,
   options: ReferenceCodonOptions = {}): Promise<ReferenceCodonExperiment> {
@@ -259,7 +259,7 @@ export async function createReferenceCodonExperiment(genome: ReferenceCodonGenom
   ] : limitations;
   const analysis = analyze(captured.genome, captured.sequence, reference, captured.options);
   const coverage = { available: analysis.summary.scoredGenes, total: analysis.summary.totalGenes, unit: 'genes' as const };
-  const record = await createAnalysisRecord({ method: corpus ? SOURCE_BACKED_METHOD : CODON_REFERENCE_METHOD, seed: null,
+  const record = await createAnalysisRecord({ method: corpus ? CODON_REFERENCE_SOURCE_METHOD : CODON_REFERENCE_METHOD, seed: null,
     inputs: [
       { id: 'genome', accession: captured.genome.accession, source: captured.genome.source, description: 'Exact genome used for annotated CDS extraction.', data: captured.sequence },
       { id: 'annotations', accession: captured.genome.accession, source: captured.genome.source, description: 'Genome identity and original CDS annotations, including joined segments and translation qualifiers.', data: analysisJson(captured.genome) },
@@ -282,7 +282,7 @@ export async function createReferenceCodonExperiment(genome: ReferenceCodonGenom
 /** Re-run extraction and scoring from original inputs; never trust imported displayed scores. */
 export async function replayReferenceCodonExperiment(content: string): Promise<ReferenceCodonExperiment> {
   const record = await parseAnalysisRecord(content, { methodId: CODON_REFERENCE_METHOD.id });
-  if (![CODON_REFERENCE_METHOD.version, SOURCE_BACKED_METHOD.version].includes(record.method.version)) throw new Error('Unsupported reference-analysis method version.');
+  if (![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version].includes(record.method.version)) throw new Error('Unsupported reference-analysis method version.');
   if (record.inputs.length !== 3) throw new Error('Unexpected reference-analysis inputs.');
   const sequence = record.inputs.find(input => input.id === 'genome')?.data;
   const genome = record.inputs.find(input => input.id === 'annotations')?.data;

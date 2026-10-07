@@ -83,7 +83,7 @@ and the existing numerical producers. It does not maintain a second command engi
 | --- | --- |
 | `nav.goto` | Validate the exact genome, gene, reading frame, view mode and position; apply headless view state. No screen is rendered. |
 | `overlay.pangenomeGraph` | Recompute the sequence graph with supplied/global/unit-wavefront/affine settings, optional strand/circular normalization, and optional GenBank CDS consequences. |
-| `overlay.codonAdaptation` | Recompute the existing single-genome illustrative host-model command. This is not the separate reference-backed codon-count workflow. |
+| `overlay.codonAdaptation` | Commands with `method: "reference-cai"` recompute reference-backed CAI from embedded count JSON or a freshly recounted source-corpus experiment. Legacy commands without the discriminator retain their illustrative host model; no command is silently migrated. |
 | `overlay.repeats` with `method: "exact-pairs"` | Recompute unsampled fixed-length direct/inverted pairs with the portable method, including its explicit completeness and output limit. |
 | Legacy `overlay.repeats` without that method | Browser-only transport/backend identity; the terminal does not relabel another engine or ignore an identity mismatch. |
 

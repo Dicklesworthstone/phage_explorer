@@ -3,7 +3,10 @@ import { usePhageStore } from '@phage-explorer/state';
 import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type GenomeImportResult } from '@phage-explorer/core';
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
-import { ResearchWorkflow, researchPangenomeParameters, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters,
+  type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
+  type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
@@ -22,14 +25,16 @@ export function runResearchWorker(request: ResearchWorkerRequest, signal: AbortS
     let done = false;
     const finish = (result?: ResearchWorkerResult, error?: Error) => {
       if (done) return; done = true;
-      signal.removeEventListener('abort', cancel); worker.terminate();
+      signal.removeEventListener('abort', cancel);
+      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
+      worker.terminate();
       if (error) reject(error); else resolve(result!);
     };
     const cancel = () => finish(undefined, new DOMException('Cancelled', 'AbortError'));
     signal.addEventListener('abort', cancel, { once: true });
     worker.onmessage = event => {
-      if (event.data.type === 'result') finish(event.data.result);
-      else if (event.data.type === 'error') finish(undefined, new Error(event.data.message));
+      if (event.data?.type === 'result') finish(event.data.result);
+      else if (event.data?.type === 'error') finish(undefined, new Error(event.data.message));
       else finish(undefined, new Error('Unexpected research worker response.'));
     };
     worker.onerror = event => { event.preventDefault(); finish(undefined, new Error('Research worker failed.')); };
@@ -104,6 +109,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
       return response.record;
     },
+    referenceCodons: async (genome, referenceText, options, signal) => {
+      const response = await runResearchWorker({ type: 'reference-codons', genome, referenceText, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected reference-backed CDS evidence.');
+      return response.record;
+    },
     pangenome: async (request, signal) => {
       const result = await runPangenomeWorker(request, signal,
         () => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
@@ -156,6 +166,24 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const circularResult = exactRepeatResult?.search.options.topology === 'circular';
   const armLabel = (start: number, end: number) => exactRepeatArmSegments(exactRepeatResult!.search.sequenceLength, start, end)
     .map(segment => `[${segment.start}, ${segment.end})`).join(' → ');
+  const [codonReference, setCodonReference] = useState<{ text: string; name: string; kind: 'counts' | 'corpus' } | null>(null);
+  const [referenceZeroPolicy, setReferenceZeroPolicy] = useState<ZeroCountReplacement>(0.5);
+  const referenceDraft = useMemo(() => {
+    if (!codonReference) return { parameters: null, error: 'Load count-reference JSON or a source-corpus experiment to record this method.' };
+    try {
+      return { parameters: researchReferenceCodonParameters(selected, codonReference.text,
+        gene === 'all' ? null : [Number(gene)], referenceZeroPolicy), error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [selected, gene, codonReference, referenceZeroPolicy]);
+  const referenceResult = useMemo(() => {
+    const record = research.result;
+    if (!record || record.method.id !== CODON_REFERENCE_METHOD.id
+      || ![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version].includes(record.method.version)) return null;
+    return { record, sourceBacked: record.method.version === CODON_REFERENCE_SOURCE_METHOD.version,
+      summary: record.fields.summary.value as unknown as ReferenceCodonAnalysis['summary'],
+      genes: record.fields.geneScores.value as unknown as ReferenceCodonAnalysis['genes'],
+      reference: record.references[1], corpus: record.references.find(item => item.id === 'genbank-codon-reference') };
+  }, [research.result]);
   const [graphIds, setGraphIds] = useState<string[]>([]);
   const [graphReference, setGraphReference] = useState('');
   const [graphAlignment, setGraphAlignment] = useState<AlignmentGraphOptions['alignment']>('wavefront');
@@ -212,6 +240,24 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
   };
+  const loadReference = async (file: File | undefined) => {
+    if (!file || busy || !active) return;
+    inputOperation.current?.abort();
+    const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null);
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error('Reference input exceeds 10 MiB.');
+      const text = await file.text();
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      // Reuse the canonical command validator for the draft envelope. Source
+      // counts are not trusted here; the numerical worker recounts before use.
+      researchReferenceCodonParameters(selected, text, null, referenceZeroPolicy);
+      const kind = JSON.parse(text).format === 'phage-explorer-analysis' ? 'corpus' : 'counts';
+      setCodonReference({ text, name: file.name, kind });
+    } catch (cause) {
+      if (inputOperation.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Reference input could not be read.');
+    } finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
+  };
   const view = (): ResearchView => ({ contentId: selected, geneId: gene === 'all' ? null : Number(gene), scrollPosition: position.trim() ? Number(position) : NaN, viewMode: mode, readingFrame: frame });
   const restoreLocal = async (content: string, signal: AbortSignal) => {
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -229,7 +275,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, repeats, single-genome CDS or multi-genome pangenome commands below, save their private input bundle, and replay with fresh result verification. Actions in other panels are not recorded. Import every required genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -271,6 +317,30 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         invoke(() => task);
       }}>Run and record exact repeat pairs</button>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId: selected, geneId: gene === 'all' ? null : Number(gene) }))}>Run and record CDS analysis</button>
+      <p>The CDS button above uses the existing illustrative host model. It is not the reference-backed command below.</p>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record reference-backed codon adaptation</legend>
+      <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}; CDS: {gene === 'all' ? 'all supported annotations' : gene}.
+        Use the genome/CDS selection above. Coding frames come from annotations, not the displayed reading frame.</p>
+      <label>Workflow codon reference JSON <input type="file" accept=".json,application/json" onChange={event => {
+        const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void loadReference(file);
+      }} /></label>
+      {codonReference && <p data-testid="workflow-reference-draft">Draft reference: {codonReference.name} · {codonReference.kind === 'corpus' ? 'source-corpus experiment; source replay required at execution' : 'user-supplied integer counts'}.
+        Loading only reads the reference; it does not execute or record a command.</p>}
+      <p>Use count JSON, or export a source-reference experiment from Reference-backed codon adaptation above.
+        A source experiment retains its original GenBank and CDS selection and is freshly recounted on every execution.
+        No reference file path is followed during replay. The exact JSON travels with each command; the whole tape must still fit 10 MiB.</p>
+      <label>Workflow reference zero-count replacement <select value={referenceZeroPolicy} onChange={event => setReferenceZeroPolicy(Number(event.target.value) as ZeroCountReplacement)}>
+        <option value={0.5}>Replace reported zeros with 0.5</option><option value={0}>Keep true zero weights</option>
+      </select></label>
+      {referenceDraft.error && <p>{referenceDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !genome || !referenceDraft.parameters} onClick={() => {
+        if (busy || !active || !genome || !referenceDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, analysisJson(referenceDraft.parameters));
+        invoke(() => task);
+      }}>Run and record reference-backed CDS</button>
+      <p>Missing reference families and unsupported CDS remain unavailable, not zero or fabricated scores.
+        CAI is a reference-relative sequence score, not expression, host range or infection probability.</p>
     </fieldset>
     <fieldset disabled={busy || !active} style={{ display: 'grid', gap: '.5rem' }}><legend>Record a real pangenome experiment</legend>
       <p>Select 2–24 imported genomes by content identity. Each run records its exact reference, alignment model and optional GenBank CDS subset; the original inputs are stored once in the workflow bundle.</p>
@@ -324,11 +394,35 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <button type="button" disabled={!commandBusy} onClick={cancel}>Cancel workflow</button></div>
     <p aria-live="polite" data-testid="workflow-status">{state.mode} · {state.tape.commands.length} recorded commands · {state.completed}/{state.total} replay commands complete. {state.notice}</p>
     {(error || state.error) && <p role="alert">{error ?? state.error}</p>}
-    <ol aria-label="Recorded workflow commands">{state.tape.commands.map((command, index) => <li key={index}>{ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId} <code>{JSON.stringify(command.parameters)}</code></li>)}</ol>
+    <ol aria-label="Recorded workflow commands">{state.tape.commands.map((command, index) => {
+      const parameters = command.parameters;
+      // A 10 MiB embedded corpus belongs in the export, not an enormous DOM node.
+      const preview = parameters !== null && typeof parameters === 'object' && !Array.isArray(parameters)
+        && parameters.method === 'reference-cai' && typeof parameters.referenceText === 'string'
+        ? { ...parameters, referenceText: `[${parameters.referenceText.length} characters embedded; retained exactly in the workflow export]` } : parameters;
+      return <li key={index}>{ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId} <code>{JSON.stringify(preview)}</code></li>;
+    })}</ol>
     {research.view && <p data-testid="workflow-view">Saved view: {research.view.contentId.slice(0, 12)} · {research.view.viewMode} · frame {research.view.readingFrame} · position {research.view.scrollPosition} · CDS {research.view.geneId ?? 'all'}</p>}
     {research.result && <div data-testid="workflow-result" data-result-id={research.result.resultId}>
       <p>Accepted result: {research.result.method.id}. Reproducibility is not biological validation.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(research.result!), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {referenceResult && <section aria-label="Recorded reference-codon results">
+        <h4>Accepted reference-backed CDS analysis</h4>
+        <p>Reference: {referenceResult.reference.id} · {referenceResult.reference.version}. {referenceResult.reference.description}</p>
+        <p>{referenceResult.sourceBacked ? 'Original reference corpus was reparsed and recounted before scoring.' : 'Counts were supplied directly; original source extraction is not verified.'}
+          {' '}Attribution and reference suitability remain author assertions.</p>
+        {referenceResult.corpus && <p>Verified corpus result: <code>{referenceResult.corpus.version}</code></p>}
+        <p>Pooled CAI: {referenceResult.summary.cai === null ? 'Unavailable' : referenceResult.summary.cai.toFixed(6)}.
+          {' '}Fully scored CDS: {referenceResult.summary.scoredGenes}/{referenceResult.summary.totalGenes}; scored codons: {referenceResult.summary.scoredCodons}.
+          {' '}Accepted zero-count replacement: {String(referenceResult.record.parameters.zeroCountReplacement)}.</p>
+        <p>The preview shows at most 50 CDS; Export workflow analysis retains all scores, exclusions, query annotations and exact reference input.
+          Draft controls above never relabel this accepted result.</p>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded reference-relative CDS scores">
+          <thead><tr><th>CDS</th><th>CAI</th><th>Covered / eligible codons</th><th>Status</th></tr></thead>
+          <tbody>{referenceResult.genes.slice(0, 50).map(row => <tr key={row.geneId}><td>{row.label} ({row.strand})</td>
+            <td>{row.cai === null ? 'Unavailable' : row.cai.toFixed(6)}</td><td>{row.scoredCodons}/{row.eligibleCodons}</td><td>{row.reasons.join(' ') || 'Scored'}</td></tr>)}</tbody>
+        </table></div>
+      </section>}
       {exactRepeatResult && <section aria-label="Exact repeat-pair results">
         <h4>Exact repeat pairs</h4>
         <p role="status">{exactRepeatResult.pairs.length.toLocaleString()} pairs retained. {exactRepeatResult.search.complete

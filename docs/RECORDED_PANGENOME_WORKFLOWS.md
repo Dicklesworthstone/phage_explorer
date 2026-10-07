@@ -32,6 +32,9 @@ Only successful, input-consistent results enter the tape. Repeat with other
 settings or interleave explicit navigation/repeat commands. The separate
 **Run and record CDS analysis** command retains its illustrative host model;
 it is not the multi-genome coding-consequence command.
+**Run and record reference-backed CDS** is a separate, explicit CAI command using
+embedded counts or source-corpus evidence. It can be interleaved with graph commands
+and replayed in the terminal; see `CODON_REFERENCE_CORPUS.md`.
 
 ## Save, reopen and replay
 

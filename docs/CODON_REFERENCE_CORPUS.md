@@ -24,6 +24,49 @@ an independently owned worker. The loaded reference reports selected, counted,
 excluded and unmappable CDS plus source identities and warnings. Changing its
 metadata controls affects the next build, not the accepted counts or exports.
 
+### Record and replay reference-backed query scoring
+
+Under **Local genomes → Saved research workflows**, start recording, choose the
+**Workflow genome** and **Workflow CDS**, then open **Record reference-backed
+codon adaptation**. Load **Workflow codon reference JSON** with either the count-only
+reference or **Export source corpus experiment** from the builder. Loading reads
+the file into a draft; it neither calculates nor records anything. A query-analysis
+export is not a reference-corpus input.
+
+Choose **Workflow reference zero-count replacement**, then **Run and record
+reference-backed CDS**. Each command embeds the exact reference JSON, an explicit
+CDS selection and the resolved zero policy. The source-corpus variant reparses its
+original GenBank, recounts and verifies its selected transcripts before scoring.
+Reference accessions, filenames and URLs never trigger file or network lookups.
+The query genome and annotations are bound to the recording's original input bundle.
+
+The accepted-result table shows scores, coverage and unavailable-CDS reasons;
+its 50-row preview does not restrict the complete analysis export. Reference or
+policy draft changes cannot alter an accepted result. The command list abbreviates
+embedded reference text for display; JSON exports retain it without modification.
+
+Stop recording before exporting or saving an on-device workflow snapshot. On
+reopening, review and explicitly add the bundled query genomes before replaying.
+Replay uses the references saved in each command, not today's draft controls,
+and verifies the newly computed method/input/result identities. Count-only and
+source-corpus commands may be mixed with navigation, exact repeats and pangenomes.
+They work with `phage-explorer workflow inspect/replay --input workflow.json` and
+the existing `bun run workflow` source command. The final verified analysis is also
+accepted by `codon-reference verify`.
+
+The existing **Run and record CDS analysis** action remains an illustrative host
+model. Its old commands cannot acquire reference-backed semantics by adding a
+method label; the complete method-specific parameters and expected output must
+come from a new computation. An older host without the reference adapter rejects
+these new commands before playback rather than falling back to an illustrative model.
+
+Each reference is embedded per command. The whole tape still has a 10 MiB limit,
+including its query input bundle and repeated references. An over-limit recording
+is refused before replacing accepted evidence; no source is silently dropped.
+Cancel and close terminate the operation's worker. Failed/cancelled executions
+preserve prior accepted evidence, while completed earlier replay commands remain.
+Checksums and reproducible counts do not validate the reference's biological suitability.
+
 Select the query genome and CDS in the existing query controls, then **Analyze
 against reference**. The worker freshly verifies the source corpus before using
 its counts. The exported query experiment contains the complete source experiment;
