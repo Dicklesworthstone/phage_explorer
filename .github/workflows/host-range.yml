@@ -1,0 +1,33 @@
+name: Measured host-range workflows
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/core/src/analysis/host-range-evidence*'
+      - 'packages/core/src/index.ts'
+      - 'packages/tui/src/host-range-cli.test.ts'
+      - 'packages/tui/src/index.tsx'
+      - 'scripts/host-range.ts'
+      - 'bun.lock'
+      - '.github/workflows/host-range.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.0'
+      - run: bun install --frozen-lockfile
+      - name: Measured evidence and headless replay regressions
+        run: bun test packages/core/src/analysis/host-range-evidence.test.ts packages/tui/src/host-range-cli.test.ts
+      - run: bun run lint
+      - run: bun run typecheck:all
+      - run: bun run check:scripts
