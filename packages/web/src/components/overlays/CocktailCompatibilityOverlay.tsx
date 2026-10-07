@@ -21,6 +21,7 @@ import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
+import { HostRangeEvidencePanel } from './HostRangeEvidencePanel';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import {
@@ -570,9 +571,11 @@ export function CocktailCompatibilityOverlay({
   return (
     <Overlay id="cocktailCompatibility" title="Cocktail Compatibility Matrix" hotkey="Alt+K" size="xl">
       <div style={overlayStyle}>
+        <HostRangeEvidencePanel />
+        <hr />
         <div style={{ ...panelStyle, color: colors.textDim }}>
-          <div style={{ color: colors.accent, marginBottom: '0.25rem' }}>Enhanced compatibility scoring</div>
-          <div>Scores are derived from lifecycle + host labels + protein-domain overlap + lysis timing + Sie genes + receptor hints (not a clinical tool).</div>
+          <div style={{ color: colors.accent, marginBottom: '0.25rem' }}>Annotation-based compatibility heuristic</div>
+          <div>These proxy scores are separate from measured host-range evidence above. They use lifecycle + host labels + protein-domain overlap + lysis timing + Sie genes + receptor hints, not measured mixture compatibility or clinical efficacy.</div>
         </div>
 
         {loading ? (

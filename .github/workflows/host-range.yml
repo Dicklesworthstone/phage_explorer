@@ -9,6 +9,9 @@ on:
       - 'packages/tui/src/host-range-cli.test.ts'
       - 'packages/tui/src/index.tsx'
       - 'scripts/host-range.ts'
+      - 'packages/web/src/components/overlays/HostRangeEvidencePanel.tsx'
+      - 'packages/web/src/components/overlays/CocktailCompatibilityOverlay.tsx'
+      - 'packages/web/e2e/host-range-evidence.e2e.ts'
       - 'bun.lock'
       - '.github/workflows/host-range.yml'
   workflow_dispatch:
@@ -31,3 +34,20 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck:all
       - run: bun run check:scripts
+
+      - name: Install browser
+        run: bunx playwright install --with-deps chromium
+      - name: Build production web application
+        run: bun run build:web
+      - name: Browser evidence and browser-terminal round trip
+        working-directory: packages/web
+        run: bunx playwright test --project=chromium --workers=1 e2e/host-range-evidence.e2e.ts
+      - name: Retain browser failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-range-browser-report
+          path: |
+            packages/web/playwright-report/
+            packages/web/test-results/
+          retention-days: 7
