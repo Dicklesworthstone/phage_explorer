@@ -135,3 +135,6 @@ export * from './analysis/alignment-pangenome';
 
 export * from './analysis/pangenome-vcf';
 export * from './analysis/gc-skew';
+
+// Imported strain-level observations and reproducible measured coverage
+export * from './analysis/host-range-evidence';
