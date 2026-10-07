@@ -32,7 +32,7 @@ export interface SequenceBuffer {
 
 interface PoolEntry {
   buffer: SequenceBuffer;
-  /** FNV-1a of the stored sequence; used to refuse a stale genome under the same phageId. */
+  /** Fast mismatch filter only; a matching fingerprint still requires exact byte comparison. */
   fingerprint: number;
   /**
    * Pin count for eviction avoidance.
@@ -73,6 +73,21 @@ function encodeSequence(sequence: string): Uint8Array {
     out[i] = sequence.charCodeAt(i) & 0xff;
   }
   return out;
+}
+
+/** Compare requested bases with the actual pool contents, without another DNA-sized allocation. */
+function matchesSequence(buffer: SequenceBuffer, sequence: string): boolean {
+  if (buffer.view.byteLength === sequence.length) {
+    for (let i = 0; i < sequence.length; i++) {
+      if (buffer.view[i] !== sequence.charCodeAt(i)) return false;
+    }
+    return true;
+  }
+  // Preserve the encoder's behavior for non-ASCII input. Ordinary DNA uses
+  // the allocation-free path above, including every IUPAC ambiguity code.
+  const encoded = encodeSequence(sequence);
+  if (encoded.byteLength !== buffer.view.byteLength) return false;
+  return encoded.every((byte, index) => byte === buffer.view[index]);
 }
 
 /**
@@ -223,7 +238,8 @@ export class SharedSequencePool {
     const fingerprint = sequenceFingerprint(sequence);
     const existing = this.pool.get(phageId);
     if (existing) {
-      if (existing.buffer.length === sequence.length && existing.fingerprint === fingerprint) {
+      if (existing.buffer.length === sequence.length && existing.fingerprint === fingerprint
+        && matchesSequence(existing.buffer, sequence)) {
         existing.lastAccess = Date.now();
         return existing.buffer;
       }
