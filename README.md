@@ -530,7 +530,36 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 | **Tail Fiber Tropism** | Precomputed trigram receptor candidates from `data/tropism-embeddings.json`, with deposited GenBank protein translations and sequence hydropathy available in the panel and JSON export |
 | **Prophage Excision** | Detects integrase genes; searches for attL/attR direct repeats; models excision products |
 
-Tropism candidates are annotation or similarity cues; they do not establish host range or binding affinity. Structural affinity and mutation illustrations, host interaction models, pangenome examples, and growth-curve fitting require explicit demonstration mode, with their inputs and assumptions shown beside the output. Growth-curve examples provide no confidence intervals. Phylodynamics preserves its NCBI sequence path but requires an identified coding alignment before reporting selection statistics; failed retrieval shows unavailable data and offers an explicit synthetic illustration.
+Tropism candidates are annotation or similarity cues; they do not establish host range or binding affinity. Structural affinity and mutation illustrations, host interaction models, and synthetic pangenome or growth examples require explicit demonstration mode, with their inputs and assumptions shown beside the output. Phylodynamics preserves its NCBI sequence path but requires an identified coding alignment before reporting selection statistics; failed retrieval shows unavailable data and offers an explicit synthetic illustration.
+
+### Measured Growth Inference
+
+The growth-inference panel accepts private PFU/mL, CFU/mL and OD600 observations
+as CSV, TSV or dataset JSON. Supply the fixed initial populations, growth/decay
+conditions, infection-stage count and OD calibration, then choose which adsorption,
+latency and burst parameters to estimate. Fits retain observations, trajectories,
+convergence checks and parameter-specific uncertainty status for export and fresh
+replay.
+
+The standard header is `timeMin,type,value,sigma`. An optional final `censoring`
+column accepts `none` for quantified observations and `left` for a PFU/CFU count
+reported below a known positive assay limit. For example,
+`0,PFU,120000,0.03,left` describes a count below 120,000 PFU/mL; it is not an exact
+measurement of that concentration. `sigma` is the known log10 standard deviation
+for PFU/CFU and the ordinary standard deviation for OD. Input requires 6–256
+observations at at least three distinct times, within 180 minutes; replicate rows
+are retained. Zero counts and missing/unknown detection limits are rejected.
+
+Censored observations contribute their below-limit probability to the likelihood.
+The plot uses downward limit arrows, and the table reports their likelihood
+contributions separately from quantified residuals. Censored fits withhold local
+Wald intervals; nuisance-refitted profile intervals require sufficient quantified
+data, numerical support and resolved likelihood crossings. Failed or unsupported
+intervals remain unavailable. These are conditional model estimates, with supplied
+independent error scales; they do not establish a biologically validated phenotype
+or global identifiability. Right/interval censoring and censored OD are unsupported.
+Existing exact-only fit/profile records retain their version-1 replay identities;
+censored analyses use version 2.
 
 ### Protein Structure & Function
 

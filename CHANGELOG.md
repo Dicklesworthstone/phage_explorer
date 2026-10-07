@@ -4,6 +4,31 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
+## Unreleased — 2026-10-07
+
+### Reproducible research
+
+- **Portable GC-skew workflows** — explicit window/step controls, per-window
+  nucleotide counts and unavailable ratios, JSON/TSV exports, browser and native
+  replay, and restoration of both accelerated and portable experiments. Accepted
+  analysis exports retain their original input identity after later navigation.
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/6df9b313bfc16c15e50f494664e9c6d6f953f9c8).
+- **Censored growth observations** — PFU/CFU detection limits contribute Gaussian
+  event probabilities to fitting and nuisance-refitted profiles. Plots distinguish
+  limits from measured concentrations; unsupported residuals and intervals remain
+  unavailable. Version-2 censored records replay through fresh computation while
+  exact-only version-1 identities remain stable. Independent numerical oracles
+  and a real-worker browser import/export/reload journey cover the implementation.
+  See [the likelihood](packages/core/src/analysis/growth-inference.ts) and
+  [browser regression](packages/web/e2e/growth-inference.e2e.ts).
+
+### Analysis correctness
+
+- **Sequence-buffer identity** — an equal-length fingerprint collision can no
+  longer substitute another genome in shared-memory or transferable workers.
+  Cache hits now compare the actual bases while preserving existing worker-held
+  buffers. [Fix](https://github.com/Dicklesworthstone/phage_explorer/commit/308f0f07cbacf229024bfbe8ab3b2dc99d6d4b3d).
+
 ## [v1.6.0] — 2026-10-04
 
 [Compare: v1.5.0...v1.6.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.5.0...v1.6.0)

@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, serializeAnalysisRecord, type AnalysisJson, type AnalysisRecord } from '../analysis-result';
 import { validateGrowthDataset, resolveGrowthOptions, GROWTH_PARAMETERS, GROWTH_BOUNDS, GROWTH_LIMITS,
-  fitGrowthDataset, type GrowthParameter, type GrowthDataset } from './growth-inference';
+  fitGrowthDataset, parseGrowthData, DEFAULT_GROWTH_CONDITIONS, type GrowthParameter, type GrowthDataset } from './growth-inference';
 import { profileGrowthDataset, replayGrowthProfile, GROWTH_PROFILE_CUTOFF, GROWTH_PROFILE_LIMITS, type ProfiledGrowthFit } from './growth-profile';
 
 // Independent SciPy DOP853 trajectory: rtol=1e-12, atol=1e-7. Same fixture as
@@ -31,6 +31,83 @@ const reference = (key:GrowthParameter) => {
   return cache.get(key)!;
 };
 const near = (a:number,b:number,tolerance:number) => assert.ok(Math.abs(a-b)<=tolerance, `${a} vs ${b}, tolerance ${tolerance}`);
+
+describe('left-censored Gaussian likelihood profiles', () => {
+  function censoredDataset(): GrowthDataset {
+    const data = dataset();
+    data.observations = data.observations.filter(row => row.type !== 'OD').map(row => row.type === 'PFU' && row.value < 120000
+      ? { ...row, value: 120000, censoring: 'left' } : row);
+    return data;
+  }
+  let accepted: Promise<ProfiledGrowthFit> | undefined;
+  const fitted = () => accepted ??= profileGrowthDataset(censoredDataset(), options(), 'burstSize');
+  it('agrees with independent censored-MLE likelihood crossings while refitting nuisance parameters', async () => {
+    // Independent SciPy DOP853 rtol=2e-12/atol=1e-7 + log_ndtr likelihood,
+    // Nelder-Mead log-parameter optimization (xatol/fatol <=2e-10), and Brent
+    // roots of delta(-2 log L)=chi2.ppf(.95,1). No production numerics used.
+    const { profile, result, record, profileRecord } = await fitted();
+    assert.equal(record.method.version, '2'); assert.equal(profileRecord.method.version, '2');
+    near(result.objective, 1.1002942961782112, 2e-6);
+    assert.ok(profile.interval95);
+    near(profile.interval95[0], 28.78261126118199, .015);
+    near(profile.interval95[1], 45.71428308252969, .015);
+    for (const side of ['lower', 'upper'] as const) {
+      assert.equal(profile[side].status, 'crossed');
+      near(profile[side].delta!, GROWTH_PROFILE_CUTOFF, .003);
+      const point = profile.points.find(row => row.value === profile[side].value)!;
+      near(point.objective! - result.objective, point.delta!, 1e-12);
+      assert.ok(point.conditionalObjective! > point.objective! * 20);
+      assert.ok(Math.abs(point.parameters!.latentPeriod / result.parameters.latentPeriod - 1) > .05);
+    }
+    // A valid profile can supply asymptotic limits even though the misleading
+    // Gram-matrix Wald intervals are intentionally not produced for censoring.
+    assert.equal(result.estimates.burstSize.interval95, null);
+  });
+  it('recomputes exported censoring events, profile probabilities and method identities', async () => {
+    const original = await fitted();
+    const fresh = await replayGrowthProfile(serializeAnalysisRecord(original.profileRecord));
+    assert.equal(fresh.profileRecord.resultId, original.profileRecord.resultId);
+    assert.equal(fresh.record.resultId, original.record.resultId);
+    assert.equal(fresh.dataset.observations.filter(row => row.censoring === 'left').length, 3);
+    const downgraded = await createAnalysisRecord({ ...original.profileRecord,
+      method: { ...original.profileRecord.method, version: '1' }, inputs: original.profileRecord.inputs.map(({ sha256: _sha, ...input }) => input) });
+    await assert.rejects(replayGrowthProfile(serializeAnalysisRecord(downgraded)), /contract/);
+  });
+  it('withholds bounded intervals when only detection limits are available', async () => {
+    const data = censoredDataset(); data.conditions.initialBacteria = 0; data.conditions.initialPhage = 0;
+    data.observations = data.observations.map(row => ({ ...row, value: 100, censoring: 'left' }));
+    const { profile, result } = await profileGrowthDataset(data, resolveGrowthOptions({ initial: truth, starts: 1, freeParameters: ['burstSize'] }), 'burstSize');
+    assert.equal(profile.interval95, null); assert.equal(result.censoring?.quantifiedSensitivityRank, 0);
+    assert.equal(profile.lower.status, 'range-limit'); assert.equal(profile.upper.status, 'range-limit');
+    assert.ok(profile.points.every(point => point.delta === 0));
+    assert.ok(profile.warnings.some(warning => warning.includes('quantified observations')));
+  });
+  it('keeps the exact-only v1 profile identity captured before censoring support', async () => {
+    const data = parseGrowthData('timeMin,type,value,sigma\n0,PFU,100000,.1\n5,PFU,95000,.1\n10,PFU,120000,.1\n15,PFU,200000,.1\n20,PFU,350000,.1\n30,PFU,1000000,.1', 'uncensored-v1-regression.csv', DEFAULT_GROWTH_CONDITIONS);
+    const { profileRecord } = await profileGrowthDataset(data, resolveGrowthOptions({ starts: 1, freeParameters: ['burstSize'] }), 'burstSize');
+    assert.equal(profileRecord.method.version, '1');
+    assert.equal(profileRecord.resultId, '044fe7b5a2b2c5dbe5ecc16641af2ce72e0f991b1df9a934bfda65685acb5c2c');
+  });
+  it('checks individual profile coverage over 24 seeded synthetic datasets with assay-fixed censoring', async () => {
+    // Predeclared 19..24 / 24 acceptance at nominal .95, one fitted parameter.
+    // Noise is applied to the independent DOP853 values before a fixed 120000
+    // PFU/mL detection rule is applied; limits never follow the fitted curve.
+    let rng = 567890, covered = 0, censored = 0;
+    const random = () => { rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0; return (rng + .5) / 2 ** 32; };
+    for (let repetition = 0; repetition < 24; repetition++) {
+      const data = dataset(); data.observations = data.observations.filter(row => row.type === 'PFU').map(row => {
+        const z = Math.sqrt(-2 * Math.log(random())) * Math.cos(2 * Math.PI * random());
+        const value = row.value * 10 ** (.08 * z);
+        if (value < 120000) { censored++; return { ...row, sigma: .08, value: 120000, censoring: 'left' }; }
+        return { ...row, sigma: .08, value };
+      });
+      const { profile } = await profileGrowthDataset(data, resolveGrowthOptions({ initial: truth, starts: 1, freeParameters: ['burstSize'] }), 'burstSize');
+      if (profile.interval95 && profile.interval95[0] <= truth.burstSize && profile.interval95[1] >= truth.burstSize) covered++;
+    }
+    assert.ok(censored > 0);
+    assert.ok(covered >= 19 && covered <= 24, `burstSize coverage: ${covered}/24; ${censored} censored observations`);
+  });
+});
 
 // Independently optimized SciPy DOP853 + least_squares (log nuisance variables,
 // bounded, rtol=2e-11; xtol/ftol=1e-11). These objectives were recomputed by a

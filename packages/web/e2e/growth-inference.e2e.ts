@@ -32,7 +32,7 @@ test('growth observations reach real workers, verifiable fit exports and cancell
     root,configFile:false,cacheDir:info.outputPath('vite-cache'),server:{host:'127.0.0.1',port:0,open:false},
     plugins:[{
       name:'growth-fit-fixture',
-      resolveId(id) { if(id==='/src/growth-fit-fixture.tsx') return fixtureId; },
+      resolveId(id) { if(id==='/src/growth-fit-fixture.tsx' || id===fixtureId) return fixtureId; },
       load(id) {
         if(id!==fixtureId) return;
         return `
@@ -181,6 +181,62 @@ test('growth observations reach real workers, verifiable fit exports and cancell
     await load(CSV.replace('100000,.03','0,.03'),'censored.csv');
     await expect(panel.getByRole('alert')).toContainText('censored');
     await expect(result).toHaveAttribute('data-result-id',record.resultId);
+
+    // A known positive detection limit is a usable censored observation. The
+    // real worker must preserve the event through fit, profile and fresh replay,
+    // and the panel must never turn its upper bound into a measured point.
+    const censoredCSV = 'timeMin,type,value,sigma,censoring\n' + REFERENCE.flatMap(([time,cfu,pfu]) =>
+      [`${time},CFU,${cfu},.03,none`, `${time},PFU,${pfu < 120000 ? 120000 : pfu},.03,${pfu < 120000 ? 'left' : 'none'}`]).join('\n');
+    await load(censoredCSV, 'count-limits.csv');
+    await expect(panel.getByTestId('growth-status')).toContainText('Data loaded.');
+    await panel.getByLabel('Adsorption rate (mL/PFU/min)',{exact:true}).fill('1e-9');
+    await panel.getByLabel('Mean infection-to-lysis time (min)',{exact:true}).fill('32');
+    await panel.getByLabel('Burst yield (PFU/cell)',{exact:true}).fill('55');
+    await panel.getByLabel('Fit initialization seed',{exact:true}).fill('0');
+    await panel.getByRole('checkbox',{name:'I have checked the fixed conditions, measurement definitions and supplied observation SDs.',exact:true}).check();
+    await panel.getByRole('button',{name:'Fit experimental growth data',exact:true}).click();
+    await expect(panel.getByTestId('growth-censoring-summary')).toContainText('3 left-censored observations and 21 quantified observations');
+    await panel.getByLabel('Displayed growth measurement',{exact:true}).selectOption('PFU');
+    await expect(panel.getByTestId('growth-censored-point')).toHaveCount(3);
+    const table = panel.getByRole('table',{name:'Growth observations and residuals',exact:true});
+    await expect(table.locator('tbody tr').filter({hasText:'Not observed'})).toHaveCount(3);
+    await expect(table.locator('tbody tr').first()).toContainText('< 120000 (limit)');
+    const censoredText = await exported(), censoredRecord = await parseAnalysisRecord(censoredText);
+    expect(censoredRecord.method.version).toBe('2');
+    const censoredEstimates = censoredRecord.fields.estimates.value as Record<string,{value:number;interval95:null}>;
+    // SciPy DOP853 + censored Gaussian log-CDF likelihood + Nelder-Mead optimum,
+    // independently calculated from the same supplied observation/limit rows.
+    for (const [key,expected] of Object.entries({adsorptionRate:2.000317734388928e-9,latentPeriod:20.278954386759395,burstSize:35.65055269551192})) {
+      expect(Math.abs(censoredEstimates[key].value/expected-1),key).toBeLessThan(5e-5);
+      expect(censoredEstimates[key].interval95,key).toBeNull();
+    }
+    const censoredFit = censoredRecord.fields.fit.value as {objective:number;residuals:Array<{censoring?:string;value:number;standardizedResidual:number|null;likelihoodDeviance?:number}>};
+    expect(Math.abs(censoredFit.objective-1.1002942961782112)).toBeLessThan(2e-6);
+    for (const row of censoredFit.residuals.filter(row=>row.censoring==='left')) {
+      expect(row.value).toBe(120000); expect(row.standardizedResidual).toBeNull(); expect(row.likelihoodDeviance).toBeGreaterThan(0);
+    }
+    await panel.getByLabel('Profile parameter',{exact:true}).selectOption('burstSize');
+    await panel.getByRole('button',{name:'Compute profile likelihood',exact:true}).click();
+    await expect(profileView).toBeVisible();
+    await expect(panel.getByTestId('growth-profile-interval')).toContainText('Individual asymptotic 95% profile interval');
+    const censoredDownload = page.waitForEvent('download');
+    await panel.getByRole('button',{name:'Export growth profile',exact:true}).click();
+    const censoredProfileText = await readFile((await (await censoredDownload).path())!,'utf8');
+    const censoredProfileRecord = await parseAnalysisRecord(censoredProfileText);
+    expect(censoredProfileRecord.method.version).toBe('2');
+    const censoredProfile = censoredProfileRecord.fields.profile.value as {baselineResultId:string;interval95:[number,number]};
+    expect(censoredProfile.baselineResultId).toBe(censoredRecord.resultId);
+    expect(Math.abs(censoredProfile.interval95[0]-28.78261126118199)).toBeLessThan(.015);
+    expect(Math.abs(censoredProfile.interval95[1]-45.71428308252969)).toBeLessThan(.015);
+    await page.reload();
+    await overlay.getByRole('button',{name:'Experimental growth fit',exact:true}).click();
+    await load(censoredProfileText,'saved-censored-profile.json');
+    await expect(panel.getByTestId('growth-status')).toContainText('Verified: fresh fit, nuisance-refitted profile');
+    await expect(profileView).toHaveAttribute('data-result-id',censoredProfileRecord.resultId);
+    await expect(result).toHaveAttribute('data-result-id',censoredRecord.resultId);
+    await panel.getByLabel('Displayed growth measurement',{exact:true}).selectOption('PFU');
+    await expect(panel.getByTestId('growth-censored-point')).toHaveCount(3);
+    expect((await parseAnalysisRecord(await exported())).resultId).toBe(censoredRecord.resultId);
     expect(requests.some(request=>request.method!=='GET'&&request.method!=='HEAD')).toBe(false);
     expect(requests.some(request=>`${request.url} ${request.body??''}`.includes('private-growth-fixture'))).toBe(false);
     expect(errors).toEqual([]);

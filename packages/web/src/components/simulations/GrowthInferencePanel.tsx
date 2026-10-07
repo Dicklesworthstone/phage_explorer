@@ -41,14 +41,21 @@ function GrowthPlot({ accepted, measurement }: { accepted: GrowthWorkResult; mea
     <svg viewBox="0 0 700 270" role="img" aria-label={`Observed and fitted ${measurement} growth curve`} style={{ width:'100%', maxHeight:320 }}>
       <path d="M60 30V225H670" fill="none" stroke={theme.colors.textDim} />
       <polyline points={segments} fill="none" stroke={theme.colors.primary} strokeWidth={2} />
-      {rows.map((row,i) => <circle key={i} cx={x(row.timeMin)} cy={y(row.value)} r={4} fill={theme.colors.accent}>
-        <title>{`${row.timeMin} min: observed ${row.value}, predicted ${row.predicted}`}</title>
-      </circle>)}
+      {rows.map((row,i) => row.censoring === 'left'
+        ? <g key={i} data-testid="growth-censored-point" stroke={theme.colors.accent} fill="none" strokeWidth={2}>
+          <path d={`M${x(row.timeMin)-5} ${y(row.value)}h10 M${x(row.timeMin)} ${y(row.value)}v10 m-4 -4 l4 4 4 -4`} />
+          <title>{`${row.timeMin} min: below ${row.value} ${measurement}/mL (detection limit, not a measured concentration); predicted ${row.predicted}`}</title>
+        </g>
+        : <circle key={i} cx={x(row.timeMin)} cy={y(row.value)} r={4} fill={theme.colors.accent}>
+          <title>{`${row.timeMin} min: observed ${row.value}, predicted ${row.predicted}`}</title>
+        </circle>)}
       <text x={60} y={250} fill={theme.colors.text}>0 min</text><text x={590} y={250} fill={theme.colors.text}>{end} min</text>
       <text x={2} y={35} fill={theme.colors.text} fontSize={11}>{high.toPrecision(4)}</text>
       <text x={2} y={225} fill={theme.colors.text} fontSize={11}>{low.toPrecision(4)}</text>
     </svg>
-    <figcaption>Points: supplied observations. Line: fitted mechanistic model. {measurement === 'OD' ? 'Linear OD600 axis.' : `log10 ${measurement}/mL axis.`} Numerical values and standardized residuals are tabulated below.</figcaption>
+    <figcaption>Circles: quantified observations. Downward arrows: positive detection limits; the concentration was reported below the limit.
+      Line: fitted mechanistic model. {measurement === 'OD' ? 'Linear OD600 axis.' : `log10 ${measurement}/mL axis.`}
+      Quantified residuals and censored likelihood contributions are tabulated below.</figcaption>
   </figure>;
 }
 
@@ -85,7 +92,7 @@ function ProfileDetails({ profile }: { profile: GrowthProfileResult }): React.Re
       <text x={5} y={35} fontSize={11} fill={theme.colors.text}>{top.toPrecision(3)}</text>
       <text x={5} y={y(profile.cutoff)-5} fontSize={11} fill={theme.colors.text}>3.84146</text>
     </svg>
-    <p>Horizontal axis: parameter value on a log scale. Vertical axis: increase in weighted residual sum of squares after refitting the other estimated parameters.
+    <p>Horizontal axis: parameter value on a log scale. Vertical axis: increase in minus twice the log likelihood after refitting the other estimated parameters.
       Dashed line: the individual 95% asymptotic likelihood-ratio cutoff. Failed candidates are gaps, not excluded parameter values.</p>
     <table aria-label="Growth profile endpoints"><thead><tr><th>Side</th><th>Candidate</th><th>Delta objective</th><th>Resolution</th></tr></thead>
       <tbody>{(['lower','upper'] as const).map(side=><tr key={side}><th>{side}</th><td>{profile[side].value?.toPrecision(6)??'Unavailable'}</td>
@@ -157,9 +164,11 @@ export function GrowthInferencePanel(): React.ReactElement {
     <input id={`${id}-file`} type="file" accept=".csv,.tsv,.json" disabled={busy} onChange={event => {
       const file = event.currentTarget.files?.[0]; event.currentTarget.value=''; load(file);
     }} />
-    <p>CSV/TSV header: <code>timeMin,type,value,sigma</code>. Each row is PFU/mL, CFU/mL, or OD600.
+    <p>CSV/TSV header: <code>timeMin,type,value,sigma</code>, optionally followed by <code>,censoring</code>. Each row is PFU/mL, CFU/mL, or OD600.
       Supply known measurement SD: <strong>log10 units for PFU/CFU; ordinary OD units for OD</strong>.
-      Positive quantified counts only; detection-limit zeros and censored measurements are not supported. Replicate rows are retained.
+      In the optional column, use <code>none</code> for a quantified observation or <code>left</code> for a PFU/CFU concentration below a known positive detection limit.
+      For example, <code>10,PFU,100,.1,left</code> means below 100 PFU/mL with log10 SD 0.1; it does not mean 100 PFU/mL was observed.
+      Supply the assay limit in <code>value</code>; zero, missing values, OD censoring and unknown limits are unsupported. Replicate rows are retained.
       Limits: 6–256 observations, at least three times, 0–180 minutes.</p>
     <form onSubmit={event => {
       event.preventDefault();
@@ -207,9 +216,14 @@ export function GrowthInferencePanel(): React.ReactElement {
     {result && accepted?.record && <section data-testid="growth-result" data-result-id={accepted.record.resultId}>
       <h4>Conditional fit, not a validated biological phenotype</h4>
       <p>{result.converged?'Optimizer converged':'Optimizer did NOT converge'}: {result.termination}.
-        {' '}Weighted residual sum of squares: {result.objective.toPrecision(6)}; residual degrees of freedom: {result.degreesOfFreedom}.
+        {' '}{result.censoring ? 'Likelihood objective (minus twice log likelihood, up to fixed constants)' : 'Weighted residual sum of squares'}: {result.objective.toPrecision(6)};
+        {' '}{result.censoring ? 'observations minus fitted parameters' : 'residual degrees of freedom'}: {result.degreesOfFreedom}.
         {' '}Sensitivity rank: {result.sensitivityRank}/{accepted.options.freeParameters.length}; condition: {result.sensitivityCondition?.toPrecision(4)??'rank deficient'}.
-        {' '}Numerical cross-check: {result.solverDiscrepancySigma.toPrecision(3)} observation SD.</p>
+        {' '}Numerical cross-check: {result.solverDiscrepancySigma.toPrecision(3)} {result.censoring ? 'likelihood-residual units' : 'observation SD'}.</p>
+      {result.censoring && <p data-testid="growth-censoring-summary">{result.censoring.censoredObservations} left-censored observations and {result.censoring.quantifiedObservations} quantified observations.
+        {' '}Quantified residual sum of squares: {result.censoring.quantifiedResidualSumSquares.toPrecision(6)};
+        {' '}quantified support rank: {result.censoring.quantifiedSensitivityRank}/{accepted.options.freeParameters.length}.
+        {' '}No exact residual or local Wald interval is assigned to a detection limit. The mixed objective has no residual chi-square calibration here.</p>}
       <table aria-label="Growth parameter inference"><thead><tr><th>Parameter</th><th>Candidate/fixed value</th><th>Local 95% interval</th><th>Status and limits</th></tr></thead>
         <tbody>{GROWTH_PARAMETERS.map(key=><tr key={key} data-testid={`growth-${key}`}><th>{LABELS[key]}</th><td>{result.estimates[key].value.toPrecision(6)}</td>
           <td>{result.estimates[key].interval95?.map(v=>v.toPrecision(6)).join(' – ')??'Unavailable / not estimated'}</td>
@@ -219,9 +233,10 @@ export function GrowthInferencePanel(): React.ReactElement {
         {(['PFU','CFU','OD'] as const).map(type=><option key={type}>{type}</option>)}
       </select>
       <GrowthPlot accepted={accepted} measurement={measurement} />
-      <div style={{overflowX:'auto'}}><table aria-label="Growth observations and residuals"><thead><tr><th>Minutes</th><th>Type</th><th>Observed</th><th>Predicted</th><th>Residual / SD</th></tr></thead>
-        <tbody>{result.residuals.filter(row=>row.type===measurement).map((row,i)=><tr key={i}><td>{row.timeMin}</td><td>{row.type}</td><td>{row.value.toPrecision(6)}</td>
-          <td>{row.predicted.toPrecision(6)}</td><td>{row.standardizedResidual.toPrecision(5)}</td></tr>)}</tbody></table></div>
+      <div style={{overflowX:'auto'}}><table aria-label="Growth observations and residuals"><thead><tr><th>Minutes</th><th>Type</th><th>Observed / limit</th><th>Predicted</th><th>Residual / SD</th>{result.censoring && <th>Censoring deviance (−2 log probability)</th>}</tr></thead>
+        <tbody>{result.residuals.filter(row=>row.type===measurement).map((row,i)=><tr key={i}><td>{row.timeMin}</td><td>{row.type}</td><td>{row.censoring === 'left' ? `< ${row.value.toPrecision(6)} (limit)` : row.value.toPrecision(6)}</td>
+          <td>{row.predicted.toPrecision(6)}</td><td>{row.standardizedResidual?.toPrecision(5) ?? 'Not observed'}</td>
+          {result.censoring && <td>{row.likelihoodDeviance?.toPrecision(6) ?? '—'}</td>}</tr>)}</tbody></table></div>
       {result.warnings.map(warning=><p key={warning}>{warning}</p>)}
       <fieldset disabled={busy}>
         <legend>Profile likelihood of the accepted fit</legend>

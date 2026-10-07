@@ -111,6 +111,26 @@ describe('growth import and fit worker operations', () => {
     const restored:GrowthWorkResult=await executeGrowthRequest({...request,content:serializeAnalysisRecord(fitted.record!)});
     assert.equal(restored.verified,true);assert.equal(restored.record?.resultId,fitted.record?.resultId);
   });
+  it('keeps detection limits distinct from measured counts through actual fit/profile operations and replay', async () => {
+    const lines = request.content.split('\n');
+    const content = `${lines[0]},censoring\n` + lines.slice(1).map((line, i) => `${line},${i === 0 ? 'left' : 'none'}`).join('\n');
+    const loaded = await executeGrowthRequest({ ...request, content });
+    assert.equal(loaded.dataset.observations[0].value, 100000);
+    assert.equal(loaded.dataset.observations[0].censoring, 'left');
+    const options = resolveGrowthOptions({ starts: 1, freeParameters: ['burstSize'] });
+    const fitted = await executeGrowthRequest({ kind: 'fit', dataset: loaded.dataset, options });
+    const first = fitted.result!.residuals[0];
+    assert.equal(first.standardizedResidual, null);
+    assert.ok(Math.abs(first.likelihoodDeviance! - 2 * Math.LN2) < 1e-12); // prediction equals limit at t=0.
+    assert.equal(fitted.record!.method.version, '2');
+    const profiled = await executeGrowthRequest({ kind: 'profile', dataset: loaded.dataset, options, parameter: 'burstSize', baselineResultId: fitted.record!.resultId });
+    assert.equal(profiled.profileRecord!.method.version, '2');
+    const restored = await executeGrowthRequest({ ...request, content: serializeAnalysisRecord(profiled.profileRecord!) });
+    assert.equal(restored.verified, true);
+    assert.equal(restored.profileRecord!.resultId, profiled.profileRecord!.resultId);
+    assert.equal(restored.result!.residuals[0].standardizedResidual, null);
+    assert.equal(restored.dataset.observations[0].censoring, 'left');
+  });
   it('rejects unknown operations and oversized inputs', async () => {
     await assert.rejects(executeGrowthRequest({kind:'other'} as unknown as GrowthRequest),/Unsupported/);
     await assert.rejects(executeGrowthRequest({...request,content:' '.repeat(10*1024*1024+1)}),/limit/);

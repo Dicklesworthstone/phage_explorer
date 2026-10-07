@@ -15,9 +15,12 @@ export const GROWTH_PARAMETERS: readonly GrowthParameter[] = ['adsorptionRate', 
 export interface GrowthObservation {
   timeMin: number;
   type: GrowthMeasurement;
+  /** A quantified concentration, or the positive upper detection limit when censoring is left. */
   value: number;
   /** Known observation SD: log10 units for PFU/CFU, OD units for OD. */
   sigma: number;
+  /** The assay reports a count below value; it did not measure value or zero. OD censoring is unsupported. */
+  censoring?: 'left';
 }
 export interface GrowthConditions {
   initialBacteria: number;
@@ -65,9 +68,15 @@ export interface GrowthFitResult {
   evaluations: number;
   rejectedEvaluations: number;
   starts: Array<{ objective: number | null; converged: boolean; parameters: Record<GrowthParameter, number> }>;
-  residuals: Array<GrowthObservation & { predicted: number; standardizedResidual: number }>;
+  residuals: Array<GrowthObservation & { predicted: number; standardizedResidual: number | null; likelihoodDeviance?: number }>;
   trajectory: GrowthTrajectoryPoint[];
   warnings: string[];
+  /** Present only for censored fits; the total objective is not a residual chi-square statistic. */
+  censoring?: {
+    censoredObservations: number; quantifiedObservations: number;
+    quantifiedResidualSumSquares: number; quantifiedDegreesOfFreedom: number;
+    quantifiedSensitivityRank: number; quantifiedSensitivityCondition: number | null;
+  };
 }
 export const GROWTH_LIMITS = { bytes: 2 * 1024 * 1024, observations: 256, minutes: 180, integrationSteps: 8000, fitSteps: 2000000 } as const;
 export const GROWTH_BOUNDS: Record<GrowthParameter, readonly [number, number]> = {
@@ -110,12 +119,14 @@ export function validateGrowthDataset(value: unknown): GrowthDataset {
   if (!Array.isArray(value.observations) || value.observations.length < 6 || value.observations.length > GROWTH_LIMITS.observations) throw new Error('Growth data requires 6–256 observations, including replicates.');
   const observations = value.observations.map((row, index): GrowthObservation => {
     if (!object(row)) throw new Error(`Observation ${index + 1} must be an object.`);
-    keys(row, ['timeMin', 'type', 'value', 'sigma'], `Observation ${index + 1}`);
+    keys(row, ['timeMin', 'type', 'value', 'sigma', ...('censoring' in row ? ['censoring'] : [])], `Observation ${index + 1}`);
     if (row.type !== 'PFU' && row.type !== 'CFU' && row.type !== 'OD') throw new Error('Measurement type must be PFU, CFU or OD; units cannot be guessed.');
+    if ('censoring' in row && (row.censoring !== 'left' || row.type === 'OD')) throw new Error('Only explicit left-censored PFU/CFU observations are supported; omit censoring for quantified observations.');
     const v = number(row.value, 0, row.type === 'OD' ? 100 : 1e15, `Observation ${index + 1} value`);
-    if (row.type !== 'OD' && v === 0) throw new Error('Zero PFU/CFU is censored under the log observation model. Supply positive quantified counts; do not replace detection limits with zeros.');
+    if (row.type !== 'OD' && v === 0) throw new Error('Zero PFU/CFU may represent a censored result, but requires a positive detection limit with censoring: left; zero is not a detection limit.');
     return { timeMin: number(row.timeMin, 0, GROWTH_LIMITS.minutes, 'Observation time in minutes'), type: row.type, value: v,
-      sigma: number(row.sigma, 1e-6, row.type === 'OD' ? 10 : 5, 'Known observation SD (OD units or log10 count units)') };
+      sigma: number(row.sigma, 1e-6, row.type === 'OD' ? 10 : 5, 'Known observation SD (OD units or log10 count units)'),
+      ...(row.censoring === 'left' ? { censoring: 'left' as const } : {}) };
   }).sort((a, b) => a.timeMin - b.timeMin);
   if (new Set(observations.map(row => row.timeMin)).size < 3 || observations.at(-1)!.timeMin === 0) throw new Error('At least three distinct observation times are required.');
   const result: GrowthDataset = {
@@ -133,12 +144,16 @@ export function parseGrowthData(content: string, name: string, conditions: Growt
   const source = content.replace(/^\uFEFF/, '').trim();
   if (source.startsWith('{')) return validateGrowthDataset(JSON.parse(source));
   const lines = source.split(/\r?\n/), delimiter = lines[0].includes('\t') ? '\t' : ',';
-  if (lines[0].split(delimiter).map(s => s.trim()).join(',') !== 'timeMin,type,value,sigma') throw new Error('Expected CSV/TSV header timeMin,type,value,sigma. PFU/CFU values are per mL; sigma is log10 SD for counts, ordinary SD for OD.');
+  const header = lines[0].split(delimiter).map(s => s.trim()).join(',');
+  const censoredColumn = header === 'timeMin,type,value,sigma,censoring';
+  if (header !== 'timeMin,type,value,sigma' && !censoredColumn) throw new Error('Expected CSV/TSV header timeMin,type,value,sigma with optional final censoring column (none or left). PFU/CFU values are per mL; sigma is log10 SD for counts, ordinary SD for OD.');
   const decimal = /^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
   const observations = lines.slice(1).map((line, i) => {
     const cells = line.split(delimiter).map(s => s.trim());
-    if (cells.length !== 4 || [0, 2, 3].some(j => !decimal.test(cells[j]))) throw new Error(`Invalid numeric observation at line ${i + 2}; blanks/NA are not zeros.`);
-    return { timeMin: Number(cells[0]), type: cells[1], value: Number(cells[2]), sigma: Number(cells[3]) };
+    if (cells.length !== (censoredColumn ? 5 : 4) || [0, 2, 3].some(j => !decimal.test(cells[j]))) throw new Error(`Invalid numeric observation at line ${i + 2}; blanks/NA are not zeros.`);
+    if (censoredColumn && cells[4] !== 'none' && cells[4] !== 'left') throw new Error(`Line ${i + 2}: censoring must be none or left; a left-censored value is the positive detection limit.`);
+    return { timeMin: Number(cells[0]), type: cells[1], value: Number(cells[2]), sigma: Number(cells[3]),
+      ...(censoredColumn && cells[4] === 'left' ? { censoring: 'left' } : {}) };
   });
   return validateGrowthDataset({ format: 'phage-explorer-growth', version: 1, name,
     source: { kind: 'local', description: name, reference: null }, conditions, observations });
@@ -219,13 +234,56 @@ export function simulateGrowth(
   return times.map(t => ({ ...points.get(t)! }));
 }
 const prediction = (p: GrowthTrajectoryPoint, type: GrowthMeasurement) => type === 'PFU' ? p.phage : type === 'CFU' ? p.bacteria : p.od;
-function residuals(dataset: GrowthDataset, p: Record<GrowthParameter, number>, tolerance: number, budget?: IntegrationBudget): number[] {
+/** log Phi(z), without clipping small probabilities or subtracting a near-one CDF.
+ * Center: positive erf series (DLMF 7.6.2); tails: Laplace's continued fraction
+ * for the Mills ratio (DLMF 7.9.1). The split keeps both evaluations well conditioned.
+ * https://dlmf.nist.gov/7.6.E2 ; https://dlmf.nist.gov/7.9.E1
+ */
+export function growthLogNormalCdf(z: number): number {
+  if (Number.isNaN(z)) throw new Error('Normal CDF requires a numeric argument.');
+  if (z === Infinity) return 0;
+  if (z === -Infinity) return -Infinity;
+  const x = Math.abs(z);
+  let logTail: number;
+  if (x < 2) {
+    // erf(x/sqrt(2)) = sqrt(2/pi) exp(-x*x/2) * (x + x^3/3 + x^5/15 + ...).
+    let term = x, sum = x;
+    for (let n = 1; n < 80; n++) {
+      term *= x * x / (2 * n + 1); sum += term;
+      if (term <= Number.EPSILON * sum) break;
+    }
+    const erf = Math.sqrt(2 / Math.PI) * Math.exp(-x * x / 2) * sum;
+    logTail = -Math.LN2 + Math.log1p(-erf);
+  } else {
+    let tail = 0;
+    for (let n = 128; n >= 1; n--) tail = n / (x + tail);
+    logTail = -x * x / 2 - Math.log(2 * Math.PI) / 2 - Math.log(x + tail);
+  }
+  return z <= 0 ? logTail : Math.log1p(-Math.exp(logTail));
+}
+
+/** An optimization residual whose square is the observation's likelihood deviance.
+ * A left-censored log-count contributes -2 log Phi((log10(limit)-log10(prediction))/sigma),
+ * the probability of the reported event. It has NO observed concentration residual.
+ * Exact-row normalization constants are independent of fitted parameters and cancel in LR differences.
+ * Censoring likelihood: https://pubs.usgs.gov/of/2012/1181/ (section 3.1).
+ */
+export function growthObservationResidual(row: GrowthObservation, predicted: number): number {
+  if (!Number.isFinite(predicted) || predicted < 0) throw new IntegrationFailure('Growth likelihood requires finite nonnegative model predictions.');
+  if (row.censoring === 'left') {
+    if (row.type === 'OD' || !Number.isFinite(row.value) || !(row.value > 0) || !Number.isFinite(row.sigma) || !(row.sigma > 0)) throw new Error('Left censoring requires a positive PFU/CFU detection limit and known log10 SD.');
+    // A zero model concentration is the limiting distribution concentrated below every positive limit.
+    if (predicted === 0) return 0;
+    return Math.sqrt(-2 * growthLogNormalCdf((Math.log10(row.value) - Math.log10(predicted)) / row.sigma));
+  }
+  if (row.type !== 'OD' && predicted <= 0) throw new IntegrationFailure('Positive PFU/CFU measurements require positive model predictions. Check initial conditions.');
+  return (row.type === 'OD' ? predicted - row.value : Math.log10(predicted) - Math.log10(row.value)) / row.sigma;
+}
+
+/** Shared fit/profile likelihood, evaluated at the exact observation times. */
+export function growthResiduals(dataset: GrowthDataset, p: Record<GrowthParameter, number>, tolerance: number, budget?: IntegrationBudget): number[] {
   const trajectory = simulateGrowth(p, dataset.conditions, dataset.observations.map(row => row.timeMin), tolerance, budget);
-  return dataset.observations.map((row, i) => {
-    const predicted = prediction(trajectory[i], row.type);
-    if (row.type !== 'OD' && predicted <= 0) throw new IntegrationFailure('Positive PFU/CFU measurements require positive model predictions. Check initial conditions.');
-    return (row.type === 'OD' ? predicted - row.value : Math.log10(predicted) - Math.log10(row.value)) / row.sigma;
-  });
+  return dataset.observations.map((row, i) => growthObservationResidual(row, prediction(trajectory[i], row.type)));
 }
 const squareSum = (v: number[]) => v.reduce((s, x) => s + x * x, 0);
 /** Pivoted small dense solve. Singular systems return null, never invented covariance. */
@@ -277,7 +335,7 @@ export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions
   const evaluate = (v: number[]): { r: number[]; cost: number } => {
     evaluations++;
     try {
-      const r = residuals(dataset, decode(v), 1e-6, budget);
+      const r = growthResiduals(dataset, decode(v), 1e-6, budget);
       return { r, cost: squareSum(r) };
     } catch (cause) {
       if (!(cause instanceof IntegrationFailure)) throw cause;
@@ -333,10 +391,23 @@ export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions
   const sensitivityRank = singularValues.filter(x => x > threshold).length;
   const sensitivityCondition = sensitivityRank === n ? singularValues[0] / singularValues[n - 1] : null;
   const covariance = information.map((_, i) => solve(information, names.map((_, j) => i === j ? 1 : 0)));
-  const refined = residuals(dataset, parameters, 1e-7, budget);
+  const refined = growthResiduals(dataset, parameters, 1e-7, budget);
   const solverDiscrepancySigma = Math.max(...best.r.map((x, i) => Math.abs(x - refined[i])));
   const objective = squareSum(refined);
   const degreesOfFreedom = dataset.observations.length - n;
+  const quantified = dataset.observations.flatMap((row, i) => row.censoring === 'left' ? [] : [i]);
+  const censoredObservations = dataset.observations.length - quantified.length;
+  let censoring: GrowthFitResult['censoring'];
+  if (censoredObservations) {
+    // The transformed censored residuals are useful for minimization, but their
+    // Gauss-Newton Gram matrix is not the censored likelihood's information.
+    // Retain a conservative separate support check from quantified observations.
+    const exactEigen = eigenvalues(gram(j.map(column => quantified.map(i => column[i])))).map(Math.sqrt);
+    const exactRank = exactEigen.filter(value => value > Math.max(1e-6, exactEigen[0] * 1e-6)).length;
+    censoring = { censoredObservations, quantifiedObservations: quantified.length,
+      quantifiedResidualSumSquares: squareSum(quantified.map(i => refined[i])), quantifiedDegreesOfFreedom: quantified.length - n,
+      quantifiedSensitivityRank: exactRank, quantifiedSensitivityCondition: exactRank === n ? exactEigen[0] / exactEigen[n - 1] : null };
+  }
   const warnings = [
     'Conditional mechanistic fit, not an experimentally validated phage phenotype. Initial counts, growth/decay, stage count and OD calibration are fixed inputs.',
     'PFU means extracellular infectious phage/mL; CFU counts susceptible colony-forming cells only. OD is (susceptible + infected cells)/the supplied calibration, ignoring debris and cell-size changes.',
@@ -344,16 +415,23 @@ export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions
     'Observation errors are independent Gaussian with the supplied SDs: log10 PFU/CFU, linear OD. Censored counts, correlated time-series errors and unknown error scales are unsupported.',
     'Intervals are local 95% Gaussian/Wald approximations in log parameters using inverse JᵀJ and known observation SDs. They are not bootstrap or Bayesian credible intervals, and do not establish global identifiability.',
   ];
+  if (censoring) {
+    warnings[3] = 'Independent Gaussian errors use supplied known SDs: log10 PFU/CFU, linear OD. A left-censored PFU/CFU row contributes the probability of being below its positive detection limit; no exact concentration is imputed. Limits must be fixed by the assay independently of model fitting. Right/interval censoring, OD censoring, correlated errors and unknown error scales are unsupported.';
+    warnings[4] = 'Local Wald intervals are withheld for censored fits: the Gram matrix of transformed likelihood residuals is not the censored likelihood information. Use nuisance-refitted profile likelihood; its asymptotic intervals require enough independently quantified observations and regular numerical support.';
+    warnings.push('The objective combines squared quantified residuals and -2 log probabilities of censoring events. Total observations minus fitted parameters is only a count, not a chi-square calibration of this mixed objective. Quantified-observation diagnostics are reported separately.');
+    warnings.push('Sensitivity and numerical cross-checks use the square-root likelihood-deviance residuals, not standardized concentration residuals for censored rows. They are local numerical diagnostics, not Fisher information or proof of identifiability.');
+  }
   const competing = starts.some(s => Number.isFinite(s.cost) && s.cost - best.cost < 3.841459 && s.v.some((x, i) => Math.abs(x - best.v[i]) > Math.log(2)));
   const atBound = best.v.some((value, index) => value - lower[index] < 1e-6 || upper[index] - value < 1e-6);
   const unresolved = !best.converged ? 'Optimizer did not converge.' : atBound ? 'Best fit touches a parameter bound; unconstrained local confidence intervals are not supported.' : sensitivityRank < n ? 'Sensitivity matrix is rank deficient: fitted parameters cannot be separated locally.'
     : sensitivityCondition! > 1e5 ? 'Sensitivity matrix is ill-conditioned.' : solverDiscrepancySigma > 0.02 ? 'Numerical integration error is material relative to observation noise.'
-      : objective / degreesOfFreedom > 4 ? 'Residuals are too large for the declared observation error/model.' : competing ? 'Multiple starts found substantially different parameters with comparable likelihood.' : '';
+      : (censoring ? censoring.quantifiedDegreesOfFreedom > 0 && censoring.quantifiedResidualSumSquares / censoring.quantifiedDegreesOfFreedom > 4 : objective / degreesOfFreedom > 4)
+        ? 'Residuals are too large for the declared observation error/model.' : competing ? 'Multiple starts found substantially different parameters with comparable likelihood.' : '';
   if (unresolved) warnings.push(unresolved);
   const estimates = Object.fromEntries(GROWTH_PARAMETERS.map(key => {
     const index = names.indexOf(key), value = parameters[key];
     if (index < 0) return [key, { value, status: 'fixed', interval95: null, reason: 'User-supplied fixed parameter; not an estimate.' }];
-    let reason = unresolved;
+    let reason = unresolved || (censoring ? 'Censored likelihood: local Wald uncertainty is unavailable; use the separately computed profile likelihood.' : '');
     const variance = covariance[index]?.[index];
     let interval95: [number, number] | null = null;
     if (!reason && variance !== undefined && variance > 0) {
@@ -370,31 +448,48 @@ export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions
   return { parameters, estimates, objective, degreesOfFreedom, converged: best.converged, termination: best.termination,
     sensitivityRank, sensitivityCondition, singularValues, solverDiscrepancySigma, evaluations, rejectedEvaluations,
     starts: starts.map(s => ({ objective: Number.isFinite(s.cost) ? s.cost : null, converged: s.converged, parameters: decode(s.v) })),
-    residuals: dataset.observations.map((row, i) => ({ ...row, predicted: prediction(sampled[i], row.type), standardizedResidual: refined[i] })), trajectory, warnings };
+    residuals: dataset.observations.map((row, i) => ({ ...row, predicted: prediction(sampled[i], row.type),
+      standardizedResidual: row.censoring === 'left' ? null : refined[i],
+      ...(row.censoring === 'left' ? { likelihoodDeviance: refined[i] * refined[i] } : {}) })), trajectory, warnings,
+    ...(censoring ? { censoring } : {}) };
 }
 
 const GROWTH_METHOD = { id: 'mechanistic-growth-fit', version: '1', implementation: 'Erlang infection chain; adaptive RK4 step-doubling; bounded multistart damped least squares in log parameters; local known-SD Wald intervals' };
 const GROWTH_REFERENCES = [{ id: 'infection-stage-model', version: '1', description: 'dB=mu B-k BP; dI1=k BP-m I1/L; dIj=m(Ij-1-Ij)/L; dP=b m Im/L-k BP-delta P. Initially all infected compartments are zero.' },
   { id: 'observation-likelihood', version: '1', description: 'Independent normal errors with supplied known SDs in linear OD/log10 counts; local information J^T J, interval multiplier 1.959963984540054.' }];
+const CENSORED_GROWTH_METHOD = { id: 'mechanistic-growth-fit', version: '2', implementation: 'Erlang infection chain; adaptive RK4 step-doubling; bounded multistart damped likelihood minimization in log parameters; explicit left-censored log-count Gaussian probabilities; no censored Wald intervals' };
+const CENSORED_GROWTH_REFERENCES = [GROWTH_REFERENCES[0],
+  { id: 'observation-likelihood', version: '2', description: 'Known independent Gaussian SDs in linear OD/log10 counts. Exact residual squared; left-censored PFU/CFU contributes -2 log Phi((log10(limit)-log10(prediction))/sigma). Fixed positive assay limits; no imputation or local Wald interval. DLMF 7.6.2/7.9.1; USGS OFR 2012-1181 section 3.1.' }];
+/** Exact-only inputs retain their original v1 identities and replay semantics. */
+export function growthFitContract(dataset: GrowthDataset): { method: typeof GROWTH_METHOD; references: typeof GROWTH_REFERENCES } {
+  return dataset.observations.some(row => row.censoring === 'left')
+    ? { method: CENSORED_GROWTH_METHOD, references: CENSORED_GROWTH_REFERENCES }
+    : { method: GROWTH_METHOD, references: GROWTH_REFERENCES };
+}
 export async function createGrowthRecord(dataset: GrowthDataset, options: GrowthFitOptions, result: GrowthFitResult): Promise<AnalysisRecord> {
   const data = validateGrowthDataset(dataset), config = resolveGrowthOptions(options);
+  const contract = growthFitContract(data);
   const coverage = { available: data.observations.length, total: data.observations.length, unit: 'records' as const };
   const field = (label: string, value: unknown) => data.source.kind === 'demo'
     ? { label, value: analysisJson(value), kind: 'demo' as const, units: 'records' as const, coverage, limitations: result.warnings,
       assumptions: ['Explicit synthetic input; parameter recovery does not validate the model for experimental data.'] }
     : { label, value: analysisJson(value), kind: 'fitted-estimate' as const, units: 'records' as const, coverage, limitations: result.warnings,
-      fit: { dataInput: 'growthData', objective: 'Weighted sum of squared log10 count/linear OD residuals under known observation SDs.', uncertainty: { kind: 'not-estimated' as const } } };
+      fit: { dataInput: 'growthData', objective: contract.method.version === '1'
+        ? 'Weighted sum of squared log10 count/linear OD residuals under known observation SDs.'
+        : 'Minus twice the known-SD Gaussian log likelihood, omitting parameter-independent exact-observation constants; left-censored log-counts contribute Gaussian CDF probabilities.', uncertainty: { kind: 'not-estimated' as const } } };
   // Parameter-specific interval status is in estimates. No scalar interval is assigned to the aggregate record field.
-  return createAnalysisRecord({ method: GROWTH_METHOD, inputs: [{ id: 'growthData', accession: null, source: data.source.kind,
-    description: data.source.description, data: analysisJson(data) }], parameters: analysisJson(config) as AnalysisRecord['parameters'], seed: config.seed, references: GROWTH_REFERENCES,
+  return createAnalysisRecord({ method: contract.method, inputs: [{ id: 'growthData', accession: null, source: data.source.kind,
+    description: data.source.description, data: analysisJson(data) }], parameters: analysisJson(config) as AnalysisRecord['parameters'], seed: config.seed, references: contract.references,
     fields: { estimates: field('Conditional parameter estimates and individual interval availability', result.estimates),
       fit: field('Numerical fit, trajectories, residuals and identifiability diagnostics', result) } });
 }
 export async function replayGrowthRecord(content: string, progress?: (message: string) => void): Promise<{ dataset: GrowthDataset; options: GrowthFitOptions; result: GrowthFitResult; record: AnalysisRecord }> {
-  const saved = await parseAnalysisRecord(content, { methodId: GROWTH_METHOD.id, methodVersion: GROWTH_METHOD.version });
-  if (saved.method.implementation !== GROWTH_METHOD.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(GROWTH_REFERENCES)) ||
-    saved.inputs.length !== 1 || saved.inputs[0].id !== 'growthData') throw new Error('Growth model, reference or input contract differs.');
+  const saved = await parseAnalysisRecord(content, { methodId: GROWTH_METHOD.id });
+  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'growthData') throw new Error('Growth model, reference or input contract differs.');
   const dataset = validateGrowthDataset(saved.inputs[0].data), options = resolveGrowthOptions(saved.parameters);
+  const contract = growthFitContract(dataset);
+  if (saved.method.version !== contract.method.version || saved.method.implementation !== contract.method.implementation ||
+    JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(contract.references))) throw new Error('Growth model, reference or input contract differs.');
   const result = fitGrowthDataset(dataset, options, progress), record = await createGrowthRecord(dataset, options, result);
   if (record.resultId !== saved.resultId) throw new Error('Fresh growth fit differs from the saved result; the saved output was not installed.');
   return { dataset, options, result, record };

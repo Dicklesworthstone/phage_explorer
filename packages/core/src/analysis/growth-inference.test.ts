@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisJson } from '../analysis-result';
 import { DEFAULT_GROWTH_CONDITIONS, GROWTH_PARAMETERS, GROWTH_BOUNDS, GROWTH_LIMITS, validateGrowthDataset, parseGrowthData,
-  resolveGrowthOptions, simulateGrowth, fitGrowthDataset, createGrowthRecord, replayGrowthRecord,
+  resolveGrowthOptions, simulateGrowth, fitGrowthDataset, createGrowthRecord, replayGrowthRecord, growthLogNormalCdf, growthObservationResidual,
   type GrowthDataset, type GrowthConditions, type GrowthMeasurement } from './growth-inference';
 
 // Independent SciPy 1.17 solve_ivp(method='DOP853', rtol=1e-12, atol=1e-7).
@@ -202,7 +202,7 @@ describe('growth data and portable evidence', () => {
     assert.deepEqual(parseGrowthData(csv.replaceAll(',', '\t'), 'local.csv', conditions), parsed);
     assert.deepEqual(parseGrowthData(JSON.stringify(parsed), 'ignored', DEFAULT_GROWTH_CONDITIONS), parsed);
   });
-  it('rejects censored, mixed/unknown-unit, blank and malformed observations instead of silently guessing', () => {
+  it('rejects unlabeled zeros, mixed/unknown-unit, blank and malformed observations instead of silently guessing', () => {
     for (const replacement of ['0','-1','NaN','Infinity','NA','']) assert.throws(() => parseGrowthData(csv.replace('100000', replacement), 'bad', conditions));
     assert.throws(() => parseGrowthData(csv.replace('PFU','pfu/ml'), 'bad', conditions), /type/);
     assert.throws(() => parseGrowthData(csv.replace('100000,.03','100000,0'), 'bad', conditions), /SD/);
@@ -242,5 +242,110 @@ describe('growth data and portable evidence', () => {
     record.references[0].version = 'other';
     const changed = await createAnalysisRecord({ ...record, inputs: record.inputs.map(({sha256:_sha,...input})=>input) });
     await assert.rejects(replayGrowthRecord(serializeAnalysisRecord(changed)), /contract differs/);
+  });
+});
+
+describe('explicit left-censored extracellular and colony counts', () => {
+  function censoredDataset(): GrowthDataset {
+    const data = dataset(['PFU', 'CFU']);
+    data.observations = data.observations.map(row => row.type === 'PFU' && row.value < 120000
+      ? { ...row, value: 120000, censoring: 'left' } : row);
+    return validateGrowthDataset(data);
+  }
+  it('matches independent SciPy log_ndtr values in the center and extreme tails without probability clipping', () => {
+    // SciPy special.log_ndtr, independent of our series/continued-fraction implementation.
+    for (const [z, expected] of [
+      [-100, -5005.524208694205], [-40, -804.6084420137539], [-20, -203.9171553710973],
+      [-8, -35.01343715991456], [-3, -6.60772622151035], [-2, -3.7831843336820317],
+      [-1.999999, -3.7831819604669423], [-1, -1.8410216450092634], [0, -Math.LN2],
+      [.1, -.6165050101150262], [1, -.1727537790234499], [1.999999, -.02301296457688293],
+      [2, -.023012909328963476], [3, -.0013508099647481925], [8, -6.220960574271742e-16],
+      [20, -2.7536241186061556e-89],
+    ]) near(growthLogNormalCdf(z), expected, Math.abs(expected) * 5e-14);
+    near(growthLogNormalCdf(-1000000), -500000000014.73456, .0002);
+    assert.equal(growthLogNormalCdf(Infinity), 0); assert.equal(growthLogNormalCdf(-Infinity), -Infinity);
+    assert.throws(() => growthLogNormalCdf(NaN));
+  });
+  it('uses event probability, never a residual to an imputed limit or zero', () => {
+    const row = { timeMin: 10, type: 'PFU' as const, value: 100, sigma: .1, censoring: 'left' as const };
+    near(growthObservationResidual(row, 100) ** 2, 2 * Math.LN2, 1e-14);
+    near(growthObservationResidual(row, 10 ** 3) ** 2, 106.46257030102496, 1e-11); // -2 log Phi(-10), SciPy.
+    assert.ok(growthObservationResidual(row, 1) < 1e-40);
+    assert.equal(growthObservationResidual(row, 0), 0);
+    const { censoring: _censoring, ...exact } = row;
+    assert.equal(growthObservationResidual(exact, 100), 0);
+    assert.throws(() => growthObservationResidual(exact, 0), /positive/i);
+    assert.throws(() => growthObservationResidual({ ...row, type: 'OD' }, .1), /PFU/);
+    assert.throws(() => growthObservationResidual(row, -1));
+    assert.throws(() => growthObservationResidual(row, Infinity));
+  });
+  it('imports explicit per-row censoring in CSV/TSV and preserves the positive limit through JSON', () => {
+    const csv = 'timeMin,type,value,sigma,censoring\n0,PFU,120000,.03,left\n5,CFU,1e7,.03,none\n10,PFU,120000,.03,left\n15,CFU,1e7,.03,none\n20,PFU,3e5,.03,none\n20,PFU,3e5,.03,left';
+    const data = parseGrowthData(csv, 'count-limits.csv', conditions);
+    assert.deepEqual(data.observations[0], { timeMin: 0, type: 'PFU', value: 120000, sigma: .03, censoring: 'left' });
+    assert.equal(data.observations[1].censoring, undefined);
+    assert.equal(data.observations.filter(row => row.timeMin === 20).length, 2);
+    assert.deepEqual(parseGrowthData(csv.replaceAll(',', '\t'), 'count-limits.csv', conditions), data);
+    assert.deepEqual(parseGrowthData(JSON.stringify(data), 'ignored', DEFAULT_GROWTH_CONDITIONS), data);
+    for (const value of ['right', 'unknown', '', '0']) assert.throws(() => parseGrowthData(csv.replace(',left', `,${value}`), 'bad', conditions), /none or left/);
+    assert.throws(() => parseGrowthData(csv.replace('0,PFU,120000', '0,PFU,0'), 'bad', conditions), /positive detection limit/);
+    assert.throws(() => parseGrowthData(csv.replace('0,PFU,120000', '0,OD,.1'), 'bad', conditions), /PFU\/CFU/);
+    const malformed = censoredDataset() as unknown as { observations: Array<Record<string, unknown>> };
+    malformed.observations[0].censoring = null;
+    assert.throws(() => validateGrowthDataset(malformed), /left-censored/);
+  });
+  it('recovers the independent censored-likelihood optimum and withholds inappropriate Wald precision', () => {
+    // SciPy DOP853 (rtol=2e-12, atol=1e-7) + Nelder-Mead in log(k,L,b),
+    // xatol=fatol=1e-11. Joint PFU/CFU fixture, PFU below 120000 censored,
+    // sigma=.03, objective exact squared residuals plus -2 scipy.special.log_ndtr.
+    // This oracle does not call the production RK4, optimizer or CDF implementation.
+    const data = censoredDataset(), before = structuredClone(data), result = fitGrowthDataset(data, options());
+    assert.equal(result.converged, true);
+    const expected = { adsorptionRate: 2.000317734388928e-9, latentPeriod: 20.278954386759395, burstSize: 35.65055269551192 };
+    for (const key of GROWTH_PARAMETERS) {
+      near(result.parameters[key], expected[key], expected[key] * 5e-5);
+      assert.equal(result.estimates[key].interval95, null);
+      assert.match(result.estimates[key].reason, /Censored likelihood/);
+    }
+    near(result.objective, 1.1002942961782112, 2e-6);
+    assert.equal(result.censoring?.censoredObservations, 3);
+    assert.equal(result.censoring?.quantifiedObservations, 21);
+    assert.equal(result.censoring?.quantifiedSensitivityRank, 3);
+    for (const row of result.residuals.filter(row => row.censoring === 'left')) {
+      assert.equal(row.value, 120000); assert.equal(row.standardizedResidual, null);
+      assert.ok(row.likelihoodDeviance! > 0);
+    }
+    near(result.residuals.reduce((total, row) => total + (row.likelihoodDeviance ?? row.standardizedResidual! ** 2), 0), result.objective, 1e-12);
+    assert.deepEqual(data, before);
+  });
+  it('retains zero-population, all-censored fits as unidentifiable rather than inventing concentrations', () => {
+    const data = censoredDataset(); data.conditions.initialBacteria = 0; data.conditions.initialPhage = 0;
+    data.observations = data.observations.map(row => ({ ...row, value: 100, censoring: 'left' }));
+    const fit = fitGrowthDataset(data, resolveGrowthOptions({ starts: 1 }));
+    assert.equal(fit.objective, 0); assert.equal(fit.sensitivityRank, 0);
+    assert.equal(fit.censoring?.quantifiedObservations, 0);
+    for (const row of fit.residuals) { assert.equal(row.predicted, 0); assert.equal(row.standardizedResidual, null); }
+    for (const estimate of Object.values(fit.estimates)) { assert.equal(estimate.interval95, null); assert.equal(estimate.status, 'unresolved'); }
+  });
+  it('exports and verifies censored fits as v2 while refusing semantic downgrades and changed limits', async () => {
+    const data = censoredDataset(), settings = options(), fit = fitGrowthDataset(data, settings);
+    const record = await createGrowthRecord(data, settings, fit);
+    assert.equal(record.method.version, '2'); assert.equal(record.references[1].version, '2');
+    const replay = await replayGrowthRecord(serializeAnalysisRecord(record));
+    assert.deepEqual(replay.result, fit); assert.equal(replay.record.resultId, record.resultId);
+    const downgraded = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' },
+      inputs: record.inputs.map(({ sha256: _sha, ...input }) => input) });
+    await assert.rejects(replayGrowthRecord(serializeAnalysisRecord(downgraded)), /contract differs/);
+    const changed = structuredClone(data); changed.observations[0].value *= 2;
+    const forged = await createGrowthRecord(changed, settings, fit);
+    await assert.rejects(replayGrowthRecord(serializeAnalysisRecord(forged)), /Fresh growth fit differs/);
+  });
+  it('preserves the known exact-only v1 result identity captured before censoring support', async () => {
+    const data = parseGrowthData('timeMin,type,value,sigma\n0,PFU,100000,.1\n5,PFU,95000,.1\n10,PFU,120000,.1\n15,PFU,200000,.1\n20,PFU,350000,.1\n30,PFU,1000000,.1', 'uncensored-v1-regression.csv', DEFAULT_GROWTH_CONDITIONS);
+    const settings = resolveGrowthOptions({ starts: 1, freeParameters: ['burstSize'] });
+    const record = await createGrowthRecord(data, settings, fitGrowthDataset(data, settings));
+    assert.equal(record.method.version, '1');
+    assert.equal(record.resultId, 'd2d508e8f9943658f10084ddc7b50d1931d9d81a8ab6283281ab16e9b9444115');
+    assert.equal((await replayGrowthRecord(serializeAnalysisRecord(record))).record.resultId, record.resultId);
   });
 });

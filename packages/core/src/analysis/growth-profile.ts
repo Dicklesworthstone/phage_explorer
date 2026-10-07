@@ -5,10 +5,11 @@
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { GROWTH_BOUNDS, GROWTH_PARAMETERS, fitGrowthDataset, createGrowthRecord, resolveGrowthOptions,
-  simulateGrowth, validateGrowthDataset, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult,
+  growthResiduals, growthFitContract, validateGrowthDataset, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult,
   type GrowthParameter } from './growth-inference';
 
-// For known independent Gaussian SDs, SSE(candidate)-SSE(MLE) = -2 log LR.
+// For known independent Gaussian SDs, objective(candidate)-objective(MLE) = -2 log LR.
+// Censored observations contribute -2 log CDF, not a residual to their detection limit.
 // chi2.ppf(.95, 1); individual-parameter, not simultaneous 3-parameter coverage.
 export const GROWTH_PROFILE_CUTOFF = 3.841458820694124;
 export const GROWTH_PROFILE_LIMITS = { points: 64, expansionSteps: 16, rootSteps: 14 } as const;
@@ -45,13 +46,7 @@ export interface ProfiledGrowthFit {
 
 /** Same declared observation model, using the shared ODE solver at refinement tolerance. */
 function residuals(dataset: GrowthDataset, parameters: Record<GrowthParameter, number>, budget: { steps: number }, tolerance = 1e-7): number[] {
-  const states = simulateGrowth(parameters, dataset.conditions, dataset.observations.map(row => row.timeMin), tolerance, budget);
-  return dataset.observations.map((row, i) => {
-    const expected = row.type === 'OD' ? states[i].od : row.type === 'PFU' ? states[i].phage : states[i].bacteria;
-    if (row.type !== 'OD' && expected <= 0) throw new Error('Profile requires positive predicted counts.');
-    const residual = (row.type === 'OD' ? expected - row.value : Math.log10(expected) - Math.log10(row.value)) / row.sigma;
-    return residual;
-  });
+  return growthResiduals(dataset, parameters, tolerance, budget);
 }
 function objective(dataset: GrowthDataset, parameters: Record<GrowthParameter, number>, budget: { steps: number }): number {
   return residuals(dataset, parameters, budget).reduce((sum, value) => sum + value * value, 0);
@@ -61,11 +56,20 @@ const METHOD = { id: 'mechanistic-growth-profile', version: '1',
   implementation: 'Accepted growth-fit-v1; bounded nuisance refits; bidirectional log-space expansion and bisection; individual known-SD likelihood-ratio component' };
 const REFERENCE = { id: 'growth-profile-likelihood', version: 'Raue-2009/component-v1',
   description: 'Reoptimize the remaining free parameters at each fixed candidate. Individual 95% asymptotic cutoff delta SSE=3.841458820694124. Trace the local connected component, not all disconnected modes.' };
+const CENSORED_METHOD = { id: 'mechanistic-growth-profile', version: '2',
+  implementation: 'Accepted growth-fit-v2 with left-censored Gaussian likelihood; bounded nuisance refits; log-space expansion and bisection; individual likelihood-ratio component with quantified-data support checks' };
+const CENSORED_REFERENCE = { id: 'growth-profile-likelihood', version: 'Raue-2009/component-v2',
+  description: 'Refit nuisance parameters under the same exact/censored likelihood. Individual 95% asymptotic cutoff -2 log LR=3.841458820694124. Require full-rank quantified observations with positive residual degrees of freedom and resolved crossings; trace only the local connected component.' };
+function profileContract(dataset: GrowthDataset): { method: typeof METHOD; reference: typeof REFERENCE } {
+  return dataset.observations.some(row => row.censoring === 'left')
+    ? { method: CENSORED_METHOD, reference: CENSORED_REFERENCE } : { method: METHOD, reference: REFERENCE };
+}
 
 /** Refit from original observations; never trust a saved candidate as the optimum. */
 export async function profileGrowthDataset(input: GrowthDataset, settings: GrowthFitOptions, parameter: GrowthParameter,
   report: (message: string) => void = () => {}, expectedBaselineId?: string): Promise<ProfiledGrowthFit> {
   const dataset = validateGrowthDataset(input), options = resolveGrowthOptions(settings);
+  const contract = profileContract(dataset);
   if (!GROWTH_PARAMETERS.includes(parameter) || !options.freeParameters.includes(parameter)) throw new Error('Only an estimated growth parameter can be profiled; fixed inputs are not estimates.');
   report('Recomputing the accepted fit before profiling');
   const budget = { steps: 0 };
@@ -152,7 +156,7 @@ export async function profileGrowthDataset(input: GrowthDataset, settings: Growt
           if (middle.delta! < GROWTH_PROFILE_CUTOFF) inside = middle; else outside = middle;
         }
         return Math.abs(closest.delta! - GROWTH_PROFILE_CUTOFF) <= .01
-          ? endpoint('crossed', closest, 'Likelihood-ratio crossing resolved to delta-SSE tolerance 0.01.')
+          ? endpoint('crossed', closest, result.censoring ? 'Likelihood-ratio crossing resolved to deviance tolerance 0.01.' : 'Likelihood-ratio crossing resolved to delta-SSE tolerance 0.01.')
           : endpoint('failed', closest, 'Profile crossing did not resolve to the required objective tolerance.');
       }
       inside = outside; warm = outside.parameters!; step = Math.min(2, step * 1.8);
@@ -172,9 +176,18 @@ export async function profileGrowthDataset(input: GrowthDataset, settings: Growt
   ];
   const competing = result.starts.some(start => start.objective !== null && start.objective - baseline < GROWTH_PROFILE_CUTOFF &&
     options.freeParameters.some(key => Math.abs(Math.log(start.parameters[key] / result.parameters[key])) > Math.log(2)));
+  const quantifiedSupport = result.censoring
+    ? result.censoring.quantifiedDegreesOfFreedom > 0 && result.censoring.quantifiedSensitivityRank === options.freeParameters.length &&
+      result.censoring.quantifiedSensitivityCondition !== null && result.censoring.quantifiedSensitivityCondition <= 1e5 &&
+      result.censoring.quantifiedResidualSumSquares / result.censoring.quantifiedDegreesOfFreedom <= 4
+    : baseline / result.degreesOfFreedom <= 4;
+  if (result.censoring) {
+    warnings.push('Left-censored counts enter every baseline and nuisance likelihood through their Gaussian CDF probability. Limits are fixed, known assay inputs. The likelihood difference is -2 log LR; it is not a sum of residuals to the limits.');
+    warnings.push('For censored datasets, bounded asymptotic intervals additionally require full-rank, well-conditioned quantified observations with positive residual degrees of freedom and acceptable residual size. A dataset of detection limits alone cannot earn a bounded interval from these diagnostics.');
+  }
   const regular = !competing && result.converged && result.sensitivityRank === options.freeParameters.length &&
     result.sensitivityCondition !== null && result.sensitivityCondition <= 1e5 && result.solverDiscrepancySigma <= .02 &&
-    baseline / result.degreesOfFreedom <= 4 && options.freeParameters.every(key => {
+    quantifiedSupport && options.freeParameters.every(key => {
       const value = result.parameters[key], bounds = GROWTH_BOUNDS[key];
       return Math.log(value / bounds[0]) > 1e-6 && Math.log(bounds[1] / value) > 1e-6;
     });
@@ -188,27 +201,26 @@ export async function profileGrowthDataset(input: GrowthDataset, settings: Growt
   const evidence = dataset.source.kind === 'demo'
     ? { kind: 'demo' as const, assumptions: ['Explicit synthetic observations; this is a numerical uncertainty diagnostic, not biological calibration.'] }
     : { kind: 'fitted-estimate' as const, fit: { dataInput: 'growthData', objective: 'Profile the known-SD Gaussian likelihood over the remaining free parameters.', uncertainty: { kind: 'not-estimated' as const } } };
-  const profileRecord = await createAnalysisRecord({ method: METHOD, inputs: record.inputs.map(({ sha256: _sha, ...input }) => input),
+  const profileRecord = await createAnalysisRecord({ method: contract.method, inputs: record.inputs.map(({ sha256: _sha, ...input }) => input),
     parameters: { fitOptions: analysisJson(options), parameter, baselineResultId: record.resultId }, seed: options.seed,
-    references: [...record.references, REFERENCE], fields: { profile: { ...evidence, label: 'Nuisance-refitted profile likelihood and individual interval availability',
+    references: [...record.references, contract.reference], fields: { profile: { ...evidence, label: 'Nuisance-refitted profile likelihood and individual interval availability',
       units: 'records', coverage, limitations: [...result.warnings, ...warnings], value: analysisJson(profile) } } });
   return { dataset, options, result, record, profile, profileRecord };
 }
 
 export async function replayGrowthProfile(content: string, report?: (message: string) => void): Promise<ProfiledGrowthFit> {
-  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id, methodVersion: METHOD.version });
-  if (saved.method.implementation !== METHOD.implementation || saved.inputs.length !== 1 || saved.inputs[0].id !== 'growthData' ||
+  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id });
+  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'growthData' ||
     Object.keys(saved.parameters).sort().join(',') !== 'baselineResultId,fitOptions,parameter' ||
     typeof saved.parameters.baselineResultId !== 'string' || !/^[a-f0-9]{64}$/.test(saved.parameters.baselineResultId) ||
     !GROWTH_PARAMETERS.includes(saved.parameters.parameter as GrowthParameter)) throw new Error('Unsupported growth-profile contract.');
   const options = resolveGrowthOptions(saved.parameters.fitOptions);
   if (saved.seed !== options.seed) throw new Error('Growth-profile seed differs from its fitting options.');
-  const expectedReferences = [
-    { id: 'infection-stage-model', version: '1', description: 'dB=mu B-k BP; dI1=k BP-m I1/L; dIj=m(Ij-1-Ij)/L; dP=b m Im/L-k BP-delta P. Initially all infected compartments are zero.' },
-    { id: 'observation-likelihood', version: '1', description: 'Independent normal errors with supplied known SDs in linear OD/log10 counts; local information J^T J, interval multiplier 1.959963984540054.' }, REFERENCE,
-  ];
+  const dataset = validateGrowthDataset(saved.inputs[0].data), contract = profileContract(dataset);
+  if (saved.method.version !== contract.method.version || saved.method.implementation !== contract.method.implementation) throw new Error('Unsupported growth-profile contract.');
+  const expectedReferences = [...growthFitContract(dataset).references, contract.reference];
   if (JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(expectedReferences))) throw new Error('Growth-profile reference contract differs.');
-  const fresh = await profileGrowthDataset(validateGrowthDataset(saved.inputs[0].data), options,
+  const fresh = await profileGrowthDataset(dataset, options,
     saved.parameters.parameter as GrowthParameter, report, saved.parameters.baselineResultId);
   if (saved.resultId !== fresh.profileRecord.resultId) throw new Error('Fresh growth profile differs from the saved result; no saved profile was installed.');
   return fresh;
