@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CODON_REFERENCE_LIMITS, parseCodonReference, buildCodonReferenceWeights, referenceGenomeFromPhage,
-  serializeAnalysisRecord, type ReferenceCodonExperiment, type ZeroCountReplacement } from '@phage-explorer/core';
+  serializeAnalysisRecord, resolveCodonCorpusOptions, exportCodonCorpusReference, type CodonReferenceCorpus,
+  type CodonCorpusOptions, type ReferenceCodonExperiment, type ZeroCountReplacement } from '@phage-explorer/core';
 import { useLocalGenomes } from '../../db/local-genomes';
 import { runCodonReferenceTask } from '../../workers/codon-reference.worker';
 import { downloadString } from '../../utils/export';
@@ -14,6 +15,28 @@ export function CodonReferencePanel(): React.ReactElement {
   const [geneId, setGeneId] = useState('all');
   const [referenceText, setReferenceText] = useState('');
   const [zeroPolicy, setZeroPolicy] = useState<ZeroCountReplacement>(0.5);
+  const [sourceId, setSourceId] = useState('');
+  const [sourceGenes, setSourceGenes] = useState('');
+  const [corpusName, setCorpusName] = useState('');
+  const [organism, setOrganism] = useState('');
+  const [citation, setCitation] = useState('');
+  const [sourceVersion, setSourceVersion] = useState('');
+  const [sourceCode, setSourceCode] = useState('');
+  const [unavailable, setUnavailable] = useState<'reject' | 'exclude'>('reject');
+  const [storedCorpus, setStoredCorpus] = useState<{ text: string; corpus: CodonReferenceCorpus } | null>(null);
+  const sourceGenome = genomes.find(item => item.phage.localGenome?.contentId === sourceId && item.phage.localGenome.format === 'genbank') ?? null;
+  const sourceReference = storedCorpus?.text === referenceText ? storedCorpus.corpus : null;
+  const corpusDraft = useMemo(() => {
+    if (!sourceGenome) return { options: null, error: 'Choose an imported GenBank reference genome.' };
+    try {
+      const text = sourceGenes.trim();
+      if (text && !/^[1-9]\d*(,[1-9]\d*)*$/.test(text)) throw new Error('Reference CDS IDs must be comma-separated positive integers.');
+      const options = resolveCodonCorpusOptions({ name: corpusName, organism, geneticCode: Number(sourceCode) as 1 | 11,
+        citation, version: sourceVersion, unavailable,
+        record: sourceId, geneIds: text ? text.split(',').map(Number) : null });
+      return { options, error: null };
+    } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : 'Invalid reference corpus settings.' }; }
+  }, [sourceGenome, sourceId, sourceGenes, corpusName, organism, sourceCode, citation, sourceVersion, unavailable]);
   const [analysisBusy, setBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const busy = analysisBusy || libraryBusy;
@@ -28,12 +51,12 @@ export function CodonReferencePanel(): React.ReactElement {
   const reference = useMemo(() => {
     if (!referenceText.trim()) return null;
     try {
-      const value = parseCodonReference(referenceText);
+      const value = sourceReference?.reference ?? parseCodonReference(referenceText);
       return { value, coverage: buildCodonReferenceWeights(value, zeroPolicy), error: null };
     } catch (cause) {
       return { value: null, coverage: null, error: cause instanceof Error ? cause.message : 'Invalid reference JSON.' };
     }
-  }, [referenceText, zeroPolicy]);
+  }, [referenceText, zeroPolicy, sourceReference]);
 
   useEffect(() => {
     if (!genomes.some(item => item.phage.localGenome?.contentId === selected)) {
@@ -74,15 +97,50 @@ export function CodonReferencePanel(): React.ReactElement {
     } catch (cause) { fail(controller, cause); }
     finally { end(controller); }
   };
+  const useCorpus = (corpus: CodonReferenceCorpus, text = serializeAnalysisRecord(corpus.record)) => {
+    setStoredCorpus({ corpus, text }); setReferenceText(text);
+  };
+  const buildCorpus = async () => {
+    if (!sourceGenome || !corpusDraft.options) { setError(corpusDraft.error); return; }
+    // Capture the source and selection before the first async file/hash operation.
+    const original = { ...sourceGenome.original }, options: CodonCorpusOptions = structuredClone(corpusDraft.options);
+    const controller = begin(); setStatus('Reparsing reference CDS and counting the declared corpus…');
+    try {
+      const corpus = await runCodonReferenceTask(
+        () => new Worker(new URL('../../workers/codon-reference.worker.ts', import.meta.url), { type: 'module' }),
+        { type: 'build-reference', input: original, options }, controller.signal);
+      if (operation.current !== controller || controller.signal.aborted) return;
+      useCorpus(corpus);
+    } catch (cause) { fail(controller, cause); }
+    finally { end(controller); }
+  };
+  const exportCorpus = (countsOnly: boolean) => {
+    if (!sourceReference) return;
+    try {
+      downloadString(countsOnly ? exportCodonCorpusReference(sourceReference) : serializeAnalysisRecord(sourceReference.record),
+        countsOnly ? 'codon-reference-counts.json' : 'codon-reference-corpus.json', 'application/json');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Reference corpus export failed.'); }
+  };
   const load = async (file: File | undefined, kind: 'reference' | 'experiment') => {
     if (!file) return;
     const controller = begin(); setStatus(kind === 'reference' ? 'Reading reference locally…' : 'Recomputing saved experiment from its original inputs…');
     try {
-      const maximum = kind === 'reference' ? CODON_REFERENCE_LIMITS.bytes : 10 * 1024 * 1024;
-      if (file.size > maximum) throw new Error(kind === 'reference' ? 'Reference exceeds 128 KiB.' : 'Experiment exceeds 10 MiB.');
+      const maximum = 10 * 1024 * 1024;
+      if (file.size > maximum) throw new Error('Reference input or experiment exceeds 10 MiB.');
       const content = await file.text();
       if (operation.current !== controller || controller.signal.aborted) return;
-      if (kind === 'reference') { parseCodonReference(content); setReferenceText(content); }
+      if (kind === 'reference') {
+        // Large references can only be source experiments; leave their parsing off-thread.
+        const corpusInput = file.size > CODON_REFERENCE_LIMITS.bytes || content.length > CODON_REFERENCE_LIMITS.bytes
+          || JSON.parse(content)?.format === 'phage-explorer-analysis';
+        if (corpusInput) {
+          const corpus = await runCodonReferenceTask(
+            () => new Worker(new URL('../../workers/codon-reference.worker.ts', import.meta.url), { type: 'module' }),
+            { type: 'verify-reference', content }, controller.signal);
+          if (operation.current !== controller || controller.signal.aborted) return;
+          useCorpus(corpus, content);
+        } else { parseCodonReference(content); setStoredCorpus(null); setReferenceText(content); }
+      }
       else {
         const experiment = await runCodonReferenceTask(
           () => new Worker(new URL('../../workers/codon-reference.worker.ts', import.meta.url), { type: 'module' }),
@@ -137,10 +195,12 @@ export function CodonReferencePanel(): React.ReactElement {
       </select></label>
       {genome && !genome.phage.genes.some(gene => !gene.type || gene.type === 'CDS') && <p>No CDS annotations are available. FASTA alone cannot define coding frames; import annotated GenBank instead.</p>}
       <label>Codon reference JSON file <input type="file" accept=".json,application/json" onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void load(file, 'reference'); }} /></label>
-      <label>Paste codon reference JSON <textarea rows={6} value={referenceText} spellCheck={false} onChange={event => {
+      <p>Accepts count-only JSON or a complete source corpus experiment; sources are verified before use.</p>
+      <label>Paste codon reference JSON <textarea rows={6} value={sourceReference ? '' : referenceText} readOnly={!!sourceReference} placeholder={sourceReference ? 'Source-backed reference loaded. Clear it below to paste count-only JSON.' : 'Codon-count JSON'} spellCheck={false} onChange={event => {
         if (new TextEncoder().encode(event.target.value).length > CODON_REFERENCE_LIMITS.bytes) { setError('Reference exceeds 128 KiB.'); return; }
         setReferenceText(event.target.value);
       }} style={{ width: '100%', fontFamily: 'var(--font-mono)' }} /></label>
+      {sourceReference && <button type="button" onClick={() => { setReferenceText(''); setStoredCorpus(null); }}>Clear source-backed reference</button>}
       <details><summary>Reference format and count requirements</summary>
         <p>Use integer counts from your documented reference corpus, ideally a justified highly expressed gene set. A synonymous family needs every codon reported and at least one observation. Omitted counts mean unavailable, never zero. Counts below illustrate the schema only; they are not a biological reference.</p>
         <pre style={{ overflowX: 'auto' }}>{`{"format":"phage-explorer-codon-reference","version":1,
@@ -156,6 +216,41 @@ export function CodonReferencePanel(): React.ReactElement {
       {reference?.value && <p>{reference.value.name} · {reference.value.organism} · {reference.value.source.version}. Covered synonymous families: {reference.coverage!.coveredFamilies.length}/18. Attribution: {reference.value.source.citation}</p>}
       <button type="button" className="btn btn-primary" disabled={!genome || !reference?.value} onClick={() => void run()}>Analyze against reference</button>
     </fieldset>
+    <details><summary>Build reference counts from imported GenBank</summary>
+      <p>Select a justified reference CDS set and supply its attribution. The program counts sequences; it does not discover highly expressed genes or certify the source organism.</p>
+      <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem' }}><legend>Reference corpus sources and policy</legend>
+        <label>Corpus source genome <select value={sourceId} onChange={event => { setSourceId(event.target.value); setSourceGenes(''); }}>
+          <option value="">Choose imported GenBank</option>
+          {genomes.filter(g => g.phage.localGenome?.format === 'genbank').map(g => <option key={g.phage.localGenome!.contentId} value={g.phage.localGenome!.contentId}>{g.phage.name} · {g.phage.accession} · {g.phage.localGenome!.contentId.slice(0, 12)}</option>)}
+        </select></label>
+        <label>Corpus name <input value={corpusName} onChange={event => setCorpusName(event.target.value)} maxLength={300} /></label>
+        <label>Corpus organism (your assertion) <input value={organism} onChange={event => setOrganism(event.target.value)} maxLength={300} /></label>
+        <label>Corpus citation and selection rationale <textarea rows={2} value={citation} onChange={event => setCitation(event.target.value)} maxLength={2000} /></label>
+        <label>Corpus source version <input value={sourceVersion} onChange={event => setSourceVersion(event.target.value)} maxLength={200} /></label>
+        <label>Corpus genetic code <select value={sourceCode} onChange={event => setSourceCode(event.target.value)}>
+          <option value="">Choose the declared reference code</option><option value="1">1 — Standard</option><option value="11">11 — Bacterial, archaeal and plastid</option>
+        </select></label>
+        <label>Corpus CDS IDs (blank selects all mapped CDS) <input value={sourceGenes} onChange={event => setSourceGenes(event.target.value)} placeholder="1,2,7" maxLength={120000} /></label>
+        {sourceGenome && <details><summary>Mapped reference CDS identifiers</summary><p>{sourceGenome.phage.genes.filter(g => g.type === 'CDS').map(g => `${g.id}: ${g.locusTag ?? g.name ?? 'CDS'}`).join('; ') || 'No mapped CDS'}</p></details>}
+        <label>Unsupported reference CDS <select value={unavailable} onChange={event => setUnavailable(event.target.value as 'reject' | 'exclude')}>
+          <option value="reject">Reject the corpus (default)</option><option value="exclude">Explicitly exclude and audit unsupported CDS</option>
+        </select></label>
+        {sourceGenome && corpusDraft.error && <p>{corpusDraft.error}</p>}
+        <button type="button" disabled={!corpusDraft.options} onClick={() => void buildCorpus()}>Build and use source-backed reference</button>
+      </fieldset>
+    </details>
+    {sourceReference && <section aria-label="Accepted reference corpus audit">
+      <h4>Loaded source-backed reference for the next analysis: {sourceReference.reference.name}</h4>
+      <p>Counted CDS: {sourceReference.summary.countedCds}/{sourceReference.summary.selectedMappedCds} selected mapped CDS; explicitly excluded: {sourceReference.summary.excludedMappedCds}; unmappable CDS in source: {sourceReference.summary.unmappedCds}. Counted triplets: {sourceReference.summary.codons.toLocaleString()}.</p>
+      <p>All 64 codons are reported. Zeros mean absent from accepted transcripts, not absent from the organism. Source input and exclusions will be recounted inside the query experiment during replay.</p>
+      <details><summary>Source identities and excluded CDS (first 100)</summary>
+        {sourceReference.sources.map(source => <p key={source.contentId}>{source.accession} · {source.contentId}. {source.warnings.slice(0, 10).join(' ')}</p>)}
+        {sourceReference.genes.filter(g => g.status === 'excluded').slice(0, 100).map(g => <p key={`${g.contentId}:${g.geneId}`}>{sourceReference.sources.find(s => s.contentId === g.contentId)?.accession ?? g.contentId} CDS {g.geneId}: {g.reasons.join(' ')}</p>)}
+      </details>
+      <button type="button" onClick={() => exportCorpus(false)}>Export source corpus experiment</button>{' '}
+      <button type="button" onClick={() => exportCorpus(true)}>Export count-only reference JSON</button>
+      <p>Count-only JSON cannot replay its source derivation. The corpus experiment retains private original inputs and the complete CDS audit.</p>
+    </section>}
     <label>Reopen and verify reference experiment <input type="file" accept=".json,application/json" disabled={busy} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void load(file, 'experiment'); }} /></label>
     {analysisBusy && <button type="button" className="btn" onClick={cancel}>Cancel reference analysis</button>}
     <p role="status" aria-live="polite">{status}</p>
