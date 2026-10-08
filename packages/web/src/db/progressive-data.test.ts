@@ -7,6 +7,9 @@ import {
 } from './progressive-manifest';
 import { readBoundedResponse, VerifiedArtifactStore, type ArtifactCache } from './progressive-artifacts';
 
+// Bun's `typeof fetch` also declares `preconnect`; these stand-ins only answer requests.
+const asFetch = (fn: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>): typeof fetch => fn as typeof fetch;
+
 const base = 'https://example.test/research/phage.db.manifest.json';
 function asset(text: string, extension = 'json'): DataArtifact {
   const sha256 = createHash('sha256').update(text).digest('hex');
@@ -31,7 +34,7 @@ class MemoryCache implements ArtifactCache {
   async delete(key: string): Promise<boolean> { return this.entries.delete(key); }
   async keys(): Promise<Request[]> { return [...this.entries.keys()].map(key => new Request(key)); }
 }
-const noNetwork: typeof fetch = async () => { throw new Error('offline'); };
+const noNetwork = asFetch(async () => { throw new Error('offline'); });
 
 describe('progressive dataset contract', () => {
   test('round trips a versioned index and verifies its full content identity', async () => {
@@ -85,7 +88,7 @@ describe('progressive dataset contract', () => {
 describe('verified on-demand artifacts', () => {
   test('coalesces concurrent loads and rechecks bytes on offline reuse', async () => {
     const cache = new MemoryCache(); const item = asset('[1]'); let calls = 0;
-    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: async () => { calls++; return new Response('[1]'); } });
+    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: asFetch(async () => { calls++; return new Response('[1]'); }) });
     const results = await Promise.all([store.read(item), store.read(item), store.read(item)]);
     assert.equal(calls, 1); assert.equal(results[0].cached, false);
     assert.equal((await store.read(item)).cached, true);
@@ -97,7 +100,7 @@ describe('verified on-demand artifacts', () => {
   test('rejects corrupt or truncated network bytes without saving them', async () => {
     const item = asset('[123]'); const cache = new MemoryCache();
     for (const text of ['[999]', '[1]', '[123456]']) {
-      const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: async () => new Response(text) });
+      const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: asFetch(async () => new Response(text)) });
       await assert.rejects(store.read(item), /integrity|budget/);
       assert.equal(cache.entries.size, 0); await store.close();
     }
@@ -105,7 +108,7 @@ describe('verified on-demand artifacts', () => {
   test('repairs a corrupt cached artifact only from verified network bytes', async () => {
     const item = asset('[1]'); const cache = new MemoryCache(); const url = dataArtifactUrl(base, item);
     await cache.put(url, new Response('[9]'));
-    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: async () => new Response('[1]') });
+    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: asFetch(async () => new Response('[1]')) });
     assert.equal((await store.read(item)).cached, false);
     assert.equal(await (await cache.match(url))!.text(), '[1]'); await store.close();
   });
@@ -122,7 +125,7 @@ describe('verified on-demand artifacts', () => {
   test('storage failure preserves usable verified data and is reported', async () => {
     let warnings = 0;
     const cache = new MemoryCache(); cache.put = async () => { throw new Error('quota'); };
-    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: async () => new Response('[1]'), onStorageUnavailable: () => { warnings++; } });
+    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: asFetch(async () => new Response('[1]')), onStorageUnavailable: () => { warnings++; } });
     assert.equal(new TextDecoder().decode((await store.read(asset('[1]'))).data), '[1]');
     assert.equal(warnings, 1); assert.equal(store.getTransferLedger().storageAvailable, false); await store.close();
   });
@@ -130,7 +133,7 @@ describe('verified on-demand artifacts', () => {
     const cache = new MemoryCache(); const texts = ['[1]', '[2]', '[3]'];
     const byUrl = new Map(texts.map(text => [dataArtifactUrl(base, asset(text)), text]));
     const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, cacheBudget: 6,
-      fetch: async input => new Response(byUrl.get(String(input))) });
+      fetch: asFetch(async input => new Response(byUrl.get(String(input)))) });
     store.pin(asset(texts[0]));
     for (const text of texts) await store.read(asset(text));
     assert.equal(cache.entries.size, 2);
@@ -140,12 +143,12 @@ describe('verified on-demand artifacts', () => {
   test('limits concurrency and cancels both active and queued requests', async () => {
     let active = 0; let peak = 0;
     const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => undefined,
-      fetch: async (_input, init) => {
+      fetch: asFetch(async (_input, init) => {
         active++; peak = Math.max(peak, active);
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener('abort', () => { active--; reject(new Error('cancelled')); }, { once: true });
         });
-      } });
+      }) });
     const pending = Array.from({ length: 9 }, (_, i) => store.read(asset(`[${i}]`)));
     const settled = Promise.allSettled(pending);
     await new Promise(resolve => setTimeout(resolve, 10));

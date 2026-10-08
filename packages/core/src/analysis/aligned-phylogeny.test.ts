@@ -1,6 +1,6 @@
 import { describe, test } from 'bun:test';
 import { strict as assert } from 'node:assert';
-import { analysisJson, createAnalysisRecord, serializeAnalysisRecord } from '../analysis-result';
+import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisField } from '../analysis-result';
 import { parseAlignedDNA, neighborJoining, inferAlignedPhylogeny, resolvePhylogenyOptions,
   createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, PHYLOGENY_LIMITS,
   type NeighborJoiningTree, type PhylogenySource } from './aligned-phylogeny';
@@ -121,7 +121,8 @@ describe('unrooted split support, identifiability and replay', () => {
   test('rejects forged results even after all content checksums have been recalculated', async () => {
     const experiment = await createAlignedPhylogenyExperiment(source);
     const forged = await createAnalysisRecord({ ...experiment.record, fields: { ...experiment.record.fields,
-      phylogeny: { ...experiment.record.fields.phylogeny, value: { fabricated: true } } } });
+      // Deliberately forged: the spread over the field union is not a valid AnalysisField.
+      phylogeny: { ...experiment.record.fields.phylogeny, value: { fabricated: true } } as unknown as AnalysisField } });
     await assert.rejects(replayAlignedPhylogenyExperiment(serializeAnalysisRecord(forged)), /Recomputed/);
   });
   test('does not let changed defaults reinterpret an incomplete saved parameter set', async () => {
