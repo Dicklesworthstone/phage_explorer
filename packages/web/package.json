@@ -7,6 +7,7 @@
     "dev": "bun run prepare:db && bunx vite dev",
     "prepare:db": "bun run ../../scripts/build-web-db.ts --source public/phage.db --output public",
     "build": "bun run prepare:db && bunx vite build",
+    "build:progressive": "bun run build.ts",
     "preview": "bunx vite preview",
     "lint": "bunx eslint src --max-warnings=0",
     "generate:og": "bun run scripts/generate-og-images.ts",

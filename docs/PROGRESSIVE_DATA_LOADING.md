@@ -9,6 +9,30 @@ monolithic database.
 
 ## Publish and use
 
+Build the deployable catalog-first application from the committed annotated input:
+
+```sh
+bun run build:web:progressive
+bun run preview:web
+```
+
+Vercel uses the same progressive build command. Automatic Git deployment remains
+disabled by the existing repository configuration; this does not deploy a site.
+The builder opens `packages/web/public/phage.db` read-only, stages a new immutable
+generation alongside copies of unrelated public assets, and passes that staging
+directory to the existing Vite/PWA build. It verifies all referenced files before
+and after bundling. Source files, source manifests, and the terminal release DB
+are not overwritten. The stage excludes old shards, the legacy monolith/gzip,
+and SQLite sidecars; missing canonical input is an error, not permission to use
+the repository-root intermediate. Temporary staging is retained in the system
+temporary directory, including after failure; no cleanup of source files occurs.
+
+`bun run build:web` and development `prepare:db` retain the version-2 layout for
+legacy-reader and existing snapshot/update tests. Use the explicit progressive
+command for the Vercel layout. Both use the same application and layout-aware
+loader, not separate browser implementations. No dependency or lockfile changes
+are needed for publication.
+
 Use the existing publisher with an explicit source database:
 
 ```sh
@@ -17,11 +41,15 @@ bun scripts/build-progressive-web-db.ts \
 ```
 
 Deploy the manifest and every referenced immutable `phage-data/` artifact together
-with a browser build containing this consumer. Keep artifacts referenced by older
-published manifests available for clients that still have those versions open.
+with a browser build containing this consumer. Clean builds emit only the current
+generation. For uninterrupted rolling updates, retain older referenced artifacts
+at the serving origin/CDN; an open old-version client otherwise must reload to
+fetch a changed, previously uncached shard. A hash in a URL is not server-side
+retention. Vercel gives shards immutable cache headers and the manifest revalidation
+headers, but this does not create a cross-deployment artifact archive.
 The publisher writes the manifest only after the artifact and row-conservation
-checks succeed. No source database is modified. The browser integration does not
-change release binaries, regenerate the production dataset, or publish a site.
+checks succeed. No source database is modified. Invoking the progressive build
+creates a staged dataset; it does not change release binaries or publish a site.
 
 `useDatabaseQuery` creates the layout-aware loader. The resulting repository has
 the existing `PhageRepository` interface, so shared-link ordering, local-genome
@@ -78,15 +106,22 @@ reload constructs a replacement rather than relabeling existing results.
 ```sh
 bun test packages/web/src/db/progressive-data.test.ts \
   packages/web/src/db/ProgressivePhageRepository.test.ts \
-  packages/web/src/db/ProgressiveSqlite.integration.test.ts
+  packages/web/src/db/ProgressiveSqlite.integration.test.ts \
+  packages/web/src/db/ProgressiveBuild.test.ts
 bun run typecheck:all
-bun run build:web
+bun run build:web:progressive
+cd packages/web
+bunx playwright test --project=chromium-pwa --workers=1 e2e/progressive-pwa.e2e.ts
 ```
 
 The repository/loader tests inject adapters to test routing, budgets, ownership,
 cancellation, replayed cache reads and refresh failures. The integration tests use
 the native publisher and actual sql.js repository over synthetic SQLite data,
 including annotations, float-vector blobs, cross-chunk sequences and offline
-reopening. Browser/PWA journeys and production cold/warm performance measurement
-remain separate acceptance checks; no startup-speed or Lighthouse score is implied
-by these conformance tests.
+reopening. The production-publication tests exercise actual SQLite and filesystem
+output, including missing/corrupt artifacts and source preservation. The progressive
+PWA journeys serve the real built app and the exact production publisher's dataset
+on an isolated origin, checking selective loading, offline reuse, and corrupt
+catalog refusal. They do not replace the existing version-2 PWA/update tests.
+Production cold/warm performance measurement remains a separate acceptance check;
+no startup-speed or Lighthouse score is implied by these conformance tests.
