@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { createDatabaseLoader, type PhageRepository, type DatabaseLoadProgress } from '../db';
+import type { PhageRepository, DatabaseLoadProgress } from '../db';
+import { createProgressiveDatabaseLoader as createDatabaseLoader } from '../db/ProgressiveDatabaseLoader';
 
 const DEFAULT_DATABASE_URL = '/phage.db';
 

@@ -73,6 +73,7 @@ export class VerifiedArtifactStore {
   }
 
   pin(item: DataArtifact): void { this.pinned.add(dataArtifactUrl(this.options.manifestUrl, item)); }
+  unpin(item: DataArtifact): void { this.pinned.delete(dataArtifactUrl(this.options.manifestUrl, item)); }
   getTransferLedger(): { networkBytes: number; cachedBytes: number; requests: number; storageAvailable: boolean } {
     return { networkBytes: this.networkBytes, cachedBytes: this.cachedBytes, requests: this.requests, storageAvailable: this.storageAvailable };
   }
