@@ -4,9 +4,34 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## Unreleased — 2026-10-07
+## [v1.7.0] — 2026-10-08
+
+[Compare: v1.6.0...v1.7.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.6.0...v1.7.0)
+
+The downloads keep the v1.6.0 format: five raw binaries, each with a `.sha256`
+file, the unchanged `phage.db`, and `sha256.txt`.
+
+### Terminal and command line
+
+- **Research commands in the binary** — `phage-explorer pangenome`,
+  `codon-reference`, `host-range` and `workflow` run from the compiled binary
+  without a database, Bun or a source checkout. `phage-explorer COMMAND --help`
+  lists the options.
+- **Private genomes without restarting** — the terminal app imports, restores
+  and exports private genomes from the command palette (Local genomes).
+  `--no-catalog` and `--export-bundle` no longer require a startup `--import`.
+- **UTF-8 imports** — imported FASTA and GenBank files must be valid UTF-8. A
+  Latin-1 or CP1252 file that loaded in v1.6.0 is now refused; convert it first.
 
 ### Reproducible research
+
+- **Pangenomes, codon references, host range and repeats** — pangenome graphs
+  with exact wavefront and gap-affine alignment, strand and circular-origin
+  normalization, VCF, reference and coding-consequence exports; codon adaptation
+  against supplied reference corpora; measured host-range evidence; exact repeat
+  pairs, including pairs that cross a circular origin; and private research
+  snapshots saved in the browser. Each records a portable experiment that the
+  browser and the terminal replay and verify.
 
 - **Portable GC-skew workflows** — explicit window/step controls, per-window
   nucleotide counts and unavailable ratios, JSON/TSV exports, browser and native
@@ -45,6 +70,30 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   Clearing or replacing the selected gene clears its analysis and hover details.
   Independent browser checks verify both a reverse-strand gene and a joined
   reverse-strand CDS with an offset. [Regression coverage](packages/web/e2e/gene-analysis-identity.e2e.ts).
+
+### Dependencies
+
+- In-range lockfile refresh, with Playwright 1.64.0 for both the root and the
+  web workspace. It moves the build-tool packages from
+  [issue #7](https://github.com/Dicklesworthstone/phage_explorer/issues/7) to
+  patched versions (serialize-javascript 7.1.2, fast-uri 3.1.8, brace-expansion
+  2.1.7 and 5.0.12); `bun audit` reports no advisories.
+
+### Known limitations
+
+- GC skew with the default 500 bp window and 125 bp step covers genomes up to
+  about 2.5 Mb. Larger imports, up to the 5 Mb import limit, need a larger step;
+  v1.6.0 had no such cap.
+- The macOS Intel binary (`phage-explorer-macos-x64`) keeps Bun's own signature,
+  which no longer matches once the app is appended, so `codesign -v` reports it
+  as invalid. v1.6.0's Intel binary was the same; it runs, including under
+  Rosetta. The Apple Silicon binary is ad-hoc signed and verifies.
+- The command palette (Ctrl+P), where Local genomes lives, unlocks at the power
+  tier (after about 60 minutes of use, or by manual promotion).
+- Aligned DNA phylogenies run from a source checkout (`bun scripts/phylogeny.ts`);
+  the binary has no `phylogeny` command yet.
+- Optional WASM regeneration still needs a tracked version contract:
+  [issue #6](https://github.com/Dicklesworthstone/phage_explorer/issues/6).
 
 ## [v1.6.0] — 2026-10-04
 

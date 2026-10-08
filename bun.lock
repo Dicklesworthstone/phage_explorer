@@ -100,7 +100,7 @@
     },
     "packages/web": {
       "name": "@phage-explorer/web",
-      "version": "1.6.0",
+      "version": "1.7.0",
       "dependencies": {
         "@react-spring/web": "^10.0.3",
         "@studio-freight/lenis": "^1.0.42",
