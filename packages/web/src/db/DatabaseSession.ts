@@ -74,7 +74,7 @@ export class DatabaseSession {
   getSnapshot = (): DatabaseSessionSnapshot => this.snapshot;
   private publish(update: Partial<DatabaseSessionSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...update };
-    for (const reader of this.readers) reader.notify();
+    for (const reader of [...this.readers]) if (this.readers.has(reader)) reader.notify();
   }
   createObserver(): DatabaseSessionObserver {
     let reader: Reader | null = null;
@@ -158,6 +158,11 @@ export class DatabaseSession {
           return borrowed;
         };
         return (...args: unknown[]) => {
+          // Neighbor warming is speculative. Offline/retired neighbors cannot
+          // fail the already displayed genome or create an unhandled rejection.
+          // Explicit genome queries still propagate every error.
+          if (repository && key === 'prefetchAround') return Promise.resolve()
+            .then(() => invoke(target, method, args)).then(() => {}, () => {});
           try { return invoke(target, method, args); }
           catch (error) {
             // Repository query methods and offline operations return promises;
@@ -204,10 +209,10 @@ export class DatabaseSession {
   };
   private start(force: boolean): Promise<void> {
     const operation: Operation = { controller: new AbortController(), force, candidate: null, done: Promise.resolve() };
+    operation.done = Promise.resolve().then(() => this.execute(operation));
     this.operation = operation;
     this.publish({ isLoading: !this.current, isFetching: true, error: null,
       progress: { stage: 'checking', percent: 0, message: force ? 'Preparing a verified database replacement...' : 'Starting database load...' } });
-    operation.done = Promise.resolve().then(() => this.execute(operation));
     // Auto-loading hooks may unsubscribe before they attach an error handler.
     void operation.done.catch(() => {});
     return operation.done;
@@ -247,7 +252,8 @@ export class DatabaseSession {
           if (previous) this.collect(previous);
           return;
         } catch (error) {
-          if (candidate) await wait(this.close(candidate), signal);
+          // Failed cleanup is not allowed to strand the error or retry indefinitely.
+          if (candidate) void this.close(candidate);
           if (!this.owns(operation)) throw aborted();
           if (attempt === 1) throw error;
           operation.candidate = null;

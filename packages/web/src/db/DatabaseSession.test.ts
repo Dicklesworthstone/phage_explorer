@@ -278,3 +278,49 @@ test('rejected query calls release their lease and cannot strand retired handles
   db.state.block.reject(new Error('query failed')); await rejected; await tick(); assert.equal(db.state.closes, 1);
   a.unsubscribe(); await turn();
 });
+
+
+test('optional neighbor warming fails quietly while direct missing-genome reads still reject', async () => {
+  const raw = repository().raw;
+  raw.prefetchAround = async () => { throw new Error('uncached neighbor is offline'); };
+  raw.getPhageById = async () => { throw new Error('requested genome is offline'); };
+  const session = new DatabaseSession('/db', () => ({ load: async () => raw, close: () => raw.close() }), 0);
+  const stop = session.createObserver().subscribe(() => {}); await session.load();
+  const borrowed = session.getSnapshot().repository!;
+  await borrowed.prefetchAround(0, 2); await borrowed.listPhages();
+  await assert.rejects(borrowed.getPhageById(99), /requested genome is offline/);
+  stop(); await turn(); await borrowed.prefetchAround(0, 2);
+  await assert.rejects(borrowed.listPhages(), { name: 'AbortError' });
+});
+test('a subscriber joining a refresh synchronously gets the real completion promise', async () => {
+  const h = harness(); let joined: Promise<void> | undefined;
+  const stop = h.session.createObserver().subscribe(() => {
+    if (h.session.getSnapshot().isFetching && !joined) joined = h.session.reload();
+  });
+  const refresh = h.session.reload(); assert.equal(joined, refresh);
+  await tick(); let settled = false; void joined!.then(() => { settled = true; });
+  await tick(); assert.equal(settled, false); await h.accept(0); await refresh;
+  assert.equal(settled, true); stop(); await turn();
+});
+
+
+test('a stalled cleanup cannot strand an initial error or its bounded retry', async () => {
+  let attempts = 0, closes = 0;
+  const session = new DatabaseSession('/db', () => ({
+    load: async () => { attempts++; throw new Error('load failed'); },
+    close: () => { closes++; return new Promise<void>(() => {}); },
+  }), 0);
+  const stop = session.createObserver().subscribe(() => {});
+  await assert.rejects(session.load(), /load failed/);
+  assert.equal(attempts, 2); assert.equal(closes, 2); assert.equal(session.getSnapshot().isFetching, false);
+  stop(); await turn();
+});
+test('a reader resubscribing during notification is not notified twice for the same publication', async () => {
+  const h = harness(), observer = h.session.createObserver(); let calls = 0;
+  let stop = () => {};
+  const notify = () => { calls++; if (calls === 1) { stop(); stop = observer.subscribe(notify); } };
+  stop = observer.subscribe(notify);
+  const loading = h.session.load(); assert.equal(calls, 1);
+  await tick(); await h.accept(0); await loading;
+  stop(); await turn();
+});

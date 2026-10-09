@@ -73,7 +73,7 @@ biological validation of annotations and embeddings.
 Concurrent reads of one genome share a load. A SQL handle stays leased through
 its query, and only idle handles are evicted. In-flight reservations count against
 the SQLite residency budget. Failed loads release reservations and can be retried.
-Closing a repository aborts active downloads, wakes admission waiters, and prevents
+Closing a loader-owned repository aborts active downloads, wakes admission waiters, and prevents
 late responses from becoming accepted results. Already-running queries release
 their handles on completion rather than having their database freed underneath them.
 
@@ -125,3 +125,53 @@ on an isolated origin, checking selective loading, offline reuse, and corrupt
 catalog refusal. They do not replace the existing version-2 PWA/update tests.
 Production cold/warm performance measurement remains a separate acceptance check;
 no startup-speed or Lighthouse score is implied by these conformance tests.
+
+## Shared browser readers and safe refresh
+
+`useDatabaseQuery` uses one `DatabaseSession` per QueryClient and database URL.
+Live SQLite handles are not cached as ordinary React Query result objects:
+query-cache lifetime cannot safely be combined with individual hook cleanup.
+Use the hook's explicit `load()` and `reload()` functions rather than generic
+query invalidation. `load()` joins current work or reuses the accepted snapshot;
+`enabled: false` does not start a load but still observes an already shared one.
+`reload()` owns a forced-download operation, including its single retry. Concurrent
+refresh callers await the same operation; a normal load cannot downgrade it.
+
+The hook returns borrowed, version-fixed repositories. Calling their `close()`
+is intentionally a no-op: only the shared session may close its loader. Unmounting
+one reader leaves the others usable. Final unsubscribe schedules release on the
+next task so immediate React StrictMode reattachment can reuse the same work.
+A later remount opens a new snapshot, reusing verified persistent data where
+available, rather than returning a previously closed SQLite object.
+
+On refresh, old snapshots remain open until readers commit the replacement and
+in-flight queries finish. Nested offline verification/preparation receives the
+same protection. A failed refresh leaves the previous repository usable and
+reports the error and failed-update status. Failed/retired loaders cannot replace
+current progress. Borrowed neighbor prefetch is best-effort; an uncached offline
+neighbor or retired warmup does not fail the selected genome. Explicit requests
+for unavailable genome data still reject, and prefetch success is not evidence
+of offline completeness.
+
+Run the focused ownership tests with:
+
+```sh
+bun test packages/web/src/db/DatabaseSession.test.ts
+```
+
+`e2e/database-session.e2e.ts` supplies a two-reader view under real React StrictMode
+and QueryClient, using the production hook, loader, sql.js and dataset publisher.
+It covers partial unmount, full remount with cache reuse, corrupt replacement,
+and coalesced successful refresh using an explicitly mutated private test snapshot.
+It does not replace repositories with fixture implementations. The spec starts
+its own Vite server; an explicit base URL disables the unrelated preview server:
+
+```sh
+cd packages/web
+PLAYWRIGHT_BASE_URL=http://127.0.0.1 bunx playwright test \
+  --project=chromium --workers=1 e2e/database-session.e2e.ts
+```
+
+Unit-adapter execution, installed-library browser execution, native Bun, and full
+workspace/build results are distinct checks. These tests imply no measured
+startup improvement or independent scientific validation.
