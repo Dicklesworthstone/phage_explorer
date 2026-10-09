@@ -1,7 +1,7 @@
 /** Auto-select the published layout; version 3 never falls back to a monolithic download. */
 import type { DatabaseLoaderConfig, DatabaseLoadProgress, PhageRepository } from './types';
 import { ProgressivePhageRepository } from './ProgressivePhageRepository';
-import { VerifiedArtifactStore, readBoundedResponse, type ArtifactCache } from './progressive-artifacts';
+import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache } from './progressive-artifacts';
 import { PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './progressive-manifest';
 
 export const PROGRESSIVE_MANIFEST_CACHE = 'phage-explorer-manifests-v3';
@@ -188,17 +188,39 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     });
     if (cached) store.pin(cached.manifest.catalog);
     this.store = store;
-    const repository = await ProgressivePhageRepository.open({ manifest, store, openRepository, signal: this.lifetime.signal });
+    const selectedManifest = manifest;
+    const manifestResponse = () => {
+      const headers = new Headers({ 'content-type': 'application/json' });
+      if (etag) headers.set('etag', etag);
+      return new Response(JSON.stringify(selectedManifest), { headers });
+    };
+    const offlineManifest = {
+      available: async () => (await this.cached(cache))?.manifest.contentVersion === selectedManifest.contentVersion,
+      // The store calls this under withArtifactCacheLock, after checking all files.
+      publish: async () => {
+        this.assertOpen();
+        if (!cache) throw new Error('Offline startup manifest storage is unavailable.');
+        const previous = await this.cached(cache);
+        if (previous && previous.manifest.contentVersion !== selectedManifest.contentVersion) {
+          throw new Error('Another dataset version is saved for startup. Reload this tab before preparing an offline selection.');
+        }
+        this.assertOpen();
+        await abortable(cache.put(this.manifestUrl, manifestResponse()), this.lifetime.signal);
+        if (!(await offlineManifest.available())) throw new Error('Offline startup manifest could not be verified after saving.');
+      },
+    };
+    const repository = await ProgressivePhageRepository.open({ manifest, store, openRepository, offlineManifest, signal: this.lifetime.signal });
     try {
       this.assertOpen();
       // Artifact persistence precedes the manifest pointer: a failed catalog never replaces the old snapshot.
       let persisted = false;
       if (cache && store.getTransferLedger().storageAvailable) {
         try {
-          const headers = new Headers({ 'content-type': 'application/json' });
-          if (etag) headers.set('etag', etag);
-          await abortable(cache.put(this.manifestUrl, new Response(JSON.stringify(manifest), { headers })), this.lifetime.signal);
-          persisted = true;
+          await withArtifactCacheLock(async () => {
+            this.assertOpen();
+            await abortable(cache!.put(this.manifestUrl, manifestResponse()), this.lifetime.signal);
+            persisted = await offlineManifest.available();
+          });
         } catch { /* Verified in-memory data remain usable; offline availability is reported separately. */ }
       }
       this.assertOpen();

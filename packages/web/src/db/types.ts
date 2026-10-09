@@ -4,6 +4,7 @@
  * Types for the browser SQLite adapter and database loading.
  */
 
+import type { OfflineDatasetAccess } from './offline-dataset';
 import type { PhageSummary, PhageFull, GeneInfo, CodonUsageData, FoldEmbedding, LatentSpacePoint } from '@phage-explorer/core';
 
 /**
@@ -90,6 +91,8 @@ export interface CodonAdaptation {
  * Repository interface matching db-runtime's PhageRepository
  */
 export interface PhageRepository {
+  /** Version-bound downloads for curated data only; absent for legacy/local-only repositories. */
+  getOfflineDataset?(): OfflineDatasetAccess | null;
   listPhages(): Promise<PhageSummary[]>;
   getPhageByIndex(index: number): Promise<PhageFull | null>;
   getPhageById(id: number): Promise<PhageFull | null>;

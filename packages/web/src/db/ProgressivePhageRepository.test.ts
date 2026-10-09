@@ -391,3 +391,211 @@ describe('published-layout browser startup', () => {
     assert.deepEqual(h.f.closed, [0]); assert.deepEqual(h.versions, []);
   });
 });
+
+/** Real loader + artifact store; only SQLite queries are the routing adapters above. */
+async function offlineFixture(atlas = false) {
+  const h = loaderFixture(); if (atlas) addAtlas(h.f);
+  const loader = h.create(), repo = await loader.load(), offline = repo.getOfflineDataset?.();
+  assert.ok(offline);
+  return { ...h, loader, repo, offline };
+}
+const selection = (genomeIds: number[] = [], atlasModels: string[] = []) => ({ genomeIds, atlasModels });
+
+describe('user-selectable offline datasets through the application repository', () => {
+  test('describes and plans exact catalog IDs without network or genome SQL opening', async () => {
+    const h = await offlineFixture(true);
+    try {
+      const info = h.offline.describe(); assert.equal(info.genomes.length, 3); assert.equal(info.atlases[0].count, 3);
+      info.genomes[0].name = 'changed'; assert.equal(h.offline.describe().genomes[0].name, 'Genome 1');
+      assert.deepEqual(h.offline.plan(selection([3, 1])), { contentVersion: h.f.manifest.contentVersion,
+        selection: selection([1, 3]), totalBytes: 1536, artifactCount: 3, withinBudget: true });
+      assert.equal(await h.offline.saved(), null);
+      const inventory = await h.offline.inspect(selection([2]));
+      assert.equal(inventory.ready, false); assert.equal(inventory.catalog, 'available');
+      assert.equal(inventory.startupManifestAvailable, true); assert.equal(inventory.verifiedBytes, 512);
+      assert.deepEqual(inventory.genomes, [{ id: 2, status: 'missing' }]);
+      assert.equal(h.f.network.length, 1); assert.deepEqual(h.f.opened, [0]);
+    } finally { await h.loader.close(); }
+  });
+  test('rejects unknown, private, duplicate and sparse selections before any I/O', async () => {
+    const h = await offlineFixture(true);
+    try {
+      for (const value of [selection([-1]), selection([99]), selection([1, 1]), selection(new Array(1)),
+        selection([], ['absent']), selection([], ['model', 'model'])]) assert.throws(() => h.offline.plan(value));
+      await assert.rejects(h.offline.prepare(selection([99])), /catalog/);
+      assert.equal(h.f.network.length, 1); assert.equal(await h.offline.saved(), null);
+    } finally { await h.loader.close(); }
+  });
+  test('prepares only chosen genomes and whole atlas pages without opening their SQLite handles', async () => {
+    const h = await offlineFixture(true), progress: string[] = [];
+    try {
+      const report = await h.offline.prepare(selection([2], ['model']), { onProgress: value => progress.push(value.phase) });
+      assert.equal(report.ready, true); assert.equal(report.verifiedBytes, report.totalBytes);
+      assert.deepEqual(report.genomes, [{ id: 2, status: 'available' }]);
+      assert.deepEqual(report.atlases, [{ model: 'model', status: 'available' }]);
+      assert.deepEqual(progress.at(-1), 'verifying');
+      assert.deepEqual(h.f.opened, [0]);
+      assert.ok(!h.f.network.includes(dataArtifactUrl(BASE, h.f.manifest.genomes[0].artifact)));
+      assert.ok(!h.f.network.includes(dataArtifactUrl(BASE, h.f.manifest.genomes[2].artifact)));
+      assert.deepEqual((await h.offline.saved())?.selection, selection([2], ['model']));
+    } finally { await h.loader.close(); }
+  });
+  test('prepared genomes and global atlas reopen through a new loader while offline', async () => {
+    const h = await offlineFixture(true);
+    await h.offline.prepare(selection([2], ['model'])); await h.loader.close();
+    h.service.respond = async () => { throw new Error('offline'); }; h.f.responses.clear();
+    const next = h.create(), repo = await next.load(), api = repo.getOfflineDataset!()!;
+    try {
+      const before = h.f.network.length;
+      assert.deepEqual((await api.saved())?.selection, selection([2], ['model']));
+      assert.equal((await api.inspect(selection([2], ['model']))).ready, true);
+      assert.equal(await repo.getSequenceWindow(2, 0, 8), 'GGGGCCCC');
+      assert.equal((await repo.getLatentSpaceAtlas!({ model: 'model' })).length, 3);
+      assert.equal(h.f.network.length, before);
+      await assert.rejects(repo.getGenes(1), /offline/);
+    } finally { await next.close(); }
+  });
+  test('changing caller-owned selections during download cannot add another genome', async () => {
+    const h = await offlineFixture(), draft = selection([1]);
+    try {
+      const pending = h.offline.prepare(draft); draft.genomeIds.push(3);
+      assert.deepEqual((await pending).selection, selection([1]));
+      assert.ok(!h.f.network.includes(dataArtifactUrl(BASE, h.f.manifest.genomes[2].artifact)));
+    } finally { await h.loader.close(); }
+  });
+  test('missing one atlas page is not a fully available global projection', async () => {
+    const h = await offlineFixture(true);
+    try {
+      await h.offline.prepare(selection([], ['model']));
+      h.f.cache.entries.delete(dataArtifactUrl(BASE, h.f.manifest.atlas[0].pages[1]));
+      const before = h.f.network.length, report = await h.offline.inspect(selection([], ['model']));
+      assert.equal(report.ready, false); assert.equal(report.atlases[0].status, 'missing');
+      assert.ok(report.verifiedBytes < report.totalBytes); assert.equal(h.f.network.length, before);
+    } finally { await h.loader.close(); }
+  });
+  test('corrupt saved bytes are reported without a download, then repaired only explicitly', async () => {
+    const h = await offlineFixture(), selected = selection([1]);
+    try {
+      await h.offline.prepare(selected);
+      await h.f.cache.put(dataArtifactUrl(BASE, h.f.manifest.genomes[0].artifact), new Response('bad bytes'));
+      const before = h.f.network.length, report = await h.offline.inspect(selected);
+      assert.equal(report.genomes[0].status, 'corrupt'); assert.equal(report.ready, false);
+      assert.equal(h.f.network.length, before);
+      assert.equal((await h.offline.prepare(selected)).ready, true); assert.equal(h.f.network.length, before + 1);
+    } finally { await h.loader.close(); }
+  });
+  test('reservations from a different version cannot silently select reused numeric genome IDs', async () => {
+    const h = await offlineFixture();
+    try {
+      await h.offline.prepare(selection([1]));
+      const key = [...h.f.cache.entries.keys()].find(key => key.includes('__phage_offline_selection'))!;
+      const saved = await (await h.f.cache.match(key))!.json(); saved.contentVersion = 'a'.repeat(64);
+      await h.f.cache.put(key, new Response(JSON.stringify(saved)));
+      const restored = await h.offline.saved(); assert.equal(restored?.selection, null);
+      assert.equal(restored?.contentVersion, 'a'.repeat(64)); assert.equal(restored?.totalBytes, 1024);
+      assert.equal(h.f.network.length, 2);
+    } finally { await h.loader.close(); }
+  });
+  test('a partial atlas reservation cannot be restored as the complete model', async () => {
+    const h = await offlineFixture(true), store = h.f.store();
+    try {
+      await store.prepareOffline(h.f.manifest.contentVersion, [h.f.manifest.catalog, h.f.manifest.atlas[0].pages[0]]);
+      assert.equal((await h.offline.saved())?.selection, null);
+    } finally { await store.close(); await h.loader.close(); }
+  });
+  test('over-budget plans cannot change an existing saved reservation or begin downloads', async () => {
+    const f = fixture(), store = new VerifiedArtifactStore({ manifestUrl: BASE, openCache: async () => f.cache, fetch: f.fetcher, cacheBudget: 1024 });
+    const repo = await ProgressivePhageRepository.open({ manifest: f.manifest, store, openRepository: f.openRepository,
+      offlineManifest: { available: async () => true, publish: async () => {} } });
+    const api = repo.getOfflineDataset()!;
+    try {
+      await api.prepare(selection([1])); const before = await api.saved(), transfers = f.network.length;
+      assert.equal(api.plan(selection([1, 2])).withinBudget, false);
+      await assert.rejects(api.prepare(selection([1, 2])), /budget/);
+      assert.deepEqual(await api.saved(), before); assert.equal(f.network.length, transfers);
+    } finally { await repo.close(); }
+  });
+  test('a saved catalog file without its startup pointer is not offline readiness', async () => {
+    const h = loaderFixture(); const put = h.manifestCache.put.bind(h.manifestCache);
+    h.manifestCache.put = async () => { throw new Error('manifest quota'); };
+    const loader = h.create(), repo = await loader.load(), api = repo.getOfflineDataset!()!;
+    try {
+      const report = await api.inspect(selection());
+      assert.equal(report.filesAvailable, true); assert.equal(report.startupManifestAvailable, false); assert.equal(report.ready, false);
+      await assert.rejects(api.prepare(selection([1])), /manifest quota/);
+      h.manifestCache.put = put;
+      assert.equal((await api.prepare(selection([1]))).ready, true);
+      assert.equal(JSON.parse(await (await h.manifestCache.match(BASE))!.text()).contentVersion, h.f.manifest.contentVersion);
+    } finally { await loader.close(); }
+  });
+  test('successful-looking but discarded manifest writes cannot declare preparation successful', async () => {
+    const h = loaderFixture(); h.manifestCache.put = async () => {};
+    const loader = h.create(), repo = await loader.load(), api = repo.getOfflineDataset!()!;
+    try {
+      assert.equal(h.progress.at(-1)?.cacheStatus, 'unavailable');
+      await assert.rejects(api.prepare(selection([1])), /manifest could not be verified/);
+      assert.equal((await api.inspect(selection([1]))).ready, false);
+    } finally { await loader.close(); }
+  });
+  test('an old tab cannot overwrite a newer startup dataset during offline preparation', async () => {
+    const h = await offlineFixture();
+    try {
+      const newer = structuredClone(h.f.manifest); newer.genomes[0].genomeLength++; identity(newer);
+      await h.manifestCache.put(BASE, new Response(JSON.stringify(newer)));
+      assert.equal((await h.offline.inspect(selection())).startupManifestAvailable, false);
+      await assert.rejects(h.offline.prepare(selection([1])), /Another dataset version/);
+      assert.equal(JSON.parse(await (await h.manifestCache.match(BASE))!.text()).contentVersion, newer.contentVersion);
+    } finally { await h.loader.close(); }
+  });
+  test('unavailable browser storage stays distinct from missing or verified data', async () => {
+    const h = loaderFixture(), loader = h.create({ openArtifactCache: async () => undefined });
+    const repo = await loader.load(), api = repo.getOfflineDataset!()!;
+    try {
+      assert.equal((await api.inspect(selection([1]))).genomes[0].status, 'unavailable');
+      await assert.rejects(api.prepare(selection([1])), /storage is unavailable/);
+      assert.equal((await repo.listPhages()).length, 3);
+    } finally { await loader.close(); }
+  });
+  test('cancel preserves verified partial data and resume avoids downloading it again', async () => {
+    const h = await offlineFixture(), controller = new AbortController(), chosen = selection([1, 2]);
+    try {
+      await assert.rejects(h.offline.prepare(chosen, { signal: controller.signal,
+        onProgress: progress => { if (progress.completed === 2) controller.abort(); } }), { name: 'AbortError' });
+      assert.deepEqual((await h.offline.saved())?.selection, chosen);
+      const partial = await h.offline.inspect(chosen);
+      assert.deepEqual(partial.genomes.map(row => row.status), ['available', 'missing']);
+      const firstUrl = dataArtifactUrl(BASE, h.f.manifest.genomes[0].artifact);
+      assert.equal((await h.offline.prepare(chosen)).ready, true);
+      assert.equal(h.f.network.filter(url => url === firstUrl).length, 1);
+      assert.equal((await h.repo.getGenes(3))[0].id, 30); // Foreground reads still work after cancellation.
+    } finally { await h.loader.close(); }
+  });
+  test('release removes only the reservation, not verified files or the live catalog', async () => {
+    const h = await offlineFixture();
+    try {
+      await h.offline.prepare(selection([1])); await h.offline.release();
+      assert.equal(await h.offline.saved(), null);
+      assert.equal((await h.offline.inspect(selection([1]))).ready, true);
+      assert.equal(await h.repo.getSequenceWindow(1, 0, 8), 'ACGTACGT');
+    } finally { await h.loader.close(); }
+  });
+  test('a cancelled release waiting for the cache lock cannot delete the retained selection', async () => {
+    const { withArtifactCacheLock } = await import('./progressive-artifacts');
+    const h = await offlineFixture(), controller = new AbortController(); let unlock!: () => void;
+    try {
+      await h.offline.prepare(selection([1]));
+      const holding = withArtifactCacheLock(() => new Promise<void>(resolve => { unlock = resolve; }));
+      while (!unlock) await tick();
+      const released = h.offline.release(controller.signal); controller.abort(); unlock();
+      await holding; await assert.rejects(released, { name: 'AbortError' });
+      assert.deepEqual((await h.offline.saved())?.selection, selection([1]));
+    } finally { unlock?.(); await h.loader.close(); }
+  });
+  test('closed repositories reject retained download capabilities instead of starting another job', async () => {
+    const h = await offlineFixture(); await h.loader.close();
+    assert.throws(() => h.offline.plan(selection([1])), { name: 'AbortError' });
+    await assert.rejects(h.offline.prepare(selection([1])), { name: 'AbortError' });
+    await assert.rejects(h.offline.inspect(selection([1])), { name: 'AbortError' });
+    assert.equal(h.f.network.length, 1);
+  });
+});

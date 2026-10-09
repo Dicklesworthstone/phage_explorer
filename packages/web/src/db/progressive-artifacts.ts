@@ -201,9 +201,12 @@ export class VerifiedArtifactStore {
     const response = await cache.match(key);
     return response ? parseSelection(response, key) : null;
   }
-  async releaseOfflineSelection(): Promise<void> {
+  async releaseOfflineSelection(signal?: AbortSignal): Promise<void> {
+    const combined = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
     await withArtifactCacheLock(async () => {
+      cancelled(combined);
       const cache = await this.requireCache();
+      cancelled(combined);
       await cache.delete(selectionKey(this.options.manifestUrl));
     });
   }

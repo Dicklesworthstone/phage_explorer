@@ -1,6 +1,7 @@
 /** Catalog-first repository for the publisher's per-phage-sqlite-v1 layout. */
 import type { PhageSummary, PhageFull, LatentSpacePoint } from '@phage-explorer/core';
 import type { PhageRepository } from './types';
+import { createOfflineDatasetAccess, type OfflineDatasetAccess, type OfflineDatasetStore, type OfflineManifestAccess } from './offline-dataset';
 import {
   PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest,
   type ProgressiveManifest, type GenomeArtifact,
@@ -9,7 +10,9 @@ import type { VerifiedArtifactStore } from './progressive-artifacts';
 
 export interface ProgressiveRepositoryOptions {
   manifest: unknown;
-  store: Pick<VerifiedArtifactStore, 'read' | 'pin' | 'close' | 'getTransferLedger'>;
+  store: Pick<VerifiedArtifactStore, 'read' | 'pin' | 'close' | 'getTransferLedger'> & Partial<OfflineDatasetStore>;
+  /** Startup manifest is separate from cached dataset files. */
+  offlineManifest?: OfflineManifestAccess;
   /** Synchronous SQL opening; the repository owns and closes every returned handle. */
   openRepository: (bytes: Uint8Array) => PhageRepository;
   /** Serialized SQLite bytes, including catalog and in-flight reservations; not total JS/WASM heap. */
@@ -55,6 +58,7 @@ export class ProgressivePhageRepository implements PhageRepository {
   private peakResidentBytes: number;
   private closed = false;
   private closing: Promise<void> | null = null;
+  private offline: OfflineDatasetAccess | null | undefined;
 
   private constructor(
     private readonly manifest: ProgressiveManifest,
@@ -192,6 +196,16 @@ export class ProgressivePhageRepository implements PhageRepository {
       shards: [...this.residents.values()].filter(entry => entry.repository !== null).length };
   }
   getTransferLedger(): ReturnType<VerifiedArtifactStore['getTransferLedger']> { return this.options.store.getTransferLedger(); }
+  getOfflineDataset(): OfflineDatasetAccess | null {
+    this.assertOpen();
+    if (this.offline === undefined) {
+      const store = this.options.store;
+      this.offline = store.getCacheBudget && store.getOfflineSelection && store.inspect && store.prepareOffline && store.releaseOfflineSelection
+        ? createOfflineDatasetAccess({ manifest: this.manifest, phages: this.phages, store: store as OfflineDatasetStore,
+          lifetime: this.lifetime.signal, startupManifest: this.options.offlineManifest }) : null;
+    }
+    return this.offline;
+  }
   async listPhages(): Promise<PhageSummary[]> { this.assertOpen(); return structuredClone(this.phages); }
   async getPhageByIndex(index: number): Promise<PhageFull | null> {
     this.assertOpen();
