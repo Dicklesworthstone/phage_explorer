@@ -147,3 +147,69 @@ describe('private file boundaries', () => {
     await assert.rejects(readAlignedPhylogenyFile({...file,size:1},100),/limit/);assert.equal(reads,1);
   });
 });
+
+describe('root hypotheses in the aligned workspace', () => {
+  const rooting = () => ({ outgroup: ['A', 'B'], fractionFromOutgroup: 0.25,
+    evidence: 'Synthetic quarter-edge root, chosen without collection dates.', dateIndependent: true as const });
+  async function original() {
+    const input = request(); input.source.fasta = '>A\nAAAAAAAA\n>B\nAAAAAAAA\n>C\nCCCCAAAA\n>D\nCCCCAAAA';
+    return executeAlignedPhylogenyRequest(input);
+  }
+  test('real worker execution retains original inference and supplies a separately bound root', async () => {
+    const base = await original();
+    const result = await executeAlignedPhylogenyRequest({ kind: 'root', content: serializeAnalysisRecord(base.record), rooting: rooting() });
+    assert.deepEqual(result.record, base.record); assert.deepEqual(result.result, base.result);
+    assert.equal(result.rooting?.result.sourceResultId, base.record.resultId);
+    assert.equal(result.rooting?.result.newick, "(('A':0,'B':0):0.125,('C':0,'D':0):0.375);");
+    assert.notEqual(result.rooting?.record.resultId, base.record.resultId);
+  });
+  test('rooted CLI-format imports recompute both records without converting root support to bootstrap support', async () => {
+    const base = await original();
+    const rooted = await executeAlignedPhylogenyRequest({ kind: 'root', content: serializeAnalysisRecord(base.record), rooting: rooting() });
+    const restored = await executeAlignedPhylogenyRequest({ kind: 'replay', content: serializeAnalysisRecord(rooted.rooting!.record) });
+    assert.deepEqual(restored, rooted); assert.deepEqual(restored.result.splits, base.result.splits);
+    assert.ok(restored.rooting!.result.warnings.some(w => w.includes('no root-placement support')));
+  });
+  test('rehashed forged root output is rejected by the actual worker operation', async () => {
+    const base = await original();
+    const rooted = await executeAlignedPhylogenyRequest({ kind: 'root', content: serializeAnalysisRecord(base.record), rooting: rooting() });
+    const record = structuredClone(rooted.rooting!.record); record.fields.rooting.value = { inventedRoot: true };
+    const forged = await createAnalysisRecord(record);
+    await assert.rejects(executeAlignedPhylogenyRequest({ kind: 'replay', content: serializeAnalysisRecord(forged) }), /Recomputed rooted/);
+  });
+  test('a failed root attempt preserves the accepted original instead of forcing reinference', async () => {
+    const { session, workers } = workspace(), base = await original();
+    const initial = session.run(request()); await tick(); workers[0].emit({ kind: 'result', experiment: base, verified: false }); await initial;
+    const pending = session.run({ kind: 'root', content: serializeAnalysisRecord(base.record), rooting: rooting() }); await tick();
+    assert.equal(session.getSnapshot().accepted?.record.resultId, base.record.resultId);
+    workers[1].emit({ kind: 'error', message: 'Invalid root hypothesis' }); assert.equal(await pending, false);
+    assert.equal(session.getSnapshot().accepted?.record.resultId, base.record.resultId); assert.equal(session.getSnapshot().busy, false);
+    session.deactivate();
+  });
+  test('cancels root work, preserves the original and ignores late root results', async () => {
+    const { session, workers } = workspace(), base = await original();
+    const initial = session.run(request()); await tick(); workers[0].emit({ kind: 'result', experiment: base, verified: false }); await initial;
+    const work = { kind: 'root' as const, content: serializeAnalysisRecord(base.record), rooting: rooting() };
+    const pending = session.run(work); await tick(); const late = workers[1].onmessage!;
+    session.cancel(); assert.equal(await pending, false); assert.equal(workers[1].terminated, 1);
+    late({ data: { kind: 'result', experiment: await executeAlignedPhylogenyRequest(work), verified: false } } as MessageEvent<AlignedPhylogenyMessage>);
+    assert.equal(session.getSnapshot().accepted?.record.resultId, base.record.resultId); assert.equal(session.getSnapshot().accepted?.rooting, undefined);
+    session.deactivate();
+  });
+  test('main alignment edits clear both original and derived root evidence', async () => {
+    const { session, workers } = workspace(), base = await original();
+    const work = { kind: 'root' as const, content: serializeAnalysisRecord(base.record), rooting: rooting() };
+    const pending = session.run(work); await tick(); workers[0].emit({ kind: 'result', experiment: await executeAlignedPhylogenyRequest(work), verified: false });
+    assert.equal(await pending, true); assert.ok(session.getSnapshot().accepted?.rooting);
+    session.invalidate(); assert.equal(session.getSnapshot().accepted, null); session.deactivate();
+  });
+  test('requires the worker root to be bound to its exact original result', async () => {
+    const base = await original(), work = { kind: 'root' as const, content: serializeAnalysisRecord(base.record), rooting: rooting() };
+    const rooted = await executeAlignedPhylogenyRequest(work);
+    for (const bad of [base, { ...rooted, rooting: { ...rooted.rooting!, result: { ...rooted.rooting!.result, sourceResultId: 'f'.repeat(64) } } }]) {
+      const { session, workers } = workspace(); const pending = session.run(work); await tick();
+      workers[0].emit({ kind: 'result', experiment: bad, verified: false });
+      assert.equal(await pending, false); assert.equal(session.getSnapshot().accepted, null); session.deactivate();
+    }
+  });
+});

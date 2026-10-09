@@ -2,6 +2,7 @@
 import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { PHYLOGENY_LIMITS, resolvePhylogenyOptions, type AlignedPhylogenyResult, type PhylogenyOptions, type PhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
+import { resolveOutgroupRooting, type RootedPhylogenyResult } from '../../../../core/src/analysis/phylogeny-rooting';
 import { AlignedPhylogenySession, readAlignedPhylogenyFile } from '../../workers/AlignedPhylogenySession';
 import { downloadString } from '../../utils/export';
 import { useTheme } from '../../hooks/useTheme';
@@ -15,9 +16,9 @@ const example: PhylogenySource = {
 const number = (value: number): string => value === 0 ? '0' : value.toPrecision(6);
 
 /** Topology-only layout avoids clipping or disguising signed NJ branch lengths. */
-function Topology({ result }: { result: AlignedPhylogenyResult }): React.ReactElement {
+function Topology({ result, rooted }: { result: AlignedPhylogenyResult; rooted?: RootedPhylogenyResult }): React.ReactElement {
   const { theme } = useTheme();
-  const { tree } = result;
+  const tree = rooted?.tree ?? result.tree;
   const links = tree.nodes.map(() => [] as number[]);
   tree.edges.forEach(edge => { links[edge.a].push(edge.b); links[edge.b].push(edge.a); });
   const depth = tree.nodes.map(() => 0), y = tree.nodes.map(() => 0);
@@ -34,7 +35,7 @@ function Topology({ result }: { result: AlignedPhylogenyResult }): React.ReactEl
   const epsilon = Number.EPSILON * 256 * Math.max(...result.distances.flat());
   return <figure style={{ margin: 0 }}>
     <div style={{ overflowX: 'auto' }}>
-      <svg viewBox={`0 0 1180 ${leaf * 25 + 30}`} role="img" aria-label="Unrooted neighbor-joining topology, arbitrary display root, not to branch-length scale"
+      <svg viewBox={`0 0 1180 ${leaf * 25 + 30}`} role="img" aria-label={rooted ? 'Explicit outgroup root hypothesis, not to branch-length scale' : 'Unrooted neighbor-joining topology, arbitrary display root, not to branch-length scale'}
         style={{ width: '100%', minWidth: 720, display: 'block' }}>
         <desc>Lines encode connectivity only, not branch lengths. Dashed edges are nonpositive or numerically zero. Signed lengths and positive split supports are in the tables and exports.</desc>
         {tree.edges.map((edge, index) => {
@@ -47,7 +48,7 @@ function Topology({ result }: { result: AlignedPhylogenyResult }): React.ReactEl
         {tree.nodes.filter(node => node.label !== null).map(node => <text key={node.id} x={585} y={y[node.id] + 4} fill={theme.colors.text} fontSize={13}>{node.label}</text>)}
       </svg>
     </div>
-    <figcaption>Unrooted connectivity with an arbitrary display root. Spacing is not branch length or time. Dashed edges do not establish a resolved split; negative lengths remain in the exports.</figcaption>
+    <figcaption>{rooted ? 'Connectivity under the supplied outgroup and branch-position hypothesis; the root is not independently inferred.' : 'Unrooted connectivity with an arbitrary display root.'} Spacing is not branch length or time. Dashed edges do not establish a resolved split; original lengths remain in the exports.</figcaption>
   </figure>;
 }
 
@@ -62,11 +63,16 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
   const [bootstrap, setBootstrap] = useState('0'), [seed, setSeed] = useState('1');
   const [confirmed, setConfirmed] = useState(false), [localError, setLocalError] = useState<string | null>(null);
   const [distancePage, setDistancePage] = useState(0), [showDistances, setShowDistances] = useState(false);
+  const [outgroup, setOutgroup] = useState<string[]>([]), [rootFraction, setRootFraction] = useState('');
+  const [rootEvidence, setRootEvidence] = useState(''), [rootDateIndependent, setRootDateIndependent] = useState(false);
   useEffect(() => { session.activate(); return session.deactivate; }, [session]);
   useEffect(() => {
     if (!accepted) return;
     setSource(accepted.source); setFile(null); setDistance(accepted.options.distance);
     setBootstrap(String(accepted.options.bootstrap)); setSeed(String(accepted.options.seed)); setConfirmed(true); setDistancePage(0);
+    const rooting = accepted.rooting?.result.rooting;
+    setOutgroup(rooting?.outgroup ?? []); setRootFraction(rooting ? String(rooting.fractionFromOutgroup) : '');
+    setRootEvidence(rooting?.evidence ?? ''); setRootDateIndependent(rooting?.dateIndependent ?? false);
   }, [accepted]);
   const invalidate = () => { session.invalidate(); setLocalError(null); };
   const editSource = <K extends keyof PhylogenySource>(key: K, value: PhylogenySource[K]) => {
@@ -96,6 +102,29 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
         : ['taxon\t' + result.taxa.join('\t'), ...result.taxa.map((taxon, index) => taxon + '\t' + result.distances[index].join('\t'))].join('\n') + '\n';
       const suffix = format === 'newick' ? 'nwk' : format === 'distances' ? 'tsv' : 'json';
       downloadString(content, `aligned-phylogeny-${format}.${suffix}`, suffix === 'json' ? 'application/json' : 'text/plain'); setLocalError(null);
+    } catch (cause) { report(cause); }
+  };
+  const acceptedRoot = accepted?.rooting;
+  const fractionValid = /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(rootFraction);
+  const rootChanged = !acceptedRoot || !fractionValid || Number(rootFraction) !== acceptedRoot.result.rooting.fractionFromOutgroup
+    || JSON.stringify([...outgroup].sort()) !== JSON.stringify(acceptedRoot.result.rooting.outgroup)
+    || rootEvidence.trim() !== acceptedRoot.result.rooting.evidence || !rootDateIndependent;
+  const root = (event: React.FormEvent) => {
+    event.preventDefault(); setLocalError(null);
+    if (!accepted || busy) return;
+    try {
+      if (!rootDateIndependent) throw new Error('Declare date-independent outgroup choice and branch placement.');
+      if (!fractionValid) throw new Error('Provide an explicit decimal fraction strictly between 0 and 1.');
+      const rooting = resolveOutgroupRooting({ outgroup, fractionFromOutgroup: Number(rootFraction), evidence: rootEvidence, dateIndependent: true });
+      void session.run({ kind: 'root', content: serializeAnalysisRecord(accepted.record), rooting });
+    } catch (cause) { report(cause); }
+  };
+  const exportRoot = (format: 'experiment' | 'newick') => {
+    if (!acceptedRoot || rootChanged || busy) return;
+    try {
+      downloadString(format === 'experiment' ? serializeAnalysisRecord(acceptedRoot.record) : acceptedRoot.result.newick + '\n',
+        format === 'experiment' ? 'rooted-phylogeny-experiment.json' : 'rooted-phylogeny.nwk', format === 'experiment' ? 'application/json' : 'text/plain');
+      setLocalError(null);
     } catch (cause) { report(cause); }
   };
   const result = accepted?.result;
@@ -161,6 +190,41 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
       <details open><summary>Method assumptions and limits</summary>{result.warnings.map(warning => <p key={warning}>{warning}</p>)}</details>
       <p>Newick preserves signed lengths and an arbitrary serialization root. Do not feed that root into dated-tree diagnostics as a biological rooting decision. Independently justified rooting and compatible nonnegative lengths are separate prerequisites.</p>
       <AnalysisRecordDetails record={accepted.record} />
+      <section aria-label="Explicit outgroup rooting">
+        <h4>Record an explicit outgroup root hypothesis</h4>
+        <p>Choose the outgroup and position along its separating branch. No midpoint, rooting evidence or date-independence is assumed.
+          This operation does not infer a biological root, rerun an alignment, validate a clock or supply root confidence.</p>
+        <form onSubmit={root}><fieldset disabled={busy} style={{ display: 'grid', gap: '.75rem' }}><legend>User-specified rooting decision</legend>
+          <label style={label}>Outgroup taxa (explicit selection)<select multiple required value={outgroup} size={Math.min(result.taxa.length, 8)}
+            onChange={event => { setOutgroup(Array.from(event.target.selectedOptions, option => option.value)); setLocalError(null); }}>
+            {result.taxa.map(taxon => <option key={taxon} value={taxon}>{taxon}</option>)}
+          </select></label>
+          <label style={label}>Root fraction from the outgroup-side endpoint<input style={control} required inputMode="decimal" value={rootFraction}
+            onChange={event => { setRootFraction(event.target.value); setLocalError(null); }} placeholder="Explicit value strictly between 0 and 1" /></label>
+          <label style={label}>Outgroup and branch-placement evidence<input style={control} required maxLength={2000} value={rootEvidence}
+            onChange={event => { setRootEvidence(event.target.value); setLocalError(null); }} /></label>
+          <label style={{ display: 'flex', gap: '.5rem', alignItems: 'center', minHeight: 44 }}><input type="checkbox" required checked={rootDateIndependent}
+            onChange={event => { setRootDateIndependent(event.target.checked); setLocalError(null); }} />I confirm that neither the outgroup choice nor root placement used collection dates.</label>
+          <p>Every original taxon and pairwise path is retained. At least two ingroup taxa must remain. Nonseparable outgroups, zero-length root edges
+            and any negative original branch (including roundoff negatives) are rejected rather than rearranged or clipped.</p>
+          <button type="submit" style={control} disabled={busy}>Create rooted hypothesis</button>
+        </fieldset></form>
+        {acceptedRoot && rootChanged && <p role="status">Root draft changed. The original unrooted result remains available; create the new hypothesis before exporting a root.</p>}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginTop: '.75rem' }}>
+          <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy} onClick={() => exportRoot('experiment')}>Export rooted experiment JSON</button>
+          <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy} onClick={() => exportRoot('newick')}>Export explicit-root Newick</button>
+        </div>
+        {acceptedRoot && !rootChanged && <section aria-label="Accepted root hypothesis" data-root-result-id={acceptedRoot.record.resultId}>
+          <p><strong>USER-CONDITIONED ROOT — NOT INDEPENDENTLY INFERRED</strong>{accepted.source.kind === 'demo' ? ' · SYNTHETIC INPUT' : ''}</p>
+          <p>Outgroup: {acceptedRoot.result.rooting.outgroup.join(', ')}. Fraction from its endpoint: {number(acceptedRoot.result.rooting.fractionFromOutgroup)}.</p>
+          <p>{acceptedRoot.result.rooting.evidence}</p>
+          <p>{acceptedRoot.result.distancePreservation.pairs} pairwise paths checked; maximum absolute difference {number(acceptedRoot.result.distancePreservation.maxAbsoluteDifference)}.</p>
+          <Topology result={result} rooted={acceptedRoot.result} />
+          <details><summary>Rooted Newick and conditional interpretation</summary><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{acceptedRoot.result.newick}</pre>
+            {acceptedRoot.result.warnings.map(warning => <p key={warning}>{warning}</p>)}</details>
+          <AnalysisRecordDetails record={acceptedRoot.record} />
+        </section>}
+      </section>
     </section>}
   </section>;
 }

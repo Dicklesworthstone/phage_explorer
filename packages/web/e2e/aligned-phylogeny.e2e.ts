@@ -122,3 +122,60 @@ test('edits supersede delayed file reads, and Cancel terminates the actual tree 
     expect(pageErrors).toEqual([]);
   } finally { release?.(); await finalize(); }
 });
+
+test('explicit browser roots retain original evidence, survive CLI replay, and invalidate edited root exports', async ({ page }, info) => {
+  test.setTimeout(180000); const { pageErrors, finalize } = setupTestHarness(page, info);
+  const original = await createAlignedPhylogenyExperiment({ ...synthetic, name: 'Private rootable quartet',
+    fasta: '>A\nAAAAAAAA\n>B\nAAAAAAAA\n>C\nCCCCAAAA\n>D\nCCCCAAAA' }, { bootstrap: 20, seed: 0 });
+  await page.addInitScript(() => localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' })));
+  let privateLeak = false;
+  const evidence = 'private-root-rationale-f792: synthetic AB split and a quarter-edge choice without dates';
+  page.on('request', request => { if (request.url().includes('private-root-rationale-f792') || request.postData()?.includes('private-root-rationale-f792')) privateLeak = true; });
+  try {
+    const panel = await open(page); await expectExplorerIdentity(page, info);
+    const load = (content: string) => panel.getByLabel('Restore verified phylogeny experiment JSON (up to 10 MiB)', { exact: true })
+      .setInputFiles({ name: 'root-experiment.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+    await load(serializeAnalysisRecord(original.record));
+    const originalResult = () => panel.getByRole('region', { name: 'Accepted aligned phylogeny', exact: true });
+    const rootControls = () => panel.getByRole('region', { name: 'Explicit outgroup rooting', exact: true });
+    const rootResult = () => panel.getByRole('region', { name: 'Accepted root hypothesis', exact: true });
+    const rootExport = () => panel.getByRole('button', { name: 'Export rooted experiment JSON', exact: true });
+    await expect(originalResult()).toHaveAttribute('data-result-id', original.record.resultId);
+    await expect(rootControls().getByLabel('Root fraction from the outgroup-side endpoint', { exact: true })).toHaveValue('');
+    await expect(rootExport()).toBeDisabled();
+    await rootControls().getByLabel('Outgroup taxa (explicit selection)', { exact: true }).selectOption(['A', 'B']);
+    await rootControls().getByLabel('Root fraction from the outgroup-side endpoint', { exact: true }).fill('0.25');
+    await rootControls().getByLabel('Outgroup and branch-placement evidence', { exact: true }).fill(evidence);
+    await rootControls().getByRole('checkbox', { name: 'I confirm that neither the outgroup choice nor root placement used collection dates.', exact: true }).check();
+    await rootControls().getByRole('button', { name: 'Create rooted hypothesis', exact: true }).click();
+    await expect(rootResult()).toContainText('6 pairwise paths checked; maximum absolute difference 0');
+    await expect(rootResult().getByRole('img', { name: 'Explicit outgroup root hypothesis, not to branch-length scale', exact: true })).toBeVisible();
+    const content = await downloaded(page, () => rootExport().click()), rooted = await parseAnalysisRecord(content);
+    expect(rooted.method.id).toBe('explicit-outgroup-rooted-nj'); expect(rooted.inputs[0].source).toBe('demo');
+    expect((rooted.fields.rooting.value as { sourceResultId: string }).sourceResultId).toBe(original.record.resultId);
+    const tree = await downloaded(page, () => panel.getByRole('button', { name: 'Export explicit-root Newick', exact: true }).click());
+    expect(tree).toBe("(('A':0,'B':0):0.125,('C':0,'D':0):0.375);\n");
+    const unrooted = await downloaded(page, () => panel.getByRole('button', { name: 'Export phylogeny experiment JSON', exact: true }).click());
+    expect((await parseAnalysisRecord(unrooted)).resultId).toBe(original.record.resultId);
+    const path = info.outputPath('browser-rooted.json'); await writeFile(path, content, { flag: 'wx' });
+    const replay = JSON.parse(execFileSync('bun', [launcher, 'phylogeny', 'replay', '--experiment', path], { cwd: dirname(path), encoding: 'utf8' }));
+    expect(replay.resultId).toBe(rooted.resultId); expect(replay.verified).toBe(true);
+    await rootControls().getByLabel('Root fraction from the outgroup-side endpoint', { exact: true }).fill('0.75');
+    await expect(rootResult()).toHaveCount(0); await expect(rootExport()).toBeDisabled();
+    await expect(originalResult()).toHaveAttribute('data-result-id', original.record.resultId);
+    await rootControls().getByRole('button', { name: 'Create rooted hypothesis', exact: true }).click();
+    await expect(rootResult()).toBeVisible(); await expect(rootResult()).not.toHaveAttribute('data-root-result-id', rooted.resultId);
+    await rootControls().getByLabel('Outgroup taxa (explicit selection)', { exact: true }).selectOption(['A', 'C']);
+    await rootControls().getByRole('button', { name: 'Create rooted hypothesis', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('one tree edge');
+    await expect(originalResult()).toHaveAttribute('data-result-id', original.record.resultId); await expect(rootExport()).toBeDisabled();
+    await load(content); await expect(rootResult()).toHaveAttribute('data-root-result-id', rooted.resultId);
+    await expect(rootControls().getByLabel('Root fraction from the outgroup-side endpoint', { exact: true })).toHaveValue('0.25');
+    await expect(rootControls().getByLabel('Outgroup and branch-placement evidence', { exact: true })).toHaveValue(evidence);
+    const fields = structuredClone(rooted.fields); fields.rooting.value = { invented: true };
+    await load(serializeAnalysisRecord(await createAnalysisRecord({ ...rooted, fields })));
+    await expect(panel.getByRole('alert')).toContainText('Recomputed rooted phylogeny differs');
+    await expect(originalResult()).toHaveCount(0); await expect(rootExport()).toHaveCount(0);
+    expect(privateLeak).toBe(false); expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});

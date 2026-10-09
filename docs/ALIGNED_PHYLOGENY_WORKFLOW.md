@@ -124,3 +124,21 @@ root hypothesis from the original experiment rather than modifying a prior root.
 
 Core rooting tests are in `packages/core/src/analysis/phylogeny-rooting.test.ts`;
 terminal rooting and source-preservation tests extend the existing CLI suite.
+
+The browser offers the same explicit rooting operation below each accepted
+unrooted result. It requires selecting outgroup taxa, entering the fraction and
+rationale, and confirming date-independence; none is preselected for a fresh
+inference. The operation runs in the existing disposable worker. Failure or
+cancellation preserves the original inference, while edits to the alignment
+invalidate both original and derived evidence. Editing only the root draft
+hides the prior root and disables rooted exports until that hypothesis is applied;
+original unrooted exports remain separate and available.
+
+The existing JSON restore input accepts rooted records from the terminal or
+browser and recomputes both stages. Rooted experiment JSON and explicit-root
+Newick have their own export buttons. The rooted topology is displayed separately
+and is not to branch-length or time scale. Nothing is silently installed into
+the temporal workspace or treated as a validated biological root. Keep both the
+original experiment and the derived record when comparing alternative roots.
+The built-in 12-column teaching quartet can contain tiny negative NJ limbs due
+to roundoff; it is subject to the same no-clipping rule as every other input.

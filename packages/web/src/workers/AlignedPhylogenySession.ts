@@ -1,12 +1,22 @@
 /** Local aligned-DNA workspace; synchronous inference runs only in a disposable worker. */
 import type { AlignedPhylogenyExperiment, PhylogenyOptions, PhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
+import type { OutgroupRooting, RootedPhylogenyExperiment } from '../../../core/src/analysis/phylogeny-rooting';
+
+/** Keep original inference distinct from the optional, user-conditioned root record. */
+export interface AlignedPhylogenyWorkResult extends AlignedPhylogenyExperiment {
+  rooting?: Pick<RootedPhylogenyExperiment, 'record' | 'result'>;
+}
+function withRoot(rooted: RootedPhylogenyExperiment): AlignedPhylogenyWorkResult {
+  return { ...rooted.unrooted, rooting: { record: rooted.record, result: rooted.result } };
+}
 
 export type AlignedPhylogenyRequest =
   | { kind: 'infer'; source: PhylogenySource; options: PhylogenyOptions }
-  | { kind: 'replay'; content: string };
+  | { kind: 'replay'; content: string }
+  | { kind: 'root'; content: string; rooting: OutgroupRooting };
 export type AlignedPhylogenyMessage =
   | { kind: 'progress'; phase: string }
-  | { kind: 'result'; experiment: AlignedPhylogenyExperiment; verified: boolean }
+  | { kind: 'result'; experiment: AlignedPhylogenyWorkResult; verified: boolean }
   | { kind: 'error'; message: string };
 export interface AlignedPhylogenyWorker {
   postMessage(request: AlignedPhylogenyRequest): void;
@@ -16,7 +26,7 @@ export interface AlignedPhylogenyWorker {
   onmessageerror: ((event: MessageEvent) => void) | null;
 }
 export interface AlignedPhylogenySnapshot {
-  accepted: AlignedPhylogenyExperiment | null;
+  accepted: AlignedPhylogenyWorkResult | null;
   verified: boolean;
   busy: boolean;
   phase: string;
@@ -25,18 +35,31 @@ export interface AlignedPhylogenySnapshot {
 
 /** Worker and tests call the real inference/replay APIs. No cached result is installed on replay. */
 export async function executeAlignedPhylogenyRequest(request: AlignedPhylogenyRequest,
-  progress: (phase: string) => void = () => {}): Promise<AlignedPhylogenyExperiment> {
+  progress: (phase: string) => void = () => {}): Promise<AlignedPhylogenyWorkResult> {
   const { createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment } = await import('../../../core/src/analysis/aligned-phylogeny');
   if (!request || typeof request !== 'object') throw new Error('Unsupported aligned-phylogeny request.');
   if (request.kind === 'infer') {
     progress('Checking aligned DNA and computing distances, tree and requested site resampling');
     return createAlignedPhylogenyExperiment(request.source, request.options);
   }
-  if (request.kind === 'replay') {
+  if (request.kind === 'replay' || request.kind === 'root') {
     if (typeof request.content !== 'string' || request.content.length > 10 * 1024 * 1024
       || new TextEncoder().encode(request.content).length > 10 * 1024 * 1024) throw new Error('Saved phylogeny exceeds the 10 MiB limit.');
+    const content = request.content.replace(/^\uFEFF/, '');
+    if (request.kind === 'root') {
+      progress('Recomputing the original tree and recording the explicit outgroup root');
+      const { rootAlignedPhylogenyExperiment } = await import('../../../core/src/analysis/phylogeny-rooting');
+      return withRoot(await rootAlignedPhylogenyExperiment(content, request.rooting));
+    }
+    const value: unknown = JSON.parse(content);
+    const method = value && typeof value === 'object' && 'method' in value ? value.method : null;
+    if (method && typeof method === 'object' && 'id' in method && method.id === 'explicit-outgroup-rooted-nj') {
+      progress('Recomputing the original inference and the saved root hypothesis');
+      const { replayRootedPhylogenyExperiment } = await import('../../../core/src/analysis/phylogeny-rooting');
+      return withRoot(await replayRootedPhylogenyExperiment(content));
+    }
     progress('Verifying exact input identities and independently recomputing the saved tree');
-    return replayAlignedPhylogenyExperiment(request.content.replace(/^\uFEFF/, ''));
+    return replayAlignedPhylogenyExperiment(content);
   }
   throw new Error('Unsupported aligned-phylogeny operation.');
 }
@@ -86,7 +109,10 @@ export class AlignedPhylogenySession {
   };
   run = async (input: AlignedPhylogenyRequest | (() => Promise<AlignedPhylogenyRequest>)): Promise<boolean> => {
     if (!this.active) return false;
-    this.invalidate();
+    // A root is a derivative of an accepted inference, not an input edit. Keep
+    // the original visible if the new hypothesis fails or is cancelled.
+    if (typeof input !== 'function' && input.kind === 'root') { this.cancel(); this.publish({ error: null, phase: '' }); }
+    else this.invalidate();
     const owner = new AbortController(); this.operation = owner;
     const current = () => this.active && this.operation === owner && !owner.signal.aborted;
     this.publish({ busy: true, phase: 'Reading local alignment or saved experiment' });
@@ -95,9 +121,9 @@ export class AlignedPhylogenySession {
       const pending = typeof input === 'function' ? input().then(value => structuredClone(value)) : Promise.resolve(structuredClone(input));
       const request = await untilCancelled(pending, owner.signal);
       if (!current()) return false;
-      const experiment = await new Promise<AlignedPhylogenyExperiment>((resolve, reject) => {
+      const experiment = await new Promise<AlignedPhylogenyWorkResult>((resolve, reject) => {
         const worker = this.factory(); let done = false;
-        const finish = (value?: AlignedPhylogenyExperiment, error?: Error) => {
+        const finish = (value?: AlignedPhylogenyWorkResult, error?: Error) => {
           if (done) return; done = true;
           owner.signal.removeEventListener('abort', onAbort);
           worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
@@ -112,7 +138,11 @@ export class AlignedPhylogenySession {
           if (message?.kind === 'progress' && typeof message.phase === 'string') this.publish({ phase: message.phase });
           else if (message?.kind === 'result' && message.verified === (request.kind === 'replay')
             && message.experiment?.record?.method?.id === 'aligned-dna-neighbor-joining'
-            && Array.isArray(message.experiment.result?.tree?.nodes)) finish(message.experiment);
+            && Array.isArray(message.experiment.result?.tree?.nodes)
+            && (request.kind !== 'root' || !!message.experiment.rooting)
+            && (request.kind !== 'infer' || !message.experiment.rooting)
+            && (!message.experiment.rooting || (message.experiment.rooting.record?.method?.id === 'explicit-outgroup-rooted-nj'
+              && message.experiment.rooting.result?.sourceResultId === message.experiment.record.resultId))) finish(message.experiment);
           else if (message?.kind === 'error' && typeof message.message === 'string') finish(undefined, new Error(message.message));
           else finish(undefined, new Error('Unexpected aligned-phylogeny worker response.'));
         };
@@ -123,7 +153,8 @@ export class AlignedPhylogenySession {
       });
       if (!current()) return false;
       this.publish({ accepted: experiment, verified: request.kind === 'replay', phase: request.kind === 'replay'
-        ? 'Replay verified: recomputed tree and complete evidence identity match.' : 'Unrooted tree computed. Inspect coverage, branch lengths and split support.' });
+        ? experiment.rooting ? 'Replay verified: original inference and explicit root hypothesis match.' : 'Replay verified: recomputed tree and complete evidence identity match.'
+        : experiment.rooting ? 'Explicit root hypothesis computed. The original unrooted inference is retained.' : 'Unrooted tree computed. Inspect coverage, branch lengths and split support.' });
       return true;
     } catch (cause) {
       if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause), phase: '' });
