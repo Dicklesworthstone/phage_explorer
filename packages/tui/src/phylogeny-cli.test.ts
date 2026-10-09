@@ -3,6 +3,9 @@ import { strict as assert } from 'node:assert';
 import { mkdtemp, writeFile, readFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { executeAlignedPhylogenyRequest } from '../../web/src/workers/AlignedPhylogenySession';
 import { parsePhylogenyCommand, executePhylogenyCommand, phylogenyMain, readPhylogenyInput } from '../../../scripts/phylogeny';
 const alignment = '>A\nAAAAAAAA\n>B\nAAAAAAAA\n>C\nCCCCAAAA\n>D\nCCCCAAAA';
 async function fixture() {
@@ -86,7 +89,7 @@ test('saturation returns an error without creating a partial experiment', async 
   const result = await run(['infer', '--alignment', saturated, '--source', 'synthetic', '--distance', 'jc69', '--output', f.output]);
   assert.equal(result.code, 1); assert.match(result.stderr, /undefined/); await assert.rejects(stat(f.output), { code: 'ENOENT' });
 });
-test('help is callable through the compiled launcher invocation without any files', async () => {
+test('help supports the launcher invocation name without any files', async () => {
   let output = '';
   assert.equal(await phylogenyMain(['--help'], text => { output += text; }, () => assert.fail('unexpected error'), 'phage-explorer phylogeny'), 0);
   assert.ok(output.includes('phage-explorer phylogeny infer')); assert.ok(!output.includes('bun scripts'));
@@ -95,4 +98,36 @@ test('the executor accepts validated commands directly', async () => {
   const f = await fixture(), command = parsePhylogenyCommand(['inspect', '--alignment', f.input]);
   assert.ok(command.type !== 'help');
   assert.equal((await executePhylogenyCommand(command)).alignmentSites, 8);
+});
+
+// Invoke the actual launcher, not just phylogenyMain with a substituted help prefix.
+const launcher = fileURLToPath(new URL('./index.tsx', import.meta.url));
+function launch(args: string[], cwd: string) {
+  return spawnSync(process.execPath, [launcher, ...args], { cwd, encoding: 'utf8', timeout: 20000,
+    env: { ...process.env, PHAGE_EXPLORER_DB_PATH: join(cwd, 'no-catalog.db'), PHAGE_DB_PATH: join(cwd, 'no-catalog.db') } });
+}
+test('real terminal entry point exposes phylogeny help and inspection without a catalog or Ink', async () => {
+  const f = await fixture();
+  const help = launch(['phylogeny', '--help'], f.dir);
+  assert.equal(help.status, 0, help.stderr); assert.equal(help.stderr, '');
+  assert.ok(help.stdout.includes('phage-explorer phylogeny infer'));
+  const inspect = launch(['phylogeny', 'inspect', '--alignment', f.input], f.dir);
+  assert.equal(inspect.status, 0, inspect.stderr); assert.deepEqual(JSON.parse(inspect.stdout).taxa, ['A','B','C','D']);
+  assert.ok(!inspect.stdout.includes('AAAAAAAA'));
+});
+test('actual launcher and browser worker operation exchange identical source-bound experiments', async () => {
+  const f = await fixture(); const inferred = launch(['phylogeny', ...f.args], f.dir);
+  assert.equal(inferred.status, 0, inferred.stderr);
+  const content = await readFile(f.output, 'utf8');
+  const fromWorker = await executeAlignedPhylogenyRequest({ kind: 'replay', content });
+  assert.equal(fromWorker.record.resultId, JSON.parse(inferred.stdout).resultId);
+  assert.equal(fromWorker.source.fasta, alignment); assert.equal(fromWorker.options.seed, 0);
+  const replay = launch(['phylogeny', 'replay', '--experiment', f.output], f.dir);
+  assert.equal(replay.status, 0, replay.stderr); assert.equal(JSON.parse(replay.stdout).resultId, fromWorker.record.resultId);
+  assert.equal(JSON.parse(replay.stdout).verified, true);
+  const output = join(f.dir, 'tree.nwk');
+  const exported = launch(['phylogeny', 'export', '--experiment', f.output, '--format', 'newick', '--output', output], f.dir);
+  assert.equal(exported.status, 0, exported.stderr); assert.equal(await readFile(output, 'utf8'), fromWorker.result.newick + '\n');
+  const repeated = launch(['phylogeny', ...f.args], f.dir);
+  assert.equal(repeated.status, 1); assert.equal(await readFile(f.output, 'utf8'), content);
 });

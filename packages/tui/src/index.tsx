@@ -117,6 +117,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     return;
   }
   // Headless scientific workflows must not require a catalog or initialize Ink.
+  if (args[0] === 'phylogeny') {
+    const { phylogenyMain } = await import('../../../scripts/phylogeny');
+    process.exitCode = await phylogenyMain(args.slice(1), text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, 'phage-explorer phylogeny');
+    return;
+  }
   if (args[0] === 'host-range') {
     const { hostRangeMain } = await import('../../../scripts/host-range');
     process.exitCode = await hostRangeMain(args.slice(1), text => { process.stdout.write(text); }, text => { process.stderr.write(text); }, 'phage-explorer host-range');
@@ -178,6 +183,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +
+      '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
       '  phage-explorer workflow inspect|replay ...\n' +
       'Use phage-explorer COMMAND --help for options. Workflow replay executes only supported recorded actions.\n\n' +
       'Local community analysis: phage-explorer abundance view|inspect|analyze|replay FILE\n' +
