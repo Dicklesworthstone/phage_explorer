@@ -168,3 +168,92 @@ export function createOfflineDatasetAccess(input: {
     },
   };
 }
+
+export interface OfflineDatasetSnapshot {
+  plan: OfflineDatasetPlan;
+  /** Undefined until inspected; null means no saved reservation exists. */
+  saved: SavedOfflineDataset | null | undefined;
+  report: OfflineDatasetReport | null;
+  busy: 'restoring' | 'checking' | 'preparing' | 'releasing' | null;
+  progress: OfflineDownloadProgress | null;
+  error: string | null;
+  notice: string;
+}
+
+/** Settings owns the operation, not the repository: closing it cancels only this job. */
+export class OfflineDatasetSession {
+  private active = false;
+  private operation: AbortController | null = null;
+  private readonly listeners = new Set<() => void>();
+  private snapshot: OfflineDatasetSnapshot;
+  constructor(private readonly access: OfflineDatasetAccess) {
+    this.snapshot = { plan: access.plan({ genomeIds: [], atlasModels: [] }), saved: undefined,
+      report: null, busy: null, progress: null, error: null, notice: 'Choose genomes and check or prepare their offline files.' };
+  }
+  getSnapshot = (): OfflineDatasetSnapshot => this.snapshot;
+  subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  private publish(update: Partial<OfflineDatasetSnapshot>): void {
+    this.snapshot = { ...this.snapshot, ...update };
+    for (const listener of this.listeners) listener();
+  }
+  activate = (): void => { this.active = true; };
+  deactivate = (): void => { this.active = false; this.cancel(); };
+  cancel = (): void => {
+    const previous = this.operation; this.operation = null; previous?.abort();
+    if (previous) this.publish({ busy: null, progress: null, report: null,
+      notice: 'Offline work cancelled. Saved files and any partial reservation remain; prepare again to resume.' });
+  };
+  select = (selection: OfflineDatasetSelection): void => {
+    if (!this.active) return;
+    this.cancel();
+    try { this.publish({ plan: this.access.plan(selection), report: null, error: null,
+      notice: 'Selection changed. Previous verification does not cover this draft.' }); }
+    catch (cause) { this.publish({ report: null, error: cause instanceof Error ? cause.message : 'Invalid offline selection.' }); }
+  };
+  private async run(kind: NonNullable<OfflineDatasetSnapshot['busy']>,
+    operation: (signal: AbortSignal, current: () => boolean) => Promise<Partial<OfflineDatasetSnapshot>>): Promise<void> {
+    if (!this.active) return;
+    this.cancel();
+    const owner = new AbortController(); this.operation = owner;
+    const current = () => this.active && this.operation === owner && !owner.signal.aborted;
+    this.publish({ busy: kind, progress: null, report: null, error: null, notice: '' });
+    try {
+      const update = await wait(operation(owner.signal, current), owner.signal);
+      if (current()) this.publish(update);
+    } catch (cause) {
+      if (current()) this.publish({ error: cause instanceof Error ? cause.message : 'Offline operation failed.',
+        notice: 'No new offline readiness claim. Saved files may be reusable; recheck or resume explicitly.' });
+    } finally {
+      if (current()) { this.operation = null; this.publish({ busy: null, progress: null }); }
+    }
+  }
+  restore = (): Promise<void> => this.run('restoring', async signal => {
+    const saved = await this.access.saved(signal);
+    return { saved, ...(saved?.selection ? { plan: this.access.plan(saved.selection) } : {}),
+      notice: !saved ? 'No saved reservation. The current draft is unchanged.' : saved.selection
+        ? 'Saved selection restored. Files have not been checked; prepare to resume or verify saved files.'
+        : 'Saved reservation belongs to another dataset or incomplete groups. It was not applied to this catalog.' };
+  });
+  check = (): Promise<void> => {
+    const selection = structuredClone(this.snapshot.plan.selection);
+    return this.run('checking', async signal => {
+      const report = await this.access.inspect(selection, signal);
+      return { report, notice: report.ready ? 'Selected dataset files and startup manifest verified in browser storage.'
+        : 'Some selected files or the startup manifest are missing, corrupt, or unavailable. Prepare to resume or repair.' };
+    });
+  };
+  prepare = (): Promise<void> => {
+    const selection = structuredClone(this.snapshot.plan.selection);
+    return this.run('preparing', async (signal, current) => {
+      const report = await this.access.prepare(selection, { signal,
+        onProgress: progress => { if (current()) this.publish({ progress: { ...progress } }); } });
+      if (!report.ready) throw new Error('Preparation did not verify all selected files and the startup manifest.');
+      const saved = await this.access.saved(signal);
+      return { report, saved, notice: 'Selected dataset files and startup manifest verified in browser storage.' };
+    });
+  };
+  release = (): Promise<void> => this.run('releasing', async signal => {
+    await this.access.release(signal);
+    return { saved: null, notice: 'Offline reservation released. Cached files were not deleted; they can now be evicted.' };
+  });
+}

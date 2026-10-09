@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useState } from 'react';
+import type { PhageRepository } from '../../db';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useTheme } from '../../hooks/useTheme';
@@ -13,13 +14,19 @@ import {
 } from '../../store/createWebStore';
 import { IconContrast, IconLearn, IconSettings, IconDatabase } from '../ui';
 
+const OfflineDatasetPanel = lazy(() => import('./OfflineDatasetPanel').then(module => ({ default: module.OfflineDatasetPanel })));
+
 export interface SettingsOverlayProps {
+  repository?: PhageRepository | null;
   reloadDatabase: () => Promise<void>;
   databaseFetching: boolean;
 }
 
-export function SettingsOverlay({ reloadDatabase, databaseFetching }: SettingsOverlayProps): React.ReactElement | null {
-  const { close } = useOverlay();
+export function SettingsOverlay({ reloadDatabase, databaseFetching, repository }: SettingsOverlayProps): React.ReactElement | null {
+  const { close, isOpen } = useOverlay();
+  const offline = useMemo(() => repository?.getOfflineDataset?.() ?? null, [repository]);
+  const [offlineExpanded, setOfflineExpanded] = useState(false);
+  const [offlineBusy, setOfflineBusy] = useState(false);
   const { theme, setTheme, availableThemes } = useTheme();
   const reducedMotion = useReducedMotion();
   const highContrast = useWebPreferences((s) => s.highContrast);
@@ -301,14 +308,14 @@ export function SettingsOverlay({ reloadDatabase, databaseFetching }: SettingsOv
                 <h3 className="settings-section-title">Database</h3>
               </div>
               <p className="settings-paragraph">
-                The phage database is cached locally for offline access. If you&apos;re missing phages or seeing
-                stale data, reload the database to fetch the latest version.
+                Reload the published database to fetch a new version. In catalog-first datasets, only fetched
+                or explicitly prepared genomes are cached; loading the catalog does not download every genome.
               </p>
               <p className="settings-meta">
                 {reloadStatus === 'loading' && 'Downloading latest database...'}
                 {reloadStatus === 'success' && 'Database updated! Reloading...'}
                 {reloadStatus === 'error' && 'Failed to reload database. Check your connection.'}
-                {reloadStatus === 'idle' && '24 phages available in the current database.'}
+                {reloadStatus === 'idle' && 'Offline availability depends on the saved dataset files and startup manifest.'}
               </p>
             </div>
             <div className="settings-row-actions">
@@ -316,13 +323,27 @@ export function SettingsOverlay({ reloadDatabase, databaseFetching }: SettingsOv
                 type="button"
                 className="btn"
                 onClick={handleReloadDatabase}
-                disabled={reloadStatus === 'loading' || databaseFetching}
+                disabled={reloadStatus === 'loading' || databaseFetching || offlineBusy}
                 aria-label="Reload database from server"
               >
                 {reloadStatus === 'loading' || databaseFetching ? 'Reloading...' : 'Reload Database'}
               </button>
             </div>
           </div>
+        </section>
+
+        <section aria-label="Offline dataset management" className="panel panel-compact settings-section">
+          {offline ? <>
+            <button type="button" className="btn" aria-expanded={offlineExpanded} disabled={databaseFetching || reloadStatus === 'loading'}
+              onClick={() => setOfflineExpanded(!offlineExpanded)}>
+              {offlineExpanded ? 'Close offline manager' : 'Manage offline genomes'}
+            </button>
+            {offlineExpanded && isOpen('settings') && !databaseFetching && reloadStatus !== 'loading' &&
+              <Suspense fallback={<p role="status">Loading offline manager…</p>}>
+                <OfflineDatasetPanel access={offline} onBusyChange={setOfflineBusy} />
+              </Suspense>}
+          </> : <p>Individual offline selections require a catalog-first dataset. Legacy databases retain their existing
+            whole-database cache. Export private genome bundles separately; private imports are not downloaded or saved by this manager.</p>}
         </section>
 
         <div className="settings-footer">
