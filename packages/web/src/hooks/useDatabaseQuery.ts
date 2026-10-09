@@ -1,129 +1,53 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import type { PhageRepository, DatabaseLoadProgress } from '../db';
-import { createProgressiveDatabaseLoader as createDatabaseLoader } from '../db/ProgressiveDatabaseLoader';
+import { useEffect, useMemo, useSyncExternalStore } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { createProgressiveDatabaseLoader } from '../db/ProgressiveDatabaseLoader';
+import { getDatabaseSession } from '../db/DatabaseSession';
+import type { DatabaseLoadProgress, PhageRepository } from '../db';
 
 const DEFAULT_DATABASE_URL = '/phage.db';
 
 export interface UseDatabaseQueryOptions {
   databaseUrl?: string;
-  /** When false, the query will not auto-run; call `load()` manually. */
+  /** When false, this observer does not start a load; call load() explicitly. */
   enabled?: boolean;
 }
-
 export interface UseDatabaseQueryResult {
+  /** Borrowed snapshot. Its loader is owned by the shared session, not the caller. */
   repository: PhageRepository | null;
   isLoading: boolean;
   isFetching: boolean;
   error: string | null;
   progress: DatabaseLoadProgress | null;
   isCached: boolean;
-  /** Trigger initial load when `enabled` is false. */
   load: () => Promise<void>;
   reload: () => Promise<void>;
 }
 
-export function useDatabaseQuery(
-  options: UseDatabaseQueryOptions = {}
-): UseDatabaseQueryResult {
+/**
+ * Share the live database within this QueryClient without putting a closeable
+ * SQLite object into its result cache. Fetch lifetimes belong to DatabaseSession;
+ * use load/reload, not generic query invalidation, to request database work.
+ */
+export function useDatabaseQuery(options: UseDatabaseQueryOptions = {}): UseDatabaseQueryResult {
   const { databaseUrl = DEFAULT_DATABASE_URL, enabled = true } = options;
-  const [progress, setProgress] = useState<DatabaseLoadProgress | null>(null);
-  const [isCached, setIsCached] = useState(false);
-  const loaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
-  const inFlightLoaderRef = useRef<ReturnType<typeof createDatabaseLoader> | null>(null);
-  const loadGenerationRef = useRef(0);
-  const forceDownloadRef = useRef(false);
+  const client = useQueryClient();
+  const session = useMemo(() => getDatabaseSession(client, databaseUrl, createProgressiveDatabaseLoader), [client, databaseUrl]);
+  const observer = useMemo(() => session.createObserver(), [session]);
+  const snapshot = useSyncExternalStore(observer.subscribe, observer.getSnapshot, observer.getSnapshot);
 
-  const query = useQuery<PhageRepository>({
-    queryKey: ['database', databaseUrl],
-    queryFn: async () => {
-      const generation = ++loadGenerationRef.current;
-      const previousLoader = loaderRef.current;
-
-      await inFlightLoaderRef.current?.close().catch(() => {});
-      const nextLoader = createDatabaseLoader(databaseUrl, (nextProgress) => {
-        if (generation !== loadGenerationRef.current) return;
-        setProgress(nextProgress);
-        if (nextProgress.cached !== undefined) {
-          setIsCached(nextProgress.cached);
-        }
-      });
-      inFlightLoaderRef.current = nextLoader;
-
-      setProgress({
-        stage: 'checking',
-        percent: 0,
-        message: 'Starting database load...',
-        cached: false,
-      });
-      setIsCached(false);
-
-      try {
-        const repository = await nextLoader.load({ forceDownload: forceDownloadRef.current });
-        if (generation !== loadGenerationRef.current) {
-          await nextLoader.close().catch(() => {});
-          throw new Error('Database load superseded by a newer request');
-        }
-
-        loaderRef.current = nextLoader;
-        inFlightLoaderRef.current = null;
-
-        if (previousLoader && previousLoader !== nextLoader) {
-          await previousLoader.close().catch(() => {});
-        }
-
-        return repository;
-      } catch (error) {
-        if (inFlightLoaderRef.current === nextLoader) {
-          inFlightLoaderRef.current = null;
-        }
-        await nextLoader.close().catch(() => {});
-        throw error;
-      }
-    },
-    staleTime: Infinity,
-    gcTime: Infinity,
-    retry: 1,
-    enabled,
-  });
-
+  // Release the previously displayed snapshot only after this render's effects
+  // commit. Child queries already running retain their own method-call leases.
+  useEffect(() => { observer.commit(snapshot.repository); }, [observer, snapshot.repository]);
   useEffect(() => {
-    return () => {
-      loadGenerationRef.current += 1;
-      inFlightLoaderRef.current?.close().catch(() => {});
-      inFlightLoaderRef.current = null;
-      loaderRef.current?.close().catch(() => {});
-      loaderRef.current = null;
-    };
-  }, [databaseUrl]);
+    if (enabled) void session.load().catch(() => {
+      // The shared snapshot exposes errors. Explicit load/reload callers still
+      // receive rejection; an unmounted auto-loader has no UI left to notify.
+    });
+  }, [enabled, session]);
 
-  const load = useCallback(async () => {
-    await query.refetch({ cancelRefetch: false });
-  }, [query.refetch]);
-
-  const reload = useCallback(async () => {
-    // Keep the verified snapshot until its replacement passes integrity checks.
-    // Hold this flag through query retries, so a failed forced refresh cannot
-    // silently become a successful load of the old cached data.
-    forceDownloadRef.current = true;
-    try {
-      const result = await query.refetch({ cancelRefetch: true });
-      if (result.error) throw result.error;
-    } finally {
-      forceDownloadRef.current = false;
-    }
-  }, [query.refetch]);
-
-  return {
-    repository: query.data ?? null,
-    isLoading: query.isLoading,
-    isFetching: query.isFetching,
-    error: query.error instanceof Error ? query.error.message : query.error ? String(query.error) : null,
-    progress,
-    isCached,
-    load,
-    reload,
-  };
+  return { ...snapshot,
+    isLoading: snapshot.isLoading || (enabled && !snapshot.repository && !snapshot.error),
+    load: session.load, reload: session.reload };
 }
 
 export default useDatabaseQuery;
