@@ -87,3 +87,40 @@ browser-to-terminal-to-browser replay, reject rehashed forged output, and check
 cancellation and delayed imports. Synthetic quartets are software test oracles,
 not empirical phylogenetic benchmarks. Native Bun, browser, production-build and
 full-workspace results must be reported separately from any adapter-based checks.
+
+## Explicit outgroup root hypotheses
+
+The terminal command can derive a rooted experiment from a verified original
+inference, without treating the arbitrary display root as biological evidence:
+
+```sh
+bun packages/tui/src/index.tsx phylogeny root --experiment experiment.json \
+  --outgroup outgroup_a,outgroup_b --fraction 0.25 \
+  --rooting-evidence 'Independent outgroup evidence and branch-placement rationale' \
+  --date-independent --output rooted.json
+bun packages/tui/src/index.tsx phylogeny replay --experiment rooted.json
+bun packages/tui/src/index.tsx phylogeny export --experiment rooted.json \
+  --format newick --output rooted.nwk
+```
+
+There is no default outgroup or midpoint: the fraction is strictly between 0 and
+1, measured from the outgroup-side endpoint of the separating edge. The user
+must justify both the outgroup and branch placement and assert that neither
+choice used collection dates. These are recorded assumptions, not independently
+verified evidence. The chosen outgroup must occupy exactly one side of a
+positive-length edge and at least two ingroup taxa must remain. Any negative NJ
+limb, including a roundoff negative, is rejected; no branch is clipped, refitted
+or rearranged to make the operation succeed. Every original taxon and pairwise
+tree path is retained, and a numeric path-preservation certificate is recorded.
+
+The derived record uses method `explicit-outgroup-rooted-nj` and retains the
+original alignment, options, source result identity and complete root decision.
+Replay recomputes the original NJ inference and then the root placement. Rehashed
+invented trees are not accepted. `replay` and `export` accept either kind of
+record; a derived Newick export uses the specified root, while distance and split
+exports remain the original unrooted values. Split support is not root support.
+Rooting does not date a tree or validate a molecular clock. Start a different
+root hypothesis from the original experiment rather than modifying a prior root.
+
+Core rooting tests are in `packages/core/src/analysis/phylogeny-rooting.test.ts`;
+terminal rooting and source-preservation tests extend the existing CLI suite.
