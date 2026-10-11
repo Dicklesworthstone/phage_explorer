@@ -13,10 +13,12 @@
  * GitHub release instead.
  */
 import { describe, expect, test } from 'bun:test';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -48,7 +50,15 @@ const HASH_TOOLS = ['sha256sum', 'shasum', 'openssl', 'perl'];
 
 /** A PATH directory with only the named host tools, plus a release-serving curl. */
 /** `hashTools`: true = every SHA-256 tool the host has, false = none, or an exact list. */
-function toolDir(root: string, releaseDir: string, opts: { hashTools: boolean | string[]; flock?: boolean }) {
+/**
+ * `stallOn`: the first download of that asset writes half its bytes, creates
+ * `stallMarker`, and then hangs like a stalled connection; later downloads are normal.
+ */
+function toolDir(
+  root: string,
+  releaseDir: string,
+  opts: { hashTools: boolean | string[]; flock?: boolean; stallOn?: string; stallMarker?: string }
+) {
   const dir = join(root, 'tools');
   mkdirSync(dir);
   const hashes = opts.hashTools === true ? HASH_TOOLS : opts.hashTools === false ? [] : opts.hashTools;
@@ -75,7 +85,17 @@ case "$url" in
 esac
 src="${releaseDir}/\${url##*/}"
 [ -f "$src" ] || exit 22
-if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
+${
+  opts.stallOn && opts.stallMarker
+    ? `if [ "\${url##*/}" = "${opts.stallOn}" ] && [ -n "$out" ] && [ ! -e "${opts.stallMarker}" ]; then
+  size=$(wc -c <"$src")
+  head -c $((size / 2)) "$src" >"$out"
+  : >"${opts.stallMarker}"
+  exec sleep 60
+fi
+`
+    : ''
+}if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 `
   );
   chmodSync(curl, 0o755);
@@ -128,22 +148,26 @@ interface Run {
   tmp: string;
 }
 
-function runInstaller(
-  release: Release,
-  opts: {
-    args?: string[];
-    hashTools?: boolean | string[];
-    flock?: boolean;
-    previous?: boolean;
-    withDb?: boolean;
-    destName?: string;
-    before?: (tmp: string) => void;
-  } = {}
-): Run {
+interface InstallOptions {
+  args?: string[];
+  hashTools?: boolean | string[];
+  flock?: boolean;
+  previous?: boolean;
+  withDb?: boolean;
+  destName?: string;
+  homeName?: string;
+  tmpName?: string;
+  stallOn?: string;
+  before?: (tmp: string) => void;
+}
+
+/** Lay out HOME, TMPDIR, the release and the tools; return the installer's argv and env. */
+function prepareInstall(release: Release, opts: InstallOptions = {}) {
   const root = mkdtempSync(join(tmpdir(), 'phage-install-'));
-  const home = join(root, 'home');
+  const home = join(root, opts.homeName ?? 'home');
   const dest = join(root, opts.destName ?? 'bin');
-  const tmp = join(root, 'tmp');
+  const tmp = join(root, opts.tmpName ?? 'tmp');
+  const stallMarker = join(root, 'download-stalled');
   mkdirSync(home);
   mkdirSync(tmp);
   if (opts.previous) {
@@ -153,26 +177,36 @@ function runInstaller(
     writeFileSync(join(home, '.phage-explorer', 'phage.db'), OLD_DB);
   }
   const releaseDir = makeRelease(root, release);
-  const tools = toolDir(root, releaseDir, { hashTools: opts.hashTools ?? true, flock: opts.flock });
+  const tools = toolDir(root, releaseDir, {
+    hashTools: opts.hashTools ?? true,
+    flock: opts.flock,
+    stallOn: opts.stallOn,
+    stallMarker,
+  });
   opts.before?.(tmp);
-  const result = Bun.spawnSync(
-    [SHELL, INSTALLER, '--dest', dest, ...(opts.withDb === false ? [] : ['--with-database']), ...(opts.args ?? [])],
-    {
-      env: { PATH: tools, HOME: home, TMPDIR: tmp, VERSION },
-      stdin: 'ignore',
-      stdout: 'pipe',
-      stderr: 'pipe',
-    }
-  );
+  const argv = [SHELL, INSTALLER, '--dest', dest, ...(opts.withDb === false ? [] : ['--with-database']), ...(opts.args ?? [])];
+  const env = { PATH: tools, HOME: home, TMPDIR: tmp, VERSION };
+  return { argv, env, home, dest, tmp, stallMarker };
+}
+
+function runPrepared(prepared: ReturnType<typeof prepareInstall>): Run {
+  const result = Bun.spawnSync(prepared.argv, { env: prepared.env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
   return {
     code: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
-    home,
-    dest,
-    tmp,
+    home: prepared.home,
+    dest: prepared.dest,
+    tmp: prepared.tmp,
   };
 }
+
+function runInstaller(release: Release, opts: InstallOptions = {}): Run {
+  return runPrepared(prepareInstall(release, opts));
+}
+
+const mkdirLockPath = (tmp: string) => join(tmp, `phage-explorer-install-${process.getuid?.()}.lock.d`);
+const flockPath = (tmp: string) => join(tmp, `phage-explorer-install-${process.getuid?.()}.lock`);
 
 const installedBinary = (run: Run) => readFileSync(join(run.dest, 'phage-explorer'));
 const installedDb = (run: Run) => readFileSync(join(run.home, '.phage-explorer', 'phage.db'));
@@ -338,9 +372,110 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
       expect(Buffer.compare(installedDb(run), Buffer.from(GOOD_DB))).toBe(0);
     });
   }
+
+  test('upgrades in place when the install directory, HOME and TMPDIR contain spaces', () => {
+    const run = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB },
+      { previous: true, destName: 'my bin', homeName: 'home dir', tmpName: 'tmp dir' }
+    );
+    expect(run.code).toBe(0);
+    expect(Buffer.compare(installedBinary(run), Buffer.from(GOOD_BINARY))).toBe(0);
+    expect(Buffer.compare(installedDb(run), Buffer.from(GOOD_DB))).toBe(0);
+    expect(leftovers(run)).toEqual([]);
+    expect(existsSync(mkdirLockPath(run.tmp))).toBe(false);
+  });
+
+  test('a symlink planted at the lock directory path is refused and nothing changes', () => {
+    let target = '';
+    const run = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB },
+      {
+        previous: true,
+        before: (tmp) => {
+          target = join(tmp, 'elsewhere');
+          mkdirSync(target);
+          symlinkSync(target, mkdirLockPath(tmp));
+        },
+      }
+    );
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Install lock path exists but is not a directory');
+    expectUnchanged(run);
+    expect(readdirSync(target)).toEqual([]);
+    expect(lstatSync(mkdirLockPath(run.tmp)).isSymbolicLink()).toBe(true);
+  });
+
+  // Ctrl+C reaches the whole foreground process group, so the stalled download
+  // and the installer are signalled together, as they are here.
+  for (const [signal, status] of [['SIGINT', 130], ['SIGTERM', 143]] as const) {
+    test(`${signal} during the download exits ${status}, keeps the previous install and releases the lock`, async () => {
+      const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true, stallOn: ASSET });
+      const child = spawn(prepared.argv[0], prepared.argv.slice(1), {
+        env: prepared.env,
+        detached: true,
+        stdio: 'ignore',
+      });
+      const exited = new Promise<number | null>((done) => child.on('exit', (code) => done(code)));
+      const deadline = Date.now() + 20_000;
+      while (!existsSync(prepared.stallMarker)) {
+        if (Date.now() > deadline) throw new Error('the binary download never started');
+        await Bun.sleep(25);
+      }
+      const run: Run = { ...prepared, code: -1, stdout: '', stderr: '' };
+      // The interrupted download is a real partial file beside the binary.
+      expect(leftovers(run)).toHaveLength(1);
+      expect(existsSync(mkdirLockPath(prepared.tmp))).toBe(true);
+      process.kill(-child.pid!, signal);
+      expect(await exited).toBe(status);
+      expectUnchanged(run);
+      expect(existsSync(mkdirLockPath(prepared.tmp))).toBe(false);
+      // Nothing still holds the lock: the next installer runs to completion.
+      const next = runPrepared(prepared);
+      expect(next.code).toBe(0);
+      expect(Buffer.compare(installedBinary(next), Buffer.from(GOOD_BINARY))).toBe(0);
+      expect(Buffer.compare(installedDb(next), Buffer.from(GOOD_DB))).toBe(0);
+    }, 30_000);
+  }
 });
 
 describe.skipIf(!supported || !Bun.which('flock'))('install.sh where flock exists', () => {
+  test('a symlink planted at the lock file path is refused, and neither target is touched or created', () => {
+    let victim = '';
+    const planted = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB },
+      {
+        flock: true,
+        previous: true,
+        before: (tmp) => {
+          victim = join(tmp, 'victim.txt');
+          writeFileSync(victim, 'keep these bytes\n');
+          symlinkSync(victim, flockPath(tmp));
+        },
+      }
+    );
+    expect(planted.code).not.toBe(0);
+    expect(planted.stderr).toContain('Install lock path is a symlink');
+    expectUnchanged(planted);
+    expect(readFileSync(victim, 'utf8')).toBe('keep these bytes\n');
+
+    let missing = '';
+    const dangling = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB },
+      {
+        flock: true,
+        previous: true,
+        before: (tmp) => {
+          missing = join(tmp, 'not-created');
+          symlinkSync(missing, flockPath(tmp));
+        },
+      }
+    );
+    expect(dangling.code).not.toBe(0);
+    expect(dangling.stderr).toContain('Install lock path is a symlink');
+    expectUnchanged(dangling);
+    expect(existsSync(missing)).toBe(false);
+  });
+
   test('a held flock blocks a second installer and a free one installs', () => {
     const free = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { flock: true });
     expect(free.code).toBe(0);

@@ -241,7 +241,9 @@ acquire_install_lock() {
   lock_path="${base%/}/phage-explorer-install-$(id -u).lock"
 
   if command -v flock &>/dev/null; then
-    # Append mode: opening the lock must never truncate whatever is there.
+    # Never follow a planted symlink: opening it would create or lock a file
+    # elsewhere. Append mode: opening the lock must never truncate whatever is there.
+    [[ ! -L "$lock_path" ]] || die "Install lock path is a symlink: $lock_path"
     exec 200>>"$lock_path" || die "Cannot open the install lock: $lock_path"
     flock -n 200 || die "Another installation is in progress (lock: $lock_path)"
     LOCK_KIND="flock"

@@ -4,6 +4,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
+## Unreleased
+
+### Installer
+
+`install.sh` is served from `main`, so this applies to every `curl | bash`
+install without a new binary release.
+
+- Where `flock` exists, the installer refuses a symlink at its lock path
+  instead of opening whatever it points to (which could create a file
+  elsewhere). The lock-directory path used without `flock` already refused
+  one; both are now tested, along with install paths containing spaces and an
+  install interrupted by Ctrl+C or SIGTERM mid-download (exit 130/143, the
+  previous binary and database untouched, the lock released).
+
 ## [v1.7.1] — 2026-10-11
 
 [Compare: v1.7.0...v1.7.1](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.7.0...v1.7.1)
