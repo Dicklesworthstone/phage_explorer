@@ -231,6 +231,7 @@ trap 'exit 143' TERM HUP
 
 acquire_install_lock() {
   local base="${TMPDIR:-/tmp}"
+  [[ -d "$base" && -w "$base" ]] || base="/tmp"
   local lock_path
   lock_path="${base%/}/phage-explorer-install-$(id -u).lock"
 
@@ -251,6 +252,7 @@ acquire_install_lock() {
       printf '%s\n' "$$" >"$dir/pid" || die "Cannot record the install lock owner: $dir/pid"
       return 0
     fi
+    [[ -e "$dir" || -L "$dir" ]] || die "Cannot create the install lock directory: $dir"
     [[ -d "$dir" && ! -L "$dir" ]] || die "Install lock path exists but is not a directory: $dir"
     owner="$(cat "$dir/pid" 2>/dev/null || true)"
     if [[ $attempt -eq 1 && "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
@@ -275,16 +277,22 @@ acquire_install_lock
 # Checksums
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Hash from stdin: with a file argument, sha256sum and shasum prefix the sum
+# with a backslash when the path contains one (Git Bash paths). Each tool is
+# tried in turn until one prints a well-formed digest.
 sha256_of() {
+  local sum=""
   if command -v sha256sum &>/dev/null; then
-    sha256sum "$1" | awk '{print tolower($1)}'
-  elif command -v shasum &>/dev/null; then
-    shasum -a 256 "$1" | awk '{print tolower($1)}'
-  elif command -v openssl &>/dev/null; then
-    openssl dgst -sha256 "$1" | awk '{print tolower($NF)}'
-  else
-    return 1
+    sum="$(sha256sum <"$1" 2>/dev/null | awk '{print tolower($1)}')" || sum=""
   fi
+  if [[ ! "$sum" =~ ^[0-9a-f]{64}$ ]] && command -v shasum &>/dev/null; then
+    sum="$(shasum -a 256 <"$1" 2>/dev/null | awk '{print tolower($1)}')" || sum=""
+  fi
+  if [[ ! "$sum" =~ ^[0-9a-f]{64}$ ]] && command -v openssl &>/dev/null; then
+    sum="$(openssl dgst -sha256 <"$1" 2>/dev/null | awk '{print tolower($NF)}')" || sum=""
+  fi
+  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$sum"
 }
 
 # Print the one SHA-256 that sha256.txt (or the asset's own .sha256 sidecar)
@@ -312,7 +320,10 @@ verify_sha256() {
     log_warn "NOT VERIFIED (--insecure-skip-checksums): $label"
     return 0
   fi
-  [[ -n "$expected" ]] || { log_error "No published SHA-256 for $label"; return 1; }
+  [[ -n "$expected" ]] || {
+    log_error "No published SHA-256 for $label (only for a release that publishes no checksums: --insecure-skip-checksums)"
+    return 1
+  }
   actual="$(sha256_of "$file")" && [[ -n "$actual" ]] || {
     log_error "Cannot compute the SHA-256 of $label (needs sha256sum, shasum or openssl)"
     return 1
@@ -479,15 +490,22 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
   TMP_DIR="$(mktemp -d)" || die "Cannot create a temporary directory; $NOT_CHANGED"
 
   log "Cloning repository..."
-  git clone --depth 1 ${VERSION:+--branch "$VERSION"} \
-    "https://github.com/$OWNER/$REPO.git" "$TMP_DIR" 2>/dev/null \
-    || git clone --depth 1 "https://github.com/$OWNER/$REPO.git" "$TMP_DIR"
+  # A pinned or resolved version builds exactly that tag; only an unresolved
+  # version builds the default branch.
+  if [[ -n "$VERSION" ]]; then
+    git clone --depth 1 --branch "$VERSION" "https://github.com/$OWNER/$REPO.git" "$TMP_DIR" \
+      || die "Cannot clone tag $VERSION of $OWNER/$REPO; $NOT_CHANGED"
+  else
+    git clone --depth 1 "https://github.com/$OWNER/$REPO.git" "$TMP_DIR" \
+      || die "Cannot clone $OWNER/$REPO; $NOT_CHANGED"
+  fi
 
   log "Installing dependencies and building..."
+  # Chained explicitly: `set -e` does not apply inside `( ... ) || die`.
   (
-    cd "$TMP_DIR"
-    bun install --frozen-lockfile 2>/dev/null || bun install
-    bun run build
+    cd "$TMP_DIR" \
+      && { bun install --frozen-lockfile 2>/dev/null || bun install; } \
+      && bun run build
   ) || die "Build failed; $NOT_CHANGED"
 
   [[ -f "$TMP_DIR/dist/phage-explorer" ]] || die "Build failed: binary not found; $NOT_CHANGED"

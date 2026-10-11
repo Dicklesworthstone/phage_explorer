@@ -21,9 +21,11 @@ source as v1.7.0.
   the release's `sha256.txt` (computed with `sha256sum`, `shasum` or
   `openssl`). Previously a missing hash tool counted as a pass, and
   `--with-database` never checked the database at all.
-- **Nothing is replaced until everything verifies.** A failed download, a
-  missing or mismatched checksum, or no hash tool exits with an error and
-  leaves an existing binary and database untouched.
+- **Nothing is replaced until everything verifies.** A missing or mismatched
+  checksum, no hash tool, or a failed database download exits with an error
+  and leaves an existing binary and database untouched. When the binary
+  download fails, the source-build fallback now builds exactly the requested
+  release tag instead of falling back to the default branch.
 - **`--insecure-skip-checksums`** skips verification with a warning, for old
   releases that publish no checksums. `--verify` is still accepted.
 

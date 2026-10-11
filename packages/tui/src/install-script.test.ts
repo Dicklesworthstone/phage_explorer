@@ -87,8 +87,10 @@ interface Release {
   gz?: Uint8Array;
   /** Serve the plain phage.db asset. */
   plainDb?: boolean;
-  /** sha256.txt lines; defaults to correct sums for the binary and phage.db. */
-  sums?: string[];
+  /** sha256.txt lines; defaults to correct sums for the binary and phage.db; null = no sha256.txt. */
+  sums?: string[] | null;
+  /** Contents of the binary's .sha256 sidecar, when the release publishes one. */
+  sidecar?: string;
 }
 
 function makeRelease(root: string, release: Release) {
@@ -97,8 +99,11 @@ function makeRelease(root: string, release: Release) {
   writeFileSync(join(dir, ASSET), release.binary);
   if (release.plainDb !== false) writeFileSync(join(dir, 'phage.db'), release.db);
   if (release.gz) writeFileSync(join(dir, 'phage.db.gz'), release.gz);
-  const sums = release.sums ?? [`${sha256(GOOD_BINARY)}  ${ASSET}`, `${sha256(GOOD_DB)}  phage.db`];
-  writeFileSync(join(dir, 'sha256.txt'), sums.join('\n') + '\n');
+  if (release.sums !== null) {
+    const sums = release.sums ?? [`${sha256(GOOD_BINARY)}  ${ASSET}`, `${sha256(GOOD_DB)}  phage.db`];
+    writeFileSync(join(dir, 'sha256.txt'), sums.join('\n') + '\n');
+  }
+  if (release.sidecar !== undefined) writeFileSync(join(dir, `${ASSET}.sha256`), release.sidecar);
   return dir;
 }
 
@@ -123,11 +128,19 @@ interface Run {
 
 function runInstaller(
   release: Release,
-  opts: { args?: string[]; hashTools?: boolean; flock?: boolean; previous?: boolean; before?: (tmp: string) => void } = {}
+  opts: {
+    args?: string[];
+    hashTools?: boolean;
+    flock?: boolean;
+    previous?: boolean;
+    withDb?: boolean;
+    destName?: string;
+    before?: (tmp: string) => void;
+  } = {}
 ): Run {
   const root = mkdtempSync(join(tmpdir(), 'phage-install-'));
   const home = join(root, 'home');
-  const dest = join(root, 'bin');
+  const dest = join(root, opts.destName ?? 'bin');
   const tmp = join(root, 'tmp');
   mkdirSync(home);
   mkdirSync(tmp);
@@ -141,7 +154,7 @@ function runInstaller(
   const tools = toolDir(root, releaseDir, { hashTools: opts.hashTools ?? true, flock: opts.flock });
   opts.before?.(tmp);
   const result = Bun.spawnSync(
-    [SHELL, INSTALLER, '--dest', dest, '--with-database', ...(opts.args ?? [])],
+    [SHELL, INSTALLER, '--dest', dest, ...(opts.withDb === false ? [] : ['--with-database']), ...(opts.args ?? [])],
     {
       env: { PATH: tools, HOME: home, TMPDIR: tmp, VERSION },
       stdin: 'ignore',
@@ -250,7 +263,7 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
   });
 
   test('a lock held by a running installer blocks a second one', () => {
-    const holder = Bun.spawn(['sleep', '30']);
+    const holder = Bun.spawn(['sleep', '10']);
     try {
       const run = runInstaller(
         { binary: GOOD_BINARY, db: GOOD_DB },
@@ -286,6 +299,32 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     );
     expect(run.code).toBe(0);
     expect(Buffer.compare(installedBinary(run), Buffer.from(GOOD_BINARY))).toBe(0);
+    // The retired lock was replaced by this installer's own and then released.
+    expect(existsSync(join(run.tmp, `phage-explorer-install-${process.getuid?.()}.lock.d`))).toBe(false);
+  });
+
+  test('falls back to the binary\'s .sha256 sidecar and still refuses a wrong one', () => {
+    const good = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(GOOD_BINARY)}  ${ASSET}\n` },
+      { withDb: false }
+    );
+    expect(good.code).toBe(0);
+    expect(Buffer.compare(installedBinary(good), Buffer.from(GOOD_BINARY))).toBe(0);
+
+    const bad = runInstaller(
+      { binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(OLD_BINARY)}  ${ASSET}\n` },
+      { withDb: false }
+    );
+    expect(bad.code).not.toBe(0);
+    expect(bad.stderr).toContain(`Checksum mismatch for ${ASSET}`);
+  });
+
+  test('verifies when the install directory name contains a backslash', () => {
+    // sha256sum and shasum escape such paths and prefix the digest with a
+    // backslash; the installer hashes from stdin so the digest stays bare.
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { destName: 'C\\tools' });
+    expect(run.code).toBe(0);
+    expect(Buffer.compare(installedBinary(run), Buffer.from(GOOD_BINARY))).toBe(0);
   });
 });
 
@@ -302,7 +341,7 @@ describe.skipIf(!supported || !Bun.which('flock'))('install.sh where flock exist
         previous: true,
         before: (tmp) => {
           const lock = join(tmp, `phage-explorer-install-${process.getuid?.()}.lock`);
-          holder = Bun.spawn([Bun.which('flock')!, lock, 'sleep', '30']);
+          holder = Bun.spawn([Bun.which('flock')!, lock, 'sleep', '10']);
           Bun.sleepSync(300);
         },
       }
@@ -353,7 +392,10 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
     expect(result.exitCode).toBe(0);
     expect(sha256(readFileSync(join(dest, 'phage-explorer')))).toBe(published.get(ASSET)!);
     expect(sha256(readFileSync(join(home, '.phage-explorer', 'phage.db')))).toBe(published.get('phage.db')!);
-    const version = Bun.spawnSync([join(dest, 'phage-explorer'), '--version'], { stdin: 'ignore' });
+    const version = Bun.spawnSync([join(dest, 'phage-explorer'), '--version'], {
+      env: { HOME: home, PATH: '/usr/bin:/bin' },
+      stdin: 'ignore',
+    });
     expect(version.exitCode).toBe(0);
     expect(version.stdout.toString()).toContain(liveVersion.replace(/^v/, ''));
   }, 600_000);
