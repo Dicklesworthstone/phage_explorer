@@ -392,6 +392,15 @@ curl -fsSL .../install.sh | bash -s -- --with-database
 curl -fsSL .../install.sh | bash -s -- --easy-mode
 ```
 
+The installer verifies the binary and the database against the release's
+`sha256.txt` (using `sha256sum`, `shasum` or `openssl`) before it replaces
+anything. If a download fails, a checksum is missing or does not match, or no
+hash tool is available, it exits with an error and leaves any existing install
+untouched. Only one installer runs at a time per user: `flock` is used where it
+exists, and a lock directory elsewhere (stock macOS has no `flock`).
+`--insecure-skip-checksums` installs without verification, with a warning, and
+exists only for old releases that publish no checksums.
+
 ### Environment Variables
 
 | Variable | Default | Description |

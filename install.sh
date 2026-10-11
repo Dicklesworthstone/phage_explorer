@@ -19,7 +19,9 @@
 #   --from-source     Skip binary download, build from source
 #   --with-database   Also download/build the phage database
 #   --easy-mode       Auto-update PATH in shell rc files
-#   --verify          Require checksum verification
+#   --verify          Accepted for compatibility; checksums are always verified
+#   --insecure-skip-checksums
+#                     Install WITHOUT SHA-256 verification (not recommended)
 #   --quiet / -q      Suppress output
 #   --help / -h       Show usage
 #
@@ -38,7 +40,7 @@ VERSION="${VERSION:-}"
 FROM_SOURCE=0
 WITH_DATABASE=0
 EASY_MODE=0
-VERIFY=0
+SKIP_CHECKSUMS=0
 QUIET=0
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,7 +102,11 @@ ${BOLD}Options:${NC}
   --from-source      Skip binary download, build from source
   --with-database    Also download/build the phage database
   --easy-mode        Auto-update PATH in shell rc files
-  --verify           Require checksum verification (fail if unavailable)
+  --verify           Accepted for compatibility: the binary and the database
+                     are always verified against the release's SHA-256 sums
+  --insecure-skip-checksums
+                     Install WITHOUT checksum verification (prints a warning;
+                     only for releases that publish no checksums)
   --quiet, -q        Suppress output
   --help, -h         Show this help
 
@@ -159,7 +165,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --verify)
-      VERIFY=1
+      # Verification is unconditional now; the flag stays accepted.
+      shift
+      ;;
+    --insecure-skip-checksums)
+      SKIP_CHECKSUMS=1
       shift
       ;;
     --quiet | -q)
@@ -175,13 +185,144 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ $SKIP_CHECKSUMS -eq 1 ]]; then
+  echo -e "${RED}${BOLD}WARNING: --insecure-skip-checksums: the binary and database will be installed WITHOUT SHA-256 verification.${NC}" >&2
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Lock file to prevent concurrent installs
+# Cleanup: one EXIT trap owns every temporary path and the install lock
 # ─────────────────────────────────────────────────────────────────────────────
 
-LOCK_FILE="/tmp/phage-explorer-install.lock"
-exec 200>"$LOCK_FILE"
-flock -n 200 || die "Another installation is in progress"
+TMP_DIR=""          # source checkout (source builds only)
+CHECKSUMS_FILE=""   # downloaded sha256.txt
+STAGED_BIN=""       # verified binary, renamed into place only at commit
+STAGED_DB=""        # verified database, renamed into place only at commit
+DB_DOWNLOAD=""      # compressed database download
+LOCK_KIND=""
+LOCK_DIR=""
+
+# Every step is non-fatal: under `set -e` a failing command here would replace
+# the installer's own exit status.
+cleanup() {
+  local path
+  for path in "$CHECKSUMS_FILE" "$STAGED_BIN" "$STAGED_DB" "$DB_DOWNLOAD"; do
+    if [[ -n "$path" && -f "$path" ]]; then rm -f "$path" || true; fi
+  done
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then rm -rf "$TMP_DIR" || true; fi
+  if [[ "$LOCK_KIND" == "mkdir" && -n "$LOCK_DIR" ]]; then
+    rm -f "$LOCK_DIR/pid" || true
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+  fi
+  return 0
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Lock: one installer per user at a time
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# flock(1) is util-linux; stock macOS does not ship it. Where it is missing, an
+# atomic mkdir lock gives the same mutual exclusion. Its owner's pid is
+# recorded so a lock left behind by a killed installer can be retired, under a
+# second mkdir mutex so that two installers never retire the same lock or a
+# fresh one.
+
+acquire_install_lock() {
+  local base="${TMPDIR:-/tmp}"
+  local lock_path
+  lock_path="${base%/}/phage-explorer-install-$(id -u).lock"
+
+  if command -v flock &>/dev/null; then
+    # Append mode: opening the lock must never truncate whatever is there.
+    exec 200>>"$lock_path" || die "Cannot open the install lock: $lock_path"
+    flock -n 200 || die "Another installation is in progress (lock: $lock_path)"
+    LOCK_KIND="flock"
+    return 0
+  fi
+
+  local dir="$lock_path.d"
+  local owner attempt
+  for attempt in 1 2; do
+    if mkdir "$dir" 2>/dev/null; then
+      LOCK_KIND="mkdir"
+      LOCK_DIR="$dir"
+      printf '%s\n' "$$" >"$dir/pid" || die "Cannot record the install lock owner: $dir/pid"
+      return 0
+    fi
+    [[ -d "$dir" && ! -L "$dir" ]] || die "Install lock path exists but is not a directory: $dir"
+    owner="$(cat "$dir/pid" 2>/dev/null || true)"
+    if [[ $attempt -eq 1 && "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
+      if mkdir "$dir.retire" 2>/dev/null; then
+        # Re-read under the retire mutex: only the same dead owner is retired.
+        if [[ "$(cat "$dir/pid" 2>/dev/null || true)" == "$owner" ]] && ! kill -0 "$owner" 2>/dev/null; then
+          rm -f "$dir/pid"
+          rmdir "$dir" 2>/dev/null || true
+        fi
+        rmdir "$dir.retire" 2>/dev/null || true
+        continue
+      fi
+    fi
+    die "Another installation is in progress (lock: $dir${owner:+, pid $owner}). If no installer is running, remove $dir (and $dir.retire if present)."
+  done
+  die "Another installation is in progress (lock: $dir)"
+}
+
+acquire_install_lock
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Checksums
+# ─────────────────────────────────────────────────────────────────────────────
+
+sha256_of() {
+  if command -v sha256sum &>/dev/null; then
+    sha256sum "$1" | awk '{print tolower($1)}'
+  elif command -v shasum &>/dev/null; then
+    shasum -a 256 "$1" | awk '{print tolower($1)}'
+  elif command -v openssl &>/dev/null; then
+    openssl dgst -sha256 "$1" | awk '{print tolower($NF)}'
+  else
+    return 1
+  fi
+}
+
+# Print the one SHA-256 that sha256.txt (or the asset's own .sha256 sidecar)
+# publishes for an exact asset name. Fails when there is none, or more than one.
+expected_sha256() {
+  local name="$1" sums sidecar
+  if [[ -n "$CHECKSUMS_FILE" && -s "$CHECKSUMS_FILE" ]]; then
+    sums="$(awk -v n="$name" 'length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == n || $2 == "*" n) {print tolower($1)}' "$CHECKSUMS_FILE" | sort -u)"
+    if [[ -n "$sums" ]]; then
+      [[ "$(printf '%s\n' "$sums" | wc -l | tr -d ' ')" == "1" ]] || return 1
+      printf '%s\n' "$sums"
+      return 0
+    fi
+  fi
+  sidecar="$(curl -fsSL "$RELEASE_URL/$name.sha256" 2>/dev/null || true)"
+  sums="$(printf '%s\n' "$sidecar" | awk -v n="$name" 'length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == n || $2 == "*" n || $2 == "") {print tolower($1)}' | sort -u)"
+  [[ -n "$sums" && "$(printf '%s\n' "$sums" | wc -l | tr -d ' ')" == "1" ]] || return 1
+  printf '%s\n' "$sums"
+}
+
+# verify_sha256 FILE EXPECTED LABEL: fail unless FILE hashes to EXPECTED.
+verify_sha256() {
+  local file="$1" expected="$2" label="$3" actual
+  if [[ $SKIP_CHECKSUMS -eq 1 ]]; then
+    log_warn "NOT VERIFIED (--insecure-skip-checksums): $label"
+    return 0
+  fi
+  [[ -n "$expected" ]] || { log_error "No published SHA-256 for $label"; return 1; }
+  actual="$(sha256_of "$file")" && [[ -n "$actual" ]] || {
+    log_error "Cannot compute the SHA-256 of $label (needs sha256sum, shasum or openssl)"
+    return 1
+  }
+  if [[ "$actual" != "$expected" ]]; then
+    log_error "Checksum mismatch for $label: expected $expected, got $actual"
+    return 1
+  fi
+  log_success "Checksum verified: $label ($expected)"
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1: Detect platform
@@ -269,54 +410,60 @@ log_success "Install directory: $DEST"
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 4: Download or build binary
 # ─────────────────────────────────────────────────────────────────────────────
+#
+# Nothing in DEST or DATA_DIR changes until every requested artifact is
+# verified: each one is staged in a private file beside its destination, and
+# only the commit step below renames them into place. A failed download,
+# missing checksum, missing hash tool or mismatch leaves an existing install
+# exactly as it was.
 
-log_step 4 "Installing binary..."
+log_step 4 "Preparing binary..."
 
 INSTALL_PATH="$DEST/$BINARY"
 if [[ "$OS" == "windows" ]]; then
   INSTALL_PATH="$DEST/$BINARY.exe"
 fi
 
+DATA_DIR="$HOME/.phage-explorer"
+DB_PATH="$DATA_DIR/phage.db"
+RELEASE_URL=""
+if [[ -n "$VERSION" ]]; then
+  RELEASE_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION"
+fi
+
+NOT_CHANGED="nothing was installed or changed"
+
+new_staging_file() {
+  mktemp "$1/.$2.download.XXXXXX" || die "Cannot create a staging file in $1; $NOT_CHANGED"
+}
+
+fetch_release_checksums() {
+  [[ $SKIP_CHECKSUMS -eq 1 || -n "$CHECKSUMS_FILE" ]] && return 0
+  CHECKSUMS_FILE="$(mktemp "${TMPDIR:-/tmp}/phage-explorer-sha256.XXXXXX")" \
+    || die "Cannot create a temporary file for sha256.txt; $NOT_CHANGED"
+  # A missing sha256.txt is not fatal by itself: expected_sha256 then tries
+  # the asset's .sha256 sidecar, and fails if that is missing too.
+  curl -fsSL "$RELEASE_URL/sha256.txt" -o "$CHECKSUMS_FILE" 2>/dev/null || : >"$CHECKSUMS_FILE"
+}
+
+# Read-only lookup, safe inside $(...); fetch_release_checksums must already
+# have run in the main shell so the trap knows the temporary file.
+release_sha256() {
+  [[ $SKIP_CHECKSUMS -eq 1 ]] && return 0
+  expected_sha256 "$1" || true
+}
+
 if [[ $FROM_SOURCE -eq 0 && -n "$VERSION" ]]; then
-  # Try to download prebuilt binary
-  DOWNLOAD_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/$ASSET_NAME"
-  CHECKSUM_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/sha256.txt"
-
+  STAGED_BIN="$(new_staging_file "$DEST" "$BINARY")"
   log "Downloading $ASSET_NAME..."
-
-  TMP_FILE=$(mktemp)
-  if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE" 2>/dev/null; then
-    # Verify checksum if available
-    if [[ $VERIFY -eq 1 ]] || curl -fsSL "$CHECKSUM_URL" -o /dev/null 2>/dev/null; then
-      log "Verifying checksum..."
-      EXPECTED_SUM=$(curl -fsSL "$CHECKSUM_URL" 2>/dev/null | grep "$ASSET_NAME" | awk '{print $1}' || echo "")
-
-      if [[ -n "$EXPECTED_SUM" ]]; then
-        if command -v sha256sum &>/dev/null; then
-          ACTUAL_SUM=$(sha256sum "$TMP_FILE" | awk '{print $1}')
-        elif command -v shasum &>/dev/null; then
-          ACTUAL_SUM=$(shasum -a 256 "$TMP_FILE" | awk '{print $1}')
-        else
-          log_warn "No sha256sum or shasum available, skipping verification"
-          ACTUAL_SUM="$EXPECTED_SUM"
-        fi
-
-        if [[ "$EXPECTED_SUM" != "$ACTUAL_SUM" ]]; then
-          rm -f "$TMP_FILE"
-          die "Checksum mismatch! Expected: $EXPECTED_SUM, Got: $ACTUAL_SUM"
-        fi
-        log_success "Checksum verified"
-      elif [[ $VERIFY -eq 1 ]]; then
-        rm -f "$TMP_FILE"
-        die "Checksum verification required but sha256.txt not available"
-      fi
-    fi
-
-    mv "$TMP_FILE" "$INSTALL_PATH"
-    chmod +x "$INSTALL_PATH"
-    log_success "Binary installed: $INSTALL_PATH"
+  if curl -fsSL "$RELEASE_URL/$ASSET_NAME" -o "$STAGED_BIN" 2>/dev/null; then
+    fetch_release_checksums
+    verify_sha256 "$STAGED_BIN" "$(release_sha256 "$ASSET_NAME")" "$ASSET_NAME" \
+      || die "Refusing to install $ASSET_NAME; $NOT_CHANGED"
+    chmod 755 "$STAGED_BIN"
   else
-    rm -f "$TMP_FILE"
+    rm -f "$STAGED_BIN"
+    STAGED_BIN=""
     log_warn "Binary download failed, falling back to source build"
     FROM_SOURCE=1
   fi
@@ -329,32 +476,26 @@ if [[ $FROM_SOURCE -eq 1 ]]; then
   command -v git &>/dev/null || die "git is required for source builds"
   command -v bun &>/dev/null || die "bun is required for source builds (https://bun.sh)"
 
-  # Clone and build
-  TMP_DIR=$(mktemp -d)
-  trap 'rm -rf "$TMP_DIR"' EXIT
+  TMP_DIR="$(mktemp -d)" || die "Cannot create a temporary directory; $NOT_CHANGED"
 
   log "Cloning repository..."
   git clone --depth 1 ${VERSION:+--branch "$VERSION"} \
     "https://github.com/$OWNER/$REPO.git" "$TMP_DIR" 2>/dev/null \
     || git clone --depth 1 "https://github.com/$OWNER/$REPO.git" "$TMP_DIR"
 
-  cd "$TMP_DIR"
+  log "Installing dependencies and building..."
+  (
+    cd "$TMP_DIR"
+    bun install --frozen-lockfile 2>/dev/null || bun install
+    bun run build
+  ) || die "Build failed; $NOT_CHANGED"
 
-  log "Installing dependencies..."
-  bun install --frozen-lockfile 2>/dev/null || bun install
-
-  log "Building binary..."
-  bun run build
-
-  if [[ -f "dist/phage-explorer" ]]; then
-    mv "dist/phage-explorer" "$INSTALL_PATH"
-    chmod +x "$INSTALL_PATH"
-    log_success "Binary built and installed: $INSTALL_PATH"
-  else
-    die "Build failed: binary not found"
+  [[ -f "$TMP_DIR/dist/phage-explorer" ]] || die "Build failed: binary not found; $NOT_CHANGED"
+  STAGED_BIN="$(new_staging_file "$DEST" "$BINARY")"
+  if ! { cp "$TMP_DIR/dist/phage-explorer" "$STAGED_BIN" && chmod 755 "$STAGED_BIN"; }; then
+    die "Cannot stage the built binary; $NOT_CHANGED"
   fi
-
-  cd - >/dev/null
+  log_success "Binary built from source"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,93 +504,69 @@ fi
 
 log_step 5 "Database setup..."
 
-DATA_DIR="$HOME/.phage-explorer"
-DB_PATH="$DATA_DIR/phage.db"
-
-install_db_from_source() {
-  # When building from source we already have a complete, shipped database in the repo.
-  local src_db="$TMP_DIR/packages/web/public/phage.db"
-  local tmp_db
-  tmp_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
-  if [[ -f "$src_db" ]]; then
-    if cp "$src_db" "$tmp_db" && chmod 644 "$tmp_db" && mv -f "$tmp_db" "$DB_PATH"; then
-      log_success "Database installed from source tree: $DB_PATH"
-      return 0
-    fi
-    rm -f "$tmp_db"
-  fi
-
-  # Last resort: build it locally (requires network access to NCBI).
-  if command -v bun &>/dev/null; then
-    log "Building database from NCBI (this may take a minute)..."
-    tmp_db=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
-    if (cd "$TMP_DIR" && bun run build:db) && cp "$TMP_DIR/phage.db" "$tmp_db" && chmod 644 "$tmp_db" && mv -f "$tmp_db" "$DB_PATH"; then
-      log_success "Database built and installed: $DB_PATH"
-      return 0
-    fi
-    rm -f "$tmp_db"
-  fi
-
-  return 1
-}
-
 if [[ $WITH_DATABASE -eq 1 ]]; then
-  mkdir -p "$DATA_DIR"
+  mkdir -p "$DATA_DIR" || die "Failed to create directory: $DATA_DIR; $NOT_CHANGED"
+  STAGED_DB="$(new_staging_file "$DATA_DIR" "phage.db")"
 
-  # Source builds: the repo already ships the complete web database.
   if [[ $FROM_SOURCE -eq 1 ]]; then
-    install_db_from_source || log_warn "Could not install database from source build"
-  # Prebuilt installs: try the compressed release asset first, then the plain DB.
+    # The repository ships the release database together with its manifest.
+    SRC_DB="$TMP_DIR/packages/web/public/phage.db"
+    SRC_MANIFEST="$TMP_DIR/packages/web/public/phage.db.manifest.json"
+    [[ -f "$SRC_DB" ]] || die "The source tree has no packages/web/public/phage.db; $NOT_CHANGED"
+    EXPECTED_DB=""
+    if [[ $SKIP_CHECKSUMS -eq 0 ]]; then
+      EXPECTED_DB="$(sed -nE 's/^[[:space:]]*"sha256"[[:space:]]*:[[:space:]]*"([0-9a-fA-F]{64})".*/\1/p' "$SRC_MANIFEST" 2>/dev/null \
+        | head -n 1 | tr '[:upper:]' '[:lower:]')"
+    fi
+    cp "$SRC_DB" "$STAGED_DB" || die "Cannot stage the database; $NOT_CHANGED"
+    verify_sha256 "$STAGED_DB" "$EXPECTED_DB" "phage.db (source tree, per phage.db.manifest.json)" \
+      || die "Refusing to install the database; $NOT_CHANGED"
   elif [[ -n "$VERSION" ]]; then
-    DB_GZ_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db.gz"
-    DB_URL="https://github.com/$OWNER/$REPO/releases/download/$VERSION/phage.db"
-    TMP_DB=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
+    # Whatever the transport, the installed bytes must be the phage.db the
+    # release publishes a checksum for.
+    fetch_release_checksums
+    EXPECTED_DB="$(release_sha256 phage.db)"
+    [[ $SKIP_CHECKSUMS -eq 1 || -n "$EXPECTED_DB" ]] \
+      || die "Release $VERSION publishes no SHA-256 for phage.db; refusing to install an unverified database; $NOT_CHANGED"
 
-    if curl -fsSL "$DB_GZ_URL" -o "$TMP_DB" 2>/dev/null; then
-      if command -v gunzip &>/dev/null; then
-        # NB: no `local` here. This block is at top level, not inside a
-        # function, and bash rejects `local` outside a function body with a
-        # non-zero status -- which `set -euo pipefail` turns into an immediate
-        # abort, after the binary has already been installed.
-        DECOMPRESSED_DB=$(mktemp "$DATA_DIR/phage.db.tmp.XXXXXX")
-        if gunzip -c "$TMP_DB" > "$DECOMPRESSED_DB" && chmod 644 "$DECOMPRESSED_DB" && mv -f "$DECOMPRESSED_DB" "$DB_PATH"; then
-          rm -f "$TMP_DB"
-          log_success "Database installed (compressed): $DB_PATH"
+    DB_STAGED_OK=0
+    if command -v gunzip &>/dev/null; then
+      DB_DOWNLOAD="$(new_staging_file "$DATA_DIR" "phage.db.gz")"
+      if curl -fsSL "$RELEASE_URL/phage.db.gz" -o "$DB_DOWNLOAD" 2>/dev/null; then
+        if gunzip -c "$DB_DOWNLOAD" >"$STAGED_DB" \
+          && verify_sha256 "$STAGED_DB" "$EXPECTED_DB" "phage.db (from phage.db.gz)"; then
+          DB_STAGED_OK=1
         else
-          rm -f "$DECOMPRESSED_DB" "$TMP_DB"
-          log_warn "Could not decompress database"
+          log_warn "The compressed database did not verify; trying the uncompressed asset"
         fi
       else
-        log_warn "gunzip not available; falling back to uncompressed database"
-        if curl -fsSL "$DB_URL" -o "$TMP_DB" 2>/dev/null && chmod 644 "$TMP_DB" && mv -f "$TMP_DB" "$DB_PATH"; then
-          log_success "Database installed: $DB_PATH"
-        else
-          rm -f "$TMP_DB"
-          log_warn "Could not download database"
-        fi
+        log "Compressed database not available, trying uncompressed..."
       fi
-    else
-      log "Compressed database not available, trying uncompressed..."
-      if curl -fsSL "$DB_URL" -o "$TMP_DB" 2>/dev/null && chmod 644 "$TMP_DB" && mv -f "$TMP_DB" "$DB_PATH"; then
-        log_success "Database installed: $DB_PATH"
-      else
-        rm -f "$TMP_DB"
-        log_warn "Could not download database from release"
-      fi
+    fi
+    if [[ $DB_STAGED_OK -eq 0 ]]; then
+      curl -fsSL "$RELEASE_URL/phage.db" -o "$STAGED_DB" 2>/dev/null \
+        || die "Could not download the database from release $VERSION; $NOT_CHANGED"
+      verify_sha256 "$STAGED_DB" "$EXPECTED_DB" "phage.db" \
+        || die "Refusing to install the database; $NOT_CHANGED"
     fi
   else
-    log_warn "No version resolved, cannot download database"
+    die "No release version was resolved, so no verified database can be installed; $NOT_CHANGED"
   fi
-
-  if [[ ! -f "$DB_PATH" ]]; then
-    log_warn "Database was not installed. Build it manually:"
-    log "  git clone https://github.com/$OWNER/$REPO.git"
-    log "  cd $REPO && bun install && bun run build:db"
-    log "  mkdir -p \"$DATA_DIR\" && cp packages/web/public/phage.db \"$DB_PATH\""
-  fi
+  chmod 644 "$STAGED_DB"
 else
   log "Skipping database download (use --with-database to include)"
   log "You can install it later by re-running with --with-database."
+fi
+
+# Commit: every requested artifact is verified; rename each into place.
+mv -f "$STAGED_BIN" "$INSTALL_PATH" || die "Could not install $INSTALL_PATH; $NOT_CHANGED"
+STAGED_BIN=""
+log_success "Binary installed: $INSTALL_PATH"
+if [[ -n "$STAGED_DB" ]]; then
+  mv -f "$STAGED_DB" "$DB_PATH" \
+    || die "The binary was installed, but the database could not be moved into place at $DB_PATH"
+  STAGED_DB=""
+  log_success "Database installed: $DB_PATH"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -505,5 +622,5 @@ echo ""
 if [[ -x "$INSTALL_PATH" ]]; then
   log_success "Binary is executable"
 else
-  log_error "Binary is not executable"
+  die "Binary is not executable: $INSTALL_PATH"
 fi
