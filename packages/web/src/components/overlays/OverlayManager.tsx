@@ -334,7 +334,7 @@ export function OverlayManager({ repository, currentPhage, reloadDatabase, datab
       <EagerOverlayBoundary id="goto"><GotoOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaKey"><AAKeyOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaLegend"><AALegend /></EagerOverlayBoundary>
-      <EagerOverlayBoundary id="settings"><SettingsOverlay reloadDatabase={reloadDatabase} databaseFetching={databaseFetching} /></EagerOverlayBoundary>
+      <EagerOverlayBoundary id="settings"><SettingsOverlay repository={repository} reloadDatabase={reloadDatabase} databaseFetching={databaseFetching} /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="commandPalette"><CommandPalette repository={repository} onSelectPhage={onSelectPhage} /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="tour"><FeatureTour /></EagerOverlayBoundary>
 

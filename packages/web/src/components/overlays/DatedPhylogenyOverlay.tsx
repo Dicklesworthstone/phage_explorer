@@ -12,6 +12,7 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { StrictClockPanel } from './StrictClockPanel';
 
 const AncestralReconstructionPanel = lazy(() => import('./AncestralReconstructionPanel').then(module => ({default:module.AncestralReconstructionPanel})));
+const AlignedPhylogenyPanel = lazy(() => import('./AlignedPhylogenyPanel').then(module => ({default:module.AlignedPhylogenyPanel})));
 
 const CatalogPhylodynamics = lazy(() => import('./PhylodynamicsOverlay').then(module => ({default:module.PhylodynamicsOverlay})));
 
@@ -54,6 +55,7 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
   const [permutations,setPermutations]=useState('999'),[seed,setSeed]=useState('42');
   const [scheme,setScheme]=useState<TemporalOptions['permutationScheme']>('unrestricted'),[excluded,setExcluded]=useState<string[]>([]);
   const [ancestralOpen,setAncestralOpen]=useState(false);
+  const [phylogenyOpen,setPhylogenyOpen]=useState(false);
   const [exportError,setExportError]=useState<string|null>(null),[page,setPage]=useState(0);
   useEffect(()=>{session.activate();return session.deactivate;},[session]);
   useEffect(()=>{
@@ -77,6 +79,10 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
     <section aria-label="Private dated-tree diagnostics" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
       <p>Inspect collection dates against a rooted, date-independent phylogram. Input stays local; this cohort is independent of the selected catalog genome.
         Exploratory diagnostics and optional conditional strict-clock dating are separate operations. No population skyline or selection estimate is generated. Export before closing this workspace.</p>
+      <button type="button" aria-expanded={phylogenyOpen} disabled={busy} onClick={()=>setPhylogenyOpen(!phylogenyOpen)}>
+        {phylogenyOpen?'Close aligned phylogeny (export first)':'Infer an unrooted tree from aligned DNA'}
+      </button>
+      {phylogenyOpen&&<Suspense fallback={<p>Loading local aligned-DNA inference…</p>}><AlignedPhylogenyPanel/></Suspense>}
       <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>setAncestralOpen(!ancestralOpen)}>
         {ancestralOpen?'Close ancestral reconstruction (export first)':'Open ancestral nucleotide reconstruction'}
       </button>

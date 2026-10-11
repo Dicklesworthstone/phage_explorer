@@ -6,11 +6,29 @@
       "master": false
     }
   },
-  "buildCommand": "cd packages/web && bun run ../../scripts/build-web-db.ts --source public/phage.db --output public && bun run build",
+  "buildCommand": "bun run build:web:progressive",
   "outputDirectory": "packages/web/dist",
   "installCommand": "bun install",
   "framework": null,
   "headers": [
+    {
+      "source": "/phage-data/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/phage.db.manifest.json",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    },
     {
       "source": "/phage.db.gz",
       "headers": [
