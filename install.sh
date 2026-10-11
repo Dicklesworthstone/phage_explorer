@@ -185,6 +185,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Every temporary path (lock, sha256.txt, source checkout) lives under TMPDIR;
+# an unset or unusable TMPDIR means /tmp.
+if [[ -z "${TMPDIR:-}" || ! -d "$TMPDIR" || ! -w "$TMPDIR" ]]; then
+  export TMPDIR=/tmp
+fi
+
 if [[ $SKIP_CHECKSUMS -eq 1 ]]; then
   echo -e "${RED}${BOLD}WARNING: --insecure-skip-checksums: the binary and database will be installed WITHOUT SHA-256 verification.${NC}" >&2
 fi
@@ -230,8 +236,7 @@ trap 'exit 143' TERM HUP
 # fresh one.
 
 acquire_install_lock() {
-  local base="${TMPDIR:-/tmp}"
-  [[ -d "$base" && -w "$base" ]] || base="/tmp"
+  local base="$TMPDIR"
   local lock_path
   lock_path="${base%/}/phage-explorer-install-$(id -u).lock"
 
@@ -252,7 +257,12 @@ acquire_install_lock() {
       printf '%s\n' "$$" >"$dir/pid" || die "Cannot record the install lock owner: $dir/pid"
       return 0
     fi
-    [[ -e "$dir" || -L "$dir" ]] || die "Cannot create the install lock directory: $dir"
+    if [[ ! -e "$dir" && ! -L "$dir" ]]; then
+      # Released between our mkdir and this check: try once more; otherwise
+      # the directory really cannot be created.
+      [[ $attempt -eq 1 ]] && continue
+      die "Cannot create the install lock directory: $dir"
+    fi
     [[ -d "$dir" && ! -L "$dir" ]] || die "Install lock path exists but is not a directory: $dir"
     owner="$(cat "$dir/pid" 2>/dev/null || true)"
     if [[ $attempt -eq 1 && "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
@@ -282,6 +292,7 @@ acquire_install_lock
 # tried in turn until one prints a well-formed digest.
 sha256_of() {
   local sum=""
+  [[ -f "$1" && -r "$1" ]] || return 1
   if command -v sha256sum &>/dev/null; then
     sum="$(sha256sum <"$1" 2>/dev/null | awk '{print tolower($1)}')" || sum=""
   fi

@@ -47,10 +47,12 @@ const BASE_TOOLS = [
 const HASH_TOOLS = ['sha256sum', 'shasum', 'openssl', 'perl'];
 
 /** A PATH directory with only the named host tools, plus a release-serving curl. */
-function toolDir(root: string, releaseDir: string, opts: { hashTools: boolean; flock?: boolean }) {
+/** `hashTools`: true = every SHA-256 tool the host has, false = none, or an exact list. */
+function toolDir(root: string, releaseDir: string, opts: { hashTools: boolean | string[]; flock?: boolean }) {
   const dir = join(root, 'tools');
   mkdirSync(dir);
-  const names = [...BASE_TOOLS, ...(opts.hashTools ? HASH_TOOLS : []), ...(opts.flock ? ['flock'] : [])];
+  const hashes = opts.hashTools === true ? HASH_TOOLS : opts.hashTools === false ? [] : opts.hashTools;
+  const names = [...BASE_TOOLS, ...hashes, ...(opts.flock ? ['flock'] : [])];
   for (const name of names) {
     const found = Bun.which(name);
     if (found) symlinkSync(found, join(dir, name));
@@ -130,7 +132,7 @@ function runInstaller(
   release: Release,
   opts: {
     args?: string[];
-    hashTools?: boolean;
+    hashTools?: boolean | string[];
     flock?: boolean;
     previous?: boolean;
     withDb?: boolean;
@@ -313,19 +315,29 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
 
     const bad = runInstaller(
       { binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(OLD_BINARY)}  ${ASSET}\n` },
-      { withDb: false }
+      { withDb: false, previous: true }
     );
     expect(bad.code).not.toBe(0);
     expect(bad.stderr).toContain(`Checksum mismatch for ${ASSET}`);
+    expectUnchanged(bad);
   });
 
-  test('verifies when the install directory name contains a backslash', () => {
-    // sha256sum and shasum escape such paths and prefix the digest with a
-    // backslash; the installer hashes from stdin so the digest stays bare.
-    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { destName: 'C\\tools' });
-    expect(run.code).toBe(0);
-    expect(Buffer.compare(installedBinary(run), Buffer.from(GOOD_BINARY))).toBe(0);
-  });
+  // GNU sha256sum and shasum escape a path containing a backslash and prefix
+  // the digest with one; the installer hashes from stdin so the digest stays
+  // bare. Each available tool is exercised on its own, which also covers the
+  // fall-through to shasum and to openssl.
+  for (const tool of ['sha256sum', 'shasum', 'openssl']) {
+    test.skipIf(!Bun.which(tool))(`verifies with only ${tool} when the install directory name contains a backslash`, () => {
+      const run = runInstaller(
+        { binary: GOOD_BINARY, db: GOOD_DB },
+        { destName: 'C\\tools', hashTools: tool === 'shasum' ? ['shasum', 'perl'] : [tool] }
+      );
+      expect(run.stderr).not.toContain('Cannot compute the SHA-256');
+      expect(run.code).toBe(0);
+      expect(Buffer.compare(installedBinary(run), Buffer.from(GOOD_BINARY))).toBe(0);
+      expect(Buffer.compare(installedDb(run), Buffer.from(GOOD_DB))).toBe(0);
+    });
+  }
 });
 
 describe.skipIf(!supported || !Bun.which('flock'))('install.sh where flock exists', () => {
