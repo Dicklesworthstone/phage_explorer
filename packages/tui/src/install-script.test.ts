@@ -27,6 +27,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { version as treeVersion } from '../../../package.json';
 
 const INSTALLER = resolve(import.meta.dir, '../../../install.sh');
 const SHELL = existsSync('/bin/bash') ? '/bin/bash' : (Bun.which('bash') ?? 'bash');
@@ -318,7 +319,8 @@ describe.skipIf(!supported || !Bun.which('flock'))('install.sh where flock exist
  * Opt-in because it downloads the platform binary and the 11 MB database.
  */
 describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install.sh against the published release', () => {
-  const liveVersion = process.env.PHAGE_INSTALLER_LIVE_VERSION ?? 'v1.7.0';
+  // Defaults to the release this tree is versioned as.
+  const liveVersion = process.env.PHAGE_INSTALLER_LIVE_VERSION ?? `v${treeVersion}`;
 
   function runLive(extra: string[]) {
     const root = mkdtempSync(join(tmpdir(), 'phage-install-live-'));

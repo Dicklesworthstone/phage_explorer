@@ -4,6 +4,29 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
+## [v1.7.1] — 2026-10-11
+
+[Compare: v1.7.0...v1.7.1](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.7.0...v1.7.1)
+
+An installer-only release: the binaries and `phage.db` are built from the same
+source as v1.7.0.
+
+### Installer
+
+- **Works on a stock Mac.** `install.sh` required `flock`, which macOS does
+  not ship, and exited with "Another installation is in progress" before
+  downloading anything. It now uses `flock` where it exists and a lock
+  directory elsewhere; either way only one installer runs per user at a time.
+- **Checksums are required for the binary and the database.** Both must match
+  the release's `sha256.txt` (computed with `sha256sum`, `shasum` or
+  `openssl`). Previously a missing hash tool counted as a pass, and
+  `--with-database` never checked the database at all.
+- **Nothing is replaced until everything verifies.** A failed download, a
+  missing or mismatched checksum, or no hash tool exits with an error and
+  leaves an existing binary and database untouched.
+- **`--insecure-skip-checksums`** skips verification with a warning, for old
+  releases that publish no checksums. `--verify` is still accepted.
+
 ## [v1.7.0] — 2026-10-08
 
 [Compare: v1.6.0...v1.7.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.6.0...v1.7.0)
