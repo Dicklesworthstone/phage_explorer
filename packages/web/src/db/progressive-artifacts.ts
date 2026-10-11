@@ -8,9 +8,14 @@ export interface ArtifactCache {
   delete(key: string): Promise<boolean>;
   keys(): Promise<readonly Request[]>;
 }
+/** The fetch call the loaders make. Narrower than `typeof fetch`, which on Bun also carries `fetch.preconnect`. */
+export type FetchLike = (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1],
+) => Promise<Response>;
 export interface ArtifactStoreOptions {
   manifestUrl: string;
-  fetch?: typeof globalThis.fetch;
+  fetch?: FetchLike;
   openCache?: () => Promise<ArtifactCache | undefined>;
   onStorageUnavailable?: (error: unknown) => void;
   forceDownload?: boolean;
@@ -120,7 +125,7 @@ export async function readBoundedResponse(response: Response, maximum: number, s
 /** Verified on-demand data plus explicitly reserved, resumable offline selections. */
 export class VerifiedArtifactStore {
   private readonly controller = new AbortController();
-  private readonly fetcher: typeof globalThis.fetch;
+  private readonly fetcher: FetchLike;
   private readonly cachePromise: Promise<ArtifactCache | undefined>;
   private readonly inFlight = new Map<string, Promise<{ data: Uint8Array; cached: boolean }>>();
   private readonly pinned = new Map<string, DataArtifact>();
@@ -139,8 +144,11 @@ export class VerifiedArtifactStore {
     this.budget = options.cacheBudget ?? PROGRESSIVE_LIMITS.cacheBytes;
     if (!Number.isSafeInteger(this.budget) || this.budget < 0) throw new Error('Invalid artifact cache budget.');
     this.cachePromise = Promise.resolve().then(options.openCache ?? (async () => {
-      if (typeof caches === 'undefined') return undefined;
-      return caches.open(PROGRESSIVE_ASSET_CACHE);
+      // Read the Cache Storage global through globalThis: the root project
+      // type-checks this module without the DOM lib, where `caches` is undeclared.
+      const storage = (globalThis as { caches?: { open(name: string): Promise<ArtifactCache> } }).caches;
+      if (storage === undefined) return undefined;
+      return storage.open(PROGRESSIVE_ASSET_CACHE);
     })).then(cache => {
       if (!cache) this.unavailable(new Error('Offline artifact storage is unavailable.'));
       return cache;

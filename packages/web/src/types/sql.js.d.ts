@@ -50,6 +50,8 @@ declare module 'sql.js' {
 
   export interface SqlJsConfig {
     locateFile?: (file: string) => string;
+    /** WebAssembly bytes to instantiate instead of fetching sql-wasm.wasm (Emscripten module option). */
+    wasmBinary?: ArrayBuffer | Uint8Array;
   }
 
   export default function initSqlJs(config?: SqlJsConfig): Promise<SqlJsStatic>;

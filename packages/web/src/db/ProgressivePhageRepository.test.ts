@@ -6,7 +6,7 @@ import type { PhageRepository } from './types';
 import { ProgressivePhageRepository } from './ProgressivePhageRepository';
 import { ProgressiveDatabaseLoader, type ProgressiveLoaderDependencies } from './ProgressiveDatabaseLoader';
 import type { DatabaseLoadProgress } from './types';
-import { VerifiedArtifactStore, type ArtifactCache } from './progressive-artifacts';
+import { VerifiedArtifactStore, type ArtifactCache, type FetchLike } from './progressive-artifacts';
 import { datasetByteLedger, progressiveIdentity, dataArtifactUrl, type DataArtifact, type ProgressiveManifest } from './progressive-manifest';
 
 const BASE = 'https://example.test/data/phage.db.manifest.json';
@@ -79,7 +79,7 @@ function fixture() {
       prefetchAround: async () => {}, close: async () => { closed.push(id); },
     };
   };
-  const fetcher: typeof fetch = async input => {
+  const fetcher: FetchLike = async input => {
     const url = String(input); network.push(url);
     const text = responses.get(url); if (text === undefined) throw new Error('offline');
     return new Response(text);

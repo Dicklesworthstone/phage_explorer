@@ -1,7 +1,7 @@
 /** Auto-select the published layout; version 3 never falls back to a monolithic download. */
 import type { DatabaseLoaderConfig, DatabaseLoadProgress, PhageRepository } from './types';
 import { ProgressivePhageRepository } from './ProgressivePhageRepository';
-import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache } from './progressive-artifacts';
+import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache, type FetchLike } from './progressive-artifacts';
 import { PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './progressive-manifest';
 
 export const PROGRESSIVE_MANIFEST_CACHE = 'phage-explorer-manifests-v3';
@@ -10,7 +10,7 @@ export interface RepositoryLoader {
   close(): Promise<void>;
 }
 export interface ProgressiveLoaderDependencies {
-  fetch?: typeof globalThis.fetch;
+  fetch?: FetchLike;
   openManifestCache?: () => Promise<Pick<ArtifactCache, 'match' | 'put'> | undefined>;
   openArtifactCache?: () => Promise<ArtifactCache | undefined>;
   sqlite?: () => Promise<(bytes: Uint8Array) => PhageRepository>;
@@ -55,7 +55,7 @@ function manifestAddress(config: DatabaseLoaderConfig): string {
 export class ProgressiveDatabaseLoader implements RepositoryLoader {
   private readonly lifetime = new AbortController();
   private readonly manifestUrl: string;
-  private readonly fetcher: typeof globalThis.fetch;
+  private readonly fetcher: FetchLike;
   private readonly timeout: number;
   private repository: PhageRepository | null = null;
   private legacy: RepositoryLoader | null = null;
