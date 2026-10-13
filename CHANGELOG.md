@@ -4,12 +4,53 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## Unreleased
+## [v1.8.0] — 2026-10-14
+
+[Compare: v1.7.1...v1.8.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.7.1...v1.8.0)
+
+The downloads keep the v1.7.x format: five raw binaries, each with a `.sha256`
+file, the unchanged `phage.db`, and `sha256.txt`.
+
+### Terminal and command line
+
+- **Aligned DNA phylogenies in the binary** — `phage-explorer phylogeny`
+  runs from the compiled binary without Bun, a database or a source checkout.
+  In v1.7.x it needed `bun scripts/phylogeny.ts`. `inspect` checks an aligned
+  FASTA; `infer` builds an unrooted neighbor-joining tree (p-distance or JC69,
+  optional bootstrap with a fixed seed) and writes a portable experiment record;
+  `replay` verifies the record's hashes and recomputes the result; `export`
+  writes Newick, the distance matrix or the splits. See
+  [the workflow guide](docs/ALIGNED_PHYLOGENY_WORKFLOW.md).
+- **Explicit outgroup roots** — `phylogeny root --outgroup A,B --fraction F`
+  derives a rooted tree from a verified experiment. It needs the outgroup and
+  branch-placement rationale and `--date-independent`, and it changes no
+  pairwise distance. Rooted records replay and export to rooted Newick;
+  distance and split exports stay unrooted, and bootstrap support is never
+  reported as root confidence. Unknown or non-separable outgroups,
+  zero-length attachment edges and negative neighbor-joining branch lengths
+  (including roundoff negatives) are refused, never clipped.
+
+### Web app
+
+The web app is deployed separately from these downloads. Its source gained:
+
+- **Aligned phylogenies in the browser** — inference and rooting run in a
+  cancellable worker; records made in the browser replay in the terminal and
+  the other way round.
+- **Catalog-first datasets** — the production web build (`bun run
+  build:web:progressive`, now Vercel's build command) publishes the database as
+  a verified catalog plus per-genome shards that load on demand. A damaged
+  catalog is refused instead of falling back to the full download.
+- **Offline genome selections** — Settings can keep chosen genomes and the
+  global atlas available offline, with a byte estimate, resumable downloads
+  and a check that needs no network.
+- **One database session per app** — readers and refreshes share the live
+  database; a failed refresh keeps the verified previous snapshot.
 
 ### Installer
 
-`install.sh` is served from `main`, so this applies to every `curl | bash`
-install without a new binary release.
+`install.sh` is served from `main`, so this has applied to every `curl | bash`
+install since 2026-10-11.
 
 - Where `flock` exists, the installer refuses a symlink at its lock path
   instead of opening whatever it points to (which could create a file
@@ -17,6 +58,21 @@ install without a new binary release.
   one; both are now tested, along with install paths containing spaces and an
   install interrupted by Ctrl+C or SIGTERM mid-download (exit 130/143, the
   previous binary and database untouched, the lock released).
+
+### Known limitations
+
+- GC skew with the default 500 bp window and 125 bp step covers genomes up to
+  about 2.5 Mb. Larger imports, up to the 5 Mb import limit, need a larger step.
+- The macOS Intel binary (`phage-explorer-macos-x64`) keeps Bun's own signature,
+  which no longer matches once the app is appended, so `codesign -v` reports it
+  as invalid, as in v1.6.0 and v1.7.x; it runs, including under Rosetta. The
+  Apple Silicon binary is ad-hoc signed and verifies.
+- The command palette (Ctrl+P), where Local genomes lives, unlocks at the power
+  tier (after about 60 minutes of use, or by manual promotion).
+- `install.sh --with-database` replaces `phage.db`, and preferences saved in it
+  go with it ([issue #10](https://github.com/Dicklesworthstone/phage_explorer/issues/10)).
+- Optional WASM regeneration still needs a tracked version contract:
+  [issue #6](https://github.com/Dicklesworthstone/phage_explorer/issues/6).
 
 ## [v1.7.1] — 2026-10-11
 
