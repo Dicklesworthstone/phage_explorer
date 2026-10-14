@@ -5,17 +5,22 @@ import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
 import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord, replayGCSkewRecord, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
+import { createRestrictionDigestRecord, replayRestrictionDigestRecord, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
   { type: 'reference-codons'; genome: LocalGenome; referenceText: string; options: ReferenceCodonOptions } |
   { type: 'gc-skew'; genome: LocalGenome; options: ResolvedGCSkewOptions } |
   { type: 'gc-skew-replay'; content: string } |
+  { type: 'restriction-digest'; sequence: string; options: RestrictionDigestOptions; context: { accession: string | null; source: 'local' | 'catalog' } } |
+  { type: 'restriction-digest-replay'; content: string } |
   { type: 'exact-repeats'; genome: LocalGenome; options: ResolvedExactRepeatOptions };
 export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult } | { type: 'analysis'; record: AnalysisRecord };
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'restriction-digest') return { type: 'analysis', record: await createRestrictionDigestRecord(request.sequence, request.options, request.context) };
+  if (request.type === 'restriction-digest-replay') return { type: 'analysis', record: await replayRestrictionDigestRecord(request.content) };
   if (request.type === 'gc-skew-replay') return { type: 'analysis', record: await replayGCSkewRecord(request.content) };
   if (request.type === 'gc-skew') return { type: 'analysis', record: await createGCSkewRecord(request.genome.sequence, request.options,
     { accession: request.genome.phage.accession, source: 'local' }) };

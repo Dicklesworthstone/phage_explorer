@@ -5,8 +5,9 @@
  * for experimental planning and genome verification.
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
-import { digestGenome, findRestrictionCutSites, RESTRICTION_ENZYMES, type PhageFull } from '@phage-explorer/core';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { digestGenome, findRestrictionCutSites, RESTRICTION_ENZYMES, serializeAnalysisRecord, type AnalysisRecord, type PhageFull } from '@phage-explorer/core';
+import { RESTRICTION_DIGEST_METHOD, resolveRestrictionDigestOptions, exportRestrictionDigestTsv } from '../../../../core/src/analysis/restriction-digest';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -21,6 +22,8 @@ import {
   OverlayErrorState,
 } from './primitives';
 import type { GelLane, GelBand, GelInteraction } from './primitives/types';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
 
 const ENZYME_COLORS: Record<string, string> = {
   EcoRI: '#ef4444', HindIII: '#f59e0b', BamHI: '#22c55e', PstI: '#3b82f6',
@@ -121,6 +124,87 @@ export function GelOverlay({
     enzyme.name, findRestrictionCutSites(sequence, enzyme, isCircular).length,
   ])), [sequence, isCircular]);
 
+  const open = isOpen('gel');
+  const settingsKey = JSON.stringify(resolveRestrictionDigestOptions({ enzymes: selectedEnzymes, topology }));
+  const source: 'local' | 'catalog' = currentPhage?.localGenome ? 'local' : 'catalog';
+  const [experiment, setExperiment] = useState<{
+    repository: PhageRepository; phage: PhageFull; sequence: string; settingsKey: string;
+    record: AnalysisRecord; replayed: boolean;
+  } | null>(null);
+  const [experimentBusy, setExperimentBusy] = useState(false);
+  const [experimentError, setExperimentError] = useState<string | null>(null);
+  const experimentController = useRef<AbortController | null>(null), experimentGeneration = useRef(0);
+  // Also guard the render-to-effect gap: a late file read must not restore
+  // enzyme settings into a different selection before effect cleanup runs.
+  const latestSelection = useRef({ repository, currentPhage, sequence, settingsKey, open });
+  latestSelection.current = { repository, currentPhage, sequence, settingsKey, open };
+  const currentExperiment = open && experiment?.repository === repository && experiment.phage === currentPhage
+    && experiment.sequence === sequence && experiment.settingsKey === settingsKey
+    && experiment.record.inputs[0].accession === currentPhage?.accession && experiment.record.inputs[0].source === source ? experiment : null;
+
+  useEffect(() => {
+    setExperimentBusy(false); setExperimentError(null);
+    return () => { experimentGeneration.current++; experimentController.current?.abort(); };
+  }, [repository, currentPhage, sequence, settingsKey, open]);
+
+  const runExperiment = async (file?: File) => {
+    if (!repository || !currentPhage || !sequence || !open) return;
+    experimentController.current?.abort();
+    const controller = new AbortController(); experimentController.current = controller;
+    const generation = ++experimentGeneration.current;
+    const selection = latestSelection.current;
+    const active = () => !controller.signal.aborted && generation === experimentGeneration.current
+      && latestSelection.current.repository === selection.repository && latestSelection.current.currentPhage === selection.currentPhage
+      && latestSelection.current.sequence === selection.sequence && latestSelection.current.settingsKey === selection.settingsKey
+      && latestSelection.current.open;
+    setExperimentBusy(true); setExperimentError(null);
+    try {
+      let content: string | null = null;
+      if (file) {
+        if (file.size > 10 * 1024 * 1024) throw new Error('Restriction experiment exceeds 10 MiB.');
+        content = await file.text();
+        if (!active()) return;
+      }
+      const { runResearchWorker } = await import('./ResearchWorkflowPanel');
+      if (!active()) return;
+      const response = await runResearchWorker(content === null ? {
+        type: 'restriction-digest', sequence, options: resolveRestrictionDigestOptions({ enzymes: selectedEnzymes, topology }),
+        context: { accession: currentPhage.accession, source },
+      } : { type: 'restriction-digest-replay', content }, controller.signal);
+      if (!active()) return;
+      if (response.type !== 'analysis') throw new Error('Expected a recomputed restriction experiment.');
+      const record = response.record;
+      if (record.method.id !== RESTRICTION_DIGEST_METHOD.id || record.method.version !== RESTRICTION_DIGEST_METHOD.version
+        || record.inputs[0]?.id !== 'sequence' || record.inputs[0].data !== sequence
+        || record.inputs[0].accession !== currentPhage.accession || record.inputs[0].source !== source) {
+        throw new Error('Experiment source does not match this selected genome. Load its exact original genome before restoring.');
+      }
+      const options = resolveRestrictionDigestOptions(record.parameters), acceptedKey = JSON.stringify(options);
+      if (content === null && acceptedKey !== settingsKey) throw new Error('Digest evidence does not match the selected enzyme settings.');
+      // A failed import never changes either the accepted experiment or controls.
+      if (content !== null) {
+        setSelectedEnzymes([...options.enzymes]);
+        setTopologyChoice({ repository, phage: currentPhage, value: options.topology });
+        setHoverInfo(null);
+      }
+      setExperiment({ repository, phage: currentPhage, sequence, settingsKey: acceptedKey, record, replayed: content !== null });
+    } catch (cause) {
+      if (active()) setExperimentError(cause instanceof Error ? cause.message : 'Restriction experiment failed.');
+    } finally {
+      if (active()) setExperimentBusy(false);
+      if (experimentController.current === controller) experimentController.current = null;
+    }
+  };
+  const exportExperiment = (format: 'json' | 'tsv') => {
+    if (!currentExperiment) return;
+    try {
+      const record = currentExperiment.record;
+      downloadString(format === 'json' ? serializeAnalysisRecord(record) : exportRestrictionDigestTsv(record),
+        `restriction-digest-${record.resultId.slice(0, 12)}.${format}`, format === 'json' ? 'application/json' : 'text/tab-separated-values');
+      setExperimentError(null);
+    } catch (cause) { setExperimentError(cause instanceof Error ? cause.message : 'Could not export restriction experiment.'); }
+  };
+
   // Hover state
   const [hoverInfo, setHoverInfo] = useState<GelInteraction | null>(null);
 
@@ -202,8 +286,7 @@ export function GelOverlay({
     const ladder = LADDERS[ladderType];
     const maxSize = Math.max(
       sequence?.length ?? 10000,
-      ...ladder.sizes,
-      ...(digestResult?.fragments ?? [])
+      ...ladder.sizes
     );
 
     // Ladder lane
@@ -480,6 +563,33 @@ export function GelOverlay({
                 </div>
               </div>
             )}
+
+            {/* Portable experiment controls share the core digest producer. */}
+            <section aria-label="Reproducible restriction experiment" style={{ fontSize: '0.8rem' }}>
+              <p>Save exact cuts and fragment coordinates, or restore an experiment by recomputing it.
+                JSON includes the full genome; share it only when intended. Processing stays on this device.</p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                <button type="button" disabled={experimentBusy} onClick={() => { void runExperiment(); }}>
+                  {experimentBusy ? 'Computing experiment…' : 'Prepare digest export'}
+                </button>
+                <label>Restore digest JSON
+                  <input type="file" accept=".json,application/json" disabled={experimentBusy} onChange={event => {
+                    const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
+                    if (file) void runExperiment(file);
+                  }} />
+                </label>
+                {experimentBusy && <button type="button" onClick={() => {
+                  experimentGeneration.current++; experimentController.current?.abort(); setExperimentBusy(false);
+                }}>Cancel experiment</button>}
+                <button type="button" disabled={!currentExperiment || experimentBusy} onClick={() => exportExperiment('json')}>Download digest JSON</button>
+                <button type="button" disabled={!currentExperiment || experimentBusy} onClick={() => exportExperiment('tsv')}>Download fragments TSV</button>
+              </div>
+              {experimentError && <p role="alert">{experimentError}</p>}
+              {currentExperiment && <>
+                <p role="status">{currentExperiment.replayed ? 'Saved cuts and fragments match a fresh computation.' : 'Digest experiment ready for the current sequence and settings.'}</p>
+                <AnalysisRecordDetails record={currentExperiment.record} />
+              </>}
+            </section>
 
             {/* Interpretation */}
             <div
