@@ -3,12 +3,15 @@ import { usePhageStore } from '@phage-explorer/state';
 import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type GenomeImportResult } from '@phage-explorer/core';
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
-import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters,
+import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
   type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
+import { exportDotPlotExperimentTsv, exportPairwiseDotPlotExperimentTsv } from '../../../../core/src/analysis/dot-plot';
+import { resolveRestrictionDigestOptions, exportRestrictionDigestTsv, type RestrictionDigestFragment } from '../../../../core/src/analysis/restriction-digest';
+import { RESTRICTION_ENZYMES } from '../../../../core/src/data/restriction-enzymes';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
@@ -52,7 +55,8 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let navigationOwner: ResearchNavigationTarget | null = null;
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
-    pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew }, {
+    pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
+    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -110,6 +114,17 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected portable GC-skew evidence.');
       return response.record;
     },
+    dotPlot: async (row, column, options, signal) => {
+      const response = await runResearchWorker({ type: 'dot-plot', genome: row, comparison: column, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected portable dot-plot evidence.');
+      return response.record;
+    },
+    digest: async (genome, options, signal) => {
+      const response = await runResearchWorker({ type: 'restriction-digest', sequence: genome.sequence, options,
+        context: { accession: genome.phage.accession, source: 'local' } }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected portable restriction-digest evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -159,6 +174,11 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [frame, setFrame] = useState<ResearchView['readingFrame']>(0);
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
   const [gcWindow, setGcWindow] = useState('500'), [gcStep, setGcStep] = useState('125');
+  const [dotComparison, setDotComparison] = useState('');
+  const [dotBins, setDotBins] = useState('80'), [dotWindow, setDotWindow] = useState('20');
+  const [digestNames, setDigestNames] = useState('EcoRI');
+  const [digestTopology, setDigestTopology] = useState<'' | 'linear' | 'circular'>('');
+  useEffect(() => { setDigestTopology(''); }, [selected]);
   const gcDraft = useMemo(() => {
     try {
       if (!gcWindow.trim() || !gcStep.trim()) throw new Error('Enter the GC-skew window and step sizes.');
@@ -235,6 +255,43 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [graphIds, graphReference, graphAlignment, graphTerminals, graphNormalization, graphMismatch, graphOpening, graphExtension, graphAnnotate, graphGeneIds, annotationGenome]);
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
+  const dotDraft = useMemo(() => {
+    try {
+      const column = dotComparison ? genomes.find(g => g.phage.localGenome?.contentId === dotComparison) : null;
+      if (!genome || (dotComparison && !column)) throw new Error('Choose available workflow genomes for both axes. A missing comparison is never replaced by a self plot.');
+      const parameters = { contentId: selected, comparisonContentId: dotComparison || null,
+        bins: dotBins.trim() ? Number(dotBins) : NaN, window: dotWindow.trim() ? Number(dotWindow) : NaN };
+      validateResearchDotPlot(analysisJson(parameters));
+      if (parameters.window > genome.sequence.length || column && parameters.window > column.sequence.length) throw new Error('The explicit dot-plot window must fit both selected genomes.');
+      if (genome.sequence.length + (column?.sequence.length ?? 0) > 5000000) throw new Error('Dot-plot experiments allow at most 5,000,000 total input bases.');
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, genomes, selected, dotComparison, dotBins, dotWindow]);
+  const digestDraft = useMemo(() => {
+    try {
+      if (!genome) throw new Error('Select an available workflow genome.');
+      const options = resolveRestrictionDigestOptions({ enzymes: digestNames.trim() === 'none' ? [] : digestNames.split(',').map(name => name.trim()), topology: digestTopology });
+      const declared = genome.phage.localGenome!.topology;
+      if (declared !== 'unknown' && declared !== options.topology) throw new Error('The explicit digest topology must agree with the source annotation.');
+      return { parameters: { contentId: selected, ...options }, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, selected, digestNames, digestTopology]);
+  // Accepted records own their labels, coordinates and settings. Editing a draft
+  // or selecting another genome never relabels the retained analysis below.
+  const dotResult = useMemo(() => {
+    const record = acceptedAnalysis;
+    if (!record || record.method.version !== '1' || !['sequence-dot-plot', 'sequence-pairwise-dot-plot'].includes(record.method.id)) return null;
+    const pairwise = record.method.id === 'sequence-pairwise-dot-plot';
+    return { record, pairwise, bins: Number(record.parameters.bins),
+      rows: record.fields[pairwise ? 'rowWindows' : 'windows'].value as { start: number; end: number }[],
+      columns: record.fields[pairwise ? 'columnWindows' : 'windows'].value as { start: number; end: number }[],
+      rowCoverage: record.fields[pairwise ? 'rowResolvedPerWindow' : 'resolvedPerWindow'].value as number[],
+      columnCoverage: record.fields[pairwise ? 'columnResolvedPerWindow' : 'resolvedPerWindow'].value as number[],
+      direct: record.fields.direct.value as number[], inverted: record.fields.inverted.value as number[] };
+  }, [acceptedAnalysis]);
+  const digestResult = acceptedAnalysis?.method.id === 'restriction-digest' && acceptedAnalysis.method.version === '1'
+    ? { record: acceptedAnalysis, fragments: acceptedAnalysis.fields.fragments.value as unknown as RestrictionDigestFragment[],
+      cuts: acceptedAnalysis.fields.cutSites.value as number[], summary: acceptedAnalysis.fields.summary.value as { sequenceLength: number; uncutCircular: boolean } } : null;
   const commandBusy = inputBusy || !['idle', 'recording'].includes(state.mode);
   const busy = commandBusy || libraryBusy;
   const active = state.mode === 'recording';
@@ -291,7 +348,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -334,6 +391,40 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       }}>Run and record exact repeat pairs</button>
       <button type="button" onClick={() => invoke(() => workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId: selected, geneId: gene === 'all' ? null : Number(gene) }))}>Run and record CDS analysis</button>
       <p>The CDS button above uses the existing illustrative host model. It is not the reference-backed command below.</p>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable dot plots</legend>
+      <p>Row/Y: {genome?.phage.name ?? 'select a workflow genome above'}. Column/X is chosen below, in that order. Linear windows are sampled even for circular input; a dot plot is not an alignment or an exhaustive repeat annotation.</p>
+      <label htmlFor="workflow-dot-comparison">Workflow dot-plot comparison</label>
+      <select id="workflow-dot-comparison" value={dotComparison} onChange={event => setDotComparison(event.target.value)}>
+        <option value="">Self plot (single input)</option>
+        {dotComparison && !genomes.some(g => g.phage.localGenome?.contentId === dotComparison) && <option value={dotComparison}>Unavailable comparison — choose an input</option>}
+        {genomes.map(g => <option key={g.phage.id} value={g.phage.localGenome!.contentId}>{g.phage.name} · {g.phage.localGenome!.contentId.slice(0, 12)}</option>)}
+      </select>
+      <label>Workflow dot-plot bins <input type="number" min={1} max={200} value={dotBins} onChange={event => setDotBins(event.target.value)} /></label>
+      <label>Workflow dot-plot window (bp) <input type="number" min={1} max={5000000} value={dotWindow} onChange={event => setDotWindow(event.target.value)} /></label>
+      <p>Both settings are explicit in the recording; the window must fit each selected sequence. Selecting the same genome on both axes creates an explicit two-input control. Ambiguous bases retain their coordinates and never count as matching evidence.</p>
+      {dotDraft.error && <p>{dotDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !dotDraft.parameters} onClick={() => {
+        if (busy || !active || !dotDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayDotPlot, analysisJson(dotDraft.parameters));
+        invoke(() => task);
+      }}>Run and record dot plot</button>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record restriction digests</legend>
+      <p>Input: {genome?.phage.name ?? 'select a workflow genome above'}. Ideal complete digestion only, not measured gel mobility, partial digestion or methylation sensitivity.</p>
+      <label>Workflow digest enzymes <input value={digestNames} onChange={event => setDigestNames(event.target.value)} /></label>
+      <details><summary>Bundled enzyme names</summary><p>{RESTRICTION_ENZYMES.map(enzyme => enzyme.name).join(', ')}</p></details>
+      <p>Use exact comma-separated names, or enter none for an explicit uncut control. Enzyme definitions are retained in each analysis; changed definitions stop replay verification.</p>
+      <label>Workflow digest topology <select value={digestTopology} onChange={event => setDigestTopology(event.target.value as typeof digestTopology)}>
+        <option value="">Choose explicitly</option><option value="linear">Linear</option><option value="circular">Complete circular molecule</option>
+      </select></label>
+      <p>Topology must agree with known source metadata. For unknown source topology this is an explicit assumption, not an inferred property. Choose again after changing the workflow genome.</p>
+      {digestDraft.error && <p>{digestDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !digestDraft.parameters} onClick={() => {
+        if (busy || !active || !digestDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayGel, analysisJson(digestDraft.parameters));
+        invoke(() => task);
+      }}>Run and record restriction digest</button>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable GC skew</legend>
       <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Complete linear windows only; topology is not inferred from a circular annotation.</p>
@@ -436,7 +527,39 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <p>Accepted result: {acceptedAnalysis.method.id}. Reproducibility is not biological validation.</p>
       {!research.result && <p role="status">The latest command changed the view. The last accepted analysis remains available with its original inputs and parameters.</p>}
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
+      <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. Coordinate TSV exports omit the source-sequence fields.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {dotResult && <section aria-label="Recorded dot-plot results">
+        <h4>Accepted {dotResult.pairwise ? 'pairwise' : 'self'} dot-plot experiment</h4>
+        <p>Row/Y: {dotResult.record.inputs[0].accession ?? dotResult.record.inputs[0].id}.
+          {' '}Column/X: {dotResult.record.inputs[dotResult.pairwise ? 1 : 0].accession ?? dotResult.record.inputs[dotResult.pairwise ? 1 : 0].id}.
+          {' '}{dotResult.bins} × {dotResult.bins} cells; window {String(dotResult.record.parameters.window)} bp.</p>
+        <p>Scores count resolved matches per full window. Coverage is counted independently for each axis, not inferred from the comparison diagonal.
+          Only the first 50 cells are previewed; JSON and TSV retain the complete matrix and both coordinate sets.</p>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString((dotResult.pairwise ? exportPairwiseDotPlotExperimentTsv : exportDotPlotExperimentTsv)(dotResult.record), 'workflow-dot-plot.tsv', 'text/tab-separated-values'))}>Export workflow dot-plot TSV</button>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded dot-plot scores">
+          <thead><tr><th>Row interval</th><th>Column interval</th><th>Direct</th><th>Inverted</th><th>Resolved row / column bases</th></tr></thead>
+          <tbody>{dotResult.direct.slice(0, 50).map((direct, index) => {
+            const y = Math.floor(index / dotResult.bins), x = index % dotResult.bins, row = dotResult.rows[y], column = dotResult.columns[x];
+            return <tr key={index}><td>[{row.start}, {row.end})</td><td>[{column.start}, {column.end})</td><td>{direct.toFixed(6)}</td>
+              <td>{dotResult.inverted[index].toFixed(6)}</td><td>{dotResult.rowCoverage[y]} / {dotResult.columnCoverage[x]}</td></tr>;
+          })}</tbody>
+        </table></div>
+      </section>}
+      {digestResult && <section aria-label="Recorded restriction-digest results">
+        <h4>Accepted restriction-digest experiment</h4>
+        <p>{digestResult.cuts.length} distinct cut boundaries; {digestResult.fragments.length} fragments; {digestResult.summary.sequenceLength} bp.
+          {' '}Topology: {String(digestResult.record.parameters.topology)}. Enzymes: {(digestResult.record.parameters.enzymes as string[]).join(', ') || 'none (uncut control)'}.
+          {' '}{digestResult.summary.uncutCircular ? 'The original molecule is an uncut circle, not a linear fragment.' : ''}</p>
+        <p>Coordinates are 0-based, half-open. A wrapped fragment traverses start → genome length → 0 → end; its length is not end minus start.
+          The first 50 fragments are shown; JSON and TSV preserve every cut and fragment.</p>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(exportRestrictionDigestTsv(digestResult.record), 'workflow-digest.tsv', 'text/tab-separated-values'))}>Export workflow digest TSV</button>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded restriction fragments">
+          <thead><tr><th>Start</th><th>End</th><th>Length</th><th>Crosses origin</th></tr></thead>
+          <tbody>{digestResult.fragments.slice(0, 50).map((fragment, index) => <tr key={index}><td>{fragment.start}</td><td>{fragment.end}</td>
+            <td>{fragment.length}</td><td>{fragment.wrapsOrigin ? 'Yes' : 'No'}</td></tr>)}</tbody>
+        </table></div>
+      </section>}
       {gcResult && <section aria-label="Recorded GC-skew results">
         <h4>Accepted GC-skew experiment</h4>
         <p>{gcResult.windows.length.toLocaleString()} complete sampled windows; {gcResult.windows.filter(row => row.skew !== null).length.toLocaleString()} with defined skew.

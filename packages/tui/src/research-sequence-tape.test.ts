@@ -280,4 +280,43 @@ describe('canonical dot-plot and digest command tapes', () => {
     assert.equal(native.report.completed, 4);
     assert.deepEqual(await parseAnalysisRecord(serializeAnalysisRecord(native.lastAnalysis!)), f.workflow.getSnapshot().lastAnalysis);
   });
+
+  it('cancels a mixed native replay between analyses without a success report or partial output', async () => {
+    const f = await recording(), directory = await mkdtemp(join(tmpdir(), 'mixed-sequence-cancel-'));
+    const input = join(directory, 'workflow.json'), output = join(directory, 'analysis.json');
+    await writeFile(input, f.content, { flag: 'wx' });
+    const controller = new AbortController(), completed: number[] = [];
+    let stdout = '', stderr = '';
+    const code = await researchWorkflowMain(['replay', '--input', input, '--output', output], text => { stdout += text; }, text => { stderr += text; }, {
+      signal: controller.signal,
+      onProgress: progress => {
+        completed.push(progress.completed);
+        if (progress.completed === 2) controller.abort(new DOMException('Cancel after the self plot', 'AbortError'));
+      },
+    });
+    assert.equal(code, 130, stderr); assert.equal(stdout, '');
+    assert.equal(completed.at(-1), 2); await assert.rejects(stat(output), { code: 'ENOENT' });
+    const fresh = await replayResearchTape(f.content); assert.equal(fresh.report.completed, 5);
+  });
+
+  it('pauses mixed replay at a verified step and resumes without duplicating that command', async () => {
+    const f = await recording();
+    f.workflow.load(f.content);
+    const paused = new Promise<void>(resolve => {
+      const unsubscribe = f.workflow.commands.subscribe(() => {
+        if (f.workflow.commands.getSnapshot().completed !== 2) return;
+        unsubscribe(); f.workflow.commands.pause(); resolve();
+      });
+    });
+    const task = f.workflow.commands.replay();
+    await paused;
+    assert.equal(f.workflow.commands.getSnapshot().mode, 'paused');
+    assert.equal(f.workflow.getSnapshot().result!.resultId, f.records.self.resultId);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(f.workflow.commands.getSnapshot().completed, 2);
+    f.workflow.commands.resume(); await task;
+    assert.equal(f.workflow.commands.getSnapshot().completed, 5);
+    assert.equal(f.workflow.getSnapshot().lastAnalysis!.resultId, f.records.digest.resultId);
+    assert.equal(f.workflow.commands.export(), f.content);
+  });
 });
