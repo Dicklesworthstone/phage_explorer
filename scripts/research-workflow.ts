@@ -26,6 +26,10 @@ bun run workflow list-enzymes
 bun run workflow analyze-experiment --input genomes.fa --method dot-plot
   [--record CONTENT_ID] [--bins 120] [--window BP] [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
+bun run workflow analyze-experiment --input genomes.fa --method pairwise-dot-plot
+  --record ROW_CONTENT_ID --compare-record COLUMN_CONTENT_ID
+  [--bins 120] [--window BP] [--output NEW_FILE] [--format json|tsv]
+  [--timeout-ms 300000]
 bun run workflow analyze-experiment --input genome.gb --method restriction-digest
   --enzymes EcoRI,BamHI --topology linear|circular [--record CONTENT_ID]
   [--output NEW_FILE] [--format json|tsv] [--timeout-ms 300000]
@@ -42,6 +46,15 @@ circular records. Input whitespace/case are normalized by the shared importer.
 JSON can be restored in the browser or checked with replay-experiment. TSV is
 coordinate/score output only, not a replayable experiment. No catalog is needed.
 
+Pairwise analysis selects BOTH axes explicitly from the same multi-record input
+or local-genome bundle. --record is row/Y; --compare-record is column/X. Both
+require complete content IDs, not accessions or record positions. An explicit
+window must fit both sequences; automatic windows use the shorter length.
+The same ID on both axes is an explicit self-control, not an implicit fallback.
+The two selected sequences together must fit the 5,000,000-base experiment limit.
+JSON includes both full sequences. Comparisons count resolved matches, not
+alignments, structural variants or biological validation.
+
 Restriction digests require explicit --enzymes and --topology. list-enzymes reports
 the actual bundled enzyme definitions; names are exact and comma-separated.
 --enzymes none requests the uncut control. No enzyme or topology is guessed.
@@ -57,8 +70,9 @@ pangenome/CDS experiments, portable GC-skew counts and exact-pairs repeats. Sour
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
-replay-experiment accepts the dot-plot and restriction-digest JSON exported by the
-browser. It recomputes the exact embedded sequence/settings with the same core
+replay-experiment accepts self/pairwise dot-plot and restriction-digest JSON
+exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
+inputs, sampled coordinates and independent coverage. It recomputes embedded inputs/settings with the same core
 methods and verifies all saved evidence, not just file checksums. No catalog,
 external source lookup or current browser selection is needed. Unsupported
 methods/versions and changed outputs are rejected. This is numerical reproducibility,
@@ -94,7 +108,7 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Choose inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
   }
   const allowed = type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
-    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--bins', '--window', '--enzymes', '--topology'] : type === 'replay-experiment'
+    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology'] : type === 'replay-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false;
   for (let i = 0; i < rest.length;) {
@@ -121,11 +135,20 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
     if (type === 'analyze-experiment') {
       const method = values.get('--method');
-      if (method !== 'dot-plot' && method !== 'restriction-digest') throw new Error('Choose --method dot-plot or restriction-digest.');
+      if (method !== 'dot-plot' && method !== 'pairwise-dot-plot' && method !== 'restriction-digest') throw new Error('Choose --method dot-plot, pairwise-dot-plot or restriction-digest.');
       const contentId = values.get('--record') ?? null;
       if (contentId !== null && !/^[a-f0-9]{64}$/.test(contentId)) throw new Error('--record requires a complete content ID from inspect-genomes.');
       let analysis: TerminalAnalysis;
-      if (method === 'dot-plot') {
+      if (method !== 'pairwise-dot-plot' && values.has('--compare-record')) throw new Error('--compare-record is only valid for pairwise-dot-plot.');
+      if (method === 'pairwise-dot-plot') {
+        if (values.has('--enzymes') || values.has('--topology')) throw new Error('Enzymes and topology are restriction-digest options, not dot-plot options.');
+        const columnContentId = values.get('--compare-record');
+        if (contentId === null || typeof columnContentId !== 'string' || !/^[a-f0-9]{64}$/.test(columnContentId)) {
+          throw new Error('Pairwise analysis requires --record ROW_CONTENT_ID and --compare-record COLUMN_CONTENT_ID from inspect-genomes.');
+        }
+        analysis = { method, columnContentId, bins: integer('--bins', 120, 200),
+          window: values.has('--window') ? integer('--window', 1, 5000000) : null };
+      } else if (method === 'dot-plot') {
         if (values.has('--enzymes') || values.has('--topology')) throw new Error('Enzymes and topology are restriction-digest options, not dot-plot options.');
         analysis = { method, bins: integer('--bins', 120, 200), window: values.has('--window') ? integer('--window', 1, 5000000) : null };
       } else {
@@ -302,13 +325,19 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
       if (command.output !== undefined) {
         if (result.exportText === null) throw new Error('No experiment output was returned.');
         if (command.outputFormat === 'json') {
-          const record = await parseAnalysisRecord(result.exportText), input = record.inputs[0];
+          const record = await parseAnalysisRecord(result.exportText);
+          const pairwise = command.analysis.method === 'pairwise-dot-plot';
+          const axes = pairwise ? [
+            { input: record.inputs[0], id: 'rowSequence', genome: result.report.genome },
+            { input: record.inputs[1], id: 'columnSequence', genome: result.report.comparison },
+          ] : [{ input: record.inputs[0], id: 'sequence', genome: result.report.genome }];
           if (record.cacheKey !== result.report.cacheKey || record.resultId !== result.report.resultId
             || JSON.stringify(analysisJson(record.method)) !== JSON.stringify(analysisJson(result.report.method))
             || JSON.stringify(analysisJson(record.parameters)) !== JSON.stringify(analysisJson(result.report.parameters))
-            || input.id !== 'sequence' || input.source !== 'local' || input.accession !== result.report.genome.accession
-            || typeof input.data !== 'string' || input.data.length !== result.report.genome.bases
-            || createHash('sha256').update(input.data).digest('hex') !== result.report.genome.sequenceSha256) {
+            || pairwise && record.inputs.length !== 2
+            || axes.some(({ input, id, genome }) => !input || !genome || input.id !== id || input.source !== 'local'
+              || input.accession !== genome.accession || typeof input.data !== 'string' || input.data.length !== genome.bases
+              || createHash('sha256').update(input.data).digest('hex') !== genome.sequenceSha256)) {
             throw new Error('Analysis output differs from the selected source or reported experiment.');
           }
         }

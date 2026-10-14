@@ -19,10 +19,13 @@ export interface TerminalGenomeInspection {
   inputFileSha256: string; genomes: TerminalGenomeSummary[];
 }
 export type TerminalAnalysis = { method: 'dot-plot'; bins: number; window: number | null } |
+  { method: 'pairwise-dot-plot'; columnContentId: string; bins: number; window: number | null } |
   ({ method: 'restriction-digest' } & RestrictionDigestOptions);
 export interface TerminalAnalysisReport {
   format: 'phage-explorer-experiment-analysis'; version: 1; headless: true;
   inputFileSha256: string; requestSha256: string; genome: TerminalGenomeSummary;
+  /** Present only for pairwise analysis: genome is row/Y, comparison is column/X. */
+  comparison?: TerminalGenomeSummary;
   method: AnalysisRecord['method']; parameters: AnalysisRecord['parameters'];
   cacheKey: string; resultId: string; interpretation: string;
 }
@@ -36,7 +39,12 @@ export function validateTerminalAnalysis(value: unknown): asserts value is Termi
     resolveRestrictionDigestOptions({ enzymes: settings.enzymes, topology: settings.topology });
     return;
   }
-  if (settings.method !== 'dot-plot' || Object.keys(settings).sort().join('|') !== 'bins|method|window'
+  const pairwise = settings.method === 'pairwise-dot-plot';
+  if (pairwise && (typeof settings.columnContentId !== 'string' || !/^[a-f0-9]{64}$/.test(settings.columnContentId))) {
+    throw new Error('Pairwise analysis requires a complete column content ID from inspect-genomes.');
+  }
+  if ((!pairwise && settings.method !== 'dot-plot')
+    || Object.keys(settings).sort().join('|') !== (pairwise ? 'bins|columnContentId|method|window' : 'bins|method|window')
     || !Number.isSafeInteger(settings.bins) || Number(settings.bins) < 1 || Number(settings.bins) > 200
     || settings.window !== null && (!Number.isSafeInteger(settings.window) || Number(settings.window) < 1
       || Number(settings.window) > GENOME_IMPORT_LIMITS.bases)) {
@@ -67,12 +75,25 @@ function genomeSummary(genome: LocalGenome): TerminalGenomeSummary {
 export function terminalAnalysisRequestSha256(request: Extract<TerminalResearchRequest, { type: 'analyze-experiment' }>): string {
   return hashText(JSON.stringify([hashText(request.content), request.contentId, request.analysis.method,
     ...(request.analysis.method === 'dot-plot' ? [request.analysis.bins, request.analysis.window]
+      : request.analysis.method === 'pairwise-dot-plot' ? [request.analysis.columnContentId, request.analysis.bins, request.analysis.window]
       : [request.analysis.enzymes, request.analysis.topology])]));
 }
 /** Check effective result settings at the parent boundary without recomputing on the main thread. */
 export function terminalAnalysisParametersMatch(analysis: TerminalAnalysis, report: TerminalAnalysisReport): boolean {
   const parameters = report.parameters;
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  if (analysis.method === 'pairwise-dot-plot') {
+    const comparison = report.comparison;
+    if (!isTerminalGenomeSummary(comparison) || comparison.contentId !== analysis.columnContentId
+      || report.genome.bases + comparison.bases > GENOME_IMPORT_LIMITS.bases) return false;
+    const length = Math.min(report.genome.bases, comparison.bases);
+    const window = analysis.window ?? Math.min(length, Math.max(20, Math.floor(length / analysis.bins)));
+    return report.method?.id === 'sequence-pairwise-dot-plot' && report.method.version === '1'
+      && Object.keys(parameters).sort().join('|') === 'ambiguity|bins|window'
+      && parameters.bins === analysis.bins && parameters.ambiguity === 'exclude'
+      && parameters.window === window && window <= length;
+  }
+  if (report.comparison !== undefined) return false;
   if (analysis.method === 'dot-plot') {
     return report.method?.id === 'sequence-dot-plot' && Object.keys(parameters).sort().join('|') === 'ambiguity|bins|window'
       && parameters.bins === analysis.bins && parameters.ambiguity === 'exclude' && Number.isSafeInteger(parameters.window)
@@ -125,6 +146,9 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
       throw new Error('Select a complete genome content ID from inspect-genomes, or null for a single-record input.');
     }
     validateTerminalAnalysis(request.analysis);
+    if (request.analysis.method === 'pairwise-dot-plot' && request.contentId === null) {
+      throw new Error('Pairwise analysis requires explicit row and column content IDs; file order never chooses axes.');
+    }
   }
 }
 export async function executeTerminalResearchRequest(request: TerminalResearchRequest,
@@ -145,6 +169,11 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     const matches = selectedId === null ? genomes : genomes.filter(g => g.phage.localGenome!.contentId === selectedId);
     if (matches.length !== 1) throw new Error('Select exactly one genome with --record CONTENT_ID from inspect-genomes; missing, stale or ambiguous selections are not analyzed.');
     const genome = matches[0];
+    const columnId = request.analysis.method === 'pairwise-dot-plot' ? request.analysis.columnContentId : null;
+    const comparison = columnId === null ? undefined : genomes.find(g => g.phage.localGenome!.contentId === columnId);
+    if (request.analysis.method === 'pairwise-dot-plot' && !comparison) {
+      throw new Error('The selected comparison genome is missing or changed. Select its full content ID from inspect-genomes.');
+    }
     let record: AnalysisRecord;
     let table: (record: AnalysisRecord) => string;
     let interpretation: string;
@@ -154,6 +183,14 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { bins: request.analysis.bins, ...(request.analysis.window === null ? {} : { window: request.analysis.window }) })).record;
       table = exportDotPlotExperimentTsv;
       interpretation = 'Dot plots sample linear windows, including for circular records; no origin wrapping.';
+    } else if (request.analysis.method === 'pairwise-dot-plot') {
+      const { createPairwiseDotPlotExperiment, exportPairwiseDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
+      record = (await createPairwiseDotPlotExperiment(
+        { sequence: genome.sequence, accession: genome.phage.accession, source: 'local' },
+        { sequence: comparison!.sequence, accession: comparison!.phage.accession, source: 'local' },
+        { bins: request.analysis.bins, ...(request.analysis.window === null ? {} : { window: request.analysis.window }) })).record;
+      table = exportPairwiseDotPlotExperimentTsv;
+      interpretation = 'The selected record is row/Y and the comparison record is column/X. Linear sampled windows use a common length fitting both genomes, even for circular records; no origin wrapping. Coverage is counted independently for each axis, not inferred from the cross-genome diagonal. Scores are not alignments or variant calls.';
     } else {
       const declared = genome.phage.localGenome!.topology;
       if (declared !== 'unknown' && declared !== request.analysis.topology) {
@@ -170,6 +207,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     return { type: 'experiment-analyzed', report: {
       format: 'phage-explorer-experiment-analysis', version: 1, headless: true,
       inputFileSha256, requestSha256: terminalAnalysisRequestSha256(request), genome: genomeSummary(genome),
+      ...(comparison ? { comparison: genomeSummary(comparison) } : {}),
       method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
       interpretation: `Fresh computation from locally parsed DNA, not replay verification or biological validation. Whitespace/case normalization follows the shared importer. ${interpretation}`,
     }, exportText: request.outputFormat === 'json' ? serializeAnalysisRecord(record)
@@ -189,12 +227,25 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         sequence: source.data, accession: source.accession, source: source.source,
       })).record;
       table = exportDotPlotExperimentTsv;
+    } else if (saved.method.id === 'sequence-pairwise-dot-plot') {
+      const { replayPairwiseDotPlotExperiment, exportPairwiseDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
+      const row = saved.inputs[0], column = saved.inputs[1];
+      if (saved.inputs.length !== 2 || row.id !== 'rowSequence' || column.id !== 'columnSequence'
+        || typeof row.data !== 'string' || typeof column.data !== 'string'
+        || (row.source !== 'local' && row.source !== 'catalog')
+        || (column.source !== 'local' && column.source !== 'catalog')) {
+        throw new Error('Pairwise replay requires ordered row/Y and column/X local or catalog sequences.');
+      }
+      fresh = (await replayPairwiseDotPlotExperiment(request.content,
+        { sequence: row.data, accession: row.accession, source: row.source },
+        { sequence: column.data, accession: column.accession, source: column.source })).record;
+      table = exportPairwiseDotPlotExperimentTsv;
     } else if (saved.method.id === 'restriction-digest') {
       const { replayRestrictionDigestRecord, exportRestrictionDigestTsv } = await import('../../core/src/analysis/restriction-digest');
       fresh = await replayRestrictionDigestRecord(request.content);
       table = exportRestrictionDigestTsv;
     } else {
-      throw new Error('Experiment replay supports sequence-dot-plot and restriction-digest records only.');
+      throw new Error('Experiment replay supports sequence-dot-plot, sequence-pairwise-dot-plot and restriction-digest records only.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.
