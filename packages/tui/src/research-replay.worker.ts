@@ -179,13 +179,15 @@ export interface TerminalExperimentReport {
   interpretation: string;
 }
 
-export type TerminalResearchRequest = { type: 'inspect'; content: string } |
+export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
+  { type: 'inspect'; content: string } |
   { type: 'record'; content: string } |
   { type: 'inspect-genomes'; content: string } |
   { type: 'analyze-experiment'; content: string; contentId: string | null; analysis: TerminalAnalysis; outputFormat: 'none' | 'json' | 'tsv' } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
-export type TerminalResearchResult = { type: 'inspection'; inspection: ResearchTapeInspection } |
+export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'inspection'; inspection: ResearchTapeInspection } |
   ({ type: 'recorded' } & ResearchRecordingResult) |
   { type: 'genomes-inspected'; report: TerminalGenomeInspection } |
   { type: 'experiment-analyzed'; report: TerminalAnalysisReport; exportText: string | null } |
@@ -196,13 +198,14 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' ? ['type', 'content'] : request.type === 'analyze-experiment'
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'fit-growth' ? ['type', 'content'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
-  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > COMMAND_LIMITS.bytes || new TextEncoder().encode(request.content).length > COMMAND_LIMITS.bytes) {
     throw new Error('Expected a supported terminal operation and UTF-8 input of at most 10 MiB.');
   }
+  if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'replay' && (typeof request.exportAnalysis !== 'boolean' || !Number.isSafeInteger(request.repetitions) ||
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
   if ((request.type === 'replay-experiment' || request.type === 'analyze-experiment') && !['none', 'json', 'tsv'].includes(String(request.outputFormat))) {
@@ -222,6 +225,11 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'fit-growth') {
+    const { createPlaqueGrowthRecord } = await import('../../core/src/analysis/plaque-growth');
+    const record = await createPlaqueGrowthRecord(request.content);
+    return { type: 'growth-fitted', inputFileSha256: hashText(request.content), recordJson: serializeAnalysisRecord(record) };
+  }
   if (request.type === 'inspect-genomes' || request.type === 'analyze-experiment') {
     const { importLocalGenomes } = await import('../../core/src/genome-import');
     // Same normalization, annotation parsing and content IDs as browser import.
@@ -331,6 +339,9 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { sequence: row.data, accession: row.accession, source: row.source },
         { sequence: column.data, accession: column.accession, source: column.source })).record;
       table = exportPairwiseDotPlotExperimentTsv;
+    } else if (saved.method.id === 'plaque-count-growth') {
+      const { replayPlaqueGrowthRecord, exportPlaqueGrowthTsv } = await import('../../core/src/analysis/plaque-growth');
+      fresh = await replayPlaqueGrowthRecord(request.content); table = exportPlaqueGrowthTsv;
     } else if (saved.method.id === 'restriction-digest') {
       const { replayRestrictionDigestRecord, exportRestrictionDigestTsv } = await import('../../core/src/analysis/restriction-digest');
       fresh = await replayRestrictionDigestRecord(request.content);
@@ -344,7 +355,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = await replayExactRepeatRecord(request.content);
       table = exportExactRepeatPairsTsv;
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew and exact repeat pairs.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs and plaque-count growth.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

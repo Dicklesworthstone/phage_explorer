@@ -18,6 +18,9 @@ declare const PHAGE_RESEARCH_WORKER: string | undefined;
 
 export const RESEARCH_WORKFLOW_HELP = `Replay recorded research locally, without a database or browser
 
+bun run workflow growth-template
+bun run workflow fit-growth --input plates.json [--output NEW_FILE]
+  [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect --input workflow.json [--timeout-ms 300000]
 bun run workflow record --input plan.json --output NEW_WORKFLOW.json
   [--timeout-ms 300000] [--progress]
@@ -43,6 +46,26 @@ bun run workflow analyze-experiment --input genome.fa --method gc-skew
 bun run workflow analyze-experiment --input genome.fa --method exact-repeats
   --topology linear|circular [--arm-length BP] [--max-gap BP] [--max-pairs COUNT]
   [--record CONTENT_ID] [--output NEW_FILE] [--format json|tsv] [--timeout-ms 300000]
+
+fit-growth accepts version-1 phage-explorer-plaque-growth-input JSON with an
+explicit extracellular-plaque-counts assay, title, source provenance, embedded
+CSV and options. growth-template prints a SYNTHETIC format example; no files are
+read or written by that operation. CSV columns are time_min,plaque_count,
+dilution_fraction,volume_ml. Use uncensored integer plaques, dilution FRACTIONS
+and explicit plated mL; zero counts are real data, not missing values. Supply
+6–2048 independent plates at 6–32 distinct times, at most 1,000,000 UTF-8 bytes.
+options requires supportDeviance and infectedCentersPerMl (null when unmeasured).
+The fit maximizes a Poisson exposure likelihood over observed-time ramps, retains
+plate-level residuals and profiles increase over all candidate knots. A constant
+curve in the support set withholds rise timing; grid-boundary support is flagged.
+This is descriptive population growth, not single-cell latency or mechanistic
+burst size. Likelihood support is NOT a calibrated confidence interval. Yield is
+conditional on an independent infected-center denominator; its error is not
+propagated. Dilution uncertainty, overdispersion, correlated plates, censoring,
+secondary infection and phage loss are not modeled. JSON retains original inputs
+and fits; replay-experiment recomputes and checks them. Growth TSV includes
+observed plate counts and residuals; neither export anonymizes measurements. Existing PFU curve fits
+and demonstration growth methods are not silently reinterpreted as plate counts.
 
 inspect-genomes accepts DNA FASTA, GenBank or a version-1 local genome bundle.
 It reports unique record content IDs, sequence hashes, lengths, topology and
@@ -110,7 +133,7 @@ reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
-GC-skew v2 and linear/circular exact-repeat-pairs JSON. Legacy accelerated GC-skew
+GC-skew v2, linear/circular exact-repeat-pairs and plaque-count-growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
@@ -136,7 +159,8 @@ input reading and final output handling. --progress emits metadata-only JSON lin
 to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTERM.
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
-export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } |
+export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'growth-template' } |
+  { type: 'fit-growth'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'record'; input: string; output: string; timeoutMs: number; progress: boolean } |
   { type: 'inspect'; input: string; timeoutMs: number } |
   { type: 'inspect-genomes'; input: string; timeoutMs: number } |
@@ -147,12 +171,13 @@ export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } |
 export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   if (args.length === 1 && args[0] === 'list-enzymes') return { type: 'list-enzymes' };
+  if (args.length === 1 && args[0] === 'growth-template') return { type: 'growth-template' };
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment') {
-    throw new Error('Choose record, inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'fit-growth') {
+    throw new Error('Choose record, inspect, replay, replay-experiment, inspect-genomes, analyze-experiment or fit-growth; see --help.');
   }
   const allowed = type === 'record' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
-    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment'
+    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment' || type === 'fit-growth'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false;
   for (let i = 0; i < rest.length;) {
@@ -178,7 +203,7 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return { type, input, output, timeoutMs, progress };
   }
   if (type === 'inspect' || type === 'inspect-genomes') return { type, input, timeoutMs };
-  if (type === 'replay-experiment' || type === 'analyze-experiment') {
+  if (type === 'replay-experiment' || type === 'analyze-experiment' || type === 'fit-growth') {
     const outputFormat = values.get('--format') ?? 'json';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
     if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
@@ -338,7 +363,9 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           onProgress({ phase: p.phase, completed, total, actionId: p.actionId }); abort(signal); return;
         }
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
-        if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) finish(value);
+        if (value?.type === 'growth-fitted' && submitted.type === 'fit-growth' && value.inputFileSha256 === tapeSha256
+          && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) finish(value);
+        else if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) finish(value);
         else if (value?.type === 'genomes-inspected' && submitted.type === 'inspect-genomes'
           && value.report?.format === 'phage-explorer-genome-inspection' && value.report.version === 1 && value.report.headless === true
           && value.report.inputFileSha256 === tapeSha256 && Array.isArray(value.report.genomes)
@@ -406,6 +433,15 @@ async function writeNewOutput(path: string, content: string, signal: AbortSignal
   abort(signal);
 }
 export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, { type: 'help' }>, runtime: WorkflowRuntime = {}): Promise<object> {
+  if (command.type === 'growth-template') {
+    if (runtime.signal) abort(runtime.signal);
+    return { format: 'phage-explorer-plaque-growth-input', version: 1, measurement: 'extracellular-plaque-counts',
+      title: 'Synthetic plate-count format example',
+      provenance: { kind: 'synthetic', source: 'Hand-constructed format example, not experimental observations. Replace counts and provenance before using real data.' },
+      csv: 'time_min,plaque_count,dilution_fraction,volume_ml\n'
+        + [10, 10, 10, 10, 60, 110, 110, 110, 110].map((count, t) => `${t},${count},1,1`).join('\n'),
+      options: { infectedCentersPerMl: null, supportDeviance: 3.84 } };
+  }
   if (command.type === 'list-enzymes') {
     if (runtime.signal) abort(runtime.signal);
     const { RESTRICTION_ENZYMES } = await import('../packages/core/src/data/restriction-enzymes');
@@ -422,13 +458,35 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   const signal = controller.signal;
   try {
     const content = await readInput(command.input, signal);
-    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'record' ? { type: command.type, content }
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'record' || command.type === 'fit-growth' ? { type: command.type, content }
       : command.type === 'analyze-experiment' ? { type: 'analyze-experiment', content, contentId: command.contentId, analysis: command.analysis,
         outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : command.type === 'replay-experiment' ? { type: 'replay-experiment', content, outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : { type: 'replay', content, repetitions: command.repetitions, exportAnalysis: command.output !== undefined };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
+    if (result.type === 'growth-fitted') {
+      if (command.type !== 'fit-growth') throw new Error('Unexpected growth fit.');
+      const { PLAQUE_GROWTH_METHOD, parsePlaqueGrowthInput, exportPlaqueGrowthTsv } = await import('../packages/core/src/analysis/plaque-growth');
+      const input = parsePlaqueGrowthInput(content);
+      const record = await parseAnalysisRecord(result.recordJson, { methodId: PLAQUE_GROWTH_METHOD.id, methodVersion: PLAQUE_GROWTH_METHOD.version });
+      abort(signal);
+      if (!commandValuesEqual(record.method, PLAQUE_GROWTH_METHOD) || record.inputs.length !== 1
+        || record.inputs[0].id !== 'experiment' || record.inputs[0].data !== content
+        || record.inputs[0].source !== (input.provenance.kind === 'synthetic' ? 'demo' : 'local')
+        || !commandValuesEqual(record.parameters, input.options) || record.seed !== null) {
+        throw new Error('Growth output differs from the submitted measurements, source or settings.');
+      }
+      // Only bounded formatting runs here; all fitting and profiling ran in the worker.
+      const { fitted: _plates, ...summary } = record.fields.fit.value as unknown as import('../packages/core/src/analysis/plaque-growth').PlaqueGrowthFit;
+      if (command.output !== undefined) {
+        const text = command.outputFormat === 'json' ? result.recordJson : exportPlaqueGrowthTsv(record);
+        await writeNewOutput(command.output, text, signal);
+      }
+      return { format: 'phage-explorer-growth-fit', version: 1, headless: true, inputFileSha256: result.inputFileSha256,
+        method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
+        provenance: input.provenance.kind, summary };
+    }
     if (result.type === 'recorded') {
       if (command.type !== 'record') throw new Error('Unexpected recording result.');
       await writeNewOutput(command.output, result.tapeJson, signal);
