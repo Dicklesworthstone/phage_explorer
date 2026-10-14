@@ -1,5 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { computeDotPlotBuffers, createDotPlotExperiment, serializeAnalysisRecord, createAnalysisRecord } from '@phage-explorer/core';
 import { computeDotPlot } from '@phage-explorer/core';
 import { createDotPlotHandler } from './dotplot.worker';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
@@ -258,5 +259,150 @@ describe('dot plot direct-buffer integration', () => {
     assert.deepEqual(run.messages.map(response => [response.requestId, response.bins]), [[22, 40], [23, 2]]);
     assert.deepEqual(Array.from(run.messages[1].directValues!), [0.5, 0, 0, 0.5]);
     assert.deepEqual(Array.from(run.messages[1].invertedValues!), [0, 0.5, 0.5, 0]);
+  });
+});
+
+const experimentContext = { accession: 'PRIVATE.1', source: 'local' as const };
+function captureJob(requestId: number, sequence = 'ACGT', bins = 2, window = 2): DotPlotJob {
+  const config = { bins, window, ambiguity: 'exclude' as const };
+  return { requestId, sequence, config, experiment: {
+    kind: 'create', context: experimentContext, displayed: computeDotPlotBuffers(sequence, config),
+  } };
+}
+
+describe('dot plot experiment worker integration', () => {
+  it('captures the actual full matrix, serializes evidence and TSV off-thread, and transfers exact buffers', async () => {
+    let nativeLoads = 0;
+    const run = harness({ loadWasm: async () => { nativeLoads++; throw new Error('not part of portable capture'); } });
+    await run.handle({ data: captureJob(20) });
+    assert.equal(run.messages.length, 1);
+    const response = run.messages[0];
+    assertAcgt(response);
+    assert.equal(response.replayExactRecord, undefined);
+    assert.equal(nativeLoads, 0);
+    assert.deepEqual(JSON.parse(response.experimentJson!), response.evidenceRecord);
+    assert.deepEqual(response.evidenceRecord!.fields.direct.value, Array.from(response.directValues!));
+    assert.deepEqual(response.evidenceRecord!.fields.inverted.value, Array.from(response.invertedValues!));
+    assert.match(response.experimentTsv!, /0\t1\t0\t2\t2\t4\t0\t1/);
+    assert.equal(response.experimentTsv!.includes('ACGT'), false);
+  });
+
+  it('never exports a preview as the requested full-resolution experiment', async () => {
+    const run = harness();
+    await run.handle({ data: captureJob(21, 'ANCT'.repeat(40), 200, 21) });
+    assert.equal(run.messages.length, 1);
+    const response = run.messages[0];
+    assert.equal(response.ok, true);
+    assert.equal(response.bins, 200);
+    assert.equal(response.directValues!.length, 40000);
+    assert.equal(response.evidenceRecord!.parameters.bins, 200);
+    assert.equal(response.experimentTsv!.trimEnd().split('\n').length, 40004);
+  });
+
+  it('replays exported JSON numerically and returns the currently selected input metadata', async () => {
+    const run = harness();
+    await run.handle({ data: captureJob(22, 'anNt') });
+    const content = run.messages[0].experimentJson!;
+    await run.handle({ data: { requestId: 23, sequence: 'anNt', experiment: { kind: 'replay', content, context: experimentContext } } });
+    assert.equal(run.messages[1].replayExactRecord, true);
+    assert.deepEqual(Array.from(run.messages[1].invertedValues!), [0, 0.5, 0.5, 0]);
+    await run.handle({ data: { requestId: 24, sequence: 'anNt', experiment: {
+      kind: 'replay', content, context: { accession: 'CATALOG.9', source: 'catalog' },
+    } } });
+    assert.equal(run.messages[2].ok, true);
+    assert.equal(run.messages[2].replayExactRecord, false);
+    assert.equal(run.messages[2].evidenceRecord!.inputs[0].accession, 'CATALOG.9');
+    assert.equal(run.messages[2].evidenceRecord!.inputs[0].source, 'catalog');
+  });
+
+  it('does not publish saved matrices for another same-length genome and remains usable after refusal', async () => {
+    const run = harness();
+    await run.handle({ data: captureJob(25) });
+    await run.handle({ data: { requestId: 26, sequence: 'AAAA', experiment: {
+      kind: 'replay', context: experimentContext, content: run.messages[0].experimentJson!,
+    } } });
+    const failure = run.messages[1];
+    assert.equal(failure.ok, false);
+    assert.match(failure.error!, /exact source/);
+    assert.equal(failure.directValues, undefined);
+    assert.equal(failure.evidenceRecord, undefined);
+    await run.handle({ data: job(27) });
+    assertAcgt(run.messages[2]);
+  });
+
+  it('rejects validly rehashed false outputs rather than treating the checksum as a replay', async () => {
+    const source = await createDotPlotExperiment({ sequence: 'ACGT', ...experimentContext }, { bins: 2, window: 2 });
+    const { record } = source;
+    record.fields.inverted.value = [0, 0, 0, 0];
+    const rehashed = await createAnalysisRecord({
+      method: record.method, parameters: record.parameters, references: record.references, seed: record.seed, fields: record.fields,
+      inputs: record.inputs.map(input => ({ id: input.id, data: input.data, description: input.description, accession: input.accession, source: input.source })),
+    });
+    const run = harness();
+    await run.handle({ data: { requestId: 28, sequence: 'ACGT', experiment: {
+      kind: 'replay', context: experimentContext, content: serializeAnalysisRecord(rehashed),
+    } } });
+    assert.equal(run.messages[0].ok, false);
+    assert.match(run.messages[0].error!, /Recomputed/);
+    assert.equal(run.messages[0].evidenceRecord, undefined);
+    assert.equal(run.messages[0].experimentJson, undefined);
+  });
+
+  it('refuses a divergent displayed backend result, missing display or lossy source encoding', async () => {
+    const badDisplay = captureJob(29);
+    assert(badDisplay.experiment?.kind === 'create');
+    badDisplay.experiment.displayed.directValues[1] = 1;
+    const encoded: SequenceBytesRef = {
+      buffer: new Uint8Array([0, 1, 2, 3]).buffer, byteOffset: 0, byteLength: 4, length: 4, encoding: 'acgt05', isShared: false,
+    };
+    const run = harness();
+    const invalid = [badDisplay,
+      { requestId: 30, sequence: 'ACGT', experiment: { kind: 'create', context: experimentContext } },
+      { requestId: 31, sequenceRef: encoded, experiment: captureJob(31).experiment },
+      { requestId: 32, sequence: 'ACGT', experiment: { kind: 'unsupported' } },
+      { requestId: 33, sequence: 'ACGT', experiment: null },
+      { requestId: 34, sequence: 'ACGT', config: { bins: 2 }, experiment: { kind: 'replay', context: experimentContext, content: '{}' } },
+    ];
+    for (const data of invalid) await run.handle({ data: data as DotPlotJob });
+    assert.equal(run.messages.length, invalid.length);
+    assert.equal(run.messages.every(response => !response.ok && response.evidenceRecord === undefined), true);
+    assert.match(run.messages[0].error!, /Displayed/);
+    assert.match(run.messages[2].error!, /lossy/);
+  });
+
+  it('accepts exact ASCII references without allowing the context to replace the actual source', async () => {
+    const request = captureJob(35);
+    const ascii: SequenceBytesRef = {
+      buffer: new Uint8Array([65, 67, 71, 84]).buffer, byteOffset: 0, byteLength: 4, length: 4, encoding: 'ascii', isShared: false,
+    };
+    const run = harness();
+    await run.handle({ data: { requestId: 35, sequenceRef: ascii, config: request.config, experiment: request.experiment } });
+    assertAcgt(run.messages[0]);
+    assert.equal(run.messages[0].evidenceRecord!.inputs[0].data, 'ACGT');
+  });
+
+  it('suppresses captures superseded while asynchronous record hashes are pending', async () => {
+    const run = harness();
+    const old = run.handle({ data: captureJob(36) });
+    await run.handle({ data: job(37) });
+    await old;
+    assert.deepEqual(run.messages.map(response => response.requestId), [37]);
+    assertAcgt(run.messages[0]);
+  });
+
+  it('suppresses both replay results and replay failures after a newer job takes ownership', async () => {
+    const source = await createDotPlotExperiment({ sequence: 'ACGT', ...experimentContext }, { bins: 2, window: 2 });
+    for (const invalidHash of [false, true]) {
+      const record = structuredClone(source.record);
+      if (invalidHash) record.inputs[0].sha256 = '0'.repeat(64);
+      const run = harness();
+      const old = run.handle({ data: { requestId: 38, sequence: 'ACGT', experiment: {
+        kind: 'replay', context: experimentContext, content: serializeAnalysisRecord(record),
+      } } });
+      await run.handle({ data: job(39) });
+      await old;
+      assert.deepEqual(run.messages.map(response => response.requestId), [39]);
+      assertAcgt(run.messages[0]);
+    }
   });
 });

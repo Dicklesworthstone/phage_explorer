@@ -16,6 +16,8 @@ import type {
   ResistanceCocktailState,
   DotPlotConfig,
   DotPlotResult,
+  DotPlotBuffers,
+  DotPlotExperimentInput,
   BiasDecomposition,
   KmerFrequencyOptions,
   KmerVector,
@@ -496,9 +498,14 @@ export interface SharedSearchWorkerAPI extends SearchWorkerAPI {
 // Non-Comlink Worker Message Types (postMessage + Transferables)
 // ============================================================
 
-export type DotPlotJob =
+export type DotPlotExperimentRequest =
+  | { kind: 'create'; context: Omit<DotPlotExperimentInput, 'sequence'>; displayed: DotPlotBuffers }
+  | { kind: 'replay'; context: Omit<DotPlotExperimentInput, 'sequence'>; content: string };
+
+export type DotPlotJob = (
   | { requestId?: number; sequence: string; config?: DotPlotConfig }
-  | { requestId?: number; sequenceRef: SequenceBytesRef; config?: DotPlotConfig };
+  | { requestId?: number; sequenceRef: SequenceBytesRef; config?: DotPlotConfig }
+) & { experiment?: DotPlotExperimentRequest };
 
 export interface DotPlotWorkerResponse {
   requestId?: number;
@@ -510,6 +517,12 @@ export interface DotPlotWorkerResponse {
   bins?: number;
   window?: number;
   error?: string;
+  /** Present only after a complete portable capture or verified replay, never on a preview. */
+  evidenceRecord?: AnalysisRecord;
+  experimentJson?: string;
+  experimentTsv?: string;
+  /** Undefined for capture; reports metadata-sensitive identity separately from numeric replay. */
+  replayExactRecord?: boolean;
 }
 
 export type ComparisonJob =

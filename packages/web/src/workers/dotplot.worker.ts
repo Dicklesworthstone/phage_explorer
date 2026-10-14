@@ -1,5 +1,8 @@
 /** Dot-plot computation with optional acceleration, explicit evidence semantics and latest-job ownership. */
-import { computeDotPlotBuffers } from '@phage-explorer/core';
+import {
+  computeDotPlotBuffers, createDotPlotExperiment, replayDotPlotExperiment,
+  exportDotPlotExperimentTsv, serializeAnalysisRecord,
+} from '@phage-explorer/core';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
 import { getWasmCompute } from '../lib/wasm-loader';
 
@@ -72,6 +75,33 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
       if (('sequence' in job) === ('sequenceRef' in job)) throw new Error('Provide exactly one dot plot sequence source');
       const sequence = 'sequence' in job ? job.sequence : decodeSequenceRef(job.sequenceRef);
       if (typeof sequence !== 'string' || sequence.length === 0) throw new Error('No sequence provided for dot plot');
+
+      if (job.experiment !== undefined) {
+        const operation = job.experiment;
+        if (!operation || !['create', 'replay'].includes(operation.kind)) throw new Error('Unsupported dot plot experiment operation.');
+        if ('sequenceRef' in job && job.sequenceRef.encoding !== 'ascii') {
+          throw new Error('Dot plot experiments require exact source symbols, not lossy acgt05 encoding.');
+        }
+        if (operation.kind === 'create' && !operation.displayed) throw new Error('Missing displayed dot plot for experiment capture.');
+        if (operation.kind === 'replay' && job.config !== undefined) throw new Error('Replay settings must come from the saved experiment.');
+        const input = { ...operation.context, sequence };
+        const experiment = operation.kind === 'replay'
+          ? await replayDotPlotExperiment(operation.content, input)
+          : await createDotPlotExperiment(input, job.config, operation.displayed);
+        if (jobId !== activeJobId) return;
+        // Serialization stays off the UI thread as well. The arrays sent to the
+        // viewer and the record both come from this same complete computation.
+        const response: DotPlotWorkerResponse = {
+          requestId: job.requestId, ok: true, bins: experiment.bins, window: experiment.window,
+          directValues: experiment.directValues, invertedValues: experiment.invertedValues,
+          evidenceRecord: experiment.record, experimentJson: serializeAnalysisRecord(experiment.record),
+          experimentTsv: exportDotPlotExperimentTsv(experiment.record),
+          ...('exactRecord' in experiment && typeof experiment.exactRecord === 'boolean'
+            ? { replayExactRecord: experiment.exactRecord } : {}),
+        };
+        runtime.postMessage(response, [experiment.directValues.buffer as ArrayBuffer, experiment.invertedValues.buffer as ArrayBuffer]);
+        return;
+      }
 
       const targetBins = job.config?.bins ?? 120;
       if (!Number.isSafeInteger(targetBins) || targetBins < 1 || targetBins > 1024) {

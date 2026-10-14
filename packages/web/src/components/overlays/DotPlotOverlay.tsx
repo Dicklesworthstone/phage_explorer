@@ -31,8 +31,10 @@ import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import { InfoButton } from '../ui';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import type { HeatmapHover, ColorScale } from '../primitives/types';
-import type { DotPlotWorkerResponse } from '../../workers/types';
+import type { DotPlotJob, DotPlotWorkerResponse } from '../../workers/types';
 import { SharedSequencePool } from '../../workers/SharedSequencePool';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { downloadString } from '../../utils/export';
 
 // Color scales for direct vs inverted
 const directColorScale: ColorScale = (value: number): string => {
@@ -55,6 +57,50 @@ const invertedColorScale: ColorScale = (value: number): string => {
 
 type ViewMode = 'direct' | 'inverted' | 'combined';
 
+interface DotPlotInput {
+  repository: PhageRepository;
+  phage: PhageFull;
+  sequence: string;
+}
+type MatrixResponse = DotPlotWorkerResponse & {
+  ok: true; bins: number; window: number; directValues: Float32Array; invertedValues: Float32Array;
+};
+type ExperimentResponse = MatrixResponse & Required<Pick<DotPlotWorkerResponse,
+  'evidenceRecord' | 'experimentJson' | 'experimentTsv'>>;
+interface DotPlotSettings {
+  resolution: number;
+  window: number; // Zero requests the automatic window; saved experiments use the effective positive size.
+  restored?: { input: DotPlotInput; response: ExperimentResponse };
+}
+
+function createDotPlotWorker(): Worker {
+  try {
+    return new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url), { type: 'module' });
+  } catch {
+    return new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url));
+  }
+}
+
+function hasMatrix(response: DotPlotWorkerResponse, sequenceLength: number): response is MatrixResponse {
+  const bins = response.bins ?? 0, window = response.window ?? 0;
+  return response.ok && Number.isSafeInteger(bins) && bins > 0 && bins <= 200
+    && Number.isSafeInteger(window) && window > 0 && window <= sequenceLength
+    && response.directValues instanceof Float32Array && response.invertedValues instanceof Float32Array
+    && response.directValues.length === bins * bins && response.invertedValues.length === bins * bins
+    && response.directValues.every(value => Number.isFinite(value) && value >= 0 && value <= 1)
+    && response.invertedValues.every(value => Number.isFinite(value) && value >= 0 && value <= 1);
+}
+
+function hasExperiment(response: DotPlotWorkerResponse, sequence: string): response is ExperimentResponse {
+  const record = response.evidenceRecord;
+  return hasMatrix(response, sequence.length) && record?.format === 'phage-explorer-analysis'
+    && record.method?.id === 'sequence-dot-plot' && record.method.version === '1'
+    && record.inputs?.length === 1 && record.inputs[0].data === sequence
+    && record.parameters?.bins === response.bins && record.parameters.window === response.window
+    && record.parameters.ambiguity === 'exclude'
+    && typeof response.experimentJson === 'string' && typeof response.experimentTsv === 'string';
+}
+
 interface DotPlotOverlayProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
@@ -65,17 +111,21 @@ export function DotPlotOverlay({
   currentPhage,
 }: DotPlotOverlayProps): React.ReactElement | null {
   const { isOpen, toggle } = useOverlay();
+  const open = isOpen('dotPlot');
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('dotPlot');
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
+  const cancelComputeRef = useRef<(() => void) | null>(null);
+  const experimentWorkerRef = useRef<Worker | null>(null);
+  const experimentGeneration = useRef(0);
 
   // State
   const [sequenceLoading, setSequenceLoading] = useState(false);
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
-  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
+  const [loaded, setLoaded] = useState<DotPlotInput | null>(null);
   const input = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
   const sequence = input?.sequence ?? '';
   const loading = sequenceLoading || computeLoading;
@@ -90,10 +140,26 @@ export function DotPlotOverlay({
 
   // UI state
   const [viewMode, setViewMode] = useState<ViewMode>('combined');
-  const [resolution, setResolution] = useState(80);
-  const request = useMemo(() => ({ input, resolution }), [input, resolution]);
-  const [computed, setComputed] = useState<{ request: typeof request; response: DotPlotWorkerResponse } | null>(null);
-  const response = computed?.request === request ? computed.response : null;
+  const [settings, setSettings] = useState<DotPlotSettings>({ resolution: 80, window: 0 });
+  const [windowInput, setWindowInput] = useState('0');
+  const resolution = settings.resolution;
+  const request = useMemo(() => ({ input, resolution: settings.resolution, window: settings.window, restored: settings.restored }), [input, settings]);
+  // Updated during render, not just effect cleanup: a late worker reply cannot
+  // apply settings in the gap between a new selection rendering and cleanup.
+  const currentRequest = useRef({ request, open });
+  currentRequest.current = { request, open };
+  const [computed, setComputed] = useState<{ request: typeof request; response: MatrixResponse } | null>(null);
+  const restored = settings.restored?.input === input ? settings.restored : null;
+  const response = restored?.response ?? (computed?.request === request ? computed.response : null);
+  const [prepared, setPrepared] = useState<{ request: typeof request; response: ExperimentResponse } | null>(null);
+  const experiment = restored?.response ?? (prepared?.request === request ? prepared.response : null);
+  const [experimentLoading, setExperimentLoading] = useState(false);
+  const [experimentError, setExperimentError] = useState<string | null>(null);
+  const [experimentNotice, setExperimentNotice] = useState<string | null>(null);
+  const requestedWindow = Number(windowInput);
+  const parameterError = !/^\d+$/.test(windowInput) || !Number.isSafeInteger(requestedWindow)
+    || requestedWindow < 0 || (sequence.length > 0 && requestedWindow > sequence.length)
+    ? 'Window must be a whole number from 0 (automatic) to the selected sequence length.' : null;
   const directValues = response?.directValues ?? null;
   const invertedValues = response?.invertedValues ?? null;
   const bins = response?.bins ?? 0;
@@ -114,7 +180,7 @@ export function DotPlotOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Reuse initialization; request IDs below isolate progressive replies.
+  // Request IDs below isolate progressive replies.
   useEffect(() => {
     return () => {
       workerRef.current?.terminate();
@@ -124,7 +190,7 @@ export function DotPlotOverlay({
 
   // Fetch full genome when overlay opens
   useEffect(() => {
-    if (!isOpen('dotPlot')) {
+    if (!open) {
       setSequenceLoading(false);
       return;
     }
@@ -166,32 +232,39 @@ export function DotPlotOverlay({
       cancelled = true;
       setSequenceLoading(false);
     };
-  }, [isOpen, repository, currentPhage, retryCount]);
+  }, [open, repository, currentPhage, retryCount]);
 
   // Run dot plot analysis when sequence or resolution changes
   useEffect(() => {
     setComputed(null);
     setHovered(null);
-    if (!isOpen('dotPlot')) {
+    if (!open) {
       setComputeLoading(false);
       return;
     }
     const selected = request.input;
-    if (!selected || selected.sequence.length < 100) {
+    if (!selected || selected.sequence.length === 0) {
       setComputeLoading(false);
       return;
     }
+    if (request.restored?.input === selected) {
+      // This is the newly recomputed, verified reply, never the imported matrix.
+      setComputeLoading(false);
+      setError(null);
+      return;
+    }
+    if (request.window > selected.sequence.length) {
+      setComputeLoading(false);
+      setError('The requested window exceeds this genome length. Choose a smaller window or automatic sizing.');
+      return;
+    }
 
-    // Start only when needed, then reuse the worker across input changes.
+    // One worker owns this request, including its preview and final pass.
     if (!workerRef.current) {
       try {
-        workerRef.current = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url), { type: 'module' });
+        workerRef.current = createDotPlotWorker();
       } catch {
-        try {
-          workerRef.current = new Worker(new URL('../../workers/dotplot.worker.ts', import.meta.url));
-        } catch {
-          // Report creation failure below.
-        }
+        // Report creation failure below.
       }
     }
     const worker = workerRef.current;
@@ -203,46 +276,51 @@ export function DotPlotOverlay({
 
     let cancelled = false;
     const requestId = ++requestIdRef.current;
+    let running = true;
+    const expectedWindow = request.window || Math.min(selected.sequence.length,
+      Math.max(20, Math.floor(selected.sequence.length / request.resolution)));
     setComputeLoading(true);
     setError(null);
 
     const handleMessage = (event: MessageEvent<DotPlotWorkerResponse>) => {
       const response = event.data;
-      if (cancelled || !response || response.requestId !== requestId) return;
-      setComputeLoading(false);
+      if (cancelled || currentRequest.current.request !== request || !currentRequest.current.open
+          || !response || response.requestId !== requestId) return;
 
       if (!response.ok) {
-        setComputed(null);
-        setError(response.error ?? 'Dot plot computation failed');
+        failWorker(response.error ?? 'Dot plot computation failed');
         return;
       }
 
       const outBins = response.bins ?? 0;
-      const outWindow = response.window ?? 0;
       const expectedResolution = outBins === request.resolution || (request.resolution >= 80 && outBins === 40);
-      if (expectedResolution && outBins > 0 && Number.isSafeInteger(outWindow) && outWindow > 0
-          && outWindow <= selected.sequence.length
-          && response.directValues instanceof Float32Array && response.invertedValues instanceof Float32Array
-          && response.directValues.length === outBins * outBins && response.invertedValues.length === outBins * outBins) {
+      if (expectedResolution && response.window === expectedWindow && hasMatrix(response, selected.sequence.length)) {
+        running = outBins !== request.resolution;
+        setComputeLoading(outBins !== request.resolution);
         setComputed({ request, response });
       } else {
-        setComputed(null);
-        setError('Dot plot worker returned an invalid matrix');
+        failWorker('Dot plot worker returned an invalid matrix');
       }
     };
 
     const failWorker = (message: string) => {
-      if (cancelled) return;
+      if (cancelled || currentRequest.current.request !== request || !currentRequest.current.open) return;
       setComputed(null);
       setComputeLoading(false);
       setError(message);
+      running = false;
       worker.terminate();
       if (workerRef.current === worker) workerRef.current = null;
     };
     worker.onmessage = handleMessage;
     worker.onerror = (event) => failWorker(event.message || 'Dot plot worker failed');
     worker.onmessageerror = () => failWorker('Could not decode dot plot worker response');
-    const config = { bins: request.resolution, ambiguity: 'exclude' as const };
+    const cancelCompute = () => {
+      failWorker('Dot plot analysis cancelled. Run analysis to restart.');
+      cancelled = true;
+    };
+    cancelComputeRef.current = cancelCompute;
+    const config = { bins: request.resolution, window: request.window, ambiguity: 'exclude' as const };
     try {
       if (/^[ACGT]+$/i.test(selected.sequence)) {
         try {
@@ -264,9 +342,124 @@ export function DotPlotOverlay({
       worker.onmessage = null;
       worker.onerror = null;
       worker.onmessageerror = null;
+      // A synchronous kernel cannot receive a cancel message. Termination also
+      // prevents new settings from queueing behind an abandoned full pass.
+      if (running) {
+        worker.terminate();
+        if (workerRef.current === worker) workerRef.current = null;
+      }
+      // Completed workers may stay warm; only abandoned computation must die.
+      if (cancelComputeRef.current === cancelCompute) cancelComputeRef.current = null;
       setComputeLoading(false);
     };
-  }, [isOpen, request]);
+  }, [open, request]);
+
+  useEffect(() => {
+    setPrepared(null);
+    setExperimentLoading(false);
+    setExperimentError(null);
+    setExperimentNotice(null);
+    return () => {
+      experimentGeneration.current++;
+      experimentWorkerRef.current?.terminate();
+      experimentWorkerRef.current = null;
+    };
+  }, [request, open]);
+
+  const cancelExperiment = () => {
+    experimentGeneration.current++;
+    experimentWorkerRef.current?.terminate();
+    experimentWorkerRef.current = null;
+    setExperimentLoading(false);
+    setExperimentError(null);
+    setExperimentNotice('Experiment operation cancelled. Accepted settings and results are unchanged.');
+  };
+
+  const runExperiment = async (file?: File) => {
+    const selected = request.input;
+    if (!open || !selected || (!file && (!response || response.bins !== resolution))) return;
+    const generation = ++experimentGeneration.current;
+    experimentWorkerRef.current?.terminate();
+    experimentWorkerRef.current = null;
+    setExperimentLoading(true);
+    setExperimentError(null);
+    setExperimentNotice(null);
+    const active = () => generation === experimentGeneration.current
+      && currentRequest.current.request === request && currentRequest.current.open;
+    let worker: Worker | null = null;
+    const finish = () => {
+      if (worker) {
+        worker.onmessage = null;
+        worker.onerror = null;
+        worker.onmessageerror = null;
+        worker.terminate();
+      }
+      if (experimentWorkerRef.current === worker) experimentWorkerRef.current = null;
+      if (active()) setExperimentLoading(false);
+    };
+    const fail = (message: string) => {
+      if (active()) setExperimentError(message);
+      finish();
+    };
+    try {
+      if (file && file.size > 10 * 1024 * 1024) throw new Error('Analysis record exceeds the 10 MiB limit.');
+      const content = file ? await file.text() : null;
+      if (!active()) return;
+      worker = createDotPlotWorker();
+      experimentWorkerRef.current = worker;
+      const requestId = ++requestIdRef.current;
+      worker.onmessage = (event: MessageEvent<DotPlotWorkerResponse>) => {
+        const result = event.data;
+        if (!active() || !result || result.requestId !== requestId) return;
+        if (!result.ok) { fail(result.error ?? 'Dot plot experiment failed.'); return; }
+        if (!hasExperiment(result, selected.sequence) || (file && typeof result.replayExactRecord !== 'boolean')) {
+          fail('Dot plot worker returned an invalid experiment.');
+          return;
+        }
+        finish();
+        if (file) {
+          // One state transition installs settings and the freshly computed
+          // matrix. Failed parsing, mismatch or cancellation cannot get here.
+          setWindowInput(String(result.window));
+          setSettings({ resolution: result.bins, window: result.window, restored: { input: selected, response: result } });
+          setError(null);
+        } else {
+          setPrepared({ request, response: result });
+          setExperimentNotice('Experiment prepared: the exact recomputation matches the displayed final matrix.');
+        }
+      };
+      worker.onerror = event => fail(event.message || 'Dot plot experiment worker failed.');
+      worker.onmessageerror = () => fail('Could not decode the dot plot experiment response.');
+      const context = { accession: selected.phage.accession, source: selected.phage.localGenome ? 'local' as const : 'catalog' as const };
+      let job: DotPlotJob;
+      if (content !== null) {
+        job = { requestId, sequence: selected.sequence, experiment: { kind: 'replay', context, content } };
+      } else {
+        if (!response) throw new Error('No completed dot plot to export.');
+        job = { requestId, sequence: selected.sequence,
+          config: { bins: response.bins, window: response.window, ambiguity: 'exclude' },
+          experiment: { kind: 'create', context, displayed: {
+            bins: response.bins, window: response.window, directValues: response.directValues, invertedValues: response.invertedValues,
+          } } };
+      }
+      // Clone the displayed arrays, never transfer/detach the live heatmap.
+      // Exactly one auxiliary worker exists and is terminated on every outcome.
+      worker.postMessage(job);
+    } catch (cause: unknown) {
+      fail(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+
+  const downloadExperiment = (format: 'json' | 'tsv') => {
+    if (!experiment) return;
+    try {
+      const filename = `dot-plot-${experiment.evidenceRecord.resultId.slice(0, 12)}.${format}`;
+      downloadString(format === 'json' ? experiment.experimentJson : experiment.experimentTsv,
+        filename, format === 'json' ? 'application/json' : 'text/tab-separated-values');
+    } catch (cause) {
+      setExperimentError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
 
   // Combined values (max of direct and inverted)
   const combinedValues = useMemo(() => {
@@ -337,7 +530,7 @@ export function DotPlotOverlay({
     };
   }, [hoverInfo, directValues, invertedValues, sequence, bins, windowSize]);
 
-  if (!isOpen('dotPlot')) return null;
+  if (!open) return null;
 
   const hasData = displayValues && bins > 0;
   const isEmpty = !loading && !error && (!displayValues || bins === 0);
@@ -410,7 +603,7 @@ export function DotPlotOverlay({
             <select
               id={resolutionSelectId}
               value={resolution}
-              onChange={(e) => setResolution(Number(e.target.value))}
+              onChange={(e) => setSettings({ resolution: Number(e.target.value), window: settings.window })}
               style={{
                 padding: '0.25rem',
                 backgroundColor: 'var(--color-background-alt)',
@@ -423,6 +616,7 @@ export function DotPlotOverlay({
               <option value={80}>Medium (80x80)</option>
               <option value={120}>High (120x120)</option>
               <option value={200}>Very High (200x200)</option>
+              {![40, 80, 120, 200].includes(resolution) && <option value={resolution}>Restored ({resolution}x{resolution})</option>}
             </select>
           </div>
 
@@ -433,8 +627,66 @@ export function DotPlotOverlay({
           )}
         </OverlayToolbar>
 
+        <form aria-label="Dot plot window parameters" onSubmit={event => {
+          event.preventDefault();
+          if (parameterError || !input) return;
+          setSettings({ resolution, window: requestedWindow });
+        }} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: '0.75rem' }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            Window size (bp; 0 = automatic)
+            <input type="number" min={0} max={sequence.length || undefined} step={1} required
+              value={windowInput} onChange={event => {
+                if (experimentLoading) cancelExperiment();
+                setWindowInput(event.target.value);
+              }} />
+          </label>
+          <button type="submit" disabled={!input || !!parameterError}>Run analysis</button>
+          {computeLoading && <button type="button" onClick={() => cancelComputeRef.current?.()}>Cancel analysis</button>}
+          {parameterError && <p role="alert" style={{ width: '100%' }}>{parameterError}</p>}
+        </form>
+        <p style={{ fontSize: '0.8rem', margin: 0 }}>
+          Editing the window does not change a completed result until Run analysis is pressed.
+          Changing resolution recomputes with the last accepted window setting.
+        </p>
+
+        <section aria-label="Dot plot experiment" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <button type="button" disabled={!response || response.bins !== resolution || computeLoading || experimentLoading}
+              onClick={() => { void runExperiment(); }}>Prepare dot plot experiment</button>
+            <button type="button" disabled={!experiment} onClick={() => downloadExperiment('json')}>Download dot plot experiment (JSON)</button>
+            <button type="button" disabled={!experiment} onClick={() => downloadExperiment('tsv')}>Download dot plot matrix (TSV)</button>
+            {experimentLoading && <button type="button" onClick={cancelExperiment}>Cancel experiment operation</button>}
+          </div>
+          <label>
+            Restore dot plot experiment (.json)
+            <input type="file" accept=".json,application/json" disabled={!input}
+              onChange={event => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = '';
+                if (file) void runExperiment(file);
+              }} />
+          </label>
+          <p style={{ fontSize: '0.8rem', margin: 0 }}>
+            Preparation verifies the final displayed matrix against an exact recomputation.
+            JSON includes the complete selected genome; sharing it shares those bases.
+            TSV contains scores, coordinates and checksums, not the sequence.
+            Preparation and replay run locally without uploading your input.
+          </p>
+          {experimentLoading && <p role="status">Computing and verifying the dot plot experiment...</p>}
+          {experimentError && <p role="alert">Dot plot experiment unavailable: {experimentError} Accepted settings and results are unchanged.</p>}
+          {experimentNotice && <p role="status">{experimentNotice}</p>}
+          {restored && <p role="status">
+            Replay matched: freshly computed matrices, sampled coordinates and evidence agree.
+            {' '}{restored.response.replayExactRecord
+              ? 'The complete record identity also matches.'
+              : 'Input display metadata differs; the new record preserves the current source identity.'}
+            {' '}Reproducibility does not establish biological accuracy.
+          </p>}
+          {experiment && <AnalysisRecordDetails record={experiment.evidenceRecord} />}
+        </section>
+
         {/* Loading State */}
-        {loading && (
+        {loading && !hasData && (
           <OverlayLoadingState message="Computing dot plot...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
@@ -453,13 +705,13 @@ export function DotPlotOverlay({
         {/* Empty State */}
         {isEmpty && (
           <OverlayEmptyState
-            message={!sequence ? 'No sequence loaded' : 'Sequence too short for analysis'}
+            message={!sequence ? 'No sequence loaded' : 'No dot plot result available'}
             hint="Select a phage with sufficient sequence data."
           />
         )}
 
         {/* Main Content */}
-        {hasData && !loading && !error && (
+        {hasData && !error && (
           <>
             {/* Dot Plot Matrix */}
             <div>
