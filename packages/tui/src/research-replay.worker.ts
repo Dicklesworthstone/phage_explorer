@@ -7,6 +7,7 @@ import { COMMAND_LIMITS } from '../../core/src/command-session';
 import { parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import type { ReplayProgress, ResearchTapeInspection, ResearchReplayResult } from './research-replay';
 import { GENOME_IMPORT_LIMITS, type LocalGenome } from '../../core/src/genome-import';
+import { resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../core/src/analysis/restriction-digest';
 
 export interface TerminalGenomeSummary {
   contentId: string; sequenceSha256: string; accession: string | null;
@@ -17,7 +18,8 @@ export interface TerminalGenomeInspection {
   format: 'phage-explorer-genome-inspection'; version: 1; headless: true;
   inputFileSha256: string; genomes: TerminalGenomeSummary[];
 }
-export type TerminalAnalysis = { method: 'dot-plot'; bins: number; window: number | null };
+export type TerminalAnalysis = { method: 'dot-plot'; bins: number; window: number | null } |
+  ({ method: 'restriction-digest' } & RestrictionDigestOptions);
 export interface TerminalAnalysisReport {
   format: 'phage-explorer-experiment-analysis'; version: 1; headless: true;
   inputFileSha256: string; requestSha256: string; genome: TerminalGenomeSummary;
@@ -29,6 +31,11 @@ const hashText = (text: string): string => createHash('sha256').update(text, 'ut
 export function validateTerminalAnalysis(value: unknown): asserts value is TerminalAnalysis {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Explicit analysis settings are required.');
   const settings = value as Record<string, unknown>;
+  if (settings.method === 'restriction-digest') {
+    if (Object.keys(settings).sort().join('|') !== 'enzymes|method|topology') throw new Error('Specify only method, enzymes and topology for restriction analysis.');
+    resolveRestrictionDigestOptions({ enzymes: settings.enzymes, topology: settings.topology });
+    return;
+  }
   if (settings.method !== 'dot-plot' || Object.keys(settings).sort().join('|') !== 'bins|method|window'
     || !Number.isSafeInteger(settings.bins) || Number(settings.bins) < 1 || Number(settings.bins) > 200
     || settings.window !== null && (!Number.isSafeInteger(settings.window) || Number(settings.window) < 1
@@ -59,7 +66,23 @@ function genomeSummary(genome: LocalGenome): TerminalGenomeSummary {
 /** Bind worker replies to the raw file, explicit selection and requested settings. */
 export function terminalAnalysisRequestSha256(request: Extract<TerminalResearchRequest, { type: 'analyze-experiment' }>): string {
   return hashText(JSON.stringify([hashText(request.content), request.contentId, request.analysis.method,
-    request.analysis.bins, request.analysis.window]));
+    ...(request.analysis.method === 'dot-plot' ? [request.analysis.bins, request.analysis.window]
+      : [request.analysis.enzymes, request.analysis.topology])]));
+}
+/** Check effective result settings at the parent boundary without recomputing on the main thread. */
+export function terminalAnalysisParametersMatch(analysis: TerminalAnalysis, report: TerminalAnalysisReport): boolean {
+  const parameters = report.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  if (analysis.method === 'dot-plot') {
+    return report.method?.id === 'sequence-dot-plot' && Object.keys(parameters).sort().join('|') === 'ambiguity|bins|window'
+      && parameters.bins === analysis.bins && parameters.ambiguity === 'exclude' && Number.isSafeInteger(parameters.window)
+      && Number(parameters.window) >= 1 && Number(parameters.window) <= report.genome.bases
+      && (analysis.window === null || parameters.window === analysis.window);
+  }
+  const expected = resolveRestrictionDigestOptions({ enzymes: analysis.enzymes, topology: analysis.topology });
+  return report.method?.id === 'restriction-digest' && Object.keys(parameters).sort().join('|') === 'enzymes|topology'
+    && parameters.topology === expected.topology && JSON.stringify(parameters.enzymes) === JSON.stringify(expected.enzymes)
+    && (report.genome.topology === 'unknown' || report.genome.topology === expected.topology);
 }
 
 export interface TerminalExperimentReport {
@@ -122,16 +145,35 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     const matches = selectedId === null ? genomes : genomes.filter(g => g.phage.localGenome!.contentId === selectedId);
     if (matches.length !== 1) throw new Error('Select exactly one genome with --record CONTENT_ID from inspect-genomes; missing, stale or ambiguous selections are not analyzed.');
     const genome = matches[0];
-    const { createDotPlotExperiment, exportDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
-    const record = (await createDotPlotExperiment({ sequence: genome.sequence, accession: genome.phage.accession, source: 'local' },
-      { bins: request.analysis.bins, ...(request.analysis.window === null ? {} : { window: request.analysis.window }) })).record;
+    let record: AnalysisRecord;
+    let table: (record: AnalysisRecord) => string;
+    let interpretation: string;
+    if (request.analysis.method === 'dot-plot') {
+      const { createDotPlotExperiment, exportDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
+      record = (await createDotPlotExperiment({ sequence: genome.sequence, accession: genome.phage.accession, source: 'local' },
+        { bins: request.analysis.bins, ...(request.analysis.window === null ? {} : { window: request.analysis.window }) })).record;
+      table = exportDotPlotExperimentTsv;
+      interpretation = 'Dot plots sample linear windows, including for circular records; no origin wrapping.';
+    } else {
+      const declared = genome.phage.localGenome!.topology;
+      if (declared !== 'unknown' && declared !== request.analysis.topology) {
+        throw new Error('Requested digest topology conflicts with the selected source metadata. This command does not simulate topology changes.');
+      }
+      const { createRestrictionDigestRecord, exportRestrictionDigestTsv } = await import('../../core/src/analysis/restriction-digest');
+      record = await createRestrictionDigestRecord(genome.sequence,
+        { enzymes: request.analysis.enzymes, topology: request.analysis.topology }, { accession: genome.phage.accession, source: 'local' });
+      table = exportRestrictionDigestTsv;
+      interpretation = `Ideal complete digestion, not measured gel mobility. ${declared === 'unknown'
+        ? 'Source topology was unknown; the explicit requested topology is an assumption.'
+        : 'Explicit topology agrees with the source annotation.'} Empty enzyme selection is an uncut control; unresolved bases are not cut evidence.`;
+    }
     return { type: 'experiment-analyzed', report: {
       format: 'phage-explorer-experiment-analysis', version: 1, headless: true,
       inputFileSha256, requestSha256: terminalAnalysisRequestSha256(request), genome: genomeSummary(genome),
       method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
-      interpretation: 'Fresh computation from locally parsed DNA, not replay verification or biological validation. Whitespace/case normalization follows the shared importer. Dot plots sample linear windows, including for circular records; no origin wrapping.',
+      interpretation: `Fresh computation from locally parsed DNA, not replay verification or biological validation. Whitespace/case normalization follows the shared importer. ${interpretation}`,
     }, exportText: request.outputFormat === 'json' ? serializeAnalysisRecord(record)
-      : request.outputFormat === 'tsv' ? exportDotPlotExperimentTsv(record) : null };
+      : request.outputFormat === 'tsv' ? table(record) : null };
   }
   if (request.type === 'replay-experiment') {
     const saved = await parseAnalysisRecord(request.content);

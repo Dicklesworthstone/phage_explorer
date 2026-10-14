@@ -8,6 +8,8 @@ import { Worker } from 'node:worker_threads';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 import { createDotPlotExperiment, replayDotPlotExperiment } from '../../core/src/analysis/dot-plot';
+import { RESTRICTION_ENZYMES } from '../../core/src/data/restriction-enzymes';
+import { createRestrictionDigestRecord, replayRestrictionDigestRecord } from '../../core/src/analysis/restriction-digest';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest, type TerminalResearchRequest } from './research-replay.worker';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker } from '../../../scripts/research-workflow';
 
@@ -15,6 +17,129 @@ const fasta = '>private [topology=circular]\r\naNNt\r\n';
 const sha = (text: string) => createHash('sha256').update(text).digest('hex');
 const request = (content = fasta): Extract<TerminalResearchRequest, { type: 'analyze-experiment' }> => ({
   type: 'analyze-experiment', content, contentId: null, analysis: { method: 'dot-plot', bins: 2, window: 2 }, outputFormat: 'json',
+});
+
+describe('source-backed restriction-digest authoring', () => {
+  const sequence = 'AAGAATTCCCGGATCCAA';
+  const digestRequest = (topology: 'linear' | 'circular', enzymes: string[] = ['EcoRI', 'BamHI']): Extract<TerminalResearchRequest, { type: 'analyze-experiment' }> => ({
+    type: 'analyze-experiment', content: `>digest [topology=${topology}]\n${sequence}\n`, contentId: null,
+    analysis: { method: 'restriction-digest', enzymes, topology }, outputFormat: 'json',
+  });
+
+  it('lists the actual bundled enzyme definitions rather than maintaining another catalog', async () => {
+    const result = await cli(['list-enzymes']); assert.equal(result.code, 0, result.err.join(''));
+    assert.deepEqual(JSON.parse(result.out[0]).enzymes, RESTRICTION_ENZYMES);
+    assert.throws(() => parseWorkflowCommand(['list-enzymes', '--input', 'private.fa']));
+  });
+
+  it('requires explicit catalog enzymes and topology, with an explicit uncut control', () => {
+    const base = ['analyze-experiment', '--input', 'x.gb', '--method', 'restriction-digest'];
+    const control = parseWorkflowCommand([...base, '--enzymes', 'none', '--topology', 'circular']);
+    assert(control.type === 'analyze-experiment');
+    assert.deepEqual(control.analysis, { method: 'restriction-digest', enzymes: [], topology: 'circular' });
+    for (const suffix of [[], ['--enzymes', 'EcoRI'], ['--topology', 'linear'],
+      ['--enzymes', 'EcoRI', '--topology', 'unknown'], ['--enzymes', 'EcoRI,EcoRI', '--topology', 'linear'],
+      ['--enzymes', 'EcoRI,,BamHI', '--topology', 'linear'], ['--enzymes', 'ecori', '--topology', 'linear'],
+      ['--enzymes', 'none,EcoRI', '--topology', 'linear'], ['--enzymes', 'EcoRI', '--topology', 'linear', '--bins', '10']]) {
+      assert.throws(() => parseWorkflowCommand([...base, ...suffix]));
+    }
+    assert.throws(() => parseWorkflowCommand(['analyze-experiment', '--input', 'x', '--method', 'dot-plot', '--enzymes', 'EcoRI']));
+    assert.throws(() => validateTerminalResearchRequest({ ...digestRequest('linear'), analysis: {
+      method: 'restriction-digest', enzymes: ['EcoRI'], topology: 'linear', reference: 'alternate',
+    } }));
+  });
+
+  it('computes independent linear double-digest boundaries and agrees with the browser producer', async () => {
+    // Literal sites begin at 2 and 10; each catalog offset is 1: boundaries 3,11.
+    const result = await executeTerminalResearchRequest(digestRequest('linear')); assert(result.type === 'experiment-analyzed');
+    const record = await parseAnalysisRecord(result.exportText!);
+    assert.deepEqual(record.fields.cutSites.value, [3, 11]);
+    assert.deepEqual(record.fields.fragments.value, [
+      { start: 3, end: 11, length: 8, wrapsOrigin: false },
+      { start: 11, end: 18, length: 7, wrapsOrigin: false },
+      { start: 0, end: 3, length: 3, wrapsOrigin: false },
+    ]);
+    assert.deepEqual(record.parameters, { enzymes: ['BamHI', 'EcoRI'], topology: 'linear' });
+    const browser = await createRestrictionDigestRecord(sequence, { enzymes: ['EcoRI', 'BamHI'], topology: 'linear' },
+      { accession: 'digest', source: 'local' });
+    assert.deepEqual(record, browser); assert.deepEqual(await replayRestrictionDigestRecord(result.exportText!), browser);
+    assert.equal((record.inputs[1].data as unknown[]).length, 2);
+  });
+
+  it('preserves circular interval coverage and finds sites crossing the origin', async () => {
+    const result = await executeTerminalResearchRequest(digestRequest('circular')); assert(result.type === 'experiment-analyzed');
+    const record = await parseAnalysisRecord(result.exportText!);
+    assert.deepEqual(record.fields.fragments.value, [
+      { start: 11, end: 3, length: 10, wrapsOrigin: true }, { start: 3, end: 11, length: 8, wrapsOrigin: false },
+    ]);
+    const origin = await executeTerminalResearchRequest({ ...digestRequest('circular', ['EcoRI']), content: '>origin [topology=circular]\nTTCGAA' });
+    assert(origin.type === 'experiment-analyzed');
+    const circular = await parseAnalysisRecord(origin.exportText!);
+    assert.deepEqual(circular.fields.cutSites.value, [4]);
+    assert.deepEqual(circular.fields.fragments.value, [{ start: 4, end: 4, length: 6, wrapsOrigin: true }]);
+  });
+
+  it('does not silently override source topology and reports an explicit unknown-topology assumption', async () => {
+    const r = digestRequest('linear'); r.content = r.content.replace('topology=linear', 'topology=circular');
+    await assert.rejects(executeTerminalResearchRequest(r), /topology conflicts/);
+    r.content = `>digest\n${sequence}`;
+    const result = await executeTerminalResearchRequest(r); assert(result.type === 'experiment-analyzed');
+    assert.equal(result.report.genome.topology, 'unknown'); assert.match(result.report.interpretation, /explicit requested topology is an assumption/);
+    assert.equal(result.report.parameters.topology, 'linear');
+  });
+
+  it('distinguishes uncut circles, unresolved inputs and the explicit no-enzyme control', async () => {
+    for (const enzymes of [[], ['EcoRI']]) {
+      const result = await executeTerminalResearchRequest({ ...digestRequest('circular', enzymes), content: '>unknown [topology=circular]\nNNNN' });
+      assert(result.type === 'experiment-analyzed'); const record = await parseAnalysisRecord(result.exportText!);
+      assert.deepEqual(record.fields.cutSites.value, []);
+      assert.deepEqual(record.fields.summary.value, { sequenceLength: 4, resolvedBases: 0, ambiguousBases: 4,
+        cutCount: 0, fragmentCount: 1, uncutCircular: true });
+      assert.deepEqual(record.fields.fragments.value, [{ start: 0, end: 4, length: 4, wrapsOrigin: false }]);
+    }
+    const control = await executeTerminalResearchRequest(digestRequest('linear', [])); assert(control.type === 'experiment-analyzed');
+    assert.deepEqual((await parseAnalysisRecord(control.exportText!)).fields.cutSites.value, []);
+  });
+
+  it('uses the combined cut set once and is invariant to enzyme selection order', async () => {
+    const a = await executeTerminalResearchRequest(digestRequest('linear', ['EcoRI', 'BamHI', 'MboI']));
+    const b = await executeTerminalResearchRequest(digestRequest('linear', ['MboI', 'BamHI', 'EcoRI']));
+    assert(a.type === 'experiment-analyzed' && b.type === 'experiment-analyzed');
+    assert.equal(a.exportText, b.exportText); assert.notEqual(a.report.requestSha256, b.report.requestSha256);
+    assert.deepEqual((await parseAnalysisRecord(a.exportText!)).fields.cutSites.value, [3, 11]);
+  });
+
+  it('creates a GenBank digest on disk, replays it and exports the same circular coordinates to TSV', async () => {
+    const source = genbank.replace('12 bp', '18 bp').replace('atgaaaccctag', sequence.toLowerCase());
+    const f = await diskInput(source), outputTsv = join(f.directory, 'digest.tsv');
+    const args = ['analyze-experiment', '--input', f.input, '--method', 'restriction-digest', '--enzymes', 'EcoRI,BamHI', '--topology', 'circular'];
+    const made = await cli([...args, '--output', f.output]); assert.equal(made.code, 0, made.err.join(''));
+    const record = await parseAnalysisRecord(await readFile(f.output, 'utf8')); assert.equal(record.inputs[0].accession, 'PRIVATE.1');
+    const replayed = await cli(['replay-experiment', '--input', f.output, '--output', outputTsv, '--format', 'tsv']);
+    assert.equal(replayed.code, 0, replayed.err.join('')); assert.equal(JSON.parse(replayed.out[0]).resultId, record.resultId);
+    const text = await readFile(outputTsv, 'utf8'); assert(text.includes('11\t3\t10\ttrue\n')); assert(!text.includes(sequence));
+    const directTsv = join(f.directory, 'direct.tsv');
+    const table = await cli([...args, '--output', directTsv, '--format', 'tsv']); assert.equal(table.code, 0, table.err.join(''));
+    assert.equal(await readFile(directTsv, 'utf8'), text); assert.equal(await readFile(f.input, 'utf8'), source);
+  });
+
+  it('refuses excessive cut counts without writing a partial result', async () => {
+    const f = await diskInput('>many\n' + 'GATC'.repeat(20001));
+    const result = await cli(['analyze-experiment', '--input', f.input, '--method', 'restriction-digest', '--enzymes', 'MboI',
+      '--topology', 'linear', '--output', f.output]);
+    assert.equal(result.code, 1); assert.equal(result.out.length, 0);
+    assert.match(result.err.join(''), /exceeds 20000 cut sites; no partial result was returned/);
+    await assert.rejects(stat(f.output), { code: 'ENOENT' });
+  });
+
+  it('rejects late or incorrect digest settings at the worker boundary', async () => {
+    const r = digestRequest('circular'), valid = await executeTerminalResearchRequest(r); assert(valid.type === 'experiment-analyzed');
+    for (const parameters of [{ enzymes: ['EcoRI'], topology: 'circular' }, { enzymes: ['BamHI', 'EcoRI'], topology: 'linear' }]) {
+      const fake = { ...valid, report: { ...valid.report, parameters } };
+      await assert.rejects(runTerminalResearchWorker(r, new AbortController().signal, undefined,
+        () => new Worker(`require('node:worker_threads').parentPort.once('message', () => require('node:worker_threads').parentPort.postMessage(${JSON.stringify(fake)}))`, { eval: true })), /Unexpected/);
+    }
+  });
 });
 const genbank = `LOCUS       PRIVATE                    12 bp    DNA     circular
 ACCESSION   PRIVATE
