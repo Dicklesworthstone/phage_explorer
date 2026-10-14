@@ -125,6 +125,7 @@ export * from './analysis/burst-kinetics';
 
 // Measured extracellular growth curves, descriptive fits, and reproducible experiments
 export * from './analysis/one-step-growth';
+export * from './analysis/plaque-growth';
 
 // Host-Phage Protein Interaction & Effector Docking Map
 export * from './analysis/host-interactions';
