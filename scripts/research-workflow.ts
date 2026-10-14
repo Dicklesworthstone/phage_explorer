@@ -6,7 +6,8 @@ import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS, parseCommandTape } from '../packages/core/src/command-session';
 import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis-result';
-import { validateTerminalResearchRequest, type TerminalResearchRequest, type TerminalResearchResult,
+import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256,
+  type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
 
@@ -20,6 +21,22 @@ bun run workflow replay --input workflow.json [--repetitions 1] [--output analys
   [--timeout-ms 300000] [--progress]
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
+bun run workflow inspect-genomes --input genomes.fa
+bun run workflow analyze-experiment --input genomes.fa --method dot-plot
+  [--record CONTENT_ID] [--bins 120] [--window BP] [--output NEW_FILE]
+  [--format json|tsv] [--timeout-ms 300000]
+
+inspect-genomes accepts DNA FASTA, GenBank or a version-1 local genome bundle.
+It reports unique record content IDs, sequence hashes, lengths, topology and
+annotation/ambiguity coverage without computing an analysis or printing bases.
+analyze-experiment uses the same importer and dot-plot method as the browser.
+For multiple unique records, --record must select the complete content ID from
+inspect-genomes; neither file order nor a bundle's saved view selects implicitly.
+Bins must be 1–200; an omitted window uses the core default, while an explicit
+window must fit the selected sequence. Dot plots sample LINEAR windows even for
+circular records. Input whitespace/case are normalized by the shared importer.
+JSON can be restored in the browser or checked with replay-experiment. TSV is
+coordinate/score output only, not a replayable experiment. No catalog is needed.
 
 inspect reparses embedded inputs and reports action support; no analyses run.
 replay recomputes every supported command and checks its recorded output identity.
@@ -51,13 +68,19 @@ Exported analysis JSON contains private sequences. No network or shell commands.
 `;
 export type WorkflowCommand = { type: 'help' } |
   { type: 'inspect'; input: string; timeoutMs: number } |
+  { type: 'inspect-genomes'; input: string; timeoutMs: number } |
+  { type: 'analyze-experiment'; input: string; contentId: string | null; analysis: TerminalAnalysis;
+    output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'replay'; input: string; repetitions: number; output?: string; timeoutMs: number; progress: boolean } |
   { type: 'replay-experiment'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number };
 export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'replay' && type !== 'replay-experiment') throw new Error('Choose inspect, replay or replay-experiment; see --help.');
-  const allowed = type === 'inspect' ? ['--input', '--timeout-ms'] : type === 'replay-experiment'
+  if (type !== 'inspect' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment') {
+    throw new Error('Choose inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
+  }
+  const allowed = type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
+    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--bins', '--window'] : type === 'replay-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false;
   for (let i = 0; i < rest.length;) {
@@ -77,11 +100,21 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return Number(value);
   };
   const timeoutMs = integer('--timeout-ms', 300000, 3600000);
-  if (type === 'inspect') return { type, input, timeoutMs };
-  if (type === 'replay-experiment') {
+  if (type === 'inspect' || type === 'inspect-genomes') return { type, input, timeoutMs };
+  if (type === 'replay-experiment' || type === 'analyze-experiment') {
     const outputFormat = values.get('--format') ?? 'json';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
     if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
+    if (type === 'analyze-experiment') {
+      if (values.get('--method') !== 'dot-plot') throw new Error('Choose --method dot-plot.');
+      const contentId = values.get('--record') ?? null;
+      if (contentId !== null && !/^[a-f0-9]{64}$/.test(contentId)) throw new Error('--record requires a complete content ID from inspect-genomes.');
+      const analysis: TerminalAnalysis = { method: 'dot-plot', bins: integer('--bins', 120, 200),
+        window: values.has('--window') ? integer('--window', 1, 5000000) : null };
+      validateTerminalAnalysis(analysis);
+      return { type, input, timeoutMs, contentId, analysis, outputFormat,
+        ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+    }
     return { type, input, timeoutMs, outputFormat, ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
   }
   return { type, input, timeoutMs, progress, repetitions: integer('--repetitions', 1, COMMAND_LIMITS.repetitions),
@@ -111,7 +144,7 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   abort(signal);
   return new Promise((resolve, reject) => {
     abort(signal);
-    const tape = submitted.type === 'replay-experiment' ? null : parseCommandTape(submitted.content);
+    const tape = submitted.type === 'inspect' || submitted.type === 'replay' ? parseCommandTape(submitted.content) : null;
     const total = submitted.type === 'replay' ? tape!.commands.length * submitted.repetitions : 0;
     const tapeSha256 = createHash('sha256').update(submitted.content, 'utf8').digest('hex');
     const worker = createWorker();
@@ -147,7 +180,24 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           onProgress({ phase: p.phase, completed, total, actionId: p.actionId }); abort(signal); return;
         }
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
-        if (value?.type === 'experiment-replayed' && submitted.type === 'replay-experiment' && saved
+        if (value?.type === 'genomes-inspected' && submitted.type === 'inspect-genomes'
+          && value.report?.format === 'phage-explorer-genome-inspection' && value.report.version === 1 && value.report.headless === true
+          && value.report.inputFileSha256 === tapeSha256 && Array.isArray(value.report.genomes)
+          && value.report.genomes.length > 0 && value.report.genomes.length <= 100 && value.report.genomes.every(isTerminalGenomeSummary)
+          && new Set(value.report.genomes.map(row => row.contentId)).size === value.report.genomes.length) finish(value);
+        else if (value?.type === 'experiment-analyzed' && submitted.type === 'analyze-experiment'
+          && value.report?.format === 'phage-explorer-experiment-analysis' && value.report.version === 1 && value.report.headless === true
+          && value.report.inputFileSha256 === tapeSha256 && value.report.requestSha256 === terminalAnalysisRequestSha256(submitted)
+          && isTerminalGenomeSummary(value.report.genome)
+          && (submitted.contentId === null || value.report.genome.contentId === submitted.contentId)
+          && value.report.method?.id === 'sequence-dot-plot' && value.report.parameters?.bins === submitted.analysis.bins
+          && value.report.parameters.ambiguity === 'exclude' && Number.isSafeInteger(value.report.parameters.window)
+          && Number(value.report.parameters.window) >= 1 && Number(value.report.parameters.window) <= value.report.genome.bases
+          && (submitted.analysis.window === null || value.report.parameters.window === submitted.analysis.window)
+          && /^[a-f0-9]{64}$/.test(value.report.cacheKey) && /^[a-f0-9]{64}$/.test(value.report.resultId)
+          && (submitted.outputFormat === 'none' ? value.exportText === null
+            : typeof value.exportText === 'string' && new TextEncoder().encode(value.exportText).length <= COMMAND_LIMITS.bytes)) finish(value);
+        else if (value?.type === 'experiment-replayed' && submitted.type === 'replay-experiment' && saved
           && value.report?.format === 'phage-explorer-experiment-replay' && value.report.version === 1
           && value.report.headless === true && value.report.verified === true && value.report.inputRecordSha256 === tapeSha256
           && value.report.cacheKey === saved.cacheKey && value.report.resultId === saved.resultId
@@ -208,12 +258,34 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   const signal = controller.signal;
   try {
     const content = await readInput(command.input, signal);
-    const request: TerminalResearchRequest = command.type === 'inspect' ? { type: 'inspect', content }
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' ? { type: command.type, content }
+      : command.type === 'analyze-experiment' ? { type: 'analyze-experiment', content, contentId: command.contentId, analysis: command.analysis,
+        outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : command.type === 'replay-experiment' ? { type: 'replay-experiment', content, outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : { type: 'replay', content, repetitions: command.repetitions, exportAnalysis: command.output !== undefined };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
     if (result.type === 'inspection') return result.inspection;
+    if (result.type === 'genomes-inspected') return result.report;
+    if (result.type === 'experiment-analyzed') {
+      if (command.type !== 'analyze-experiment') throw new Error('Unexpected fresh analysis result.');
+      if (command.output !== undefined) {
+        if (result.exportText === null) throw new Error('No experiment output was returned.');
+        if (command.outputFormat === 'json') {
+          const record = await parseAnalysisRecord(result.exportText), input = record.inputs[0];
+          if (record.cacheKey !== result.report.cacheKey || record.resultId !== result.report.resultId
+            || JSON.stringify(analysisJson(record.method)) !== JSON.stringify(analysisJson(result.report.method))
+            || JSON.stringify(analysisJson(record.parameters)) !== JSON.stringify(analysisJson(result.report.parameters))
+            || input.id !== 'sequence' || input.source !== 'local' || input.accession !== result.report.genome.accession
+            || typeof input.data !== 'string' || input.data.length !== result.report.genome.bases
+            || createHash('sha256').update(input.data).digest('hex') !== result.report.genome.sequenceSha256) {
+            throw new Error('Analysis output differs from the selected source or reported experiment.');
+          }
+        }
+        await writeNewOutput(command.output, result.exportText, signal);
+      }
+      return result.report;
+    }
     if (result.type === 'experiment-replayed') {
       if (command.type !== 'replay-experiment') throw new Error('Unexpected experiment result for a command tape.');
       if (command.output !== undefined) {
