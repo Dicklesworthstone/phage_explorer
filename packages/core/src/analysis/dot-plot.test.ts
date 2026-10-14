@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'bun:test';
-import { computeDotPlot, computeDotPlotBuffers, getDotPlotWindowRange, type DotPlotConfig } from './dot-plot';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import {
+  computeDotPlot, computeDotPlotBuffers, getDotPlotWindowRange,
+  createDotPlotExperiment, replayDotPlotExperiment, exportDotPlotExperimentTsv,
+  type DotPlotConfig, type DotPlotExperimentInput,
+} from './dot-plot';
 
 const resolved = (sequence: string, config: DotPlotConfig = {}) =>
   computeDotPlot(sequence, { ...config, ambiguity: 'exclude' });
@@ -289,5 +296,208 @@ describe('Dot plot output and sampling contracts', () => {
     for (const config of [{ bins: 0 }, { bins: 1025 }, { window: 0 }, { window: NaN }]) {
       expect(() => computeDotPlotBuffers('ACGT', config)).toThrow(RangeError);
     }
+  });
+});
+
+const experimentInput = (sequence = 'ACGT'): DotPlotExperimentInput => ({ sequence, accession: 'PRIVATE.1', source: 'local' });
+const twoWindows = { bins: 2, window: 2 };
+async function resignDotPlot(record: AnalysisRecord, change: (copy: AnalysisRecord) => void): Promise<string> {
+  const copy = structuredClone(record);
+  change(copy);
+  const signed = await createAnalysisRecord({
+    method: copy.method, parameters: copy.parameters, seed: copy.seed, references: copy.references, fields: copy.fields,
+    inputs: copy.inputs.map(input => ({ id: input.id, accession: input.accession, source: input.source, description: input.description, data: input.data })),
+  });
+  return serializeAnalysisRecord(signed);
+}
+
+describe('portable dot plot experiments', () => {
+  it('binds independently known matrices, exact source hash, coordinates and coverage', async () => {
+    const result = await createDotPlotExperiment(experimentInput(), twoWindows);
+    assert.deepEqual(Array.from(result.directValues), [1, 0, 0, 1]);
+    assert.deepEqual(Array.from(result.invertedValues), [0, 1, 1, 0]);
+    assert.deepEqual(result.record.fields.windows.value, [{ start: 0, end: 2 }, { start: 2, end: 4 }]);
+    assert.deepEqual(result.record.fields.resolvedPerWindow.value, [2, 2]);
+    assert.deepEqual(result.record.fields.direct.coverage, { available: 4, total: 4, unit: 'bases' });
+    assert.deepEqual(result.record.parameters, { bins: 2, window: 2, ambiguity: 'exclude' });
+    assert.equal(result.record.inputs[0].sha256, createHash('sha256').update(JSON.stringify('ACGT')).digest('hex'));
+    assert.equal(result.record.fields.direct.kind, 'sequence-score');
+    assert.equal(result.record.fields.direct.units, 'fraction');
+  });
+
+  it('retains ambiguity, U, case and overlapping coordinates without inventing evidence', async () => {
+    const result = await createDotPlotExperiment(experimentInput('anNt'), twoWindows);
+    assert.deepEqual(Array.from(result.directValues), [0.5, 0, 0, 0.5]);
+    assert.deepEqual(Array.from(result.invertedValues), [0, 0.5, 0.5, 0]);
+    assert.deepEqual(result.record.fields.resolvedPerWindow.value, [1, 1]);
+    assert.equal(result.record.inputs[0].data, 'anNt');
+    const overlapping = await createDotPlotExperiment(experimentInput('ACUGT'), { bins: 4, window: 2 });
+    assert.deepEqual(overlapping.record.fields.windows.value, [
+      { start: 0, end: 2 }, { start: 1, end: 3 }, { start: 2, end: 4 }, { start: 3, end: 5 },
+    ]);
+    assert.deepEqual(overlapping.record.fields.resolvedPerWindow.value, [2, 1, 1, 2]);
+  });
+
+  it('normalizes automatic windows to explicit replay settings, including short genomes', async () => {
+    const result = await createDotPlotExperiment(experimentInput('ACG'));
+    assert.deepEqual(result.record.parameters, { bins: 120, window: 3, ambiguity: 'exclude' });
+    const windows = result.record.fields.windows.value;
+    assert(Array.isArray(windows));
+    assert.equal(windows.length, 120);
+    assert.deepEqual(windows[119], { start: 0, end: 3 });
+    const fresh = await replayDotPlotExperiment(serializeAnalysisRecord(result.record), experimentInput('ACG'));
+    assert.equal(fresh.exactRecord, true);
+    assert.deepEqual(fresh.directValues, result.directValues);
+  });
+
+  it('captures source metadata and options before the first asynchronous digest', async () => {
+    const input = experimentInput();
+    const config = { ...twoWindows };
+    const task = createDotPlotExperiment(input, config);
+    input.sequence = 'AAAA'; input.accession = 'OTHER'; config.bins = 100;
+    const result = await task;
+    assert.equal(result.record.inputs[0].data, 'ACGT');
+    assert.equal(result.record.inputs[0].accession, 'PRIVATE.1');
+    assert.equal(result.bins, 2);
+  });
+
+  it('replays a saved experiment to fresh arrays and the same complete identity', async () => {
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows);
+    const fresh = await replayDotPlotExperiment(serializeAnalysisRecord(saved.record), experimentInput());
+    assert.equal(fresh.exactRecord, true);
+    assert.deepEqual(fresh.record, saved.record);
+    assert.deepEqual(fresh.directValues, saved.directValues);
+    assert.notEqual(fresh.directValues, saved.directValues);
+  });
+
+  it('reports changed display metadata separately while using the current source identity', async () => {
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows);
+    const fresh = await replayDotPlotExperiment(serializeAnalysisRecord(saved.record), { sequence: 'ACGT', accession: null, source: 'catalog' });
+    assert.equal(fresh.exactRecord, false);
+    assert.equal(fresh.record.inputs[0].source, 'catalog');
+    assert.equal(fresh.record.inputs[0].accession, null);
+    assert.deepEqual(fresh.record.fields, saved.record.fields);
+  });
+
+  it('refuses changed exact bases even when lengths, composition or normalized scores agree', async () => {
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows);
+    for (const sequence of ['AGCT', 'acgt', 'ACGN', 'ACGTA']) {
+      await assert.rejects(replayDotPlotExperiment(serializeAnalysisRecord(saved.record), experimentInput(sequence)), /exact source/);
+    }
+  });
+
+  it('snapshots replay selection before parsing asynchronous hashes', async () => {
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows);
+    const selected = experimentInput();
+    const task = replayDotPlotExperiment(serializeAnalysisRecord(saved.record), selected);
+    selected.sequence = 'AAAA'; selected.source = 'catalog';
+    const fresh = await task;
+    assert.equal(fresh.record.inputs[0].data, 'ACGT');
+    assert.equal(fresh.record.inputs[0].source, 'local');
+    assert.equal(fresh.exactRecord, true);
+  });
+
+  it('rejects both checksum tampering and plausible incorrect outputs with valid new hashes', async () => {
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows);
+    const tampered = structuredClone(saved.record);
+    (tampered.fields.direct.value as number[])[1] = 0.5;
+    await assert.rejects(replayDotPlotExperiment(JSON.stringify(tampered), experimentInput()), /checksum/);
+    const rehashed = await resignDotPlot(saved.record, record => { (record.fields.direct.value as number[])[1] = 0.5; });
+    await assert.rejects(replayDotPlotExperiment(rehashed, experimentInput()), /Recomputed dot plot/);
+  });
+
+  it('recomputes coordinates, counts and evidence, not only matrix values', async () => {
+    const { record } = await createDotPlotExperiment(experimentInput(), twoWindows);
+    for (const change of [
+      (r: AnalysisRecord) => { r.fields.windows.value = [{ start: 0, end: 2 }, { start: 1, end: 3 }]; },
+      (r: AnalysisRecord) => { r.fields.resolvedPerWindow.value = [2, 1]; },
+      (r: AnalysisRecord) => { r.fields.direct.coverage.available = 3; },
+      (r: AnalysisRecord) => { r.fields.direct.limitations = ['Biological confidence is established.']; },
+    ]) await assert.rejects(replayDotPlotExperiment(await resignDotPlot(record, change), experimentInput()), /Recomputed dot plot/);
+  });
+
+  it('refuses unsupported methods, policies, parameters, references and evidence kinds', async () => {
+    const { record } = await createDotPlotExperiment(experimentInput(), twoWindows);
+    for (const change of [
+      (r: AnalysisRecord) => { r.method.version = '2'; },
+      (r: AnalysisRecord) => { r.method.implementation = 'unverified'; },
+      (r: AnalysisRecord) => { r.parameters.ambiguity = 'literal'; },
+      (r: AnalysisRecord) => { r.parameters.extra = true; },
+      (r: AnalysisRecord) => { r.parameters.bins = 201; },
+      (r: AnalysisRecord) => { r.seed = 42; },
+      (r: AnalysisRecord) => { r.references[0].version = '2'; },
+      (r: AnalysisRecord) => { r.inputs[0].source = 'external'; },
+      (r: AnalysisRecord) => { r.inputs[0].source = 'demo'; },
+      (r: AnalysisRecord) => { r.fields.direct.units = 'percent'; },
+      (r: AnalysisRecord) => { r.fields.resolvedPerWindow.value = []; },
+    ]) await assert.rejects(replayDotPlotExperiment(await resignDotPlot(record, change), experimentInput()));
+  });
+
+  it('rejects unsafe dimensions and unsupported source strings before producing any record', async () => {
+    for (const config of [{ bins: 0 }, { bins: 201 }, { bins: 1.5 }, { bins: NaN }, { window: 0 },
+      { window: 5 }, { window: Infinity }, { ambiguity: 'literal' as const }, { bins: 2, extra: true }]) {
+      await assert.rejects(createDotPlotExperiment(experimentInput(), config));
+    }
+    for (const sequence of ['', 'NNNN', 'UUUU', 'AC-GT', 'ACßT', 'A'.repeat(5_000_001)]) {
+      await assert.rejects(createDotPlotExperiment(experimentInput(sequence), twoWindows));
+    }
+    await assert.rejects(createDotPlotExperiment({ ...experimentInput(), accession: '' }, twoWindows));
+  });
+
+  it('checks every displayed Float32 value and leaves the display buffers owned by their caller', async () => {
+    const shown = computeDotPlotBuffers('ACGT', { ...twoWindows, ambiguity: 'exclude' });
+    const saved = await createDotPlotExperiment(experimentInput(), twoWindows, shown);
+    assert.deepEqual(saved.directValues, shown.directValues);
+    assert.equal(shown.directValues.byteLength, 16);
+    for (const change of [
+      { ...shown, bins: 3 }, { ...shown, window: 1 }, { ...shown, directValues: new Float32Array(1) },
+      { ...shown, invertedValues: new Float32Array([0, 0, 1, 0]) },
+      { ...shown, directValues: new Float32Array([1, NaN, 0, 1]) },
+    ]) await assert.rejects(createDotPlotExperiment(experimentInput(), twoWindows, change), /Displayed dot plot/);
+  });
+
+  it('keeps JSON evidence intact after matrix buffers are transferred and detached', async () => {
+    const experiment = await createDotPlotExperiment(experimentInput(), twoWindows);
+    const moved = structuredClone(experiment, { transfer: [experiment.directValues.buffer as ArrayBuffer, experiment.invertedValues.buffer as ArrayBuffer] });
+    assert.equal(experiment.directValues.byteLength, 0);
+    const replay = await replayDotPlotExperiment(serializeAnalysisRecord(experiment.record), experimentInput());
+    assert.deepEqual(replay.directValues, moved.directValues);
+    assert.equal(replay.exactRecord, true);
+  });
+
+  it('exports exact tabular coordinates, both score orientations and identities without source bases', async () => {
+    const { record } = await createDotPlotExperiment({ ...experimentInput(), accession: '=FORMULA\tprivate' }, twoWindows);
+    const tsv = exportDotPlotExperimentTsv(record);
+    assert.equal(tsv.includes('ACGT'), false);
+    assert.equal(tsv.includes('=FORMULA'), false);
+    assert.equal(tsv.includes(record.resultId), true);
+    assert.equal(tsv.includes(record.inputs[0].sha256), true);
+    assert.deepEqual(tsv.trimEnd().split('\n').slice(3), [
+      'row\tcolumn\ty_start\ty_end\tx_start\tx_end\tdirect_score\tinverted_score',
+      '0\t0\t0\t2\t0\t2\t1\t0', '0\t1\t0\t2\t2\t4\t0\t1',
+      '1\t0\t2\t4\t0\t2\t0\t1', '1\t1\t2\t4\t2\t4\t1\t0',
+    ]);
+  });
+
+  it('recovers exact resolved counts at the maximum supported source length', async () => {
+    const sequence = 'A'.repeat(2_500_001) + 'N'.repeat(2_499_999);
+    const result = await createDotPlotExperiment(experimentInput(sequence), { bins: 1, window: sequence.length });
+    assert.deepEqual(result.record.fields.resolvedPerWindow.value, [2_500_001]);
+    assert.equal(result.record.fields.direct.coverage.available, 2_500_001);
+    assert.equal(result.directValues[0], Math.fround(2_500_001 / 5_000_000));
+  });
+
+  it('preserves the complete 200x200 viewer resolution in a replayable result', async () => {
+    const input = experimentInput('ACGTNN'.repeat(100));
+    const saved = await createDotPlotExperiment(input, { bins: 200, window: 21 });
+    const replay = await replayDotPlotExperiment(serializeAnalysisRecord(saved.record), input);
+    assert.equal(replay.directValues.length, 40_000);
+    assert.equal(replay.invertedValues.length, 40_000);
+    assert.equal(replay.exactRecord, true);
+  });
+
+  it('refuses malformed or oversized serialized experiments', async () => {
+    await assert.rejects(replayDotPlotExperiment('{', experimentInput()));
+    await assert.rejects(replayDotPlotExperiment(' '.repeat(10 * 1024 * 1024 + 1), experimentInput()), /10 MiB/);
   });
 });

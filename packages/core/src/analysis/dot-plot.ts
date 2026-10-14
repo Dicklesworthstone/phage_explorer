@@ -8,6 +8,8 @@
  * symbols retain their scalar matching contract; neither path samples bases.
  */
 
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+
 export interface DotCell {
   direct: number;   // 0..1 matches / full window length
   inverted: number; // 0..1 reverse-complement matches / full window length
@@ -300,4 +302,180 @@ function computeScalarDotPlot(seq: string, starts: readonly number[], window: nu
       write(i, j, direct, inverted);
     }
   }
+}
+
+// Portable experiments use the viewer's full resolution range. The low-level
+// matrix APIs keep their existing 1024-bin contract; an export never silently
+// reduces it to fit the shared AnalysisRecord size budget.
+export const DOT_PLOT_EXPERIMENT_LIMITS = { bases: 5_000_000, bins: 200 } as const;
+const DOT_PLOT_METHOD = {
+  id: 'sequence-dot-plot', version: '1',
+  implementation: 'TypeScript exact resolved-window comparisons with Float32 matrix output',
+};
+const DOT_PLOT_REFERENCES = [{
+  id: 'bundled-resolved-dot-plot', version: '1',
+  description: 'Sampled linear windows; resolved A/C/G/T matches divided by full window length. No external biological reference.',
+}];
+
+export interface DotPlotExperimentInput {
+  sequence: string;
+  accession: string | null;
+  source: 'catalog' | 'local';
+}
+export interface DotPlotExperiment extends DotPlotBuffers { record: AnalysisRecord }
+
+function snapshotDotPlotInput(input: DotPlotExperimentInput): DotPlotExperimentInput {
+  const { sequence, accession, source } = input;
+  if (typeof sequence !== 'string' || sequence.length < 1 || sequence.length > DOT_PLOT_EXPERIMENT_LIMITS.bases
+      || /[^ACGTURYSWKMBDHVN]/i.test(sequence)) {
+    throw new Error('Dot plot experiments require 1–5,000,000 exact IUPAC nucleotide symbols.');
+  }
+  if (!/[ACGT]/i.test(sequence)) throw new Error('No resolved A/C/G/T bases available for dot plot.');
+  if (!['catalog', 'local'].includes(source) || !(accession === null
+      || typeof accession === 'string' && accession.trim().length > 0 && accession.length <= 2000)) {
+    throw new Error('Dot plot experiments require local or catalog input identity.');
+  }
+  return { sequence, accession, source };
+}
+
+function dotPlotExperimentConfig(sequenceLength: number, config: DotPlotConfig): Required<DotPlotConfig> {
+  if (Object.keys(config).some(key => !['bins', 'window', 'ambiguity'].includes(key))) {
+    throw new Error('Unsupported dot plot experiment parameters.');
+  }
+  const bins = config.bins ?? 120;
+  const window = config.window ?? Math.min(sequenceLength, Math.max(20, Math.floor(sequenceLength / bins)));
+  if (!Number.isSafeInteger(bins) || bins < 1 || bins > DOT_PLOT_EXPERIMENT_LIMITS.bins
+      || !Number.isSafeInteger(window) || window < 1 || window > sequenceLength
+      || config.ambiguity !== undefined && config.ambiguity !== 'exclude') {
+    throw new Error('Dot plot experiments support 1–200 bins, an in-bounds positive window, and resolved-base scoring only.');
+  }
+  return { bins, window, ambiguity: 'exclude' };
+}
+
+const dotPlotJsonEqual = (a: unknown, b: unknown): boolean =>
+  JSON.stringify(analysisJson(a)) === JSON.stringify(analysisJson(b));
+
+/**
+ * Recompute before creating a portable result. Supplying the displayed matrix
+ * also verifies that the exported experiment represents exactly what was seen,
+ * rather than quietly replacing a preview, another input or a divergent backend.
+ * No network, filesystem or browser globals are used; run in a worker for cancel.
+ */
+export async function createDotPlotExperiment(
+  input: DotPlotExperimentInput, config: DotPlotConfig = {}, displayed?: DotPlotBuffers,
+): Promise<DotPlotExperiment> {
+  const source = snapshotDotPlotInput(input);
+  const parameters = dotPlotExperimentConfig(source.sequence.length, config);
+  const result = computeDotPlotBuffers(source.sequence, parameters);
+  if (displayed && (displayed.bins !== result.bins || displayed.window !== result.window
+      || !(displayed.directValues instanceof Float32Array) || !(displayed.invertedValues instanceof Float32Array)
+      || displayed.directValues.length !== result.directValues.length || displayed.invertedValues.length !== result.invertedValues.length
+      || !result.directValues.every((value, i) => value === displayed.directValues[i])
+      || !result.invertedValues.every((value, i) => value === displayed.invertedValues[i]))) {
+    throw new Error('Displayed dot plot differs from the exact recomputation. Rerun the analysis before exporting.');
+  }
+  let resolved = 0;
+  for (let i = 0; i < source.sequence.length; i++) {
+    const code = source.sequence.charCodeAt(i) | 32;
+    if (code === 97 || code === 99 || code === 103 || code === 116) resolved++;
+  }
+  const coverage = { available: resolved, total: source.sequence.length, unit: 'bases' as const };
+  const windows = Array.from({ length: result.bins }, (_, i) =>
+    getDotPlotWindowRange(source.sequence.length, result.bins, result.window, i));
+  // The diagonal is resolved_count/window. With at most 5M bases, Float32
+  // rounding changes the recovered count by less than 0.15, so round is exact.
+  const resolvedPerWindow = windows.map((_, i) => Math.round(result.directValues[i * result.bins + i] * result.window));
+  const limitations = [
+    'Row-major Float32 scores use the full window denominator. U and ambiguity symbols retain their coordinates but never count as matches.',
+    'Sampled linear windows can overlap or skip bases. Similarity is not an exact alignment, exhaustive repeat call or biological mechanism.',
+  ];
+  const record = await createAnalysisRecord({
+    method: DOT_PLOT_METHOD,
+    inputs: [{ id: 'sequence', accession: source.accession, source: source.source,
+      description: 'Exact nucleotide string supplied to the dot plot; SHA-256 identifies its canonical JSON encoding.', data: source.sequence }],
+    parameters: { ...parameters }, seed: null, references: DOT_PLOT_REFERENCES,
+    fields: {
+      windows: { label: 'Sampled windows on both matrix axes', kind: 'sequence-score', units: 'records',
+        value: analysisJson(windows), coverage, limitations: ['Zero-based, end-exclusive intervals in bin order; no circular-origin wrap.'] },
+      direct: { label: 'Direct resolved-match scores', kind: 'sequence-score', units: 'fraction',
+        value: Array.from(result.directValues), coverage, limitations },
+      inverted: { label: 'Reverse-complement resolved-match scores', kind: 'sequence-score', units: 'fraction',
+        value: Array.from(result.invertedValues), coverage, limitations },
+      resolvedPerWindow: { label: 'Resolved A/C/G/T bases per sampled window', kind: 'sequence-score', units: 'count',
+        value: resolvedPerWindow, coverage, limitations: ['Counts describe input coverage, not biological certainty.'] },
+    },
+  });
+  return { ...result, record };
+}
+
+/** Structural contract for already parsed/generated records, not checksum verification. */
+function dotPlotRecordParameters(record: AnalysisRecord): Required<DotPlotConfig> {
+  if (!dotPlotJsonEqual(record.method, DOT_PLOT_METHOD) || record.seed !== null
+      || !dotPlotJsonEqual(record.references, DOT_PLOT_REFERENCES)
+      || record.inputs.length !== 1 || record.inputs[0].id !== 'sequence'
+      || Object.keys(record.parameters).sort().join('|') !== 'ambiguity|bins|window'
+      || record.parameters.ambiguity !== 'exclude'
+      || typeof record.parameters.bins !== 'number' || typeof record.parameters.window !== 'number'
+      || typeof record.inputs[0].data !== 'string') {
+    throw new Error('Incompatible dot plot method, inputs, parameters, seed or reference versions.');
+  }
+  const input = record.inputs[0];
+  snapshotDotPlotInput({ sequence: input.data as string, accession: input.accession, source: input.source as 'catalog' | 'local' });
+  const parameters = dotPlotExperimentConfig((input.data as string).length, record.parameters as unknown as DotPlotConfig);
+  const fields = record.fields;
+  if (Object.keys(fields).sort().join('|') !== 'direct|inverted|resolvedPerWindow|windows'
+      || Object.values(fields).some(field => field.kind !== 'sequence-score')
+      || fields.direct.units !== 'fraction' || fields.inverted.units !== 'fraction'
+      || fields.windows.units !== 'records' || fields.resolvedPerWindow.units !== 'count'
+      || !Array.isArray(fields.windows.value) || fields.windows.value.length !== parameters.bins
+      || !Array.isArray(fields.resolvedPerWindow.value) || fields.resolvedPerWindow.value.length !== parameters.bins
+      || ![fields.direct, fields.inverted].every(field => Array.isArray(field.value)
+        && field.value.length === parameters.bins * parameters.bins
+        && field.value.every(value => typeof value === 'number' && value >= 0 && value <= 1 && Math.fround(value) === value))) {
+    throw new Error('Dot plot experiment has invalid matrix or coverage fields.');
+  }
+  return parameters;
+}
+
+/** Verify all hashes, exact selected bases and freshly computed outputs before restoring anything. */
+export async function replayDotPlotExperiment(
+  content: string, input: DotPlotExperimentInput,
+): Promise<DotPlotExperiment & { exactRecord: boolean }> {
+  // Capture the caller's selection before the parser's first asynchronous hash.
+  const selected = snapshotDotPlotInput(input);
+  const saved = await parseAnalysisRecord(content, { methodId: DOT_PLOT_METHOD.id, methodVersion: DOT_PLOT_METHOD.version });
+  const parameters = dotPlotRecordParameters(saved);
+  if (saved.inputs[0].data !== selected.sequence) {
+    throw new Error('Saved dot plot sequence does not match the selected genome. Load its exact source before replaying.');
+  }
+  const fresh = await createDotPlotExperiment(selected, parameters);
+  if (!dotPlotJsonEqual(saved.fields, fresh.record.fields)) {
+    throw new Error('Recomputed dot plot matrices, sampled coordinates or evidence differ from the saved experiment.');
+  }
+  return { ...fresh, exactRecord: saved.resultId === fresh.record.resultId };
+}
+
+/**
+ * Tabular export of a generated/verified record. Untrusted JSON must first go
+ * through replayDotPlotExperiment. No nucleotide sequence or free-text labels
+ * are included; numeric coordinates and stable identities are spreadsheet-safe.
+ */
+export function exportDotPlotExperimentTsv(record: AnalysisRecord): string {
+  const { bins, window } = dotPlotRecordParameters(record);
+  const sequenceLength = (record.inputs[0].data as string).length;
+  const direct = record.fields.direct.value as number[];
+  const inverted = record.fields.inverted.value as number[];
+  const lines = [
+    '# Dot plot resolved-match scores; coordinates are zero-based, end-exclusive.',
+    `# result_id\t${record.resultId}`, `# sequence_json_sha256\t${record.inputs[0].sha256}`,
+    'row\tcolumn\ty_start\ty_end\tx_start\tx_end\tdirect_score\tinverted_score',
+  ];
+  for (let row = 0; row < bins; row++) {
+    const y = getDotPlotWindowRange(sequenceLength, bins, window, row);
+    for (let col = 0; col < bins; col++) {
+      const x = getDotPlotWindowRange(sequenceLength, bins, window, col);
+      lines.push([row, col, y.start, y.end, x.start, x.end, direct[row * bins + col], inverted[row * bins + col]].join('\t'));
+    }
+  }
+  return `${lines.join('\n')}\n`;
 }
