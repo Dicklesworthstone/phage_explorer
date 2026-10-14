@@ -387,7 +387,7 @@ export function computePairwiseDotPlotBuffers(rowSequence: string, columnSequenc
 // matrix APIs keep their existing 1024-bin contract; an export never silently
 // reduces it to fit the shared AnalysisRecord size budget.
 export const DOT_PLOT_EXPERIMENT_LIMITS = { bases: 5_000_000, bins: 200 } as const;
-const DOT_PLOT_METHOD = {
+export const DOT_PLOT_METHOD = {
   id: 'sequence-dot-plot', version: '1',
   implementation: 'TypeScript exact resolved-window comparisons with Float32 matrix output',
 };

@@ -12,8 +12,9 @@ import { createGCSkewRecord } from '../../core/src/analysis/gc-skew';
 import type { AnalysisRecord } from '../../core/src/analysis-result';
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
-  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew];
+  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
+  dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel };
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -77,6 +78,23 @@ function host(bundle: string) {
     genomes: () => genomes, bundle: () => bundle, parseBundle: parse, currentView: () => view,
     applyView: async (next, signal) => { abort(signal); view = structuredClone(next); },
     repeats: async () => { throw new Error(REPEAT_LIMIT); },
+    dotPlot: async (genome, comparison, options, signal) => {
+      abort(signal);
+      // Share the numerical producer, not a browser worker's global message handler.
+      const { createDotPlotExperiment, createPairwiseDotPlotExperiment } = await import('../../core/src/analysis/dot-plot');
+      abort(signal);
+      const input = (item: LocalGenome) => ({ sequence: item.sequence, accession: item.phage.accession, source: 'local' as const });
+      const result = comparison === null ? await createDotPlotExperiment(input(genome), options)
+        : await createPairwiseDotPlotExperiment(input(genome), input(comparison), options);
+      abort(signal); return result.record;
+    },
+    digest: async (genome, options, signal) => {
+      abort(signal);
+      const { createRestrictionDigestRecord } = await import('../../core/src/analysis/restriction-digest');
+      abort(signal);
+      const record = await createRestrictionDigestRecord(genome.sequence, options, { accession: genome.phage.accession, source: 'local' });
+      abort(signal); return record;
+    },
     gcSkew: async (genome, options, signal) => {
       abort(signal);
       const record = await createGCSkewRecord(genome.sequence, options, { accession: genome.phage.accession, source: 'local' });

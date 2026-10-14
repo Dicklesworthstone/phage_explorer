@@ -1,17 +1,19 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
-import { analysisJson } from '../../../core/src/analysis-result';
+import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import { CODON_REFERENCE_METHOD, parseCodonReference, referenceGenomeFromPhage,
   type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
 import { CODON_CORPUS_METHOD } from '../../../core/src/analysis/codon-reference-corpus';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
+import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
+import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -31,6 +33,33 @@ export interface ResearchEnvironment {
   referenceCodons?: (genome: LocalGenome, referenceText: string, options: Required<ReferenceCodonOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
   gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+  dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
+  digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+/** A null comparison selects the self method. An explicit second ID, even the
+ * same ID, selects the ordered pairwise method; the axes must never be sorted.
+ * Window size is resolved before dispatch so future defaults cannot alter replay.
+ */
+export interface ResearchDotPlotParameters {
+  contentId: string; comparisonContentId: string | null; bins: number; window: number;
+}
+export function validateResearchDotPlot(value: CommandValue): void {
+  fields(value, ['contentId', 'comparisonContentId', 'bins', 'window']);
+  contentId(value.contentId);
+  if (value.comparisonContentId !== null) contentId(value.comparisonContentId);
+  integer(value.bins, 1, DOT_PLOT_EXPERIMENT_LIMITS.bins);
+  integer(value.window, 1, DOT_PLOT_EXPERIMENT_LIMITS.bases);
+}
+export interface ResearchDigestParameters extends RestrictionDigestOptions { contentId: string }
+export function researchDigestParameters(id: string, options: RestrictionDigestOptions): ResearchDigestParameters {
+  const value = { contentId: id, ...resolveRestrictionDigestOptions(options) };
+  validateResearchDigest(analysisJson(value));
+  return value;
+}
+export function validateResearchDigest(value: CommandValue): void {
+  fields(value, ['contentId', 'enzymes', 'topology']); contentId(value.contentId);
+  const options = resolveRestrictionDigestOptions({ enzymes: value.enzymes, topology: value.topology });
+  if (!commandValuesEqual(value.enzymes, options.enzymes)) throw new Error('Record sorted, distinct catalog enzyme names.');
 }
 export interface ResearchGCSkewParameters extends ResolvedGCSkewOptions { contentId: string }
 export function validateResearchGCSkew(value: CommandValue): void {
@@ -303,7 +332,60 @@ export class ResearchWorkflow {
         return this.result(record, [genome], signal);
       },
     });
-    if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+    if ((ids.dotPlot === undefined) !== (environment.dotPlot === undefined)) throw new Error('Dot-plot action and executor must be supplied together.');
+    if (ids.dotPlot !== undefined) adapters.set(ids.dotPlot, {
+      validate: validateResearchDotPlot,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchDotPlotParameters;
+        const genomes = await this.selectedGenomes(values.comparisonContentId === null
+          ? [values.contentId] : [values.contentId, values.comparisonContentId], signal);
+        if (genomes.some(genome => values.window > genome.sequence.length)
+          || genomes.reduce((sum, genome) => sum + genome.sequence.length, 0) > DOT_PLOT_EXPERIMENT_LIMITS.bases) {
+          throw new Error('The recorded window must fit every axis and total dot-plot input must not exceed 5,000,000 bases.');
+        }
+        const options = { bins: values.bins, window: values.window };
+        const result = await environment.dotPlot!(structuredClone(genomes[0]), genomes[1] ? structuredClone(genomes[1]) : null, { ...options }, signal);
+        abort(signal);
+        // Verify content identities without repeating CPU computation on the UI
+        // thread. CommandSession compares the freshly produced result on replay.
+        const record = await parseAnalysisRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        const pairwise = values.comparisonContentId !== null;
+        const inputIds = pairwise ? ['rowSequence', 'columnSequence'] : ['sequence'];
+        if (!commandValuesEqual(analysisJson(record.method), analysisJson(pairwise ? PAIRWISE_DOT_PLOT_METHOD : DOT_PLOT_METHOD))
+          || record.inputs.length !== genomes.length
+          || record.inputs.some((input, index) => input.id !== inputIds[index] || input.source !== 'local'
+            || input.data !== genomes[index].sequence || input.accession !== genomes[index].phage.accession)
+          || !commandValuesEqual(record.parameters, { ...options, ambiguity: 'exclude' })) {
+          throw new Error('Dot-plot evidence does not match the ordered inputs, method or recorded settings.');
+        }
+        return this.result(record, genomes, signal);
+      },
+    });
+    if ((ids.digest === undefined) !== (environment.digest === undefined)) throw new Error('Digest action and executor must be supplied together.');
+    if (ids.digest !== undefined) adapters.set(ids.digest, {
+      validate: validateResearchDigest,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchDigestParameters;
+        const genome = await this.genome(values.contentId, signal);
+        const options = resolveRestrictionDigestOptions({ enzymes: values.enzymes, topology: values.topology });
+        const topology = genome.phage.localGenome!.topology;
+        if (topology !== 'unknown' && topology !== options.topology) throw new Error('Recorded digest topology conflicts with the source annotation.');
+        const result = await environment.digest!(structuredClone(genome), structuredClone(options), signal);
+        abort(signal);
+        // Also validate the exact catalog recognition definitions and reference
+        // version; enzyme names alone cannot establish the computation identity.
+        const { record } = await parseRestrictionDigestRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        if (record.inputs[0].data !== genome.sequence || record.inputs[0].source !== 'local'
+          || record.inputs[0].accession !== genome.phage.accession || !commandValuesEqual(record.parameters, options)) {
+          throw new Error('Digest evidence does not match the source or recorded settings.');
+        }
+        return this.result(record, [genome], signal);
+      },
+    });
+    if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
+      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
   }
   getSnapshot = (): ResearchSnapshot => this.snapshot;

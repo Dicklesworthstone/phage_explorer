@@ -6,8 +6,10 @@ import type { AnalysisRecord } from '../../../core/src/analysis-result';
 import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord, replayGCSkewRecord, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { createRestrictionDigestRecord, replayRestrictionDigestRecord, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
+import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
+  { type: 'dot-plot'; genome: LocalGenome; comparison: LocalGenome | null; options: { bins: number; window: number } } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
   { type: 'reference-codons'; genome: LocalGenome; referenceText: string; options: ReferenceCodonOptions } |
   { type: 'gc-skew'; genome: LocalGenome; options: ResolvedGCSkewOptions } |
@@ -19,6 +21,13 @@ export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult 
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'dot-plot') {
+    const input = (genome: LocalGenome) => ({ sequence: genome.sequence, accession: genome.phage.accession, source: 'local' as const });
+    const result = request.comparison === null
+      ? await createDotPlotExperiment(input(request.genome), request.options)
+      : await createPairwiseDotPlotExperiment(input(request.genome), input(request.comparison), request.options);
+    return { type: 'analysis', record: result.record };
+  }
   if (request.type === 'restriction-digest') return { type: 'analysis', record: await createRestrictionDigestRecord(request.sequence, request.options, request.context) };
   if (request.type === 'restriction-digest-replay') return { type: 'analysis', record: await replayRestrictionDigestRecord(request.content) };
   if (request.type === 'gc-skew-replay') return { type: 'analysis', record: await replayGCSkewRecord(request.content) };
