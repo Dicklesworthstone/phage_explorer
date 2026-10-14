@@ -5,6 +5,8 @@ import { createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } fr
 import {
   computeDotPlot, computeDotPlotBuffers, getDotPlotWindowRange,
   createDotPlotExperiment, replayDotPlotExperiment, exportDotPlotExperimentTsv,
+  computePairwiseDotPlotBuffers, createPairwiseDotPlotExperiment, replayPairwiseDotPlotExperiment,
+  exportPairwiseDotPlotExperimentTsv,
   type DotPlotConfig, type DotPlotExperimentInput,
 } from './dot-plot';
 
@@ -499,5 +501,174 @@ describe('portable dot plot experiments', () => {
   it('refuses malformed or oversized serialized experiments', async () => {
     await assert.rejects(replayDotPlotExperiment('{', experimentInput()));
     await assert.rejects(replayDotPlotExperiment(' '.repeat(10 * 1024 * 1024 + 1), experimentInput()), /10 MiB/);
+  });
+});
+
+/** Independent literal-window oracle: no production encoding, packed counts,
+ * symmetry, coordinate helper or coverage implementation is used here. */
+function pairwiseOracle(row: string, column: string, bins: number, window: number) {
+  const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+  const windows = (sequence: string) => Array.from({ length: bins }, (_, i) => {
+    const start = bins === 1 ? 0 : Math.floor(i * ((sequence.length - window) / (bins - 1)));
+    return sequence.slice(start, start + window).toUpperCase();
+  });
+  const rows = windows(row), columns = windows(column), direct: number[] = [], inverted: number[] = [];
+  for (const a of rows) for (const b of columns) {
+    let d = 0, r = 0;
+    for (let k = 0; k < window; k++) {
+      if (Object.hasOwn(complement, a[k]) && a[k] === b[k]) d++;
+      if (Object.hasOwn(complement, a[window - 1 - k]) && complement[a[window - 1 - k]] === b[k]) r++;
+    }
+    direct.push(Math.fround(d / window)); inverted.push(Math.fround(r / window));
+  }
+  const coverage = (samples: string[]) => samples.map(text => Array.from(text).filter(base => Object.hasOwn(complement, base)).length);
+  return { direct, inverted, rows: coverage(rows), columns: coverage(columns) };
+}
+function assertPairwise(row: string, column: string, bins: number, window: number) {
+  const result = computePairwiseDotPlotBuffers(row, column, { bins, window });
+  const oracle = pairwiseOracle(row, column, bins, Math.min(window, row.length, column.length));
+  assert.deepEqual(Array.from(result.directValues), oracle.direct);
+  assert.deepEqual(Array.from(result.invertedValues), oracle.inverted);
+  assert.deepEqual(result.rowResolvedPerWindow, oracle.rows);
+  assert.deepEqual(result.columnResolvedPerWindow, oracle.columns);
+  return result;
+}
+
+describe('pairwise genome dot plots', () => {
+  it('compares unequal axes without mirroring an asymmetric matrix or using its diagonal as coverage', () => {
+    const result = assertPairwise('AACC', 'CCAATT', 3, 2);
+    assert.deepEqual(Array.from(result.directValues), [0, 1, 0, 0.5, 0.5, 0, 1, 0, 0]);
+    assert.deepEqual(Array.from(result.invertedValues), [0, 0, 1, 0, 0, 0.5, 0, 0, 0]);
+    assert.deepEqual(result.rowResolvedPerWindow, [2, 2, 2]);
+    assert.deepEqual(result.columnResolvedPerWindow, [2, 2, 2]);
+  });
+  it('agrees with independent oracles across scalar/packed boundaries and offset alignments', () => {
+    let seed = 4281;
+    const sequence = (length: number) => Array.from({ length }, () => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return 'aCgTNRYSU'[seed % 9];
+    }).join('');
+    for (const window of [1, 2, 15, 31, 32, 33, 63, 64, 65, 127, 128, 129]) {
+      for (const bins of [1, 2, 9, 33]) assertPairwise(sequence(521), sequence(713), bins, window);
+    }
+  });
+  it('retains every ambiguity position and excludes unresolved symbols from both orientations', () => {
+    assertPairwise('anNtcg', 'nNauTcgrYS', 5, 3);
+    const result = assertPairwise('NNNN', 'ACGT', 3, 2);
+    assert(result.directValues.every(n => n === 0)); assert(result.invertedValues.every(n => n === 0));
+    assert.deepEqual(result.rowResolvedPerWindow, [0, 0, 0]);
+    assert.deepEqual(result.columnResolvedPerWindow, [2, 2, 2]);
+  });
+  it('reuses duplicate windows independently on each axis without dropping cells', () => {
+    for (const [a, b] of [['ACGT', 'AC'], ['AC', 'ACGT'], ['A', 'TTT']]) assertPairwise(a, b, 80, 2);
+    const full = assertPairwise('AN', 'GT', 1024, 2);
+    assert.equal(full.directValues.length, 1024 * 1024);
+    assert(full.invertedValues.every(n => n === 0.5));
+  });
+  it('swapping the ordered inputs transposes both matrices', () => {
+    const a = 'ACGNACGTTTNN'.repeat(30), b = 'TTNNACCGNTAC'.repeat(21);
+    const ab = computePairwiseDotPlotBuffers(a, b, { bins: 25, window: 65 });
+    const ba = computePairwiseDotPlotBuffers(b, a, { bins: 25, window: 65 });
+    for (let i = 0; i < 25; i++) for (let j = 0; j < 25; j++) {
+      assert.equal(ab.directValues[i * 25 + j], ba.directValues[j * 25 + i]);
+      assert.equal(ab.invertedValues[i * 25 + j], ba.invertedValues[j * 25 + i]);
+    }
+    assert.deepEqual(ab.rowResolvedPerWindow, ba.columnResolvedPerWindow);
+  });
+  it('preserves all self-plot scores when the two inputs are identical', () => {
+    for (const sequence of ['ANCGTU'.repeat(31), 'ACTG'.repeat(113)]) {
+      for (const window of [2, 31, 32, 33, 64, 95, sequence.length]) {
+        const pair = computePairwiseDotPlotBuffers(sequence, sequence, { bins: 40, window });
+        const self = computeDotPlotBuffers(sequence, { bins: 40, window, ambiguity: 'exclude' });
+        assert.deepEqual(pair.directValues, self.directValues); assert.deepEqual(pair.invertedValues, self.invertedValues);
+      }
+    }
+  });
+  it('chooses an automatic common window from the shorter input and handles empty input', () => {
+    const result = computePairwiseDotPlotBuffers('ACGT'.repeat(500), 'ACGT'.repeat(100), { bins: 10 });
+    assert.equal(result.window, 40);
+    assert.equal(computePairwiseDotPlotBuffers('AC', 'ACGT', { bins: 2, window: 99 }).window, 2);
+    assert.equal(computePairwiseDotPlotBuffers('', 'ACGT').bins, 0);
+    assert.equal(computePairwiseDotPlotBuffers('ACGT', '').directValues.length, 0);
+    for (const config of [{ bins: 0 }, { bins: 1025 }, { bins: 1.5 }, { window: 0 }, { window: NaN }, { ambiguity: 'literal' as const }]) {
+      assert.throws(() => computePairwiseDotPlotBuffers('ACGT', 'ACGT', config));
+    }
+  });
+});
+
+describe('portable pairwise dot plot experiments', () => {
+  const row = () => experimentInput('AACC'), column = () => ({ ...experimentInput('CCAANT'), accession: 'COLUMN.1' });
+  const config = { bins: 3, window: 2 };
+  it('binds both ordered exact sequences, distinct coordinates, coverage and stable checksums', async () => {
+    const { record } = await createPairwiseDotPlotExperiment(row(), column(), config);
+    assert.equal(record.method.id, 'sequence-pairwise-dot-plot');
+    assert.deepEqual(record.inputs.map(i => i.id), ['rowSequence', 'columnSequence']);
+    assert.equal(record.inputs[1].sha256, createHash('sha256').update(JSON.stringify(column().sequence)).digest('hex'));
+    assert.deepEqual(record.fields.rowWindows.value, [{ start: 0, end: 2 }, { start: 1, end: 3 }, { start: 2, end: 4 }]);
+    assert.deepEqual(record.fields.columnWindows.value, [{ start: 0, end: 2 }, { start: 2, end: 4 }, { start: 4, end: 6 }]);
+    assert.deepEqual(record.fields.rowResolvedPerWindow.value, [2, 2, 2]);
+    assert.deepEqual(record.fields.columnResolvedPerWindow.value, [2, 2, 1]);
+    assert.deepEqual(record.fields.direct.coverage, { available: 9, total: 10, unit: 'bases' });
+  });
+  it('captures and numerically replays a final matrix with identical record identity', async () => {
+    const displayed = computePairwiseDotPlotBuffers(row().sequence, column().sequence, config);
+    const original = await createPairwiseDotPlotExperiment(row(), column(), config, displayed);
+    const restored = await replayPairwiseDotPlotExperiment(serializeAnalysisRecord(original.record), row(), column());
+    assert.deepEqual(restored.record, original.record); assert.equal(restored.exactRecord, true);
+    assert.notEqual(restored.directValues.buffer, displayed.directValues.buffer);
+  });
+  it('rejects stale column inputs, swapped axes and self-record substitutions', async () => {
+    const saved = serializeAnalysisRecord((await createPairwiseDotPlotExperiment(row(), column(), config)).record);
+    await assert.rejects(replayPairwiseDotPlotExperiment(saved, row(), { ...column(), sequence: 'CCTTNT' }), /both selected genome axes/);
+    await assert.rejects(replayPairwiseDotPlotExperiment(saved, column(), row()), /both selected genome axes/);
+    const self = serializeAnalysisRecord((await createDotPlotExperiment(row(), config)).record);
+    await assert.rejects(replayPairwiseDotPlotExperiment(self, row(), column()), /method/);
+    await assert.rejects(replayDotPlotExperiment(saved, row()), /method/);
+  });
+  it('checks numerical values, both coordinate sets and independent coverage even after rehashing', async () => {
+    const { record } = await createPairwiseDotPlotExperiment(row(), column(), config);
+    for (const change of [
+      (r: AnalysisRecord) => { (r.fields.direct.value as number[])[0] = 1; },
+      (r: AnalysisRecord) => { (r.fields.inverted.value as number[])[2] = 0; },
+      (r: AnalysisRecord) => { (r.fields.columnWindows.value as { end: number }[])[2].end = 5; },
+      (r: AnalysisRecord) => { (r.fields.rowResolvedPerWindow.value as number[])[0] = 0; },
+      (r: AnalysisRecord) => { r.fields.direct.coverage.available = 1; },
+    ]) await assert.rejects(replayPairwiseDotPlotExperiment(await resignDotPlot(record, change), row(), column()), /Recomputed pairwise/);
+  });
+  it('rejects wrong references, malformed matrices, unsupported options and excessive total input', async () => {
+    const { record } = await createPairwiseDotPlotExperiment(row(), column(), config);
+    for (const change of [
+      (r: AnalysisRecord) => { r.references[0].version = '999'; },
+      (r: AnalysisRecord) => { r.method.version = '999'; },
+      (r: AnalysisRecord) => { r.parameters.window = 5; },
+      (r: AnalysisRecord) => { r.fields.direct.value = [1]; },
+      (r: AnalysisRecord) => { r.parameters.circular = true; },
+    ]) await assert.rejects(replayPairwiseDotPlotExperiment(await resignDotPlot(record, change), row(), column()));
+    await assert.rejects(createPairwiseDotPlotExperiment(row(), column(), { bins: 201 }), /1–200/);
+    await assert.rejects(createPairwiseDotPlotExperiment(row(), experimentInput('NNN')), /No resolved/);
+    await assert.rejects(createPairwiseDotPlotExperiment(experimentInput('A'.repeat(2500001)), experimentInput('T'.repeat(2500000))), /total input bases/);
+  });
+  it('rejects captured previews and matrices computed with a different second genome', async () => {
+    const preview = computePairwiseDotPlotBuffers(row().sequence, column().sequence, { bins: 2, window: 2 });
+    await assert.rejects(createPairwiseDotPlotExperiment(row(), column(), config, preview), /Displayed pairwise/);
+    const wrong = computePairwiseDotPlotBuffers(row().sequence, 'TTTTTT', config);
+    await assert.rejects(createPairwiseDotPlotExperiment(row(), column(), config, wrong), /Displayed pairwise/);
+  });
+  it('snapshots both selections before asynchronous hashing and reports metadata-only changes separately', async () => {
+    const a = row(), b = column();
+    const pending = createPairwiseDotPlotExperiment(a, b, config); a.sequence = 'TTTT'; b.sequence = 'AAAAAA';
+    const original = await pending;
+    assert.equal(original.record.inputs[0].data, row().sequence); assert.equal(original.record.inputs[1].data, column().sequence);
+    const restored = await replayPairwiseDotPlotExperiment(serializeAnalysisRecord(original.record), row(), { ...column(), accession: 'RENAMED' });
+    assert.equal(restored.exactRecord, false); assert.deepEqual(restored.record.fields, original.record.fields);
+  });
+  it('exports ordered coordinate pairs and true per-axis coverage without source bases or free text', async () => {
+    const { record } = await createPairwiseDotPlotExperiment({ ...row(), accession: '=UNTRUSTED\tROW' }, column(), config);
+    const tsv = exportPairwiseDotPlotExperimentTsv(record), lines = tsv.trim().split('\n');
+    assert.equal(lines.length, 5 + 9);
+    assert.equal(lines[5], '0\t0\t0\t2\t0\t2\t2\t2\t0\t0');
+    assert.match(lines[7], /^0\t2\t0\t2\t4\t6\t2\t1\t/);
+    assert(!tsv.includes('UNTRUSTED')); assert(!tsv.includes('CCAANT'));
+    assert.throws(() => exportDotPlotExperimentTsv(record), /Incompatible/);
   });
 });

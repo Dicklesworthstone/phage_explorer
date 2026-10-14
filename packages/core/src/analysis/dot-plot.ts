@@ -103,8 +103,10 @@ function countBits(value: number): number {
 /** O(sequence length + bins^2 * ceil(window / 32)) work, O(sequence length)
  * packed storage. Align only the current row, not bins copies of the genome.
  */
-function computePackedDotPlot(sequence: string, starts: readonly number[], window: number, write: WriteCell): void {
+function computePackedDotPlot(sequence: string, starts: readonly number[], window: number, write: WriteCell,
+  otherSequence?: string, otherStarts: readonly number[] = starts): void {
   const { forward, reverse } = packSequence(sequence);
+  const target = otherSequence === undefined ? forward : packSequence(otherSequence).forward;
   const words = Math.ceil(window / 32);
   const row = packedBases(words);
   const reverseRow = packedBases(words);
@@ -125,15 +127,15 @@ function computePackedDotPlot(sequence: string, starts: readonly number[], windo
     }
     row.valid[words - 1] &= tailMask;
     reverseRow.valid[words - 1] &= tailMask;
-    for (let j = i; j < bins; j++) {
-      const shift = starts[j] & 31;
-      const startWord = starts[j] >>> 5;
+    for (let j = otherSequence === undefined ? i : 0; j < otherStarts.length; j++) {
+      const shift = otherStarts[j] & 31;
+      const startWord = otherStarts[j] >>> 5;
       let directMatches = 0;
       let invertedMatches = 0;
       for (let k = 0; k < words; k++) {
-        const low = readPackedWord(forward.low, startWord + k, shift);
-        const high = readPackedWord(forward.high, startWord + k, shift);
-        const valid = readPackedWord(forward.valid, startWord + k, shift);
+        const low = readPackedWord(target.low, startWord + k, shift);
+        const high = readPackedWord(target.high, startWord + k, shift);
+        const valid = readPackedWord(target.valid, startWord + k, shift);
         directMatches += countBits(~((row.low[k] ^ low) | (row.high[k] ^ high)) & row.valid[k] & valid);
         invertedMatches += countBits(~((reverseRow.low[k] ^ low) | (reverseRow.high[k] ^ high)) & reverseRow.valid[k] & valid);
       }
@@ -243,7 +245,7 @@ export function computeDotPlotBuffers(sequence: string, config: DotPlotConfig = 
 }
 
 /** Keep the small-window/literal hot loop separate from packed dispatch. */
-function computeScalarDotPlot(seq: string, starts: readonly number[], window: number, literal: boolean, write: WriteCell): void {
+function scalarWindows(seq: string, starts: readonly number[], window: number, literal: boolean) {
   const len = seq.length;
   const bins = starts.length;
   const sparse = bins * window < len;
@@ -273,25 +275,33 @@ function computeScalarDotPlot(seq: string, starts: readonly number[], window: nu
     }
   }
 
-  for (let i = 0; i < bins; i++) {
+  return { bases, complements, offsets };
+}
+
+/** The same encoder and counting contract serve both self and cross-genome plots. */
+function computeScalarDotPlot(seq: string, starts: readonly number[], window: number, literal: boolean, write: WriteCell,
+  otherSequence?: string, otherStarts: readonly number[] = starts): void {
+  const { bases, complements, offsets } = scalarWindows(seq, starts, window, literal);
+  const target = otherSequence === undefined ? { bases, offsets } : scalarWindows(otherSequence, otherStarts, window, literal);
+  for (let i = 0; i < starts.length; i++) {
     const start = offsets[i];
     const reverseEnd = start + window - 1;
-    for (let j = i; j < bins; j++) {
-      const otherStart = offsets[j];
+    for (let j = otherSequence === undefined ? i : 0; j < otherStarts.length; j++) {
+      const otherStart = target.offsets[j];
       let directMatches = 0;
       let invertedMatches = 0;
       // Keep the policy branch outside the per-base loop. Literal symbols
       // require equality only; resolved evidence additionally needs validity.
       if (literal) {
         for (let k = 0; k < window; k++) {
-          const b = bases[otherStart + k];
+          const b = target.bases[otherStart + k];
           if (bases[start + k] === b) directMatches++;
           if (complements[reverseEnd - k] === b) invertedMatches++;
         }
       } else {
         for (let k = 0; k < window; k++) {
           const a = bases[start + k];
-          const b = bases[otherStart + k];
+          const b = target.bases[otherStart + k];
           const reverseA = complements[reverseEnd - k];
           if (a < 4 && a === b) directMatches++;
           if (reverseA < 4 && reverseA === b) invertedMatches++;
@@ -302,6 +312,75 @@ function computeScalarDotPlot(seq: string, starts: readonly number[], window: nu
       write(i, j, direct, inverted);
     }
   }
+}
+
+export interface PairwiseDotPlotBuffers extends DotPlotBuffers {
+  /** Counts, not scores: a cross-genome diagonal is not input coverage. */
+  rowResolvedPerWindow: number[];
+  columnResolvedPerWindow: number[];
+}
+
+function sampledWindowGroups(length: number, bins: number, window: number) {
+  const starts: number[] = [], boundaries: number[] = [];
+  for (let i = 0; i < bins; i++) {
+    const start = getDotPlotWindowRange(length, bins, window, i).start;
+    if (start !== starts[starts.length - 1]) { starts.push(start); boundaries.push(i); }
+  }
+  boundaries.push(bins);
+  return { starts, boundaries };
+}
+
+/** Sliding counts visit only covered positions and preserve ambiguity coordinates. */
+function resolvedWindowCounts(sequence: string, bins: number, window: number): number[] {
+  const counts: number[] = [];
+  let previousStart = 0, previousEnd = 0, count = 0;
+  const resolved = (i: number) => {
+    const code = sequence.charCodeAt(i) | 32;
+    return code === 97 || code === 99 || code === 103 || code === 116 ? 1 : 0;
+  };
+  for (let i = 0; i < bins; i++) {
+    const { start, end } = getDotPlotWindowRange(sequence.length, bins, window, i);
+    for (let p = previousStart; p < Math.min(start, previousEnd); p++) count -= resolved(p);
+    for (let p = Math.max(start, previousEnd); p < end; p++) count += resolved(p);
+    counts.push(count); previousStart = start; previousEnd = end;
+  }
+  return counts;
+}
+
+/** Compare ordered, independently sampled genome axes. Unlike a self plot the
+ * matrix is not generally symmetric. The common window fits BOTH sequences;
+ * all positions in it remain in the denominator, including unresolved bases.
+ */
+export function computePairwiseDotPlotBuffers(rowSequence: string, columnSequence: string,
+  config: DotPlotConfig = {}): PairwiseDotPlotBuffers {
+  if (config.ambiguity !== undefined && config.ambiguity !== 'exclude') {
+    throw new RangeError('Pairwise dot plots require resolved-base scoring.');
+  }
+  const length = Math.min(rowSequence.length, columnSequence.length);
+  if (length === 0) return { bins: 0, window: 0, directValues: new Float32Array(), invertedValues: new Float32Array(),
+    rowResolvedPerWindow: [], columnResolvedPerWindow: [] };
+  const { bins } = prepareDotPlot(rowSequence, { ...config, ambiguity: 'exclude' });
+  const window = Math.min(length, config.window ?? Math.max(20, Math.floor(length / bins)));
+  const rows = sampledWindowGroups(rowSequence.length, bins, window);
+  const columns = sampledWindowGroups(columnSequence.length, bins, window);
+  const directValues = new Float32Array(bins * bins), invertedValues = new Float32Array(bins * bins);
+  const emit: WriteCell = (i, j, direct, inverted) => {
+    for (let row = rows.boundaries[i]; row < rows.boundaries[i + 1]; row++) {
+      for (let col = columns.boundaries[j]; col < columns.boundaries[j + 1]; col++) {
+        directValues[row * bins + col] = direct;
+        invertedValues[row * bins + col] = inverted;
+      }
+    }
+  };
+  const scalarWork = rows.starts.length * columns.starts.length * window;
+  if (window >= 32 && scalarWork > rowSequence.length + columnSequence.length) {
+    computePackedDotPlot(rowSequence, rows.starts, window, emit, columnSequence, columns.starts);
+  } else {
+    computeScalarDotPlot(rowSequence, rows.starts, window, false, emit, columnSequence, columns.starts);
+  }
+  return { bins, window, directValues, invertedValues,
+    rowResolvedPerWindow: resolvedWindowCounts(rowSequence, bins, window),
+    columnResolvedPerWindow: resolvedWindowCounts(columnSequence, bins, window) };
 }
 
 // Portable experiments use the viewer's full resolution range. The low-level
@@ -475,6 +554,131 @@ export function exportDotPlotExperimentTsv(record: AnalysisRecord): string {
     for (let col = 0; col < bins; col++) {
       const x = getDotPlotWindowRange(sequenceLength, bins, window, col);
       lines.push([row, col, y.start, y.end, x.start, x.end, direct[row * bins + col], inverted[row * bins + col]].join('\t'));
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+export const PAIRWISE_DOT_PLOT_METHOD = {
+  id: 'sequence-pairwise-dot-plot', version: '1',
+  implementation: 'TypeScript exact resolved-window comparisons with Float32 matrix output',
+};
+const PAIRWISE_DOT_PLOT_REFERENCES = [{
+  id: 'bundled-pairwise-resolved-dot-plot', version: '1',
+  description: 'Ordered row/Y and column/X sequences, independently sampled linear windows of equal length; no external biological reference.',
+}];
+export interface PairwiseDotPlotExperiment extends PairwiseDotPlotBuffers { record: AnalysisRecord }
+
+/** Ordered axes are part of the experiment identity. Renaming them is not a
+ * license to swap sequences, reuse a self matrix or reinterpret its diagonal.
+ */
+export async function createPairwiseDotPlotExperiment(rowInput: DotPlotExperimentInput, columnInput: DotPlotExperimentInput,
+  config: DotPlotConfig = {}, displayed?: DotPlotBuffers): Promise<PairwiseDotPlotExperiment> {
+  const row = snapshotDotPlotInput(rowInput), column = snapshotDotPlotInput(columnInput);
+  if (row.sequence.length + column.sequence.length > DOT_PLOT_EXPERIMENT_LIMITS.bases) {
+    throw new Error('Pairwise dot plot experiments allow at most 5,000,000 total input bases.');
+  }
+  const parameters = dotPlotExperimentConfig(Math.min(row.sequence.length, column.sequence.length), config);
+  const result = computePairwiseDotPlotBuffers(row.sequence, column.sequence, parameters);
+  if (displayed && (displayed.bins !== result.bins || displayed.window !== result.window
+      || !(displayed.directValues instanceof Float32Array) || !(displayed.invertedValues instanceof Float32Array)
+      || displayed.directValues.length !== result.directValues.length || displayed.invertedValues.length !== result.invertedValues.length
+      || !result.directValues.every((value, i) => value === displayed.directValues[i])
+      || !result.invertedValues.every((value, i) => value === displayed.invertedValues[i]))) {
+    throw new Error('Displayed pairwise dot plot differs from the exact recomputation. Rerun both inputs before exporting.');
+  }
+  const coverageOf = (sequence: string) => ({ available: resolvedWindowCounts(sequence, 1, sequence.length)[0],
+    total: sequence.length, unit: 'bases' as const });
+  const rowCoverage = coverageOf(row.sequence), columnCoverage = coverageOf(column.sequence);
+  const coverage = { available: rowCoverage.available + columnCoverage.available,
+    total: rowCoverage.total + columnCoverage.total, unit: 'bases' as const };
+  const limitations = [
+    'Row-major Float32 scores count resolved A/C/G/T matches divided by the common full window length. U and ambiguity symbols never add matching evidence.',
+    'The inverted score compares the reverse complement of the row/Y window with the forward column/X window.',
+    'Sampled linear windows may overlap or skip positions. These scores are not alignments, variant calls, calibrated homology probabilities or biological validation.',
+  ];
+  const windows = (sequence: string) => Array.from({ length: result.bins }, (_, i) =>
+    getDotPlotWindowRange(sequence.length, result.bins, result.window, i));
+  const record = await createAnalysisRecord({
+    method: PAIRWISE_DOT_PLOT_METHOD,
+    inputs: [
+      { id: 'rowSequence', accession: row.accession, source: row.source,
+        description: 'Exact row/Y nucleotide sequence; its canonical JSON encoding is hashed.', data: row.sequence },
+      { id: 'columnSequence', accession: column.accession, source: column.source,
+        description: 'Exact column/X nucleotide sequence; its canonical JSON encoding is hashed.', data: column.sequence },
+    ],
+    parameters: { ...parameters }, seed: null, references: PAIRWISE_DOT_PLOT_REFERENCES,
+    fields: {
+      rowWindows: { label: 'Row/Y sampled windows', kind: 'sequence-score', units: 'records', value: analysisJson(windows(row.sequence)),
+        coverage: rowCoverage, limitations: ['Zero-based, end-exclusive row-input coordinates; no circular-origin wrapping.'] },
+      columnWindows: { label: 'Column/X sampled windows', kind: 'sequence-score', units: 'records', value: analysisJson(windows(column.sequence)),
+        coverage: columnCoverage, limitations: ['Zero-based, end-exclusive column-input coordinates; no circular-origin wrapping.'] },
+      direct: { label: 'Direct resolved-match scores', kind: 'sequence-score', units: 'fraction',
+        value: Array.from(result.directValues), coverage, limitations },
+      inverted: { label: 'Reverse-complement resolved-match scores', kind: 'sequence-score', units: 'fraction',
+        value: Array.from(result.invertedValues), coverage, limitations },
+      rowResolvedPerWindow: { label: 'Resolved bases per row/Y window', kind: 'sequence-score', units: 'count',
+        value: result.rowResolvedPerWindow, coverage: rowCoverage, limitations: ['Input coverage, not the cross-genome diagonal or biological confidence.'] },
+      columnResolvedPerWindow: { label: 'Resolved bases per column/X window', kind: 'sequence-score', units: 'count',
+        value: result.columnResolvedPerWindow, coverage: columnCoverage, limitations: ['Input coverage, not the cross-genome diagonal or biological confidence.'] },
+    },
+  });
+  return { ...result, record };
+}
+
+function pairwiseRecordParameters(record: AnalysisRecord): Required<DotPlotConfig> {
+  if (!dotPlotJsonEqual(record.method, PAIRWISE_DOT_PLOT_METHOD) || record.seed !== null
+      || !dotPlotJsonEqual(record.references, PAIRWISE_DOT_PLOT_REFERENCES)
+      || record.inputs.length !== 2 || record.inputs[0].id !== 'rowSequence' || record.inputs[1].id !== 'columnSequence'
+      || Object.keys(record.parameters).sort().join('|') !== 'ambiguity|bins|window'
+      || record.parameters.ambiguity !== 'exclude' || typeof record.parameters.bins !== 'number' || typeof record.parameters.window !== 'number') {
+    throw new Error('Incompatible pairwise dot plot method, ordered inputs, parameters or references.');
+  }
+  const sources = record.inputs.map(input => snapshotDotPlotInput({ sequence: input.data as string,
+    accession: input.accession, source: input.source as 'local' | 'catalog' }));
+  if (sources[0].sequence.length + sources[1].sequence.length > DOT_PLOT_EXPERIMENT_LIMITS.bases) throw new Error('Pairwise input exceeds 5,000,000 total bases.');
+  const parameters = dotPlotExperimentConfig(Math.min(...sources.map(source => source.sequence.length)), record.parameters as unknown as DotPlotConfig);
+  const f = record.fields;
+  if (Object.keys(f).sort().join('|') !== 'columnResolvedPerWindow|columnWindows|direct|inverted|rowResolvedPerWindow|rowWindows'
+      || Object.values(f).some(field => field.kind !== 'sequence-score')
+      || ![f.rowWindows, f.columnWindows].every(field => field.units === 'records' && Array.isArray(field.value) && field.value.length === parameters.bins)
+      || ![f.rowResolvedPerWindow, f.columnResolvedPerWindow].every(field => field.units === 'count' && Array.isArray(field.value)
+        && field.value.length === parameters.bins && field.value.every(n => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 && n <= parameters.window))
+      || ![f.direct, f.inverted].every(field => field.units === 'fraction' && Array.isArray(field.value)
+        && field.value.length === parameters.bins * parameters.bins && field.value.every(n => typeof n === 'number' && n >= 0 && n <= 1 && Math.fround(n) === n))) {
+    throw new Error('Invalid pairwise dot plot matrices, axis coordinates or coverage.');
+  }
+  return parameters;
+}
+
+/** Recompute all evidence against BOTH selected inputs, in their recorded order. */
+export async function replayPairwiseDotPlotExperiment(content: string, rowInput: DotPlotExperimentInput,
+  columnInput: DotPlotExperimentInput): Promise<PairwiseDotPlotExperiment & { exactRecord: boolean }> {
+  const row = snapshotDotPlotInput(rowInput), column = snapshotDotPlotInput(columnInput);
+  const saved = await parseAnalysisRecord(content, { methodId: PAIRWISE_DOT_PLOT_METHOD.id, methodVersion: PAIRWISE_DOT_PLOT_METHOD.version });
+  const parameters = pairwiseRecordParameters(saved);
+  if (saved.inputs[0].data !== row.sequence || saved.inputs[1].data !== column.sequence) {
+    throw new Error('Saved pairwise dot plot does not match both selected genome axes. Load the exact row and column sources before replaying.');
+  }
+  const fresh = await createPairwiseDotPlotExperiment(row, column, parameters);
+  if (!dotPlotJsonEqual(saved.fields, fresh.record.fields)) throw new Error('Recomputed pairwise matrices, axis coordinates or coverage differ from the saved experiment.');
+  return { ...fresh, exactRecord: saved.resultId === fresh.record.resultId };
+}
+
+/** Only generated/verified records belong here. Untrusted JSON must be replayed first. */
+export function exportPairwiseDotPlotExperimentTsv(record: AnalysisRecord): string {
+  const { bins, window } = pairwiseRecordParameters(record);
+  const direct = record.fields.direct.value as number[], inverted = record.fields.inverted.value as number[];
+  const rowCounts = record.fields.rowResolvedPerWindow.value as number[], columnCounts = record.fields.columnResolvedPerWindow.value as number[];
+  const lines = ['# Pairwise resolved-match scores; coordinates are zero-based, end-exclusive.',
+    `# result_id\t${record.resultId}`, `# row_sequence_json_sha256\t${record.inputs[0].sha256}`,
+    `# column_sequence_json_sha256\t${record.inputs[1].sha256}`,
+    'row\tcolumn\ty_start\ty_end\tx_start\tx_end\ty_resolved\tx_resolved\tdirect_score\tinverted_score'];
+  for (let row = 0; row < bins; row++) {
+    const y = getDotPlotWindowRange((record.inputs[0].data as string).length, bins, window, row);
+    for (let col = 0; col < bins; col++) {
+      const x = getDotPlotWindowRange((record.inputs[1].data as string).length, bins, window, col);
+      lines.push([row, col, y.start, y.end, x.start, x.end, rowCounts[row], columnCounts[col], direct[row * bins + col], inverted[row * bins + col]].join('\t'));
     }
   }
   return `${lines.join('\n')}\n`;
