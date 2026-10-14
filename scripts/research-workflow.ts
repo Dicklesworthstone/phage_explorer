@@ -6,7 +6,9 @@ import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS, parseCommandTape } from '../packages/core/src/command-session';
 import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis-result';
-import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch,
+import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
+import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
+import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -33,6 +35,12 @@ bun run workflow analyze-experiment --input genomes.fa --method pairwise-dot-plo
 bun run workflow analyze-experiment --input genome.gb --method restriction-digest
   --enzymes EcoRI,BamHI --topology linear|circular [--record CONTENT_ID]
   [--output NEW_FILE] [--format json|tsv] [--timeout-ms 300000]
+bun run workflow analyze-experiment --input genome.fa --method gc-skew
+  [--window BP] [--step BP] [--record CONTENT_ID] [--output NEW_FILE]
+  [--format json|tsv] [--timeout-ms 300000]
+bun run workflow analyze-experiment --input genome.fa --method exact-repeats
+  --topology linear|circular [--arm-length BP] [--max-gap BP] [--max-pairs COUNT]
+  [--record CONTENT_ID] [--output NEW_FILE] [--format json|tsv] [--timeout-ms 300000]
 
 inspect-genomes accepts DNA FASTA, GenBank or a version-1 local genome bundle.
 It reports unique record content IDs, sequence hashes, lengths, topology and
@@ -63,6 +71,21 @@ reported as an assumption. This command does not simulate topology changes.
 Circular cut products retain their origin-crossing coordinates. Results describe
 ideal complete digestion, not methylation, partial digestion or measured mobility.
 
+GC skew uses the portable counted-window method (v2). --window and --step resolve
+through the shared core defaults (500 and one quarter of the chosen window).
+Only complete linear windows are sampled. No-GC ratios are null (empty TSV cells),
+not zero; a short sequence can have no windows. The report counts informative
+windows. More than 20,000 windows fails rather than silently reducing resolution.
+
+Exact repeats enumerate fixed-length, non-overlapping direct/inverted pairs with
+resolved A/C/G/T arms. --arm-length, --max-gap and --max-pairs use shared defaults
+8, 5000 and 2000; a zero gap is valid. Explicit topology must agree with known
+source metadata, otherwise it is a reported assumption. Circular search wraps
+the origin, uses shortest spacer arcs and exports traversal-ordered arm segments.
+The report and TSV distinguish complete searches from truncated output prefixes.
+Comparison-budget exhaustion fails the job. These are not maximal repeat families
+or biological structure predictions. Neither new method changes the input bases.
+
 inspect reparses embedded inputs and reports action support; no analyses run.
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
@@ -70,7 +93,10 @@ pangenome/CDS experiments, portable GC-skew counts and exact-pairs repeats. Sour
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
-replay-experiment accepts self/pairwise dot-plot and restriction-digest JSON
+replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
+GC-skew v2 and linear/circular exact-repeat-pairs JSON. Legacy accelerated GC-skew
+v1 and sampled-repeat overview records are not relabeled as portable methods.
+These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
 inputs, sampled coordinates and independent coverage. It recomputes embedded inputs/settings with the same core
 methods and verifies all saved evidence, not just file checksums. No catalog,
@@ -108,7 +134,7 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Choose inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
   }
   const allowed = type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
-    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology'] : type === 'replay-experiment'
+    ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false;
   for (let i = 0; i < rest.length;) {
@@ -135,10 +161,20 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
     if (type === 'analyze-experiment') {
       const method = values.get('--method');
-      if (method !== 'dot-plot' && method !== 'pairwise-dot-plot' && method !== 'restriction-digest') throw new Error('Choose --method dot-plot, pairwise-dot-plot or restriction-digest.');
+      if (method !== 'dot-plot' && method !== 'pairwise-dot-plot' && method !== 'restriction-digest' && method !== 'gc-skew' && method !== 'exact-repeats') {
+        throw new Error('Choose --method dot-plot, pairwise-dot-plot, restriction-digest, gc-skew or exact-repeats.');
+      }
       const contentId = values.get('--record') ?? null;
       if (contentId !== null && !/^[a-f0-9]{64}$/.test(contentId)) throw new Error('--record requires a complete content ID from inspect-genomes.');
       let analysis: TerminalAnalysis;
+      const methodFlags: Record<TerminalAnalysis['method'], readonly string[]> = {
+        'dot-plot': ['--bins', '--window'], 'pairwise-dot-plot': ['--compare-record', '--bins', '--window'],
+        'restriction-digest': ['--enzymes', '--topology'], 'gc-skew': ['--window', '--step'],
+        'exact-repeats': ['--arm-length', '--max-gap', '--max-pairs', '--topology'],
+      };
+      for (const key of ['--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs']) {
+        if (values.has(key) && !methodFlags[method].includes(key)) throw new Error(`${key} is not an option for ${method}.`);
+      }
       if (method !== 'pairwise-dot-plot' && values.has('--compare-record')) throw new Error('--compare-record is only valid for pairwise-dot-plot.');
       if (method === 'pairwise-dot-plot') {
         if (values.has('--enzymes') || values.has('--topology')) throw new Error('Enzymes and topology are restriction-digest options, not dot-plot options.');
@@ -151,6 +187,23 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
       } else if (method === 'dot-plot') {
         if (values.has('--enzymes') || values.has('--topology')) throw new Error('Enzymes and topology are restriction-digest options, not dot-plot options.');
         analysis = { method, bins: integer('--bins', 120, 200), window: values.has('--window') ? integer('--window', 1, 5000000) : null };
+      } else if (method === 'gc-skew') {
+        analysis = { method, ...resolveGCSkewOptions({
+          ...(values.has('--window') ? { windowSize: integer('--window', 500, 1000000) } : {}),
+          ...(values.has('--step') ? { stepSize: integer('--step', 1, 5000000) } : {}),
+        }) };
+      } else if (method === 'exact-repeats') {
+        const topology = values.get('--topology');
+        if (topology !== 'linear' && topology !== 'circular') throw new Error('Exact repeats require --topology linear|circular.');
+        const gap = values.get('--max-gap');
+        if (gap !== undefined && (!/^(0|[1-9]\d*)$/.test(gap) || !Number.isSafeInteger(Number(gap)) || Number(gap) > 100000)) {
+          throw new Error('--max-gap must be an integer from 0 to 100000.');
+        }
+        analysis = { method, ...resolveExactRepeatOptions({
+          ...(values.has('--arm-length') ? { armLength: integer('--arm-length', 8, 256) } : {}),
+          ...(gap === undefined ? {} : { maxGap: Number(gap) }),
+          ...(values.has('--max-pairs') ? { maxPairs: integer('--max-pairs', 2000, 20000) } : {}), topology,
+        }), topology };
       } else {
         if (values.has('--bins') || values.has('--window')) throw new Error('Bins and window are dot-plot options, not restriction-digest options.');
         const enzymes = values.get('--enzymes'), topology = values.get('--topology');
@@ -334,6 +387,7 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
           if (record.cacheKey !== result.report.cacheKey || record.resultId !== result.report.resultId
             || JSON.stringify(analysisJson(record.method)) !== JSON.stringify(analysisJson(result.report.method))
             || JSON.stringify(analysisJson(record.parameters)) !== JSON.stringify(analysisJson(result.report.parameters))
+            || JSON.stringify(analysisJson(terminalSequenceSummary(record) ?? null)) !== JSON.stringify(analysisJson(result.report.summary ?? null))
             || pairwise && record.inputs.length !== 2
             || axes.some(({ input, id, genome }) => !input || !genome || input.id !== id || input.source !== 'local'
               || input.accession !== genome.accession || typeof input.data !== 'string' || input.data.length !== genome.bases

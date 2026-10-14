@@ -4,10 +4,12 @@
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS } from '../../core/src/command-session';
-import { parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
+import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import type { ReplayProgress, ResearchTapeInspection, ResearchReplayResult } from './research-replay';
 import { GENOME_IMPORT_LIMITS, type LocalGenome } from '../../core/src/genome-import';
 import { resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../core/src/analysis/restriction-digest';
+import { GC_SKEW_METHOD, GC_SKEW_LIMITS, resolveGCSkewOptions, type ResolvedGCSkewOptions, type GCSkewScan } from '../../core/src/analysis/gc-skew';
+import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ExactRepeatScan } from '../../core/src/analysis/exact-repeat-pairs';
 
 export interface TerminalGenomeSummary {
   contentId: string; sequenceSha256: string; accession: string | null;
@@ -20,20 +22,57 @@ export interface TerminalGenomeInspection {
 }
 export type TerminalAnalysis = { method: 'dot-plot'; bins: number; window: number | null } |
   { method: 'pairwise-dot-plot'; columnContentId: string; bins: number; window: number | null } |
+  ({ method: 'gc-skew' } & ResolvedGCSkewOptions) |
+  { method: 'exact-repeats'; armLength: number; maxGap: number; maxPairs: number; topology: 'linear' | 'circular' } |
   ({ method: 'restriction-digest' } & RestrictionDigestOptions);
+export type TerminalSequenceSummary = { kind: 'gc-skew'; sampledWindows: number; definedSkewWindows: number } |
+  { kind: 'exact-repeats'; pairCount: number; complete: boolean; stoppedAtRightStart: number | null };
 export interface TerminalAnalysisReport {
   format: 'phage-explorer-experiment-analysis'; version: 1; headless: true;
   inputFileSha256: string; requestSha256: string; genome: TerminalGenomeSummary;
   /** Present only for pairwise analysis: genome is row/Y, comparison is column/X. */
   comparison?: TerminalGenomeSummary;
+  /** Output coverage, not a biological inference or a replay verification flag. */
+  summary?: TerminalSequenceSummary;
   method: AnalysisRecord['method']; parameters: AnalysisRecord['parameters'];
   cacheKey: string; resultId: string; interpretation: string;
 }
 
 const hashText = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(analysisJson(a)) === JSON.stringify(analysisJson(b));
+/** One projection for worker reports and the parent's accepted JSON output. */
+export function terminalSequenceSummary(record: AnalysisRecord): TerminalSequenceSummary | undefined {
+  if (record.method.id === GC_SKEW_METHOD.id) {
+    const windows = record.fields.windows.value as unknown as GCSkewScan['windows'];
+    return { kind: 'gc-skew', sampledWindows: windows.length, definedSkewWindows: windows.filter(w => w.skew !== null).length };
+  }
+  if (record.method.id === EXACT_REPEAT_METHOD.id) {
+    const search = record.fields.search.value as unknown as ExactRepeatScan['search'];
+    const pairs = record.fields.pairs.value as unknown as ExactRepeatScan['pairs'];
+    return { kind: 'exact-repeats', pairCount: pairs.length, complete: search.complete, stoppedAtRightStart: search.stoppedAtRightStart };
+  }
+  return undefined;
+}
 export function validateTerminalAnalysis(value: unknown): asserts value is TerminalAnalysis {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Explicit analysis settings are required.');
   const settings = value as Record<string, unknown>;
+  if (settings.method === 'gc-skew') {
+    if (Object.keys(settings).sort().join('|') !== 'method|stepSize|windowSize'
+      || typeof settings.windowSize !== 'number' || typeof settings.stepSize !== 'number') {
+      throw new Error('GC skew requires explicit numeric windowSize and stepSize settings.');
+    }
+    resolveGCSkewOptions({ windowSize: settings.windowSize, stepSize: settings.stepSize });
+    return;
+  }
+  if (settings.method === 'exact-repeats') {
+    if (Object.keys(settings).sort().join('|') !== 'armLength|maxGap|maxPairs|method|topology'
+      || typeof settings.armLength !== 'number' || typeof settings.maxGap !== 'number' || typeof settings.maxPairs !== 'number'
+      || (settings.topology !== 'linear' && settings.topology !== 'circular')) {
+      throw new Error('Exact repeats require numeric armLength, maxGap, maxPairs and explicit linear/circular topology.');
+    }
+    resolveExactRepeatOptions({ armLength: settings.armLength, maxGap: settings.maxGap, maxPairs: settings.maxPairs, topology: settings.topology });
+    return;
+  }
   if (settings.method === 'restriction-digest') {
     if (Object.keys(settings).sort().join('|') !== 'enzymes|method|topology') throw new Error('Specify only method, enzymes and topology for restriction analysis.');
     resolveRestrictionDigestOptions({ enzymes: settings.enzymes, topology: settings.topology });
@@ -76,12 +115,38 @@ export function terminalAnalysisRequestSha256(request: Extract<TerminalResearchR
   return hashText(JSON.stringify([hashText(request.content), request.contentId, request.analysis.method,
     ...(request.analysis.method === 'dot-plot' ? [request.analysis.bins, request.analysis.window]
       : request.analysis.method === 'pairwise-dot-plot' ? [request.analysis.columnContentId, request.analysis.bins, request.analysis.window]
+      : request.analysis.method === 'gc-skew' ? [request.analysis.windowSize, request.analysis.stepSize]
+      : request.analysis.method === 'exact-repeats' ? [request.analysis.armLength, request.analysis.maxGap, request.analysis.maxPairs, request.analysis.topology]
       : [request.analysis.enzymes, request.analysis.topology])]));
 }
 /** Check effective result settings at the parent boundary without recomputing on the main thread. */
 export function terminalAnalysisParametersMatch(analysis: TerminalAnalysis, report: TerminalAnalysisReport): boolean {
   const parameters = report.parameters;
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return false;
+  if (analysis.method === 'gc-skew') {
+    const summary = report.summary;
+    const count = report.genome.bases < analysis.windowSize ? 0 : Math.floor((report.genome.bases - analysis.windowSize) / analysis.stepSize) + 1;
+    return report.comparison === undefined && sameJson(report.method, GC_SKEW_METHOD)
+      && sameJson(parameters, { windowSize: analysis.windowSize, stepSize: analysis.stepSize })
+      && count <= GC_SKEW_LIMITS.windows && summary?.kind === 'gc-skew' && summary.sampledWindows === count
+      && Number.isSafeInteger(summary.definedSkewWindows) && summary.definedSkewWindows >= 0
+      && summary.definedSkewWindows <= count;
+  }
+  if (analysis.method === 'exact-repeats') {
+    const summary = report.summary;
+    const expected = resolveExactRepeatOptions({ armLength: analysis.armLength, maxGap: analysis.maxGap,
+      maxPairs: analysis.maxPairs, topology: analysis.topology });
+    return report.comparison === undefined && sameJson(parameters, expected)
+      && sameJson(report.method, analysis.topology === 'circular' ? CIRCULAR_EXACT_REPEAT_METHOD : EXACT_REPEAT_METHOD)
+      && (report.genome.topology === 'unknown' || report.genome.topology === analysis.topology)
+      && summary?.kind === 'exact-repeats' && Number.isSafeInteger(summary.pairCount)
+      && summary.pairCount >= 0 && summary.pairCount <= analysis.maxPairs
+      && (summary.complete === true ? summary.stoppedAtRightStart === null
+        : summary.complete === false && summary.pairCount === analysis.maxPairs
+          && Number.isSafeInteger(summary.stoppedAtRightStart) && Number(summary.stoppedAtRightStart) >= 0
+          && Number(summary.stoppedAtRightStart) < report.genome.bases);
+  }
+  if (report.summary !== undefined) return false;
   if (analysis.method === 'pairwise-dot-plot') {
     const comparison = report.comparison;
     if (!isTerminalGenomeSummary(comparison) || comparison.contentId !== analysis.columnContentId
@@ -177,6 +242,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     let record: AnalysisRecord;
     let table: (record: AnalysisRecord) => string;
     let interpretation: string;
+    let summary: TerminalSequenceSummary | undefined;
     if (request.analysis.method === 'dot-plot') {
       const { createDotPlotExperiment, exportDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
       record = (await createDotPlotExperiment({ sequence: genome.sequence, accession: genome.phage.accession, source: 'local' },
@@ -191,6 +257,28 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { bins: request.analysis.bins, ...(request.analysis.window === null ? {} : { window: request.analysis.window }) })).record;
       table = exportPairwiseDotPlotExperimentTsv;
       interpretation = 'The selected record is row/Y and the comparison record is column/X. Linear sampled windows use a common length fitting both genomes, even for circular records; no origin wrapping. Coverage is counted independently for each axis, not inferred from the cross-genome diagonal. Scores are not alignments or variant calls.';
+    } else if (request.analysis.method === 'gc-skew') {
+      const { createGCSkewRecord, exportGCSkewTsv } = await import('../../core/src/analysis/gc-skew');
+      record = await createGCSkewRecord(genome.sequence,
+        { windowSize: request.analysis.windowSize, stepSize: request.analysis.stepSize }, { accession: genome.phage.accession, source: 'local' });
+      table = exportGCSkewTsv;
+      summary = terminalSequenceSummary(record);
+      interpretation = 'Complete linear windows only, including for circular inputs. Zero-GC windows have unavailable (null) skew, not a measured zero. Cumulative values are inclusive per-base G-minus-C counts, not a sum of ratios. Extrema are composition candidates, not experimentally established replication locations.';
+    } else if (request.analysis.method === 'exact-repeats') {
+      const declared = genome.phage.localGenome!.topology;
+      if (declared !== 'unknown' && declared !== request.analysis.topology) {
+        throw new Error('Requested repeat topology conflicts with the selected source metadata. No topology change is inferred.');
+      }
+      const { createExactRepeatRecord, exportExactRepeatPairsTsv } = await import('../../core/src/analysis/exact-repeat-pairs');
+      record = await createExactRepeatRecord(genome.sequence,
+        { armLength: request.analysis.armLength, maxGap: request.analysis.maxGap, maxPairs: request.analysis.maxPairs,
+          topology: request.analysis.topology }, { accession: genome.phage.accession, source: 'local' });
+      table = exportExactRepeatPairsTsv;
+      const search = record.fields.search.value as unknown as ExactRepeatScan['search'];
+      summary = terminalSequenceSummary(record);
+      interpretation = `Unsampled fixed-length non-overlapping direct and inverted pairs; not maximal repeats or biological structure predictions. ${declared === 'unknown'
+        ? 'Source topology was unknown; the explicit requested topology is an assumption.' : 'Explicit topology agrees with source metadata.'} ${search.complete
+        ? 'Search completed for these parameters.' : 'Output is a truncated ordered prefix; it is not an exhaustive result.'} Circular ends may exceed genome length; TSV retains the wrapped arm segments.`;
     } else {
       const declared = genome.phage.localGenome!.topology;
       if (declared !== 'unknown' && declared !== request.analysis.topology) {
@@ -208,6 +296,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       format: 'phage-explorer-experiment-analysis', version: 1, headless: true,
       inputFileSha256, requestSha256: terminalAnalysisRequestSha256(request), genome: genomeSummary(genome),
       ...(comparison ? { comparison: genomeSummary(comparison) } : {}),
+      ...(summary ? { summary } : {}),
       method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
       interpretation: `Fresh computation from locally parsed DNA, not replay verification or biological validation. Whitespace/case normalization follows the shared importer. ${interpretation}`,
     }, exportText: request.outputFormat === 'json' ? serializeAnalysisRecord(record)
@@ -244,8 +333,16 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const { replayRestrictionDigestRecord, exportRestrictionDigestTsv } = await import('../../core/src/analysis/restriction-digest');
       fresh = await replayRestrictionDigestRecord(request.content);
       table = exportRestrictionDigestTsv;
+    } else if (saved.method.id === GC_SKEW_METHOD.id) {
+      const { replayGCSkewRecord, exportGCSkewTsv } = await import('../../core/src/analysis/gc-skew');
+      fresh = await replayGCSkewRecord(request.content);
+      table = exportGCSkewTsv;
+    } else if (saved.method.id === EXACT_REPEAT_METHOD.id) {
+      const { replayExactRepeatRecord, exportExactRepeatPairsTsv } = await import('../../core/src/analysis/exact-repeat-pairs');
+      fresh = await replayExactRepeatRecord(request.content);
+      table = exportExactRepeatPairsTsv;
     } else {
-      throw new Error('Experiment replay supports sequence-dot-plot, sequence-pairwise-dot-plot and restriction-digest records only.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew and exact repeat pairs.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.
