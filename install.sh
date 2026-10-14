@@ -408,9 +408,11 @@ log_step 2 "Resolving version..."
 if [[ -z "$VERSION" ]]; then
   log "Fetching latest release tag..."
   VERSION=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest" \
-    | grep '"tag_name":' \
-    | sed -E 's/.*"([^"]+)".*/\1/' \
+    | grep -o '"tag_name": *"[^"]*"' \
+    | head -n 1 \
+    | sed -E 's/.*"([^"]*)"$/\1/' \
     || echo "")
+  case "$VERSION" in v[0-9]*|[0-9]*) ;; *) VERSION="" ;; esac
 
   if [[ -z "$VERSION" ]]; then
     log_warn "Could not fetch latest release, falling back to source build"
