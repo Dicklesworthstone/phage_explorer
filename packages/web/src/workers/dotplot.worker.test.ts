@@ -1,5 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
+import { computeDotPlot } from '@phage-explorer/core';
 import { createDotPlotHandler } from './dotplot.worker';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
 
@@ -215,5 +216,47 @@ describe('dot plot worker runtime', () => {
     assert(newer, 'the newer task ran before the full pass');
     await newer;
     assert.deepEqual(messages.map(r => [r.requestId, r.bins]), [[13, 40], [14, 2]]);
+  });
+});
+
+describe('dot plot direct-buffer integration', () => {
+  it('transfers packed preview and final outputs with the same sampled windows and Float32 values', async () => {
+    const sequence = 'ACGTNacgt?'.repeat(83);
+    const run = harness({ loadWasm: async () => { throw new Error('ambiguous input must not load the literal backend'); }, yieldControl: async () => {} });
+    await run.handle({ data: job(20, sequence, 80, 65) });
+    assert.deepEqual(run.messages.map(response => [response.requestId, response.bins, response.window, response.ok]),
+      [[20, 40, 65, true], [20, 80, 65, true]]);
+    for (const response of run.messages) {
+      // Contract check against the full-precision API. Independent scalar
+      // numerical oracles live in the core dot-plot tests.
+      const expected = computeDotPlot(sequence, { bins: response.bins, window: 65, ambiguity: 'exclude' });
+      assert.deepEqual(response.directValues, new Float32Array(expected.grid.flat().map(cell => cell.direct)));
+      assert.deepEqual(response.invertedValues, new Float32Array(expected.grid.flat().map(cell => cell.inverted)));
+    }
+  });
+
+  it('supports maximum resolution with a full-genome window without recomputing identical pairs', async () => {
+    const run = harness({ yieldControl: async () => {} });
+    await run.handle({ data: job(21, 'A'.repeat(4096), 1024, 4096) });
+    const final = run.messages[1];
+    assert.equal(final.ok, true);
+    assert.equal(final.bins, 1024);
+    assert.equal(final.window, 4096);
+    assert.equal(final.directValues!.length, 1024 * 1024);
+    assert(final.directValues!.every(value => value === 1));
+    assert(final.invertedValues!.every(value => value === 0));
+  });
+
+  it('publishes only the newer full result after transferring an older packed preview', async () => {
+    const preview = deferred(), resume = deferred();
+    const run = harness({ yieldControl: () => { preview.resolve(); return resume.promise; } });
+    const old = run.handle({ data: job(22, 'ACGTN'.repeat(500), 80, 65) });
+    await preview.promise;
+    await run.handle({ data: job(23, 'ANNT') });
+    resume.resolve();
+    await old;
+    assert.deepEqual(run.messages.map(response => [response.requestId, response.bins]), [[22, 40], [23, 2]]);
+    assert.deepEqual(Array.from(run.messages[1].directValues!), [0.5, 0, 0, 0.5]);
+    assert.deepEqual(Array.from(run.messages[1].invertedValues!), [0, 0.5, 0.5, 0]);
   });
 });
