@@ -1,7 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { computeDotPlotBuffers, createDotPlotExperiment, serializeAnalysisRecord, createAnalysisRecord } from '@phage-explorer/core';
-import { computeDotPlot } from '@phage-explorer/core';
+import { computeDotPlot, computePairwiseDotPlotBuffers, createPairwiseDotPlotExperiment } from '@phage-explorer/core';
 import { createDotPlotHandler } from './dotplot.worker';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
 
@@ -404,5 +404,99 @@ describe('dot plot experiment worker integration', () => {
       assert.deepEqual(run.messages.map(response => response.requestId), [39]);
       assertAcgt(run.messages[0]);
     }
+  });
+});
+
+const columnInput = (sequence = 'CCAANT') => ({ sequence, accession: 'COLUMN.1', source: 'local' as const });
+function pairJob(id: number, row = 'AACC', column = 'CCAANT', bins = 3, window = 2): DotPlotJob {
+  return { requestId: id, sequence: row, comparison: columnInput(column), config: { bins, window, ambiguity: 'exclude' } };
+}
+function pairCapture(id: number): DotPlotJob {
+  const request = pairJob(id);
+  return { ...request, experiment: { kind: 'create', context: experimentContext,
+    displayed: computePairwiseDotPlotBuffers('AACC', 'CCAANT', request.config) } };
+}
+
+describe('pairwise dot plot worker integration', () => {
+  it('computes both distinct axes without substituting the self-only native ABI', async () => {
+    let loads = 0;
+    const run = harness({ loadWasm: async () => { loads++; throw new Error('Self ABI must not be requested'); } });
+    await run.handle({ data: pairJob(60) });
+    const response = run.messages[0];
+    assert.equal(response.ok, true); assert.equal(response.pairwise, true); assert.equal(loads, 0);
+    assert.deepEqual(Array.from(response.directValues!), [0, 1, 0, 0.5, 0.5, 0, 1, 0, 0]);
+    assert.deepEqual(Array.from(response.invertedValues!), [0, 0, 0.5, 0, 0, 0.5, 0, 0, 0]);
+    assert.deepEqual(response.rowResolvedPerWindow, [2, 2, 2]);
+    assert.deepEqual(response.columnResolvedPerWindow, [2, 2, 1]);
+    assert.equal(response.evidenceRecord, undefined);
+  });
+  it('uses one common shorter-genome window in preview and final passes', async () => {
+    const run = harness({ yieldControl: async () => {} });
+    await run.handle({ data: pairJob(61, 'ACGT'.repeat(400), 'TGCA'.repeat(160), 80, 0) });
+    assert.deepEqual(run.messages.map(r => [r.bins, r.window]), [[40, 20], [80, 20]]);
+    for (const response of run.messages) {
+      assert.equal(response.pairwise, true); assert.equal(response.rowResolvedPerWindow!.length, response.bins);
+      assert.equal(response.columnResolvedPerWindow!.length, response.bins);
+    }
+  });
+  it('captures and replays two-source records with exact matrix transfers and matching JSON/TSV', async () => {
+    const run = harness();
+    await run.handle({ data: pairCapture(62) });
+    const first = run.messages[0];
+    assert.equal(first.ok, true); assert.equal(first.evidenceRecord!.method.id, 'sequence-pairwise-dot-plot');
+    assert.deepEqual(first.evidenceRecord!.inputs.map(i => i.data), ['AACC', 'CCAANT']);
+    assert.deepEqual(JSON.parse(first.experimentJson!), first.evidenceRecord);
+    assert.match(first.experimentTsv!, /0\t2\t0\t2\t4\t6\t2\t1\t0\t0.5/);
+    await run.handle({ data: { requestId: 63, sequence: 'AACC', comparison: columnInput(),
+      experiment: { kind: 'replay', context: experimentContext, content: first.experimentJson! } } });
+    const second = run.messages[1];
+    assert.equal(second.replayExactRecord, true); assert.deepEqual(second.evidenceRecord, first.evidenceRecord);
+    assert.deepEqual(second.directValues, first.directValues); assert.deepEqual(second.columnResolvedPerWindow, [2, 2, 1]);
+  });
+  it('refuses a different same-length column and self/pairwise record substitution without losing the next job', async () => {
+    const saved = (await createPairwiseDotPlotExperiment({ sequence: 'AACC', ...experimentContext }, columnInput(), { bins: 3, window: 2 })).record;
+    const content = serializeAnalysisRecord(saved), run = harness();
+    for (const comparison of [columnInput('TTTTTT'), undefined]) {
+      await run.handle({ data: { requestId: 64, sequence: 'AACC', comparison,
+        experiment: { kind: 'replay', context: experimentContext, content } } });
+    }
+    assert(run.messages.every(message => !message.ok && message.evidenceRecord === undefined));
+    await run.handle({ data: job(65) }); assertAcgt(run.messages[2]);
+  });
+  it('rejects invalid column data and literal policy before producing a preview or loading WASM', async () => {
+    let loads = 0;
+    const run = harness({ loadWasm: async () => { loads++; return null; } });
+    for (const comparison of [null, {}, columnInput(''), columnInput('NNNN'), columnInput('A😀T')]) {
+      await run.handle({ data: { ...pairJob(66), comparison } as DotPlotJob });
+    }
+    await run.handle({ data: { ...pairJob(66), config: { bins: 3, window: 2, ambiguity: 'literal' } } });
+    assert.equal(run.messages.length, 6); assert.equal(loads, 0);
+    assert(run.messages.every(message => !message.ok && message.directValues === undefined));
+  });
+  it('preserves exact primary ASCII references and the separately supplied comparison sequence', async () => {
+    const bytes = new TextEncoder().encode('!AACC!');
+    const sequenceRef: SequenceBytesRef = { buffer: bytes.buffer, byteOffset: 1, byteLength: 4, length: 4, encoding: 'ascii', isShared: false };
+    const run = harness();
+    await run.handle({ data: { requestId: 67, sequenceRef, comparison: columnInput(), config: { bins: 3, window: 2 }, experiment: pairCapture(67).experiment } });
+    assert.equal(run.messages[0].ok, true);
+    assert.deepEqual(run.messages[0].evidenceRecord!.inputs.map(input => input.data), ['AACC', 'CCAANT']);
+  });
+  it('suppresses an old pairwise final pass after a new comparison takes ownership', async () => {
+    const preview = deferred(), resume = deferred();
+    const run = harness({ yieldControl: () => { preview.resolve(); return resume.promise; } });
+    const old = run.handle({ data: pairJob(68, 'ACGT'.repeat(50), 'TTAA'.repeat(30), 80, 20) });
+    await preview.promise;
+    await run.handle({ data: pairJob(69) }); resume.resolve(); await old;
+    assert.deepEqual(run.messages.map(r => [r.requestId, r.bins]), [[68, 40], [69, 3]]);
+  });
+  it('suppresses obsolete captures and replay failures while evidence hashes are pending', async () => {
+    const run = harness(), old = run.handle({ data: pairCapture(70) });
+    await run.handle({ data: job(71) }); await old;
+    assert.deepEqual(run.messages.map(r => r.requestId), [71]);
+    const saved = (await createPairwiseDotPlotExperiment({ sequence: 'AACC', ...experimentContext }, columnInput(), { bins: 3, window: 2 })).record;
+    const replay = run.handle({ data: { requestId: 72, sequence: 'AACC', comparison: columnInput('TTTTTT'),
+      experiment: { kind: 'replay', context: experimentContext, content: serializeAnalysisRecord(saved) } } });
+    await run.handle({ data: job(73) }); await replay;
+    assert.deepEqual(run.messages.map(r => r.requestId), [71, 73]);
   });
 });

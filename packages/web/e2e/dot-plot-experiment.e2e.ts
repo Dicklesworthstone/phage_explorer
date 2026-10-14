@@ -3,10 +3,12 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
-import { createDotPlotExperiment } from '../../core/src/analysis/dot-plot';
+import { createDotPlotExperiment, replayPairwiseDotPlotExperiment } from '../../core/src/analysis/dot-plot';
 
 const sequenceA = 'ANCGTACGTN'.repeat(16);
 const sequenceB = 'CCCCN'.repeat(32);
+const comparisonA = 'TTANCCG'.repeat(31);
+const comparisonB = 'GGNNAAA'.repeat(24);
 interface FixtureWindow extends Window {
   selectDotInput(name: 'a' | 'b'): void;
   holdDotReply: boolean;
@@ -49,13 +51,15 @@ const test = base.extend<{ dotFixture: void }>({
             import { ToastProvider } from './components/ui/Toast';
             import { ScrollProvider } from './providers';
             import './styles/index.css';
-            async function entry(sequence) {
+            async function entry(sequence, comparisonSequence) {
               const genome = (await importLocalGenomes({ name: 'private.fasta', text: '>dot-local\\n' + sequence })).genomes[0];
               genome.phage = { ...genome.phage, id: 1 };
-              return { phage: genome.phage, repository: createLocalGenomeRepository(null, [genome]) };
+              const comparison = (await importLocalGenomes({ name: 'comparison.fasta', text: '>dot-comparison\\n' + comparisonSequence })).genomes[0];
+              comparison.phage = { ...comparison.phage, id: 2 };
+              return { phage: genome.phage, repository: createLocalGenomeRepository(null, [genome, comparison]) };
             }
-            const a = await entry(${JSON.stringify(sequenceA)});
-            const b = await entry(${JSON.stringify(sequenceB)});
+            const a = await entry(${JSON.stringify(sequenceA)}, ${JSON.stringify(comparisonA)});
+            const b = await entry(${JSON.stringify(sequenceB)}, ${JSON.stringify(comparisonB)});
             window.experimentJobs = 0;
             const NativeWorker = window.Worker;
             window.Worker = class extends NativeWorker {
@@ -239,4 +243,63 @@ test('a new window edit cancels a pending file read before it can launch or rest
   await expect(windowControl(panel(page))).toHaveValue('7');
   expect((await parseAnalysisRecord(await download(page, 'JSON'))).resultId).toBe(saved.resultId);
   expect(await page.evaluate(() => (window as FixtureWindow).experimentJobs)).toBe(jobs);
+});
+
+test('compares unequal private genomes and restores both exact axes without relabeling their coordinates', async ({ page }) => {
+  const overlay = panel(page), comparison = overlay.getByRole('combobox', { name: 'Comparison genome (column/X)' });
+  await comparison.selectOption('2');
+  await expect(overlay).toContainText('Column/X: dot-comparison');
+  const content = await prepare(page), saved = await parseAnalysisRecord(content);
+  expect(saved.method.id).toBe('sequence-pairwise-dot-plot');
+  expect(saved.inputs.map(input => input.data)).toEqual([sequenceA, comparisonA]);
+  const table = (await download(page, 'TSV')).trim().split('\n');
+  expect(table[5 + 39].split('\t').slice(2, 8)).toEqual(['0', '4', '213', '217', '3', '3']);
+  const fresh = await replayPairwiseDotPlotExperiment(content,
+    { sequence: sequenceA, accession: 'dot-local', source: 'local' },
+    { sequence: comparisonA, accession: 'dot-comparison', source: 'local' });
+  expect(fresh.exactRecord).toBe(true);
+  await restore(page, content);
+  await expect(overlay).toContainText('Replay matched:');
+
+  // The new column has the SAME repository and an independently valid sequence.
+  // It must not accept the saved second genome merely because the row agrees.
+  await comparison.selectOption('1');
+  await expect(overlay).toContainText('Column/X: dot-local');
+  await expect(overlay).toContainText('Analysis complete.');
+  await overlay.getByRole('button', { name: 'Prepare dot plot experiment', exact: true }).click();
+  await expect(overlay).toContainText('Experiment prepared:');
+  const accepted = await download(page, 'JSON');
+  await restore(page, content);
+  await expect(overlay.getByRole('alert')).toContainText('both selected genome axes');
+  expect(await download(page, 'JSON')).toBe(accepted);
+  await comparison.selectOption('self');
+  await expect(overlay).toContainText('Analysis complete.');
+  await expect(overlay).not.toContainText('Column/X:');
+});
+
+test('abandons a delayed pairwise restore when the reference changes and resets repository-owned choices', async ({ page }) => {
+  const overlay = panel(page), comparison = overlay.getByRole('combobox', { name: 'Comparison genome (column/X)' });
+  await comparison.selectOption('2');
+  const content = await prepare(page);
+  const jobs = await page.evaluate(() => (window as unknown as FixtureWindow).experimentJobs);
+  await page.evaluate(() => { (window as unknown as FixtureWindow).holdDotRead = true; });
+  await restore(page, content);
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReadPending)).toBe(true);
+  await comparison.selectOption('1');
+  await expect(overlay).toContainText('Column/X: dot-local');
+  await expect(overlay).toContainText('Analysis complete.');
+  await page.evaluate(() => { (window as unknown as FixtureWindow).releaseDotRead(); });
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReadReleased)).toBe(true);
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).experimentJobs)).toBe(jobs);
+  await expect(comparison).toHaveValue('1');
+
+  await comparison.selectOption('2');
+  await expect(overlay).toContainText('Column/X: dot-comparison');
+  await page.evaluate(() => { (window as unknown as FixtureWindow).selectDotInput('b'); });
+  await expect(comparison).toHaveValue('self');
+  await expect(overlay).toContainText('Analysis complete.');
+  await comparison.selectOption('2');
+  await expect(overlay).toContainText('(168 bp)');
+  const replaced = await parseAnalysisRecord(await prepare(page));
+  expect(replaced.inputs.map(input => input.data)).toEqual([sequenceB, comparisonB]);
 });

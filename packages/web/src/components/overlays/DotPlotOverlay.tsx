@@ -1,5 +1,5 @@
 /**
- * DotPlotOverlay - Self-Similarity Matrix Visualization
+ * DotPlotOverlay - Self and Pairwise Genome Similarity Matrices
  *
  * Explores sampled genome windows for direct and reverse-complement similarity.
  * Patterns nominate candidates; this is not an exhaustive repeat annotation.
@@ -12,7 +12,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { getDotPlotWindowRange, type PhageFull } from '@phage-explorer/core';
+import { getDotPlotWindowRange, type PhageFull, type PhageSummary } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
@@ -61,6 +61,7 @@ interface DotPlotInput {
   repository: PhageRepository;
   phage: PhageFull;
   sequence: string;
+  comparison: { phage: PhageFull; sequence: string } | null;
 }
 type MatrixResponse = DotPlotWorkerResponse & {
   ok: true; bins: number; window: number; directValues: Float32Array; invertedValues: Float32Array;
@@ -81,24 +82,35 @@ function createDotPlotWorker(): Worker {
   }
 }
 
-function hasMatrix(response: DotPlotWorkerResponse, sequenceLength: number): response is MatrixResponse {
+function hasMatrix(response: DotPlotWorkerResponse, sequenceLength: number, columnLength?: number): response is MatrixResponse {
   const bins = response.bins ?? 0, window = response.window ?? 0;
   return response.ok && Number.isSafeInteger(bins) && bins > 0 && bins <= 200
-    && Number.isSafeInteger(window) && window > 0 && window <= sequenceLength
+    && Number.isSafeInteger(window) && window > 0 && window <= Math.min(sequenceLength, columnLength ?? sequenceLength)
+    && (columnLength === undefined ? response.pairwise !== true : response.pairwise === true
+      && [response.rowResolvedPerWindow, response.columnResolvedPerWindow].every(counts => Array.isArray(counts)
+        && counts.length === bins && counts.every(count => Number.isSafeInteger(count) && count >= 0 && count <= window)))
     && response.directValues instanceof Float32Array && response.invertedValues instanceof Float32Array
     && response.directValues.length === bins * bins && response.invertedValues.length === bins * bins
     && response.directValues.every(value => Number.isFinite(value) && value >= 0 && value <= 1)
     && response.invertedValues.every(value => Number.isFinite(value) && value >= 0 && value <= 1);
 }
 
-function hasExperiment(response: DotPlotWorkerResponse, sequence: string): response is ExperimentResponse {
+function hasExperiment(response: DotPlotWorkerResponse, input: DotPlotInput): response is ExperimentResponse {
   const record = response.evidenceRecord;
-  return hasMatrix(response, sequence.length) && record?.format === 'phage-explorer-analysis'
-    && record.method?.id === 'sequence-dot-plot' && record.method.version === '1'
-    && record.inputs?.length === 1 && record.inputs[0].data === sequence
+  return hasMatrix(response, input.sequence.length, input.comparison?.sequence.length) && record?.format === 'phage-explorer-analysis'
+    && record.method?.id === (input.comparison ? 'sequence-pairwise-dot-plot' : 'sequence-dot-plot') && record.method.version === '1'
+    && (input.comparison ? record.inputs?.length === 2 && record.inputs[0].id === 'rowSequence'
+      && record.inputs[1].id === 'columnSequence' && record.inputs[1].data === input.comparison.sequence : record.inputs?.length === 1)
+    && record.inputs[0].data === input.sequence
     && record.parameters?.bins === response.bins && record.parameters.window === response.window
     && record.parameters.ambiguity === 'exclude'
     && typeof response.experimentJson === 'string' && typeof response.experimentTsv === 'string';
+}
+
+function comparisonSource(input: DotPlotInput): DotPlotJob['comparison'] {
+  const other = input.comparison;
+  return other ? { sequence: other.sequence, accession: other.phage.accession,
+    source: other.phage.localGenome ? 'local' : 'catalog' } : undefined;
 }
 
 interface DotPlotOverlayProps {
@@ -125,9 +137,16 @@ export function DotPlotOverlay({
   const [computeLoading, setComputeLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
+  const [comparisonSelection, setComparisonSelection] = useState<{ repository: PhageRepository; id: number } | null>(null);
+  const comparisonId = comparisonSelection?.repository === repository ? comparisonSelection.id : null;
+  const [comparisonCatalog, setComparisonCatalog] = useState<{ repository: PhageRepository; phages: PhageSummary[]; error: string | null } | null>(null);
+  const catalog = comparisonCatalog?.repository === repository ? comparisonCatalog : null;
   const [loaded, setLoaded] = useState<DotPlotInput | null>(null);
-  const input = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
+  const input = loaded?.repository === repository && loaded?.phage === currentPhage
+    && (loaded.comparison?.phage.id ?? null) === comparisonId ? loaded : null;
   const sequence = input?.sequence ?? '';
+  const columnSequence = input?.comparison?.sequence ?? sequence;
+  const commonLength = Math.min(sequence.length, columnSequence.length);
   const loading = sequenceLoading || computeLoading;
   const resolvedBaseCount = useMemo(() => {
     let count = 0;
@@ -158,8 +177,8 @@ export function DotPlotOverlay({
   const [experimentNotice, setExperimentNotice] = useState<string | null>(null);
   const requestedWindow = Number(windowInput);
   const parameterError = !/^\d+$/.test(windowInput) || !Number.isSafeInteger(requestedWindow)
-    || requestedWindow < 0 || (sequence.length > 0 && requestedWindow > sequence.length)
-    ? 'Window must be a whole number from 0 (automatic) to the selected sequence length.' : null;
+    || requestedWindow < 0 || (commonLength > 0 && requestedWindow > commonLength)
+    ? 'Window must be a whole number from 0 (automatic) to the shorter selected sequence length.' : null;
   const directValues = response?.directValues ?? null;
   const invertedValues = response?.invertedValues ?? null;
   const bins = response?.bins ?? 0;
@@ -188,7 +207,22 @@ export function DotPlotOverlay({
     };
   }, []);
 
-  // Fetch full genome when overlay opens
+  // Catalog choices are repository-owned too; a replaced local workspace must
+  // not reuse a same-ID comparison selection or a late list response.
+  useEffect(() => {
+    if (!open || !repository) return;
+    let cancelled = false;
+    setComparisonCatalog(null);
+    void repository.listPhages().then(phages => {
+      if (!cancelled) setComparisonCatalog({ repository, phages, error: null });
+    }).catch((cause: unknown) => {
+      if (!cancelled) setComparisonCatalog({ repository, phages: [], error: cause instanceof Error ? cause.message : String(cause) });
+    });
+    return () => { cancelled = true; };
+  }, [open, repository, retryCount]);
+
+  // Load both exact axes as one selection-owned snapshot, never independently
+  // relabel an old reference sequence after either selection changes.
   useEffect(() => {
     if (!open) {
       setSequenceLoading(false);
@@ -208,13 +242,25 @@ export function DotPlotOverlay({
     let cancelled = false;
     setSequenceLoading(true);
 
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => cancelled ? '' : repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string) => {
+    void (async () => {
+      const length = await repository.getFullGenomeLength(phageId);
+      if (cancelled) return;
+      const sequence = await repository.getSequenceWindow(phageId, 0, length);
+      if (cancelled) return;
+      let comparison: DotPlotInput['comparison'] = null;
+      if (comparisonId !== null) {
+        const phage = await repository.getPhageById(comparisonId);
         if (cancelled) return;
-        setLoaded({ repository, phage: currentPhage, sequence: seq });
-      })
+        if (!phage) throw new Error('The selected comparison genome is unavailable in this repository.');
+        const otherLength = await repository.getFullGenomeLength(phage.id);
+        if (cancelled) return;
+        const otherSequence = await repository.getSequenceWindow(phage.id, 0, otherLength);
+        if (cancelled) return;
+        if (!otherSequence.length) throw new Error('The selected comparison genome has no sequence.');
+        comparison = { phage, sequence: otherSequence };
+      }
+      setLoaded({ repository, phage: currentPhage, sequence, comparison });
+    })()
       .catch((err: unknown) => {
         if (cancelled) return;
         // Do not swallow this. Setting an empty sequence rendered "No sequence
@@ -232,7 +278,7 @@ export function DotPlotOverlay({
       cancelled = true;
       setSequenceLoading(false);
     };
-  }, [open, repository, currentPhage, retryCount]);
+  }, [open, repository, currentPhage, comparisonId, retryCount]);
 
   // Run dot plot analysis when sequence or resolution changes
   useEffect(() => {
@@ -253,9 +299,10 @@ export function DotPlotOverlay({
       setError(null);
       return;
     }
-    if (request.window > selected.sequence.length) {
+    const shorterLength = Math.min(selected.sequence.length, selected.comparison?.sequence.length ?? selected.sequence.length);
+    if (request.window > shorterLength) {
       setComputeLoading(false);
-      setError('The requested window exceeds this genome length. Choose a smaller window or automatic sizing.');
+      setError('The requested window exceeds a selected genome length. Choose a smaller window or automatic sizing.');
       return;
     }
 
@@ -277,8 +324,8 @@ export function DotPlotOverlay({
     let cancelled = false;
     const requestId = ++requestIdRef.current;
     let running = true;
-    const expectedWindow = request.window || Math.min(selected.sequence.length,
-      Math.max(20, Math.floor(selected.sequence.length / request.resolution)));
+    const expectedWindow = request.window || Math.min(shorterLength,
+      Math.max(20, Math.floor(shorterLength / request.resolution)));
     setComputeLoading(true);
     setError(null);
 
@@ -294,7 +341,7 @@ export function DotPlotOverlay({
 
       const outBins = response.bins ?? 0;
       const expectedResolution = outBins === request.resolution || (request.resolution >= 80 && outBins === 40);
-      if (expectedResolution && response.window === expectedWindow && hasMatrix(response, selected.sequence.length)) {
+      if (expectedResolution && response.window === expectedWindow && hasMatrix(response, selected.sequence.length, selected.comparison?.sequence.length)) {
         running = outBins !== request.resolution;
         setComputeLoading(outBins !== request.resolution);
         setComputed({ request, response });
@@ -321,17 +368,18 @@ export function DotPlotOverlay({
     };
     cancelComputeRef.current = cancelCompute;
     const config = { bins: request.resolution, window: request.window, ambiguity: 'exclude' as const };
+    const comparison = comparisonSource(selected);
     try {
       if (/^[ACGT]+$/i.test(selected.sequence)) {
         try {
           const { ref: sequenceRef, transfer } = SharedSequencePool.getInstance().getOrCreateRef(selected.phage.id, selected.sequence);
-          worker.postMessage({ requestId, sequenceRef, config }, transfer);
+          worker.postMessage({ requestId, sequenceRef, config, comparison }, transfer);
         } catch {
-          worker.postMessage({ requestId, sequence: selected.sequence, config });
+          worker.postMessage({ requestId, sequence: selected.sequence, config, comparison });
         }
       } else {
         // Preserve unresolved symbols/coordinates rather than using a lossy base encoding.
-        worker.postMessage({ requestId, sequence: selected.sequence, config });
+        worker.postMessage({ requestId, sequence: selected.sequence, config, comparison });
       }
     } catch (cause: unknown) {
       failWorker(cause instanceof Error ? cause.message : String(cause));
@@ -412,7 +460,7 @@ export function DotPlotOverlay({
         const result = event.data;
         if (!active() || !result || result.requestId !== requestId) return;
         if (!result.ok) { fail(result.error ?? 'Dot plot experiment failed.'); return; }
-        if (!hasExperiment(result, selected.sequence) || (file && typeof result.replayExactRecord !== 'boolean')) {
+        if (!hasExperiment(result, selected) || (file && typeof result.replayExactRecord !== 'boolean')) {
           fail('Dot plot worker returned an invalid experiment.');
           return;
         }
@@ -433,10 +481,10 @@ export function DotPlotOverlay({
       const context = { accession: selected.phage.accession, source: selected.phage.localGenome ? 'local' as const : 'catalog' as const };
       let job: DotPlotJob;
       if (content !== null) {
-        job = { requestId, sequence: selected.sequence, experiment: { kind: 'replay', context, content } };
+        job = { requestId, sequence: selected.sequence, comparison: comparisonSource(selected), experiment: { kind: 'replay', context, content } };
       } else {
         if (!response) throw new Error('No completed dot plot to export.');
-        job = { requestId, sequence: selected.sequence,
+        job = { requestId, sequence: selected.sequence, comparison: comparisonSource(selected),
           config: { bins: response.bins, window: response.window, ambiguity: 'exclude' },
           experiment: { kind: 'create', context, displayed: {
             bins: response.bins, window: response.window, directValues: response.directValues, invertedValues: response.invertedValues,
@@ -521,14 +569,14 @@ export function DotPlotOverlay({
     const { row, col } = hoverInfo;
     if (!Number.isSafeInteger(row) || !Number.isSafeInteger(col) || row < 0 || col < 0 || row >= bins || col >= bins) return null;
     return {
-      x: getDotPlotWindowRange(sequence.length, bins, windowSize, col),
+      x: getDotPlotWindowRange(columnSequence.length, bins, windowSize, col),
       y: getDotPlotWindowRange(sequence.length, bins, windowSize, row),
       direct: directValues[row * bins + col],
       inverted: invertedValues[row * bins + col],
-      coverageX: directValues[col * bins + col],
-      coverageY: directValues[row * bins + row],
+      coverageX: response?.pairwise ? response.columnResolvedPerWindow![col] / windowSize : directValues[col * bins + col],
+      coverageY: response?.pairwise ? response.rowResolvedPerWindow![row] / windowSize : directValues[row * bins + row],
     };
-  }, [hoverInfo, directValues, invertedValues, sequence, bins, windowSize]);
+  }, [hoverInfo, directValues, invertedValues, sequence, columnSequence, response, bins, windowSize]);
 
   if (!open) return null;
 
@@ -554,10 +602,23 @@ export function DotPlotOverlay({
           Scores count resolved A/C/G/T matches divided by the full window length;
           unknown and IUPAC ambiguity symbols never count as matching evidence.
           Combined view shows the larger of the two scores, not an average or an exact repeat call.
+          {input?.comparison && <> The selected genome is the row/Y axis; the comparison is the column/X axis.
+            Each axis is sampled in its own coordinates. Inverted scores reverse-complement the row window.
+            The cross-genome diagonal is similarity, not input coverage.</>}
         </OverlayDescription>
 
         {/* Controls */}
         <OverlayToolbar>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            Compare with (column/X):
+            <select aria-label="Comparison genome (column/X)" value={comparisonId === null ? 'self' : String(comparisonId)}
+              disabled={!repository} onChange={event => {
+                setComparisonSelection(event.target.value === 'self' || !repository ? null : { repository, id: Number(event.target.value) });
+              }}>
+              <option value="self">Self comparison</option>
+              {(catalog?.phages ?? []).map(phage => <option key={phage.id} value={String(phage.id)}>{phage.name} ({phage.accession})</option>)}
+            </select>
+          </label>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <label htmlFor={viewSelectId} style={{ color: 'var(--color-text-muted)' }}>
               View:
@@ -626,6 +687,11 @@ export function DotPlotOverlay({
             </span>
           )}
         </OverlayToolbar>
+        {catalog?.error && <p role="alert">Could not list comparison genomes: {catalog.error}</p>}
+        {input?.comparison && <p role="status">
+          Row/Y: {input.phage.name} ({sequence.length.toLocaleString()} bp). Column/X: {input.comparison.phage.name}
+          {' '}({columnSequence.length.toLocaleString()} bp). Independent genomic coordinates; equal-length sampled windows.
+        </p>}
 
         <form aria-label="Dot plot window parameters" onSubmit={event => {
           event.preventDefault();
@@ -634,7 +700,7 @@ export function DotPlotOverlay({
         }} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: '0.75rem' }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
             Window size (bp; 0 = automatic)
-            <input type="number" min={0} max={sequence.length || undefined} step={1} required
+            <input type="number" min={0} max={commonLength || undefined} step={1} required
               value={windowInput} onChange={event => {
                 if (experimentLoading) cancelExperiment();
                 setWindowInput(event.target.value);
@@ -668,7 +734,7 @@ export function DotPlotOverlay({
           </label>
           <p style={{ fontSize: '0.8rem', margin: 0 }}>
             Preparation verifies the final displayed matrix against an exact recomputation.
-            JSON includes the complete selected genome; sharing it shares those bases.
+            JSON includes the complete selected genome{input?.comparison ? ' and comparison genome' : ''}; sharing it shares those bases.
             TSV contains scores, coordinates and checksums, not the sequence.
             Preparation and replay run locally without uploading your input.
           </p>
@@ -739,7 +805,7 @@ export function DotPlotOverlay({
                   </div>
                   <div role="status" aria-live="polite" style={{ fontSize: '0.75rem', marginBottom: '0.5rem' }}>
                     {bins < resolution ? `Preview; refining to ${resolution}x${resolution}. ` : 'Analysis complete. '}
-                    Resolved bases: {resolvedBaseCount.toLocaleString()} / {sequence.length.toLocaleString()}
+                    {input?.comparison ? 'Resolved row/Y bases: ' : 'Resolved bases: '}{resolvedBaseCount.toLocaleString()} / {sequence.length.toLocaleString()}
                     {' '}({((resolvedBaseCount / sequence.length) * 100).toFixed(1)}%).
                   </div>
                   <HeatmapCanvas
@@ -754,7 +820,8 @@ export function DotPlotOverlay({
                     }}
                     colorScale={currentColorScale}
                     onHover={handleHover}
-                    ariaLabel={`Dot plot ${viewMode} view, resolved matches per full window`}
+                    ariaLabel={`Dot plot ${viewMode} view, resolved matches per full window${input?.comparison
+                      ? `; row genome ${input.phage.name}, column genome ${input.comparison.phage.name}` : ''}`}
                   />
                 </div>
 
@@ -854,7 +921,9 @@ export function DotPlotOverlay({
               style={{ fontSize: '0.75rem' }}
             >
               <ul style={{ margin: '0.5rem 0 0 1rem', padding: 0 }}>
-                <li><strong>Direct main diagonal</strong>: Resolved-base coverage; unknown positions reduce brightness.</li>
+                <li><strong>Direct main diagonal</strong>: {input?.comparison
+                  ? 'Similarity between independently sampled windows, not input coverage.'
+                  : 'Resolved-base coverage; unknown positions reduce brightness.'}</li>
                 <li><strong>Parallel patterns</strong>: Candidates for direct repeats, not confirmed duplications.</li>
                 <li><strong>Reverse-complement patterns</strong>: Candidates for inverted similarity or palindromes.</li>
                 <li><strong>Sampling limits</strong>: Windows can overlap or skip positions. This is not an exhaustive repeat search or a packaging-mechanism prediction.</li>

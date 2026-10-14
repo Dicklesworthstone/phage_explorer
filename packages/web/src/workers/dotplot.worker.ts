@@ -2,6 +2,8 @@
 import {
   computeDotPlotBuffers, createDotPlotExperiment, replayDotPlotExperiment,
   exportDotPlotExperimentTsv, serializeAnalysisRecord,
+  computePairwiseDotPlotBuffers, createPairwiseDotPlotExperiment,
+  replayPairwiseDotPlotExperiment, exportPairwiseDotPlotExperimentTsv,
 } from '@phage-explorer/core';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
 import { getWasmCompute } from '../lib/wasm-loader';
@@ -75,6 +77,12 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
       if (('sequence' in job) === ('sequenceRef' in job)) throw new Error('Provide exactly one dot plot sequence source');
       const sequence = 'sequence' in job ? job.sequence : decodeSequenceRef(job.sequenceRef);
       if (typeof sequence !== 'string' || sequence.length === 0) throw new Error('No sequence provided for dot plot');
+      const comparison = job.comparison === undefined ? undefined : { ...job.comparison };
+      if (comparison && (typeof comparison.sequence !== 'string' || !comparison.sequence.length
+          || sequence.length + comparison.sequence.length > 5000000
+          || /[^ACGTURYSWKMBDHVN]/i.test(sequence) || /[^ACGTURYSWKMBDHVN]/i.test(comparison.sequence))) {
+        throw new Error('Pairwise dot plots require two IUPAC sequences of at most 5,000,000 total bases.');
+      }
 
       if (job.experiment !== undefined) {
         const operation = job.experiment;
@@ -85,9 +93,13 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
         if (operation.kind === 'create' && !operation.displayed) throw new Error('Missing displayed dot plot for experiment capture.');
         if (operation.kind === 'replay' && job.config !== undefined) throw new Error('Replay settings must come from the saved experiment.');
         const input = { ...operation.context, sequence };
-        const experiment = operation.kind === 'replay'
-          ? await replayDotPlotExperiment(operation.content, input)
-          : await createDotPlotExperiment(input, job.config, operation.displayed);
+        const experiment = comparison
+          ? operation.kind === 'replay'
+            ? await replayPairwiseDotPlotExperiment(operation.content, input, comparison)
+            : await createPairwiseDotPlotExperiment(input, comparison, job.config, operation.displayed)
+          : operation.kind === 'replay'
+            ? await replayDotPlotExperiment(operation.content, input)
+            : await createDotPlotExperiment(input, job.config, operation.displayed);
         if (jobId !== activeJobId) return;
         // Serialization stays off the UI thread as well. The arrays sent to the
         // viewer and the record both come from this same complete computation.
@@ -95,7 +107,9 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
           requestId: job.requestId, ok: true, bins: experiment.bins, window: experiment.window,
           directValues: experiment.directValues, invertedValues: experiment.invertedValues,
           evidenceRecord: experiment.record, experimentJson: serializeAnalysisRecord(experiment.record),
-          experimentTsv: exportDotPlotExperimentTsv(experiment.record),
+          experimentTsv: comparison ? exportPairwiseDotPlotExperimentTsv(experiment.record) : exportDotPlotExperimentTsv(experiment.record),
+          ...('rowResolvedPerWindow' in experiment ? { pairwise: true as const,
+            rowResolvedPerWindow: experiment.rowResolvedPerWindow, columnResolvedPerWindow: experiment.columnResolvedPerWindow } : {}),
           ...('exactRecord' in experiment && typeof experiment.exactRecord === 'boolean'
             ? { replayExactRecord: experiment.exactRecord } : {}),
         };
@@ -115,7 +129,11 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
       const ambiguity = job.config?.ambiguity ?? 'exclude';
       if (ambiguity !== 'exclude' && ambiguity !== 'literal') throw new Error('Unsupported dot plot ambiguity policy');
       if (ambiguity === 'exclude' && !/[ACGT]/i.test(sequence)) throw new Error('No resolved A/C/G/T bases available for dot plot');
-      const length = ambiguity === 'literal' ? sequence.toUpperCase().length : sequence.length;
+      if (comparison && (ambiguity !== 'exclude' || !/[ACGT]/i.test(comparison.sequence))) {
+        throw new Error('Pairwise dot plots require resolved-base scoring and resolved A/C/G/T bases on both axes.');
+      }
+      const length = comparison ? Math.min(sequence.length, comparison.sequence.length)
+        : ambiguity === 'literal' ? sequence.toUpperCase().length : sequence.length;
       // Preview and final results must differ only in resolution, not window size.
       const window = Math.min(length, requestedWindow || Math.max(20, Math.floor(length / targetBins) || length));
       const passes = targetBins >= 80 ? [40, targetBins] : [targetBins];
@@ -125,7 +143,8 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
       // lossy native encoding or treat a successful load as semantic parity.
       let wasm: DotPlotBackend | null = null;
       let bytes: Uint8Array | null = null;
-      if (/^[ACGT]+$/i.test(sequence)) {
+      // The native ABI is self-only. A successful load cannot make it a two-genome kernel.
+      if (!comparison && /^[ACGT]+$/i.test(sequence)) {
         bytes = new Uint8Array(sequence.length);
         for (let i = 0; i < sequence.length; i++) bytes[i] = sequence.charCodeAt(i);
         try { wasm = await loadWasm(); } catch { /* Optional acceleration; compute in JS below. */ }
@@ -168,8 +187,13 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
         if (!response) {
           // Write the exact counts directly into the arrays we transfer. At
           // maximum resolution this avoids 1,048,576 temporary cell objects.
-          const { directValues, invertedValues } = computeDotPlotBuffers(sequence, { bins, window, ambiguity });
-          response = { requestId: job.requestId, ok: true, directValues, invertedValues, bins, window };
+          if (comparison) {
+            const result = computePairwiseDotPlotBuffers(sequence, comparison.sequence, { bins, window, ambiguity });
+            response = { requestId: job.requestId, ok: true, ...result, pairwise: true };
+          } else {
+            const { directValues, invertedValues } = computeDotPlotBuffers(sequence, { bins, window, ambiguity });
+            response = { requestId: job.requestId, ok: true, directValues, invertedValues, bins, window };
+          }
         }
         if (jobId !== activeJobId) return;
         const transfer = [...new Set([response.directValues!.buffer, response.invertedValues!.buffer])] as ArrayBuffer[];

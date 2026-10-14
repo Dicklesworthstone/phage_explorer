@@ -505,7 +505,11 @@ export type DotPlotExperimentRequest =
 export type DotPlotJob = (
   | { requestId?: number; sequence: string; config?: DotPlotConfig }
   | { requestId?: number; sequenceRef: SequenceBytesRef; config?: DotPlotConfig }
-) & { experiment?: DotPlotExperimentRequest };
+) & {
+  experiment?: DotPlotExperimentRequest;
+  /** Optional exact column/X genome. The primary sequence remains the row/Y axis. */
+  comparison?: DotPlotExperimentInput;
+};
 
 export interface DotPlotWorkerResponse {
   requestId?: number;
@@ -516,6 +520,10 @@ export interface DotPlotWorkerResponse {
   invertedValues?: Float32Array;
   bins?: number;
   window?: number;
+  pairwise?: true;
+  /** Pairwise diagonals are similarities, never coverage estimates. */
+  rowResolvedPerWindow?: number[];
+  columnResolvedPerWindow?: number[];
   error?: string;
   /** Present only after a complete portable capture or verified replay, never on a preview. */
   evidenceRecord?: AnalysisRecord;
