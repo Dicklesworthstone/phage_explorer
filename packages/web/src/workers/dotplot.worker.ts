@@ -1,5 +1,5 @@
 /** Dot-plot computation with optional acceleration, explicit evidence semantics and latest-job ownership. */
-import { computeDotPlot } from '@phage-explorer/core';
+import { computeDotPlotBuffers } from '@phage-explorer/core';
 import type { DotPlotJob, DotPlotWorkerResponse, SequenceBytesRef } from './types';
 import { getWasmCompute } from '../lib/wasm-loader';
 
@@ -136,15 +136,9 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
           }
         }
         if (!response) {
-          const result = computeDotPlot(sequence, { bins, window, ambiguity });
-          const directValues = new Float32Array(bins * bins);
-          const invertedValues = new Float32Array(bins * bins);
-          for (let i = 0; i < bins; i++) {
-            for (let j = 0; j < bins; j++) {
-              directValues[i * bins + j] = result.grid[i][j].direct;
-              invertedValues[i * bins + j] = result.grid[i][j].inverted;
-            }
-          }
+          // Write the exact counts directly into the arrays we transfer. At
+          // maximum resolution this avoids 1,048,576 temporary cell objects.
+          const { directValues, invertedValues } = computeDotPlotBuffers(sequence, { bins, window, ambiguity });
           response = { requestId: job.requestId, ok: true, directValues, invertedValues, bins, window };
         }
         if (jobId !== activeJobId) return;
