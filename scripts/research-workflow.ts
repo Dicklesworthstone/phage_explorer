@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
-import { COMMAND_LIMITS, parseCommandTape } from '../packages/core/src/command-session';
+import { COMMAND_LIMITS, parseCommandTape, parseCommandPlan, commandValuesEqual, type CommandPlan } from '../packages/core/src/command-session';
 import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis-result';
 import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
 import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
@@ -19,6 +19,8 @@ declare const PHAGE_RESEARCH_WORKER: string | undefined;
 export const RESEARCH_WORKFLOW_HELP = `Replay recorded research locally, without a database or browser
 
 bun run workflow inspect --input workflow.json [--timeout-ms 300000]
+bun run workflow record --input plan.json --output NEW_WORKFLOW.json
+  [--timeout-ms 300000] [--progress]
 bun run workflow replay --input workflow.json [--repetitions 1] [--output analysis.json]
   [--timeout-ms 300000] [--progress]
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
@@ -87,9 +89,23 @@ Comparison-budget exhaustion fails the job. These are not maximal repeat familie
 or biological structure predictions. Neither new method changes the input bases.
 
 inspect reparses embedded inputs and reports action support; no analyses run.
+record creates a NEW recording from a version-1 phage-explorer-command-plan.
+Plans contain name, context: {bundle: ORIGINAL_GENOME_BUNDLE_JSON}, and ordered
+commands with only actionId and parameters. Use the existing canonical action IDs
+and explicit content IDs/settings; expected results, file paths, shell commands,
+implicit genome selection and nested execution are not supported. The whole plan
+is validated before any computation. Recorded tapes cannot be used as plans.
+Each command is computed through the same adapters as browser recording/replay;
+new output identities are recorded, not supplied by the plan. The output is a
+normal portable command tape that the browser and replay command can verify.
+This is fresh authoring, not replay verification. All commands must finish before
+the output is created; a failed command produces no partial tape or success report.
+Plans and the completed tape must each fit 10 MiB; allow room for recorded outputs.
+
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
-pangenome/CDS experiments, portable GC-skew counts and exact-pairs repeats. Source-corpus references are freshly
+pangenome/CDS experiments, portable GC-skew counts, exact-pairs repeats, self/pairwise
+dot plots and restriction digests. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
@@ -107,7 +123,8 @@ json (default) retains full source sequences, while tsv contains coordinates and
 scores/cut products without source bases. The report never includes raw sequences.
 
 The JSON report goes to stdout only on success. --output exclusively creates the
-freshly computed or successfully replayed analysis, not the report or command tape.
+command tape for record, or the freshly computed/successfully replayed analysis
+for other commands; it never writes the report.
 Command-tape replay retains the last analysis's real step identity even when later
 navigation occurs. Existing files/symlinks are never
 replaced. No analysis output is written if computation/verification fails.
@@ -120,6 +137,7 @@ to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTER
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
 export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } |
+  { type: 'record'; input: string; output: string; timeoutMs: number; progress: boolean } |
   { type: 'inspect'; input: string; timeoutMs: number } |
   { type: 'inspect-genomes'; input: string; timeoutMs: number } |
   { type: 'analyze-experiment'; input: string; contentId: string | null; analysis: TerminalAnalysis;
@@ -130,16 +148,16 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   if (args.length === 1 && args[0] === 'list-enzymes') return { type: 'list-enzymes' };
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment') {
-    throw new Error('Choose inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment') {
+    throw new Error('Choose record, inspect, replay, replay-experiment, inspect-genomes or analyze-experiment; see --help.');
   }
-  const allowed = type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
+  const allowed = type === 'record' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false;
   for (let i = 0; i < rest.length;) {
     const key = rest[i++];
-    if (key === '--progress' && type === 'replay') {
+    if (key === '--progress' && (type === 'replay' || type === 'record')) {
       if (progress) throw new Error('Repeated --progress flag.'); progress = true; continue;
     }
     if (!allowed.includes(key) || values.has(key)) throw new Error(`Unsupported or repeated option: ${key}`);
@@ -154,6 +172,11 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return Number(value);
   };
   const timeoutMs = integer('--timeout-ms', 300000, 3600000);
+  if (type === 'record') {
+    const output = values.get('--output');
+    if (!output) throw new Error('record requires --output NEW_WORKFLOW.json; authoring never replaces the plan.');
+    return { type, input, output, timeoutMs, progress };
+  }
   if (type === 'inspect' || type === 'inspect-genomes') return { type, input, timeoutMs };
   if (type === 'replay-experiment' || type === 'analyze-experiment') {
     const outputFormat = values.get('--format') ?? 'json';
@@ -231,6 +254,39 @@ export interface WorkflowRuntime {
   createWorker?: () => TerminalWorker;
 }
 
+/** Bind a newly authored tape to every submitted command and reported output.
+ * This is transport/identity validation, not another numerical executor.
+ */
+function recordingMatches(value: Extract<TerminalResearchResult, { type: 'recorded' }>,
+  plan: CommandPlan, planSha256: string, completed: number): boolean {
+  const report = value.report, total = plan.commands.length;
+  if (!report || report.format !== 'phage-explorer-workflow-recording' || report.version !== 1
+    || report.headless !== true || 'verified' in report || report.name !== plan.name || report.planSha256 !== planSha256
+    || completed !== total || total < 1 || report.completed !== total || !Array.isArray(report.steps)
+    || report.steps.length !== total || typeof value.tapeJson !== 'string'
+    || report.tapeSha256 !== createHash('sha256').update(value.tapeJson, 'utf8').digest('hex')) return false;
+  const tape = parseCommandTape(value.tapeJson);
+  if (tape.name !== plan.name || !commandValuesEqual(tape.context, plan.context) || tape.commands.length !== total) return false;
+  for (let i = 0; i < total; i++) {
+    const command = tape.commands[i], planned = plan.commands[i], step = report.steps[i];
+    if (!step || command.actionId !== planned.actionId || !commandValuesEqual(command.parameters, planned.parameters)
+      || step.execution !== i + 1 || step.step !== i + 1 || step.iteration !== 1 || step.actionId !== planned.actionId) return false;
+    if (step.analysis !== null) {
+      if (!step.analysis || !/^[a-f0-9]{64}$/.test(step.analysis.cacheKey) || !/^[a-f0-9]{64}$/.test(step.analysis.resultId)
+        || !commandValuesEqual(command.expected, step.analysis)) return false;
+    } else {
+      const expected = command.expected;
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)
+        || Object.keys(expected).sort().join('|') !== 'sequenceSha256|view'
+        || typeof expected.sequenceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expected.sequenceSha256)
+        || !commandValuesEqual(expected.view, step.view)) return false;
+    }
+  }
+  let last: number | null = null;
+  for (const step of report.steps) if (step.analysis !== null) last = step.execution;
+  return report.lastAnalysisExecution === last && commandValuesEqual(report.finalView, report.steps[total - 1].view);
+}
+
 /** Each invocation owns exactly one worker; a late message cannot settle it twice.
  * Worker exit without a result is an error, including a zero exit code.
  */
@@ -241,12 +297,13 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   abort(signal);
   validateTerminalResearchRequest(request);
   const submitted = structuredClone(request);
+  const plan = submitted.type === 'record' ? parseCommandPlan(submitted.content) : null;
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
   abort(signal);
   return new Promise((resolve, reject) => {
     abort(signal);
     const tape = submitted.type === 'inspect' || submitted.type === 'replay' ? parseCommandTape(submitted.content) : null;
-    const total = submitted.type === 'replay' ? tape!.commands.length * submitted.repetitions : 0;
+    const total = submitted.type === 'replay' ? tape!.commands.length * submitted.repetitions : plan?.commands.length ?? 0;
     const tapeSha256 = createHash('sha256').update(submitted.content, 'utf8').digest('hex');
     const worker = createWorker();
     let completed = 0;
@@ -272,7 +329,7 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
       if (done) return;
       try {
         abort(signal);
-        if (value?.type === 'progress' && submitted.type === 'replay') {
+        if (value?.type === 'progress' && (submitted.type === 'replay' || submitted.type === 'record')) {
           const p = value.progress;
           if (!p || !['inputs', 'commands'].includes(p.phase) || !Number.isSafeInteger(p.completed) || !Number.isSafeInteger(p.total)
             || p.total !== total || p.total > COMMAND_LIMITS.executions || p.completed < completed || p.completed > completed + 1 || p.completed > p.total
@@ -281,7 +338,8 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           onProgress({ phase: p.phase, completed, total, actionId: p.actionId }); abort(signal); return;
         }
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
-        if (value?.type === 'genomes-inspected' && submitted.type === 'inspect-genomes'
+        if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) finish(value);
+        else if (value?.type === 'genomes-inspected' && submitted.type === 'inspect-genomes'
           && value.report?.format === 'phage-explorer-genome-inspection' && value.report.version === 1 && value.report.headless === true
           && value.report.inputFileSha256 === tapeSha256 && Array.isArray(value.report.genomes)
           && value.report.genomes.length > 0 && value.report.genomes.length <= 100 && value.report.genomes.every(isTerminalGenomeSummary)
@@ -364,13 +422,18 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   const signal = controller.signal;
   try {
     const content = await readInput(command.input, signal);
-    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' ? { type: command.type, content }
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'record' ? { type: command.type, content }
       : command.type === 'analyze-experiment' ? { type: 'analyze-experiment', content, contentId: command.contentId, analysis: command.analysis,
         outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : command.type === 'replay-experiment' ? { type: 'replay-experiment', content, outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : { type: 'replay', content, repetitions: command.repetitions, exportAnalysis: command.output !== undefined };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
+    if (result.type === 'recorded') {
+      if (command.type !== 'record') throw new Error('Unexpected recording result.');
+      await writeNewOutput(command.output, result.tapeJson, signal);
+      return result.report;
+    }
     if (result.type === 'inspection') return result.inspection;
     if (result.type === 'genomes-inspected') return result.report;
     if (result.type === 'experiment-analyzed') {
@@ -432,7 +495,7 @@ export async function researchWorkflowMain(args: readonly string[], output: (tex
     else {
       const report = await executeWorkflowCommand(command, { ...runtime, onProgress: progress => {
         runtime.onProgress?.(progress);
-        if (command.type === 'replay' && command.progress) error(JSON.stringify({ type: 'progress', ...progress }) + '\n');
+        if ((command.type === 'replay' || command.type === 'record') && command.progress) error(JSON.stringify({ type: 'progress', ...progress }) + '\n');
       } });
       output(JSON.stringify(report, null, 2) + '\n');
     }

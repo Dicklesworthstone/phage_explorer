@@ -13,6 +13,17 @@ export interface CommandTape {
   context: CommandValue;
   commands: RecordedCommand[];
 }
+/** An explicit request to compute new results, never a recording to verify.
+ * Output expectations are forbidden so a failed tape cannot be silently
+ * rebaselined by the authoring path. Parameters use the same canonical actions.
+ */
+export interface CommandPlan {
+  format: 'phage-explorer-command-plan';
+  version: 1;
+  name: string;
+  context: CommandValue;
+  commands: Array<Pick<RecordedCommand, 'actionId' | 'parameters'>>;
+}
 export const COMMAND_LIMITS = { bytes: 10 * 1024 * 1024, commands: 128, repetitions: 10, executions: 256, depth: 48 } as const;
 
 /** Canonical snapshots reject executable/nonfinite values, including inside arrays. */
@@ -56,6 +67,31 @@ export function validateCommandTape(input: unknown): CommandTape {
 export function serializeCommandTape(tape: CommandTape): string {
   // Compact output has the same limit as the accepted input, including embedded source bundles.
   return JSON.stringify(validateCommandTape(tape));
+}
+export function parseCommandPlan(content: string): CommandPlan {
+  if (typeof content !== 'string' || content.length > COMMAND_LIMITS.bytes
+    || new TextEncoder().encode(content).length > COMMAND_LIMITS.bytes) throw new Error('Command plan exceeds the 10 MiB limit.');
+  return validateCommandPlan(JSON.parse(content));
+}
+export function validateCommandPlan(input: unknown): CommandPlan {
+  const value = bounded(input);
+  if (!object(value)) throw new Error('Invalid command plan.');
+  keys(value, ['format', 'version', 'name', 'context', 'commands']);
+  if (value.format !== 'phage-explorer-command-plan' || value.version !== 1) throw new Error('Unsupported command plan format/version; recorded tapes must use replay.');
+  if (!Array.isArray(value.commands) || value.commands.length > COMMAND_LIMITS.commands) throw new Error('Command plan exceeds the 128-command limit.');
+  for (const command of value.commands) {
+    if (!object(command)) throw new Error('Invalid planned command.');
+    keys(command, ['actionId', 'parameters']);
+  }
+  // Reuse the exact name, action-ID, JSON, depth and envelope constraints. The
+  // temporary null expectations are for validation only; no tape is returned.
+  const checked = validateCommandTape({ ...value, format: 'phage-explorer-commands',
+    commands: value.commands.map(command => ({ ...command as object, expected: null })) });
+  return { format: 'phage-explorer-command-plan', version: 1, name: checked.name, context: checked.context,
+    commands: checked.commands.map(({ actionId, parameters }) => ({ actionId, parameters })) };
+}
+export function serializeCommandPlan(plan: CommandPlan): string {
+  return JSON.stringify(validateCommandPlan(plan));
 }
 export function commandValuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(snapshot(a)) === JSON.stringify(snapshot(b));

@@ -5,7 +5,7 @@ import { isMainThread, parentPort } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS } from '../../core/src/command-session';
 import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
-import type { ReplayProgress, ResearchTapeInspection, ResearchReplayResult } from './research-replay';
+import type { ReplayProgress, ResearchTapeInspection, ResearchReplayResult, ResearchRecordingResult } from './research-replay';
 import { GENOME_IMPORT_LIMITS, type LocalGenome } from '../../core/src/genome-import';
 import { resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../core/src/analysis/restriction-digest';
 import { GC_SKEW_METHOD, GC_SKEW_LIMITS, resolveGCSkewOptions, type ResolvedGCSkewOptions, type GCSkewScan } from '../../core/src/analysis/gc-skew';
@@ -180,11 +180,13 @@ export interface TerminalExperimentReport {
 }
 
 export type TerminalResearchRequest = { type: 'inspect'; content: string } |
+  { type: 'record'; content: string } |
   { type: 'inspect-genomes'; content: string } |
   { type: 'analyze-experiment'; content: string; contentId: string | null; analysis: TerminalAnalysis; outputFormat: 'none' | 'json' | 'tsv' } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'inspection'; inspection: ResearchTapeInspection } |
+  ({ type: 'recorded' } & ResearchRecordingResult) |
   { type: 'genomes-inspected'; report: TerminalGenomeInspection } |
   { type: 'experiment-analyzed'; report: TerminalAnalysisReport; exportText: string | null } |
   { type: 'replayed'; report: ResearchReplayResult['report']; analysisJson: string | null } |
@@ -194,10 +196,10 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' ? ['type', 'content'] : request.type === 'analyze-experiment'
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' ? ['type', 'content'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
-  if (!['inspect', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > COMMAND_LIMITS.bytes || new TextEncoder().encode(request.content).length > COMMAND_LIMITS.bytes) {
     throw new Error('Expected a supported terminal operation and UTF-8 input of at most 10 MiB.');
   }
@@ -360,7 +362,8 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   }
   // A standalone sequence experiment does not initialize command adapters,
   // genome imports or unrelated scientific methods.
-  const { inspectResearchTape, replayResearchTape } = await import('./research-replay');
+  const { inspectResearchTape, replayResearchTape, recordResearchPlan } = await import('./research-replay');
+  if (request.type === 'record') return { type: 'recorded', ...await recordResearchPlan(request.content, { onProgress: progress }) };
   if (request.type === 'inspect') return { type: 'inspection', inspection: await inspectResearchTape(request.content) };
   const result = await replayResearchTape(request.content, { repetitions: request.repetitions, onProgress: progress });
   if (request.exportAnalysis && !result.lastAnalysis) throw new Error('The verified workflow contains no analysis to export; omit --output for navigation-only replay.');

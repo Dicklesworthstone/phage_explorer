@@ -5,7 +5,7 @@
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { ResearchWorkflow, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { executePangenomeRequest } from '../../web/src/workers/PangenomeSession';
-import { COMMAND_LIMITS, parseCommandTape, type CommandTape } from '../../core/src/command-session';
+import { COMMAND_LIMITS, parseCommandTape, parseCommandPlan, serializeCommandTape, type CommandTape } from '../../core/src/command-session';
 import { importLocalGenomes, type LocalGenome, type GenomeImportResult } from '../../core/src/genome-import';
 import { createExactRepeatRecord } from '../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord } from '../../core/src/analysis/gc-skew';
@@ -40,6 +40,15 @@ export interface ResearchReplayResult {
   lastAnalysis: AnalysisRecord | null;
 }
 export interface ResearchReplayOptions { repetitions?: number; signal?: AbortSignal; onProgress?: (progress: ReplayProgress) => void }
+export interface ResearchRecordingResult {
+  report: {
+    format: 'phage-explorer-workflow-recording'; version: 1; headless: true;
+    name: string; planSha256: string; tapeSha256: string; completed: number;
+    steps: ReplayStep[]; finalView: ResearchView | null; lastAnalysisExecution: number | null;
+    interpretation: string;
+  };
+  tapeJson: string;
+}
 
 function abort(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException('Research replay cancelled.', 'AbortError');
@@ -155,6 +164,64 @@ export async function inspectResearchTape(content: string, signal = new AbortCon
     canReplay: steps.length > 0 && steps.every(step => step.supported), steps,
     genomes: parsed.genomes.map(genome => ({ contentId: genome.phage.localGenome!.contentId,
       accession: genome.phage.accession, bases: genome.sequence.length, mappedFeatures: genome.phage.genes.length })) };
+}
+
+/** Author an ordinary portable tape through the SAME adapters used by replay.
+ * The isolated host never publishes a partial tape on error or cancellation.
+ * This records fresh results; it does not claim independent replay verification.
+ */
+export async function recordResearchPlan(content: string,
+  options: Omit<ResearchReplayOptions, 'repetitions'> = {}): Promise<ResearchRecordingResult> {
+  const signal = options.signal ?? new AbortController().signal;
+  abort(signal);
+  const plan = parseCommandPlan(content);
+  const validationTape: CommandTape = { ...plan, format: 'phage-explorer-commands',
+    commands: plan.commands.map(command => ({ ...command, expected: null })) };
+  const bundle = bundleOf(validationTape);
+  const unsupported = stepsOf(validationTape).find(step => !step.supported);
+  if (unsupported) throw new Error(`Step ${unsupported.step} (${unsupported.actionId}): ${unsupported.reason}`);
+  if (!plan.commands.length) throw new Error('There are no planned commands to record.');
+  const environment = host(bundle), workflow = environment.workflow;
+  // Validate every action's full parameters BEFORE input parsing or computation.
+  workflow.load(serializeCommandTape(validationTape));
+  const total = plan.commands.length, steps: ReplayStep[] = [];
+  let lastAnalysisExecution: number | null = null;
+  const progress = (phase: ReplayProgress['phase'], actionId: string | null) => {
+    options.onProgress?.({ phase, completed: steps.length, total, actionId }); abort(signal);
+  };
+  const cancel = () => workflow.commands.cancel();
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    abort(signal); progress('inputs', null);
+    environment.install(await environment.parse(bundle, signal));
+    const planSha256 = await checksum(content); abort(signal);
+    workflow.start(plan.name);
+    progress('commands', null);
+    for (const command of plan.commands) {
+      abort(signal);
+      try { await workflow.commands.dispatch(command.actionId, command.parameters); }
+      catch (cause) {
+        if (signal.aborted) throw new DOMException('Research recording cancelled.', 'AbortError');
+        throw new Error(`Step ${steps.length + 1} (${command.actionId}): ${cause instanceof Error ? cause.message : String(cause)}`);
+      }
+      abort(signal);
+      const result = workflow.getSnapshot().result, execution = steps.length + 1;
+      if (result) lastAnalysisExecution = execution;
+      steps.push({ execution, iteration: 1, step: execution, actionId: command.actionId,
+        view: structuredClone(environment.view()),
+        analysis: result ? { method: { ...result.method }, cacheKey: result.cacheKey, resultId: result.resultId } : null });
+      progress('commands', command.actionId);
+    }
+    workflow.commands.stop();
+    const tapeJson = workflow.commands.export(), tapeSha256 = await checksum(tapeJson);
+    abort(signal);
+    return { tapeJson, report: { format: 'phage-explorer-workflow-recording', version: 1, headless: true,
+      name: plan.name, planSha256, tapeSha256, completed: steps.length, steps,
+      finalView: structuredClone(environment.view()), lastAnalysisExecution,
+      interpretation: 'Fresh computation recorded through canonical adapters. This is a new baseline, not replay verification or biological validation. Replay the tape to verify its recorded outputs.' } };
+  } finally {
+    signal.removeEventListener('abort', cancel); workflow.commands.cancel();
+  }
 }
 
 /** Compute every recorded output and verify it BEFORE the existing adapter applies
