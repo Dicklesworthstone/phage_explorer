@@ -128,3 +128,35 @@ export class PlaqueGrowthSession {
     }
   };
 }
+
+export interface PlaqueGrowthDraft {
+  title: string; source: string; kind: 'user-supplied' | 'synthetic'; csv: string;
+  centers: string; support: string; extracellular: boolean;
+}
+/** Reject invalid numbers before JSON can turn Infinity/NaN into a valid null. */
+export function plaqueGrowthDraftContent(draft: PlaqueGrowthDraft): string {
+  if (!draft.extracellular) throw new Error('Confirm uncensored extracellular free-phage plaque counts, not total infective centers.');
+  const numeric = (text: string, name: string): number => {
+    if (!text.trim() || !/^[+]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text.trim())) throw new Error(`Provide a finite positive ${name}.`);
+    const value = Number(text);
+    if (!Number.isFinite(value) || value <= 0) throw new Error(`Provide a finite positive ${name}.`);
+    return value;
+  };
+  const input: PlaqueGrowthInput = {
+    format: 'phage-explorer-plaque-growth-input', version: 1, measurement: 'extracellular-plaque-counts',
+    title: draft.title, provenance: { kind: draft.kind, source: draft.source }, csv: draft.csv,
+    options: { infectedCentersPerMl: draft.centers.trim() ? numeric(draft.centers, 'measured infected-center concentration') : null,
+      supportDeviance: numeric(draft.support, 'support deviance cutoff') },
+  };
+  const content = JSON.stringify(input, null, 2);
+  parsePlaqueGrowthInput(content);
+  return content;
+}
+export async function readPlaqueGrowthFile(file: Pick<File, 'size' | 'arrayBuffer'>, limit: number, signal: AbortSignal): Promise<string> {
+  check(signal);
+  if (file.size > limit) throw new Error(`File exceeds the ${limit}-byte limit.`);
+  const bytes = await file.arrayBuffer();
+  check(signal);
+  if (bytes.byteLength > limit) throw new Error(`File exceeds the ${limit}-byte limit.`);
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+}

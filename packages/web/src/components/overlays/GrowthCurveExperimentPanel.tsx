@@ -6,6 +6,7 @@ import {
   type GrowthCurveExperiment, type GrowthCurveFit, type GrowthEstimates,
 } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
+import { PlaqueGrowthPanel } from './PlaqueGrowthPanel';
 
 interface Draft {
   title: string;
@@ -184,6 +185,7 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
 
   return (
     <section aria-labelledby={`${id}-heading`} style={{ padding: '1rem', color: colors.text, minWidth: 0 }} onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
+      <PlaqueGrowthPanel />
       <h3 id={`${id}-heading`}>Measured extracellular growth curves</h3>
       <p>Import your own free-phage PFU/mL observations or reload an exported experiment. Fits describe the population curve; they do not establish biological latency, adsorption, or single-cell burst size.</p>
       <p style={{ color: colors.textMuted }}>Data stay in this browser. Drafts are retained in this tab when storage is available; export JSON for durable, reproducible records. Saved results are recomputed on import.</p>

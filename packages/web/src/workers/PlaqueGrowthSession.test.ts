@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Worker as NativeWorker, isMainThread, parentPort } from 'node:worker_threads';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { createPlaqueGrowthRecord, type PlaqueGrowthInput, type PlaqueGrowthFit } from '../../../core/src/analysis/plaque-growth';
-import { PlaqueGrowthSession, type PlaqueGrowthWorker } from './PlaqueGrowthSession';
+import { PlaqueGrowthSession, plaqueGrowthDraftContent, readPlaqueGrowthFile, type PlaqueGrowthDraft, type PlaqueGrowthWorker } from './PlaqueGrowthSession';
 import { executePlaqueGrowthRequest, validatePlaqueGrowthRequest, type PlaqueGrowthRequest } from './plaque-growth.worker';
 
 const input: PlaqueGrowthInput = {
@@ -164,7 +164,43 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     };
     const fit = new PlaqueGrowthSession(() => make(false)); fit.activate();
     assert.equal(await fit.run('fit', content()), true, fit.getSnapshot().error ?? 'Expected accepted fit'); assert(fit.getSnapshot().accepted); await exited;
+    native = null; exited = null;
     const busy = new PlaqueGrowthSession(() => make(true)); busy.activate(); const pending = busy.run('fit', content());
     assert(native); busy.cancel(); assert.equal(await pending, false); await exited; assert.equal(busy.getSnapshot().accepted, null);
   });
+  it('creates exact-count inputs from drafts and requires an explicit assay and source', () => {
+    const draft: PlaqueGrowthDraft = { title: input.title, source: input.provenance.source, kind: 'synthetic',
+      csv: input.csv, centers: '10', support: '3.84', extracellular: true };
+    const made = JSON.parse(plaqueGrowthDraftContent(draft));
+    assert.deepEqual(made, input); assert.equal(made.csv, input.csv);
+    assert.equal(JSON.parse(plaqueGrowthDraftContent({ ...draft, centers: '' })).options.infectedCentersPerMl, null);
+    for (const update of [{ extracellular: false }, { source: '' }, { title: '' }, { support: '' }, { support: 'NaN' },
+      { support: 'Infinity' }, { support: '0' }, { support: '101' }, { centers: 'NaN' }, { centers: 'Infinity' },
+      { centers: '-1' }, { centers: '0' }, { centers: '0x20' }]) assert.throws(() => plaqueGrowthDraftContent({ ...draft, ...update }));
+    assert.equal(JSON.parse(plaqueGrowthDraftContent({ ...draft, centers: '1e3' })).options.infectedCentersPerMl, 1000);
+  });
+  it('keeps raw count columns distinct from corrected PFU data and preserves every input zero', () => {
+    const draft: PlaqueGrowthDraft = { title: input.title, source: input.provenance.source, kind: 'synthetic',
+      csv: input.csv.replace(/^(\d+),\d+,/gm, '$1,0,'), centers: '', support: '3.84', extracellular: true };
+    const made = JSON.parse(plaqueGrowthDraftContent(draft)); assert.equal(made.csv, draft.csv);
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, csv: 'time_min,pfu_per_ml\n0,100\n' }));
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, csv: draft.csv.replace('0,0,1,1', '0,TNTC,1,1') }));
+  });
+  it('reads exact UTF-8 file bytes and rejects oversized, invalid or cancelled file input', async () => {
+    const signal = new AbortController().signal, text = content() + '\n';
+    assert.equal(await readPlaqueGrowthFile(new Blob([text]), 1000000, signal), text);
+    await assert.rejects(readPlaqueGrowthFile(new Blob([Uint8Array.from([255])]), 1000000, signal));
+    await assert.rejects(readPlaqueGrowthFile(new Blob([text]), 1, signal), /limit/);
+    // Do not trust a file provider that understates its size.
+    await assert.rejects(readPlaqueGrowthFile({ size: 0, arrayBuffer: async () => new ArrayBuffer(2) }, 1, signal), /limit/);
+    const controller = new AbortController(); controller.abort(); let reads = 0;
+    await assert.rejects(readPlaqueGrowthFile({ size: 0, arrayBuffer: async () => { reads++; return new ArrayBuffer(0); } }, 1, controller.signal), { name: 'AbortError' });
+    assert.equal(reads, 0);
+  });
+  it('a cancelled asynchronous file read cannot install subsequently returned bytes', async () => {
+    const controller = new AbortController(), file = latch<ArrayBuffer>();
+    const pending = readPlaqueGrowthFile({ size: 0, arrayBuffer: () => file.promise }, 1000000, controller.signal);
+    controller.abort(); file.resolve(new ArrayBuffer(0)); await assert.rejects(pending, { name: 'AbortError' });
+  });
+
 });
