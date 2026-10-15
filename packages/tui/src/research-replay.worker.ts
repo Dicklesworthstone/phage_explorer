@@ -4,6 +4,8 @@
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS } from '../../core/src/command-session';
+import { WORKFLOW_RESULTS_LIMITS, parseWorkflowResults, workflowResultIndex, workflowAnalysisAt,
+  type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import type { ReplayProgress, ResearchTapeInspection, ResearchReplayResult, ResearchRecordingResult } from './research-replay';
 import { GENOME_IMPORT_LIMITS, type LocalGenome } from '../../core/src/genome-import';
@@ -179,37 +181,84 @@ export interface TerminalExperimentReport {
   interpretation: string;
 }
 
+export interface TerminalResultsInspection {
+  format: 'phage-explorer-workflow-results-inspection'; version: 1; headless: true;
+  inputArchiveSha256: string; tapeSha256: string; name: string; repetitions: number;
+  executions: number; distinctAnalyses: number; index: WorkflowResultEntry[];
+  integrityChecked: true; numericallyReplayed: false; interpretation: string;
+}
+export interface TerminalResultExtraction {
+  format: 'phage-explorer-workflow-result-extraction'; version: 1; headless: true;
+  inputArchiveSha256: string; tapeSha256: string; entry: WorkflowResultEntry;
+  integrityChecked: true; numericallyReplayed: false; interpretation: string;
+}
+/** Metadata and extraction projections require an integrity-checked archive.
+ * They never invoke scientific methods or promote cached values to fresh evidence.
+ */
+export function terminalResultsInspection(archive: WorkflowResults, inputArchiveSha256: string): TerminalResultsInspection {
+  const index = workflowResultIndex(archive.tapeJson, archive.repetitions);
+  return { format: 'phage-explorer-workflow-results-inspection', version: 1, headless: true,
+    inputArchiveSha256, tapeSha256: hashText(archive.tapeJson), name: JSON.parse(archive.tapeJson).name,
+    repetitions: archive.repetitions, executions: index.length, distinctAnalyses: archive.records.length,
+    index, integrityChecked: true, numericallyReplayed: false,
+    interpretation: 'Archive hashes and ordered record bindings checked. No numerical method executed; method availability, source authenticity and biological validity are not established. Use replay-results for fresh whole-run verification.' };
+}
+export function terminalResultExtraction(archive: WorkflowResults, inputArchiveSha256: string, execution: number) {
+  const record = workflowAnalysisAt(archive, execution);
+  const report: TerminalResultExtraction = { format: 'phage-explorer-workflow-result-extraction', version: 1, headless: true,
+    inputArchiveSha256, tapeSha256: hashText(archive.tapeJson), entry: workflowResultIndex(archive.tapeJson, archive.repetitions)[execution - 1],
+    integrityChecked: true, numericallyReplayed: false,
+    interpretation: 'Copied the integrity-checked stored analysis for the selected execution, not a fresh computation. The output contains private inputs. Use replay-results for fresh whole-run verification.' };
+  return { report, recordJson: serializeAnalysisRecord(record) };
+}
+
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'fit-pfu-growth'; content: string } |
   { type: 'inspect'; content: string } |
-  { type: 'record'; content: string } |
+  { type: 'record'; content: string; captureResults?: boolean } |
+  { type: 'replay-results'; content: string } |
+  { type: 'inspect-results'; content: string } |
+  { type: 'extract-result'; content: string; execution: number } |
   { type: 'inspect-genomes'; content: string } |
   { type: 'analyze-experiment'; content: string; contentId: string | null; analysis: TerminalAnalysis; outputFormat: 'none' | 'json' | 'tsv' } |
-  { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean } |
+  { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
   { type: 'inspection'; inspection: ResearchTapeInspection } |
   ({ type: 'recorded' } & ResearchRecordingResult) |
   { type: 'genomes-inspected'; report: TerminalGenomeInspection } |
   { type: 'experiment-analyzed'; report: TerminalAnalysisReport; exportText: string | null } |
-  { type: 'replayed'; report: ResearchReplayResult['report']; analysisJson: string | null } |
+  { type: 'replayed'; report: ResearchReplayResult['report']; analysisJson: string | null; allResultsJson?: string } |
+  { type: 'results-replayed'; report: ResearchReplayResult['report']; inputArchiveSha256: string; archiveJson: string } |
+  { type: 'results-inspected'; report: TerminalResultsInspection } |
+  { type: 'result-extracted'; report: TerminalResultExtraction; recordJson: string } |
   { type: 'experiment-replayed'; report: TerminalExperimentReport; exportText: string | null };
 export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress'; progress: ReplayProgress } | { type: 'error'; message: string };
 
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content'] : request.type === 'analyze-experiment'
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
+    : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
-  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
-    typeof request.content !== 'string' || request.content.length > COMMAND_LIMITS.bytes || new TextEncoder().encode(request.content).length > COMMAND_LIMITS.bytes) {
-    throw new Error('Expected a supported terminal operation and UTF-8 input of at most 10 MiB.');
+  if ((request.type === 'record' || request.type === 'replay') && Object.hasOwn(request, 'captureResults')) {
+    allowed.push('captureResults');
+    if (typeof request.captureResults !== 'boolean' || request.captureResults && request.exportAnalysis === true) {
+      throw new Error('Choose complete workflow results or a last analysis, not both.');
+    }
+  }
+  const limit = ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+    typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
+    throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'replay' && (typeof request.exportAnalysis !== 'boolean' || !Number.isSafeInteger(request.repetitions) ||
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
+  if (request.type === 'extract-result' && (!Number.isSafeInteger(request.execution) || Number(request.execution) < 1
+    || Number(request.execution) > COMMAND_LIMITS.executions)) throw new Error('Choose a 1-based execution from inspect-results.');
   if ((request.type === 'replay-experiment' || request.type === 'analyze-experiment') && !['none', 'json', 'tsv'].includes(String(request.outputFormat))) {
     throw new Error('Experiment output must be none, json or tsv.');
   }
@@ -227,6 +276,12 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'inspect-results' || request.type === 'extract-result') {
+    const archive = await parseWorkflowResults(request.content), inputArchiveSha256 = hashText(request.content);
+    return request.type === 'inspect-results'
+      ? { type: 'results-inspected', report: terminalResultsInspection(archive, inputArchiveSha256) }
+      : { type: 'result-extracted', ...terminalResultExtraction(archive, inputArchiveSha256, request.execution) };
+  }
   if (request.type === 'fit-pfu-growth') {
     const { createGrowthCurveRecord } = await import('../../core/src/analysis/one-step-growth');
     const record = await createGrowthCurveRecord(request.content);
@@ -383,12 +438,16 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   }
   // A standalone sequence experiment does not initialize command adapters,
   // genome imports or unrelated scientific methods.
-  const { inspectResearchTape, replayResearchTape, recordResearchPlan } = await import('./research-replay');
-  if (request.type === 'record') return { type: 'recorded', ...await recordResearchPlan(request.content, { onProgress: progress }) };
+  const { inspectResearchTape, replayResearchTape, recordResearchPlan, replayResearchResults } = await import('./research-replay');
+  if (request.type === 'replay-results') return { type: 'results-replayed', inputArchiveSha256: hashText(request.content),
+    ...await replayResearchResults(request.content, { onProgress: progress }) };
+  if (request.type === 'record') return { type: 'recorded', ...await recordResearchPlan(request.content,
+    { onProgress: progress, captureResults: request.captureResults }) };
   if (request.type === 'inspect') return { type: 'inspection', inspection: await inspectResearchTape(request.content) };
-  const result = await replayResearchTape(request.content, { repetitions: request.repetitions, onProgress: progress });
+  const result = await replayResearchTape(request.content, { repetitions: request.repetitions, onProgress: progress, captureResults: request.captureResults });
   if (request.exportAnalysis && !result.lastAnalysis) throw new Error('The verified workflow contains no analysis to export; omit --output for navigation-only replay.');
   return { type: 'replayed', report: result.report,
+    ...(result.allResultsJson === undefined ? {} : { allResultsJson: result.allResultsJson }),
     analysisJson: request.exportAnalysis ? serializeAnalysisRecord(result.lastAnalysis!) : null };
 }
 

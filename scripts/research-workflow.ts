@@ -6,9 +6,11 @@ import { Worker } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { COMMAND_LIMITS, parseCommandTape, parseCommandPlan, commandValuesEqual, type CommandPlan } from '../packages/core/src/command-session';
 import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis-result';
+import { WORKFLOW_RESULTS_LIMITS, parseWorkflowResults, workflowResultIndex, type WorkflowResults } from '../packages/core/src/workflow-results';
 import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
 import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
 import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
+  terminalResultsInspection, terminalResultExtraction,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -24,9 +26,14 @@ bun run workflow fit-pfu-growth --input corrected-pfu.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect --input workflow.json [--timeout-ms 300000]
 bun run workflow record --input plan.json --output NEW_WORKFLOW.json
-  [--timeout-ms 300000] [--progress]
+  [--results] [--timeout-ms 300000] [--progress]
 bun run workflow replay --input workflow.json [--repetitions 1] [--output analysis.json]
+  [--results] [--timeout-ms 300000] [--progress]
+bun run workflow replay-results --input complete-results.json [--output NEW_RESULTS.json]
   [--timeout-ms 300000] [--progress]
+bun run workflow inspect-results --input complete-results.json [--timeout-ms 300000]
+bun run workflow extract-result --input complete-results.json --execution 2
+  --output NEW_ANALYSIS.json [--timeout-ms 300000]
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect-genomes --input genomes.fa
@@ -47,6 +54,25 @@ bun run workflow analyze-experiment --input genome.fa --method gc-skew
 bun run workflow analyze-experiment --input genome.fa --method exact-repeats
   --topology linear|circular [--arm-length BP] [--max-gap BP] [--max-pairs COUNT]
   [--record CONTENT_ID] [--output NEW_FILE] [--format json|tsv] [--timeout-ms 300000]
+
+--results changes the record/replay output to a complete workflow-results JSON
+archive, preserving the exact tape and every distinct analysis in first-execution
+order. It requires --output. Identical records are stored once; every repeated
+execution keeps its own step number. Navigation is not an analysis. Default
+record/replay output remains the command tape / last analysis respectively.
+replay-results validates the whole archive then recomputes every original command
+using the saved repetition count; it never regenerates failed expected results.
+All archive records and their execution bindings are checked before file creation.
+Only complete archives may use the 32 MiB input/output limit; the 10 MiB individual
+tape/analysis limits remain unchanged. Archives contain private genomes and
+annotations and are not anonymized. No partial archive is returned on computation
+failure, retention-limit failure or cancellation.
+inspect-results lists all ordered executions and record identities without running
+methods or printing raw sequences. extract-result copies the selected 1-based
+execution's AnalysisRecord JSON; navigation steps have no analysis to extract.
+Both check complete-archive integrity, but neither claims numerical replay or
+method availability. Extracted records retain their original private inputs and
+can be used with the existing compatible analysis viewers/replay-experiment.
 
 fit-pfu-growth accepts the existing one-step-growth-v1 corrected extracellular
 PFU/mL experiment JSON, with explicit provenance, observations, denominator,
@@ -179,12 +205,15 @@ Exported analysis JSON contains private sequences. No network or shell commands.
 export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'growth-template'; version: 1 | 2 } |
   { type: 'fit-growth'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'fit-pfu-growth'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
-  { type: 'record'; input: string; output: string; timeoutMs: number; progress: boolean } |
+  { type: 'record'; input: string; output: string; timeoutMs: number; progress: boolean; allResults?: boolean } |
+  { type: 'replay-results'; input: string; output?: string; timeoutMs: number; progress: boolean } |
+  { type: 'inspect-results'; input: string; timeoutMs: number } |
+  { type: 'extract-result'; input: string; output: string; execution: number; timeoutMs: number } |
   { type: 'inspect'; input: string; timeoutMs: number } |
   { type: 'inspect-genomes'; input: string; timeoutMs: number } |
   { type: 'analyze-experiment'; input: string; contentId: string | null; analysis: TerminalAnalysis;
     output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
-  { type: 'replay'; input: string; repetitions: number; output?: string; timeoutMs: number; progress: boolean } |
+  { type: 'replay'; input: string; repetitions: number; output?: string; timeoutMs: number; progress: boolean; allResults?: boolean } |
   { type: 'replay-experiment'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number };
 export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
@@ -197,17 +226,21 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Use growth-template with no options or exactly --version 1|2.');
   }
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
-    throw new Error('Choose record, inspect, replay, replay-experiment, inspect-genomes, analyze-experiment, fit-growth or fit-pfu-growth; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
+    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, fit-growth or fit-pfu-growth; see --help.');
   }
-  const allowed = type === 'record' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
+  const allowed = type === 'extract-result' ? ['--input', '--output', '--execution', '--timeout-ms']
+    : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
-  const values = new Map<string, string>(); let progress = false;
+  const values = new Map<string, string>(); let progress = false, allResults = false;
   for (let i = 0; i < rest.length;) {
     const key = rest[i++];
-    if (key === '--progress' && (type === 'replay' || type === 'record')) {
+    if (key === '--progress' && (type === 'replay' || type === 'record' || type === 'replay-results')) {
       if (progress) throw new Error('Repeated --progress flag.'); progress = true; continue;
+    }
+    if (key === '--results' && (type === 'record' || type === 'replay')) {
+      if (allResults) throw new Error('Repeated --results flag.'); allResults = true; continue;
     }
     if (!allowed.includes(key) || values.has(key)) throw new Error(`Unsupported or repeated option: ${key}`);
     const value = rest[i++];
@@ -221,12 +254,20 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return Number(value);
   };
   const timeoutMs = integer('--timeout-ms', 300000, 3600000);
+  if (allResults && !values.has('--output')) throw new Error('--results requires --output NEW_RESULTS.json.');
+  if (type === 'replay-results') return { type, input, timeoutMs, progress,
+    ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  if (type === 'extract-result') {
+    const output = values.get('--output');
+    if (!output || !values.has('--execution')) throw new Error('extract-result requires --execution NUMBER and --output NEW_ANALYSIS.json.');
+    return { type, input, output, timeoutMs, execution: integer('--execution', 1, COMMAND_LIMITS.executions) };
+  }
   if (type === 'record') {
     const output = values.get('--output');
     if (!output) throw new Error('record requires --output NEW_WORKFLOW.json; authoring never replaces the plan.');
-    return { type, input, output, timeoutMs, progress };
+    return { type, input, output, timeoutMs, progress, ...(allResults ? { allResults: true } : {}) };
   }
-  if (type === 'inspect' || type === 'inspect-genomes') return { type, input, timeoutMs };
+  if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results') return { type, input, timeoutMs };
   if (type === 'replay-experiment' || type === 'analyze-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth') {
     const outputFormat = values.get('--format') ?? 'json';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
@@ -291,6 +332,7 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return { type, input, timeoutMs, outputFormat, ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
   }
   return { type, input, timeoutMs, progress, repetitions: integer('--repetitions', 1, COMMAND_LIMITS.repetitions),
+    ...(allResults ? { allResults: true } : {}),
     ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
 }
 function abort(signal: AbortSignal): void {
@@ -336,6 +378,43 @@ function recordingMatches(value: Extract<TerminalResearchResult, { type: 'record
   return report.lastAnalysisExecution === last && commandValuesEqual(report.finalView, report.steps[total - 1].view);
 }
 
+type CompleteResultReply = Extract<TerminalResearchResult, { type: 'recorded' | 'replayed' | 'results-replayed' }>;
+/** Validate every returned record and execution before opening an output file.
+ * Numerical recomputation belongs to the isolated worker, not this transport check.
+ */
+async function checkCompleteResults(value: CompleteResultReply, tapeJson: string, repetitions: number,
+  signal: AbortSignal, saved?: WorkflowResults): Promise<void> {
+  const text = value.type === 'results-replayed' ? value.archiveJson : value.allResultsJson;
+  if (typeof text !== 'string') throw new Error('The complete workflow results were not returned.');
+  const archive = await parseWorkflowResults(text, signal);
+  abort(signal);
+  if (archive.tapeJson !== tapeJson || archive.repetitions !== repetitions
+    || saved !== undefined && !commandValuesEqual(archive, saved)) throw new Error('Complete results differ from the submitted workflow.');
+  const index = workflowResultIndex(tapeJson, repetitions), tape = parseCommandTape(tapeJson), report = value.report;
+  if (!report || report.version !== 1 || report.headless !== true || report.name !== tape.name
+    || report.tapeSha256 !== createHash('sha256').update(tapeJson, 'utf8').digest('hex')
+    || report.completed !== index.length || !Array.isArray(report.steps) || report.steps.length !== index.length) {
+    throw new Error('Complete results differ from their execution report.');
+  }
+  let lastAnalysisExecution: number | null = null;
+  for (let i = 0; i < index.length; i++) {
+    const step = report.steps[i], expected = index[i];
+    if (!step || !commandValuesEqual({ execution: step.execution, iteration: step.iteration,
+      step: step.step, actionId: step.actionId, analysis: step.analysis }, expected)) {
+      throw new Error(`Complete result execution ${i + 1} differs from the recorded analysis.`);
+    }
+    if (expected.analysis) lastAnalysisExecution = i + 1;
+    else {
+      const output = tape.commands[expected.step - 1].expected as { view: unknown };
+      if (!commandValuesEqual(step.view, output.view)) throw new Error('Navigation output differs from the recorded view.');
+    }
+  }
+  if (report.lastAnalysisExecution !== lastAnalysisExecution
+    || !commandValuesEqual(report.finalView, report.steps[index.length - 1].view)) {
+    throw new Error('Complete workflow results have an incorrect final analysis or view.');
+  }
+}
+
 /** Each invocation owns exactly one worker; a late message cannot settle it twice.
  * Worker exit without a result is an error, including a zero exit code.
  */
@@ -348,15 +427,24 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   const submitted = structuredClone(request);
   const plan = submitted.type === 'record' ? parseCommandPlan(submitted.content) : null;
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
+  const archive = submitted.type === 'replay-results' || submitted.type === 'inspect-results' || submitted.type === 'extract-result'
+    ? await parseWorkflowResults(submitted.content, signal)
+    .catch(cause => { abort(signal); throw cause; }) : null;
+  // Resolve extraction before allocation so navigation and invalid selection
+  // cannot accidentally fall back to the last analysis in a worker response.
+  const extracted = archive && submitted.type === 'extract-result'
+    ? terminalResultExtraction(archive, createHash('sha256').update(submitted.content, 'utf8').digest('hex'), submitted.execution) : null;
   abort(signal);
   return new Promise((resolve, reject) => {
     abort(signal);
-    const tape = submitted.type === 'inspect' || submitted.type === 'replay' ? parseCommandTape(submitted.content) : null;
-    const total = submitted.type === 'replay' ? tape!.commands.length * submitted.repetitions : plan?.commands.length ?? 0;
+    const tape = archive ? parseCommandTape(archive.tapeJson)
+      : submitted.type === 'inspect' || submitted.type === 'replay' ? parseCommandTape(submitted.content) : null;
+    const total = archive ? tape!.commands.length * archive.repetitions
+      : submitted.type === 'replay' ? tape!.commands.length * submitted.repetitions : plan?.commands.length ?? 0;
     const tapeSha256 = createHash('sha256').update(submitted.content, 'utf8').digest('hex');
     const worker = createWorker();
     let completed = 0;
-    let done = false;
+    let done = false, validating = false;
     const finish = (result?: TerminalResearchResult, cause?: unknown) => {
       if (done) return; done = true;
       signal.removeEventListener('abort', cancelled);
@@ -371,14 +459,22 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
     const error = (cause: Error) => finish(undefined, cause);
     const messageError = () => finish(undefined, new Error('Terminal research response could not be decoded.'));
     const exit = (code: number) => {
-      finish(undefined, new Error(`Terminal research worker exited (${code}) before returning a result.`));
+      // The one-shot worker closes its port after sending. Hash validation can
+      // outlive that normal exit; it still obeys the parent's cancellation timer.
+      if (code !== 0 || !validating) finish(undefined, new Error(`Terminal research worker exited (${code}) before returning a result.`));
       worker.off('error', error);
     };
+    const acceptComplete = (value: CompleteResultReply, tapeJson: string, repetitions: number, savedResults?: WorkflowResults) => {
+      validating = true;
+      void checkCompleteResults(value, tapeJson, repetitions, signal, savedResults)
+        .then(() => { abort(signal); finish(value); })
+        .catch(cause => finish(undefined, cause));
+    };
     const message = (value: TerminalResearchMessage) => {
-      if (done) return;
+      if (done || validating) return;
       try {
         abort(signal);
-        if (value?.type === 'progress' && (submitted.type === 'replay' || submitted.type === 'record')) {
+        if (value?.type === 'progress' && (submitted.type === 'replay' || submitted.type === 'record' || submitted.type === 'replay-results')) {
           const p = value.progress;
           if (!p || !['inputs', 'commands'].includes(p.phase) || !Number.isSafeInteger(p.completed) || !Number.isSafeInteger(p.total)
             || p.total !== total || p.total > COMMAND_LIMITS.executions || p.completed < completed || p.completed > completed + 1 || p.completed > p.total
@@ -389,7 +485,20 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
         if (value?.type === 'growth-fitted' && (submitted.type === 'fit-growth' || submitted.type === 'fit-pfu-growth') && value.inputFileSha256 === tapeSha256
           && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) finish(value);
-        else if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) finish(value);
+        else if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) {
+          if (submitted.captureResults) acceptComplete(value, value.tapeJson, 1);
+          else if (value.allResultsJson !== undefined) throw new Error('Unrequested complete results were returned.');
+          else finish(value);
+        }
+        else if (value?.type === 'results-replayed' && submitted.type === 'replay-results' && archive
+          && value.inputArchiveSha256 === tapeSha256 && value.report?.format === 'phage-explorer-workflow-replay'
+          && value.report.verified === true && value.report.repetitions === archive.repetitions && completed === total) {
+          acceptComplete(value, archive.tapeJson, archive.repetitions, archive);
+        }
+        else if (value?.type === 'results-inspected' && submitted.type === 'inspect-results' && archive
+          && commandValuesEqual(value.report, terminalResultsInspection(archive, tapeSha256))) finish(value);
+        else if (value?.type === 'result-extracted' && submitted.type === 'extract-result' && extracted
+          && commandValuesEqual(value.report, extracted.report) && value.recordJson === extracted.recordJson) finish(value);
         else if (value?.type === 'genomes-inspected' && submitted.type === 'inspect-genomes'
           && value.report?.format === 'phage-explorer-genome-inspection' && value.report.version === 1 && value.report.headless === true
           && value.report.inputFileSha256 === tapeSha256 && Array.isArray(value.report.genomes)
@@ -422,7 +531,11 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           && Array.isArray(value.report.steps) && value.report.steps.length === total
           && value.report.steps.every((step, i) => step.execution === i + 1 && step.step === i % tape.commands.length + 1
             && step.iteration === Math.floor(i / tape.commands.length) + 1 && step.actionId === tape.commands[i % tape.commands.length].actionId)
-          && (submitted.exportAnalysis ? typeof value.analysisJson === 'string' : value.analysisJson === null)) finish(value);
+          && (submitted.exportAnalysis ? typeof value.analysisJson === 'string' : value.analysisJson === null)) {
+          if (submitted.captureResults) acceptComplete(value, submitted.content, submitted.repetitions);
+          else if (value.allResultsJson !== undefined) throw new Error('Unrequested complete results were returned.');
+          else finish(value);
+        }
         else throw new Error('Unexpected terminal research response.');
       } catch (cause) { finish(undefined, cause); }
     };
@@ -431,21 +544,21 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
     try { abort(signal); worker.postMessage(submitted); } catch (cause) { finish(undefined, cause); }
   });
 }
-async function readInput(path: string, signal: AbortSignal): Promise<string> {
+async function readInput(path: string, signal: AbortSignal, limit = COMMAND_LIMITS.bytes): Promise<string> {
   abort(signal);
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     abort(signal);
     const stat = await file.stat();
     if (!stat.isFile()) throw new Error('Workflow input must be a regular file.');
-    if (stat.size > COMMAND_LIMITS.bytes) throw new Error('Workflow input exceeds 10 MiB.');
-    const bytes = Buffer.alloc(COMMAND_LIMITS.bytes + 1); let offset = 0;
+    if (stat.size > limit) throw new Error(`Workflow input exceeds ${limit / 1024 / 1024} MiB.`);
+    const bytes = Buffer.alloc(limit + 1); let offset = 0;
     while (offset < bytes.length) {
       abort(signal);
       const { bytesRead } = await file.read(bytes, offset, bytes.length - offset, offset);
       if (!bytesRead) break; offset += bytesRead;
     }
-    if (offset > COMMAND_LIMITS.bytes) throw new Error('Workflow input exceeds 10 MiB.');
+    if (offset > limit) throw new Error(`Workflow input exceeds ${limit / 1024 / 1024} MiB.`);
     abort(signal); return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset));
   } finally { await file.close(); }
 }
@@ -457,6 +570,9 @@ async function writeNewOutput(path: string, content: string, signal: AbortSignal
   abort(signal);
 }
 export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, { type: 'help' }>, runtime: WorkflowRuntime = {}): Promise<object> {
+  if ((command.type === 'record' || command.type === 'replay') && command.allResults && command.output === undefined) {
+    throw new Error('--results requires --output NEW_RESULTS.json.');
+  }
   if (command.type === 'growth-template') {
     if (runtime.signal) abort(runtime.signal);
     return { format: 'phage-explorer-plaque-growth-input', version: command.version, measurement: 'extracellular-plaque-counts',
@@ -482,12 +598,16 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   const timer = setTimeout(() => controller.abort(new DOMException('Research workflow timed out.', 'TimeoutError')), command.timeoutMs);
   const signal = controller.signal;
   try {
-    const content = await readInput(command.input, signal);
-    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'record' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+    const archiveInput = command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'extract-result';
+    const content = await readInput(command.input, signal, archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+      : command.type === 'extract-result' ? { type: 'extract-result', content, execution: command.execution }
+      : command.type === 'record' ? { type: 'record', content, ...(command.allResults ? { captureResults: true } : {}) }
       : command.type === 'analyze-experiment' ? { type: 'analyze-experiment', content, contentId: command.contentId, analysis: command.analysis,
         outputFormat: command.output === undefined ? 'none' : command.outputFormat }
       : command.type === 'replay-experiment' ? { type: 'replay-experiment', content, outputFormat: command.output === undefined ? 'none' : command.outputFormat }
-      : { type: 'replay', content, repetitions: command.repetitions, exportAnalysis: command.output !== undefined };
+      : { type: 'replay', content, repetitions: command.repetitions, exportAnalysis: command.output !== undefined && !command.allResults,
+        ...(command.allResults ? { captureResults: true } : {}) };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
     if (result.type === 'growth-fitted') {
@@ -517,7 +637,22 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
     }
     if (result.type === 'recorded') {
       if (command.type !== 'record') throw new Error('Unexpected recording result.');
-      await writeNewOutput(command.output, result.tapeJson, signal);
+      const text = command.allResults ? result.allResultsJson : result.tapeJson;
+      if (typeof text !== 'string') throw new Error('The completed workflow output was not returned.');
+      await writeNewOutput(command.output, text, signal);
+      return { ...result.report, ...(command.allResults ? { outputKind: 'complete-workflow-results',
+        archiveSha256: createHash('sha256').update(text, 'utf8').digest('hex') } : {}) };
+    }
+    if (result.type === 'results-replayed') {
+      if (command.type !== 'replay-results') throw new Error('Unexpected complete-results replay.');
+      if (command.output !== undefined) await writeNewOutput(command.output, result.archiveJson, signal);
+      return { ...result.report, inputArchiveSha256: result.inputArchiveSha256,
+        archiveSha256: createHash('sha256').update(result.archiveJson, 'utf8').digest('hex') };
+    }
+    if (result.type === 'results-inspected') return result.report;
+    if (result.type === 'result-extracted') {
+      if (command.type !== 'extract-result') throw new Error('Unexpected stored analysis extraction.');
+      await writeNewOutput(command.output, result.recordJson, signal);
       return result.report;
     }
     if (result.type === 'inspection') return result.inspection;
@@ -561,6 +696,12 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
       return result.report;
     }
     if (command.type === 'replay' && command.output !== undefined) {
+      if (command.allResults) {
+        if (typeof result.allResultsJson !== 'string') throw new Error('No complete workflow results were returned.');
+        await writeNewOutput(command.output, result.allResultsJson, signal);
+        return { ...result.report, outputKind: 'complete-workflow-results',
+          archiveSha256: createHash('sha256').update(result.allResultsJson, 'utf8').digest('hex') };
+      }
       if (result.analysisJson === null) throw new Error('No verified analysis was returned.');
       const record = await parseAnalysisRecord(result.analysisJson);
       const index = result.report.lastAnalysisExecution;
@@ -581,7 +722,7 @@ export async function researchWorkflowMain(args: readonly string[], output: (tex
     else {
       const report = await executeWorkflowCommand(command, { ...runtime, onProgress: progress => {
         runtime.onProgress?.(progress);
-        if ((command.type === 'replay' || command.type === 'record') && command.progress) error(JSON.stringify({ type: 'progress', ...progress }) + '\n');
+        if ((command.type === 'replay' || command.type === 'record' || command.type === 'replay-results') && command.progress) error(JSON.stringify({ type: 'progress', ...progress }) + '\n');
       } });
       output(JSON.stringify(report, null, 2) + '\n');
     }
