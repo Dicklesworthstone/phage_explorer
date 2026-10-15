@@ -13,6 +13,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
+import type { ThemePalette } from '../../theme/types';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useHotkey } from '../../hooks/useHotkey';
@@ -49,6 +50,44 @@ import {
 interface PhylodynamicsOverlayProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
+}
+
+export function PhylodynamicsStats({ result, colors }: {
+  result: PhylodynamicsResult;
+  colors: ThemePalette;
+}): React.ReactElement {
+  const value = result.selection?.treeDnDs;
+  const treeDnDs = typeof value === 'number' && Number.isFinite(value) ? value : null;
+  return (
+    <>
+      {result.selectionUnavailableReason && <p role="note">{result.selectionUnavailableReason}</p>}
+      {treeDnDs === null && result.selection?.treeDnDsUnavailableReason && (
+        <p role="note">{result.selection.treeDnDsUnavailableReason}</p>
+      )}
+      <div style={{
+        display: 'flex', justifyContent: 'space-between', padding: '0.5rem',
+        backgroundColor: colors.backgroundAlt, borderRadius: '4px',
+        fontSize: '0.8rem', fontFamily: 'monospace',
+      }}>
+        <span style={{ color: colors.textDim }}>
+          Leaves: <strong style={{ color: colors.text }}>{result.tree.leafCount}</strong>
+        </span>
+        <span style={{ color: colors.textDim }}>
+          Clock R²:{' '}
+          <strong style={{ color: (result.clockRegression?.r2 ?? 0) > 0.7 ? colors.success : colors.warning }}>
+            {result.clockRegression?.r2.toFixed(3) ?? 'N/A'}
+          </strong>
+        </span>
+        <span style={{ color: colors.textDim }}>
+          dN/dS:{' '}
+          <strong style={{ color: treeDnDs === null ? colors.textDim
+            : treeDnDs > 1 ? colors.error : treeDnDs < 1 ? colors.primary : colors.text }}>
+            {treeDnDs === null ? 'N/A' : treeDnDs.toFixed(3)}
+          </strong>
+        </span>
+      </div>
+    </>
+  );
 }
 
 type ViewMode = 'tree' | 'clock' | 'skyline';
@@ -841,49 +880,7 @@ export function PhylodynamicsOverlay({
         )}
 
         {/* Stats footer */}
-        {result?.selectionUnavailableReason && <p role="note">{result.selectionUnavailableReason}</p>}
-        {result && (
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              padding: '0.5rem',
-              backgroundColor: colors.backgroundAlt,
-              borderRadius: '4px',
-              fontSize: '0.8rem',
-              fontFamily: 'monospace',
-            }}
-          >
-            <span style={{ color: colors.textDim }}>
-              Leaves: <strong style={{ color: colors.text }}>{result.tree.leafCount}</strong>
-            </span>
-            <span style={{ color: colors.textDim }}>
-              Clock R²:{' '}
-              <strong
-                style={{
-                  color: (result.clockRegression?.r2 ?? 0) > 0.7 ? colors.success : colors.warning,
-                }}
-              >
-                {result.clockRegression?.r2.toFixed(3) ?? 'N/A'}
-              </strong>
-            </span>
-            <span style={{ color: colors.textDim }}>
-              dN/dS:{' '}
-              <strong
-                style={{
-                  color:
-                    (result.selection?.treeDnDs ?? 1) > 1
-                      ? colors.error
-                      : (result.selection?.treeDnDs ?? 1) < 1
-                        ? colors.primary
-                        : colors.text,
-                }}
-              >
-                {result.selection?.treeDnDs.toFixed(3) ?? 'N/A'}
-              </strong>
-            </span>
-          </div>
-        )}
+        {result && <PhylodynamicsStats result={result} colors={colors} />}
       </div>
     </Overlay>
   );
