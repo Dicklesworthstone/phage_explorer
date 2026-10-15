@@ -10,6 +10,7 @@ import { importLocalGenomes, type LocalGenome, type GenomeImportResult } from '.
 import { createExactRepeatRecord } from '../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord } from '../../core/src/analysis/gc-skew';
 import type { AnalysisRecord } from '../../core/src/analysis-result';
+import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/workflow-results';
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
   codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
@@ -38,8 +39,10 @@ export interface ResearchReplayResult {
    * Its actual execution index is recorded; never relabel it as the final view.
    */
   lastAnalysis: AnalysisRecord | null;
+  /** Present only for explicitly requested complete-run capture. */
+  allResultsJson?: string;
 }
-export interface ResearchReplayOptions { repetitions?: number; signal?: AbortSignal; onProgress?: (progress: ReplayProgress) => void }
+export interface ResearchReplayOptions { repetitions?: number; signal?: AbortSignal; onProgress?: (progress: ReplayProgress) => void; captureResults?: boolean }
 export interface ResearchRecordingResult {
   report: {
     format: 'phage-explorer-workflow-recording'; version: 1; headless: true;
@@ -48,6 +51,7 @@ export interface ResearchRecordingResult {
     interpretation: string;
   };
   tapeJson: string;
+  allResultsJson?: string;
 }
 
 function abort(signal: AbortSignal): void {
@@ -185,6 +189,7 @@ export async function recordResearchPlan(content: string,
   // Validate every action's full parameters BEFORE input parsing or computation.
   workflow.load(serializeCommandTape(validationTape));
   const total = plan.commands.length, steps: ReplayStep[] = [];
+  const collector = options.captureResults ? new WorkflowResultCollector() : null;
   let lastAnalysisExecution: number | null = null;
   const progress = (phase: ReplayProgress['phase'], actionId: string | null) => {
     options.onProgress?.({ phase, completed: steps.length, total, actionId }); abort(signal);
@@ -206,7 +211,7 @@ export async function recordResearchPlan(content: string,
       }
       abort(signal);
       const result = workflow.getSnapshot().result, execution = steps.length + 1;
-      if (result) lastAnalysisExecution = execution;
+      if (result) { lastAnalysisExecution = execution; collector?.add(result); }
       steps.push({ execution, iteration: 1, step: execution, actionId: command.actionId,
         view: structuredClone(environment.view()),
         analysis: result ? { method: { ...result.method }, cacheKey: result.cacheKey, resultId: result.resultId } : null });
@@ -214,8 +219,9 @@ export async function recordResearchPlan(content: string,
     }
     workflow.commands.stop();
     const tapeJson = workflow.commands.export(), tapeSha256 = await checksum(tapeJson);
+    const allResultsJson = collector ? await collector.finish(tapeJson, 1, signal) : undefined;
     abort(signal);
-    return { tapeJson, report: { format: 'phage-explorer-workflow-recording', version: 1, headless: true,
+    return { tapeJson, ...(allResultsJson === undefined ? {} : { allResultsJson }), report: { format: 'phage-explorer-workflow-recording', version: 1, headless: true,
       name: plan.name, planSha256, tapeSha256, completed: steps.length, steps,
       finalView: structuredClone(environment.view()), lastAnalysisExecution,
       interpretation: 'Fresh computation recorded through canonical adapters. This is a new baseline, not replay verification or biological validation. Replay the tape to verify its recorded outputs.' } };
@@ -241,6 +247,7 @@ export async function replayResearchTape(content: string, options: ResearchRepla
   const environment = host(bundle), workflow = environment.workflow;
   workflow.load(content); // All command parameters checked before parsing/computation.
   const total = tape.commands.length * repetitions;
+  const collector = options.captureResults ? new WorkflowResultCollector() : null;
   const progress = (phase: ReplayProgress['phase'], completed: number, actionId: string | null) => {
     options.onProgress?.({ phase, completed, total, actionId }); abort(signal);
   };
@@ -258,7 +265,7 @@ export async function replayResearchTape(content: string, options: ResearchRepla
       if (completed <= steps.length) return;
       const index = (completed - 1) % tape.commands.length;
       const result = workflow.getSnapshot().result;
-      if (result) { lastAnalysis = result; lastAnalysisExecution = completed; }
+      if (result) { lastAnalysis = result; lastAnalysisExecution = completed; collector?.add(result); }
       steps.push({ execution: completed, iteration: Math.floor((completed - 1) / tape.commands.length) + 1,
         step: index + 1, actionId: tape.commands[index].actionId,
         view: structuredClone(environment.view()),
@@ -267,16 +274,28 @@ export async function replayResearchTape(content: string, options: ResearchRepla
     });
     progress('commands', 0, null);
     await workflow.commands.replay(repetitions);
+    const allResultsJson = collector ? await collector.finish(content, repetitions, signal) : undefined;
     abort(signal);
     return { report: { format: 'phage-explorer-workflow-replay', version: 1, name: tape.name, tapeSha256,
       verified: true, headless: true, repetitions, completed: steps.length, steps,
       finalView: structuredClone(environment.view()), lastAnalysisExecution,
       interpretation: 'Fresh recorded-output verification with headless view state, not a rendered TUI or biological validation. The legacy single-genome codon action remains illustrative.' },
-      lastAnalysis };
+      lastAnalysis, ...(allResultsJson === undefined ? {} : { allResultsJson }) };
   } catch (cause) {
     if (signal.aborted) throw new DOMException('Research replay cancelled.', 'AbortError');
     throw new Error(workflow.commands.getSnapshot().error ?? (cause instanceof Error ? cause.message : 'Research replay failed.'));
   } finally {
     unsubscribe(); signal.removeEventListener('abort', cancel); workflow.commands.cancel();
   }
+}
+
+/** Recompute the entire archived tape, not just its last method or stored hashes.
+ * Unknown actions, changed evidence and cancellation return no partial archive.
+ */
+export async function replayResearchResults(content: string, options: Omit<ResearchReplayOptions, 'repetitions' | 'captureResults'> = {}) {
+  const saved = await parseWorkflowResults(content, options.signal);
+  const result = await replayResearchTape(saved.tapeJson, { ...options, repetitions: saved.repetitions, captureResults: true });
+  const fresh = await parseWorkflowResults(result.allResultsJson!, options.signal);
+  if (JSON.stringify(saved) !== JSON.stringify(fresh)) throw new Error('Recomputed workflow results differ from the saved archive.');
+  return { report: result.report, archiveJson: result.allResultsJson! };
 }
