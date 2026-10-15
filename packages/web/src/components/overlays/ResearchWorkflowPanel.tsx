@@ -4,7 +4,9 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
-  type ResearchView } from '../../keyboard/ResearchWorkflow';
+  readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
+import { workflowResultIndex } from '../../../../core/src/workflow-results';
+import { parseCommandTape } from '../../../../core/src/command-session';
 import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
@@ -164,7 +166,19 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   }), []), workflow = binding.workflow;
   const state = useSyncExternalStore(workflow.commands.subscribe, workflow.commands.getSnapshot, workflow.commands.getSnapshot);
   const research = useSyncExternalStore(workflow.subscribe, workflow.getSnapshot, workflow.getSnapshot);
-  const acceptedAnalysis = research.lastAnalysis;
+  const [resultExecution, setResultExecution] = useState('');
+  const [archiveReview, setArchiveReview] = useState<{ content: string; repetitions: number; records: number } | null>(null);
+  const [resultNotice, setResultNotice] = useState('');
+  const completedRun = research.completeResults;
+  const runDetails = useMemo(() => completedRun ? {
+    name: parseCommandTape(completedRun.tapeJson).name,
+    entries: workflowResultIndex(completedRun.tapeJson, completedRun.repetitions),
+  } : null, [completedRun]);
+  useEffect(() => { setResultExecution(''); }, [completedRun]);
+  const selectedExecution = runDetails?.entries.find(entry => String(entry.execution) === resultExecution);
+  const acceptedAnalysis = resultExecution
+    ? completedRun?.records.find(record => record.resultId === selectedExecution?.analysis?.resultId) ?? null
+    : research.lastAnalysis;
   const genomes = useLocalGenomes(s => s.genomes);
   const [name, setName] = useState('Private genome workflow');
   const [selected, setSelected] = useState('');
@@ -299,7 +313,10 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     setError(null);
     void Promise.resolve().then(action).catch(cause => { if (!(cause instanceof DOMException && cause.name === 'AbortError')) setError(workflow.commands.getSnapshot().error ?? (cause instanceof Error ? cause.message : String(cause))); });
   };
-  const cancel = () => { inputOperation.current?.abort(); inputOperation.current = null; setInputBusy(false); workflow.commands.cancel(); };
+  const cancel = () => {
+    inputOperation.current?.abort(); inputOperation.current = null; setInputBusy(false); workflow.commands.cancel();
+    setResultNotice('Cancelled. Previously accepted complete results are unchanged.');
+  };
   const load = async (file: File | undefined) => {
     if (!file) return;
     inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
@@ -309,9 +326,45 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       const content = await file.text(); if (controller.signal.aborted) return;
       const parsed = await workflow.loadAndReview(content, controller.signal); if (controller.signal.aborted) return;
       setName(workflow.commands.getSnapshot().tape.name);
-      setReview(parsed);
+      setReview(parsed); setArchiveReview(null);
     } catch (cause) { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
+  };
+  const loadResults = async (file: File | undefined) => {
+    if (!file || busy || active) return;
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null);
+    try {
+      const content = await readWorkflowResultsFile(file, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      const reviewed = await workflow.loadResultsAndReview(content, controller.signal);
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      setName(workflow.commands.getSnapshot().tape.name); setReview(reviewed.inputs); setCollisions(false);
+      setArchiveReview({ content, repetitions: reviewed.repetitions, records: reviewed.records });
+      setResultNotice('Archive integrity and source parsing passed. No commands ran; numerical verification is still required.');
+    } catch (cause) {
+      if (inputOperation.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Complete results could not be read.');
+    } finally {
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    }
+  };
+  const replayComplete = (verifyArchive: boolean) => {
+    if (busy || active || (verifyArchive && !archiveReview)) return;
+    inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null); setResultNotice('Recomputing all commands. The previous complete run remains available.');
+    // Claim execution within the click; unmount/cancel cannot race a queued job.
+    const task = verifyArchive ? workflow.verifyCompleteResults(archiveReview!.content, controller.signal)
+      : workflow.replayWithResults(repetitions.trim() ? Number(repetitions) : NaN, controller.signal);
+    void task.then(() => {
+      if (inputOperation.current === controller && !controller.signal.aborted) setResultNotice('Every command completed and its numerical output was verified. Complete results are ready to inspect or export.');
+    }).catch(cause => {
+      if (inputOperation.current === controller && !controller.signal.aborted) {
+        setError(workflow.commands.getSnapshot().error ?? (cause instanceof Error ? cause.message : String(cause)));
+        setResultNotice('The run did not produce a complete archive. The preceding complete run was not replaced.');
+      }
+    }).finally(() => {
+      if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
+    });
   };
   const loadReference = async (file: File | undefined) => {
     if (!file || busy || !active) return;
@@ -340,7 +393,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     try {
       const parsed = await workflow.loadAndReview(content, controller.signal);
       if (inputOperation.current !== controller || controller.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-      setName(workflow.commands.getSnapshot().tape.name); setCollisions(false); setReview(parsed);
+      setName(workflow.commands.getSnapshot().tape.name); setCollisions(false); setReview(parsed); setArchiveReview(null);
     } finally {
       signal.removeEventListener('abort', abort);
       if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); }
@@ -352,7 +405,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
-    <div><button type="button" disabled={busy || active || !genomes.length} onClick={() => invoke(() => workflow.start(name))}>Start workflow recording</button>
+    <div><button type="button" disabled={busy || active || !genomes.length} onClick={() => invoke(() => { workflow.start(name); setArchiveReview(null); })}>Start workflow recording</button>
       <button type="button" disabled={busy || !active} onClick={() => invoke(workflow.commands.stop)}>Stop workflow recording</button>
       <button type="button" disabled={busy || active || !state.tape.commands.length} onClick={() => invoke(() => downloadString(workflow.commands.export(), 'research-workflow.json', 'application/json'))}>Export research workflow</button></div>
     <label>Load research workflow JSON <input type="file" accept=".json,application/json" disabled={busy || active} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void load(file); }} /></label>
@@ -512,6 +565,36 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <button type="button" disabled={state.mode !== 'replaying'} onClick={workflow.commands.pause}>Pause workflow</button>
       <button type="button" disabled={state.mode !== 'paused'} onClick={workflow.commands.resume}>Resume workflow</button>
       <button type="button" disabled={!commandBusy} onClick={cancel}>Cancel workflow</button></div>
+    <section aria-label="Complete workflow results" style={{ border: '1px solid var(--color-border)', padding: '.75rem', display: 'grid', gap: '.5rem' }}>
+      <h4>Complete workflow results</h4>
+      <p>Replay and retain every analysis, not just the last result. Identical evidence is stored once; each repeated execution keeps its original step number.
+        Only a wholly successful run replaces the accepted archive. This does not automatically save to browser storage.</p>
+      <button type="button" disabled={busy || active || !state.tape.commands.length} onClick={() => replayComplete(false)}>Replay and retain all results</button>
+      <label>Load complete workflow results JSON (up to 32 MiB)
+        <input type="file" accept=".json,application/json" disabled={busy || active} onChange={event => {
+          const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void loadResults(file);
+        }} /></label>
+      {archiveReview && <div>
+        <p data-testid="workflow-results-review">Reviewed archive: {archiveReview.records} distinct analyses and {archiveReview.repetitions} repetitions.
+          Add its bundled genomes using the review controls above, then verify. Loading checks integrity only and does not run an analysis.</p>
+        <button type="button" disabled={busy || active} onClick={() => replayComplete(true)}>Replay and verify loaded complete results</button>
+      </div>}
+      <p role="status" data-testid="workflow-results-status">{resultNotice}</p>
+      {completedRun && runDetails && <div data-testid="workflow-complete-results">
+        <p>Accepted complete run: <strong>{runDetails.name}</strong> · {runDetails.entries.length} executions · {completedRun.records.length} distinct analyses.</p>
+        <label>Inspect workflow execution <select value={resultExecution} disabled={busy} onChange={event => setResultExecution(event.target.value)}>
+          <option value="">Latest live result (not an archive execution)</option>
+          {runDetails.entries.map(entry => <option key={entry.execution} value={entry.execution}>
+            {entry.execution}: repetition {entry.iteration}, step {entry.step} · {entry.analysis?.method.id ?? 'Navigation — no analysis'}
+          </option>)}
+        </select></label>
+        <p>Selecting stored evidence does not navigate the explorer or change draft settings. Export workflow analysis and the method-specific tables below use the selected original record.</p>
+        {selectedExecution && !selectedExecution.analysis && <p data-testid="workflow-result-navigation">Execution {selectedExecution.execution} is navigation. It has no analysis to display or export.</p>}
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(workflow.exportCompleteResults(), 'complete-workflow-results.json', 'application/json'))}>Export complete workflow results JSON</button>
+        <p>The archive contains the full original workflow, private genomes, annotations and all retained results. Review it before sharing.
+          Completed archives may be 32 MiB; individual workflows and analysis records still have their existing 10 MiB limits.</p>
+      </div>}
+    </section>
     <p aria-live="polite" data-testid="workflow-status">{state.mode} · {state.tape.commands.length} recorded commands · {state.completed}/{state.total} replay commands complete. {state.notice}</p>
     {(error || state.error) && <p role="alert">{error ?? state.error}</p>}
     <ol aria-label="Recorded workflow commands">{state.tape.commands.map((command, index) => {
@@ -525,7 +608,8 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     {research.view && <p data-testid="workflow-view">Saved view: {research.view.contentId.slice(0, 12)} · {research.view.viewMode} · frame {research.view.readingFrame} · position {research.view.scrollPosition} · CDS {research.view.geneId ?? 'all'}</p>}
     {acceptedAnalysis && <div data-testid="workflow-result" data-result-id={acceptedAnalysis.resultId}>
       <p>Accepted result: {acceptedAnalysis.method.id}. Reproducibility is not biological validation.</p>
-      {!research.result && <p role="status">The latest command changed the view. The last accepted analysis remains available with its original inputs and parameters.</p>}
+      {selectedExecution && <p role="status">Inspecting accepted archive execution {selectedExecution.execution}, repetition {selectedExecution.iteration}, step {selectedExecution.step}. Current drafts do not change this evidence.</p>}
+      {!selectedExecution && !research.result && <p role="status">The latest command changed the view. The last accepted analysis remains available with its original inputs and parameters.</p>}
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
       <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. Coordinate TSV exports omit the source-sequence fields.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>

@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
 import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
+import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
 
 interface WorkflowFixture extends Window {
   workflowIds: string[];
@@ -170,4 +171,59 @@ test('does not record a late real result after cancellation or substitute self c
   await expect(page.getByRole('button', { name: 'Run and record dot plot', exact: true })).toBeDisabled();
   await expect(page.getByText('A missing comparison is never replaced by a self plot.', { exact: false })).toBeVisible();
   await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+});
+
+test('retains every browser analysis, selects earlier executions and exports their original records', async ({ page }) => {
+  const saved = await captureMixed(page);
+  await page.getByLabel('Workflow replay repetitions', { exact: true }).fill('2');
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-complete-results')).toContainText('6 executions · 3 distinct analyses');
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  const content = await download(page, 'Export complete workflow results JSON'), archive = await parseWorkflowResults(content);
+  expect(archive.repetitions).toBe(2); expect(archive.records).toHaveLength(3);
+  await page.getByLabel('Inspect workflow execution', { exact: true }).selectOption('1');
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', saved.selfId!);
+  const exported = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  expect(exported).toEqual(workflowAnalysisAt(archive, 1));
+  await page.getByLabel('Inspect workflow execution', { exact: true }).selectOption('5');
+  const digest = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  expect(digest.fields.cutSites.value).toEqual([1]);
+  expect(digest.fields.fragments.value).toEqual([{ start: 1, end: 1, length: 8, wrapsOrigin: true }]);
+  await page.getByLabel('Inspect workflow execution', { exact: true }).selectOption('6');
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', saved.pairId!);
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(content);
+});
+
+test('reviews an exported complete run without executing, then verifies all its original repetitions', async ({ page }) => {
+  await captureMixed(page);
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  const content = await download(page, 'Export complete workflow results JSON');
+  await page.reload();
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({ name: 'results.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('3 distinct analyses and 1 repetitions');
+  await expect(page.getByTestId('workflow-complete-results')).toHaveCount(0);
+  await expect(page.getByTestId('workflow-result')).toHaveCount(0);
+  await expect(page.getByTestId('workflow-status')).toContainText('0/3');
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(content);
+});
+
+test('cancelled replacement and invalid import preserve the accepted complete run', async ({ page }) => {
+  await captureMixed(page);
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  const content = await download(page, 'Export complete workflow results JSON');
+  await page.evaluate(() => { (window as WorkflowFixture).holdWorkflowReply = true; });
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel workflow', exact: true }).click();
+  await page.evaluate(() => (window as WorkflowFixture).releaseWorkflowReply());
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Previously accepted complete results are unchanged');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(content);
+  const changed = JSON.parse(content); changed.records.pop();
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({ name: 'incomplete.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(changed)) });
+  await expect(page.getByRole('alert')).toContainText('missing analyses');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(content);
 });
