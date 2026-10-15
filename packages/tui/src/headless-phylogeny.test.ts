@@ -130,3 +130,17 @@ test('bounded reader rejects oversized files, directories and invalid UTF-8', as
   await writeFile(invalid, Buffer.from([0xff, 0xfe, 0x41]));
   await assert.rejects(runPhylogenyCommand(['inspect', '--input', invalid]));
 });
+
+
+test('physical FASTA import/export preserves a UTF-8 BOM while saved JSON accepts one', async () => {
+  const directory = await temporary(), input = join(directory, 'bom.fa'), output = join(directory, 'bom.json'), original = join(directory, 'original.fa');
+  const text = '\uFEFF' + fasta.replaceAll('\n', '\r\n');
+  await writeFile(input, text);
+  await runPhylogenyCommand(fileArgs(input, output));
+  const saved = await readFile(output, 'utf8');
+  assert.equal(JSON.parse(saved).inputs[0].data.fasta, text);
+  const withBom = join(directory, 'bom-experiment.json');
+  await writeFile(withBom, '\uFEFF' + saved);
+  await runPhylogenyCommand(['export', '--experiment', withBom, '--format', 'alignment-fasta', '--output', original]);
+  assert.deepEqual(await readFile(original), await readFile(input));
+});

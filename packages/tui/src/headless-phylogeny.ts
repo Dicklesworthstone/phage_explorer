@@ -129,7 +129,7 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
     ? exportPhylogeny(experiment, task.format) : serializeAnalysisRecord(experiment.record) };
 }
 
-async function readBounded(path: string, maximum: number): Promise<string> {
+async function readBounded(path: string, maximum: number, preserveBom = false): Promise<string> {
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
@@ -143,7 +143,7 @@ async function readBounded(path: string, maximum: number): Promise<string> {
       offset += bytesRead;
     }
     if (offset > maximum) throw new Error(`Phylogeny input exceeds ${maximum} bytes.`);
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset));
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: preserveBom }).decode(bytes.subarray(0, offset));
   } finally { await file.close(); }
 }
 
@@ -184,7 +184,7 @@ export async function runPhylogenyCommand(args: readonly string[], signal?: Abor
   if (command.type === 'help') return PHYLOGENY_HELP;
   signal?.throwIfAborted();
   const raw = command.type === 'infer' || command.type === 'inspect';
-  const content = await readBounded(raw ? command.inputPath : command.experimentPath, raw ? PHYLOGENY_LIMITS.bytes : RECORD_BYTES);
+  const content = await readBounded(raw ? command.inputPath : command.experimentPath, raw ? PHYLOGENY_LIMITS.bytes : RECORD_BYTES, raw);
   signal?.throwIfAborted();
   const task: PhylogenyTask = command.type === 'infer'
     ? { type: 'infer', content, source: command.source, options: command.options }

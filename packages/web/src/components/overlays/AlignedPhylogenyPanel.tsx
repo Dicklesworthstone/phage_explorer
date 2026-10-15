@@ -5,6 +5,7 @@ import { PHYLOGENY_LIMITS, resolvePhylogenyOptions, type AlignedPhylogenyResult,
 import { resolveOutgroupRooting, type RootedPhylogenyResult } from '../../../../core/src/analysis/phylogeny-rooting';
 import { AlignedPhylogenySession, readAlignedPhylogenyFile } from '../../workers/AlignedPhylogenySession';
 import { downloadString } from '../../utils/export';
+import { preparePhylogenyDownload, type PhylogenyDownloadFormat } from '../../utils/phylogeny-download';
 import { useTheme } from '../../hooks/useTheme';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 
@@ -93,15 +94,11 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
   const replay = (input: File) => {
     invalidate(); void session.run(async () => ({ kind: 'replay', content: await readAlignedPhylogenyFile(input, 10 * 1024 * 1024) }));
   };
-  const exportResult = (format: 'experiment' | 'newick' | 'distances' | 'splits') => {
+  const exportResult = (format: PhylogenyDownloadFormat) => {
     if (!accepted || busy) return;
     try {
-      const { result, record } = accepted;
-      const content = format === 'experiment' ? serializeAnalysisRecord(record) : format === 'newick' ? result.newick + '\n'
-        : format === 'splits' ? JSON.stringify({ resultId: record.resultId, bootstrap: result.bootstrap, splits: result.splits, warnings: result.warnings }, null, 2) + '\n'
-        : ['taxon\t' + result.taxa.join('\t'), ...result.taxa.map((taxon, index) => taxon + '\t' + result.distances[index].join('\t'))].join('\n') + '\n';
-      const suffix = format === 'newick' ? 'nwk' : format === 'distances' ? 'tsv' : 'json';
-      downloadString(content, `aligned-phylogeny-${format}.${suffix}`, suffix === 'json' ? 'application/json' : 'text/plain'); setLocalError(null);
+      const download = preparePhylogenyDownload(accepted, format);
+      downloadString(download.content, download.filename, download.mimeType); setLocalError(null);
     } catch (cause) { report(cause); }
   };
   const acceptedRoot = accepted?.rooting;
@@ -167,6 +164,8 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('newick')}>Export unrooted Newick</button>
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('distances')}>Export distance matrix TSV</button>
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('splits')}>Export split supports JSON</button>
+      <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('splits-tsv')}>Export split supports TSV</button>
+      <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('alignment-fasta')}>Export original aligned FASTA</button>
     </div>
     {accepted && result && <section aria-label="Accepted aligned phylogeny" data-result-id={accepted.record.resultId}>
       <h4>{accepted.source.name}</h4>
@@ -188,7 +187,17 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
         <div><button type="button" disabled={!page} onClick={() => setDistancePage(page - 1)}>Previous distances</button> {page + 1}/{pages} <button type="button" disabled={page + 1 === pages} onClick={() => setDistancePage(page + 1)}>Next distances</button></div></>}
       <details><summary>Excluded alignment columns (0-based)</summary><p>{result.excludedColumns.length ? result.excludedColumns.join(', ') : 'None'}</p></details>
       <details open><summary>Method assumptions and limits</summary>{result.warnings.map(warning => <p key={warning}>{warning}</p>)}</details>
-      <p>Newick preserves signed lengths and an arbitrary serialization root. Do not feed that root into dated-tree diagnostics as a biological rooting decision. Independently justified rooting and compatible nonnegative lengths are separate prerequisites.</p>
+      <p>Unrooted Newick preserves signed lengths and labels supported internal branches with bootstrap percentages (0–100), not probabilities.
+        The split table and TSV use fractions (0–1); unavailable support is omitted, not zero. The arbitrary serialization root has no support label.
+        Do not feed that root into dated-tree diagnostics as a biological rooting decision. Independently justified rooting and compatible nonnegative lengths are separate prerequisites.</p>
+      <p>Distance and split TSV include method and result identity in # metadata comments. Original FASTA retains submitted descriptions, gaps and ambiguous columns,
+        including columns excluded from inference. These downloads contain private data and are not anonymized.</p>
+      <details><summary>Replay this unrooted experiment without a browser</summary>
+        <p>Save the experiment JSON for a complete, reproducible record; Newick and TSV alone cannot be replayed.
+          The headless command recomputes the saved tree and all support before accepting or exporting it. No database or network is required.</p>
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{`bun run phylogeny verify --experiment aligned-phylogeny-experiment.json
+bun run phylogeny export --experiment aligned-phylogeny-experiment.json --format newick --output NEW_TREE.nwk`}</pre>
+      </details>
       <AnalysisRecordDetails record={accepted.record} />
       <section aria-label="Explicit outgroup rooting">
         <h4>Record an explicit outgroup root hypothesis</h4>
