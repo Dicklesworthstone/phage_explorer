@@ -180,6 +180,7 @@ export interface TerminalExperimentReport {
 }
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
+  { type: 'fit-pfu-growth'; content: string } |
   { type: 'inspect'; content: string } |
   { type: 'record'; content: string } |
   { type: 'inspect-genomes'; content: string } |
@@ -198,14 +199,15 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'fit-growth' ? ['type', 'content'] : request.type === 'analyze-experiment'
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
-  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > COMMAND_LIMITS.bytes || new TextEncoder().encode(request.content).length > COMMAND_LIMITS.bytes) {
     throw new Error('Expected a supported terminal operation and UTF-8 input of at most 10 MiB.');
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
+  if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'replay' && (typeof request.exportAnalysis !== 'boolean' || !Number.isSafeInteger(request.repetitions) ||
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
   if ((request.type === 'replay-experiment' || request.type === 'analyze-experiment') && !['none', 'json', 'tsv'].includes(String(request.outputFormat))) {
@@ -225,6 +227,11 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'fit-pfu-growth') {
+    const { createGrowthCurveRecord } = await import('../../core/src/analysis/one-step-growth');
+    const record = await createGrowthCurveRecord(request.content);
+    return { type: 'growth-fitted', inputFileSha256: hashText(request.content), recordJson: serializeAnalysisRecord(record) };
+  }
   if (request.type === 'fit-growth') {
     const { createPlaqueGrowthRecord } = await import('../../core/src/analysis/plaque-growth');
     const record = await createPlaqueGrowthRecord(request.content);
@@ -339,6 +346,9 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { sequence: row.data, accession: row.accession, source: row.source },
         { sequence: column.data, accession: column.accession, source: column.source })).record;
       table = exportPairwiseDotPlotExperimentTsv;
+    } else if (saved.method.id === 'extracellular-pfu-growth') {
+      const { replayGrowthCurveRecord, exportGrowthCurveTsv } = await import('../../core/src/analysis/one-step-growth');
+      fresh = await replayGrowthCurveRecord(request.content); table = exportGrowthCurveTsv;
     } else if (saved.method.id === 'plaque-count-growth') {
       const { replayPlaqueGrowthRecord, exportPlaqueGrowthTsv } = await import('../../core/src/analysis/plaque-growth');
       fresh = await replayPlaqueGrowthRecord(request.content); table = exportPlaqueGrowthTsv;
@@ -355,7 +365,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = await replayExactRepeatRecord(request.content);
       table = exportExactRepeatPairsTsv;
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs and plaque-count growth.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, plaque-count and corrected-PFU growth.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.
