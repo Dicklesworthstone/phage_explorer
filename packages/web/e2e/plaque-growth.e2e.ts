@@ -4,10 +4,12 @@ import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { replayPlaqueGrowthRecord, type PlaqueGrowthFit } from '../../core/src/analysis/plaque-growth';
+import { replayGrowthCurveRecord, type GrowthCurveFit } from '../../core/src/analysis/one-step-growth';
 
 interface PlaqueFixture extends Window {
   holdPlaqueReply: boolean; plaqueReplyHeld: boolean; releasePlaqueReply(): void;
   holdPlaqueRead: boolean; plaqueReadHeld: boolean; releasePlaqueRead(): void;
+  holdPfuReply: boolean; pfuReplyHeld: boolean; releasePfuReply(): void;
 }
 let config: UserConfig | undefined;
 // Real integrated component, Vite transforms and module worker. Only message/file
@@ -36,6 +38,12 @@ const test = base.extend<{ plaqueFixture: void }>({
               constructor(url, options) {
                 super(url, options);
                 this.addEventListener('message', event => {
+                  if (window.holdPfuReply && event.data?.record?.method?.id === 'extracellular-pfu-growth') {
+                    window.holdPfuReply = false; window.pfuReplyHeld = true;
+                    const data = event.data; event.stopImmediatePropagation();
+                    window.releasePfuReply = () => this.dispatchEvent(new MessageEvent('message', { data }));
+                    return;
+                  }
                   if (!window.holdPlaqueReply || event.data?.record?.method?.id !== 'plaque-count-growth') return;
                   window.holdPlaqueReply = false; window.plaqueReplyHeld = true;
                   const data = event.data; event.stopImmediatePropagation();
@@ -93,7 +101,7 @@ test('raw CSV review, fitting, native-compatible evidence and reload/replay pres
   await expect(page.getByTestId('plaque-growth-result')).toHaveCount(0);
   await page.getByLabel('Plate source and assay context', { exact: true }).fill('Synthetic test counts entered through the CSV route; not empirical data.');
   await page.getByLabel('Plate data provenance', { exact: true }).selectOption('synthetic');
-  await page.getByLabel('I confirm uncensored extracellular free-phage plaque counts.', { exact: true }).check();
+  await page.getByLabel('I confirm extracellular free-phage counts and any explicitly recorded inclusive bounds.', { exact: true }).check();
   await page.getByRole('button', { name: 'Fit raw plaque counts', exact: true }).click();
   await expect(page.getByTestId('plaque-growth-status')).toContainText('Fresh fit accepted');
   const saved = await download(page, 'Export plaque evidence JSON'), record = await parseAnalysisRecord(saved);
@@ -161,4 +169,120 @@ test('all-zero input shows unavailable timing and nonzero upper support rather t
   const fit = record.fields.fit.value as unknown as PlaqueGrowthFit;
   expect(fit.totalPlaques).toBe(0); expect(fit.riseStartMin).toBeNull(); expect(fit.increaseSupport[0][1]).toBeGreaterThan(0);
   await expect(page.getByTestId('plaque-growth-result')).toContainText('not calibrated confidence intervals');
+});
+
+async function fitCorrectedExample(page: Page) {
+  await page.getByRole('button', { name: 'Load clearly labeled synthetic example', exact: true }).click();
+  await page.getByLabel('Bootstrap samples (0, or 20–200)', { exact: true }).fill('20');
+  await page.getByRole('button', { name: 'Fit observations', exact: true }).click();
+  await expect(page.getByTestId('corrected-pfu-status')).toContainText('Fresh fit accepted');
+}
+const correctedImport = (page: Page) => page.getByLabel('Import CSV, TSV, or experiment JSON (input up to 1 MB; evidence up to 10 MiB)', { exact: true });
+
+test('corrected-PFU worker fit exports old and portable formats, preserves accepted inputs and replays after reload', async ({ page }) => {
+  await fitCorrectedExample(page);
+  const evidence = await download(page, 'Export verified PFU evidence JSON'), record = await parseAnalysisRecord(evidence);
+  const fit = record.fields.fit.value as unknown as GrowthCurveFit;
+  expect(record.method.id).toBe('extracellular-pfu-growth');
+  expect(Math.abs(fit.baselinePFUPerMl - 10000)).toBeLessThan(1e-5);
+  expect(Math.abs(fit.increasePFUPerMl - 100000)).toBeLessThan(1e-5);
+  expect([fit.riseStartMin, fit.riseEndMin]).toEqual([15, 30]); expect(fit.bootstrapSamples).toBe(20);
+  expect((await replayGrowthCurveRecord(evidence)).resultId).toBe(record.resultId);
+  const legacy = await download(page, 'Export replayable experiment JSON'), residuals = await download(page, 'Export residuals CSV');
+  expect(JSON.parse(legacy).schemaVersion).toBe('one-step-growth-v1'); expect(JSON.parse(legacy).result).toEqual(fit);
+  await page.getByRole('button', { name: 'Pin result for comparison', exact: true }).click();
+  await page.getByLabel('Experiment title', { exact: true }).fill('Unapplied corrected-PFU edit');
+  await expect(page.getByRole('region', { name: 'Growth-curve fit results' })).toHaveAttribute('data-result-id', record.resultId);
+  expect(await download(page, 'Export verified PFU evidence JSON')).toBe(evidence);
+  await page.reload();
+  await correctedImport(page).setInputFiles({ name: 'corrected.json', mimeType: 'application/json', buffer: Buffer.from(evidence) });
+  await expect(page.getByTestId('corrected-pfu-status')).toContainText('verified by fresh replay');
+  expect(await download(page, 'Export residuals CSV')).toBe(residuals);
+  expect(await download(page, 'Export verified PFU evidence JSON')).toBe(evidence);
+});
+
+test('corrected-PFU import refuses false legacy answers and rehashed intervals without losing an accepted result', async ({ page }) => {
+  await fitCorrectedExample(page);
+  const evidence = await download(page, 'Export verified PFU evidence JSON'), record = await parseAnalysisRecord(evidence);
+  const old = JSON.parse(await download(page, 'Export replayable experiment JSON')); old.result.increasePFUPerMl = 0;
+  await correctedImport(page).setInputFiles({ name: 'altered-legacy.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(old)) });
+  await expect(page.getByRole('alert')).toContainText('legacy saved result');
+  await expect(page.getByRole('region', { name: 'Growth-curve fit results' })).toHaveAttribute('data-result-id', record.resultId);
+  const changed = structuredClone(record); (changed.fields.fit.value as unknown as GrowthCurveFit).intervals!.increasePFUPerMl = [0, 0];
+  const forged = await createAnalysisRecord({ method: changed.method, parameters: changed.parameters, fields: changed.fields,
+    references: changed.references, seed: changed.seed, inputs: changed.inputs.map(({ sha256: _sha, ...row }) => row) });
+  await correctedImport(page).setInputFiles({ name: 'forged.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(forged)) });
+  await expect(page.getByRole('alert')).toContainText('Recomputed corrected-PFU');
+  await expect(page.getByRole('region', { name: 'Growth-curve fit results' })).toHaveAttribute('data-result-id', record.resultId);
+  expect(await download(page, 'Export verified PFU evidence JSON')).toBe(evidence);
+});
+
+test('cancelling corrected-PFU worker and file deliveries prevents stale results or draft replacement', async ({ page }) => {
+  await fitCorrectedExample(page);
+  const evidence = await download(page, 'Export verified PFU evidence JSON');
+  await page.evaluate(() => { (window as PlaqueFixture).holdPfuReply = true; });
+  await page.getByRole('button', { name: 'Fit observations', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).pfuReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel corrected-PFU work', exact: true }).click();
+  await page.getByLabel('Experiment title', { exact: true }).fill('New corrected-PFU fit');
+  await page.getByRole('button', { name: 'Fit observations', exact: true }).click();
+  await expect(page.getByTestId('corrected-pfu-status')).toContainText('Fresh fit accepted');
+  const newer = await download(page, 'Export verified PFU evidence JSON'); expect(newer).not.toBe(evidence);
+  await page.evaluate(() => (window as PlaqueFixture).releasePfuReply());
+  expect(await download(page, 'Export verified PFU evidence JSON')).toBe(newer);
+  await page.evaluate(() => { (window as PlaqueFixture).holdPlaqueRead = true; });
+  await correctedImport(page).setInputFiles({ name: 'late.json', mimeType: 'application/json', buffer: Buffer.from(evidence) });
+  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).plaqueReadHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel corrected-PFU work', exact: true }).click();
+  await page.getByLabel('Experiment title', { exact: true }).fill('Kept draft');
+  await page.evaluate(() => (window as PlaqueFixture).releasePlaqueRead());
+  await expect(page.getByLabel('Experiment title', { exact: true })).toHaveValue('Kept draft');
+  expect(await download(page, 'Export verified PFU evidence JSON')).toBe(newer);
+});
+
+test('explicit count bounds retain unknown totals and unavailable residuals through browser export and replay', async ({ page }) => {
+  await page.getByLabel('Plate CSV format', { exact: true }).selectOption('2');
+  await fitExample(page);
+  const result = page.getByTestId('plaque-growth-result');
+  await expect(result).toContainText('Accepted method version: 2');
+  await expect(result).toContainText('total plaques: Unavailable');
+  await expect(page.getByTestId('plaque-count-coverage')).toContainText('upper-bound plates: 1; lower-bound plates: 1');
+  await expect(result.locator('svg').first().locator('[data-plate-status="at-most"]')).toHaveCount(1);
+  await expect(result.locator('svg').first().locator('[data-plate-status="at-least"]')).toHaveCount(1);
+  await result.getByText('Inspect plate residuals and exposures', { exact: true }).click();
+  const table = page.getByRole('table', { name: 'Accepted plate counts and residuals' });
+  await expect(table.getByRole('row').filter({ hasText: 'at-most' })).toContainText('Unavailable');
+  await expect(result.locator('svg').nth(1).locator('[data-plate-status="at-most"], [data-plate-status="at-least"]')).toHaveCount(0);
+  const evidence = await download(page, 'Export plaque evidence JSON'), accepted = await replayPlaqueGrowthRecord(evidence);
+  expect(accepted.method.version).toBe('2');
+  const before = await result.getAttribute('data-result-id'), exported = await download(page, 'Export fitted plates TSV');
+  const upper = exported.split('\n').find(row => row.startsWith('2\t'))!.split('\t');
+  expect(upper[2]).toBe('at-most'); expect(upper[7]).toBe('');
+  await page.getByLabel('Plate CSV format', { exact: true }).selectOption('1');
+  await expect(result).toContainText('Accepted method version: 2');
+  expect(await download(page, 'Export plaque evidence JSON')).toBe(evidence);
+  await page.getByLabel('Restore and verify plaque evidence JSON (up to 10 MiB)', { exact: true }).setInputFiles({ name: 'bounds.json', mimeType: 'application/json', buffer: Buffer.from(evidence) });
+  await expect(page.getByTestId('plaque-growth-status')).toContainText('verified by fresh replay');
+  await expect(result).toHaveAttribute('data-result-id', before!);
+  await expect(page.getByLabel('Plate CSV format', { exact: true })).toHaveValue('2');
+  expect(await download(page, 'Export fitted plates TSV')).toBe(exported);
+});
+
+test('CSV schema selection does not infer censoring or destroy accepted measurements on failure', async ({ page }) => {
+  const before = await fitExample(page);
+  const boundedCsv = csv.trimEnd().split('\n').map((row, i) => row + (i === 0 ? ',count_status' : i === 3 ? ',at-most' : ',exact')).join('\n');
+  const upload = page.getByLabel('Load plate CSV/TSV for review (up to 1 MB)', { exact: true });
+  await upload.setInputFiles({ name: 'bounded.csv', mimeType: 'text/csv', buffer: Buffer.from(boundedCsv) });
+  await expect(page.getByRole('alert')).toContainText('Expected');
+  await expect(page.getByTestId('plaque-growth-result')).toHaveAttribute('data-result-id', before!);
+  await page.getByLabel('Plate CSV format', { exact: true }).selectOption('2');
+  await upload.setInputFiles({ name: 'bounded.csv', mimeType: 'text/csv', buffer: Buffer.from(boundedCsv) });
+  await expect(page.getByLabel('Raw plate CSV', { exact: true })).toHaveValue(boundedCsv);
+  await expect(page.getByTestId('plaque-growth-result')).toHaveAttribute('data-result-id', before!);
+  await page.getByLabel('Plate source and assay context', { exact: true }).fill('Synthetic bound-import test, not empirical observations.');
+  await page.getByLabel('Plate data provenance', { exact: true }).selectOption('synthetic');
+  await page.getByLabel('I confirm extracellular free-phage counts and any explicitly recorded inclusive bounds.', { exact: true }).check();
+  await page.getByRole('button', { name: 'Fit raw plaque counts', exact: true }).click();
+  await expect(page.getByTestId('plaque-growth-status')).toContainText('Fresh fit accepted');
+  await expect(page.getByTestId('plaque-count-coverage')).toContainText('upper-bound plates: 1');
 });

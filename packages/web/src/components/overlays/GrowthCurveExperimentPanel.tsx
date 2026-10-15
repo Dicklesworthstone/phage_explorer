@@ -1,11 +1,12 @@
 /** Measured-data workflow; deliberately separate from illustrative simulations. */
-import React, { useEffect, useId, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
-  GROWTH_CURVE_LIMITS, GROWTH_CURVE_METHOD, fitOneStepGrowth,
-  parseGrowthCurveCSV, parseGrowthCurveExperiment, serializeGrowthCurveExperiment,
+  GROWTH_CURVE_LIMITS, GROWTH_CURVE_METHOD, parseGrowthCurveCSV,
   type GrowthCurveExperiment, type GrowthCurveFit, type GrowthEstimates,
 } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
+import { GrowthExperimentSession, CORRECTED_PFU_GROWTH_MODEL, correctedPfuGrowthDraftContent,
+  readPlaqueGrowthFile } from '../../workers/PlaqueGrowthSession';
 import { PlaqueGrowthPanel } from './PlaqueGrowthPanel';
 
 interface Draft {
@@ -103,13 +104,21 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   const colors = theme.colors;
   const id = useId();
   const [draft, setDraft] = useState<Draft>(restoreDraft);
-  const [completed, setCompleted] = useState<Completed | null>(null);
+  const session = useMemo(() => new GrowthExperimentSession(() => new Worker(
+    new URL('../../workers/plaque-growth.worker.ts', import.meta.url), { type: 'module' }), CORRECTED_PFU_GROWTH_MODEL), []);
+  const execution = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const completed = useMemo<Completed | null>(() => execution.accepted ? { experiment: execution.accepted.input,
+    fit: execution.accepted.record.fields.fit.value as unknown as GrowthCurveFit } : null, [execution.accepted]);
   const [reference, setReference] = useState<Completed | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState(false);
   const [loading, setLoading] = useState(false);
   const revision = useRef(0);
-  useEffect(() => () => { revision.current++; }, []);
+  const reading = useRef<AbortController | null>(null);
+  useEffect(() => {
+    session.activate();
+    return () => { revision.current++; reading.current?.abort(); session.deactivate(); };
+  }, [session]);
   useEffect(() => {
     try {
       const saved = JSON.stringify(draft);
@@ -119,7 +128,10 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
     catch { setStorageError(true); }
   }, [draft]);
 
-  const invalidate = () => { revision.current++; setCompleted(null); setError(null); setLoading(false); };
+  const invalidate = () => {
+    revision.current++; reading.current?.abort(); reading.current = null;
+    session.cancel(); setError(null); setLoading(false);
+  };
   const edit = <K extends keyof Draft>(key: K, value: Draft[K]) => {
     invalidate(); setDraft(previous => ({ ...previous, [key]: value }));
   };
@@ -128,36 +140,29 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   const fitDraft = (event: React.FormEvent) => {
     event.preventDefault(); invalidate();
     try {
-      if (!draft.extracellular) throw new Error('Confirm that the measurements are extracellular free-phage PFU/mL, not total infective-center titers.');
-      if (!draft.seed.trim() || !draft.bootstrap.trim()) throw new Error('Provide a seed and bootstrap count; blank is not zero.');
-      const centers = draft.centers.trim() ? Number(draft.centers) : null;
-      if (centers !== null && (!Number.isFinite(centers) || centers <= 0)) throw new Error('Infected centers must be a positive measured concentration, or blank.');
-      const experiment = parseGrowthCurveExperiment(JSON.stringify({
-        schemaVersion: 'one-step-growth-v1', method: GROWTH_CURVE_METHOD, measurement: 'extracellular-pfu-per-ml',
-        title: draft.title, provenance: { kind: draft.kind, source: draft.source }, observations: parseGrowthCurveCSV(draft.csv),
-        options: { infectedCentersPerMl: centers,
-          bootstrapSamples: Number(draft.bootstrap), seed: Number(draft.seed) },
-      }));
-      setCompleted({ experiment, fit: fitOneStepGrowth(experiment.observations, experiment.options) });
+      void session.run('fit', correctedPfuGrowthDraftContent(draft));
     } catch (problem) { report(problem); }
   };
 
   const importFile = async (file: File) => {
-    invalidate(); const request = revision.current; setLoading(true);
+    invalidate(); const request = revision.current, owner = new AbortController(); reading.current = owner; setLoading(true);
     try {
-      if (file.size > GROWTH_CURVE_LIMITS.bytes) throw new Error('Maximum import size is 1 MB.');
-      const text = await file.text();
-      if (request !== revision.current) return;
+      // Evidence envelopes use the shared 10 MiB limit; embedded observations
+      // and raw CSV remain bounded by the existing 1 MB input limit.
+      const text = await readPlaqueGrowthFile(file, 10 * 1024 * 1024, owner.signal);
+      if (request !== revision.current || owner.signal.aborted) return;
       if (/\.json$/i.test(file.name) || text.trimStart().startsWith('{')) {
-        const experiment = parseGrowthCurveExperiment(text);
-        const fit = fitOneStepGrowth(experiment.observations, experiment.options);
-        setDraft(draftFor(experiment)); setCompleted({ experiment, fit });
+        const parsed: unknown = JSON.parse(text);
+        const evidence = parsed !== null && typeof parsed === 'object' && 'format' in parsed && parsed.format === 'phage-explorer-analysis';
+        const accepted = await session.run(evidence ? 'replay' : 'fit', text);
+        if (accepted && request === revision.current && !owner.signal.aborted) setDraft(draftFor(session.getSnapshot().accepted!.input));
       } else {
+        if (new TextEncoder().encode(text).length > GROWTH_CURVE_LIMITS.bytes) throw new Error('Maximum CSV import size is 1 MB.');
         parseGrowthCurveCSV(text);
         setDraft({ ...EMPTY_DRAFT, title: file.name.slice(0, 200), source: `User-supplied file: ${file.name}`.slice(0, 2000), csv: text });
       }
-    } catch (problem) { if (request === revision.current) report(problem); }
-    finally { if (request === revision.current) setLoading(false); }
+    } catch (problem) { if (request === revision.current && !owner.signal.aborted) report(problem); }
+    finally { if (reading.current === owner) { reading.current = null; setLoading(false); } }
   };
 
   const example = () => {
@@ -169,7 +174,8 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   };
   const exportJSON = () => {
     if (!completed) return;
-    try { download(serializeGrowthCurveExperiment(completed.experiment), 'extracellular-growth-experiment.json', 'application/json'); }
+    // Preserve the older export format without performing another bootstrap.
+    try { download(JSON.stringify({ ...completed.experiment, result: completed.fit }, null, 2), 'extracellular-growth-experiment.json', 'application/json'); }
     catch (problem) { report(problem); }
   };
   const exportResiduals = () => {
@@ -182,17 +188,21 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   const control: React.CSSProperties = { width: '100%', boxSizing: 'border-box', minHeight: 44, padding: '0.5rem', color: colors.text, background: colors.background, border: `1px solid ${colors.borderLight}`, borderRadius: 4 };
   const button: React.CSSProperties = { ...control, width: 'auto', cursor: 'pointer' };
   const label: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '0.25rem' };
+  const busy = loading || execution.busy;
 
   return (
     <section aria-labelledby={`${id}-heading`} style={{ padding: '1rem', color: colors.text, minWidth: 0 }} onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
       <PlaqueGrowthPanel />
       <h3 id={`${id}-heading`}>Measured extracellular growth curves</h3>
       <p>Import your own free-phage PFU/mL observations or reload an exported experiment. Fits describe the population curve; they do not establish biological latency, adsorption, or single-cell burst size.</p>
-      <p style={{ color: colors.textMuted }}>Data stay in this browser. Drafts are retained in this tab when storage is available; export JSON for durable, reproducible records. Saved results are recomputed on import.</p>
+      <p style={{ color: colors.textMuted }}>Data stay in this browser. Drafts are retained in this tab when storage is available; export JSON for durable, reproducible records.
+        Fitting and bootstrapping run in a cancellable worker. Saved numerical results are checked against fresh computation on import.</p>
+      <p>Raw plaque counts above and corrected PFU/mL below use different observation models; neither is silently converted into the other.
+        Editing drafts or a failed import leaves the last accepted result and its exports unchanged. Exports contain private measurements.</p>
       {storageError && <p role="status">Browser draft storage is unavailable. Export before leaving to avoid losing your inputs.</p>}
       <form onSubmit={fitDraft}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
-          <label style={label}>Import CSV, TSV, or experiment JSON (up to 1 MB)
+          <label style={label}>Import CSV, TSV, or experiment JSON (input up to 1 MB; evidence up to 10 MiB)
             <input type="file" accept=".csv,.tsv,.json,text/csv,text/tab-separated-values,application/json" style={control} onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void importFile(file); }} />
           </label>
           <button type="button" style={button} onClick={example}>Load clearly labeled synthetic example</button>
@@ -212,18 +222,25 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
         <label style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', minHeight: 44 }}><input type="checkbox" checked={draft.extracellular} onChange={event => edit('extracellular', event.target.checked)} />I confirm that these are extracellular free-phage measurements, not total infective-center counts.</label>
         <p style={{ color: colors.textMuted }}>Optional net yield is the fitted extracellular PFU/mL increase divided by independently measured infected centers/mL on the same concentration basis. Initial PFU and total host counts are not substitutes. Denominator uncertainty is not included.</p>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <button type="submit" style={button} disabled={loading}>Fit observations</button>
-          <button type="button" style={button} disabled={!completed || loading} onClick={exportJSON}>Export replayable experiment JSON</button>
-          <button type="button" style={button} disabled={!completed || loading} onClick={exportResiduals}>Export residuals CSV</button>
-          <button type="button" style={button} disabled={!completed || loading} onClick={() => setReference(completed)}>Pin result for comparison</button>
+          <button type="submit" style={button} disabled={busy}>Fit observations</button>
+          <button type="button" style={button} disabled={!busy} onClick={invalidate}>Cancel corrected-PFU work</button>
+          <button type="button" style={button} disabled={!completed || busy} onClick={exportJSON}>Export replayable experiment JSON</button>
+          <button type="button" style={button} disabled={!execution.accepted || busy} onClick={() => {
+            try { if (execution.accepted) download(execution.accepted.json, 'corrected-pfu-evidence.json', 'application/json'); }
+            catch (problem) { report(problem); }
+          }}>Export verified PFU evidence JSON</button>
+          <button type="button" style={button} disabled={!completed || busy} onClick={exportResiduals}>Export residuals CSV</button>
+          <button type="button" style={button} disabled={!completed || busy} onClick={() => setReference(completed)}>Pin result for comparison</button>
           {reference && <button type="button" style={button} onClick={() => setReference(null)}>Clear comparison</button>}
         </div>
       </form>
       {reference && <p role="status">Comparison pinned: {reference.experiment.title} ({reference.experiment.provenance.kind}). Edit inputs or import another experiment, then fit to compare. Deltas are descriptive, not significance tests; export each experiment to retain both.</p>}
-      {loading && <p role="status">Reading experiment file…</p>}
-      {error && <p role="alert" style={{ color: colors.error }}>{error}</p>}
-      {completed && <section aria-label="Growth-curve fit results">
+      <p role="status" data-testid="corrected-pfu-status">{loading && !execution.busy ? 'Reading experiment file…' : execution.phase}</p>
+      {(error || execution.error) && <p role="alert" style={{ color: colors.error }}>{error ?? execution.error}</p>}
+      {completed && <section aria-label="Growth-curve fit results" data-result-id={execution.accepted!.record.resultId}>
         <h4>{completed.experiment.title}</h4>
+        <p>Accepted input and fit below; draft edits are not applied until Fit observations succeeds.
+          {' '}{execution.accepted!.verifiedReplay ? 'Saved evidence numerically verified.' : 'Freshly computed evidence; not biological validation.'}</p>
         <p><strong>{completed.experiment.provenance.kind === 'synthetic' ? 'SYNTHETIC — NOT EXPERIMENTAL EVIDENCE' : 'USER-SUPPLIED OBSERVATIONS — NOT INDEPENDENTLY VERIFIED'}</strong></p>
         <p>{completed.experiment.provenance.source}</p>
         <GrowthChart fit={completed.fit} />

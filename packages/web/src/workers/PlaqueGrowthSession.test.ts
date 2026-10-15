@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { Worker as NativeWorker, isMainThread, parentPort } from 'node:worker_threads';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { createPlaqueGrowthRecord, type PlaqueGrowthInput, type PlaqueGrowthFit } from '../../../core/src/analysis/plaque-growth';
-import { PlaqueGrowthSession, plaqueGrowthDraftContent, readPlaqueGrowthFile, type PlaqueGrowthDraft, type PlaqueGrowthWorker } from './PlaqueGrowthSession';
+import { GrowthExperimentSession, PLAQUE_GROWTH_MODEL, CORRECTED_PFU_GROWTH_MODEL, correctedPfuGrowthDraftContent,
+  plaqueGrowthDraftContent, readPlaqueGrowthFile, type PlaqueGrowthDraft, type PlaqueGrowthWorker } from './PlaqueGrowthSession';
 import { executePlaqueGrowthRequest, validatePlaqueGrowthRequest, type PlaqueGrowthRequest } from './plaque-growth.worker';
 
 const input: PlaqueGrowthInput = {
@@ -31,7 +32,7 @@ class Endpoint implements PlaqueGrowthWorker {
 }
 function session(factory = () => new Endpoint()) {
   const workers: Endpoint[] = [];
-  const state = new PlaqueGrowthSession(() => { const worker = factory(); workers.push(worker); return worker; });
+  const state = new GrowthExperimentSession(() => { const worker = factory(); workers.push(worker); return worker; }, PLAQUE_GROWTH_MODEL);
   state.activate(); return { state, workers };
 }
 async function resign(record: AnalysisRecord, change: (r: AnalysisRecord) => void) {
@@ -125,7 +126,7 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     assert.equal(state.getSnapshot().error, null); assert.equal(state.getSnapshot().accepted, accepted);
   });
   it('handles worker construction, decoding, execution and message-shape failures without hanging', async () => {
-    const creation = new PlaqueGrowthSession(() => { throw new Error('Worker unavailable'); }); creation.activate();
+    const creation = new GrowthExperimentSession(() => { throw new Error('Worker unavailable'); }, PLAQUE_GROWTH_MODEL); creation.activate();
     assert.equal(await creation.run('fit', content()), false); assert.match(creation.getSnapshot().error!, /unavailable/);
     for (const failure of ['message', 'error', 'decode']) {
       const worker = new Endpoint();
@@ -134,7 +135,7 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
         else if (failure === 'error') worker.onerror?.call(worker as unknown as AbstractWorker, { preventDefault() {} } as ErrorEvent);
         else worker.onmessageerror?.call(worker as unknown as Worker, {} as MessageEvent);
       });
-      const s = new PlaqueGrowthSession(() => worker); s.activate(); assert.equal(await s.run('fit', content()), false);
+      const s = new GrowthExperimentSession(() => worker, PLAQUE_GROWTH_MODEL); s.activate(); assert.equal(await s.run('fit', content()), false);
       assert.equal(worker.terminations, 1); assert.equal(s.getSnapshot().busy, false); assert(s.getSnapshot().error);
     }
   });
@@ -162,14 +163,14 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
       worker.on('error', error => adapter.onerror?.call(adapter as unknown as AbstractWorker, { message: error instanceof Error ? error.message : String(error), preventDefault() {} } as ErrorEvent));
       return adapter;
     };
-    const fit = new PlaqueGrowthSession(() => make(false)); fit.activate();
+    const fit = new GrowthExperimentSession(() => make(false), PLAQUE_GROWTH_MODEL); fit.activate();
     assert.equal(await fit.run('fit', content()), true, fit.getSnapshot().error ?? 'Expected accepted fit'); assert(fit.getSnapshot().accepted); await exited;
     native = null; exited = null;
-    const busy = new PlaqueGrowthSession(() => make(true)); busy.activate(); const pending = busy.run('fit', content());
+    const busy = new GrowthExperimentSession(() => make(true), PLAQUE_GROWTH_MODEL); busy.activate(); const pending = busy.run('fit', content());
     assert(native); busy.cancel(); assert.equal(await pending, false); await exited; assert.equal(busy.getSnapshot().accepted, null);
   });
   it('creates exact-count inputs from drafts and requires an explicit assay and source', () => {
-    const draft: PlaqueGrowthDraft = { title: input.title, source: input.provenance.source, kind: 'synthetic',
+    const draft: PlaqueGrowthDraft = { version: 1, title: input.title, source: input.provenance.source, kind: 'synthetic',
       csv: input.csv, centers: '10', support: '3.84', extracellular: true };
     const made = JSON.parse(plaqueGrowthDraftContent(draft));
     assert.deepEqual(made, input); assert.equal(made.csv, input.csv);
@@ -180,7 +181,7 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     assert.equal(JSON.parse(plaqueGrowthDraftContent({ ...draft, centers: '1e3' })).options.infectedCentersPerMl, 1000);
   });
   it('keeps raw count columns distinct from corrected PFU data and preserves every input zero', () => {
-    const draft: PlaqueGrowthDraft = { title: input.title, source: input.provenance.source, kind: 'synthetic',
+    const draft: PlaqueGrowthDraft = { version: 1, title: input.title, source: input.provenance.source, kind: 'synthetic',
       csv: input.csv.replace(/^(\d+),\d+,/gm, '$1,0,'), centers: '', support: '3.84', extracellular: true };
     const made = JSON.parse(plaqueGrowthDraftContent(draft)); assert.equal(made.csv, draft.csv);
     assert.throws(() => plaqueGrowthDraftContent({ ...draft, csv: 'time_min,pfu_per_ml\n0,100\n' }));
@@ -203,4 +204,136 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     controller.abort(); file.resolve(new ArrayBuffer(0)); await assert.rejects(pending, { name: 'AbortError' });
   });
 
+});
+
+if (isMainThread) describe('corrected-PFU execution through the shared growth session', () => {
+  const draft = { title: 'Synthetic corrected-PFU curve', source: 'Hand-specified observations for a test, not an actual assay', kind: 'synthetic' as const,
+    csv: 'time_min,pfu_per_ml\n0,10\n1,10\n2,10\n3,60\n4,110\n5,110\n6,110\n',
+    centers: '', seed: '0', bootstrap: '20', extracellular: true };
+  const source = () => correctedPfuGrowthDraftContent(draft);
+  function corrected(factory = () => new Endpoint()) {
+    const workers: Endpoint[] = [];
+    const state = new GrowthExperimentSession(() => { const worker = factory(); workers.push(worker); return worker; }, CORRECTED_PFU_GROWTH_MODEL);
+    state.activate(); return { state, workers };
+  }
+  it('uses the explicit corrected-PFU worker operation and keeps complete accepted bootstrap output', async () => {
+    const requests: string[] = [];
+    const { state, workers } = corrected(() => new Endpoint(async request => {
+      requests.push(request.type); return { type: 'result', record: await executePlaqueGrowthRequest(request) };
+    }));
+    assert.equal(await state.run('fit', source()), true, state.getSnapshot().error ?? 'No accepted fit');
+    const accepted = state.getSnapshot().accepted!;
+    assert.deepEqual(requests, ['pfu-fit']); assert.equal(accepted.record.seed, 0);
+    assert.equal(accepted.input.measurement, 'extracellular-pfu-per-ml'); assert.equal(accepted.inputText, source());
+    const fit = accepted.record.fields.fit.value as { baselinePFUPerMl: number; increasePFUPerMl: number; riseStartMin: number; riseEndMin: number; intervals: unknown };
+    assert(Math.abs(fit.baselinePFUPerMl - 10) < 1e-9); assert(Math.abs(fit.increasePFUPerMl - 100) < 1e-9);
+    assert.deepEqual([fit.riseStartMin, fit.riseEndMin], [2, 4]); assert(fit.intervals);
+    assert.match(accepted.tsv, /observed_pfu_per_ml/); assert.equal(workers[0].terminations, 1);
+    assert.equal(await state.run('replay', accepted.json), true); assert.deepEqual(requests, ['pfu-fit', 'pfu-replay']);
+    assert.equal(state.getSnapshot().accepted!.json, accepted.json); assert.equal(state.getSnapshot().accepted!.tsv, accepted.tsv);
+    assert.equal(state.getSnapshot().accepted!.verifiedReplay, true);
+  });
+  it('cannot cross observation models when fitting input or restoring saved results', async () => {
+    const raw = session(), pfu = corrected();
+    await raw.state.run('fit', content()); await pfu.state.run('fit', source());
+    const beforeRaw = raw.state.getSnapshot().accepted!, beforePfu = pfu.state.getSnapshot().accepted!;
+    assert.equal(await raw.state.run('replay', beforePfu.json), false); assert.equal(raw.workers.length, 1);
+    assert.equal(await pfu.state.run('replay', beforeRaw.json), false); assert.equal(pfu.workers.length, 1);
+    assert.equal(await raw.state.run('fit', source()), false); assert.equal(await pfu.state.run('fit', content()), false);
+    assert.equal(raw.state.getSnapshot().accepted, beforeRaw); assert.equal(pfu.state.getSnapshot().accepted, beforePfu);
+  });
+  it('verifies legacy result-bearing inputs and refuses altered results while preserving accepted evidence', async () => {
+    const { state } = corrected(); assert.equal(await state.run('fit', source()), true);
+    const accepted = state.getSnapshot().accepted!;
+    const original = JSON.stringify({ ...accepted.input, result: accepted.record.fields.fit.value });
+    assert.equal(await state.run('fit', original), true);
+    const before = state.getSnapshot().accepted!;
+    const invalid = JSON.parse(original); invalid.result.intervals.increasePFUPerMl[0] -= 1;
+    assert.equal(await state.run('fit', JSON.stringify(invalid)), false); assert.equal(state.getSnapshot().accepted, before);
+    assert.match(state.getSnapshot().error!, /legacy saved result/);
+  });
+  it('rejects rehashed false intervals and wrongly seeded provider results', async () => {
+    const { state } = corrected(); await state.run('fit', source()); const accepted = state.getSnapshot().accepted!;
+    const forged = await resign(accepted.record, r => { (r.fields.fit.value as { intervals: { increasePFUPerMl: number[] } }).intervals.increasePFUPerMl = [0, 0]; });
+    await parseAnalysisRecord(serializeAnalysisRecord(forged));
+    assert.equal(await state.run('replay', serializeAnalysisRecord(forged)), false); assert.equal(state.getSnapshot().accepted, accepted);
+    const wrong = corrected(() => new Endpoint(async r => ({ type: 'result', record: await resign(await executePlaqueGrowthRequest(r), copy => { copy.seed = 1; }) })));
+    assert.equal(await wrong.state.run('fit', source()), false); assert.equal(wrong.state.getSnapshot().accepted, null);
+  });
+  it('invalidates a delayed read or reply before it can replace a subsequent corrected-PFU result', async () => {
+    const file = latch<string>(), reply = latch<unknown>(), started = latch<void>(); let calls = 0;
+    const { state, workers } = corrected(() => new Endpoint(async request => {
+      if (++calls === 1) { started.resolve(); return reply.promise; }
+      return { type: 'result', record: await executePlaqueGrowthRequest(request) };
+    }));
+    const reading = state.run('fit', () => file.promise); await immediate(); state.cancel(); assert.equal(await reading, false);
+    file.resolve(source()); await immediate(); assert.equal(workers.length, 0);
+    const fitting = state.run('fit', source()); await started.promise; state.cancel(); assert.equal(await fitting, false);
+    const newer = correctedPfuGrowthDraftContent({ ...draft, title: 'Subsequent accepted curve' });
+    assert.equal(await state.run('fit', newer), true); const accepted = state.getSnapshot().accepted;
+    reply.resolve({ type: 'result', record: await executePlaqueGrowthRequest({ type: 'pfu-fit', content: source() }) }); await immediate();
+    assert.equal(state.getSnapshot().accepted, accepted); assert.equal(accepted!.input.title, 'Subsequent accepted curve');
+    assert.equal(workers[0].terminations, 1);
+  });
+  it('rejects malformed numeric drafts before JSON converts NaN or Infinity to valid nulls', () => {
+    for (const values of [{ extracellular: false }, { centers: 'Infinity' }, { centers: 'NaN' }, { centers: '0' }, { centers: '-2' },
+      { centers: '0x10' }, { seed: '' }, { seed: '-1' }, { seed: '4294967296' }, { bootstrap: '' }, { bootstrap: '1' }, { bootstrap: '20.5' }]) {
+      assert.throws(() => correctedPfuGrowthDraftContent({ ...draft, ...values }));
+    }
+    const zero = JSON.parse(correctedPfuGrowthDraftContent({ ...draft, bootstrap: '0', seed: '0' }));
+    assert.deepEqual(zero.options, { bootstrapSamples: 0, infectedCentersPerMl: null, seed: 0 });
+  });
+});
+
+if (isMainThread) describe('shared session for exact and censored counts', () => {
+  const bounded = (): PlaqueGrowthInput => ({ ...input, version: 2,
+    csv: input.csv.trimEnd().split('\n').map((line, i) => line + (i === 0 ? ',count_status' : i === 3 ? ',at-most' : i === 6 ? ',at-least' : ',exact')).join('\n') + '\n' });
+  it('accepts and replays v2 while preserving bound statuses, unknown totals and unavailable residuals', async () => {
+    const f = session(), text = JSON.stringify(bounded());
+    assert.equal(await f.state.run('fit', text), true, f.state.getSnapshot().error ?? 'No bounded fit');
+    const accepted = f.state.getSnapshot().accepted!, fit = accepted.record.fields.fit.value as {
+      totalPlaques: number | null; exactPlaques: number; countCoverage: object;
+      fitted: Array<{ countStatus: string; devianceResidual: number | null }> };
+    assert.equal(accepted.input.version, 2); assert.equal(accepted.record.method.version, '2');
+    assert.equal(accepted.inputText, text); assert.equal(fit.totalPlaques, null);
+    assert.deepEqual(fit.countCoverage, { exact: 7, atMost: 1, atLeast: 1 });
+    assert(fit.fitted.filter(row => row.countStatus !== 'exact').every(row => row.devianceResidual === null));
+    assert.equal(await f.state.run('replay', accepted.json), true);
+    assert.equal(f.state.getSnapshot().accepted!.json, accepted.json); assert.equal(f.state.getSnapshot().accepted!.tsv, accepted.tsv);
+    const old = content(); assert.equal(await f.state.run('fit', old), true);
+    assert.equal(f.state.getSnapshot().accepted!.record.method.version, '1');
+    assert.equal(f.state.getSnapshot().accepted!.json, serializeAnalysisRecord(await createPlaqueGrowthRecord(old)));
+  });
+  it('rejects version-swapped saved evidence before allocating a worker', async () => {
+    const f = session(); assert.equal(await f.state.run('fit', content()), true);
+    const accepted = f.state.getSnapshot().accepted!, record = await createPlaqueGrowthRecord(JSON.stringify(bounded()));
+    const bad = await resign(record, r => { r.method.version = '1'; });
+    assert.equal(await f.state.run('replay', serializeAnalysisRecord(bad)), false);
+    assert.equal(f.workers.length, 1); assert.equal(f.state.getSnapshot().accepted, accepted);
+  });
+  it('rejects incorrectly versioned provider replies instead of treating count bounds as exact counts', async () => {
+    const f = session(() => new Endpoint(async request => ({ type: 'result', record: await resign(await executePlaqueGrowthRequest(request), r => { r.method.version = '1'; }) })));
+    assert.equal(await f.state.run('fit', JSON.stringify(bounded())), false);
+    assert.equal(f.state.getSnapshot().accepted, null); assert.match(f.state.getSnapshot().error!, /differs/);
+  });
+  it('preserves explicit v2 drafts and rejects missing versions or incompatible headers rather than guessing', () => {
+    const source = bounded(), draft: PlaqueGrowthDraft = { version: 2, title: source.title,
+      kind: source.provenance.kind, source: source.provenance.source, csv: source.csv,
+      centers: '10', support: '3.84', extracellular: true };
+    assert.deepEqual(JSON.parse(plaqueGrowthDraftContent(draft)), source);
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, version: 1 }));
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, version: undefined } as unknown as PlaqueGrowthDraft));
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, csv: input.csv }));
+    assert.throws(() => plaqueGrowthDraftContent({ ...draft, csv: source.csv.replace('at-most', 'TNTC') }));
+  });
+  it('preserves accepted bounded evidence after numerical failure, cancellation and malformed later files', async () => {
+    const f = session(); assert.equal(await f.state.run('fit', JSON.stringify(bounded())), true);
+    const accepted = f.state.getSnapshot().accepted!, invalid = bounded();
+    invalid.csv = invalid.csv.replaceAll('at-most', 'at-least').replaceAll('exact', 'at-least');
+    assert.equal(await f.state.run('fit', JSON.stringify(invalid)), false); assert.equal(f.state.getSnapshot().accepted, accepted);
+    assert.match(f.state.getSnapshot().error!, /plateau.*unbounded/);
+    const late = latch<string>(), pending = f.state.run('fit', () => late.promise); await immediate(); f.state.cancel();
+    assert.equal(await pending, false); late.resolve(content()); await immediate(); assert.equal(f.state.getSnapshot().accepted, accepted);
+    assert.equal(await f.state.run('replay', '{'), false); assert.equal(f.state.getSnapshot().accepted, accepted);
+  });
 });
