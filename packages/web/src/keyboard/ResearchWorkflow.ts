@@ -9,6 +9,8 @@ import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from
 import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
 import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
+import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowResultIndex,
+  type WorkflowResults } from '../../../core/src/workflow-results';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
@@ -127,6 +129,8 @@ export interface ResearchSnapshot {
   result: AnalysisRecord | null;
   /** Retained for inspection/export across navigation; never relabeled as its output. */
   lastAnalysis: AnalysisRecord | null;
+  /** Only a wholly completed, numerically verified run replaces this archive. */
+  completeResults: WorkflowResults | null;
   undoAvailable: boolean;
   redoAvailable: boolean;
 }
@@ -175,6 +179,25 @@ export function validateResearchView(value: CommandValue): asserts value is unkn
 }
 function abort(signal: AbortSignal): void { if (signal.aborted) throw new DOMException('Workflow cancelled.', 'AbortError'); }
 
+/** A cancelled file read cannot keep an import pending or install stale input.
+ * The file interface is structural so this boundary is also testable off-browser.
+ */
+export function readWorkflowResultsFile(file: { size: number; arrayBuffer: () => Promise<ArrayBuffer> }, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException('Workflow cancelled.', 'AbortError')); return; }
+    if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > WORKFLOW_RESULTS_LIMITS.bytes) {
+      reject(new Error('Complete workflow results exceed the 32 MiB import limit.')); return;
+    }
+    const cancel = () => reject(new DOMException('Workflow cancelled.', 'AbortError'));
+    signal.addEventListener('abort', cancel, { once: true });
+    void Promise.resolve().then(() => { abort(signal); return file.arrayBuffer(); }).then(bytes => {
+      abort(signal);
+      if (bytes.byteLength > WORKFLOW_RESULTS_LIMITS.bytes) throw new Error('Complete workflow results exceed the 32 MiB import limit.');
+      resolve(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    }).catch(reject).finally(() => signal.removeEventListener('abort', cancel));
+  });
+}
+
 export class ResearchWorkflow {
   readonly commands: CommandSession;
   private expectedBundle: string | null = null;
@@ -183,7 +206,9 @@ export class ResearchWorkflow {
   private historyIndex = -1;
   private historyTarget: number | null = null;
   private listeners = new Set<() => void>();
-  private snapshot: ResearchSnapshot = { view: null, result: null, lastAnalysis: null, undoAvailable: false, redoAvailable: false };
+  private commandRevision = 0;
+  private capture: { collector: WorkflowResultCollector; controller: AbortController; running: boolean } | null = null;
+  private snapshot: ResearchSnapshot = { view: null, result: null, lastAnalysis: null, completeResults: null, undoAvailable: false, redoAvailable: false };
 
   constructor(readonly ids: ResearchActionIds, private readonly environment: ResearchEnvironment) {
     const adapters = new Map<string, CommandAdapter>();
@@ -387,6 +412,12 @@ export class ResearchWorkflow {
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
       + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
+    this.commands.subscribe(() => {
+      this.commandRevision++;
+      // Cancellation/completion ends ownership before another command can start.
+      // In particular, a late external abort must not cancel a newer command.
+      if (this.capture && this.commands.getSnapshot().mode === 'idle') this.capture.running = false;
+    });
   }
   getSnapshot = (): ResearchSnapshot => this.snapshot;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -397,9 +428,79 @@ export class ResearchWorkflow {
   private result(record: AnalysisRecord, genomes: readonly LocalGenome[], signal: AbortSignal) {
     abort(signal);
     const copy = structuredClone(record);
+    const owner = this.capture;
     return { output: analysisJson({ method: copy.method, cacheKey: copy.cacheKey, resultId: copy.resultId }),
-      apply: (activeSignal: AbortSignal) => { abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome)); this.publish({ result: copy, lastAnalysis: copy }); } };
+      apply: (activeSignal: AbortSignal) => {
+        abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome));
+        // Retention is opt-in. A limit failure stops the run before this result
+        // is accepted, rather than evicting an earlier analysis to make room.
+        if (owner && this.capture === owner && owner.running) owner.collector.add(copy);
+        this.publish({ result: copy, lastAnalysis: copy });
+      } };
   }
+  /** Recompute the current tape and retain every distinct result, not just its
+   * last analysis. Repetitions retain separate ordered execution identities.
+   */
+  replayWithResults = (repetitions = 1, signal?: AbortSignal): Promise<string> => this.collectResults(repetitions, null, signal);
+  /** Review/load is separate: never replace a different active tape implicitly. */
+  verifyCompleteResults = async (content: string, signal?: AbortSignal): Promise<string> => {
+    const revision = this.commandRevision;
+    const expected = await parseWorkflowResults(content, signal);
+    if (revision !== this.commandRevision) throw new DOMException('Workflow changed during archive validation.', 'AbortError');
+    return this.collectResults(expected.repetitions, expected, signal);
+  };
+  private async collectResults(repetitions: number, expected: WorkflowResults | null, signal?: AbortSignal): Promise<string> {
+    if (signal?.aborted) abort(signal);
+    if (this.capture || this.commands.getSnapshot().mode !== 'idle') throw new Error('Stop recording or cancel running work before retaining complete results.');
+    const currentTape = this.commands.export();
+    if (expected && !commandValuesEqual(analysisJson(parseCommandTape(currentTape)), analysisJson(parseCommandTape(expected.tapeJson)))) {
+      throw new Error('Load and review this archive\'s workflow before verifying its complete results.');
+    }
+    const tapeJson = expected?.tapeJson ?? currentTape;
+    workflowResultIndex(tapeJson, repetitions); // Reject noncanonical outputs before executing anything.
+    const owner = { collector: new WorkflowResultCollector(), controller: new AbortController(), running: true };
+    this.capture = owner;
+    const cancel = () => {
+      owner.controller.abort();
+      if (this.capture === owner && owner.running) this.commands.cancel();
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      if (signal?.aborted) cancel();
+      abort(owner.controller.signal);
+      await this.commands.replay(repetitions);
+      owner.running = false;
+      const revision = this.commandRevision;
+      abort(owner.controller.signal);
+      const content = await owner.collector.finish(tapeJson, repetitions, owner.controller.signal);
+      const archive = await parseWorkflowResults(content, owner.controller.signal);
+      if (expected && (archive.records.length !== expected.records.length || archive.records.some((record, i) =>
+        serializeAnalysisRecord(record) !== serializeAnalysisRecord(expected.records[i])))) {
+        throw new Error('Fresh workflow evidence differs from the saved complete results.');
+      }
+      abort(owner.controller.signal);
+      if (revision !== this.commandRevision) throw new DOMException('Workflow changed before complete results were accepted.', 'AbortError');
+      this.publish({ completeResults: archive });
+      return content;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      if (this.capture === owner) this.capture = null;
+    }
+  }
+  exportCompleteResults = (): string => {
+    if (!this.snapshot.completeResults) throw new Error('No complete verified workflow results are available.');
+    return serializeWorkflowResults(this.snapshot.completeResults);
+  };
+  /** Checksums and source review are not numerical verification. Import never
+   * runs a command, adds a genome, or replaces a previous completed archive.
+   */
+  loadResultsAndReview = async (content: string, signal: AbortSignal): Promise<{ inputs: GenomeImportResult; repetitions: number; records: number }> => {
+    const revision = this.commandRevision;
+    const archive = await parseWorkflowResults(content, signal);
+    if (revision !== this.commandRevision) throw new DOMException('Workflow changed during archive review.', 'AbortError');
+    const inputs = await this.loadAndReview(archive.tapeJson, signal);
+    return { inputs, repetitions: archive.repetitions, records: archive.records.length };
+  };
   private checkSelection(genome: LocalGenome, selected: number | null, requireCDS = true): void {
     if (selected !== null && !genome.phage.genes.some(gene => gene.id === selected && (!requireCDS || gene.type === 'CDS'))) throw new Error('The selected CDS is unavailable in this exact annotation snapshot.');
   }
@@ -455,11 +556,13 @@ export class ResearchWorkflow {
   };
   /** Parse private inputs before replacing an accepted tape or result. */
   loadAndReview = async (content: string, signal: AbortSignal): Promise<GenomeImportResult> => {
+    const revision = this.commandRevision;
     const tape = parseCommandTape(content);
     fields(tape.context, ['bundle']);
     if (typeof tape.context.bundle !== 'string') throw new Error('Workflow has no input bundle.');
     const parsed = await this.environment.parseBundle(tape.context.bundle, signal);
     abort(signal);
+    if (revision !== this.commandRevision) throw new DOMException('Workflow changed during source review.', 'AbortError');
     this.load(content);
     return parsed;
   };
