@@ -1,9 +1,10 @@
-import React, { lazy, Suspense, useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { lazy, Suspense, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { validateTemporalDataset, type TemporalOptions, type TemporalResult } from '../../../../core/src/analysis/temporal-signal';
-import { TemporalSignalSession, type TemporalRequest } from '../../workers/TemporalSignalSession';
+import { TemporalSignalSession, temporalAnalysisRequest, type TemporalRequest } from '../../workers/TemporalSignalSession';
+import { readAlignedPhylogenyFile } from '../../workers/AlignedPhylogenySession';
 import { downloadString } from '../../utils/export';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
@@ -42,7 +43,7 @@ function TemporalPlot({result}:{result:TemporalResult}):React.ReactElement|null 
 }
 const readInput=(file:File|null,fallback:string):Promise<string>=>{
   if(file&&file.size>2*1024*1024)return Promise.reject(new Error('Tree and sample files are limited to 2 MiB each.'));
-  return file?file.text():Promise.resolve(fallback);
+  return file?readAlignedPhylogenyFile(file,2*1024*1024):Promise.resolve(fallback);
 };
 function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:boolean;canSearch:boolean;onCatalog:()=>void}):React.ReactElement {
   const id=useId();const {theme}=useTheme();
@@ -56,10 +57,19 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
   const [scheme,setScheme]=useState<TemporalOptions['permutationScheme']>('unrestricted'),[excluded,setExcluded]=useState<string[]>([]);
   const [ancestralOpen,setAncestralOpen]=useState(false);
   const [phylogenyOpen,setPhylogenyOpen]=useState(false);
+  const [rootDraft,setRootDraft]=useState<{content:string;name:string;kind:'local'|'demo'}|null>(null);
+  const [dateKind,setDateKind]=useState<'local'|'demo'>('local');
+  const draftRef=useRef<HTMLDetailsElement>(null);
   const [exportError,setExportError]=useState<string|null>(null),[page,setPage]=useState(0);
   useEffect(()=>{session.activate();return session.deactivate;},[session]);
   useEffect(()=>{
     if(accepted){setPermutations(String(accepted.options.permutations));setSeed(String(accepted.options.seed));setScheme(accepted.options.permutationScheme);setExcluded(accepted.options.excludedSamples);}
+    if(accepted?.rootedSource){
+      const input=accepted.rootedSource.metadata;
+      setRootDraft({content:accepted.rootedSource.content,name:input.name,kind:accepted.dataset.source.kind});
+      setName(input.name);setDescription(input.description);setReference(input.reference??'');setLicense(input.license);
+      setSampleTable(input.sampleTable);setSampleFile(null);setDateKind(input.kind);setConfirmed(input.dateIndependent);
+    }else if(accepted){setRootDraft(null);setConfirmed(false);}
     setExportError(null);setPage(0);
   },[accepted]);
   const result=accepted?.result,fit=result?.regression;
@@ -82,7 +92,10 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
       <button type="button" aria-expanded={phylogenyOpen} disabled={busy} onClick={()=>setPhylogenyOpen(!phylogenyOpen)}>
         {phylogenyOpen?'Close aligned phylogeny (export first)':'Infer an unrooted tree from aligned DNA'}
       </button>
-      {phylogenyOpen&&<Suspense fallback={<p>Loading local aligned-DNA inference…</p>}><AlignedPhylogenyPanel/></Suspense>}
+      {phylogenyOpen&&<Suspense fallback={<p>Loading local aligned-DNA inference…</p>}><AlignedPhylogenyPanel onTemporalRoot={root=>{
+        session.cancel();setRootDraft(root);setName(root.name);setConfirmed(false);setDateKind(root.kind);setExportError(null);
+        if(draftRef.current){draftRef.current.open=true;draftRef.current.scrollIntoView({block:'start'});}
+      }}/></Suspense>}
       <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>setAncestralOpen(!ancestralOpen)}>
         {ancestralOpen?'Close ancestral reconstruction (export first)':'Open ancestral nucleotide reconstruction'}
       </button>
@@ -96,25 +109,41 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
       <label style={labelStyle} htmlFor={`${id}-saved`}>Import dated-tree dataset or saved diagnostics JSON</label>
       <input id={`${id}-saved`} type="file" accept=".json,application/json" disabled={busy} onChange={event=>{
         const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
-        run(file.size>10*1024*1024?Promise.reject(new Error('Saved temporal file exceeds the 10 MiB limit.')):file.text().then(content=>({kind:'import' as const,content})));
+        run(file.size>10*1024*1024?Promise.reject(new Error('Saved temporal file exceeds the 10 MiB limit.')):readAlignedPhylogenyFile(file,10*1024*1024).then(content=>({kind:'import' as const,content})));
       }}/>
       <div><button type="button" disabled={busy} onClick={()=>run({kind:'example'})}>Load synthetic dated-tree example</button>{' '}
         <button type="button" disabled={!busy} onClick={session.cancel}>Cancel temporal work</button></div>
       <p role="status" data-testid="temporal-status">{busy?`${phase}. The last accepted data remain unchanged.`:notice??'No temporal data loaded.'}</p>
       {(error||exportError)&&<p role="alert">{error??exportError}</p>}
-      <details open={!accepted}><summary>Prepare a new rooted tree and collection-date table</summary>
+      <details ref={draftRef} open={!accepted||!!rootDraft}><summary>Prepare a new rooted tree and collection-date table</summary>
         <form onSubmit={event=>{
           event.preventDefault();if(!confirmed)return;
+          if(rootDraft){
+            const captured={name,kind:dateKind,description,reference:reference.trim()||null,license,dateIndependent:true as const};
+            const content=rootDraft.content;
+            run(readInput(sampleFile,sampleTable).then(table=>({kind:'analyze-rooted' as const,
+              rootedSource:{content,metadata:{...captured,sampleTable:table}},options:{}})));
+            return;
+          }
           const dataset={format:'phage-explorer-temporal-signal' as const,version:1 as const,name,
             source:{kind:'local' as const,description,reference:reference.trim()||null,license},
             tree:{newick:'',units:'substitutions/site' as const,inferredWithoutDates:true as const,method,rooting,alignmentProvenance:alignment}};
           run(Promise.all([readInput(treeFile,newick),readInput(sampleFile,sampleTable)]).then(([tree,samples])=>({kind:'prepare' as const,dataset:{...dataset,tree:{...dataset.tree,newick:tree}},sampleTable:samples})));
         }}><fieldset disabled={busy} style={{display:'grid',gap:'.75rem'}}>
           <legend>New input draft (does not relabel accepted results)</legend>
+          {rootDraft?<div role="status">
+            <strong>Selected alignment-backed rooted experiment: {rootDraft.name}</strong>
+            <p>{rootDraft.kind==='demo'?'SYNTHETIC TREE — NOT EXPERIMENTAL EVIDENCE. ':''}Its tree and source alignment will be recomputed before analysis.
+              Newick and rooting provenance cannot be overridden. The last accepted result is unchanged until this draft succeeds.</p>
+            <label style={labelStyle}>Collection-date provenance<select value={dateKind} onChange={event=>setDateKind(event.target.value as typeof dateKind)}>
+              <option value="local">User-supplied local collection metadata</option><option value="demo">Synthetic example dates</option></select></label>
+            <button type="button" onClick={()=>{setRootDraft(null);setConfirmed(false);}}>Use a separate external Newick tree instead</button>
+          </div>:<>
           <label style={labelStyle} htmlFor={`${id}-newick`}>Rooted Newick phylogram</label>
           <textarea id={`${id}-newick`} value={newick} rows={3} disabled={!!treeFile} onChange={e=>setNewick(e.target.value)} spellCheck={false}/>
           <label style={labelStyle} htmlFor={`${id}-tree-file`}>Or choose a Newick file</label><input id={`${id}-tree-file`} type="file" accept=".nwk,.newick,.tree,.txt" onChange={e=>setTreeFile(e.currentTarget.files?.[0]??null)}/>
           {treeFile&&<button type="button" onClick={()=>setTreeFile(null)}>Use pasted tree instead</button>}
+          </>}
           <label style={labelStyle} htmlFor={`${id}-samples`}>Collection-date CSV or TSV</label>
           <textarea id={`${id}-samples`} value={sampleTable} rows={4} disabled={!!sampleFile} onChange={e=>setSampleTable(e.target.value)} spellCheck={false}/>
           <label style={labelStyle} htmlFor={`${id}-sample-file`}>Or choose sample metadata</label><input id={`${id}-sample-file`} type="file" accept=".csv,.tsv,.txt" onChange={e=>setSampleFile(e.currentTarget.files?.[0]??null)}/>
@@ -127,19 +156,21 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
             <label style={labelStyle}>Data source description<input required value={description} onChange={e=>setDescription(e.target.value)}/></label>
             <label style={labelStyle}>Source reference (optional)<input value={reference} onChange={e=>setReference(e.target.value)}/></label>
             <label style={labelStyle}>Source license or usage permission<input required value={license} onChange={e=>setLicense(e.target.value)}/></label>
+            {!rootDraft&&<>
             <label style={labelStyle}>Tree estimation method and version<input required value={method} onChange={e=>setMethod(e.target.value)}/></label>
             <label style={labelStyle}>Rooting method and evidence<input required value={rooting} onChange={e=>setRooting(e.target.value)}/></label>
             <label style={labelStyle}>Alignment or tree-input provenance<input required value={alignment} onChange={e=>setAlignment(e.target.value)}/></label>
+            </>}
           </div>
-          <label><input type="checkbox" required checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/> I confirm the tree uses substitutions/site and neither its inference nor rooting used these collection dates.</label>
-          <button type="submit">Load and validate dated tree</button>
+          <label><input type="checkbox" required checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/> I confirm the tree uses substitutions/site and collection dates did not guide alignment/cohort selection, tree inference or rooting.</label>
+          <button type="submit">{rootDraft?'Analyze linked rooted tree':'Load and validate dated tree'}</button>
         </fieldset></form>
       </details>
       {accepted&&<>
         <h3 data-testid="temporal-dataset-name">{accepted.dataset.name}</h3>
         <p>{accepted.dataset.source.description} · {accepted.dataset.source.license}. Tree: {accepted.dataset.tree.method}; root: {accepted.dataset.tree.rooting}.
           Input provenance: {accepted.dataset.tree.alignmentProvenance}. {accepted.dataset.samples.length} sample metadata rows.</p>
-        <form onSubmit={event=>{event.preventDefault();run({kind:'analyze',dataset:accepted.dataset,options:{permutations:Number(permutations),seed:Number(seed),permutationScheme:scheme,excludedSamples:excluded}});}}>
+        <form onSubmit={event=>{event.preventDefault();run(temporalAnalysisRequest(accepted,{permutations:Number(permutations),seed:Number(seed),permutationScheme:scheme,excludedSamples:excluded}));}}>
           <fieldset disabled={busy}><legend>Temporal diagnostic settings</legend><div style={grid}>
             <label style={labelStyle}>Date-label permutations<input type="number" required min={19} max={9999} step={1} value={permutations} onChange={e=>setPermutations(e.target.value)}/></label>
             <label style={labelStyle}>Temporal randomization seed<input type="number" required min={0} max={0xffffffff} step={1} value={seed} onChange={e=>setSeed(e.target.value)}/></label>
@@ -152,9 +183,11 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
             <button type="submit">Run temporal diagnostics</button>
           </fieldset>
         </form>
-        <div><button type="button" disabled={busy} onClick={()=>save(false)}>Export dated-tree dataset</button>{' '}
-          <button type="button" disabled={busy||!accepted.record} onClick={()=>save(true)}>Export temporal diagnostics</button></div>
+        <div><button type="button" disabled={busy} onClick={()=>save(false)}>{accepted.rootedSource?'Export tree/date dataset only (no alignment lineage)':'Export dated-tree dataset'}</button>{' '}
+          <button type="button" disabled={busy||!accepted.record} onClick={()=>save(true)}>{accepted.rootedSource?'Export complete alignment/root/temporal experiment':'Export temporal diagnostics'}</button></div>
       </>}
+      {accepted?.rootedSource&&<p>The complete temporal experiment retains the original alignment, root decision and collection metadata.
+        Separate tree/date dataset, strict-clock and ancestral exports do not retain that full alignment lineage.</p>}
       {accepted&&<StrictClockPanel accepted={accepted} busy={busy} onFit={options=>run({kind:'date',dataset:accepted.dataset,options})}/>}
       {result&&accepted?.record&&<section data-testid="temporal-result" data-result-id={accepted.record.resultId}>
         <h3>Fixed-root exploratory diagnostics</h3>

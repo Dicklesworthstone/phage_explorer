@@ -53,7 +53,9 @@ function Topology({ result, rooted }: { result: AlignedPhylogenyResult; rooted?:
   </figure>;
 }
 
-export function AlignedPhylogenyPanel(): React.ReactElement {
+export function AlignedPhylogenyPanel({ onTemporalRoot }: {
+  onTemporalRoot?: (root: { content: string; name: string; kind: 'local' | 'demo' }) => void;
+} = {}): React.ReactElement {
   const { theme } = useTheme(); const id = useId();
   const session = useMemo(() => new AlignedPhylogenySession(() => new Worker(new URL('../../workers/aligned-phylogeny.worker.ts', import.meta.url), { type: 'module' })), []);
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
@@ -121,6 +123,13 @@ export function AlignedPhylogenyPanel(): React.ReactElement {
     try {
       downloadString(format === 'experiment' ? serializeAnalysisRecord(acceptedRoot.record) : acceptedRoot.result.newick + '\n',
         format === 'experiment' ? 'rooted-phylogeny-experiment.json' : 'rooted-phylogeny.nwk', format === 'experiment' ? 'application/json' : 'text/plain');
+      setLocalError(null);
+    } catch (cause) { report(cause); }
+  };
+  const handoffTemporalRoot = () => {
+    if (!onTemporalRoot || !accepted || !acceptedRoot || rootChanged || busy || accepted.options.distance !== 'jc69') return;
+    try {
+      onTemporalRoot({ content: serializeAnalysisRecord(acceptedRoot.record), name: accepted.source.name, kind: accepted.source.kind });
       setLocalError(null);
     } catch (cause) { report(cause); }
   };
@@ -223,6 +232,12 @@ bun run phylogeny export --experiment aligned-phylogeny-experiment.json --format
           <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy} onClick={() => exportRoot('experiment')}>Export rooted experiment JSON</button>
           <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy} onClick={() => exportRoot('newick')}>Export explicit-root Newick</button>
         </div>
+        {onTemporalRoot && <div>
+          <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy || accepted.options.distance !== 'jc69'}
+            onClick={handoffTemporalRoot}>Use this rooted experiment for temporal diagnostics</button>
+          <p>The handoff keeps the original alignment and rooting evidence. Supply collection dates and their provenance in the dated-tree form.
+            It requires JC69 branches; p-distance is not silently reinterpreted as substitutions/site.</p>
+        </div>}
         {acceptedRoot && !rootChanged && <section aria-label="Accepted root hypothesis" data-root-result-id={acceptedRoot.record.resultId}>
           <p><strong>USER-CONDITIONED ROOT — NOT INDEPENDENTLY INFERRED</strong>{accepted.source.kind === 'demo' ? ' · SYNTHETIC INPUT' : ''}</p>
           <p>Outgroup: {acceptedRoot.result.rooting.outgroup.join(', ')}. Fraction from its endpoint: {number(acceptedRoot.result.rooting.fractionFromOutgroup)}.</p>
