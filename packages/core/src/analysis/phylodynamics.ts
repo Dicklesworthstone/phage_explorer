@@ -97,14 +97,26 @@ export interface SkylinePlot {
   timeSpan: number;
 }
 
+/** One pairwise coding-sequence estimate. A missing ratio is evidence, not neutrality. */
+export interface DnDsEstimate {
+  dnds: number | null;
+  dn: number | null;
+  ds: number | null;
+  synonymousChanges: number;
+  nonsynonymousChanges: number;
+  usableCodons: number;
+  unavailableReason?: string;
+}
+
 /** Selection pressure result */
 export interface SelectionResult {
-  /** Per-branch dN/dS */
-  branchDnDs: Array<{ nodeId: string; dnds: number; dn: number; ds: number }>;
+  /** Per-branch dN/dS. Null ratios are retained with an explicit reason. */
+  branchDnDs: Array<{ nodeId: string } & DnDsEstimate>;
   /** Per-site dN/dS (averaged across tree) */
   siteDnDs?: number[];
-  /** Overall tree dN/dS */
-  treeDnDs: number;
+  /** Overall tree dN/dS; null means the denominator/model support is insufficient. */
+  treeDnDs: number | null;
+  treeDnDsUnavailableReason?: string;
 }
 
 /** Complete phylodynamics analysis result */
@@ -762,48 +774,61 @@ function countSynNonsyn(codon1: string, codon2: string): { syn: number; nonsyn: 
  * @param seq2 Second sequence (coding region)
  * @returns dN/dS ratio, or null if cannot compute
  */
-export function computeDnDs(seq1: string, seq2: string): { dnds: number; dn: number; ds: number } | null {
-  const len = Math.min(seq1.length, seq2.length);
-  const codonLen = Math.floor(len / 3) * 3;
-
-  if (codonLen < 3) return null;
+export function computeDnDs(seq1: string, seq2: string): DnDsEstimate | null {
+  // A codon-aligned comparison has one shared frame. Do not silently truncate a
+  // shorter sequence or trailing partial codon into a different experiment.
+  if (seq1.length !== seq2.length || seq1.length < 3 || seq1.length % 3 !== 0) return null;
 
   let totalSyn = 0;
   let totalNonsyn = 0;
   let synSites = 0;
   let nonsynSites = 0;
+  let usableCodons = 0;
 
-  for (let i = 0; i < codonLen; i += 3) {
+  for (let i = 0; i < seq1.length; i += 3) {
     const codon1 = seq1.slice(i, i + 3).toUpperCase();
     const codon2 = seq2.slice(i, i + 3).toUpperCase();
 
-    // Skip if contains gaps or N
-    if (codon1.includes('-') || codon2.includes('-') ||
-        codon1.includes('N') || codon2.includes('N')) {
-      continue;
-    }
+    // Ambiguous/gapped codons are missing evidence, not matches.
+    if (!/^[ACGT]{3}$/.test(codon1) || !/^[ACGT]{3}$/.test(codon2)) continue;
 
     const { syn, nonsyn } = countSynNonsyn(codon1, codon2);
     totalSyn += syn;
     totalNonsyn += nonsyn;
+    usableCodons++;
 
-    // Approximate site counts (simplified)
+    // Approximate site counts (simplified Nei-Gojobori teaching estimator).
     synSites += 1;
     nonsynSites += 2;
   }
 
-  if (synSites === 0 || nonsynSites === 0) return null;
+  if (usableCodons === 0 || synSites === 0 || nonsynSites === 0) return null;
 
   const pS = totalSyn / synSites;
   const pN = totalNonsyn / nonsynSites;
+  const evidence = { synonymousChanges: totalSyn, nonsynonymousChanges: totalNonsyn, usableCodons };
 
-  // Jukes-Cantor correction
-  const dS = pS < 0.75 ? -0.75 * Math.log(1 - 4 * pS / 3) : 1;
-  const dN = pN < 0.75 ? -0.75 * Math.log(1 - 4 * pN / 3) : 1;
+  // The JC transform is undefined at/above 0.75. A finite sentinel would turn
+  // saturation into fabricated evidence and can make a tree-wide ratio look valid.
+  if (pS >= 0.75 || pN >= 0.75) {
+    return {
+      dnds: null, dn: null, ds: null, ...evidence,
+      unavailableReason: 'dN/dS unavailable because the simplified Jukes-Cantor correction is saturated for this branch.',
+    };
+  }
 
-  const dnds = dS > 0 ? dN / dS : (dN > 0 ? Infinity : 1);
+  const dS = -0.75 * Math.log(1 - 4 * pS / 3);
+  const dN = -0.75 * Math.log(1 - 4 * pN / 3);
+  if (!(dS > 0)) {
+    return {
+      dnds: null, dn: dN, ds: dS, ...evidence,
+      unavailableReason: dN > 0
+        ? 'dN/dS unavailable because this branch has no observed synonymous substitutions; an infinite ratio is not reported as an estimate.'
+        : 'dN/dS unavailable because this branch has no observed substitutions; neutrality is not inferred from 0/0.',
+    };
+  }
 
-  return { dnds, dn: dN, ds: dS };
+  return { dnds: dN / dS, dn: dN, ds: dS, ...evidence };
 }
 
 /**
@@ -833,14 +858,29 @@ export function computeSelection(tree: PhylogeneticTree): SelectionResult {
 
   processNode(tree.root, null);
 
-  // Tree-wide dN/dS
-  const totalDn = branchDnDs.reduce((a, b) => a + b.dn, 0);
-  const totalDs = branchDnDs.reduce((a, b) => a + b.ds, 0);
-  const treeDnDs = totalDs > 0 ? totalDn / totalDs : 1;
+  // Tree-wide dN/dS is an aggregate of finite dN and dS components, not an
+  // average of branch ratios. Saturated branches make the aggregate incomplete.
+  const saturated = branchDnDs.filter(branch => branch.dn === null || branch.ds === null);
+  const finite = branchDnDs.filter((branch): branch is typeof branch & { dn: number; ds: number } =>
+    branch.dn !== null && branch.ds !== null);
+  const totalDn = finite.reduce((sum, branch) => sum + branch.dn, 0);
+  const totalDs = finite.reduce((sum, branch) => sum + branch.ds, 0);
+  let treeDnDs: number | null = null;
+  let treeDnDsUnavailableReason: string | undefined;
+  if (!branchDnDs.length) {
+    treeDnDsUnavailableReason = 'Tree-wide dN/dS unavailable because no comparable coding branches were reconstructed.';
+  } else if (saturated.length) {
+    treeDnDsUnavailableReason = `Tree-wide dN/dS unavailable because ${saturated.length} branch(es) have saturated substitution corrections.`;
+  } else if (!(totalDs > 0)) {
+    treeDnDsUnavailableReason = 'Tree-wide dN/dS unavailable because the reconstructed branches contain no observed synonymous substitutions.';
+  } else {
+    treeDnDs = totalDn / totalDs;
+  }
 
   return {
     branchDnDs,
     treeDnDs,
+    ...(treeDnDsUnavailableReason ? { treeDnDsUnavailableReason } : {}),
   };
 }
 

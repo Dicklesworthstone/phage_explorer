@@ -211,19 +211,45 @@ describe('computeDnDs', () => {
     expect(computeDnDs('AC', 'AC')).toBeNull();
   });
 
-  it('returns dnds of 1 for identical sequences', () => {
+  it('does not invent neutrality for an identical 0/0 comparison', () => {
     const result = computeDnDs('ATGATGATG', 'ATGATGATG');
-    // No differences, so dN = dS = 0, ratio defaults to 1
     expect(result).not.toBeNull();
+    expect(result?.dnds).toBeNull();
+    expect(result?.dn).toBe(0);
+    expect(result?.ds).toBe(0);
+    expect(result?.unavailableReason).toContain('neutrality is not inferred');
   });
 
-  it('detects synonymous vs nonsynonymous changes', () => {
+  it('does not report infinity when nonsynonymous change has no synonymous denominator', () => {
     // ATG = Met, ATA = Ile (nonsynonymous)
     const result = computeDnDs('ATG', 'ATA');
     expect(result).not.toBeNull();
-    if (result) {
-      expect(result.dnds).toBeGreaterThanOrEqual(0);
-    }
+    expect(result?.dn).toBeGreaterThan(0);
+    expect(result?.ds).toBe(0);
+    expect(result?.dnds).toBeNull();
+    expect(result?.unavailableReason).toContain('no observed synonymous substitutions');
+  });
+
+  it('returns a finite zero ratio when synonymous evidence supplies the denominator', () => {
+    const result = computeDnDs('GCTGCTGCT', 'GCCGCTGCT');
+    expect(result).not.toBeNull();
+    expect(result?.dn).toBe(0);
+    expect(result?.ds).toBeGreaterThan(0);
+    expect(result?.dnds).toBe(0);
+  });
+
+  it('marks saturated codon comparisons unavailable instead of substituting distance 1', () => {
+    const result = computeDnDs('AAAAAAAAAAAA', 'CCCCCCCCCCCC');
+    expect(result).not.toBeNull();
+    expect(result?.dn).toBeNull();
+    expect(result?.ds).toBeNull();
+    expect(result?.dnds).toBeNull();
+    expect(result?.unavailableReason).toContain('saturated');
+  });
+
+  it('requires one complete shared codon frame', () => {
+    expect(computeDnDs('ATGAAA', 'ATGAA')).toBeNull();
+    expect(computeDnDs('ATGAAAA', 'ATGAAAA')).toBeNull();
   });
 
   it('skips codons with gaps', () => {
@@ -233,7 +259,7 @@ describe('computeDnDs', () => {
 });
 
 describe('computeSelection', () => {
-  it('computes tree-wide dN/dS', () => {
+  it('marks tree-wide dN/dS unavailable when no synonymous denominator exists', () => {
     const sequences: DatedSequence[] = [
       { id: 'A', sequence: 'ATGATGATGATG', date: 2020 },
       { id: 'B', sequence: 'ATGATGATGATA', date: 2021 },
@@ -241,7 +267,19 @@ describe('computeSelection', () => {
     const tree = buildUPGMATree(sequences);
     const result = computeSelection(tree);
 
-    expect(result.treeDnDs).toBeGreaterThanOrEqual(0);
+    expect(result.treeDnDs).toBeNull();
+    expect(result.treeDnDsUnavailableReason).toContain('no observed synonymous substitutions');
+    expect(result.branchDnDs.some(branch => branch.dnds === null)).toBe(true);
+  });
+
+  it('aggregates finite branch components when synonymous evidence exists', () => {
+    const sequences: DatedSequence[] = [
+      { id: 'A', sequence: 'GCTGCTGCT', date: 2020 },
+      { id: 'B', sequence: 'GCCGCTGCT', date: 2021 },
+    ];
+    const result = computeSelection(buildUPGMATree(sequences));
+    expect(result.treeDnDs).toBe(0);
+    expect(result.treeDnDsUnavailableReason).toBeUndefined();
   });
 });
 
