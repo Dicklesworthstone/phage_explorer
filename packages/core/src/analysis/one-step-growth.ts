@@ -8,6 +8,8 @@
  * Yield requires an independently measured infected-center concentration, not
  * initial PFU, MOI, or total host concentration.
  */
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisField, type AnalysisRecord, type ObservationUnits } from '../analysis-result';
+
 export const GROWTH_CURVE_METHOD = 'nonnegative-grid-ramp-v1' as const;
 export const GROWTH_CURVE_LIMITS = { rows: 2048, times: 64, bootstrap: 200, bytes: 1_000_000 } as const;
 
@@ -304,4 +306,102 @@ export function serializeGrowthCurveExperiment(experiment: GrowthCurveExperiment
   optionsFor(experiment.options);
   const validated = parseGrowthCurveExperiment(JSON.stringify(experiment));
   return JSON.stringify({ ...validated, result: fitOneStepGrowth(validated.observations, validated.options) }, null, 2);
+}
+
+/** Portable evidence for the existing corrected-PFU method. This is deliberately
+ * not the raw-count Poisson model: dilution/volume information is unavailable.
+ */
+export const GROWTH_CURVE_RECORD_METHOD = { id: 'extracellular-pfu-growth', version: '1',
+  implementation: `${GROWTH_CURVE_METHOD}; equal-row nonnegative least squares; seeded centered-residual bootstrap` } as const;
+const GROWTH_REFERENCE = { id: 'corrected-pfu-grid-ramp', version: '1',
+  description: 'Complete observed-time knot grid; equal observation weights; nonnegative baseline and rise. Residual-bootstrap intervals are conditional on the fixed model, grid, independent exchangeable additive errors and any supplied denominator.' };
+const canonical = (value: unknown): string => JSON.stringify(analysisJson(value));
+
+/** Strict portable envelope, while retaining the older input parser's contract.
+ * A legacy result is allowed ONLY so the producer can compare a fresh fit with
+ * it. Extra fields are not silently discarded from new portable evidence.
+ */
+export function parseGrowthCurveRecordInput(content: string): GrowthCurveExperiment {
+  if (typeof content !== 'string' || content.length > GROWTH_CURVE_LIMITS.bytes
+    || new TextEncoder().encode(content).length > GROWTH_CURVE_LIMITS.bytes) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
+  const value = objectFor(JSON.parse(content), 'Corrected-PFU experiment');
+  const fields = (object: Record<string, unknown>, keys: string[], label: string) => {
+    if (Object.keys(object).sort().join('|') !== [...keys].sort().join('|')) throw new Error(`Unexpected ${label} fields.`);
+  };
+  fields(value, ['schemaVersion', 'method', 'measurement', 'title', 'provenance', 'observations', 'options',
+    ...(Object.hasOwn(value, 'result') ? ['result'] : [])], 'corrected-PFU input');
+  fields(objectFor(value.provenance, 'Provenance'), ['kind', 'source'], 'provenance');
+  fields(objectFor(value.options, 'Options'), ['infectedCentersPerMl', 'bootstrapSamples', 'seed'], 'corrected-PFU options');
+  if (!Array.isArray(value.observations) || value.observations.length > GROWTH_CURVE_LIMITS.rows) throw new Error('Bounded corrected-PFU observations are required.');
+  value.observations.forEach(row => fields(objectFor(row, 'Observation'), ['timeMin', 'pfuPerMl'], 'observation'));
+  return parseGrowthCurveExperiment(content);
+}
+
+/** Compute once, then bind original input bytes, seed, scalar intervals and full
+ * residuals to the shared record. A legacy result is verified, never regenerated
+ * into an apparently successful replay after its numerical values have changed.
+ */
+export async function createGrowthCurveRecord(content: string): Promise<AnalysisRecord> {
+  const experiment = parseGrowthCurveRecordInput(content);
+  const fit = fitOneStepGrowth(experiment.observations, experiment.options);
+  const raw = objectFor(JSON.parse(content), 'Corrected-PFU input');
+  if (Object.hasOwn(raw, 'result') && canonical(raw.result) !== canonical(fit)) {
+    throw new Error('Recomputed corrected-PFU fit differs from the legacy saved result.');
+  }
+  const coverage = { available: experiment.observations.length, total: experiment.observations.length, unit: 'records' as const };
+  const demo = experiment.provenance.kind === 'synthetic';
+  const assumptions = ['Author-declared synthetic observations and any supplied denominator; not empirical measurements.'];
+  const objective = 'Equal-row nonnegative least squares over complete observed-time ramp knots';
+  const metric = (label: string, value: unknown, units: ObservationUnits, key?: keyof GrowthEstimates): AnalysisField => {
+    if (value === null) return { label, kind: 'unavailable', value: null, units: null, coverage: { ...coverage, available: 0 },
+      limitations: fit.warnings, missingInputs: [key === 'infectiousYieldPerInfectedCenter'
+        ? 'An independently measured infected-center concentration on the same concentration basis.'
+        : 'A positive fitted population rise; a flat or declining curve does not identify rise timing.'] };
+    if (demo) return { label, kind: 'demo', value: analysisJson(value), units, coverage, limitations: fit.warnings, assumptions };
+    const interval = key ? fit.intervals?.[key] : null;
+    return { label, kind: 'fitted-estimate', value: analysisJson(value), units, coverage, limitations: fit.warnings,
+      fit: { dataInput: 'experiment', objective, uncertainty: interval
+        ? { kind: 'interval', method: 'Fixed-design centered residual bootstrap; conditional, not biological validation', level: 0.95,
+          lower: interval[0], upper: interval[1] }
+        : { kind: 'not-estimated' } } };
+  };
+  const fields: Record<string, AnalysisField> = {
+    fit: metric('Corrected-PFU fit, residuals and conditional scalar intervals (no joint interval)', fit, 'records'),
+    observations: demo
+      ? { label: 'Synthetic corrected-PFU observations', kind: 'demo', value: analysisJson(experiment.observations), units: 'records', coverage, limitations: fit.warnings, assumptions }
+      : { label: 'Author-supplied corrected extracellular PFU/mL observations', kind: 'observation', value: analysisJson(experiment.observations), units: 'records', coverage,
+        sourceInput: 'experiment', limitations: ['Assay type, source attribution, correction factors and independence are author assertions, not authenticated here.'] },
+  };
+  for (const [key, label, units] of [
+    ['baselinePFUPerMl', 'Fitted baseline', 'PFU/mL'], ['plateauPFUPerMl', 'Fitted plateau', 'PFU/mL'],
+    ['increasePFUPerMl', 'Fitted extracellular increase', 'PFU/mL'], ['riseStartMin', 'Population rise start', 'minutes'],
+    ['riseEndMin', 'Population rise end', 'minutes'], ['infectiousYieldPerInfectedCenter', 'Conditional net infectious yield', 'dimensionless'],
+  ] as const) fields[key] = metric(label, fit[key], units, key);
+  return createAnalysisRecord({ method: GROWTH_CURVE_RECORD_METHOD,
+    inputs: [{ id: 'experiment', accession: null, source: demo ? 'demo' : 'local',
+      description: 'Exact corrected extracellular PFU/mL experiment JSON; original observations, source and options retained.', data: content }],
+    parameters: { ...experiment.options }, seed: experiment.options.seed, references: [GROWTH_REFERENCE], fields });
+}
+
+export async function replayGrowthCurveRecord(content: string): Promise<AnalysisRecord> {
+  const saved = await parseAnalysisRecord(content, { methodId: GROWTH_CURVE_RECORD_METHOD.id, methodVersion: GROWTH_CURVE_RECORD_METHOD.version });
+  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'experiment' || typeof saved.inputs[0].data !== 'string') {
+    throw new Error('Corrected-PFU replay requires one embedded original experiment.');
+  }
+  const fresh = await createGrowthCurveRecord(saved.inputs[0].data);
+  if (fresh.cacheKey !== saved.cacheKey || fresh.resultId !== saved.resultId) {
+    throw new Error('Recomputed corrected-PFU values, intervals, seed or input identity differ from the saved result.');
+  }
+  return fresh;
+}
+
+/** Export an accepted producer/replay result without fitting or bootstrapping again. */
+export function exportGrowthCurveTsv(record: AnalysisRecord): string {
+  if (canonical(record.method) !== canonical(GROWTH_CURVE_RECORD_METHOD)) throw new Error('Expected a corrected-PFU growth record.');
+  const fit = record.fields.fit.value as unknown as GrowthCurveFit;
+  return [`# method=${record.method.id}; version=${record.method.version}; result=${record.resultId}; inputSha256=${record.inputs[0].sha256}`,
+    `# bootstrapSamples=${record.parameters.bootstrapSamples}; seed=${record.seed}; intervals=${JSON.stringify(fit.intervals)}`,
+    '# Conditional descriptive corrected-PFU fit; not raw plaque counts, mechanistic latency or biological validation.',
+    'time_min\tobserved_pfu_per_ml\tpredicted_pfu_per_ml\tresidual_pfu_per_ml',
+    ...fit.fitted.map(row => [row.timeMin, row.pfuPerMl, row.predictedPFUPerMl, row.residualPFUPerMl].join('\t'))].join('\n') + '\n';
 }
