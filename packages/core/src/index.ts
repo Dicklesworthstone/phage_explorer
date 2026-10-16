@@ -139,3 +139,6 @@ export * from './analysis/gc-skew';
 
 // Imported strain-level observations and reproducible measured coverage
 export * from './analysis/host-range-evidence';
+
+// Source-backed protein/host/chain inputs; availability is separate from inference.
+export * from './protein-reference';

@@ -488,7 +488,7 @@ function renderLazyOverlay(
 
     // Host-Phage Interaction & Effector Docking Map (Roadmap #35)
     case 'hostInteractions':
-      return <HostInteractionOverlay />;
+      return <HostInteractionOverlay repository={repository} />;
 
     // Pan-Phage Graph Pangenome & Variant Cards (Roadmap Top-10 #3)
     case 'pangenomeGraph':

@@ -1,12 +1,99 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
+from pathlib import Path
 import sqlite3
 import struct
 import time
+from datetime import datetime, timezone
 
 import torch
 from transformers import AutoModel, AutoTokenizer
+
+
+def reference_embeddings(input_path: str, output_path: str, checkpoint: str, revision: str):
+    """Explicit offline-file input mode; never opens or writes a catalog database."""
+    from huggingface_hub import hf_hub_download
+    import transformers
+
+    if len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision):
+        raise ValueError("Reference mode requires an immutable checkpoint revision")
+    destination = Path(output_path)
+    if destination.exists():
+        raise ValueError("Reference output must not already exist")
+    rows = json.loads(Path(input_path).read_text(encoding="utf-8"))
+    if not isinstance(rows, list) or not 2 <= len(rows) <= 8:
+        raise ValueError("Reference input requires two through eight explicit proteins")
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("Each reference protein must be an object")
+        sequence = row.get("sequence", "")
+        if not isinstance(sequence, str) or not 1 <= len(sequence) <= 1022 or any(
+            amino_acid not in "ACDEFGHIKLMNPQRSTVWY" for amino_acid in sequence
+        ):
+            raise ValueError("Reference sequence must be complete, bounded and unambiguous")
+        if not isinstance(row.get("proteinId"), str) or not row["proteinId"] or row["proteinId"] in seen:
+            raise ValueError("Reference protein identities must be unique")
+        if type(row.get("start")) is not int or type(row.get("end")) is not int or not (
+            1 <= row["start"] <= row["end"] <= 10000
+        ) or row["end"] - row["start"] + 1 != len(sequence):
+            raise ValueError("Reference interval must exactly cover the consumed sequence")
+        seen.add(row["proteinId"])
+
+    def sha256(path):
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+    def canonical_hash(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+            separators=(",", ":")).encode()).hexdigest()
+
+    # Reference generation has a declared CPU/fp32 implementation and no truncation.
+    torch.set_num_threads(1)
+    paths = {name: hf_hub_download(checkpoint, name, revision=revision,
+        cache_dir=str(destination.parent / "esm2-cache"),
+        user_agent={"phage_explorer": "protein-reference-builder"}) for name in
+        ["model.safetensors", "config.json", "tokenizer_config.json", "vocab.txt"]}
+    # Loading is local-only after the explicit, honestly identified source fetches.
+    snapshot = str(Path(paths["config.json"]).parent)
+    tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+    model = AutoModel.from_pretrained(snapshot, local_files_only=True, add_pooling_layer=False).float().cpu().eval()
+    files = {name: sha256(path) for name, path in paths.items()}
+    space = {
+        "model": checkpoint, "revision": revision,
+        "weightsSha256": files["model.safetensors"],
+        "configSha256": files["config.json"],
+        "tokenizerSha256": canonical_hash({name: files[name] for name in ["tokenizer_config.json", "vocab.txt"]}),
+        "dimensions": model.config.hidden_size,
+        "implementation": f"transformers-{transformers.__version__}/torch-{torch.__version__}/cpu",
+        "precision": "fp32", "pooling": "attention-mean-including-special-tokens-l2",
+    }
+    if space["dimensions"] != 320:
+        raise ValueError("Reference checkpoint must expose the expected 320 hidden features")
+    vectors = []
+    with torch.inference_mode():
+        for row in rows:
+            sequence = row["sequence"]
+            inputs = tokenizer(sequence, return_tensors="pt", padding=False, truncation=False)
+            if inputs["input_ids"].shape != (1, len(sequence) + 2):
+                raise ValueError("Tokenizer must retain every residue plus BOS/EOS")
+            hidden = model(**inputs).last_hidden_state
+            if hidden.shape != (1, len(sequence) + 2, 320):
+                raise ValueError("Expected complete hidden features, not masked-token logits")
+            masks = inputs["attention_mask"].unsqueeze(-1)
+            pooled = (hidden * masks).sum(dim=1) / masks.sum(dim=1)
+            pooled = torch.nn.functional.normalize(pooled, dim=1).cpu().float()
+            if not torch.isfinite(pooled).all() or abs(float(pooled.norm()) - 1.0) > 0.0001:
+                raise ValueError("Invalid normalized model output")
+            vectors.append({"proteinId": row["proteinId"], "start": row["start"], "end": row["end"],
+                "sequenceSha256": hashlib.sha256(sequence.encode()).hexdigest(),
+                "spaceSha256": canonical_hash(space), "vector": pooled[0].tolist()})
+            print(f"Embedded reference {row['proteinId']}: {len(sequence)} residues / 320 features", flush=True)
+    with destination.open("x", encoding="utf-8") as output:
+        json.dump({"space": space, "files": files, "embeddings": vectors,
+            "retrievedAt": datetime.now(timezone.utc).isoformat()}, output, indent=2)
+        output.write("\n")
 
 
 def reverse_complement(sequence: str) -> str:
@@ -54,7 +141,16 @@ def main():
     parser.add_argument("--model", default="facebook/esm2_t6_8M_UR50D")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--reference-input")
+    parser.add_argument("--reference-output")
+    parser.add_argument("--revision")
     args = parser.parse_args()
+
+    if args.reference_input or args.reference_output:
+        if not (args.reference_input and args.reference_output and args.revision):
+            parser.error("Reference mode requires --reference-input, --reference-output and --revision")
+        reference_embeddings(args.reference_input, args.reference_output, args.model, args.revision)
+        return
 
     connection = sqlite3.connect(args.database)
     proteins = load_proteins(connection)

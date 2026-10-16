@@ -7,9 +7,12 @@ import { useOverlay } from './OverlayProvider';
 import { usePhageStore } from '../../store';
 import {
   analyzeHostInteractions,
+  loadProteinReferenceInputs,
   type PredictedHostInteraction,
   type InteractionFunctionalRole,
+  type ProteinReferenceInputs,
 } from '@phage-explorer/core';
+import type { PhageRepository } from '../../db';
 import {
   OverlayDescription,
   OverlayEmptyState,
@@ -36,11 +39,77 @@ const ROLE_LABELS: Record<InteractionFunctionalRole, string> = {
   'translation-hijacking': 'Translation Hijacking',
 };
 
-export function HostInteractionOverlay(): React.ReactElement | null {
+/** The same production presentation is exercised with real repository inputs. */
+export function ProteinReferenceCoverage({ inputs }: { inputs: ProteinReferenceInputs | null }): React.ReactElement {
+  if (!inputs) return <p role="status">Loading source-backed protein references…</p>;
+  if (inputs.status === 'unavailable') return <p role="status">Protein reference inputs unavailable: {inputs.reason}</p>;
+  const { bundle, protein, host } = inputs;
+  return (
+    <section aria-label="Source-backed protein reference inputs">
+      <h3>Source-backed protein inputs available</h3>
+      <p>{protein.accession}: complete deposited CDS ({protein.sequence.length} residues).</p>
+      <p>Receptor sequence reference: {host.accession}, {host.organism}.
+        Experimental receptor: {bundle.evidence.experimentalHost}.
+        The mapped chain sequence matches the reference; strain identity and host range are separate evidence.</p>
+      <ul>
+        {inputs.chains.map(chain => <li key={chain.labelAsymId}>
+          {chain.proteinId}: {chain.coordinates.length} observed residues; protein positions {chain.start}–{chain.end},
+          PDB {chain.pdbId} chain {chain.authAsymId} (label {chain.labelAsymId}), assembly {chain.assemblyId}.
+        </li>)}
+      </ul>
+      <p>Published interaction: {bundle.domainInteractions[0].phageDomain} loops {bundle.domainInteractions[0].phageLoops.join(', ')}
+        {' → '}{bundle.domainInteractions[0].hostDomain} loops {bundle.domainInteractions[0].hostLoops.join(', ')}.
+        These assignments describe the deposited complex.</p>
+      <p>{bundle.alignment.rows.length} source-identified homolog sequences in the alignment.
+        Both reference vectors use {bundle.embeddingSpace.dimensions} features from the same pinned ESM2 implementation.
+        Vector coverage is limited to the declared structure intervals.</p>
+      <p>Available inputs do not establish binding affinity, mutation benefit or host range.</p>
+      <details>
+        <summary>Reference sources, versions and licenses</summary>
+        <ul>{bundle.sources.map(source => <li key={source.id}>
+          <a href={source.uri} target="_blank" rel="noreferrer">{source.id}</a>: {source.version}; {source.license}
+        </li>)}</ul>
+        <p>Snapshot identity: {bundle.bundleSha256}</p>
+      </details>
+      <button type="button" onClick={() => {
+        const url = URL.createObjectURL(new Blob([JSON.stringify({
+          format: 'phage-explorer-protein-inputs', version: 1, geneId: inputs.gene.id,
+          genomeAccession: bundle.cds.genomeAccession, reference: bundle,
+        }, null, 2)], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${bundle.id}-inputs.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      }}>Export reference inputs</button>
+    </section>
+  );
+}
+
+export function HostInteractionOverlay({ repository }: { repository?: PhageRepository | null }): React.ReactElement | null {
   const { isOpen, toggle } = useOverlay();
   const { theme } = useTheme();
   const colors = theme.colors;
   const phage = usePhageStore((s) => s.currentPhage);
+  const [reference, setReference] = useState<{ phage: typeof phage; inputs: ProteinReferenceInputs } | null>(null);
+  const referenceInputs = reference?.phage === phage ? reference?.inputs ?? null : null;
+
+  useEffect(() => {
+    if (!isOpen('hostInteractions') || !phage) return;
+    let cancelled = false;
+    setReference(null);
+    if (!repository || phage.localGenome) {
+      setReference({ phage, inputs: { status: 'unavailable', reason: phage.localGenome
+        ? 'References are not automatically applied to private imported genomes.' : 'Genome repository is unavailable.' } });
+      return;
+    }
+    void import('../../../../../data/protein-references/lambda-lamb-v1.json')
+      .then(module => loadProteinReferenceInputs(repository, phage.id, module.default))
+      .then(inputs => { if (!cancelled) setReference({ phage, inputs }); })
+      .catch(error => { if (!cancelled) setReference({ phage, inputs: { status: 'unavailable',
+        reason: error instanceof Error ? error.message : 'Could not load protein references.' } }); });
+    return () => { cancelled = true; };
+  }, [isOpen, phage, repository]);
 
   // Keyboard shortcut toggle: Alt+I
   useHotkey(ActionIds.OverlayHostInteractions, () => toggle('hostInteractions'));
@@ -106,6 +175,7 @@ export function HostInteractionOverlay(): React.ReactElement | null {
         <OverlayDescription title="Host interaction evidence">
           Physical affinities and mutation effects require mapped protein structures and validated interaction evidence. The current pseudo-vector model cannot establish these quantities for the selected phage.
         </OverlayDescription>
+        <ProteinReferenceCoverage inputs={referenceInputs} />
         <OverlayEmptyState
           message={demonstration ? 'No illustrative interactions exceed the selected threshold.' : `${phage.genes.length} gene annotations are available. Stored receptor-candidate evidence can be explored in the tropism panel.`}
         />
