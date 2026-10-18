@@ -1,6 +1,7 @@
 /** An alignment-backed dated-tree workflow, not a new temporal estimator. */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { replayRootedPhylogenyExperiment } from './phylogeny-rooting';
+import { createDatedTreeRecord, fitDatedTree, resolveDatingOptions, type DatingOptions, type DatedTreeResult } from './strict-clock';
 import { analyzeTemporalSignal, createTemporalRecord, parseTemporalSampleTable, resolveTemporalOptions,
   validateTemporalDataset, TEMPORAL_LIMITS, type TemporalDataset, type TemporalOptions, type TemporalResult } from './temporal-signal';
 
@@ -116,6 +117,70 @@ export async function replayRootedTemporalExperiment(content: string, signal?: A
     saved.inputs[2].data as unknown as RootedTemporalMetadata, saved.parameters as Partial<TemporalOptions>, signal);
   if (experiment.record.cacheKey !== saved.cacheKey || experiment.record.resultId !== saved.resultId) {
     throw new Error('Recomputed alignment/root/temporal experiment differs from saved evidence.');
+  }
+  return experiment;
+}
+
+export const ROOTED_DATING_METHOD = { id: 'rooted-nj-strict-clock-dating', version: '1.0.0', implementation: 'typescript' } as const;
+/** Keep the diagnostic record distinct from the conditional clock record. */
+export interface RootedDatingExperiment extends RootedTemporalExperiment {
+  dating: DatedTreeResult;
+  datingRecord: AnalysisRecord;
+}
+
+/**
+ * Date a verified alignment-backed experiment. The original phylogram, not a
+ * previously time-scaled tree, supplies the branch observations. Diagnostic
+ * exclusions remain diagnostic-only; the clock solver retains every tree tip.
+ */
+export async function createRootedDatingExperiment(content: string, supplied: Partial<DatingOptions> = {},
+  signal?: AbortSignal, progress: (phase: string) => void = () => {}): Promise<RootedDatingExperiment> {
+  active(signal);
+  const options = resolveDatingOptions(supplied); // Snapshot before parent replay yields.
+  const report = (phase: string) => { active(signal); progress(phase); active(signal); };
+  report('Replaying aligned DNA, the explicit root and temporal diagnostics');
+  const parent = await replayRootedTemporalExperiment(content.replace(/^\uFEFF/, ''), signal);
+  report('Fitting the original branch observations under strict-clock constraints');
+  const dating = fitDatedTree(parent.dataset, options, report);
+  active(signal);
+  const fitRecord = await createDatedTreeRecord(parent.dataset, dating);
+  report('Binding the complete alignment-to-dating experiment');
+  const limitations = [
+    'Replay recomputes the alignment, root hypothesis, temporal diagnostics and conditional strict-clock fit. It does not independently verify the source data or validate the clock.',
+    'Temporal exclusions and randomization settings are retained as diagnostic evidence, not as clock-fit pruning instructions or a pass/fail clock-validation gate.',
+    'Branch-length, topology and root uncertainty are not propagated into date confidence intervals. The original sequence-distance and date-provenance limitations still apply.',
+  ];
+  const datingRecord = await createAnalysisRecord({ method: ROOTED_DATING_METHOD,
+    inputs: [...fitRecord.inputs.map(({ sha256: _sha, ...input }) => input),
+      { id: 'temporalExperiment', accession: null, source: parent.dataset.source.kind,
+        description: 'Verified temporal experiment with original aligned DNA, rooting decision, collection metadata and diagnostic settings',
+        data: analysisJson(parent.record) }],
+    parameters: analysisJson(options) as AnalysisRecord['parameters'], seed: null,
+    references: [...parent.record.references, ...fitRecord.references],
+    fields: { ...fitRecord.fields, lineage: { kind: 'sequence-score', label: 'Recomputed alignment-to-dating identities', units: 'records',
+      value: { temporalResultId: parent.record.resultId, rootedResultId: parent.rootedResultId,
+        unrootedResultId: parent.unrootedResultId, fitResultId: fitRecord.resultId },
+      coverage: { available: dating.exactTips + dating.intervalTips, total: parent.result.tips.length, unit: 'records' },
+      limitations } } });
+  active(signal);
+  return { ...parent, dating, datingRecord };
+}
+
+/** A hash-valid cached tree, fit or solver certificate cannot bypass full replay. */
+export async function replayRootedDatingExperiment(content: string, signal?: AbortSignal,
+  progress: (phase: string) => void = () => {}): Promise<RootedDatingExperiment> {
+  active(signal);
+  const saved = await parseAnalysisRecord(content.replace(/^\uFEFF/, ''),
+    { methodId: ROOTED_DATING_METHOD.id, methodVersion: ROOTED_DATING_METHOD.version });
+  active(signal);
+  if (saved.inputs.length !== 2 || saved.inputs.map(input => input.id).join('|') !== 'datedTree|temporalExperiment'
+    || Object.keys(saved.parameters).sort().join('|') !== 'fixedRate|maxIterations|maximumRate|minimumRate|rateMode|rateSource') {
+    throw new Error('Linked dating replay requires the original temporal experiment, derived phylogram and every explicit clock option.');
+  }
+  const experiment = await createRootedDatingExperiment(
+    serializeAnalysisRecord(saved.inputs[1].data as unknown as AnalysisRecord), saved.parameters as Partial<DatingOptions>, signal, progress);
+  if (experiment.datingRecord.cacheKey !== saved.cacheKey || experiment.datingRecord.resultId !== saved.resultId) {
+    throw new Error('Recomputed alignment/root/temporal/dating experiment differs from saved evidence.');
   }
   return experiment;
 }
