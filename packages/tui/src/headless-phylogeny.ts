@@ -6,8 +6,12 @@ import { ALIGNED_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, createAlignedPhylogenyExper
   replayAlignedPhylogenyExperiment, resolvePhylogenyOptions, type AlignedPhylogenyExperiment,
   type PhylogenyOptions, type PhylogenySource } from '../../core/src/analysis/aligned-phylogeny';
 import { exportPhylogeny, PHYLOGENY_EXPORT_FORMATS, type PhylogenyExportFormat } from '../../core/src/analysis/phylogeny-export';
+import { ROOTED_PHYLOGENY_METHOD, rootAlignedPhylogenyExperiment, replayRootedPhylogenyExperiment,
+  type RootedPhylogenyExperiment } from '../../core/src/analysis/phylogeny-rooting';
 import { serializeAnalysisRecord } from '../../core/src/analysis-result';
 
+export const HEADLESS_PHYLOGENY_FORMATS = [...PHYLOGENY_EXPORT_FORMATS, 'unrooted-newick', 'rooting-json'] as const;
+export type HeadlessPhylogenyFormat = typeof HEADLESS_PHYLOGENY_FORMATS[number];
 export const PHYLOGENY_HELP = `Aligned DNA phylogeny, private computation and verified exports
 
 bun run phylogeny inspect --input aligned.fa
@@ -15,11 +19,13 @@ bun run phylogeny infer --input aligned.fa --alignment provided
   --name NAME --reference ALIGNMENT_PROVENANCE --output NEW_EXPERIMENT.json
   [--source local|demo] [--distance p-distance|jc69] [--bootstrap 0|20..200]
   [--seed 1] [--timeout-ms 300000]
+bun run phylogeny root --experiment unrooted.json --rooting decision.json
+  --output NEW_ROOTED_EXPERIMENT.json [--timeout-ms 300000]
 bun run phylogeny verify --experiment experiment.json [--output NEW_COPY.json]
   [--timeout-ms 300000]
 bun run phylogeny export --experiment experiment.json --format FORMAT --output NEW_FILE
   [--timeout-ms 300000]
-  FORMAT: newick|distances-tsv|splits-tsv|alignment-fasta
+  FORMAT: newick|unrooted-newick|distances-tsv|splits-tsv|alignment-fasta|rooting-json
 
 Input is an ALREADY ALIGNED homologous DNA FASTA, not raw genomes or proteins.
 --alignment provided is a declaration, not an automatic alignment or homology test.
@@ -30,19 +36,34 @@ Defaults are observed p-distance, no bootstrap, and seed 1. Bootstrap resamples
 retained columns; any saturated replicate withholds ALL support, not just that
 replicate. Linked sites and recombination limit its interpretation.
 
-This is an unrooted neighbor-joining tree, not a molecular clock, ancestry,
-transmission, host-range or population-size inference. Signed NJ branch lengths
-are preserved. Newick starts with [&U]; internal labels are bootstrap PERCENTAGES
-when available, never clade probabilities. The arbitrary serialization root has
-no support label. Splits TSV reports fractions and counts; unavailable values
-are empty, not zero. Distance TSV is a square matrix with # metadata comments.
+infer creates an unrooted neighbor-joining tree. root requires an explicit JSON
+decision with exactly: outgroup (array of sample IDs), fractionFromOutgroup
+(number strictly between 0 and 1), evidence (nonempty text), dateIndependent
+(true). No outgroup, midpoint or scientific justification is assumed. The
+separating edge must be positive and all original branches nonnegative; the
+existing core rejects unsuitable trees rather than clipping or rearranging them.
+Rooting retains every taxon, the original alignment, settings and pairwise paths.
+It is a user-conditioned root hypothesis, not an independently inferred ancestor.
+Decision files are limited to 64 KiB and decoded as strict UTF-8.
+
+verify and export recognize both unrooted and rooted experiment JSON, including
+browser downloads. newick exports the recorded tree: [&U] for unrooted or [&R]
+for an explicit root. Rooted Newick does not invent root or clade support labels;
+splits-tsv and unrooted-newick retain the ORIGINAL unrooted bootstrap evidence.
+unrooted-newick explicitly exports the parent tree, with internal support labels
+as bootstrap PERCENTAGES when available, never clade probabilities. Splits TSV
+reports fractions and counts; unavailable values are empty, not zero. Distance
+TSV is a square matrix with # metadata comments. Root-derived table exports
+identify both the parent inference and the selected rooted experiment.
+rooting-json exports the exact resolved decision, and requires a rooted record.
 The full experiment JSON retains all inputs, settings, masks and limitations and
 can be restored in the browser. Newick/TSV are views, not replayable experiments.
 alignment-fasta exports the exact original input, including its descriptions.
 
 verify and EVERY export recompute the saved analysis and compare full identities,
 not just checksums. No catalog, database or network is used. Inputs/exports contain
-private sequences and are not anonymized. Stdout summaries omit sequence bases.
+private sequences and are not anonymized. Stdout summaries omit sequence bases
+and free-text rooting evidence. No molecular clock or population history is inferred.
 Output is created exclusively with owner-only permissions; existing files and
 symlinks are never overwritten. Failed disk writes may leave a partial new file.
 Timeout or interruption terminates computation before output creation. Use a new
@@ -53,22 +74,26 @@ interface JobOptions { timeoutMs: number }
 export type PhylogenyCommand = { type: 'help' }
   | ({ type: 'inspect'; inputPath: string } & JobOptions)
   | ({ type: 'infer'; inputPath: string; outputPath: string; source: Omit<PhylogenySource, 'fasta'>; options: PhylogenyOptions } & JobOptions)
+  | ({ type: 'root'; experimentPath: string; rootingPath: string; outputPath: string } & JobOptions)
   | ({ type: 'verify'; experimentPath: string; outputPath?: string } & JobOptions)
-  | ({ type: 'export'; experimentPath: string; outputPath: string; format: PhylogenyExportFormat } & JobOptions);
+  | ({ type: 'export'; experimentPath: string; outputPath: string; format: HeadlessPhylogenyFormat } & JobOptions);
 export type PhylogenyTask = { type: 'inspect'; content: string }
   | { type: 'infer'; content: string; source: Omit<PhylogenySource, 'fasta'>; options: PhylogenyOptions }
+  | { type: 'root'; content: string; rootingContent: string }
   | { type: 'verify'; content: string }
-  | { type: 'export'; content: string; format: PhylogenyExportFormat };
+  | { type: 'export'; content: string; format: HeadlessPhylogenyFormat };
 export interface PhylogenyTaskResult { summary: Record<string, unknown>; output?: string }
 export type PhylogenyWorkerReply = { ok: true; value: PhylogenyTaskResult } | { ok: false; error: string };
 const RECORD_BYTES = 10 * 1024 * 1024;
+const ROOTING_BYTES = 64 * 1024;
 
 export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand {
   if (!args.length || args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
-  if (!['inspect', 'infer', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, infer, verify or export. Use --help for usage.');
+  if (!['inspect', 'infer', 'root', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, verify or export. Use --help for usage.');
   const allowed = type === 'inspect' ? ['--input', '--timeout-ms'] : type === 'infer'
     ? ['--input', '--alignment', '--name', '--reference', '--source', '--distance', '--bootstrap', '--seed', '--output', '--timeout-ms']
+    : type === 'root' ? ['--experiment', '--rooting', '--output', '--timeout-ms']
     : type === 'verify' ? ['--experiment', '--output', '--timeout-ms'] : ['--experiment', '--format', '--output', '--timeout-ms'];
   const flags = new Map<string, string>();
   for (let i = 0; i < rest.length; i += 2) {
@@ -88,12 +113,13 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   const timeoutMs = integer('--timeout-ms', 300000);
   if (timeoutMs < 1 || timeoutMs > 3600000) throw new Error('--timeout-ms must be from 1 to 3600000.');
   if (type === 'inspect') return { type, inputPath: required('--input'), timeoutMs };
+  if (type === 'root') return { type, experimentPath: required('--experiment'), rootingPath: required('--rooting'), outputPath: required('--output'), timeoutMs };
   if (type === 'verify') return { type, experimentPath: required('--experiment'), timeoutMs,
     ...(flags.has('--output') ? { outputPath: required('--output') } : {}) };
   if (type === 'export') {
     const format = required('--format');
-    if (!(PHYLOGENY_EXPORT_FORMATS as readonly string[]).includes(format)) throw new Error(`--format must be ${PHYLOGENY_EXPORT_FORMATS.join(', ')}.`);
-    return { type, experimentPath: required('--experiment'), outputPath: required('--output'), format: format as PhylogenyExportFormat, timeoutMs };
+    if (!(HEADLESS_PHYLOGENY_FORMATS as readonly string[]).includes(format)) throw new Error(`--format must be ${HEADLESS_PHYLOGENY_FORMATS.join(', ')}.`);
+    return { type, experimentPath: required('--experiment'), outputPath: required('--output'), format: format as HeadlessPhylogenyFormat, timeoutMs };
   }
   if (required('--alignment') !== 'provided') throw new Error('--alignment must be provided: this command does not align sequences.');
   const kind = flags.get('--source') ?? 'local';
@@ -112,6 +138,23 @@ function summarize(experiment: AlignedPhylogenyExperiment): Record<string, unkno
     variableSites: result.variableSites, negativeEdges: result.negativeEdges, options,
     bootstrap: result.bootstrap, warnings: result.warnings };
 }
+function summarizeRooted(experiment: RootedPhylogenyExperiment): Record<string, unknown> {
+  return { ...summarize(experiment.unrooted), method: ROOTED_PHYLOGENY_METHOD,
+    resultId: experiment.record.resultId, cacheKey: experiment.record.cacheKey,
+    unrootedResultId: experiment.unrooted.record.resultId, rooted: true,
+    outgroupTaxa: experiment.result.rooting.outgroup.length,
+    fractionFromOutgroup: experiment.result.rooting.fractionFromOutgroup,
+    distancePreservation: experiment.result.distancePreservation,
+    warnings: [...experiment.unrooted.result.warnings, ...experiment.result.warnings] };
+}
+function exportRooted(experiment: RootedPhylogenyExperiment, format: HeadlessPhylogenyFormat): string {
+  if (format === 'newick') return `[&R]${experiment.result.newick}\n`;
+  if (format === 'rooting-json') return JSON.stringify(experiment.result.rooting, null, 2) + '\n';
+  const parentFormat: PhylogenyExportFormat = format === 'unrooted-newick' ? 'newick' : format;
+  const content = exportPhylogeny(experiment.unrooted, parentFormat);
+  return format === 'distances-tsv' || format === 'splits-tsv'
+    ? `# rooted_result_id\t${experiment.record.resultId}\n` + content : content;
+}
 
 /** Shared by the isolated worker and deterministic numerical tests. */
 export async function performPhylogenyTask(task: PhylogenyTask): Promise<PhylogenyTaskResult> {
@@ -122,11 +165,29 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
     return { summary: { taxa: taxa.map(taxon => taxon.id), alignmentSites: columns, completeColumns,
       excludedColumns: columns - completeColumns, homologyVerified: false } };
   }
+  if (task.type === 'root') {
+    if (typeof task.rootingContent !== 'string' || Buffer.byteLength(task.rootingContent) > ROOTING_BYTES) throw new Error('Rooting decision exceeds 64 KiB.');
+    const decision = JSON.parse(task.rootingContent.replace(/^\uFEFF/, ''));
+    const experiment = await rootAlignedPhylogenyExperiment(task.content.replace(/^\uFEFF/, ''), decision);
+    return { summary: summarizeRooted(experiment), output: serializeAnalysisRecord(experiment.record) };
+  }
+  if (task.type !== 'infer') {
+    if (Buffer.byteLength(task.content) > RECORD_BYTES) throw new Error('Saved phylogeny exceeds 10 MiB.');
+    const content = task.content.replace(/^\uFEFF/, ''), parsed: unknown = JSON.parse(content);
+    const method = parsed && typeof parsed === 'object' && 'method' in parsed ? parsed.method : null;
+    if (method && typeof method === 'object' && 'id' in method && method.id === ROOTED_PHYLOGENY_METHOD.id) {
+      const experiment = await replayRootedPhylogenyExperiment(content);
+      return { summary: summarizeRooted(experiment), output: task.type === 'export'
+        ? exportRooted(experiment, task.format) : serializeAnalysisRecord(experiment.record) };
+    }
+  }
   const experiment = task.type === 'infer'
     ? await createAlignedPhylogenyExperiment({ ...task.source, fasta: task.content }, task.options)
-    : await replayAlignedPhylogenyExperiment(task.content);
+    : await replayAlignedPhylogenyExperiment(task.content.replace(/^\uFEFF/, ''));
+  if (task.type === 'export' && task.format === 'rooting-json') throw new Error('rooting-json requires an explicitly rooted experiment.');
   return { summary: summarize(experiment), output: task.type === 'export'
-    ? exportPhylogeny(experiment, task.format) : serializeAnalysisRecord(experiment.record) };
+    ? exportPhylogeny(experiment, task.format === 'unrooted-newick' ? 'newick' : task.format as PhylogenyExportFormat)
+    : serializeAnalysisRecord(experiment.record) };
 }
 
 async function readBounded(path: string, maximum: number, preserveBom = false): Promise<string> {
@@ -151,6 +212,7 @@ async function readBounded(path: string, maximum: number, preserveBom = false): 
 export function executePhylogenyTask(task: PhylogenyTask, timeoutMs: number, signal?: AbortSignal): Promise<PhylogenyTaskResult> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new DOMException('Phylogeny cancelled.', 'AbortError')); return; }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) { reject(new Error('Task timeout must be from 1 to 3600000 ms.')); return; }
     const worker = new Worker(new URL('./phylogeny.worker.ts', import.meta.url));
     let settled = false;
     const finish = (error: Error | null, value?: PhylogenyTaskResult) => {
@@ -175,7 +237,8 @@ export function executePhylogenyTask(task: PhylogenyTask, timeoutMs: number, sig
       }
       finish(null, reply.value);
     });
-    try { worker.postMessage(task); } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+    try { if (signal?.aborted) onAbort(); else worker.postMessage(task); }
+    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
   });
 }
 
@@ -188,7 +251,9 @@ export async function runPhylogenyCommand(args: readonly string[], signal?: Abor
   signal?.throwIfAborted();
   const task: PhylogenyTask = command.type === 'infer'
     ? { type: 'infer', content, source: command.source, options: command.options }
+    : command.type === 'root' ? { type: 'root', content, rootingContent: await readBounded(command.rootingPath, ROOTING_BYTES) }
     : command.type === 'export' ? { type: 'export', content, format: command.format } : { type: command.type, content };
+  signal?.throwIfAborted();
   const result = await executePhylogenyTask(task, command.timeoutMs, signal);
   signal?.throwIfAborted();
   if ('outputPath' in command && command.outputPath !== undefined) {
