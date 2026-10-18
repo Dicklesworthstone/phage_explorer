@@ -3,7 +3,7 @@ import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { validateTemporalDataset, type TemporalOptions, type TemporalResult } from '../../../../core/src/analysis/temporal-signal';
-import { TemporalSignalSession, temporalAnalysisRequest, type TemporalRequest } from '../../workers/TemporalSignalSession';
+import { TemporalSignalSession, temporalAnalysisRequest, temporalDatingRequest, type TemporalRequest } from '../../workers/TemporalSignalSession';
 import { readAlignedPhylogenyFile } from '../../workers/AlignedPhylogenySession';
 import { downloadString } from '../../utils/export';
 import { useTheme } from '../../hooks/useTheme';
@@ -187,8 +187,8 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
           <button type="button" disabled={busy||!accepted.record} onClick={()=>save(true)}>{accepted.rootedSource?'Export complete alignment/root/temporal experiment':'Export temporal diagnostics'}</button></div>
       </>}
       {accepted?.rootedSource&&<p>The complete temporal experiment retains the original alignment, root decision and collection metadata.
-        Separate tree/date dataset, strict-clock and ancestral exports do not retain that full alignment lineage.</p>}
-      {accepted&&<StrictClockPanel accepted={accepted} busy={busy} onFit={options=>run({kind:'date',dataset:accepted.dataset,options})}/>}
+        The complete clock experiment also retains temporal diagnostics and the conditional fit. Separate tree/date datasets, Newick and ancestral exports do not retain the full chain.</p>}
+      {accepted&&<StrictClockPanel accepted={accepted} busy={busy} onFit={options=>run(temporalDatingRequest(accepted,options))}/>}
       {result&&accepted?.record&&<section data-testid="temporal-result" data-result-id={accepted.record.resultId}>
         <h3>Fixed-root exploratory diagnostics</h3>
         <p>{result.tips.filter(tip=>!tip.exclusion).length}/{result.tips.length} tips retained. Root fixed; branch lengths in substitutions/site. No clock-calibrated tree.</p>

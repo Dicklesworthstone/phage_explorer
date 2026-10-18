@@ -1,7 +1,7 @@
 import React, { useEffect, useId, useState } from 'react';
 import { exportDatedNewick, resolveDatingOptions, type DatingOptions, type DatedTreeResult } from '../../../../core/src/analysis/strict-clock';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
-import type { TemporalWorkResult } from '../../workers/TemporalSignalSession';
+import { isLinkedDatingRecord, type TemporalWorkResult } from '../../workers/TemporalSignalSession';
 import { useTheme } from '../../hooks/useTheme';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
@@ -45,6 +45,7 @@ export function StrictClockPanel({accepted,busy,onFit}:{accepted:TemporalWorkRes
   const [minimum,setMinimum]=useState('1e-10'),[maximum,setMaximum]=useState('1'),[iterations,setIterations]=useState('10000');
   const [confirmed,setConfirmed]=useState(false),[error,setError]=useState<string|null>(null);
   const result=accepted.dating,record=accepted.datingRecord;
+  const linked=isLinkedDatingRecord(record);
   useEffect(()=>{
     const options=result?.options??resolveDatingOptions();
     setMode(options.rateMode);setFixed(String(options.fixedRate??.01));setSource(options.rateSource??'');
@@ -54,7 +55,7 @@ export function StrictClockPanel({accepted,busy,onFit}:{accepted:TemporalWorkRes
   const save=(tree:boolean)=>{
     try {
       if(!result||!record)return;
-      downloadString(tree?exportDatedNewick(result):serializeAnalysisRecord(record),tree?'strict-clock-years.nwk':'strict-clock-fit.json',tree?'text/plain':'application/json');
+      downloadString(tree?exportDatedNewick(result):serializeAnalysisRecord(record),tree?'strict-clock-years.nwk':linked?'aligned-strict-clock-experiment.json':'strict-clock-fit.json',tree?'text/plain':'application/json');
       setError(null);
     }catch(cause){setError(cause instanceof Error?cause.message:String(cause));}
   };
@@ -63,6 +64,7 @@ export function StrictClockPanel({accepted,busy,onFit}:{accepted:TemporalWorkRes
     <p>This fits every branch, not the root-to-tip regression line. All supplied tips are retained; diagnostic exclusions do not prune this fit.
       Every tip needs a sourced date or interval. An estimated rate requires two different exact tip dates; a fixed rate requires one exact tip date.
       The dense solver supports up to 128 tips. A rate at its search bound or an unresolved solver produces no node dates.</p>
+    {accepted.rootedSource&&<p>This fit retains the original alignment, root hypothesis, collection metadata and temporal diagnostics in its complete experiment export.</p>}
     <form onSubmit={event=>{
       event.preventDefault();if(!confirmed)return;
       try {const options=resolveDatingOptions({rateMode:mode,fixedRate:mode==='fixed'?Number(fixed):null,rateSource:mode==='fixed'?source:null,
@@ -114,8 +116,8 @@ export function StrictClockPanel({accepted,busy,onFit}:{accepted:TemporalWorkRes
         </table></div></details>}
       {result.warnings.map(warning=><p key={warning}>{warning}</p>)}
       <button type="button" disabled={busy||result.status!=='fitted'} onClick={()=>save(true)}>Export dated Newick (years)</button>{' '}
-      <button type="button" disabled={busy} onClick={()=>save(false)}>Export strict-clock fit</button>
-      <p>Restore the JSON fit using the existing dated-tree import control. It reruns the solver and checks the complete record before acceptance.
+      <button type="button" disabled={busy} onClick={()=>save(false)}>{linked?'Export complete alignment-to-dating experiment':'Export strict-clock fit'}</button>
+      <p>Restore the JSON fit using the existing dated-tree import control. {linked?'It recomputes the original alignment, root, temporal diagnostics and clock fit before accepting any saved result.':'It reruns the solver and checks the complete record before acceptance.'}
         Newick is a visualization/interchange export in years, not a substitutions/site input or a complete replay record.</p>
       <AnalysisRecordDetails record={record}/>
     </section>}

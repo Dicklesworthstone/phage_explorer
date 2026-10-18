@@ -1,7 +1,7 @@
 /** One private dated-tree workspace. Late reads/workers cannot replace accepted evidence. */
 import { analyzeTemporalSignal, createTemporalRecord, parseTemporalSampleTable, replayTemporalRecord,
   resolveTemporalOptions, validateTemporalDataset, type TemporalDataset, type TemporalOptions, type TemporalResult } from '../../../core/src/analysis/temporal-signal';
-import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import { serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import type { DatingOptions, DatedTreeResult } from '../../../core/src/analysis/strict-clock';
 
 import type { RootedTemporalSource } from '../../../core/src/analysis/phylogeny-temporal';
@@ -11,16 +11,31 @@ export type TemporalRequest =
   | { kind: 'prepare'; dataset: Omit<TemporalDataset, 'samples'>; sampleTable: string }
   | { kind: 'analyze-rooted'; rootedSource: RootedTemporalSource; options: Partial<TemporalOptions> }
   | { kind: 'analyze'; dataset: TemporalDataset; options: Partial<TemporalOptions> }
+  | { kind: 'date-rooted'; content: string; options: Partial<DatingOptions> }
   | { kind: 'date'; dataset: TemporalDataset; options: Partial<DatingOptions> }
   | { kind: 'example' };
 export interface TemporalWorkResult { dataset: TemporalDataset; options: TemporalOptions; result: TemporalResult | null; record: AnalysisRecord | null; verified: boolean;
   dating?: DatedTreeResult; datingRecord?: AnalysisRecord; rootedSource?: RootedTemporalSource }
 export type TemporalMessage = { kind: 'progress'; phase: string } | { kind: 'result'; value: TemporalWorkResult } | { kind: 'error'; message: string };
 
+const LINKED_DATING_METHOD_ID = 'rooted-nj-strict-clock-dating';
+export function isLinkedDatingRecord(record: AnalysisRecord | null | undefined): boolean {
+  return record?.method.id === LINKED_DATING_METHOD_ID;
+}
+
 /** Re-analysis cannot discard an accepted alignment/root chain. */
 export function temporalAnalysisRequest(accepted: TemporalWorkResult, options: Partial<TemporalOptions>): TemporalRequest {
   return accepted.rootedSource ? { kind: 'analyze-rooted', rootedSource: accepted.rootedSource, options }
     : { kind: 'analyze', dataset: accepted.dataset, options };
+}
+
+/** Fit the original verified chain when one exists; never downgrade it to Newick alone. */
+export function temporalDatingRequest(accepted: TemporalWorkResult, options: Partial<DatingOptions>): TemporalRequest {
+  if (!accepted.rootedSource) return { kind: 'date', dataset: accepted.dataset, options };
+  if (accepted.record?.method.id !== 'rooted-nj-temporal-signal') {
+    throw new Error('Run alignment-backed temporal diagnostics before creating a linked dating experiment.');
+  }
+  return { kind: 'date-rooted', content: serializeAnalysisRecord(accepted.record), options };
 }
 
 export async function executeTemporalRequest(request: TemporalRequest, progress: (phase: string) => void = () => {}): Promise<TemporalWorkResult> {
@@ -32,6 +47,11 @@ export async function executeTemporalRequest(request: TemporalRequest, progress:
     const parsed: unknown = JSON.parse(request.content.replace(/^\uFEFF/, ''));
     if (parsed && typeof parsed === 'object' && 'format' in parsed && parsed.format === 'phage-explorer-analysis') {
       const method = 'method' in parsed ? parsed.method : null;
+      if (method && typeof method === 'object' && 'id' in method && method.id === LINKED_DATING_METHOD_ID) {
+        const { replayRootedDatingExperiment } = await import('../../../core/src/analysis/phylogeny-temporal');
+        const replay = await replayRootedDatingExperiment(request.content, undefined, progress);
+        return { ...replay, options: replay.result.options, verified: true };
+      }
       if (method && typeof method === 'object' && 'id' in method && method.id === 'fixed-root-strict-clock-dating') {
         progress('Verifying saved inputs and recomputing constrained strict-clock dating');
         const { replayDatedTreeRecord } = await import('../../../core/src/analysis/strict-clock');
@@ -49,6 +69,10 @@ export async function executeTemporalRequest(request: TemporalRequest, progress:
       return { ...replay, options: replay.result.options, verified: true };
     }
     dataset = validateTemporalDataset(parsed);
+  } else if (request.kind === 'date-rooted') {
+    const { createRootedDatingExperiment } = await import('../../../core/src/analysis/phylogeny-temporal');
+    const experiment = await createRootedDatingExperiment(request.content, request.options, undefined, progress);
+    return { ...experiment, options: experiment.result.options, verified: false };
   } else if (request.kind === 'analyze-rooted') {
     if (!request.rootedSource || typeof request.rootedSource !== 'object') throw new Error('A rooted source is required.');
     progress('Recomputing the alignment and root before joining collection dates and fitting diagnostics');
@@ -145,16 +169,24 @@ export class TemporalSignalSession {
         try { if(owner.signal.aborted)cancel();else worker.postMessage(request); } catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}
       });
       if(current()) {
-        // Independent diagnostic and dating results may coexist only for exact
-        // matching inputs. Explicit imports still replace the entire workspace.
+        // Independent fits may coexist for matching inputs. A linked clock also
+        // binds the exact diagnostic parent, not just equivalent tree/date data.
         const previous=this.snapshot.accepted;
-        let accepted=value;
+        let accepted=value, clearedLinkedDating=false;
         if(previous&&JSON.stringify(previous.dataset)===JSON.stringify(value.dataset)) {
           if(request.kind==='date')accepted={...value,options:previous.options,result:previous.result,record:previous.record,
             ...(previous.rootedSource?{rootedSource:previous.rootedSource}:{})};
-          else if((request.kind==='analyze'||request.kind==='analyze-rooted')&&previous.dating&&previous.datingRecord)accepted={...value,dating:previous.dating,datingRecord:previous.datingRecord};
+          else if((request.kind==='analyze'||request.kind==='analyze-rooted')&&previous.dating&&previous.datingRecord) {
+            const lineage=previous.datingRecord.fields.lineage?.value;
+            const sameParent=lineage!==null&&typeof lineage==='object'&&!Array.isArray(lineage)
+              &&lineage.temporalResultId===value.record?.resultId;
+            if(!isLinkedDatingRecord(previous.datingRecord)||sameParent)accepted={...value,dating:previous.dating,datingRecord:previous.datingRecord};
+            else clearedLinkedDating=true;
+          }
         }
-        this.publish({accepted,notice:value.verified?value.dating?'Verified strict-clock replay: fresh fit and complete evidence identity match.'
+        this.publish({accepted,notice:clearedLinkedDating?'Temporal diagnostics updated. The previous linked clock fit was cleared because its diagnostic parent changed; run dating again.'
+          :value.verified?isLinkedDatingRecord(value.datingRecord)?'Verified full replay: original alignment, root, temporal diagnostics and strict-clock fit match.'
+          :value.dating?'Verified strict-clock replay: fresh fit and complete evidence identity match.'
           :value.rootedSource?'Verified full replay: original alignment, root hypothesis and temporal diagnostics match.'
           :'Verified temporal replay: fresh diagnostics and complete evidence identity match.'
           :value.dating?value.dating.status==='fitted'?'Conditional strict-clock dating computed. Review branch residuals and model assumptions.'
