@@ -11,7 +11,8 @@ import { ROOTED_PHYLOGENY_METHOD, rootAlignedPhylogenyExperiment, replayRootedPh
 import { serializeAnalysisRecord } from '../../core/src/analysis-result';
 import type { RootedTemporalExperiment, RootedDatingExperiment, RootedTemporalMetadata } from '../../core/src/analysis/phylogeny-temporal';
 
-export const HEADLESS_PHYLOGENY_FORMATS = [...PHYLOGENY_EXPORT_FORMATS, 'unrooted-newick', 'rooting-json', 'dated-newick'] as const;
+export const HEADLESS_PHYLOGENY_FORMATS = [...PHYLOGENY_EXPORT_FORMATS, 'unrooted-newick', 'rooting-json',
+  'dated-newick', 'temporal-tsv', 'dates-tsv', 'samples-table'] as const;
 export type HeadlessPhylogenyFormat = typeof HEADLESS_PHYLOGENY_FORMATS[number];
 export const PHYLOGENY_HELP = `Aligned DNA phylogeny, private computation and verified exports
 
@@ -31,7 +32,8 @@ bun run phylogeny verify --experiment experiment.json [--output NEW_COPY.json]
   [--timeout-ms 300000]
 bun run phylogeny export --experiment experiment.json --format FORMAT --output NEW_FILE
   [--timeout-ms 300000]
-  FORMAT: newick|unrooted-newick|distances-tsv|splits-tsv|alignment-fasta|rooting-json|dated-newick
+  FORMAT: newick|unrooted-newick|distances-tsv|splits-tsv|alignment-fasta|rooting-json
+          dated-newick|temporal-tsv|dates-tsv|samples-table
 
 Input is an ALREADY ALIGNED homologous DNA FASTA, not raw genomes or proteins.
 --alignment provided is a declaration, not an automatic alignment or homology test.
@@ -90,6 +92,18 @@ For linked records, newick is always the original rooted substitutions/site
 phylogram, NEVER the time-scaled tree. dated-newick requires a fitted dating
 record and explicitly exports durations in YEARS. Verification of a linked record
 recomputes every stage; a successful replay is not evidence of clock adequacy.
+temporal-tsv exports every tip, date bounds, exclusions and regression residuals;
+missing numerical estimates are empty fields, not zero. dates-tsv requires a
+fitted linked dating record and exports every node, original/fitted branch lengths,
+calendar dates and durations, with original observations in substitutions/site
+and durations in years. Both tables include method, parent and selected result
+identities. Free-text columns ending in _json are JSON strings (or literal null),
+not ordinary unquoted text; parse them as JSON to recover quotes and backslashes.
+Formula-marker characters in text are Unicode-escaped inside JSON strings.
+Numbers are not rounded. These are data tables,
+not complete experiment records or confidence intervals. samples-table recovers
+the exact original CSV/TSV bytes, including a BOM and line endings when supplied.
+All three formats require a linked temporal or dating experiment.
 
 verify and EVERY export recompute the saved analysis and compare full identities,
 not just checksums. No catalog, database or network is used. Inputs/exports contain
@@ -193,7 +207,8 @@ function summarizeRooted(experiment: RootedPhylogenyExperiment): Record<string, 
 function exportRooted(experiment: RootedPhylogenyExperiment, format: HeadlessPhylogenyFormat): string {
   if (format === 'newick') return `[&R]${experiment.result.newick}\n`;
   if (format === 'rooting-json') return JSON.stringify(experiment.result.rooting, null, 2) + '\n';
-  if (format === 'dated-newick') throw new Error('dated-newick requires a fitted linked dating experiment.');
+  if (format === 'dated-newick' || format === 'dates-tsv') throw new Error(`${format} requires a fitted linked dating experiment.`);
+  if (format === 'temporal-tsv' || format === 'samples-table') throw new Error(`${format} requires a linked temporal or dating experiment.`);
   const parentFormat: PhylogenyExportFormat = format === 'unrooted-newick' ? 'newick' : format;
   const content = exportPhylogeny(experiment.unrooted, parentFormat);
   return format === 'distances-tsv' || format === 'splits-tsv'
@@ -230,11 +245,53 @@ function summarizeLinked(experiment: RootedTemporalExperiment | RootedDatingExpe
     warnings: [...result.warnings, ...dating.warnings] };
 }
 
+/** Lossless machine tables: numeric null is blank; free text is explicitly JSON encoded. */
+function linkedTable(experiment: RootedTemporalExperiment | RootedDatingExperiment, format: 'temporal-tsv' | 'dates-tsv'): string {
+  const record = 'datingRecord' in experiment ? experiment.datingRecord : experiment.record;
+  const metadata = `# format\tphage-explorer-${format}\n# format_version\t1\n# method\t${record.method.id}\n# method_version\t${record.method.version}\n`
+    + `# selected_result_id\t${record.resultId}\n# temporal_result_id\t${experiment.record.resultId}\n# rooted_result_id\t${experiment.rootedResultId}\n# unrooted_result_id\t${experiment.unrootedResultId}\n`
+    + `# source_kind\t${experiment.dataset.source.kind}\n# date_unit\tdecimal_calendar_year\n# distance_unit\tsubstitutions/site\n# missing_numeric\tempty\n# text_encoding\tJSON_string_or_null_in_columns_ending_in_json\n`
+    + '# clock_validated\tfalse\n# uncertainty\tnot-estimated\n';
+  // Preserve exact strings while avoiding raw spreadsheet formula markers,
+  // even when a TSV reader strips the JSON string's outer quotation marks.
+  const jsonText = (value: string | null): string => JSON.stringify(value).replace(/[=+@-]/g,
+    character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const row = (values: Array<string | number | boolean | null | undefined>) => values.map(value => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Cannot export a nonfinite numerical result.');
+    const text = String(value);
+    if (/[\t\r\n]/.test(text)) throw new Error('Table strings must be JSON encoded before export.');
+    return text;
+  }).join('\t');
+  if (format === 'temporal-tsv') {
+    const residuals = new Map(experiment.result.regression?.residuals.map(value => [value.id, value]));
+    const header = 'sample_id\taccession_json\texact_collection_year\tcollection_lower_year\tcollection_upper_year\troot_to_tip_distance\tincluded\texclusion_json\tpredicted_distance\tresidual\tleverage\tleave_one_out_slope\tdate_source_json\tpermutation_group_json';
+    return metadata + '# analysis\tfixed-root exploratory diagnostics; not clock validation\n' + header + '\n'
+      + experiment.result.tips.map(tip => {
+        const fit = residuals.get(tip.id);
+        return row([tip.id, jsonText(tip.accession), tip.date, tip.dateRange?.lower, tip.dateRange?.upper,
+          tip.distance, tip.exclusion === null, jsonText(tip.exclusion), fit?.predicted, fit?.residual,
+          fit?.leverage, fit?.leaveOneOutSlope, jsonText(tip.dateSource), jsonText(tip.group)]);
+      }).join('\n') + '\n';
+  }
+  if (!('dating' in experiment) || experiment.dating.status !== 'fitted' || !experiment.dating.nodes.length) {
+    throw new Error('dates-tsv requires a fitted linked dating experiment; unavailable node dates are not exported as zeros.');
+  }
+  const { dating } = experiment;
+  const header = 'node_id\tparent_id\tlabel_json\tis_tip\tcalendar_year\tcollection_lower_year\tcollection_upper_year\tduration_years\tsource_length\tfitted_length\tresidual\tat_date_bound\tdate_source_json';
+  return metadata + `# analysis\tconditional fixed-root strict-clock fit\n# rate_mode\t${dating.options.rateMode}\n# rate_substitutions_per_site_per_year\t${dating.rate}\n`
+    + header + '\n' + dating.nodes.map(node => row([node.id, node.parentId, jsonText(node.label), node.isTip, node.date,
+      node.dateRange?.lower, node.dateRange?.upper, node.duration, node.sourceLength, node.fittedLength,
+      node.residual, node.atDateBound, jsonText(node.dateSource)])).join('\n') + '\n';
+}
+
 async function linkedOutput(experiment: RootedTemporalExperiment | RootedDatingExperiment,
   format?: HeadlessPhylogenyFormat): Promise<PhylogenyTaskResult> {
   const record = 'datingRecord' in experiment ? experiment.datingRecord : experiment.record;
   const summary = summarizeLinked(experiment);
   if (!format) return { summary, output: serializeAnalysisRecord(record) };
+  if (format === 'samples-table') return { summary, output: experiment.rootedSource.metadata.sampleTable };
+  if (format === 'temporal-tsv' || format === 'dates-tsv') return { summary, output: linkedTable(experiment, format) };
   if (format === 'newick') return { summary, output: `[&R][&branch_units=substitutions/site]\n${experiment.dataset.tree.newick}\n` };
   if (format === 'dated-newick') {
     if (!('dating' in experiment)) throw new Error('dated-newick requires a fitted linked dating experiment.');
@@ -298,7 +355,8 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
   const experiment = task.type === 'infer'
     ? await createAlignedPhylogenyExperiment({ ...task.source, fasta: task.content }, task.options)
     : await replayAlignedPhylogenyExperiment(task.content.replace(/^\uFEFF/, ''));
-  if (task.type === 'export' && task.format === 'dated-newick') throw new Error('dated-newick requires a fitted linked dating experiment.');
+  if (task.type === 'export' && (task.format === 'dated-newick' || task.format === 'dates-tsv')) throw new Error(`${task.format} requires a fitted linked dating experiment.`);
+  if (task.type === 'export' && (task.format === 'temporal-tsv' || task.format === 'samples-table')) throw new Error(`${task.format} requires a linked temporal or dating experiment.`);
   if (task.type === 'export' && task.format === 'rooting-json') throw new Error('rooting-json requires an explicitly rooted experiment.');
   return { summary: summarize(experiment), output: task.type === 'export'
     ? exportPhylogeny(experiment, task.format === 'unrooted-newick' ? 'newick' : task.format as PhylogenyExportFormat)

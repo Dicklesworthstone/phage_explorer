@@ -234,3 +234,146 @@ test('unrooted and explicitly rooted verification and exports retain their origi
   const rootDecision = await performPhylogenyTask({ type: 'export', content, format: 'rooting-json' });
   assert.deepEqual(JSON.parse(rootDecision.output!), decision);
 });
+
+function readTable(content: string): Array<Record<string, string>> {
+  const lines = content.trimEnd().split('\n').filter(line => !line.startsWith('#'));
+  const header = lines.shift()!.split('\t');
+  return lines.map(line => {
+    const cells = line.split('\t');
+    assert.equal(cells.length, header.length);
+    return Object.fromEntries(header.map((key, i) => [key, cells[i]]));
+  });
+}
+
+test('temporal tables export numerical residuals, exact date bounds and source identities without rounding', async () => {
+  const temporal = await performPhylogenyTask(await temporalTask());
+  const dated = await performPhylogenyTask({ type: 'date', content: temporal.output! });
+  for (const content of [temporal.output!, dated.output!]) {
+    const saved = JSON.parse(content) as AnalysisRecord;
+    const exported = await performPhylogenyTask({ type: 'export', content, format: 'temporal-tsv' });
+    const text = exported.output!, rows = readTable(text);
+    assert.equal(rows.length, 4);
+    assert.ok(text.includes(`# selected_result_id\t${saved.resultId}\n`));
+    assert.ok(text.includes(`# temporal_result_id\t${temporal.summary.resultId}\n`));
+    assert.ok(text.includes('# source_kind\tdemo\n'));
+    assert.ok(text.includes('# distance_unit\tsubstitutions/site\n'));
+    assert.ok(text.includes('# clock_validated\tfalse\n'));
+    for (const row of rows) {
+      const i = 'ABCD'.indexOf(row.sample_id);
+      assert.ok(i >= 0);
+      assert.equal(Number(row.exact_collection_year), dates[i]);
+      assert.equal(row.exact_collection_year, row.collection_lower_year);
+      assert.equal(row.exact_collection_year, row.collection_upper_year);
+      close(Number(row.root_to_tip_distance), paths[i]);
+      close(Number(row.predicted_distance), .005 * (dates[i] - 2000));
+      close(Number(row.residual), 0);
+      close(Number(row.leave_one_out_slope), .005);
+      assert.equal(row.included, 'true');
+      assert.equal(JSON.parse(row.exclusion_json), null);
+      assert.equal(JSON.parse(row.date_source_json), 'Private sample source sentinel');
+      assert.equal(JSON.parse(row.permutation_group_json), i < 2 ? 'one' : 'two');
+    }
+  }
+});
+
+test('uncertain, missing and excluded dates stay distinguishable from zero in exported rows', async () => {
+  const table = sampleTable.replace(String(dates[3]), '2003').replace(String(dates[1]), '');
+  const temporal = await performPhylogenyTask(await temporalTask({ sampleTable: table,
+    optionsContent: JSON.stringify({ ...temporalOptions, excludedSamples: ['C'] }) }));
+  const exported = await performPhylogenyTask({ type: 'export', content: temporal.output!, format: 'temporal-tsv' });
+  const rows = new Map(readTable(exported.output!).map(row => [row.sample_id, row]));
+  assert.equal(rows.get('D')!.exact_collection_year, '');
+  assert.equal(rows.get('D')!.collection_lower_year, '2003');
+  assert.equal(rows.get('D')!.collection_upper_year, '2004');
+  assert.match(JSON.parse(rows.get('D')!.exclusion_json), /Uncertain/);
+  assert.equal(rows.get('B')!.collection_lower_year, '');
+  assert.equal(rows.get('B')!.collection_upper_year, '');
+  assert.match(JSON.parse(rows.get('B')!.exclusion_json), /Missing collection date/);
+  assert.equal(rows.get('C')!.exact_collection_year, String(dates[2]));
+  assert.equal(JSON.parse(rows.get('C')!.exclusion_json), 'Explicit user exclusion');
+  assert.equal(rows.get('A')!.included, 'true');
+  for (const row of rows.values()) {
+    assert.equal(row.predicted_distance, ''); assert.equal(row.residual, '');
+    assert.equal(row.leverage, ''); assert.equal(row.leave_one_out_slope, '');
+  }
+});
+
+test('node date tables expose every branch with correct calendar and genetic units', async () => {
+  const temporal = await performPhylogenyTask(await temporalTask());
+  const dated = await performPhylogenyTask({ type: 'date', content: temporal.output! });
+  const output = await performPhylogenyTask({ type: 'export', content: dated.output!, format: 'dates-tsv' });
+  const rows = readTable(output.output!), byId = new Map(rows.map(row => [row.node_id, row]));
+  assert.equal(rows.length, 7); // Four tips, two NJ internals, one explicit inserted root.
+  assert.equal(rows.filter(row => row.is_tip === 'true').length, 4);
+  assert.ok(output.output!.includes('# rate_mode\testimate\n'));
+  assert.ok(output.output!.includes('# uncertainty\tnot-estimated\n'));
+  const root = rows.find(row => row.parent_id === '')!;
+  close(Number(root.calendar_year), 2000, 1e-8);
+  assert.equal(root.collection_lower_year, ''); assert.equal(root.collection_upper_year, '');
+  assert.equal(root.duration_years, '0'); assert.equal(root.source_length, '0');
+  for (const row of rows) {
+    if (row.parent_id) {
+      const parent = byId.get(row.parent_id)!;
+      close(Number(row.duration_years), Number(row.calendar_year) - Number(parent.calendar_year));
+      close(Number(row.fitted_length), .005 * Number(row.duration_years));
+      close(Number(row.residual), Number(row.source_length) - Number(row.fitted_length));
+    }
+    if (row.is_tip === 'true') {
+      const label = JSON.parse(row.label_json) as string;
+      assert.equal(Number(row.calendar_year), dates['ABCD'.indexOf(label)]);
+      assert.equal(row.calendar_year, row.collection_lower_year);
+      assert.equal(row.calendar_year, row.collection_upper_year);
+    }
+  }
+});
+
+test('typed text exports round-trip quotes, Unicode, backslashes and formula-like metadata', async () => {
+  const tricky = '=HYPERLINK("fixture","α") + \\path - @literal';
+  // CSV quoting is the input contract; the exported typed text is JSON, not CSV.
+  const cell = '"' + tricky.replaceAll('"', '""') + '"';
+  const table = 'sampleId,collectionDate,dateSource,accession,permutationGroup\n'
+    + [0, 1, 2, 3].map(i => `${'ABCD'[i]},${dates[i]},${cell},${cell},${cell}`).join('\n') + '\n';
+  const temporal = await performPhylogenyTask(await temporalTask({ sampleTable: table }));
+  const exported = await performPhylogenyTask({ type: 'export', content: temporal.output!, format: 'temporal-tsv' });
+  for (const row of readTable(exported.output!)) {
+    for (const key of ['accession_json', 'date_source_json', 'permutation_group_json']) {
+      assert.equal(JSON.parse(row[key]), tricky);
+      assert.ok(row[key].startsWith('"\\u003d'));
+      assert.ok(!/[=+@-]/.test(row[key]));
+    }
+  }
+});
+
+test('original collection table survives linked dating and physical export byte-for-byte', async () => {
+  const temporal = await performPhylogenyTask(await temporalTask());
+  const dated = await performPhylogenyTask({ type: 'date', content: temporal.output! });
+  const directory = await temporary(), input = join(directory, 'saved.json'), output = join(directory, 'original.tsv');
+  await writeFile(input, dated.output!);
+  await runPhylogenyCommand(['export', '--experiment', input, '--format', 'samples-table', '--output', output]);
+  assert.deepEqual(await readFile(output), Buffer.from(sampleTable, 'utf8'));
+  const tablePath = join(directory, 'residuals.tsv');
+  await runPhylogenyCommand(['export', '--experiment', input, '--format', 'temporal-tsv', '--output', tablePath]);
+  assert.equal(readTable(await readFile(tablePath, 'utf8')).length, 4);
+  await assert.rejects(runPhylogenyCommand(['export', '--experiment', input, '--format', 'samples-table', '--output', output]), /EEXIST/);
+});
+
+test('new exports replay before trusting data and reject inapplicable or unavailable node tables', async () => {
+  const temporal = await performPhylogenyTask(await temporalTask());
+  const date = await performPhylogenyTask({ type: 'date', content: temporal.output! });
+  const forged = JSON.parse(date.output!) as AnalysisRecord;
+  (forged.fields.dating.value as unknown as { rootDate: number }).rootDate = 1900;
+  const content = serializeAnalysisRecord(await rehash(forged));
+  await parseAnalysisRecord(content);
+  for (const format of ['samples-table', 'temporal-tsv', 'dates-tsv'] as const) {
+    await assert.rejects(performPhylogenyTask({ type: 'export', content, format }), /differs/);
+    const { unrooted, rooted } = await inputs();
+    for (const record of [unrooted.record, rooted.record]) {
+      await assert.rejects(performPhylogenyTask({ type: 'export', content: serializeAnalysisRecord(record), format }), /requires a/);
+    }
+  }
+  const boundary = await performPhylogenyTask({ type: 'date', content: temporal.output!, optionsContent: '{"minimumRate":0.02,"maximumRate":0.1}' });
+  const directory = await temporary(), input = join(directory, 'boundary.json'), output = join(directory, 'must-not-exist.tsv');
+  await writeFile(input, boundary.output!);
+  await assert.rejects(runPhylogenyCommand(['export', '--experiment', input, '--format', 'dates-tsv', '--output', output]), /requires a fitted/);
+  await assert.rejects(access(output), /ENOENT/);
+});
