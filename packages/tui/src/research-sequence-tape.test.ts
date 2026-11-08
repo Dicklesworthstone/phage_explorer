@@ -411,7 +411,7 @@ describe('headless planned research recording', () => {
     for (const change of [
       (p: CommandPlan) => { p.commands[3].actionId = 'process.exec'; },
       (p: CommandPlan) => { p.commands[2].parameters = { ...f.pair, bins: 0 }; },
-      (p: CommandPlan) => { p.commands[3].parameters = { ...f.digest, topology: 'unknown' }; },
+      (p: CommandPlan) => { p.commands[3].parameters = analysisJson({ ...f.digest, topology: 'unknown' }); },
       (p: CommandPlan) => { p.commands.push({ actionId: ids.repeats, parameters: { contentId: f.row, minLength: 8, maxGap: 0 } }); },
     ]) {
       const plan = structuredClone(f.plan); change(plan); plan.context = { bundle: 'not even JSON' };
@@ -529,8 +529,8 @@ describe('headless planned research recording', () => {
       (r: typeof valid) => { const tape = parseCommandTape(r.tapeJson); tape.context = { bundle: '{}' }; r.tapeJson = serializeCommandTape(tape); r.report.tapeSha256 = textSha(r.tapeJson); },
       (r: typeof valid) => { const tape = parseCommandTape(r.tapeJson); (tape.commands[2].parameters as { bins: number }).bins = 2; r.tapeJson = serializeCommandTape(tape); r.report.tapeSha256 = textSha(r.tapeJson); },
     ]) {
-      const bad = structuredClone(valid); change(bad);
-      const worker = new PlanReplyWorker(bad, 5);
+      const bad: Extract<TerminalResearchResult, { type: 'recorded' }> = structuredClone(valid); change(bad);
+      const worker: PlanReplyWorker = new PlanReplyWorker(bad, 5);
       await assert.rejects(runTerminalResearchWorker(request, new AbortController().signal, undefined, () => worker as unknown as TerminalWorker), /Unexpected/);
       assert.equal(worker.terminations, 1);
     }

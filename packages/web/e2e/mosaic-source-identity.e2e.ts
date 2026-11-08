@@ -17,10 +17,11 @@ declare global {
 }
 
 async function ready(overlay: Locator, name: 'a' | 'b'): Promise<void> {
-  await expect(overlay.getByRole('img', { name: 'Mosaic structure track', exact: true })).toBeVisible();
-  await expect(overlay.getByText(`${name} matching donor`, { exact: true }).first()).toBeVisible();
-  await expect(overlay.getByText(name === 'a' ? 'Compared against 1 reference' : 'Compared against 2 references', { exact: true })).toBeVisible();
-  await expect(overlay.getByText('100.0% coverage', { exact: true })).toBeVisible();
+  await expect(overlay.getByRole('img', { name: 'Mosaic reference similarity track', exact: true })).toBeVisible();
+  await expect(overlay.getByText(`${name} matching donor #-2`, { exact: true }).first()).toBeVisible();
+  const references = name === 'a' ? 1 : 2;
+  await expect(overlay.getByText(`${references} of ${references} selected references contain valid k-mers. Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.`, { exact: true })).toBeVisible();
+  await expect(overlay.getByText('100.0% of display partition', { exact: true })).toBeVisible();
   await expect(overlay.getByText('J=1.00', { exact: true })).toBeVisible();
 }
 
@@ -92,6 +93,8 @@ test('mosaic references, query reads and segment details belong to the current r
           const entries = {
             a: await entry('a', 'A'.repeat(6000)),
             b: await entry('b', 'C'.repeat(8000), true),
+            missing: await entry('missing', 'N'.repeat(6000)),
+            tied: await entry('tied', 'A'.repeat(6000), true),
             queryLength: await entry('queryLength', 'G'.repeat(7000)),
             querySequence: await entry('querySequence', 'G'.repeat(7200)),
             referenceLength: await entry('referenceLength', 'G'.repeat(7400), true),
@@ -127,9 +130,9 @@ test('mosaic references, query reads and segment details belong to the current r
     await expect(overlay.getByText('k=6', { exact: true })).toBeVisible();
     await expect(overlay.getByText('window=2500bp', { exact: true })).toBeVisible();
     await expect(overlay.getByText('minSim=0.07', { exact: true })).toBeVisible();
-    const track = overlay.getByRole('img', { name: 'Mosaic structure track', exact: true });
+    const track = overlay.getByRole('img', { name: 'Mosaic reference similarity track', exact: true });
     await track.hover({ position: { x: 120, y: 20 } }); await track.click({ position: { x: 120, y: 20 } });
-    await expect(overlay.getByText('Mean Jaccard: 1.000', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Mean window Jaccard: 1.000', { exact: true })).toBeVisible();
 
     // Repositories deliberately reuse query ID -1 and reference IDs -2/-3.
     // Their exact sequences, donor labels and reference panel sizes differ.
@@ -137,20 +140,20 @@ test('mosaic references, query reads and segment details belong to the current r
     await expect.poll(() => page.evaluate(() => window.mosaicIdentityFixture.reads.b.querySequence)).toBeGreaterThan(0);
     await ready(overlay, 'b');
     await expect.poll(() => page.evaluate(() => window.mosaicIdentityFixture.reads.b.referenceSequence)).toBe(2);
-    await expect(overlay.getByText('a matching donor', { exact: true })).toHaveCount(0);
-    await expect(overlay.getByText('Mean Jaccard: 1.000', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByText('a matching donor #-2', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByText('Mean window Jaccard: 1.000', { exact: true })).toHaveCount(0);
     await track.hover({ position: { x: 120, y: 20 } }); await track.click({ position: { x: 120, y: 20 } });
-    await expect(overlay.getByText('Mean Jaccard: 1.000', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Mean window Jaccard: 1.000', { exact: true })).toBeVisible();
     await page.keyboard.press(']');
     await expect(overlay.getByText('k=7', { exact: true })).toBeVisible();
-    await expect(overlay.getByText('Mean Jaccard: 1.000', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByText('Mean window Jaccard: 1.000', { exact: true })).toHaveCount(0);
     await page.keyboard.press('[');
 
     for (const stage of ['queryLength', 'referenceLength', 'querySequence', 'referenceSequence'] as const) {
       await page.evaluate(stage => { window.mosaicIdentityFixture.hold(stage, stage); window.mosaicIdentityFixture.select(stage); }, stage);
       await expect.poll(() => page.evaluate(() => window.mosaicIdentityFixture.pending)).toBe(true);
-      await expect(overlay.getByRole('img', { name: 'Mosaic structure track', exact: true })).toHaveCount(0);
-      await expect(overlay.getByText('b matching donor', { exact: true })).toHaveCount(0);
+      await expect(overlay.getByRole('img', { name: 'Mosaic reference similarity track', exact: true })).toHaveCount(0);
+      await expect(overlay.getByText('b matching donor #-2', { exact: true })).toHaveCount(0);
       await page.evaluate(() => window.mosaicIdentityFixture.select('b'));
       await ready(overlay, 'b');
       await page.evaluate(() => window.mosaicIdentityFixture.release());
@@ -159,11 +162,40 @@ test('mosaic references, query reads and segment details belong to the current r
       if (stage === 'queryLength') expect(await page.evaluate(() => window.mosaicIdentityFixture.reads.queryLength.querySequence)).toBe(0);
       if (stage === 'referenceLength') expect(await page.evaluate(() => window.mosaicIdentityFixture.reads.referenceLength.referenceSequence)).toBe(0);
       await ready(overlay, 'b');
-      await expect(overlay.getByText(`${stage} matching donor`, { exact: true })).toHaveCount(0);
+      await expect(overlay.getByText(`${stage} matching donor #-2`, { exact: true })).toHaveCount(0);
       await expect(overlay.getByText('k=6', { exact: true })).toBeVisible();
       await expect(overlay.getByText('window=2500bp', { exact: true })).toBeVisible();
       await expect(overlay.getByText('minSim=0.07', { exact: true })).toBeVisible();
     }
+
+    // Real imported N-only sequences supply no k-mers, including against each
+    // other. They must clear the previous result rather than become a match.
+    await page.evaluate(() => window.mosaicIdentityFixture.select('missing'));
+    await expect(track).toBeVisible();
+    await expect(overlay.getByText('No unique reference assignments at the current similarity threshold.', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('b matching donor #-2', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByText('J=1.00', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByText('0 of 1 selected references contain valid k-mers. Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Unresolved display spans: 0 bp tied, 0 bp below threshold, 6,000 bp without comparable k-mers.', { exact: true })).toBeVisible();
+    await track.click({ position: { x: 120, y: 20 } });
+    await expect(overlay.getByText('No comparable k-mers', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Mean window Jaccard: 0.000', { exact: true })).toBeVisible();
+
+    // The A and T reference strings are reverse complements. Canonical k-mers
+    // therefore tie exactly, regardless of their label or catalogue order.
+    await page.evaluate(() => window.mosaicIdentityFixture.select('tied'));
+    await expect(track).toBeVisible();
+    await expect(overlay.getByText('No unique reference assignments at the current similarity threshold.', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('2 of 2 selected references contain valid k-mers. Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Unresolved display spans: 6,000 bp tied, 0 bp below threshold, 0 bp without comparable k-mers.', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('100.0% of display partition', { exact: true })).toHaveCount(0);
+    await expect(overlay.getByRole('img', { name: 'Reference switch ranges', exact: true })).toHaveCount(0);
+    await track.click({ position: { x: 120, y: 20 } });
+    await expect(overlay.getByText('Tied references: tied matching donor #-2, tied unrelated donor #-3', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Mean window Jaccard: 1.000', { exact: true })).toBeVisible();
+    await page.evaluate(() => window.mosaicIdentityFixture.select('b'));
+    await ready(overlay, 'b');
+    await expect(overlay.getByText('Tied references: tied matching donor #-2, tied unrelated donor #-3', { exact: true })).toHaveCount(0);
     expect(errors).toEqual([]);
   } finally {
     await page.close();

@@ -6,6 +6,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   computeMosaicRadar,
   type ReferenceSketch,
+  type MosaicRadarConfig,
 } from './recombination-radar';
 
 // Helper to create a simple reference
@@ -269,7 +270,7 @@ describe('computeMosaicRadar', () => {
     it('respects maxReferences limit', () => {
       const seq = 'ACGT'.repeat(50);
       const manyRefs = Array.from({ length: 100 }, (_, i) =>
-        makeRef(`ref${i}`, 'ACGT'.repeat(10))
+        makeRef(`ref${i.toString().padStart(3, '0')}`, 'ACGT'.repeat(10))
       );
 
       const result = computeMosaicRadar(seq, manyRefs, {
@@ -347,5 +348,181 @@ describe('computeMosaicRadar', () => {
         expect(result.windows[0].topDonors.length).toBe(3);
       }
     });
+  });
+});
+
+describe('mosaic evidence and coordinate conformance', () => {
+  const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A', N: 'N' };
+  const reverseComplement = (sequence: string): string =>
+    [...sequence.toUpperCase()].reverse().map(base => complement[base] ?? base).join('');
+
+  // Deliberately use literal strings, not the production rolling integer encoding.
+  function referenceJaccard(query: string, reference: string, k: number): number {
+    const kmers = (sequence: string): Set<string> => {
+      const result = new Set<string>();
+      for (let i = 0; i + k <= sequence.length; i++) {
+        const word = sequence.slice(i, i + k).toUpperCase();
+        if (!/^[ACGT]+$/.test(word)) continue;
+        result.add([word, reverseComplement(word)].sort()[0]);
+      }
+      return result;
+    };
+    const a = kmers(query);
+    const b = kmers(reference);
+    if (!a.size || !b.size) return 0;
+    const shared = [...a].filter(word => b.has(word)).length;
+    return shared / new Set([...a, ...b]).size;
+  }
+
+  it('never turns two missing observations into a perfect reference match', () => {
+    const result = computeMosaicRadar('N'.repeat(200), [makeRef('unknown', 'N'.repeat(200))]);
+    expect(result.windows[0]).toMatchObject({
+      donor: null, status: 'no-evidence', score: 0, validKmerCount: 0, topDonors: [],
+    });
+    expect(result.referencePanel).toEqual({
+      supplied: 1, selected: 1, usable: 0, omitted: 0, excludedLabels: ['unknown'],
+    });
+    expect(result.coverage['no-evidence']).toBe(200);
+    expect(result.breakpoints).toEqual([]);
+    const queryOnly = computeMosaicRadar('A'.repeat(200), [makeRef('unknown', 'N'.repeat(200))]);
+    expect(queryOnly.windows[0].status).toBe('no-evidence');
+    expect(queryOnly.windows[0].donor).toBeNull();
+    expect(queryOnly.windows[0].topDonors).toEqual([]);
+  });
+
+  it('does not name a reference with zero shared k-mers even at a zero threshold', () => {
+    const result = computeMosaicRadar('A'.repeat(200), [makeRef('C-only', 'C'.repeat(200))], { minSimilarity: 0 });
+    expect(result.windows[0]).toMatchObject({ donor: null, status: 'below-threshold', score: 0 });
+    expect(result.coverage['below-threshold']).toBe(200);
+  });
+
+  it('matches the independently enumerated canonical sets {AA, AC} and {AA, AG, AC}', () => {
+    const result = computeMosaicRadar('AAAC', [makeRef('reference', 'AAGT')], { k: 2 });
+    expect(result.windows[0].score).toBeCloseTo(2 / 3, 14);
+    expect(result.windows[0].validKmerCount).toBe(3);
+    const reverseReference = computeMosaicRadar('AAAC', [makeRef('reference', 'ACTT')], { k: 2 });
+    const reverseQuery = computeMosaicRadar('GTTT', [makeRef('reference', 'AAGT')], { k: 2 });
+    expect(reverseReference).toEqual(result);
+    expect(reverseQuery).toEqual(result);
+  });
+
+  it('agrees with a string oracle including unsigned 32-bit k=16 and reverse complements', () => {
+    const query = 'AAAAAAAACCCCCCCCGGGGGGGGTTTTTTTTACGTCAGTACGATCGATGCAANNTGACTGACTGAC';
+    const reference = 'TGACTGACTGACAAGTCAGTACGATCGATGCAACCCCGGGGTTTTAAAA';
+    for (const k of [1, 2, 3, 5, 8, 15, 16]) {
+      const expected = referenceJaccard(query, reference, k);
+      for (const [q, r] of [[query, reference], [query, reverseComplement(reference)],
+        [reverseComplement(query), reference]]) {
+        const result = computeMosaicRadar(q, [makeRef('reference', r)], { k, minSimilarity: 0 });
+        expect(result.windows[0].score).toBeCloseTo(expected, 14);
+      }
+    }
+    expect(computeMosaicRadar('T'.repeat(16), [makeRef('A', 'A'.repeat(16))], { k: 16 }).windows[0].score).toBe(1);
+    expect(computeMosaicRadar('G'.repeat(16), [makeRef('A', 'A'.repeat(16))], { k: 16 }).windows[0].score).toBe(0);
+  });
+
+  it('keeps tied references unresolved even when topN hides one of them', () => {
+    const references = [makeRef('beta', 'AAAC'), makeRef('alpha', 'GTTT')];
+    const result = computeMosaicRadar('AAAC', references, { k: 2, topN: 1 });
+    expect(result.windows[0]).toMatchObject({
+      donor: null, status: 'ambiguous', score: 1, tiedReferences: ['alpha', 'beta'],
+      topDonors: [{ label: 'alpha', score: 1 }],
+    });
+    expect(result.coverage.ambiguous).toBe(4);
+    expect(computeMosaicRadar('AAAC', [...references].reverse(), { k: 2, topN: 1 })).toEqual(result);
+    expect(references.map(reference => reference.label)).toEqual(['beta', 'alpha']);
+  });
+
+  it('selects the same bounded reference panel after a source-order permutation', () => {
+    const references = [makeRef('z', 'AAAA'), makeRef('b', 'CCCC'), makeRef('a', 'AAAA')];
+    const result = computeMosaicRadar('AAAA', references, { k: 2, maxReferences: 2 });
+    expect(result.referencePanel).toMatchObject({ supplied: 3, selected: 2, usable: 2, omitted: 1 });
+    expect(result.windows[0].topDonors.map(reference => reference.label)).toEqual(['a', 'b']);
+    expect(computeMosaicRadar('AAAA', [...references].reverse(), { k: 2, maxReferences: 2 })).toEqual(result);
+  });
+
+  it('rejects colliding reference identities instead of merging different sources', () => {
+    expect(() => computeMosaicRadar('AAAA', [makeRef('same', 'AAAA'), makeRef('same', 'CCCC')])).toThrow('Duplicate reference label');
+    expect(() => computeMosaicRadar('AAAA', [makeRef('same', 'AAAA'), makeRef(' same ', 'CCCC')])).toThrow('Duplicate reference label');
+  });
+
+  it('reconstructs a planted A/C mosaic with an explicit tied window and a single switch range', () => {
+    const result = computeMosaicRadar('A'.repeat(300) + 'C'.repeat(300),
+      [makeRef('A', 'A'.repeat(300)), makeRef('C', 'C'.repeat(300))],
+      { k: 3, window: 200, step: 100 });
+    // The mixed window has canonical {AAA, AAC, ACC, CCC}; each reference
+    // contributes one of those four words. It cannot distinguish the two.
+    expect(result.windows.map(window => window.score)).toEqual([1, 1, 1 / 4, 1, 1]);
+    expect(result.segments.map(segment => [segment.start, segment.end, segment.donor, segment.status])).toEqual([
+      [0, 250, 'A', 'matched'], [250, 350, null, 'ambiguous'], [350, 600, 'C', 'matched'],
+    ]);
+    expect(result.coverage).toEqual({ matched: 500, ambiguous: 100, 'below-threshold': 0, 'no-evidence': 0 });
+    expect(result.referenceSwitches).toEqual([{ from: 'A', to: 'C', start: 200, end: 400, position: 300 }]);
+    expect(result.breakpoints).toEqual([300]);
+  });
+
+  it('does not interpret a no-data gap or null-to-reference transition as a reference switch', () => {
+    const result = computeMosaicRadar('A'.repeat(200) + 'N'.repeat(200) + 'C'.repeat(200),
+      [makeRef('A', 'A'.repeat(200)), makeRef('C', 'C'.repeat(200))],
+      { k: 3, window: 200, step: 200 });
+    expect(result.segments.map(segment => [segment.start, segment.end, segment.status])).toEqual([
+      [0, 200, 'matched'], [200, 400, 'no-evidence'], [400, 600, 'matched'],
+    ]);
+    expect(result.breakpoints).toEqual([]);
+    expect(result.referenceSwitches).toEqual([]);
+  });
+
+  it('anchors the final full window and weights scores by nonoverlapping display spans', () => {
+    const result = computeMosaicRadar('A'.repeat(400) + 'C', [makeRef('A', 'A'.repeat(400))],
+      { k: 5, window: 200, step: 200 });
+    expect(result.windows.map(window => [window.start, window.end])).toEqual([[0, 200], [200, 400], [201, 401]]);
+    expect(result.segments).toHaveLength(1);
+    expect(result.segments[0]).toMatchObject({ start: 0, end: 401, windows: 3 });
+    // Display spans are 200, 100 and 101 bp; scores are 1, 1 and 1/2.
+    expect(result.segments[0].meanScore).toBeCloseTo(350.5 / 401, 14);
+    expect(result.coverage.matched).toBe(401);
+  });
+
+  it('does not bridge ambiguous characters or change coordinates during case normalization', () => {
+    const result = computeMosaicRadar('aaßcc', [makeRef('A', 'AAAA')], { k: 2 });
+    expect(result.windows[0]).toMatchObject({ start: 0, end: 5, validKmerCount: 2, score: 0.5 });
+    expect(result.segments[0].end).toBe(5);
+  });
+
+  it('partitions every analyzed genome base exactly once across window and tail sizes', () => {
+    for (const length of [5, 199, 200, 201, 399, 401, 750]) {
+      for (const window of [200, 333, 500]) {
+        for (const step of [100, 200]) {
+          const sequence = 'A'.repeat(Math.floor(length / 2)) + 'C'.repeat(Math.ceil(length / 2));
+          const result = computeMosaicRadar(sequence, [makeRef('A', 'A'.repeat(200)), makeRef('C', 'C'.repeat(200))],
+            { k: 5, window, step });
+          expect(result.segments[0].start).toBe(0);
+          expect(result.segments[result.segments.length - 1].end).toBe(length);
+          let covered = 0;
+          for (const segment of result.segments) {
+            expect(segment.start).toBe(covered);
+            expect(segment.end).toBeGreaterThan(segment.start);
+            expect(segment.end).toBeLessThanOrEqual(length);
+            covered = segment.end;
+          }
+          expect(result.segments.reduce((sum, segment) => sum + segment.end - segment.start, 0)).toBe(length);
+          expect(Object.values(result.coverage).reduce((sum, bases) => sum + bases, 0)).toBe(length);
+        }
+      }
+    }
+  });
+
+  it('rejects invalid numerical settings even when no sequence or reference is supplied', () => {
+    const invalid: MosaicRadarConfig[] = [
+      { k: 0 }, { k: 1.5 }, { k: 17 }, { k: NaN }, { k: Infinity },
+      { window: 0 }, { window: -1 }, { window: 200.5 }, { window: Infinity },
+      { step: 0 }, { step: NaN }, { step: 201, window: 200 },
+      { topN: 0 }, { topN: 1.5 }, { maxReferences: -1 }, { maxReferences: Infinity },
+      { minSimilarity: -0.1 }, { minSimilarity: 1.1 }, { minSimilarity: NaN },
+    ];
+    for (const config of invalid) {
+      expect(() => computeMosaicRadar('ACGT', [makeRef('reference', 'ACGT')], config)).toThrow();
+      expect(() => computeMosaicRadar('', [], config)).toThrow();
+    }
   });
 });

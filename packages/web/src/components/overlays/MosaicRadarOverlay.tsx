@@ -1,8 +1,8 @@
 /**
  * MosaicRadarOverlay - Recombination & Mosaic Detection
  *
- * Visualizes mosaic/chimeric structure in phage genomes by comparing
- * against reference genomes and identifying recombination breakpoints.
+ * Compares local canonical k-mer similarity against a bounded reference panel.
+ * Reference switches are exploratory evidence, not inferred recombination events.
  */
 
 import React, { useMemo, useState, useCallback, useEffect } from 'react';
@@ -53,6 +53,12 @@ interface MosaicInputs {
   references: ReferenceSketch[];
 }
 
+function segmentLabel(segment: MosaicSegment): string {
+  if (segment.donor) return segment.donor;
+  if (segment.status === 'ambiguous') return `Tied references: ${segment.tiedReferences.join(', ')}`;
+  return segment.status === 'no-evidence' ? 'No comparable k-mers' : 'Below similarity threshold';
+}
+
 function requireActiveRead(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException('Mosaic input read cancelled', 'AbortError');
 }
@@ -81,11 +87,11 @@ async function buildReferenceList(
   const phages = await repository.listPhages();
   requireActiveRead(signal);
   // Preserve the bounded panel: at most 30 other genomes, up to 150kb each.
-  const limited = phages.filter((p) => p.id !== currentPhageId).slice(0, 30);
+  const limited = phages.filter((p) => p.id !== currentPhageId).sort((a, b) => a.id - b.id).slice(0, 30);
   const results = await Promise.all(limited.map(async (p) => {
     try {
       const sequence = await readSequence(repository, p.id, signal, 150000);
-      return { label: p.name || `Phage #${p.id}`, sequence };
+      return { label: `${p.name || 'Phage'} #${p.id}`, sequence };
     } catch {
       // A failed reference can be skipped, but a superseded panel must stop reading.
       requireActiveRead(signal);
@@ -219,21 +225,21 @@ export function MosaicRadarOverlay({
       {
         combo: { key: ']' },
         description: 'Mosaic radar: increase k',
-        action: () => setK((v) => Math.min(8, v + 1)),
+        action: () => setK((v) => Math.min(16, v + 1)),
         modes: ['NORMAL'],
         priority: 10,
       },
       // Breakpoints toggle
       {
         combo: { key: 'b' },
-        description: 'Mosaic radar: toggle breakpoints',
+        description: 'Mosaic radar: toggle reference switches',
         action: () => setShowBreakpoints((v) => !v),
         modes: ['NORMAL'],
         priority: 10,
       },
       {
         combo: { key: 'b', modifiers: { shift: true } },
-        description: 'Mosaic radar: toggle breakpoints',
+        description: 'Mosaic radar: toggle reference switches',
         action: () => setShowBreakpoints((v) => !v),
         modes: ['NORMAL'],
         priority: 10,
@@ -316,7 +322,7 @@ export function MosaicRadarOverlay({
     return analysis.segments.map((seg) => ({
       start: seg.start,
       end: seg.end,
-      label: seg.donor ? `${seg.donor} (J=${seg.meanScore.toFixed(2)})` : 'Unknown',
+      label: `${segmentLabel(seg)} (J=${seg.meanScore.toFixed(2)})`,
       color: seg.donor ? donorColorMap.get(seg.donor) ?? colors.textMuted : colors.textMuted,
       height: 20,
       data: seg,
@@ -326,15 +332,15 @@ export function MosaicRadarOverlay({
   // Breakpoint markers
   const breakpointSegments = useMemo((): GenomeTrackSegment[] => {
     if (!analysis || !showBreakpoints) return [];
-    return analysis.breakpoints.map((bp) => ({
-      start: Math.max(0, bp - 100),
-      end: Math.min(sequence.length, bp + 100),
-      label: `Breakpoint: ${bp.toLocaleString()}`,
+    return analysis.referenceSwitches.map((change) => ({
+      start: change.start,
+      end: change.end,
+      label: `${change.from} → ${change.to}: sampled centers ${change.start.toLocaleString()}–${change.end.toLocaleString()} bp`,
       color: colors.warning,
       height: 30,
-      data: { breakpoint: bp },
+      data: change,
     }));
-  }, [analysis, showBreakpoints, colors.warning, sequence.length]);
+  }, [analysis, showBreakpoints, colors.warning]);
 
   // Handle track hover
   const handleHover = useCallback((info: GenomeTrackInteraction | null) => {
@@ -373,23 +379,20 @@ export function MosaicRadarOverlay({
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-            <strong style={{ color: colors.accent }}>Mosaic Detection</strong>
+            <strong style={{ color: colors.accent }}>Reference Similarity</strong>
             {beginnerModeEnabled && (
               <InfoButton
                 size="sm"
                 label="Learn about mosaic phages"
-                tooltip={
-                  overlayHelp?.summary ??
-                  'Phage genomes are often chimeric - assembled from pieces of different ancestral phages through recombination.'
-                }
+                tooltip="Local k-mer similarity can highlight candidate mosaic regions. It does not identify a donor or establish a recombination event."
                 onClick={() => showContextFor(overlayHelp?.glossary?.[0] ?? 'mosaic-genome')}
               />
             )}
           </div>
           <div>
-            Detects mosaic/chimeric structure by comparing k-mer similarity against reference genomes.
-            Different colors indicate regions most similar to different reference phages. Breakpoints
-            mark where the closest reference changes.
+            Compares strand-independent k-mer similarity against reference sequences. Colors indicate
+            a uniquely closest reference. Ties and windows without evidence stay unresolved.
+            Reference switches do not establish a donor, transfer direction or recombination event.
           </div>
         </div>
 
@@ -397,20 +400,20 @@ export function MosaicRadarOverlay({
           <OverlayLoadingState message="Loading sequence and references...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
-        ) : !analysis ? (
+        ) : !analysis || analysis.windows.length === 0 ? (
           <OverlayEmptyState
             message={
               !sequence
                 ? 'No sequence loaded'
                 : references.length === 0
                   ? 'No reference genomes available'
-                  : 'Analysis error'
+                  : 'Sequence is shorter than the selected k-mer length'
             }
             hint={
               !sequence
                 ? 'Select a phage to analyze.'
                 : references.length === 0
-                  ? 'Mosaic detection requires at least one reference genome in the database.'
+                  ? 'Reference comparison requires at least one other genome in the database.'
                   : 'Try adjusting analysis parameters.'
             }
           />
@@ -431,10 +434,10 @@ export function MosaicRadarOverlay({
               }}
             >
               <span>k={k}</span>
-              <span>window={windowSize}bp</span>
+              <span>window={analysis.window}bp</span>
               <span>minSim={minSimilarity}</span>
               <span style={{ color: colors.textDim }}>
-                [+/-] window | [/] k | [b] breakpoints {showBreakpoints ? 'on' : 'off'} | [m/M]
+                [+/-] window | [/] k | [b] reference switches {showBreakpoints ? 'on' : 'off'} | [m/M]
                 minSim
               </span>
             </div>
@@ -451,12 +454,12 @@ export function MosaicRadarOverlay({
                   gap: '0.5rem',
                 }}
               >
-                <span>Mosaic Structure (click segment for details)</span>
+                <span>Reference similarity segments (click for details)</span>
                 {beginnerModeEnabled && (
                   <InfoButton
                     size="sm"
                     label="What do colors mean?"
-                    tooltip="Each color represents a different reference genome. Regions with the same color are most similar to the same reference."
+                    tooltip="Colors represent unique closest references. Gray regions are tied, below threshold or lack comparable k-mers. Display segments partition the genome without overlapping."
                     onClick={() => showContextFor('mosaic-genome')}
                   />
                 )}
@@ -468,7 +471,7 @@ export function MosaicRadarOverlay({
                 height={50}
                 onHover={handleHover}
                 onClick={handleClick}
-                ariaLabel="Mosaic structure track"
+                ariaLabel="Mosaic reference similarity track"
               />
             </div>
 
@@ -482,14 +485,14 @@ export function MosaicRadarOverlay({
                     marginBottom: '0.25rem',
                   }}
                 >
-                  Breakpoints ({analysis.breakpoints.length})
+                  Reference switches ({analysis.breakpoints.length})
                 </div>
                 <GenomeTrack
                   genomeLength={sequence.length}
                   segments={breakpointSegments}
                   width={540}
                   height={30}
-                  ariaLabel="Breakpoint markers"
+                  ariaLabel="Reference switch ranges"
                 />
               </div>
             )}
@@ -536,17 +539,17 @@ export function MosaicRadarOverlay({
                 >
                   <div>
                     <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
-                      {selectedSegment.donor ?? 'Unknown donor'}
+                      {segmentLabel(selectedSegment)}
                     </div>
                     <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
                       Position: {selectedSegment.start.toLocaleString()} -{' '}
-                      {selectedSegment.end.toLocaleString()} bp
+                      {selectedSegment.end.toLocaleString()} bp (0-based, end-exclusive)
                     </div>
                     <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
                       Size: {(selectedSegment.end - selectedSegment.start).toLocaleString()} bp
                     </div>
                     <div style={{ color: colors.textDim, fontSize: '0.7rem' }}>
-                      Mean Jaccard: {selectedSegment.meanScore.toFixed(3)}
+                      Mean window Jaccard: {selectedSegment.meanScore.toFixed(3)}
                     </div>
                   </div>
                   <button
@@ -575,11 +578,11 @@ export function MosaicRadarOverlay({
                   fontWeight: 'bold',
                 }}
               >
-                Donor segments:
+                Unique closest references:
               </div>
               {donorStats.length === 0 ? (
                 <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>
-                  No confident donors at current minSim threshold.
+                  No unique reference assignments at the current similarity threshold.
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
@@ -604,7 +607,7 @@ export function MosaicRadarOverlay({
                       />
                       <span style={{ color: stat.color, fontWeight: 500 }}>{stat.donor}</span>
                       <span style={{ color: colors.textMuted }}>
-                        {(stat.coverage * 100).toFixed(1)}% coverage
+                        {(stat.coverage * 100).toFixed(1)}% of display partition
                       </span>
                       <span style={{ color: colors.textDim }}>
                         J={stat.meanScore.toFixed(2)}
@@ -626,7 +629,10 @@ export function MosaicRadarOverlay({
                 }}
               >
                 <span style={{ color: colors.textDim }}>
-                  Breakpoints: {analysis.breakpoints.map((b) => b.toLocaleString()).join(', ')}
+                  Reference switches between sampled window centers:{' '}
+                  {analysis.referenceSwitches.map((change) =>
+                    `${change.from} → ${change.to}: ${change.start.toLocaleString()}–${change.end.toLocaleString()} bp`
+                  ).join('; ')}
                 </span>
               </div>
             )}
@@ -647,14 +653,21 @@ export function MosaicRadarOverlay({
                   <InfoButton
                     size="sm"
                     label="Learn about mosaic interpretation"
-                    tooltip="Mosaic structure reveals evolutionary history. Multi-colored genomes acquired genes from multiple ancestral phages."
+                    tooltip="A change in the closest reference is an exploratory similarity signal. Establishing recombination requires additional alignment and statistical evidence."
                     onClick={() => showContextFor('mosaic-genome')}
                   />
                 )}
               </span>{' '}
-              Colors show which reference genome each region is most similar to. Breakpoints indicate
-              recombination boundaries where the closest match changes. Multiple colors suggest a
-              chimeric genome assembled from different phage lineages.
+              Display boundaries lie midway between sampled window centers; the colored spans are
+              not sequence alignments. Switch ranges show the resolution of the supporting windows,
+              not a biological breakpoint or confidence interval. Similarity depends on k, window size
+              and the available panel. Small k can tie many long references; use [/] to choose k from
+              3 to 16. No matches do not rule out shared ancestry.
+              <div style={{ marginTop: '0.5rem' }}>
+                Unresolved display spans: {analysis.coverage.ambiguous.toLocaleString()} bp tied,{' '}
+                {analysis.coverage['below-threshold'].toLocaleString()} bp below threshold,{' '}
+                {analysis.coverage['no-evidence'].toLocaleString()} bp without comparable k-mers.
+              </div>
             </div>
 
             {/* Reference count */}
@@ -665,7 +678,8 @@ export function MosaicRadarOverlay({
                 textAlign: 'right',
               }}
             >
-              Compared against {references.length} reference{references.length !== 1 ? 's' : ''}
+              {analysis.referencePanel.usable} of {analysis.referencePanel.selected} selected references
+              contain valid k-mers. Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.
             </div>
           </>
         )}

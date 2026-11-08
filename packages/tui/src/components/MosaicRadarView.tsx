@@ -21,7 +21,7 @@ export function MosaicRadarView({ sequence, references, currentPhageId }: Mosaic
 
   const referenceList: ReferenceSketch[] = useMemo(() => {
     const entries = Object.entries(references);
-    const filtered = currentPhageId
+    const filtered = currentPhageId !== undefined
       ? entries.filter(([label]) => !label.trimEnd().endsWith(`#${currentPhageId}`))
       : entries;
     return filtered.map(([label, seq]) => ({ label, sequence: seq }));
@@ -38,25 +38,16 @@ export function MosaicRadarView({ sequence, references, currentPhageId }: Mosaic
       return;
     }
     if (input === '+' || input === '=') {
-      setWindowSize(w => Math.min(sequence.length, Math.round(w * 1.25)));
+      setWindowSize(w => Math.min(10000, Math.round(w * 1.25)));
     } else if (input === '-' || input === '_') {
       setWindowSize(w => Math.max(500, Math.round(w / 1.25)));
     }
     if (input === '[') setK(v => Math.max(3, v - 1));
-    if (input === ']') setK(v => Math.min(8, v + 1));
+    if (input === ']') setK(v => Math.min(16, v + 1));
     if (input === 'b' || input === 'B') setShowBreakpoints(v => !v);
     if (input === 'm') setMinSim(s => Math.max(0.01, +(s - 0.02).toFixed(2)));
     if (input === 'M') setMinSim(s => Math.min(0.95, +(s + 0.02).toFixed(2)));
   });
-
-  if (!sequence.length || result.windows.length === 0) {
-    return (
-      <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} padding={1}>
-        <Text color={colors.textDim}>No sequence or references available for mosaic radar.</Text>
-        <Text color={colors.textDim}>Esc to close.</Text>
-      </Box>
-    );
-  }
 
   const donors = useMemo(() => {
     const unique = new Set<string>();
@@ -66,12 +57,12 @@ export function MosaicRadarView({ sequence, references, currentPhageId }: Mosaic
     return Array.from(unique);
   }, [result.segments]);
 
-  const palette = [colors.accent, colors.info, colors.warning, colors.success, colors.secondary, colors.primary];
   const donorColor = useMemo(() => {
+    const palette = [colors.accent, colors.info, colors.warning, colors.success, colors.secondary, colors.primary];
     const map = new Map<string, string>();
     donors.forEach((d, i) => map.set(d, palette[i % palette.length]));
     return map;
-  }, [donors, palette]);
+  }, [donors, colors]);
 
   const barWidth = Math.max(20, terminalCols - 8);
   const genomeLen = sequence.length;
@@ -111,15 +102,28 @@ export function MosaicRadarView({ sequence, references, currentPhageId }: Mosaic
     return stats;
   }, [donors, result.segments, genomeLen]);
 
+  // Keep hook order stable when a changed genome/reference panel is empty.
+  if (!sequence.length || result.windows.length === 0) {
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} padding={1}>
+        <Text color={colors.textDim}>
+          {!sequence.length ? 'No sequence loaded.' : referenceList.length === 0
+            ? 'No other reference genomes available.' : `Sequence is shorter than k=${k}.`}
+        </Text>
+        <Text color={colors.textDim}>Esc to close.</Text>
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={colors.borderFocus} paddingX={1} paddingY={1}>
       <Box justifyContent="space-between" marginBottom={1}>
-        <Text color={colors.primary} bold>🧬 Mosaic / Recombination Radar</Text>
+        <Text color={colors.primary} bold>🧬 Mosaic / Reference Similarity</Text>
         <Text color={colors.textDim}>ESC to close</Text>
       </Box>
 
       <Text color={colors.textDim}>
-        k={k} · window={windowSize}bp · minSim={minSim} · [+/-] window ±25% · [[/]] k · [b] breakpoints {showBreakpoints ? 'on' : 'off'} · [m/M] minSim ±0.02
+        k={k} · window={result.window}bp · minSim={minSim} · [+/-] window ±25% · [[/]] k · [b] reference switches {showBreakpoints ? 'on' : 'off'} · [m/M] minSim ±0.02
       </Text>
 
       <Box marginTop={1} flexDirection="column">
@@ -134,22 +138,34 @@ export function MosaicRadarView({ sequence, references, currentPhageId }: Mosaic
       </Box>
 
       <Box marginTop={1} flexDirection="column">
-        <Text color={colors.textDim} bold>Donor segments:</Text>
+        <Text color={colors.textDim} bold>Unique closest references:</Text>
         {donorStats.length === 0 && (
-          <Text color={colors.textMuted}>No confident donors at current minSim.</Text>
+          <Text color={colors.textMuted}>No unique reference assignments at current minSim.</Text>
         )}
         {donorStats.map((s, idx) => (
           <Text key={idx} color={donorColor.get(s.donor) ?? colors.text}>
-            {s.donor} · {(s.coverage * 100).toFixed(1)}% · mean J={s.mean.toFixed(2)}
+            {s.donor} · {(s.coverage * 100).toFixed(1)}% of display partition · mean J={s.mean.toFixed(2)}
           </Text>
         ))}
         {result.breakpoints.length > 0 && (
           <Box marginTop={1}>
             <Text color={colors.textDim}>
-              Breakpoints: {result.breakpoints.map(b => b.toLocaleString()).join(', ')}
+              Reference switches between sampled centers: {result.referenceSwitches.map(change =>
+                `${change.from} → ${change.to}: ${change.start.toLocaleString()}–${change.end.toLocaleString()} bp`
+              ).join('; ')}
             </Text>
           </Box>
         )}
+        <Text color={colors.textMuted}>
+          Unresolved: {result.coverage.ambiguous.toLocaleString()} bp tied · {result.coverage['below-threshold'].toLocaleString()} bp below threshold · {result.coverage['no-evidence'].toLocaleString()} bp without comparable k-mers
+        </Text>
+        <Text color={colors.textDim}>
+          {result.referencePanel.usable}/{result.referencePanel.selected} selected references have valid k-mers; {result.referencePanel.omitted} omitted by the panel limit.
+        </Text>
+        <Text color={colors.textDim}>
+          Canonical k-mer similarity is strand independent. Colors partition sampled windows, not aligned bases. Switches do not establish donors or recombination breakpoints.
+        </Text>
+        <Text color={colors.textDim}>Small k can tie many long references; [[/]] selects k from 3 to 16.</Text>
       </Box>
     </Box>
   );
