@@ -177,3 +177,53 @@ Focused native verification:
 ```sh
 bun test packages/tui/src/research-protein.test.ts
 ```
+
+## Browser and interactive terminal
+
+In the browser, open **Host Interactions** from the command palette. The
+**Protein alignment and structural evidence** workbench offers two input paths:
+
+1. For the bundled Lambda reference, choose **Select mapped protein CDS**, then
+   **Analyze mapped protein CDS**. The reference loader checks the complete
+   deposited translation against the actual genomic CDS. Selecting another gene
+   cannot silently reuse this mapping.
+2. Use **Load protein reference JSON** for a standalone validated snapshot.
+   Choose its protein, mapped label chain, cutoff, sequence separation and
+   contact scope, then **Analyze loaded protein reference**. This describes the
+   imported reference independently of the genome in the background. The
+   existing **Export reference inputs** button emits this same importable format.
+
+**Replay protein experiment JSON** recomputes an exported experiment from its
+embedded sources and settings. It retains the embedded protein identity even
+under an unsupported current genome. The result includes a paged residue
+inspector, a contact preview, source attribution and full JSON/residue/contact
+exports. A protein absent from the supplied alignment has unavailable entropy;
+**Alignment only (no geometry)** retains its alignment evidence without
+inventing coordinates. Closing the panel, changing the repository or selected
+gene, and replacing the operation cancel obsolete work and discard late replies.
+
+In the terminal, open **Tropism** and press **P** for the reference evidence
+view. It uses the active repository and the same genomic translation check. If
+another gene is selected, **G** explicitly selects the mapped CDS. With no gene
+selected, the view identifies the reference CDS it is displaying. The complete
+protein remains available through paging, including positions without coordinates.
+
+| Terminal key | Operation |
+| --- | --- |
+| `+` / `-` | Adjust the C-alpha cutoff by 0.5 Å |
+| `[` / `]` | Adjust minimum within-chain sequence separation |
+| `S` | Switch between selected-chain and supplied-assembly scope |
+| `A` | Switch between mapped geometry and alignment-only analysis |
+| `V` | Switch between residue and contact tables |
+| Arrow keys / Page Up / Page Down | Page the complete current table |
+| Home / End | First or last table page |
+| `M` | First observed residue |
+| `j` / `t` / `c` | Export replayable JSON / all residue rows / all contact rows |
+| `P` | Return to annotation hints |
+| `E` / Escape | Close the overlay; Escape first cancels an active export prompt |
+
+Computation uses the owned native research worker. Setting or selection changes
+invalidate the accepted result before the next result is shown. Export prompts
+create a new private file from the accepted snapshot and never replace an
+existing destination. For standalone file analysis and replay outside a current
+genome, use the headless commands above.

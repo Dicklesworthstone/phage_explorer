@@ -1361,7 +1361,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginLeft={Math.max(0, Math.floor((terminalCols - 84) / 2))}
           marginTop={Math.max(0, Math.floor((terminalRows - 20) / 2))}
         >
-          <TropismOverlay />
+          <TropismOverlay repository={repository} />
         </Box>
       )}
 

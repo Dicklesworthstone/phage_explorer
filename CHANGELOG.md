@@ -6,6 +6,31 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Protein alignment and mapped structural evidence
+
+- **Real reference-derived residue analysis** — compute finite-sample Shannon
+  diversity from the supplied homolog alignment and C-alpha neighborhoods from
+  observed, mapped coordinates. Keep complete proteins, explicit missingness,
+  label/author residue identities and source attribution; bounded work rejects
+  oversized results instead of truncating them. Saved experiments replay through
+  fresh computation and reject altered results even after rehashing.
+  [Core implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/bd24ada34615f14c4f38664bd9ff509d2dcf646d).
+- **Portable terminal and standalone workflow** — inspect exact reference
+  snapshots, analyze with explicit protein/chain/settings, export complete residue
+  and contact tables, and replay experiments without the catalog. Owned workers
+  support cancellation and timeouts; exports create new private files.
+  [Native implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/7612f1aa95bf8706fc421f58faa77d8e5997e77a).
+- **Browser workbench** — connect a verified selected CDS or imported reference
+  snapshot to the method, inspect residue and contact evidence, export all rows,
+  and replay independently of the current phage. Source, parameter and selection
+  ownership prevent obsolete results from being relabeled.
+  [Browser implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/8d735338ded721d06b10da009d396cfa41c4ccb1).
+- **Interactive terminal view** — Tropism's P view runs the same mapped-reference
+  method with adjustable geometry settings, complete table paging and accepted
+  JSON/residue/contact exports. It checks the actual genomic CDS and preserves
+  unavailable alignment/geometry distinctly from zero. See the
+  [reference workflow guide](data/protein-references/README.md).
+
 ### Portable mosaic reference analysis
 
 - **Exact query and reference snapshots** — Mosaic Radar now records the supplied
