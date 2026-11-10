@@ -13,6 +13,312 @@
  */
 
 import type { PhageFull, GeneInfo } from '../types';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { parseProteinReferenceBundle, type ProteinReferenceBundle, type ReferenceChain } from '../protein-reference';
+
+/** Descriptive measurements from supplied homologs and observed coordinates.
+ * The illustrative model below remains a separate, explicitly opted-in method.
+ */
+export const PROTEIN_STRUCTURE_METHOD = { id: 'mapped-protein-reference-evidence', version: '1',
+  implementation: 'TypeScript unweighted observed-column Shannon entropy and mapped model-1 C-alpha Euclidean distances' };
+export const PROTEIN_STRUCTURE_LIMITS = { referenceBytes: 512 * 1024, pairChecks: 20_000_000, contacts: 20_000 } as const;
+export interface ProteinStructureOptions {
+  proteinId?: string;
+  chainLabelAsymId?: string | null;
+  contactScope?: 'chain' | 'assembly';
+  contactCutoffAngstrom?: number;
+  minSequenceSeparation?: number;
+}
+export interface ResolvedProteinStructureOptions {
+  proteinId: string; chainLabelAsymId: string | null; contactScope: 'chain' | 'assembly';
+  contactCutoffAngstrom: number; minSequenceSeparation: number;
+}
+export type ReferenceChainCoordinate = ReferenceChain['coordinates'][number];
+export interface ResidueIdentity {
+  proteinId: string; labelAsymId: string; authAsymId: string; proteinPosition: number;
+  labelSeqId: number; authSeqId: number; insertionCode: string; aminoAcid: string;
+}
+export interface ProteinStructureResult {
+  protein: { id: string; accession: string; length: number };
+  chain: { pdbId: string; entryVersion: string; assemblyId: string; labelAsymId: string;
+    authAsymId: string; start: number; end: number; observedResidues: number } | null;
+  alignment: { rows: number; columns: number; targetPresent: boolean };
+  residues: Array<{
+    position: number; aminoAcid: string;
+    alignment: { column: number; observed: number; total: number; gaps: number; entropyBits: number | null } | null;
+    coordinate: ReferenceChainCoordinate | null; intrachainNeighbors: number | null;
+    interchainNeighbors: number | null; comparedResidues: number | null;
+    nearestNonlocalDistanceAngstrom: number | null;
+  }>;
+  contacts: Array<{ kind: 'intrachain' | 'interchain'; query: ResidueIdentity; partner: ResidueIdentity; distanceAngstrom: number }>;
+  coverage: { proteinResidues: number; alignmentResidues: number; entropyResidues: number;
+    insufficientAlignmentResidues: number; coordinateResidues: number; unmappedResidues: number;
+    intrachainContacts: number; interchainContacts: number };
+  limitations: string[];
+}
+export interface ProteinStructureExperiment {
+  reference: ProteinReferenceBundle; options: ResolvedProteinStructureOptions;
+  result: ProteinStructureResult; record: AnalysisRecord;
+}
+const PROTEIN_STRUCTURE_REFERENCE = { id: 'mapped-protein-reference-conventions', version: '1',
+  description: 'One-based protein and alignment positions; label sequence IDs map through the declared chain interval. Author residue numbers and insertion codes retain source conventions. Entropy excludes gaps and requires at least two observations. Contacts include each eligible pair once within an inclusive C-alpha distance cutoff.' };
+const PROTEIN_STRUCTURE_LIMITATIONS = [
+  'Entropy is unweighted finite-sample diversity in the supplied alignment, in bits. Gaps are missing observations; fewer than two observed residues yields no entropy. This is not population conservation or a calibrated evolutionary constraint.',
+  'Distances are Euclidean separations in Angstroms between observed model-1 C-alpha atoms. Missing residues, atoms, chains and assembly symmetry mates are not generated. Missing geometry is null, not zero.',
+  'Within-chain pairs exclude positions closer than minSequenceSeparation in the source protein. Assembly scope compares the selected chain with other supplied chains in the same validated coordinate frame; no other chain pairs are evaluated.',
+  'C-alpha proximity does not establish atom clashes, solvent accessibility, affinity, docking energy, mutation effects or host range. Zero retained contacts only describes these supplied coordinates and this cutoff.',
+  'The reference snapshot retains source attribution and experimental context. Checksums identify content; they do not authenticate a source. This method alone does not verify the declared CDS against a selected genome.',
+];
+const proteinCanonical = (value: unknown): string => JSON.stringify(analysisJson(value));
+const proteinObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+function proteinActive(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Protein structure experiment cancelled.', 'AbortError');
+}
+
+/** Bound JSON before cloning or serialization: repeated long source IDs may
+ * expand a small reference into a very large contact export. No complete output
+ * string is allocated here; repeated string sizes are cached.
+ */
+function proteinJsonBudget(value: unknown, limit: number, pretty = false): void {
+  let bytes = 0;
+  const strings = new Map<string, number>();
+  const add = (amount: number) => {
+    bytes += amount;
+    if (bytes > limit) throw new Error('Protein structure JSON exceeds its ' + limit / 1024 + ' KiB output/input limit.');
+  };
+  const string = (text: string) => {
+    if (text.length > limit) { add(text.length); return; }
+    let size = strings.get(text);
+    if (size === undefined) {
+      size = new TextEncoder().encode(JSON.stringify(text)).length;
+      strings.set(text, size);
+    }
+    add(size);
+  };
+  const visit = (item: unknown, depth: number): void => {
+    if (depth > 64) throw new Error('Protein structure JSON exceeds the nesting limit.');
+    if (typeof item === 'string') { string(item); return; }
+    if (item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) {
+      add(JSON.stringify(item).length); return;
+    }
+    const array = Array.isArray(item);
+    if (!array && (!proteinObject(item) || ![Object.prototype, null].includes(Object.getPrototypeOf(item)))) {
+      throw new Error('Protein structure inputs require finite numbers and plain JSON values.');
+    }
+    const entries: unknown[] = array ? item : Object.entries(item as Record<string, unknown>).filter(([, member]) => member !== undefined);
+    add(2);
+    for (let index = 0; index < entries.length; index++) {
+      if (index) add(1);
+      if (pretty) add(1 + 2 * (depth + 1));
+      if (array) visit(entries[index], depth + 1);
+      else {
+        const [key, member] = entries[index] as [string, unknown];
+        string(key); add(pretty ? 2 : 1); visit(member, depth + 1);
+      }
+    }
+    if (pretty && entries.length) add(1 + 2 * depth);
+  };
+  visit(value, 0);
+}
+function proteinOptionKeys(options: unknown): asserts options is ProteinStructureOptions {
+  if (!proteinObject(options) || Object.keys(options).some(key => !['proteinId', 'chainLabelAsymId', 'contactScope', 'contactCutoffAngstrom', 'minSequenceSeparation'].includes(key))) {
+    throw new Error('Unsupported protein structure options.');
+  }
+}
+
+/** Validate the bundle first with parseProteinReferenceBundle. An omitted chain
+ * never chooses an arbitrary structural copy among several mapped chains.
+ */
+export function resolveProteinStructureOptions(reference: ProteinReferenceBundle, options: ProteinStructureOptions = {}): ResolvedProteinStructureOptions {
+  proteinOptionKeys(options);
+  const proteinId = options.proteinId === undefined ? reference.cds.proteinId : options.proteinId;
+  if (typeof proteinId !== 'string' || !reference.proteins.some(protein => protein.id === proteinId)) throw new Error('Choose a protein ID present in the reference snapshot.');
+  const chains = reference.chains.filter(chain => chain.proteinId === proteinId);
+  if (options.chainLabelAsymId === undefined && chains.length > 1) throw new Error('Several mapped chains exist; choose an explicit label chain ID or null for alignment only.');
+  const chainLabelAsymId = options.chainLabelAsymId === undefined ? chains[0]?.labelAsymId ?? null : options.chainLabelAsymId;
+  if (chainLabelAsymId !== null && (typeof chainLabelAsymId !== 'string' || !chains.some(chain => chain.labelAsymId === chainLabelAsymId))) throw new Error('The selected label chain ID must map to the selected source protein.');
+  const contactScope = options.contactScope === undefined ? 'assembly' : options.contactScope;
+  const contactCutoffAngstrom = options.contactCutoffAngstrom === undefined ? 8 : options.contactCutoffAngstrom;
+  const minSequenceSeparation = options.minSequenceSeparation === undefined ? 3 : options.minSequenceSeparation;
+  if (contactScope !== 'chain' && contactScope !== 'assembly') throw new Error('Choose chain or assembly contact scope.');
+  if (typeof contactCutoffAngstrom !== 'number' || !Number.isFinite(contactCutoffAngstrom) || contactCutoffAngstrom <= 0 || contactCutoffAngstrom > 30) throw new Error('Contact cutoff must be greater than zero and at most 30 Angstroms.');
+  if (!Number.isSafeInteger(minSequenceSeparation) || minSequenceSeparation < 1 || minSequenceSeparation > 10_000) throw new Error('Minimum sequence separation must be an integer from 1 to 10,000 residues.');
+  return { proteinId, chainLabelAsymId, contactScope, contactCutoffAngstrom, minSequenceSeparation };
+}
+
+function proteinStructureResult(reference: ProteinReferenceBundle, options: ResolvedProteinStructureOptions, signal?: AbortSignal): ProteinStructureResult {
+  const protein = reference.proteins.find(item => item.id === options.proteinId)!;
+  const chain = options.chainLabelAsymId === null ? null : reference.chains.find(item => item.labelAsymId === options.chainLabelAsymId)!;
+  const partners = chain && options.contactScope === 'assembly' ? reference.chains.filter(item => item !== chain) : [];
+  const atoms = chain ? [...chain.coordinates].sort((a, b) => a.labelSeqId - b.labelSeqId) : [];
+  const pairChecks = atoms.length * (atoms.length - 1) / 2 + atoms.length * partners.reduce((sum, item) => sum + item.coordinates.length, 0);
+  if (pairChecks > PROTEIN_STRUCTURE_LIMITS.pairChecks) throw new Error('Protein geometry exceeds 20,000,000 pair checks. Select chain-only scope or a smaller explicit reference.');
+  const residues: ProteinStructureResult['residues'] = Array.from(protein.sequence, (aminoAcid, i) => ({
+    position: i + 1, aminoAcid, alignment: null, coordinate: null, intrachainNeighbors: null,
+    interchainNeighbors: null, comparedResidues: null, nearestNonlocalDistanceAngstrom: null,
+  }));
+  const rows = reference.alignment.rows, target = rows.find(row => row.proteinId === protein.id);
+  if (target) {
+    let position = 0;
+    for (let column = 0; column < target.alignedSequence.length; column++) {
+      if (column % 256 === 0) proteinActive(signal);
+      if (target.alignedSequence[column] === '-') continue;
+      const counts = new Map<string, number>();
+      let observed = 0;
+      for (const row of rows) {
+        const aa = row.alignedSequence[column];
+        if (aa !== '-') { counts.set(aa, (counts.get(aa) ?? 0) + 1); observed++; }
+      }
+      let entropyBits: number | null = null;
+      if (observed >= 2) {
+        entropyBits = 0;
+        for (const count of counts.values()) { const p = count / observed; entropyBits -= p * Math.log2(p); }
+      }
+      residues[position++].alignment = { column: column + 1, observed, total: rows.length, gaps: rows.length - observed, entropyBits };
+    }
+  }
+  const identity = (source: ReferenceChain, atom: ReferenceChainCoordinate): ResidueIdentity => ({
+    proteinId: source.proteinId, labelAsymId: source.labelAsymId, authAsymId: source.authAsymId,
+    proteinPosition: source.start + atom.labelSeqId - 1, labelSeqId: atom.labelSeqId,
+    authSeqId: atom.authSeqId, insertionCode: atom.insertionCode, aminoAcid: atom.aminoAcid,
+  });
+  const contacts: ProteinStructureResult['contacts'] = [];
+  let checks = 0, intrachainContacts = 0, interchainContacts = 0;
+  if (chain) {
+    for (const atom of atoms) Object.assign(residues[chain.start + atom.labelSeqId - 2], {
+      coordinate: { ...atom }, intrachainNeighbors: 0, interchainNeighbors: options.contactScope === 'assembly' ? 0 : null, comparedResidues: 0,
+    });
+    const compare = (a: ReferenceChainCoordinate, b: ReferenceChainCoordinate, other: ReferenceChain, kind: 'intrachain' | 'interchain') => {
+      if (checks++ % 2048 === 0) proteinActive(signal);
+      const distanceAngstrom = Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+      if (!Number.isFinite(distanceAngstrom)) throw new Error('The supplied coordinates produce a nonfinite C-alpha distance.');
+      const left = residues[chain.start + a.labelSeqId - 2];
+      const update = (residue: typeof left) => {
+        residue.comparedResidues!++;
+        residue.nearestNonlocalDistanceAngstrom = residue.nearestNonlocalDistanceAngstrom === null ? distanceAngstrom : Math.min(residue.nearestNonlocalDistanceAngstrom, distanceAngstrom);
+      };
+      update(left);
+      const right = kind === 'intrachain' ? residues[chain.start + b.labelSeqId - 2] : null;
+      if (right) update(right);
+      if (distanceAngstrom > options.contactCutoffAngstrom) return;
+      if (contacts.length === PROTEIN_STRUCTURE_LIMITS.contacts) throw new Error('Protein geometry exceeds 20,000 contacts. Reduce the cutoff or supplied coordinate panel; results are never truncated.');
+      contacts.push({ kind, query: identity(chain, a), partner: identity(other, b), distanceAngstrom });
+      if (right) { left.intrachainNeighbors!++; right.intrachainNeighbors!++; intrachainContacts++; }
+      else { left.interchainNeighbors!++; interchainContacts++; }
+    };
+    for (let i = 0; i < atoms.length; i++) {
+      proteinActive(signal);
+      for (let j = i + 1; j < atoms.length; j++) if (atoms[j].labelSeqId - atoms[i].labelSeqId >= options.minSequenceSeparation) compare(atoms[i], atoms[j], chain, 'intrachain');
+      for (const partner of partners) for (const atom of partner.coordinates) compare(atoms[i], atom, partner, 'interchain');
+    }
+  }
+  const alignmentResidues = residues.filter(residue => residue.alignment !== null).length;
+  const entropyResidues = residues.filter(residue => residue.alignment !== null && residue.alignment.entropyBits !== null).length;
+  const result: ProteinStructureResult = { protein: { id: protein.id, accession: protein.accession, length: protein.sequence.length },
+    chain: chain ? { pdbId: chain.pdbId, entryVersion: chain.entryVersion, assemblyId: chain.assemblyId,
+      labelAsymId: chain.labelAsymId, authAsymId: chain.authAsymId, start: chain.start, end: chain.end, observedResidues: atoms.length } : null,
+    alignment: { rows: rows.length, columns: rows[0].alignedSequence.length, targetPresent: !!target }, residues, contacts,
+    coverage: { proteinResidues: residues.length, alignmentResidues, entropyResidues, insufficientAlignmentResidues: alignmentResidues - entropyResidues,
+      coordinateResidues: atoms.length, unmappedResidues: residues.length - atoms.length, intrachainContacts, interchainContacts },
+    limitations: [...PROTEIN_STRUCTURE_LIMITATIONS],
+  };
+  if (!chain) result.limitations.push('No chain was selected for this protein; all geometry is unavailable.');
+  if (!target) result.limitations.push('The selected protein is absent from the supplied alignment; all alignment metrics are unavailable.');
+  if (options.contactScope === 'chain') result.limitations.push('Only within-chain geometry was requested. Interchain neighbors are unavailable; an aggregate contact count of zero does not mean other chains were compared.');
+  return result;
+}
+
+export async function createProteinStructureExperiment(input: unknown, config: ProteinStructureOptions = {}, signal?: AbortSignal): Promise<ProteinStructureExperiment> {
+  proteinActive(signal);
+  proteinJsonBudget(input, PROTEIN_STRUCTURE_LIMITS.referenceBytes);
+  // Validate raw keys before analysisJson can omit undefined unknown properties.
+  // Snapshot options before asynchronous reference checksum validation.
+  proteinOptionKeys(config);
+  const suppliedOptions = analysisJson(config) as unknown as ProteinStructureOptions;
+  const reference = await parseProteinReferenceBundle(input);
+  proteinActive(signal);
+  const options = resolveProteinStructureOptions(reference, suppliedOptions);
+  const result = proteinStructureResult(reference, options, signal);
+  const recordOptions = { method: PROTEIN_STRUCTURE_METHOD,
+    inputs: [{ id: 'reference', accession: result.protein.accession, source: 'external' as const,
+      description: 'Exact versioned protein reference snapshot with complete source proteins, homolog alignment, observed C-alpha coordinates, mappings and source attribution. No selected genome verification is implied.', data: reference }],
+    parameters: { ...options }, seed: null, references: [PROTEIN_STRUCTURE_REFERENCE], fields: {
+      structure: { kind: 'sequence-score' as const, label: 'Mapped alignment diversity and observed C-alpha geometry', units: 'records' as const,
+        value: result, limitations: [...result.limitations],
+        coverage: { available: result.residues.filter(residue => residue.coordinate !== null || residue.alignment !== null && residue.alignment.entropyBits !== null).length,
+          total: result.residues.length, unit: 'residues' as const } },
+    },
+  };
+  // Match the portable serializer's pretty-print size, including its hashes.
+  proteinJsonBudget({ ...recordOptions, format: 'phage-explorer-analysis', version: 1, cacheKey: '0'.repeat(64), resultId: '0'.repeat(64),
+    inputs: recordOptions.inputs.map(item => ({ ...item, sha256: '0'.repeat(64) })) }, 10 * 1024 * 1024, true);
+  const record = await createAnalysisRecord({ ...recordOptions,
+    inputs: recordOptions.inputs.map(item => ({ ...item, data: analysisJson(item.data) })),
+    fields: { structure: { ...recordOptions.fields.structure, value: analysisJson(result) } } });
+  proteinActive(signal);
+  return { reference, options, result, record };
+}
+
+/** Checksums alone cannot validate geometry: recompute every field and compare
+ * the complete evidence contract, parameters and source identity.
+ */
+export async function replayProteinStructureExperiment(content: string, signal?: AbortSignal): Promise<ProteinStructureExperiment> {
+  proteinActive(signal);
+  const saved = await parseAnalysisRecord(content, { methodId: PROTEIN_STRUCTURE_METHOD.id, methodVersion: PROTEIN_STRUCTURE_METHOD.version });
+  proteinActive(signal);
+  if (proteinCanonical(saved.method) !== proteinCanonical(PROTEIN_STRUCTURE_METHOD) || proteinCanonical(saved.references) !== proteinCanonical([PROTEIN_STRUCTURE_REFERENCE]) ||
+    saved.seed !== null || saved.inputs.length !== 1 || saved.inputs[0].id !== 'reference') throw new Error('Protein structure method, references, seed or exact input contract differs.');
+  const fresh = await createProteinStructureExperiment(saved.inputs[0].data, saved.parameters, signal);
+  if (proteinCanonical(fresh.options) !== proteinCanonical(saved.parameters)) throw new Error('All effective protein structure settings must be explicit.');
+  if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Fresh protein structure calculation or source evidence differs from the saved experiment.');
+  return fresh;
+}
+
+/** For results from the producer or successful replay. This is not an
+ * alternative to verifying an imported experiment.
+ */
+export function proteinStructureResultFromRecord(record: AnalysisRecord): ProteinStructureResult {
+  const value = record.fields.structure?.value;
+  if (proteinCanonical(record.method) !== proteinCanonical(PROTEIN_STRUCTURE_METHOD) || !proteinObject(value) ||
+    !proteinObject(value.protein) || !proteinObject(value.alignment) || !proteinObject(value.coverage) ||
+    !Array.isArray(value.residues) || !Array.isArray(value.contacts) || !Array.isArray(value.limitations)) throw new Error('Expected a produced or replayed protein structure result.');
+  return structuredClone(value) as unknown as ProteinStructureResult;
+}
+function proteinTsvCell(value: string | number | null): string {
+  if (value === null) return '';
+  if (typeof value === 'number') return String(value);
+  const safe = /^[=+@-]/.test(value) ? "'" + value : value;
+  return /[\t\r\n"]/.test(safe) ? '"' + safe.replace(/"/g, '""') + '"' : safe;
+}
+export function exportProteinStructureTsv(record: AnalysisRecord, section: 'residues' | 'contacts' = 'residues'): string {
+  proteinJsonBudget(record, 10 * 1024 * 1024, true);
+  const result = proteinStructureResultFromRecord(record);
+  const reference = record.inputs[0]?.data as unknown as ProteinReferenceBundle;
+  if (record.inputs.length !== 1 || record.inputs[0].id !== 'reference' || reference?.format !== 'phage-explorer-protein-reference') throw new Error('Protein structure export requires the exact reference snapshot.');
+  const comments = ['# method=' + record.method.id + '; version=' + record.method.version + '; result=' + record.resultId + '; inputSha256=' + record.inputs[0].sha256,
+    '# protein=' + proteinCanonical(result.protein) + '; chain=' + proteinCanonical(result.chain) + '; options=' + proteinCanonical(record.parameters),
+    '# source_attribution=' + proteinCanonical(reference.sources),
+    '# Protein, alignment-column and label-sequence positions are one-based. Author residue numbers and insertion codes retain the deposited convention, including negative numbers.',
+    '# Distances are observed C-alpha separations in Angstroms; entropy is unweighted observed-column diversity in bits, requiring two non-gap observations. Empty cells are unavailable, not zero.',
+    '# Supplied-chain proximity is not atom clashes, SASA, affinity, docking energy, mutation effects or host range. No missing coordinates or assembly copies are inferred.',
+    '# limitations=' + proteinCanonical(result.limitations)];
+  let header: string[], rows: Array<Array<string | number | null>>;
+  if (section === 'residues') {
+    header = ['protein_position_1based', 'amino_acid', 'alignment_column_1based', 'observed_rows', 'total_rows', 'gaps', 'entropy_bits',
+      'label_seq_id', 'auth_seq_id', 'insertion_code', 'x_angstrom', 'y_angstrom', 'z_angstrom', 'intrachain_neighbors', 'interchain_neighbors', 'compared_residues', 'nearest_nonlocal_distance_angstrom'];
+    rows = result.residues.map(residue => [residue.position, residue.aminoAcid, residue.alignment?.column ?? null,
+      residue.alignment?.observed ?? null, residue.alignment?.total ?? null, residue.alignment?.gaps ?? null, residue.alignment?.entropyBits ?? null,
+      residue.coordinate?.labelSeqId ?? null, residue.coordinate?.authSeqId ?? null, residue.coordinate?.insertionCode ?? null,
+      residue.coordinate?.x ?? null, residue.coordinate?.y ?? null, residue.coordinate?.z ?? null, residue.intrachainNeighbors,
+      residue.interchainNeighbors, residue.comparedResidues, residue.nearestNonlocalDistanceAngstrom]);
+  } else if (section === 'contacts') {
+    header = ['kind', 'query_protein', 'query_label_chain', 'query_author_chain', 'query_protein_position_1based', 'query_label_seq_id', 'query_auth_seq_id', 'query_insertion_code', 'query_amino_acid',
+      'partner_protein', 'partner_label_chain', 'partner_author_chain', 'partner_protein_position_1based', 'partner_label_seq_id', 'partner_auth_seq_id', 'partner_insertion_code', 'partner_amino_acid', 'distance_angstrom'];
+    const cells = (identity: ResidueIdentity) => [identity.proteinId, identity.labelAsymId, identity.authAsymId, identity.proteinPosition, identity.labelSeqId, identity.authSeqId, identity.insertionCode, identity.aminoAcid];
+    rows = result.contacts.map(contact => [contact.kind, ...cells(contact.query), ...cells(contact.partner), contact.distanceAngstrom]);
+  } else throw new Error('Choose residues or contacts for protein structure TSV export.');
+  return [...comments, header.join('\t'), ...rows.map(row => row.map(proteinTsvCell).join('\t'))].join('\n') + '\n';
+}
 
 export type TailFiberDomainType = 'n_anchor' | 'shaft' | 'distal_rbd';
 
