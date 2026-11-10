@@ -1010,19 +1010,16 @@ export const ActionRegistry: Record<ActionId, ActionDefinition> = {
     id: ActionIds.OverlayEnvironmentalProvenance,
     title: 'Environmental provenance',
     category: 'Analysis',
-    description: 'Open environmental provenance overlay',
+    description: 'Import environmental observations, inspect missing data, and export or replay evidence',
     defaultShortcut: { key: 'e', modifiers: { ctrl: true, shift: true } },
     scope: 'global',
     surfaces: ['web'],
     minLevel: 'intermediate',
     overlayId: 'environmentalProvenance',
     overlayAction: 'toggle',
-    // Locations, isolation sources and sample counts from NCBI SRA.
-    // Catalogue distinctiveness is measured locally with MinHash. The
-    // synthesised containment score is gone. Falls back to a stamped demo
-    // sample set when SRA returns nothing usable.
-    provenance: 'external',
-    provenanceFallback: 'demo',
+    // The source is chosen explicitly: local observations, public reference
+    // metadata, or a labelled example. There is no automatic demo fallback.
+    provenance: 'input',
   },
   [ActionIds.OverlayGpuWasmBenchmark]: {
     id: ActionIds.OverlayGpuWasmBenchmark,

@@ -20,10 +20,11 @@ import type { AnalysisRecord } from '@phage-explorer/core';
  *
  * ## The contract
  *
- * Four levels, and they are genuinely different claims:
+ * These levels make different claims about the input:
  *
  * - `measured`   computed from this phage's sequence, genes or annotations
  * - `external`   fetched live from a named third-party service
+ * - `input`      user-selected data; its source is shown after selection
  * - `heuristic`  a rule-based estimate, not a measurement
  * - `simulated`  a model the user parameterised; its inputs are real
  * - `demo`       synthetic input, not derived from the user's phage at all
@@ -40,6 +41,7 @@ import type { AnalysisRecord } from '@phage-explorer/core';
 export type ProvenanceLevel =
   | 'measured'
   | 'external'
+  | 'input'
   | 'heuristic'
   | 'simulated'
   | 'demo';
@@ -71,6 +73,13 @@ const PROVENANCE_STYLES: Record<ProvenanceLevel, ProvenanceStyle> = {
   external: {
     label: 'External data',
     meaning: 'Fetched live from a third-party service.',
+    color: 'var(--color-info, #2563eb)',
+    background: 'var(--color-info-bg, rgba(37, 99, 235, 0.12))',
+    border: 'var(--color-info, #2563eb)',
+  },
+  input: {
+    label: 'Supplied input',
+    meaning: 'Analyses data you select. Its source is shown after selection; imported observations are not independently verified.',
     color: 'var(--color-info, #2563eb)',
     background: 'var(--color-info-bg, rgba(37, 99, 235, 0.12))',
     border: 'var(--color-info, #2563eb)',

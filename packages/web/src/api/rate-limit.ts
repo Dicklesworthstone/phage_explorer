@@ -13,18 +13,23 @@ const NCBI_REQUEST_DELAY_MS = 350; // ~3 requests/second
  * Throttled fetch for NCBI APIs (SRA, Entrez, etc.)
  * Ensures we don't exceed NCBI's rate limit of 3 requests/second.
  */
-export async function throttledNCBIFetch(url: string): Promise<Response> {
+export async function throttledNCBIFetch(url: string, signal?: AbortSignal): Promise<Response> {
+  signal?.throwIfAborted();
   const now = Date.now();
-  const timeSinceLastRequest = now - lastNCBIRequestTime;
-
-  if (timeSinceLastRequest < NCBI_REQUEST_DELAY_MS) {
-    await new Promise(resolve =>
-      setTimeout(resolve, NCBI_REQUEST_DELAY_MS - timeSinceLastRequest)
-    );
+  // Reserve a slot synchronously. Concurrent batch callers must not all wake
+  // from the same delay and issue a burst of requests together.
+  const start = Math.max(now, lastNCBIRequestTime + NCBI_REQUEST_DELAY_MS);
+  lastNCBIRequestTime = start;
+  if (start > now) {
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(signal?.reason); };
+      const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve(); }, start - now);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+    });
   }
-
-  lastNCBIRequestTime = Date.now();
-  return fetch(url);
+  signal?.throwIfAborted();
+  return fetch(url, { signal });
 }
 
 /**

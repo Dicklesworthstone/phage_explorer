@@ -105,18 +105,13 @@ describe('the overlays the audit found fabricating data are labelled as such', (
     expect(levelOf('crispr')).toBe('heuristic');
   });
 
-  it('promotes the two overlays whose fabrications were removed', () => {
-    // phylodynamics built its tree from hashes of accession strings and now
-    // fetches real sequences from NCBI; environmentalProvenance derived its
-    // headline score from a hash of the phage name and now measures
-    // catalogue distinctiveness with MinHash. Both are 'external' because
-    // their primary data comes from a third-party service.
-    //
-    // This assertion is the reason the levels cannot quietly drift back: a
-    // change that reintroduced synthesis without relabelling would leave the
-    // registry claiming external data for a hash.
+  it('declares the actual input choices of overlays whose fabrications were removed', () => {
+    // Phylodynamics starts with external sequence lookup. Environmental
+    // evidence now waits for explicit input and shows its source per result;
+    // the unopened menu must not claim that imported observations were fetched
+    // or independently measured by this application.
     expect(levelOf('phylodynamics')).toBe('external');
-    expect(levelOf('environmentalProvenance')).toBe('external');
+    expect(levelOf('environmentalProvenance')).toBe('input');
   });
 
   it('does not let a rule-based estimate pass as a measurement', () => {
@@ -136,8 +131,8 @@ describe('the overlays the audit found fabricating data are labelled as such', (
 /**
  * An overlay that can silently degrade must say so before it is opened.
  *
- * Two overlays fetch live data and fall back to synthetic data when the fetch
- * returns too little to analyse. The registry declared only the successful
+ * Phylodynamics can fetch live data and fall back to synthetic data when the
+ * fetch returns too little to analyse. The registry declared only the successful
  * case, so the Analysis Menu badged them "External data" unconditionally --
  * including in the case that happens most in practice: offline, rate-limited,
  * or a phage with too few dated records. The badge was wrong exactly when the
@@ -150,13 +145,12 @@ describe('the overlays the audit found fabricating data are labelled as such', (
 describe('overlays that degrade declare what they degrade to', () => {
   const OVERLAY_SOURCES: Record<string, string> = {
     phylodynamics: 'PhylodynamicsOverlay.tsx',
-    environmentalProvenance: 'EnvironmentalProvenanceOverlay.tsx',
   };
 
   const entryFor = (overlayId: string) =>
     ActionRegistryList.find(a => a.overlayId === overlayId);
 
-  it('declares a fallback for both overlays with a demo path', () => {
+  it('declares a fallback for overlays that automatically enter their demo path', () => {
     for (const id of Object.keys(OVERLAY_SOURCES)) {
       expect(entryFor(id)?.provenanceFallback).toBe('demo');
     }
@@ -179,9 +173,19 @@ describe('overlays that degrade declare what they degrade to', () => {
   it('does not declare a fallback for overlays that never degrade', () => {
     // A fallback on an overlay that cannot fall back would train users to
     // discount the badge, which is the same failure as not showing one.
-    for (const id of ['gcSkew', 'dotPlot', 'proteinDomains', 'codonBias']) {
+    for (const id of ['gcSkew', 'dotPlot', 'proteinDomains', 'codonBias', 'environmentalProvenance']) {
       expect(entryFor(id)?.provenanceFallback).toBeUndefined();
     }
+  });
+
+  it('requires an explicit environmental example action and never labels it a fallback', () => {
+    const src = readFileSync(join(import.meta.dir, '../components/overlays/EnvironmentalProvenanceOverlay.tsx'), 'utf8');
+    expect(src).toContain('Load synthetic environmental example');
+    expect(src).toContain("session.run({ kind: 'demo' })");
+    expect(src).not.toContain("setDataSource('demo')");
+    expect(src).not.toContain('generateDemoProvenanceData(');
+    expect(entryFor('environmentalProvenance')?.provenance).toBe('input');
+    expect(entryFor('environmentalProvenance')?.provenanceFallback).toBeUndefined();
   });
 
   it('never declares a fallback stronger than the primary level', () => {

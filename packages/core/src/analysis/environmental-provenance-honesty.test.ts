@@ -1,165 +1,163 @@
 import { describe, expect, it } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateDemoProvenanceData } from './environmental-provenance';
+import { analyzeEnvironmentalDataset, createEnvironmentalAnalysisRecord, validateEnvironmentalDataset,
+  type EnvironmentalDataset } from './environmental-evidence';
+import { EnvironmentalEvidenceResults, environmentalSourceLabel } from '../../../web/src/components/overlays/EnvironmentalProvenanceOverlay';
+import { DEFAULT_THEME } from '../../../web/src/theme/themes';
 
-/**
- * Honesty guard for the environmental provenance overlay.
- *
- * Two separate defects, both about a fabricated value being indistinguishable
- * from a measured one:
- *
- * 1. The headline novelty score was `1 - maxContainment`, where containment
- *    was `0.3 + seededUnit(hashString(phageName + location)) * 0.5`. A hash of
- *    the phage's name, displayed under a green "REAL DATA" banner.
- *
- * 2. The demo fallback minted identifiers like `IMG/VR_20230001` and
- *    `MGnify_20210003`, which are indistinguishable from real accessions. A
- *    user copying one into notes and searching for it finds nothing, or worse,
- *    an unrelated real record.
- *
- * These are source-level assertions because the defect is the presence of the
- * fabrication, not a value a unit test can observe once it is gone.
- */
+const OVERLAY = readFileSync(join(import.meta.dir, '../../../web/src/components/overlays/EnvironmentalProvenanceOverlay.tsx'), 'utf8');
 
-const OVERLAY = readFileSync(
-  join(import.meta.dir, '../../../web/src/components/overlays/EnvironmentalProvenanceOverlay.tsx'),
-  'utf8'
-);
+function suppliedDataset(kind: EnvironmentalDataset['source']['kind'] = 'local'): EnvironmentalDataset {
+  return validateEnvironmentalDataset({
+    format: 'phage-explorer-environmental', version: 1, name: 'Analytical observation fixture',
+    query: { id: 'taxon:fixture', label: 'Synthetic test taxon', accession: null },
+    source: { kind, study: 'Hand-constructed regression fixture, not empirical observations', reference: null, version: '1', license: 'CC0' },
+    measurement: { type: 'counts', method: 'Declared fixture counts', normalization: 'none' },
+    samples: [
+      { id: 'positive', accession: 'fixture:1', biome: 'freshwater', country: 'Test', location: { latitude: 42, longitude: -70, uncertaintyKm: 12 },
+        collectionDate: '2024', occurrence: 'detected', abundance: 6 },
+      { id: 'zero', accession: null, biome: 'freshwater', country: 'USA', location: null, collectionDate: '2024-02', occurrence: 'not-detected', abundance: 0 },
+      { id: 'missing', accession: null, biome: 'wastewater', country: 'Germany', location: null, collectionDate: null, occurrence: 'not-assayed', abundance: null },
+    ],
+  });
+}
 
-describe('environmental provenance no longer fabricates containment', () => {
-  it('reads the overlay source, so the checks below are not vacuous', () => {
-    expect(OVERLAY.length).toBeGreaterThan(1000);
-    expect(OVERLAY).toContain('EnvironmentalProvenanceOverlay');
+async function render(kind: EnvironmentalDataset['source']['kind'], view: 'overview' | 'biomes' | 'geography' | 'observations', dataset = suppliedDataset(kind), page = 0): Promise<string> {
+  const analysis = analyzeEnvironmentalDataset(dataset);
+  const record = await createEnvironmentalAnalysisRecord(dataset, analysis);
+  return renderToStaticMarkup(createElement(EnvironmentalEvidenceResults, { dataset, analysis, record, view, page, colors: DEFAULT_THEME.colors }));
+}
+
+/** Render actual accepted evidence: component call counts cannot establish scientific labelling. */
+describe('environmental evidence preserves the meaning of supplied observations', () => {
+  it('keeps detected, measured zero and unassayed observations distinct in the live result surface', async () => {
+    const html = await render('local', 'observations');
+    expect(html).toContain('Detected');
+    expect(html).toContain('Not detected in this assay');
+    expect(html).toContain('Not assayed');
+    expect(html).toContain('<td>0</td>');
+    expect(html).toContain('Not measured');
+    expect(html).toContain('2024 (year only)');
+    expect(html).toContain('2024-02 (month precision)');
+    expect(html).toContain('Coordinates not reported');
+    expect(html).toContain('12 km stated uncertainty');
+    expect(html.match(/data-testid="environmental-observation"/g)?.length).toBe(3);
   });
 
-  it('does not derive any displayed value from a hash of a name', () => {
-    // Strip comments first: the fix documents the old expression verbatim so
-    // the next reader knows what was removed, and that prose must not trip the
-    // check that the code is gone.
-    const code = OVERLAY.split('\n')
-      .filter(line => {
-        const t = line.trimStart();
-        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
-      })
-      .join('\n');
+  it('does not turn an unassayed biome into zero detection or a specialized habitat', async () => {
+    const dataset = suppliedDataset();
+    const analysis = analyzeEnvironmentalDataset(dataset);
+    expect(analysis.totals).toEqual({ samples: 3, assayed: 2, detected: 1, notDetected: 1, notAssayed: 1, located: 1, dated: 2 });
+    const html = await render('local', 'biomes', dataset);
+    expect(html).toContain('50.0%');
+    expect(html).toContain('Unavailable — no assays');
+    expect(html).not.toContain('specialized for');
+    expect(html).not.toContain('Novelty Score:');
+    expect(html).not.toContain('PRIMARY HABITAT');
+  });
 
+  it('plots only reported coordinates, retaining unlocated samples in the observation table', async () => {
+    const map = await render('local', 'geography');
+    expect(map.match(/data-sample-id=/g)?.length).toBe(1);
+    expect(map).toContain('data-sample-id="positive"');
+    expect(map).not.toContain('data-sample-id="zero"');
+    expect(map).not.toContain('data-sample-id="missing"');
+    expect(map).toContain('2 remain in the table without a map position');
+    expect(map).toContain('uncertainty 12 km');
+    const table = await render('local', 'observations');
+    expect(table).toContain('USA');
+    expect(table).toContain('Germany');
+    expect(table).toContain('missing');
+  });
+
+  it('does not invent precision for an unknown coordinate uncertainty or collection date', async () => {
+    const dataset = suppliedDataset();
+    dataset.samples[0].location!.uncertaintyKm = null;
+    dataset.samples[0].collectionDate = null;
+    const html = await render('local', 'observations', dataset);
+    expect(html).toContain('Uncertainty not reported');
+    expect(html).toContain('Not reported');
+    expect(html).not.toContain('0 km stated uncertainty');
+  });
+
+  it('renders imported markup as literal sample and source text', async () => {
+    const dataset = suppliedDataset();
+    dataset.query.label = '<script>query</script>';
+    dataset.samples[0].id = '<b>literal sample</b>';
+    dataset.source.study = '<img src=x onerror=alert(1)>';
+    const html = await render('local', 'observations', dataset);
+    expect(html).toContain('&lt;b&gt;literal sample&lt;/b&gt;');
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('<b>literal sample');
+  });
+
+  it('allows later observation pages without silently truncating the dataset', async () => {
+    const dataset = suppliedDataset();
+    dataset.samples = Array.from({ length: 57 }, (_, index) => ({ ...dataset.samples[0], id: `sample-${index}` }));
+    const html = await render('local', 'observations', dataset, 1);
+    expect(html.match(/data-testid="environmental-observation"/g)?.length).toBe(7);
+    expect(html).toContain('sample-56');
+    expect(html).not.toContain('sample-49');
+    expect(dataset.samples.length).toBe(57);
+  });
+});
+
+describe('environmental provenance travels with every actual figure', () => {
+  for (const kind of ['local', 'external', 'demo'] as const) {
+    it(`labels all four views according to their accepted ${kind} source`, async () => {
+      const dataset = suppliedDataset(kind);
+      for (const view of ['overview', 'biomes', 'geography', 'observations'] as const) {
+        const html = await render(kind, view, dataset);
+        expect(html).toContain(environmentalSourceLabel(dataset));
+        expect(html).toContain(dataset.query.label);
+        expect(html).toContain('data-testid="environmental-figure-source"');
+        expect(html).not.toContain('REAL DATA');
+      }
+    });
+  }
+
+  it('embeds the synthetic stamp inside both exported SVG figures and never stamps local observations as synthetic', async () => {
+    for (const view of ['biomes', 'geography'] as const) {
+      const demo = (await render('demo', view)).match(/<svg[\s\S]*?<\/svg>/)?.[0];
+      const local = (await render('local', view)).match(/<svg[\s\S]*?<\/svg>/)?.[0];
+      expect(demo).toBeDefined();
+      expect(local).toBeDefined();
+      expect(demo).toContain('DEMO DATA — synthetic sample set');
+      expect(local).toContain('LOCAL INPUT');
+      expect(local).not.toContain('DEMO DATA');
+    }
+  });
+
+  it('has no name-hash score, automatic lookup or automatic synthetic replacement in the overlay', () => {
+    expect(OVERLAY.length).toBeGreaterThan(1000);
+    const code = OVERLAY.split('\n').filter(line => !/^\s*(?:\/\/|\*|\/\*)/.test(line)).join('\n');
     expect(code).not.toContain('seededUnit(');
     expect(code).not.toContain('hashString(');
-  });
-
-  it('defines neither helper any more', () => {
-    // They existed solely to manufacture a plausible-looking score. Leaving
-    // them defined invites the next use.
-    expect(OVERLAY).not.toContain('function hashString');
-    expect(OVERLAY).not.toContain('function seededUnit');
-  });
-
-  it('the source check is discriminating', () => {
-    // Guards the guard: the same filter applied to the original expression
-    // must flag it, or the assertions above would pass on any file.
-    const originalLine =
-      '  containment: Math.min(0.95, 0.3 + seededUnit(hashString(`${k}:${loc}`)) * 0.5),';
-    expect(originalLine).toContain('seededUnit(');
-  });
-
-  it('qualifies what the REAL DATA banner covers', () => {
-    // An unqualified "REAL DATA" over a mix of measured and unmeasurable
-    // fields is how this went wrong. The banner must scope its claim.
-    expect(OVERLAY).toContain('REAL DATA');
-    expect(OVERLAY).toContain('SRA metadata carries no sequence');
+    expect(code).not.toContain('searchPhageRelated(');
+    expect(code).not.toContain('generateDemoProvenanceData(');
+    // These user actions retain both public metadata and demonstrations without
+    // silently invoking either when a private dataset or a selected phage changes.
+    expect(code).toContain('Fetch public phage-family context');
+    expect(code).toContain('Load synthetic environmental example');
+    expect(code).toContain('SRA metadata carries no sequence');
   });
 });
 
-describe('demo identifiers cannot be mistaken for real accessions', () => {
+describe('legacy demo identifiers cannot be mistaken for real accessions', () => {
   const hits = generateDemoProvenanceData('lambda', () => 0.42);
-
-  it('produces demo hits at all, so the checks below mean something', () => {
+  it('retains unambiguous demo identifiers even for callers of the legacy generator', () => {
     expect(hits.length).toBeGreaterThan(0);
-  });
-
-  it('prefixes every identifier so it is unmistakably synthetic', () => {
     for (const hit of hits) {
       expect(hit.metagenomeId.startsWith('DEMO-')).toBe(true);
-    }
-  });
-
-  it('no identifier matches the shape of a real database accession', () => {
-    // IMG/VR_20230001 and MGnify_20210003 are exactly what a real accession
-    // looks like. With the prefix, none can be mistaken for one.
-    for (const hit of hits) {
       expect(/^(IMG\/VR|MGnify|VIROME)_\d+$/.test(hit.metagenomeId)).toBe(false);
     }
-  });
-
-  it('that shape check is discriminating', () => {
-    // Guards the guard: the pattern must match the old format.
     expect(/^(IMG\/VR|MGnify|VIROME)_\d+$/.test('IMG/VR_20230001')).toBe(true);
     expect(/^(IMG\/VR|MGnify|VIROME)_\d+$/.test('DEMO-IMG/VR_20230001')).toBe(false);
-  });
-});
-
-/**
- * Every figure carries its own provenance, not just the banner at the top.
- *
- * The banner was the first fix and it was not enough. Every number beneath it
- * is rendered by the same code on both the real and the demo path, so a seeded
- * random value looked identical to a measured one to anyone who scrolled past
- * the banner or screenshotted a panel. That is the same defect this file exists
- * for, one layer down.
- *
- * These are source-level assertions for the same reason as the ones above: what
- * is being checked is the presence of the label, which no unit test can observe
- * once the component is not rendered.
- */
-describe('provenance travels with each figure, not only the banner', () => {
-  const code = OVERLAY.split('\n')
-    .filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
-    .join('\n');
-
-  it('defines a single provenance element reused across figures', () => {
-    // One helper rather than five hand-placed badges: a figure added later
-    // should be able to call the same thing, and a reader should not have to
-    // check whether five copies still agree.
-    expect(code).toContain('resultProvenance');
-    expect(code).toContain("level=\"demo\"");
-    expect(code).toContain("level=\"external\"");
-  });
-
-  it('labels every figure region that renders analysis numbers', () => {
-    // The four view panels plus the novelty badge. If a fifth panel is added
-    // without a badge, this count stops matching and the test fails, which is
-    // the point: the omission has to be deliberate rather than accidental.
-    const uses = code.split('resultProvenance()').length - 1;
-    expect(uses).toBeGreaterThanOrEqual(5);
-  });
-
-  it('marks demo data as demo rather than as heuristic or estimated', () => {
-    // "Heuristic" is not a euphemism for "fake". A seeded random abundance
-    // table is demo data, and calling it anything softer is how the original
-    // defect was tolerated for so long.
-    expect(code).toContain('synthetic sample set');
-    expect(code).not.toContain('level="heuristic"');
-  });
-
-  it('stamps the canvases, which are the figures that can leave their context', () => {
-    // A badge in the DOM is lost the moment someone crops a screenshot or
-    // copies the canvas image. The stamp is drawn into the pixels.
-    expect(code).toContain('stampDemo');
-    expect(code).toContain('DEMO DATA');
-  });
-
-  it('draws the stamp on both canvases and on the empty state', () => {
-    // Three call sites: biome chart, geography map, and the "no biome data"
-    // early return, which is still a canvas a user can screenshot.
-    const stamps = code.split('stampDemo(ctx').length - 1;
-    expect(stamps).toBeGreaterThanOrEqual(3);
-  });
-
-  it('only stamps when the data really is synthetic', () => {
-    // The discrimination check. A stamp drawn unconditionally would label real
-    // results as demo, which destroys the signal exactly as thoroughly as
-    // labelling nothing.
-    expect(code).toContain("dataSource !== 'demo'");
   });
 });

@@ -15,52 +15,22 @@ const NCBI_EFETCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
 const NCBI_ESEARCH = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi';
 
 /**
- * Parse geographic location string into coordinates
- * Examples: "USA: California", "38.5 N 121.5 W", "Germany: Berlin"
+ * Parse reported coordinates only. A country or city name is not a measured
+ * sampling position, and must never become a country-centroid map marker.
  */
-function parseGeoLocation(geoStr: string): { name: string; lat?: number; lon?: number } {
-  // Try to extract coordinates if present
-  const coordMatch = geoStr.match(/(-?\d+\.?\d*)\s*([NS])\s+(-?\d+\.?\d*)\s*([EW])/i);
+export function parseReportedCoordinates(geoStr: string): { latitude: number; longitude: number } | null {
+  const coordMatch = geoStr.trim().match(/^(\d+(?:\.\d+)?)\s*([NS])\s*[,;]?\s+(\d+(?:\.\d+)?)\s*([EW])$/i);
   if (coordMatch) {
-    let lat = parseFloat(coordMatch[1]);
-    let lon = parseFloat(coordMatch[3]);
-    if (coordMatch[2].toUpperCase() === 'S') lat = -lat;
-    if (coordMatch[4].toUpperCase() === 'W') lon = -lon;
-    return { name: geoStr, lat, lon };
+    const latitude = Number(coordMatch[1]) * (coordMatch[2].toUpperCase() === 'S' ? -1 : 1);
+    const longitude = Number(coordMatch[3]) * (coordMatch[4].toUpperCase() === 'W' ? -1 : 1);
+    return latitude <= 90 && latitude >= -90 && longitude <= 180 && longitude >= -180 ? { latitude, longitude } : null;
   }
-
-  // Known location coordinates (common research locations)
-  const knownLocations: Record<string, [number, number]> = {
-    'usa': [39.8, -98.5],
-    'united states': [39.8, -98.5],
-    'california': [36.7, -119.4],
-    'germany': [51.2, 10.5],
-    'china': [35.9, 104.2],
-    'japan': [36.2, 138.3],
-    'uk': [55.4, -3.4],
-    'united kingdom': [55.4, -3.4],
-    'france': [46.2, 2.2],
-    'australia': [-25.3, 133.8],
-    'canada': [56.1, -106.3],
-    'india': [20.6, 78.9],
-    'brazil': [-14.2, -51.9],
-    'russia': [61.5, 105.3],
-    'south korea': [35.9, 127.8],
-    'netherlands': [52.1, 5.3],
-    'sweden': [60.1, 18.6],
-    'switzerland': [46.8, 8.2],
-    'spain': [40.5, -3.7],
-    'italy': [41.9, 12.6],
-  };
-
-  const lowerGeo = geoStr.toLowerCase();
-  for (const [location, coords] of Object.entries(knownLocations)) {
-    if (lowerGeo.includes(location)) {
-      return { name: geoStr, lat: coords[0], lon: coords[1] };
-    }
+  const signed = geoStr.trim().match(/^(-?\d+(?:\.\d+)?)\s*(?:,\s*|\s+)(-?\d+(?:\.\d+)?)$/);
+  if (signed) {
+    const latitude = Number(signed[1]), longitude = Number(signed[2]);
+    return Math.abs(latitude) <= 90 && Math.abs(longitude) <= 180 ? { latitude, longitude } : null;
   }
-
-  return { name: geoStr };
+  return null;
 }
 
 /**
@@ -68,11 +38,13 @@ function parseGeoLocation(geoStr: string): { name: string; lat?: number; lon?: n
  *
  * @param runId - SRA run accession (e.g., "SRR1234567")
  */
-export async function fetchSRARunMetadata(runId: string): Promise<APIResult<SRARunMetadata>> {
+export async function fetchSRARunMetadata(runId: string, signal?: AbortSignal): Promise<APIResult<SRARunMetadata>> {
+  signal?.throwIfAborted();
+  if (!/^(SRR|ERR|DRR)\d+$/.test(runId)) return { success: false, error: { code: 'INVALID_RUN', message: 'An SRA run accession is required.' } };
   try {
     // First, get the SRA record
     const url = `${NCBI_EFETCH}?db=sra&id=${runId}&rettype=runinfo&retmode=text`;
-    const response = await throttledNCBIFetch(url);
+    const response = await throttledNCBIFetch(url, signal);
 
     if (!response.ok) {
       return {
@@ -85,7 +57,7 @@ export async function fetchSRARunMetadata(runId: string): Promise<APIResult<SRAR
     }
 
     const text = await response.text();
-    const lines = text.trim().split('\n');
+    const lines = text.trim().split(/\r?\n/).filter(line => line.trim().length > 0);
 
     if (lines.length < 2) {
       return {
@@ -94,29 +66,40 @@ export async function fetchSRARunMetadata(runId: string): Promise<APIResult<SRAR
       };
     }
 
-    // Parse CSV header and data (handles quoted fields with commas)
-    const parseCSVLine = (line: string): string[] => {
+    // Select a verified Run identity, never relabel the first response row.
+    // Unsupported multiline or malformed CSV is rejected rather than guessing.
+    const parseCSVLine = (line: string): string[] | null => {
       const result: string[] = [];
-      let current = '';
-      let inQuotes = false;
-
+      let current = '', inQuotes = false, closedQuote = false;
       for (let i = 0; i < line.length; i++) {
         const char = line[i];
-        if (char === '"') {
-          inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
-          result.push(current.trim());
-          current = '';
-        } else {
-          current += char;
-        }
+        if (inQuotes) {
+          if (char === '"' && line[i + 1] === '"') { current += '"'; i++; }
+          else if (char === '"') { inQuotes = false; closedQuote = true; }
+          else current += char;
+        } else if (char === ',') {
+          result.push(current.trim()); current = ''; closedQuote = false;
+        } else if (char === '"' && current.trim() === '' && !closedQuote) {
+          current = ''; inQuotes = true;
+        } else if (char === '"' || closedQuote && char.trim() !== '') return null;
+        else current += char;
       }
+      if (inQuotes) return null;
       result.push(current.trim());
       return result;
     };
-
-    const headers = parseCSVLine(lines[0]).map(h => h.toLowerCase());
-    const values = parseCSVLine(lines[1]);
+    const parsed = lines.map(parseCSVLine);
+    const headers = parsed[0]?.map(header => header.toLowerCase());
+    if (!headers || new Set(headers).size !== headers.length || !headers.includes('run')
+      || parsed.some(row => row === null || row.length !== headers.length)) {
+      return { success: false, error: { code: 'INVALID_RUN_METADATA', message: 'SRA returned malformed or ambiguous run metadata.' } };
+    }
+    const runColumn = headers.indexOf('run');
+    const matches = parsed.slice(1).filter((row): row is string[] => row !== null && row[runColumn] === runId);
+    if (matches.length !== 1) {
+      return { success: false, error: { code: 'RUN_ID_MISMATCH', message: 'SRA metadata must contain exactly one row for the requested run accession.' } };
+    }
+    const values = matches[0];
 
     const getField = (name: string): string | undefined => {
       const idx = headers.indexOf(name);
@@ -124,27 +107,26 @@ export async function fetchSRARunMetadata(runId: string): Promise<APIResult<SRAR
     };
 
     const metadata: SRARunMetadata = {
-      run_id: runId,
+      run_id: values[runColumn],
       biosample: getField('biosample') || '',
       bioproject: getField('bioproject') || '',
       organism: getField('scientificname') || getField('organism') || '',
       collection_date: getField('collection_date'),
-      geo_loc_name: getField('geo_loc_name') || getField('sample_name'),
+      geo_loc_name: getField('geo_loc_name'),
       isolation_source: getField('isolation_source'),
       host: getField('host'),
       library_strategy: getField('librarystrategy'),
       platform: getField('platform'),
     };
 
-    // Try to extract coordinates from geo_loc_name
-    if (metadata.geo_loc_name) {
-      const parsed = parseGeoLocation(metadata.geo_loc_name);
-      metadata.latitude = parsed.lat;
-      metadata.longitude = parsed.lon;
-    }
+    const explicitPair = getField('latitude') && getField('longitude')
+      ? `${getField('latitude')},${getField('longitude')}` : '';
+    const coordinates = parseReportedCoordinates(getField('lat_lon') || explicitPair || metadata.geo_loc_name || '');
+    if (coordinates) Object.assign(metadata, coordinates);
 
     return { success: true, data: metadata };
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       success: false,
       error: {
@@ -165,18 +147,22 @@ export async function fetchSRARunMetadata(runId: string): Promise<APIResult<SRAR
  */
 export async function fetchSRARunMetadataBatch(
   runIds: string[],
-  batchSize: number = 3
+  batchSize: number = 3,
+  signal?: AbortSignal
 ): Promise<APIResult<SRARunMetadata[]>> {
+  signal?.throwIfAborted();
+  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 10) throw new Error('SRA batch size must be between 1 and 10.');
   const results: SRARunMetadata[] = [];
   const errors: string[] = [];
 
   // Process in batches
   for (let i = 0; i < runIds.length; i += batchSize) {
+    signal?.throwIfAborted();
     const batch = runIds.slice(i, i + batchSize);
 
     // Fetch batch in parallel
     const batchResults = await Promise.all(
-      batch.map(id => fetchSRARunMetadata(id))
+      batch.map(id => fetchSRARunMetadata(id, signal))
     );
 
     for (const result of batchResults) {
@@ -187,10 +173,6 @@ export async function fetchSRARunMetadataBatch(
       }
     }
 
-    // Small delay between batches
-    if (i + batchSize < runIds.length) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
   }
 
   if (results.length === 0 && errors.length > 0) {
@@ -261,6 +243,7 @@ export function processProvenanceData(
 ): EnvironmentalProvenanceData {
   // Group by location
   const locationMap = new Map<string, {
+    name: string;
     lat: number;
     lon: number;
     samples: SRARunMetadata[];
@@ -270,23 +253,19 @@ export function processProvenanceData(
   const allDates: string[] = [];
 
   for (const m of metadata) {
-    // Process location
-    if (m.geo_loc_name) {
-      const parsed = parseGeoLocation(m.geo_loc_name);
-      const key = parsed.name.split(':')[0].trim(); // Use country as key
-
-      if (parsed.lat !== undefined && parsed.lon !== undefined) {
-        const existing = locationMap.get(key);
-        if (existing) {
-          existing.samples.push(m);
-        } else {
-          locationMap.set(key, {
-            lat: parsed.lat,
-            lon: parsed.lon,
-            samples: [m],
-          });
-        }
-      }
+    // Preserve actual positions even when only a lat_lon field was reported.
+    // Group by coordinates, not country: different sample sites stay distinct.
+    const supplied = typeof m.latitude === 'number' && typeof m.longitude === 'number'
+      && Number.isFinite(m.latitude) && Number.isFinite(m.longitude)
+      && Math.abs(m.latitude) <= 90 && Math.abs(m.longitude) <= 180
+      ? { latitude: m.latitude, longitude: m.longitude } : null;
+    const coordinates = supplied ?? parseReportedCoordinates(m.geo_loc_name ?? '');
+    if (coordinates) {
+      const key = `${coordinates.latitude},${coordinates.longitude}`;
+      const existing = locationMap.get(key);
+      if (existing) existing.samples.push(m);
+      else locationMap.set(key, { name: m.geo_loc_name || m.run_id,
+        lat: coordinates.latitude, lon: coordinates.longitude, samples: [m] });
     }
 
     // Count isolation sources
@@ -302,7 +281,7 @@ export function processProvenanceData(
   }
 
   // Build locations array
-  const locations = Array.from(locationMap.entries()).map(([name, data]) => {
+  const locations = Array.from(locationMap.values()).map(data => {
     const sources = data.samples
       .map(s => s.isolation_source)
       .filter((s): s is string => !!s);
@@ -312,7 +291,7 @@ export function processProvenanceData(
       .sort();
 
     return {
-      name,
+      name: data.name,
       latitude: data.lat,
       longitude: data.lon,
       sampleCount: data.samples.length,

@@ -6,6 +6,21 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Environmental sample evidence
+
+- **Explicit local observations** — import a versioned sample dataset with its
+  own query, study, assay units, missing values, reported coordinates and date
+  precision. Summaries distinguish unassayed samples from observed zeros and
+  preserve the denominators used for occurrence and abundance.
+- **Browser analysis and verified replay** — inspect complete observation
+  tables and biome/geographic views, export dataset/evidence JSON or all-sample
+  TSV, and recompute saved evidence before accepting it. An exact taxon from a
+  supplied abundance table can be adapted with metadata joined by sample ID.
+- **Deliberate public and synthetic inputs** — public family context is fetched
+  only on request and remains unassayed for the query. Synthetic examples stay
+  labelled; missing coordinates are never placed at country centroids.
+  See the [evidence workspace guide](docs/EVIDENCE_WORKSPACES.md).
+
 ### Protein alignment and mapped structural evidence
 
 - **Real reference-derived residue analysis** — compute finite-sample Shannon

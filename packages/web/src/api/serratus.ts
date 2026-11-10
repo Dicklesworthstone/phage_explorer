@@ -33,8 +33,10 @@ function escapeODataString(input: string): string {
  */
 export async function searchByFamily(
   familyName: string,
-  limit: number = 100
+  limit: number = 100,
+  signal?: AbortSignal
 ): Promise<APIResult<SerratusSearchResponse>> {
+  signal?.throwIfAborted();
   try {
     // Serratus uses a SQL-like query interface
     // Query the nfamily table for matches to a viral family
@@ -44,6 +46,7 @@ export async function searchByFamily(
     const response = await fetch(url, {
       method: 'GET',
       headers: buildSerratusHeaders(),
+      signal,
     });
 
     if (!response.ok) {
@@ -76,6 +79,7 @@ export async function searchByFamily(
       },
     };
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       success: false,
       error: {
@@ -143,8 +147,10 @@ export async function getRunDetails(sraId: string): Promise<APIResult<SerratusSe
  */
 export async function searchPhageRelated(
   phageName: string,
-  limit: number = 50
+  limit: number = 50,
+  signal?: AbortSignal
 ): Promise<APIResult<SerratusSearchResponse>> {
+  signal?.throwIfAborted();
   // Common bacteriophage families to search
   const phageFamilies = [
     'Siphoviridae',
@@ -165,11 +171,12 @@ export async function searchPhageRelated(
     const response = await fetch(url, {
       method: 'GET',
       headers: buildSerratusHeaders(),
+      signal,
     });
 
     if (!response.ok) {
       // Try alternative endpoint if main one fails
-      return searchByFamily('Caudovirales', limit);
+      return searchByFamily('Caudovirales', limit, signal);
     }
 
     const data = await response.json();
@@ -191,6 +198,7 @@ export async function searchPhageRelated(
       },
     };
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       success: false,
       error: {

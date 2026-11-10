@@ -1,1084 +1,362 @@
-/**
- * EnvironmentalProvenanceOverlay
- *
- * Interactive visualization of phage environmental provenance:
- * - Novelty score and classification
- * - Biome distribution chart
- * - Geographic hit map
- * - Top metagenome hits list
- *
- * Hotkey: Ctrl+Shift+E (environmental)
- */
-
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
-import type { PhageRepository } from '../../db';
-import { useTheme } from '../../hooks/useTheme';
-import { Overlay } from './Overlay';
-import { useOverlay } from './OverlayProvider';
-import { useHotkey } from '../../hooks/useHotkey';
+/** Local sample evidence, with explicit public lookup and independently labelled catalogue comparison. */
+import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { AnalysisRecord, PhageFull } from '@phage-explorer/core';
+import { BIOME_NAMES, serializeAnalysisRecord } from '@phage-explorer/core';
+import { SketchCache, initMinHashWasm, type ContainmentMethod } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import {
-  SketchCache,
-  initMinHashWasm,
-  type ContainmentMethod,
-} from '@phage-explorer/comparison';
-import { OverlayProvenance } from './primitives';
+  environmentalEvidenceTsv,
+  serializeEnvironmentalDataset,
+  type EnvironmentalAnalysis,
+  type EnvironmentalDataset,
+} from '../../../../core/src/analysis/environmental-evidence';
+import type { PhageRepository } from '../../db';
+import type { ThemePalette } from '../../theme/types';
+import { useTheme } from '../../hooks/useTheme';
+import { useHotkey } from '../../hooks/useHotkey';
 import { ActionIds } from '../../keyboard';
-import {
-  analyzeProvenance,
-  generateDemoProvenanceData,
-  type ProvenanceResult,
-  BIOME_NAMES,
-  BIOME_COLORS,
-} from '@phage-explorer/core';
-import { AnalysisPanelSkeleton } from '../ui/Skeleton';
-import {
-  OverlayLoadingState,
-  OverlayEmptyState,
-  OverlayErrorState,
-} from './primitives';
-import {
-  searchPhageRelated,
-  fetchSRARunMetadataBatch,
-  processProvenanceData,
-  getCached,
-  setCache,
-  generateCacheKey,
-} from '../../api';
+import { EnvironmentalSession, readEnvironmentalFile } from '../../workers/EnvironmentalSession';
+import { fetchPublicEnvironmentalContext } from '../../api/environmental-evidence';
+import { downloadString } from '../../utils/export';
+import { Overlay } from './Overlay';
+import { useOverlay } from './OverlayProvider';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 
-interface EnvironmentalProvenanceOverlayProps {
-  repository: PhageRepository | null;
-  currentPhage: PhageFull | null;
+type ViewMode = 'overview' | 'biomes' | 'geography' | 'observations';
+const VIEW_NAMES: Record<ViewMode, string> = { overview: 'Overview', biomes: 'Biomes', geography: 'Geography', observations: 'All observations' };
+const OCCURRENCE = { detected: 'Detected', 'not-detected': 'Not detected in this assay', 'not-assayed': 'Not assayed' } as const;
+const PAGE_SIZE = 50;
+
+export function environmentalSourceLabel(dataset: EnvironmentalDataset): string {
+  if (dataset.source.kind === 'demo') return 'SYNTHETIC EXAMPLE — not observed environmental data';
+  if (dataset.source.kind === 'external') return 'EXTERNAL SOURCE — supplied source, not independently verified';
+  return 'LOCAL INPUT — supplied observations, not independently verified';
 }
 
-type ViewMode = 'overview' | 'biomes' | 'geography' | 'hits';
-type DataSource = 'loading' | 'real' | 'demo' | 'error';
+function SourceLabel({ dataset }: { dataset: EnvironmentalDataset }): React.ReactElement {
+  return <p data-testid="environmental-figure-source" style={{ fontSize: '.8rem', margin: '.25rem 0', overflowWrap: 'anywhere' }}>
+    {environmentalSourceLabel(dataset)} · {dataset.query.label} · {dataset.source.study}
+  </p>;
+}
 
-/** Novelty badge color based on classification */
-const NOVELTY_COLORS: Record<string, string> = {
-  novel: '#e74c3c',
-  rare: '#e67e22',
-  uncommon: '#f1c40f',
-  known: '#3498db',
-  well_characterized: '#27ae60',
-};
+function dateDescription(value: string | null): string {
+  if (value === null) return 'Not reported';
+  return `${value} (${value.length === 4 ? 'year only' : value.length === 7 ? 'month precision' : 'day precision'})`;
+}
 
-// NOTE: hashString and seededUnit used to live here. They existed for exactly
-// one purpose -- turning a phage name into a number that looked like a
-// containment score -- and became dead the moment that number was replaced with
-// a measured one. Removed rather than left available for the next person who
-// needs a plausible-looking value.
+/** The visible source stamp is part of each SVG, so it survives copying the figure. */
+export function EnvironmentalBiomeFigure({ dataset, analysis, colors }: {
+  dataset: EnvironmentalDataset; analysis: EnvironmentalAnalysis; colors: ThemePalette;
+}): React.ReactElement {
+  const height = 112 + analysis.biomes.length * 38;
+  const maximum = Math.max(1, ...analysis.biomes.map(biome => biome.samples));
+  return <figure style={{ margin: 0 }}>
+    <SourceLabel dataset={dataset} />
+    <svg viewBox={`0 0 720 ${height}`} role="img" aria-label="Environmental observations by biome and assay status"
+      style={{ width: '100%', maxHeight: 470, background: colors.backgroundAlt }}>
+      <title>{dataset.query.label}: sample counts by biome</title>
+      <desc>Stacked counts of detected, not detected, and not assayed observations. These are sample counts, not ecological prevalence.</desc>
+      <text x={14} y={22} fill={colors.text} fontSize={12}>{dataset.source.kind === 'demo' ? 'DEMO DATA — synthetic sample set' : `${dataset.source.kind.toUpperCase()} INPUT — sample metadata`}</text>
+      <text x={14} y={42} fill={colors.textDim} fontSize={11}>Query: {dataset.query.label.slice(0, 80)}</text>
+      {analysis.biomes.map((biome, index) => {
+        const y = 59 + index * 38;
+        const scale = 445 / maximum;
+        return <g key={biome.biome}>
+          <text x={14} y={y + 17} fill={colors.text} fontSize={12}>{BIOME_NAMES[biome.biome]}</text>
+          <rect x={176} y={y} width={biome.detected * scale} height={24} fill={colors.primary} />
+          <rect x={176 + biome.detected * scale} y={y} width={biome.notDetected * scale} height={24} fill={colors.secondary} />
+          <rect x={176 + (biome.detected + biome.notDetected) * scale} y={y} width={biome.notAssayed * scale} height={24} fill={colors.textMuted} />
+          <text x={633} y={y + 17} fill={colors.text} fontSize={12}>{biome.samples} samples</text>
+          <title>{`${BIOME_NAMES[biome.biome]}: ${biome.detected} detected, ${biome.notDetected} not detected, ${biome.notAssayed} not assayed`}</title>
+        </g>;
+      })}
+      <text x={14} y={height - 13} fill={colors.textDim} fontSize={11}>Counts describe supplied samples; missing assays are not observed zeros.</text>
+    </svg>
+    <figcaption style={{ fontSize: '.85rem' }}>
+      <span style={{ color: colors.primary }}>■ Detected</span> · <span style={{ color: colors.secondary }}>■ Not detected</span> · <span style={{ color: colors.textMuted }}>■ Not assayed</span>.
+      Each sample appears once. Counts are not k-mer containment or ecological prevalence.
+    </figcaption>
+  </figure>;
+}
 
-export function EnvironmentalProvenanceOverlay({
-  // `repository` was declared on the props interface and never destructured,
-  // so the overlay had a live database handle available and ignored it while
-  // synthesising the number it most needed. It is used now.
-  repository,
-  currentPhage,
-}: EnvironmentalProvenanceOverlayProps): React.ReactElement | null {
+export function EnvironmentalGeographyFigure({ dataset, analysis, colors }: {
+  dataset: EnvironmentalDataset; analysis: EnvironmentalAnalysis; colors: ThemePalette;
+}): React.ReactElement {
+  const points = analysis.locations.slice(0, 1000);
+  const x = (longitude: number) => 40 + (longitude + 180) / 360 * 640;
+  const y = (latitude: number) => 53 + (90 - latitude) / 180 * 300;
+  return <figure style={{ margin: 0 }}>
+    <SourceLabel dataset={dataset} />
+    <svg viewBox="0 0 720 400" role="img" aria-label="Reported environmental sample coordinates"
+      style={{ width: '100%', maxHeight: 420, background: colors.backgroundAlt }}>
+      <title>{dataset.query.label}: reported sample locations</title>
+      <desc>Coordinate grid of supplied sample positions. Countries without reported coordinates are not assigned a centroid. Marker size does not represent abundance or coordinate precision.</desc>
+      <text x={14} y={22} fill={colors.text} fontSize={12}>{dataset.source.kind === 'demo' ? 'DEMO DATA — synthetic sample set' : `${dataset.source.kind.toUpperCase()} INPUT — reported coordinates only`}</text>
+      <text x={14} y={42} fill={colors.textDim} fontSize={11}>Query: {dataset.query.label.slice(0, 80)}</text>
+      {[-90, -60, -30, 0, 30, 60, 90].map(latitude => <g key={latitude}>
+        <line x1={40} x2={680} y1={y(latitude)} y2={y(latitude)} stroke={colors.borderLight} />
+        <text x={5} y={y(latitude) + 4} fill={colors.textDim} fontSize={10}>{latitude}°</text>
+      </g>)}
+      {[-180, -120, -60, 0, 60, 120, 180].map(longitude => <g key={longitude}>
+        <line x1={x(longitude)} x2={x(longitude)} y1={53} y2={353} stroke={colors.borderLight} />
+        <text x={x(longitude)} y={369} textAnchor="middle" fill={colors.textDim} fontSize={10}>{longitude}°</text>
+      </g>)}
+      {points.map(point => <circle key={point.sampleId} data-sample-id={point.sampleId}
+        cx={x(point.longitude)} cy={y(point.latitude)} r={5}
+        fill={point.occurrence === 'detected' ? colors.primary : point.occurrence === 'not-assayed' ? colors.textMuted : colors.backgroundAlt}
+        stroke={point.occurrence === 'not-detected' ? colors.secondary : colors.text} strokeWidth={1.5}>
+        <title>{`${point.sampleId}: ${point.latitude}, ${point.longitude}; ${OCCURRENCE[point.occurrence]}; ${point.uncertaintyKm === null ? 'uncertainty not reported' : `stated uncertainty ${point.uncertaintyKm} km`}`}</title>
+      </circle>)}
+      <text x={14} y={392} fill={colors.textDim} fontSize={11}>Fixed-size markers show reported centres; uncertainty remains in the observation table.</text>
+    </svg>
+    <figcaption>
+      {analysis.totals.located}/{analysis.totals.samples} observations have coordinates; {analysis.totals.samples - analysis.totals.located} remain in the table without a map position.
+      {analysis.locations.length > points.length && ` Showing the first ${points.length} markers; export contains every observation.`}
+      {' '}Filled accent: detected; outline: not detected; muted: not assayed. Missing uncertainty is not zero uncertainty.
+    </figcaption>
+  </figure>;
+}
+
+export function EnvironmentalObservationTable({ dataset, page = 0 }: { dataset: EnvironmentalDataset; page?: number }): React.ReactElement {
+  const start = page * PAGE_SIZE;
+  return <div style={{ overflowX: 'auto' }}>
+    <SourceLabel dataset={dataset} />
+    <table aria-label="Environmental sample observations" style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead><tr><th>Sample / accession</th><th>Assay outcome</th><th>Abundance</th><th>Biome / country</th><th>Reported location / uncertainty</th><th>Collection date</th></tr></thead>
+      <tbody>{dataset.samples.slice(start, start + PAGE_SIZE).map(sample => <tr key={sample.id} data-testid="environmental-observation">
+        <td>{sample.id}<br />{sample.accession ?? 'No accession supplied'}</td>
+        <td>{OCCURRENCE[sample.occurrence]}</td>
+        <td>{sample.abundance === null ? 'Not measured' : String(sample.abundance)}</td>
+        <td>{BIOME_NAMES[sample.biome]}<br />{sample.country ?? 'Country not reported'}</td>
+        <td>{sample.location ? <>{sample.location.latitude}, {sample.location.longitude}<br />
+          {sample.location.uncertaintyKm === null ? 'Uncertainty not reported' : `${sample.location.uncertaintyKm} km stated uncertainty`}</> : 'Coordinates not reported'}</td>
+        <td>{dateDescription(sample.collectionDate)}</td>
+      </tr>)}</tbody>
+    </table>
+    <p>Abundance units: {dataset.measurement.type}; normalization: {dataset.measurement.normalization}.
+      A not-detected result is specific to the supplied assay and does not establish environmental absence.</p>
+  </div>;
+}
+
+/** Pure result surface shared by the live workspace and scientific-label regression tests. */
+export function EnvironmentalEvidenceResults({ dataset, analysis, record, view, colors, page = 0 }: {
+  dataset: EnvironmentalDataset; analysis: EnvironmentalAnalysis; record: AnalysisRecord;
+  view: ViewMode; colors: ThemePalette; page?: number;
+}): React.ReactElement {
+  return <section data-testid="environmental-result" data-result-id={record.resultId} style={{ display: 'grid', gap: '.75rem' }}>
+    {view === 'overview' && <>
+      <SourceLabel dataset={dataset} />
+      <h3>Evidence for {dataset.query.label}</h3>
+      <p>Query identifier: <code>{dataset.query.id}</code>{dataset.query.accession ? ` · ${dataset.query.accession}` : ' · No query accession supplied.'}</p>
+      <dl data-testid="environmental-summary" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '.75rem' }}>
+        {([
+          ['Samples', analysis.totals.samples], ['Assayed', analysis.totals.assayed], ['Detected', analysis.totals.detected],
+          ['Not detected', analysis.totals.notDetected], ['Not assayed', analysis.totals.notAssayed],
+          ['Located', analysis.totals.located], ['Dated', analysis.totals.dated],
+        ] as const).map(([label, value]) => <div key={label} style={{ padding: '.75rem', background: colors.backgroundAlt }}>
+          <dt>{label}</dt><dd style={{ margin: 0, fontSize: '1.3rem', fontWeight: 600 }}>{value}</dd>
+        </div>)}
+      </dl>
+      <p>These are observations for the explicitly supplied query and sample panel. Sample coverage and assay sensitivity limit interpretation.
+        No novelty score, host range, ecological specialization, or metagenomic containment is inferred.</p>
+    </>}
+    {view === 'biomes' && <>
+      <EnvironmentalBiomeFigure dataset={dataset} analysis={analysis} colors={colors} />
+      <div style={{ overflowX: 'auto' }}><table aria-label="Environmental biome summaries" style={{ width: '100%' }}>
+        <thead><tr><th>Biome</th><th>Samples</th><th>Assayed</th><th>Detected</th><th>Not detected</th><th>Not assayed</th><th>Detected / assayed</th><th>Mean abundance / measured samples</th></tr></thead>
+        <tbody>{analysis.biomes.map(biome => <tr key={biome.biome}><td>{BIOME_NAMES[biome.biome]}</td><td>{biome.samples}</td><td>{biome.assayed}</td>
+          <td>{biome.detected}</td><td>{biome.notDetected}</td><td>{biome.notAssayed}</td>
+          <td>{biome.detectionFraction === null ? 'Unavailable — no assays' : `${(biome.detectionFraction * 100).toFixed(1)}%`}</td>
+          <td>{biome.meanAbundance === null ? 'Not measured' : `${biome.meanAbundance.toPrecision(5)} / ${biome.abundanceSamples}`}</td></tr>)}</tbody>
+      </table></div>
+      <p>Detection fractions describe this sample panel and are not population prevalence. Abundance means use only reported values, in {dataset.measurement.type} units.</p>
+    </>}
+    {view === 'geography' && <EnvironmentalGeographyFigure dataset={dataset} analysis={analysis} colors={colors} />}
+    {view === 'observations' && <EnvironmentalObservationTable dataset={dataset} page={page} />}
+    {analysis.warnings.map(warning => <p key={warning} role="note">{warning}</p>)}
+    <AnalysisRecordDetails record={record} />
+  </section>;
+}
+
+interface CatalogResult {
+  score: number; nearest: string; containment: number; method: ContainmentMethod; uncertainty: number; referenceCount: number;
+}
+
+/** An explicit local comparison, independent of the imported environmental query. */
+function CatalogueDistinctiveness({ repository, currentPhage, open }: {
+  repository: PhageRepository | null; currentPhage: PhageFull | null; open: boolean;
+}): React.ReactElement {
+  const phages = usePhageStore(state => state.phages);
+  const scope = useMemo(() => ({ repository, currentPhage, phages }), [repository, currentPhage, phages]);
+  const [state, setState] = useState<{ scope: typeof scope; loading: boolean; result: CatalogResult | null; error: string | null } | null>(null);
+  const controller = useRef<AbortController | null>(null);
+  const owned = state?.scope === scope ? state : null;
+  useEffect(() => () => { controller.current?.abort(); controller.current = null; }, [scope, open]);
+  const compare = async () => {
+    if (!repository || !currentPhage || !open) return;
+    controller.current?.abort();
+    const owner = new AbortController(); controller.current = owner;
+    const current = () => !owner.signal.aborted && controller.current === owner;
+    setState({ scope, loading: true, result: null, error: null });
+    try {
+      await initMinHashWasm();
+      if (!current()) return;
+      const cache = new SketchCache();
+      const candidates = [currentPhage, ...phages.filter(phage => phage.id !== currentPhage.id)];
+      let referenceCount = 0;
+      for (const phage of candidates) {
+        const length = await repository.getFullGenomeLength(phage.id);
+        if (!current()) return;
+        if (!Number.isSafeInteger(length) || length < 1) throw new Error(`No complete sequence is available for ${phage.name}.`);
+        const sequence = await repository.getSequenceWindow(phage.id, 0, length);
+        if (!current()) return;
+        if (sequence.length !== length) throw new Error(`Incomplete sequence for ${phage.name}; no partial comparison was accepted.`);
+        const sketch = cache.getOrBuild(String(phage.id), sequence);
+        if (sketch && phage.id !== currentPhage.id) referenceCount++;
+      }
+      const best = cache.maxContainment(String(currentPhage.id));
+      if (!best) throw new Error('No comparable reference genome is available.');
+      if (current()) setState({ scope, loading: false, error: null, result: {
+        score: 1 - best.containment, containment: best.containment,
+        nearest: phages.find(phage => String(phage.id) === best.referenceId)?.name ?? best.referenceId,
+        method: best.method, uncertainty: best.uncertainty, referenceCount,
+      } });
+    } catch (cause) {
+      if (current()) setState({ scope, loading: false, result: null, error: cause instanceof Error ? cause.message : 'Local comparison failed.' });
+    } finally { if (current()) controller.current = null; }
+  };
+  return <details>
+    <summary>Separate local genome comparison</summary>
+    <p>This compares {currentPhage?.name ?? 'the selected genome'} with other genomes in the loaded catalog. It does not use the environmental dataset or contact an external service.</p>
+    <button type="button" disabled={!repository || !currentPhage || owned?.loading} onClick={() => void compare()}>Compare selected genome with local catalog</button>
+    {owned?.loading && <><p role="status">Reading and comparing catalog sequences…</p><button type="button" onClick={() => {
+      controller.current?.abort(); controller.current = null; setState({ scope, loading: false, result: null, error: null });
+    }}>Cancel catalog comparison</button></>}
+    {owned?.error && <p role="alert">{owned.error}</p>}
+    {owned?.result && <p data-testid="environmental-catalog-result">
+      {(owned.result.score * 100).toFixed(1)}% of the selected genome's 16-mers are absent from its closest individual reference, {owned.result.nearest}
+      {' '}(contains {(owned.result.containment * 100).toFixed(1)}%{owned.result.method === 'estimated' ? ` ± ${(owned.result.uncertainty * 100).toFixed(1)} percentage points` : ''}).
+      {' '}{owned.result.referenceCount} other genomes compared; {owned.result.method === 'estimated' ? 'MinHash estimate' : 'exact 16-mer containment'}.
+      This is not absence from the union of all references, environmental novelty, or environmental abundance.
+    </p>}
+  </details>;
+}
+
+export function EnvironmentalProvenanceOverlay({ repository, currentPhage }: {
+  repository: PhageRepository | null; currentPhage: PhageFull | null;
+}): React.ReactElement | null {
   const { theme } = useTheme();
-  const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-
-  const biomeCanvasRef = useRef<HTMLCanvasElement>(null);
-  const geoCanvasRef = useRef<HTMLCanvasElement>(null);
-
-  const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>('overview');
-  const [result, setResult] = useState<ProvenanceResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [dataSource, setDataSource] = useState<DataSource>('loading');
-  const [apiMessage, setApiMessage] = useState<string>('');
-
-  const wasOpenRef = useRef(false);
-  const lastAnalyzedKeyRef = useRef<string | null>(null);
-
-  // Hotkey: Ctrl+Shift+E
-  useHotkey(
-    ActionIds.OverlayEnvironmentalProvenance,
-    useCallback(() => toggle('environmentalProvenance'), [toggle]),
-    { modes: ['NORMAL'] }
-  );
-
-  const phages = usePhageStore(s => s.phages);
-
-  const overlayIsOpen = isOpen('environmentalProvenance');
-
-  /**
-   * Stamp "DEMO DATA" into a canvas that is drawing synthetic figures.
-   *
-   * The surrounding badge is enough on screen, but a canvas is the one part of
-   * this overlay a user can lift out of its context: right-click and copy, or
-   * crop a screenshot, and the label is gone while the chart still looks like a
-   * result. The stamp travels with the pixels.
-   *
-   * Drawn last so nothing paints over it, and kept out of the plot area's
-   * centre so it does not obscure the very figure it is qualifying.
-   */
-  const stampDemo = useCallback(
-    (ctx: CanvasRenderingContext2D, width: number, _height: number): void => {
-      if (dataSource !== 'demo' && dataSource !== 'error') return;
-      ctx.save();
-      ctx.font = 'bold 13px monospace';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'top';
-      const text = 'DEMO DATA — NOT THIS PHAGE';
-      const pad = 6;
-      const w = ctx.measureText(text).width;
-      ctx.fillStyle = 'rgba(220, 38, 38, 0.9)';
-      ctx.fillRect(width - w - pad * 3, 6, w + pad * 2, 22);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(text, width - pad * 2, 10);
-      ctx.restore();
-    },
-    [dataSource]
-  );
-
-  /**
-   * Provenance of the numbers in the analysis result, rendered beside each
-   * figure rather than only in the banner at the top.
-   *
-   * Returns null while loading, when there is nothing to label yet.
-   */
-  const resultProvenance = useCallback(
-    (): React.ReactElement | null => {
-      if (dataSource === 'demo' || dataSource === 'error') {
-        return <OverlayProvenance level="demo" source="synthetic sample set" />;
-      }
-      if (dataSource === 'real') {
-        return <OverlayProvenance level="external" source="NCBI SRA sample metadata" />;
-      }
-      return null;
-    },
-    [dataSource]
-  );
-
-  /**
-   * Catalogue-relative distinctiveness: 1 - (max containment of this genome
-   * within any OTHER catalogue genome), computed with real MinHash sketches.
-   *
-   * This is deliberately a different quantity from the metagenomic novelty the
-   * overlay used to claim, and it is labelled as such. It answers "how much of
-   * this genome appears elsewhere in the 24 reference phages", which is a
-   * question the shipped data can actually answer.
-   */
-  const [distinctiveness, setDistinctiveness] = useState<{
-    score: number;
-    nearestId: string;
-    containment: number;
-    /**
-     * Whether the containment was counted or estimated, and how far the
-     * estimate could be out. Carried into the UI rather than dropped: the
-     * MinHash estimate was measured to be off by as much as 0.6 when a small
-     * genome sits inside a much larger one, so a bare percentage would be
-     * overstating what is known.
-     */
-    method: ContainmentMethod;
-    uncertainty: number;
-  } | null>(null);
-  const [distinctivenessState, setDistinctivenessState] =
-    useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
-
-  // Compute catalogue-relative distinctiveness from real sketches.
-  //
-  // Separate from the SRA fetch above because it needs no network and answers
-  // a different question. It replaces the hashed "containment" that used to
-  // drive the headline novelty score.
-  useEffect(() => {
-    if (!overlayIsOpen || !repository || !currentPhage || phages.length === 0) return;
-
-    let cancelled = false;
-    setDistinctivenessState('loading');
-
-    void (async () => {
-      try {
-        await initMinHashWasm();
-        const cache = new SketchCache();
-
-        for (const p of phages) {
-          if (cancelled) return;
-          const length = await repository.getFullGenomeLength(p.id);
-          if (!Number.isFinite(length) || length <= 0) continue;
-          const seq = await repository.getSequenceWindow(p.id, 0, length);
-          if (!seq) continue;
-          cache.getOrBuild(String(p.id), seq);
-        }
-        if (cancelled) return;
-
-        const best = cache.maxContainment(String(currentPhage.id));
-        if (!best) {
-          // No comparable sketch. Report unavailable rather than 0, which
-          // would render as "maximally distinctive" -- a confident wrong answer.
-          setDistinctivenessState('unavailable');
-          return;
-        }
-        const nearest = phages.find(p => String(p.id) === best.referenceId);
-        setDistinctiveness({
-          score: 1 - best.containment,
-          nearestId: nearest?.name ?? best.referenceId,
-          containment: best.containment,
-          method: best.method,
-          uncertainty: best.uncertainty,
-        });
-        setDistinctivenessState('ready');
-      } catch {
-        if (!cancelled) setDistinctivenessState('unavailable');
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [overlayIsOpen, repository, currentPhage, phages]);
-
-  // Run analysis when overlay opens or phage changes
-  useEffect(() => {
-    const justOpened = overlayIsOpen && !wasOpenRef.current;
-    wasOpenRef.current = overlayIsOpen;
-
-    if (!overlayIsOpen) return;
-
-    const phageKey = String(currentPhage?.id ?? 'demo');
-    const phageName = currentPhage?.name ?? 'bacteriophage';
-    const shouldRun = justOpened || lastAnalyzedKeyRef.current !== phageKey || !result;
-    if (!shouldRun) return;
-
-    setLoading(true);
-    setError(null);
-    setDataSource('loading');
-    setApiMessage('');
-
-    let cancelled = false;
-
-    const runAnalysis = async () => {
-      try {
-        lastAnalyzedKeyRef.current = phageKey;
-
-        // Check cache first
-        const cacheKey = generateCacheKey('provenance', { phageKey, phageName });
-        const cached = getCached<{ result: ProvenanceResult; source: 'real' | 'demo' }>(cacheKey);
-        if (cached) {
-          if (cancelled) return;
-          setResult(cached.result);
-          setDataSource(cached.source);
-          setApiMessage(cached.source === 'real' ? 'Data loaded from cache' : '');
-          setLoading(false);
-          return;
-        }
-
-        // Try real API: Search Serratus for phage-related sequences
-        let usedRealData = false;
-        try {
-          setApiMessage('Searching Serratus database...');
-          const serratusResult = await searchPhageRelated(phageName, 50);
-          if (cancelled) return;
-
-          if (serratusResult.success && serratusResult.data.matches.length > 0) {
-            // Extract SRA run IDs
-            const runIds = serratusResult.data.matches
-              .map(m => m.run_id)
-              .filter(id => id && (id.startsWith('SRR') || id.startsWith('ERR') || id.startsWith('DRR')));
-
-            const uniqueRunIds = Array.from(new Set(runIds));
-            if (uniqueRunIds.length > 0) {
-              setApiMessage(`Fetching metadata for ${uniqueRunIds.length} SRA runs...`);
-              // Limit to first 20 runs to avoid rate limiting
-              const metadataResult = await fetchSRARunMetadataBatch(uniqueRunIds.slice(0, 20), 3);
-              if (cancelled) return;
-
-              if (metadataResult.success && metadataResult.data.length > 0) {
-                // Process into provenance format
-                const provenanceData = processProvenanceData(metadataResult.data);
-
-                // Convert to hits format for analyzeProvenance.
-                //
-                // `containment` used to be
-                //   0.3 + seededUnit(hashString(`${phageKey}:${loc.name}:...`)) * 0.5
-                // i.e. a hash of the phage name and the location string, shown
-                // under a green "REAL DATA" banner and driving the headline
-                // novelty score (1 - maxContainment). It was the single most
-                // misleading number in the app.
-                //
-                // It cannot be computed here honestly. SRA metadata gives
-                // locations, isolation sources and sample counts -- it does not
-                // give sequences, and containment is by definition a
-                // sequence-to-sequence measure. There is nothing to compare
-                // against, so no value is reported per location.
-                //
-                // It is null, not 0. Setting it to 0 was a first attempt at the
-                // same honesty and it made things worse: 0 is a measured claim
-                // that the genome shares nothing with the sample, so the
-                // headline novelty score (1 - maxContainment) read 100% NOVEL
-                // for every phage in the catalogue, under a green REAL DATA
-                // banner. Null means not measured, and the analysis now returns
-                // no novelty score at all rather than a maximal one.
-                //
-                // Real, correctly-scoped distinctiveness is computed separately
-                // below against the catalogue, where sequences do exist.
-                const realHits = provenanceData.locations.map(loc => ({
-                  metagenomeId: loc.runIds[0] ?? loc.name,
-                  source: 'other' as const, // SRA data doesn't fit other source categories
-                  containment: null,
-                  biome: mapIsolationSourceToBiome(loc.isolationSources[0]),
-                  location: {
-                    latitude: loc.latitude,
-                    longitude: loc.longitude,
-                    country: loc.name,
-                  },
-                  description: `${loc.sampleCount} samples from ${loc.isolationSources.join(', ') || 'various sources'}`,
-                }));
-
-                if (realHits.length > 0) {
-                  const analysisResult = analyzeProvenance(realHits);
-                  if (cancelled) return;
-                  setResult(analysisResult);
-                  setDataSource('real');
-                  setApiMessage(`Found ${provenanceData.totalSamples} real samples from ${provenanceData.locations.length} locations`);
-                  usedRealData = true;
-
-                  // Cache the result
-                  setCache(cacheKey, { result: analysisResult, source: 'real' as const }, { ttl: 24 * 60 * 60 * 1000 });
-                }
-              }
-            }
-          }
-        } catch {
-          // API failed, will fall back to demo data
-        }
-
-        // Fallback to demo data if real API didn't work
-        if (!usedRealData) {
-          if (cancelled) return;
-          setApiMessage('Using demonstration data (API unavailable or no matches found)');
-          const hits = generateDemoProvenanceData(phageKey);
-          const analysisResult = analyzeProvenance(hits);
-          setResult(analysisResult);
-          setDataSource('demo');
-
-          // Cache demo result with shorter TTL
-          setCache(cacheKey, { result: analysisResult, source: 'demo' as const }, { ttl: 60 * 60 * 1000 });
-        }
-      } catch (err) {
-        if (cancelled) return;
-        setResult(null);
-        setDataSource('error');
-        setError(err instanceof Error ? err.message : 'Provenance analysis failed.');
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    runAnalysis();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [overlayIsOpen, result, currentPhage]);
-
-  // Helper to map isolation source to BiomeType
-  function mapIsolationSourceToBiome(source?: string): 'gut' | 'marine' | 'freshwater' | 'soil' | 'hot_spring' | 'wastewater' | 'clinical' | 'food' | 'unknown' {
-    if (!source) return 'unknown';
-    const s = source.toLowerCase();
-    if (s.includes('soil') || s.includes('rhizo')) return 'soil';
-    if (s.includes('water') || s.includes('ocean') || s.includes('sea') || s.includes('marine')) return 'marine';
-    if (s.includes('fresh') || s.includes('lake') || s.includes('river')) return 'freshwater';
-    if (s.includes('gut') || s.includes('feces') || s.includes('intestin') || s.includes('oral') || s.includes('saliva')) return 'gut';
-    if (s.includes('waste') || s.includes('sewage') || s.includes('sludge')) return 'wastewater';
-    if (s.includes('hot') || s.includes('thermal') || s.includes('vent')) return 'hot_spring';
-    if (s.includes('hospital') || s.includes('clinical') || s.includes('patient')) return 'clinical';
-    if (s.includes('food') || s.includes('dairy') || s.includes('ferment')) return 'food';
-    return 'unknown';
-  }
-
-  // Draw biome distribution chart
-  useEffect(() => {
-    if (!isOpen('environmentalProvenance') || viewMode !== 'biomes') return;
-    if (!biomeCanvasRef.current || !result) return;
-
-    const canvas = biomeCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const draw = () => {
-      const dpr = window.devicePixelRatio || 1;
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      ctx.fillStyle = colors.background;
-      ctx.fillRect(0, 0, width, height);
-
-      const { biomeDistribution } = result;
-      if (biomeDistribution.length === 0) {
-        ctx.fillStyle = colors.textMuted;
-        ctx.textAlign = 'center';
-        ctx.font = '14px monospace';
-        ctx.fillText('No biome data available', width / 2, height / 2);
-        stampDemo(ctx, width, height);
-        return;
-      }
-
-      const padding = 20;
-      const barHeight = 30;
-      const barGap = 10;
-      const labelWidth = 120;
-      const barMaxWidth = width - padding * 2 - labelWidth - 60;
-
-      // When containment was never measured -- the usual case, since SRA
-      // metadata carries no sequence -- the bars encode how many sampled
-      // locations fall in each biome instead, and the axis says so. They used
-      // to encode containment 0 for every biome, which divided by zero, drew
-      // nothing, and printed "0%" beside every label as if measured.
-      const measuredContainment = biomeDistribution.some(b => b.maxContainment !== null);
-      const valueOf = (b: (typeof biomeDistribution)[number]) =>
-        measuredContainment ? (b.maxContainment ?? 0) : b.hitCount;
-      const maxValue = Math.max(...biomeDistribution.map(valueOf), 0);
-
-      biomeDistribution.slice(0, 8).forEach((biome, i) => {
-        const y = padding + i * (barHeight + barGap);
-        const barWidth = maxValue > 0 ? (valueOf(biome) / maxValue) * barMaxWidth : 0;
-
-        // Label
-        ctx.fillStyle = colors.text;
-        ctx.font = '12px monospace';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(BIOME_NAMES[biome.biome], padding, y + barHeight / 2);
-
-        // Bar background
-        ctx.fillStyle = colors.backgroundAlt;
-        ctx.fillRect(padding + labelWidth, y, barMaxWidth, barHeight);
-
-        // Bar fill
-        ctx.fillStyle = BIOME_COLORS[biome.biome];
-        ctx.fillRect(padding + labelWidth, y, barWidth, barHeight);
-
-        // Value
-        ctx.fillStyle = colors.text;
-        ctx.textAlign = 'left';
-        const label =
-          measuredContainment && biome.maxContainment !== null
-            ? `${Math.round(biome.maxContainment * 100)}%`
-            : `${biome.hitCount} loc`;
-        ctx.fillText(label, padding + labelWidth + barMaxWidth + 10, y + barHeight / 2);
-      });
-
-      // Say which quantity is on the axis, so the bars cannot be misread as
-      // containment when they are location counts.
-      ctx.fillStyle = colors.textMuted;
-      ctx.font = '11px monospace';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillText(
-        measuredContainment
-          ? 'Bar length = maximum containment in biome'
-          : 'Bar length = sampled locations per biome. Containment not measured.',
-        padding,
-        padding + Math.min(8, biomeDistribution.length) * (barHeight + barGap) + 4
-      );
-
-      stampDemo(ctx, width, height);
-    };
-
-    draw();
-
-    const resizeObserver = new ResizeObserver(draw);
-    resizeObserver.observe(canvas);
-    return () => resizeObserver.disconnect();
-  }, [overlayIsOpen, viewMode, result, colors, stampDemo]);
-
-  // Draw geographic map
-  useEffect(() => {
-    if (!isOpen('environmentalProvenance') || viewMode !== 'geography') return;
-    if (!geoCanvasRef.current || !result) return;
-
-    const canvas = geoCanvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const draw = () => {
-      const dpr = window.devicePixelRatio || 1;
-      const width = canvas.clientWidth;
-      const height = canvas.clientHeight;
-
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      ctx.fillStyle = colors.background;
-      ctx.fillRect(0, 0, width, height);
-
-      const { geoHeatmap } = result;
-
-      // Draw simplified world map outline
-      ctx.strokeStyle = colors.borderLight;
-      ctx.lineWidth = 1;
-
-      // Equirectangular projection helpers
-      const latToY = (lat: number) => height / 2 - (lat / 90) * (height / 2);
-      const lonToX = (lon: number) => width / 2 + (lon / 180) * (width / 2);
-
-      // Draw grid
-      ctx.strokeStyle = colors.borderLight + '40';
-      for (let lat = -60; lat <= 60; lat += 30) {
-        ctx.beginPath();
-        ctx.moveTo(0, latToY(lat));
-        ctx.lineTo(width, latToY(lat));
-        ctx.stroke();
-      }
-      for (let lon = -150; lon <= 150; lon += 30) {
-        ctx.beginPath();
-        ctx.moveTo(lonToX(lon), 0);
-        ctx.lineTo(lonToX(lon), height);
-        ctx.stroke();
-      }
-
-      // Draw hits.
-      //
-      // Radius and opacity encode containment. Where containment was not
-      // measured they must not vary, or every point renders at the minimum and
-      // the map reads as "found everywhere, abundant nowhere". Unmeasured
-      // points get one fixed neutral size, and the legend below says what the
-      // markers mean in that case.
-      for (const hit of geoHeatmap) {
-        const x = lonToX(hit.lon);
-        const y = latToY(hit.lat);
-
-        const radius = hit.intensity === null ? 7 : 5 + hit.intensity * 15;
-        const alpha = hit.intensity === null ? 0.45 : 0.3 + hit.intensity * 0.5;
-        ctx.fillStyle = `rgba(231, 76, 60, ${alpha})`;
-        ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Outline
-        ctx.strokeStyle = colors.error;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-
-      // Draw legend
-      ctx.fillStyle = colors.textDim;
-      ctx.font = '10px monospace';
-      ctx.textAlign = 'left';
-      ctx.fillText(
-        geoHeatmap.some(h => h.intensity !== null)
-          ? 'Circle size = containment strength'
-          : 'Marker = sampled location. Containment not measured, so size carries no meaning.',
-        10,
-        height - 10
-      );
-
-      stampDemo(ctx, width, height);
-    };
-
-    draw();
-
-    const resizeObserver = new ResizeObserver(draw);
-    resizeObserver.observe(canvas);
-    return () => resizeObserver.disconnect();
-  }, [overlayIsOpen, viewMode, result, colors, stampDemo]);
-
-  if (!overlayIsOpen) return null;
-
-  return (
-    <Overlay id="environmentalProvenance" title="ENVIRONMENTAL PROVENANCE MAP" size="xl">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', height: '100%' }}>
-        {/* Data source banner */}
-        <div
-          style={{
-            padding: '0.75rem',
-            backgroundColor: dataSource === 'real' ? colors.success + '22' : colors.warning + '22',
-            border: `1px solid ${dataSource === 'real' ? colors.success : colors.warning}`,
-            borderRadius: '4px',
-            color: colors.text,
-            fontSize: '0.85rem',
-          }}
-        >
-          {dataSource === 'loading' && (
-            <>
-              <strong style={{ color: colors.accent }}>LOADING</strong>: {apiMessage || 'Connecting to Serratus and NCBI SRA databases...'}
-            </>
-          )}
-          {dataSource === 'real' && (
-            <>
-              {/*
-                The banner now says exactly which parts are real, because the
-                previous unqualified "REAL DATA" sat above a containment score
-                that was a hash of the phage name. Geography and sample counts
-                come from SRA; per-sample containment does not exist, because
-                SRA metadata carries no sequence to compare against.
-              */}
-              <strong style={{ color: colors.success }}>REAL DATA</strong>:{' '}
-              {apiMessage || 'Locations, isolation sources and sample counts from NCBI SRA.'}{' '}
-              <span style={{ color: colors.textMuted }}>
-                Per-sample containment is not shown: SRA metadata carries no sequence to
-                compare against. Sequence-level distinctiveness is measured against the
-                24-genome catalogue below.
-              </span>
-            </>
-          )}
-          {dataSource === 'demo' && (
-            <>
-              <strong style={{ color: colors.warning }}>DEMO MODE</strong>: {apiMessage || 'Using synthetic data. Real data requires metagenome containment search results from databases like Serratus/IMG/VR.'}
-            </>
-          )}
-          {dataSource === 'error' && (
-            <>
-              <strong style={{ color: colors.error }}>ERROR</strong>: Failed to fetch data. Showing demo visualization.
-            </>
-          )}
+  const open = isOpen('environmentalProvenance');
+  const id = useId();
+  const session = useMemo(() => new EnvironmentalSession(() => new Worker(new URL('../../workers/environmental.worker.ts', import.meta.url), { type: 'module' })), []);
+  const { accepted, loading, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [paste, setPaste] = useState('');
+  const [abundanceFile, setAbundanceFile] = useState<File | null>(null);
+  const [taxon, setTaxon] = useState('');
+  const [view, setView] = useState<ViewMode>('overview');
+  const [page, setPage] = useState(0);
+  const [exportError, setExportError] = useState<string | null>(null);
+  useHotkey(ActionIds.OverlayEnvironmentalProvenance, () => toggle('environmentalProvenance'), { modes: ['NORMAL'] });
+  useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open, session]);
+  useEffect(() => { setPage(0); setView('overview'); setExportError(null); }, [accepted]);
+  if (!open) return null;
+  const colors = theme.colors;
+  const dataset = accepted?.dataset;
+  const inputStyle: React.CSSProperties = { padding: '.5rem', color: colors.text, background: colors.background, border: `1px solid ${colors.borderLight}`, width: '100%', minWidth: 0 };
+  const pageCount = Math.max(1, Math.ceil((dataset?.samples.length ?? 0) / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount - 1);
+  const save = (format: 'dataset' | 'record' | 'tsv') => {
+    if (!accepted) return;
+    try {
+      if (format === 'dataset') downloadString(serializeEnvironmentalDataset(accepted.dataset), 'environmental-dataset.json', 'application/json');
+      else if (format === 'record' && accepted.record) downloadString(serializeAnalysisRecord(accepted.record), 'environmental-evidence.json', 'application/json');
+      else if (format === 'tsv' && accepted.analysis) downloadString(environmentalEvidenceTsv(accepted.dataset, accepted.analysis), 'environmental-observations.tsv', 'text/tab-separated-values');
+      setExportError(null);
+    } catch (cause) { setExportError(cause instanceof Error ? cause.message : 'Could not export environmental evidence.'); }
+  };
+  return <Overlay id="environmentalProvenance" title="ENVIRONMENTAL SAMPLE EVIDENCE" size="xl"
+    provenanceBadge={<span data-testid="environmental-header-source" style={{ fontSize: '.75rem', color: colors.textDim }}>{dataset ? environmentalSourceLabel(dataset) : 'No environmental input loaded'}</span>}>
+    <section aria-label="Environmental evidence workspace" style={{ display: 'grid', gap: '1rem', color: colors.text, minWidth: 0, overflowWrap: 'anywhere' }}>
+      <div style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
+        <strong data-testid="environmental-source">{dataset ? environmentalSourceLabel(dataset) : 'NO ENVIRONMENTAL DATA LOADED'}</strong>
+        <p>Import sample observations for an explicit query or taxon. Local files are processed in a worker and are not uploaded.
+          Changing the catalog phage does not rename the query or transform sample metadata into genome matches.</p>
+        <label htmlFor={`${id}-import`}>Import environmental dataset or saved evidence JSON</label>
+        <input id={`${id}-import`} type="file" accept=".json,application/json" disabled={loading}
+          onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) void session.importFile(file); }} />
+        <details style={{ marginTop: '.75rem' }}><summary>Paste environmental dataset JSON</summary>
+          <label htmlFor={`${id}-paste`}>Environmental JSON input</label>
+          <textarea id={`${id}-paste`} rows={7} style={inputStyle} value={paste} onChange={event => setPaste(event.target.value)} disabled={loading} />
+          <button type="button" disabled={loading || !paste.trim()} onClick={() => void session.run({ kind: 'import', content: paste })}>Load pasted environmental data</button>
+        </details>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem', marginTop: '.75rem' }}>
+          <button type="button" disabled={loading} onClick={() => void session.run({ kind: 'demo' })}>Load synthetic environmental example</button>
+          <button type="button" disabled={!loading} onClick={session.cancel}>Cancel environmental work</button>
         </div>
-
-        {/* Catalogue-relative distinctiveness: real, and labelled for what it is. */}
-        {(distinctivenessState === 'ready' || distinctivenessState === 'loading' ||
-          distinctivenessState === 'unavailable') && (
-          <div
-            style={{
-              border: `1px solid ${colors.borderLight}`,
-              borderRadius: '4px',
-              padding: '0.75rem 1rem',
-              marginBottom: '0.75rem',
-              fontSize: '0.85rem',
-            }}
-          >
-            <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
-              Catalogue distinctiveness{' '}
-              <OverlayProvenance
-                level="measured"
-                source={
-                  distinctiveness?.method === 'estimated'
-                    ? 'MinHash containment estimate, k=16'
-                    : 'Exact 16-mer containment'
-                }
-              />
-            </div>
-            {distinctivenessState === 'loading' && (
-              <span style={{ color: colors.textMuted }}>Sketching the catalogue…</span>
-            )}
-            {distinctivenessState === 'unavailable' && (
-              <span style={{ color: colors.textMuted }}>
-                Not available for this phage. No score is shown rather than a default,
-                because 0 would read as &ldquo;maximally distinctive&rdquo;.
-              </span>
-            )}
-            {distinctivenessState === 'ready' && distinctiveness && (
-              <div>
-                <span style={{ color: colors.text, fontWeight: 600 }}>
-                  {(distinctiveness.score * 100).toFixed(1)}%
-                </span>{' '}
-                of this genome&rsquo;s 16-mers are absent from every other catalogue
-                genome. Closest relative:{' '}
-                <span style={{ color: colors.accent }}>{distinctiveness.nearestId}</span>{' '}
-                (contains {(distinctiveness.containment * 100).toFixed(1)}%
-                {distinctiveness.method === 'estimated' &&
-                  ` \u00b1 ${(distinctiveness.uncertainty * 100).toFixed(1)}`}{' '}
-                of them).
-                <div style={{ color: colors.textMuted, marginTop: '0.35rem' }}>
-                  Measured against the 24 reference genomes shipped with the app, not
-                  against metagenomes. A phage can be distinctive here and still be
-                  common in the environment.
-                  {distinctiveness.method === 'estimated' && (
-                    <>
-                      {' '}
-                      This genome is too large to count k-mers directly, so the figure
-                      is a MinHash estimate and carries the interval shown.
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Provenance badge for the analysis result, reused at every figure.
-
-            The banner at the top of the overlay was not enough. Every number
-            below it is rendered by the same code on both paths, so a seeded
-            random value looked identical to a measured one, and a screenshot of
-            a panel carried no trace of which it was. This badge travels with
-            each figure instead. */}
-        {/* Novelty badge.
-
-            Rendered only when a novelty score exists. It is absent whenever no
-            hit carried a containment, which is every result built from SRA
-            metadata -- that API returns locations and sample counts, never
-            sequences. The badge previously read "Novelty Score: 100% / NOVEL"
-            for every phage in the catalogue because containment was being set
-            to 0, and it sat directly under the green REAL DATA banner. */}
-        {result?.novelty && (
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '0.75rem 1rem',
-              backgroundColor: NOVELTY_COLORS[result.novelty.classification] + '22',
-              border: `1px solid ${NOVELTY_COLORS[result.novelty.classification]}`,
-              borderRadius: '4px',
-            }}
-          >
-            <div>
-              <strong style={{ color: NOVELTY_COLORS[result.novelty.classification] }}>
-                Novelty Score: {(result.novelty.score * 100).toFixed(0)}%
-              </strong>
-              <span
-                style={{
-                  marginLeft: '1rem',
-                  padding: '0.25rem 0.5rem',
-                  backgroundColor: NOVELTY_COLORS[result.novelty.classification],
-                  color: '#fff',
-                  borderRadius: '4px',
-                  fontSize: '0.8rem',
-                  textTransform: 'uppercase',
-                  fontWeight: 'bold',
-                }}
-              >
-                {result.novelty.classification.replace('_', ' ')}
-              </span>
-            </div>
-            <span
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '0.6rem',
-                color: colors.textDim,
-                fontSize: '0.85rem',
-              }}
-            >
-              {result.novelty.totalHits} metagenome hits
-              {resultProvenance()}
-            </span>
-          </div>
-        )}
-
-        {/* Why the novelty score is missing, said explicitly. An absent number
-            with no explanation reads as a bug; this says it was not measured
-            and what would be needed to measure it. */}
-        {result && !result.novelty && (
-          <div
-            style={{
-              padding: '0.75rem 1rem',
-              border: `1px solid ${colors.borderLight}`,
-              borderRadius: '4px',
-              fontSize: '0.85rem',
-              color: colors.textMuted,
-            }}
-          >
-            <strong style={{ color: colors.text }}>No novelty score.</strong> Novelty is
-            1 &minus; containment against metagenomes, and containment is a
-            sequence-to-sequence measure. The SRA records behind this view carry
-            locations, isolation sources and sample counts, but no sequence, so there is
-            nothing to compare against. Computing it would need a sketch index of the
-            metagenomes themselves. Catalogue distinctiveness above is measured and is a
-            different question.
-          </div>
-        )}
-
-        {/* View mode tabs */}
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          {(['overview', 'biomes', 'geography', 'hits'] as ViewMode[]).map(mode => (
-            <button
-              key={mode}
-              onClick={() => setViewMode(mode)}
-              style={{
-                padding: '0.5rem 1rem',
-                border: `1px solid ${viewMode === mode ? colors.accent : colors.borderLight}`,
-                borderRadius: '4px',
-                backgroundColor: viewMode === mode ? colors.accent + '22' : 'transparent',
-                color: viewMode === mode ? colors.accent : colors.text,
-                cursor: 'pointer',
-                fontFamily: 'monospace',
-                fontSize: '0.85rem',
-                textTransform: 'uppercase',
-              }}
-            >
-              {mode === 'overview' && 'Overview'}
-              {mode === 'biomes' && 'Biomes'}
-              {mode === 'geography' && 'Geography'}
-              {mode === 'hits' && 'Top Hits'}
-            </button>
-          ))}
-        </div>
-
-        {/* Content area */}
-        {loading ? (
-          <OverlayLoadingState message={apiMessage || 'Connecting to metagenome databases...'}>
-            <AnalysisPanelSkeleton />
-          </OverlayLoadingState>
-        ) : error ? (
-          <OverlayErrorState
-            message="Failed to load provenance data"
-            details={error}
-          />
-        ) : !result ? (
-          <OverlayEmptyState
-            message="No provenance data available"
-            hint="Provenance analysis requires metagenome containment data from Serratus or similar databases."
-          />
-        ) : (
-          <div style={{ flex: 1, overflow: 'auto' }}>
-            {viewMode === 'overview' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {/* Primary habitat */}
-                <div
-                  style={{
-                    padding: '1rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.6rem',
-                      color: colors.textDim,
-                      fontSize: '0.85rem',
-                      marginBottom: '0.5rem',
-                    }}
-                  >
-                    PRIMARY HABITAT
-                    {resultProvenance()}
-                  </div>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                    }}
-                  >
-                    <span
-                      style={{
-                        width: '12px',
-                        height: '12px',
-                        borderRadius: '50%',
-                        backgroundColor: BIOME_COLORS[result.primaryHabitat],
-                      }}
-                    />
-                    <strong style={{ color: colors.text, fontSize: '1.1rem' }}>
-                      {BIOME_NAMES[result.primaryHabitat]}
-                    </strong>
-                  </div>
-                </div>
-
-                {/* Ecological context */}
-                <div
-                  style={{
-                    padding: '1rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div style={{ color: colors.textDim, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-                    ECOLOGICAL CONTEXT
-                  </div>
-                  <p style={{ color: colors.text, margin: 0, lineHeight: 1.5 }}>
-                    {result.ecologicalContext}
-                  </p>
-                </div>
-
-                {/* Novelty interpretation */}
-                <div
-                  style={{
-                    padding: '1rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div style={{ color: colors.textDim, fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-                    NOVELTY INTERPRETATION
-                  </div>
-                  <p style={{ color: colors.text, margin: 0, lineHeight: 1.5 }}>
-                    {/* Without a containment there is no novelty and therefore
-                        nothing to interpret. This paragraph used to print "shows
-                        minimal similarity to known metagenomes, suggesting it
-                        represents a novel lineage" for every phage, which is a
-                        strong scientific claim generated from a hardcoded 0. */}
-                    {result.novelty
-                      ? result.novelty.interpretation
-                      : 'Not available. Novelty needs containment against metagenome sketches, ' +
-                        'and the SRA records behind this view carry no sequence to compare against.'}
-                  </p>
-                </div>
-
-                {/* Quick biome summary */}
-                <div
-                  style={{
-                    padding: '1rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                  }}
-                >
-                  <div style={{ color: colors.textDim, fontSize: '0.85rem', marginBottom: '0.75rem' }}>
-                    BIOME DISTRIBUTION
-                  </div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                    {result.biomeDistribution.slice(0, 5).map(b => (
-                      <span
-                        key={b.biome}
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: '0.25rem',
-                          padding: '0.25rem 0.5rem',
-                          backgroundColor: BIOME_COLORS[b.biome] + '33',
-                          border: `1px solid ${BIOME_COLORS[b.biome]}`,
-                          borderRadius: '4px',
-                          fontSize: '0.8rem',
-                        }}
-                      >
-                        <span
-                          style={{
-                            width: '8px',
-                            height: '8px',
-                            borderRadius: '50%',
-                            backgroundColor: BIOME_COLORS[b.biome],
-                          }}
-                        />
-                        {BIOME_NAMES[b.biome]}:{' '}
-                        {b.maxContainment === null
-                          ? `${b.hitCount} loc`
-                          : `${Math.round(b.maxContainment * 100)}%`}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {viewMode === 'biomes' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.6rem',
-                    color: colors.textDim,
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  BIOME DISTRIBUTION
-                  {resultProvenance()}
-                </div>
-                <div
-                  style={{
-                    height: '350px',
-                    border: `1px solid ${colors.borderLight}`,
-                    borderRadius: '4px',
-                    overflow: 'hidden',
-                  }}
-                >
-                <canvas ref={biomeCanvasRef} role="img" aria-label="Biome distribution chart showing environmental source predictions" style={{ width: '100%', height: '100%', display: 'block' }} />
-                </div>
-              </div>
-            )}
-
-            {viewMode === 'geography' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.6rem',
-                    color: colors.textDim,
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  SAMPLE GEOGRAPHY
-                  {resultProvenance()}
-                </div>
-                <div
-                  style={{
-                    height: '350px',
-                    border: `1px solid ${colors.borderLight}`,
-                    borderRadius: '4px',
-                    overflow: 'hidden',
-                  }}
-                >
-                <canvas ref={geoCanvasRef} role="img" aria-label="Geographic distribution map showing sample locations" style={{ width: '100%', height: '100%', display: 'block' }} />
-                </div>
-              </div>
-            )}
-
-            {viewMode === 'hits' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.6rem',
-                    color: colors.textDim,
-                    fontSize: '0.85rem',
-                  }}
-                >
-                  TOP HITS
-                  {resultProvenance()}
-                </div>
-                {result.topHits.map((hit, i) => (
-                  <div
-                    key={hit.metagenomeId}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '0.75rem',
-                      backgroundColor: i % 2 === 0 ? colors.backgroundAlt : 'transparent',
-                      borderRadius: '4px',
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span
-                          style={{
-                            width: '10px',
-                            height: '10px',
-                            borderRadius: '50%',
-                            backgroundColor: BIOME_COLORS[hit.biome],
-                          }}
-                        />
-                        <strong style={{ color: colors.text }}>{hit.source}</strong>
-                        <span style={{ color: colors.textDim, fontSize: '0.85rem' }}>
-                          {hit.metagenomeId}
-                        </span>
-                      </div>
-                      <div style={{ color: colors.textMuted, fontSize: '0.8rem', marginTop: '0.25rem' }}>
-                        {hit.description}
-                      </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div
-                        style={{
-                          color: hit.containment === null ? colors.textMuted : colors.accent,
-                          fontWeight: 'bold',
-                        }}
-                      >
-                        {/* Every row printed "0%" when containment was set to
-                            zero, which reads as a measured absence. An em dash
-                            reads as what it is: no measurement. */}
-                        {hit.containment === null
-                          ? '\u2014'
-                          : `${Math.round(hit.containment * 100)}%`}
-                      </div>
-                      <div style={{ color: colors.textDim, fontSize: '0.8rem' }}>
-                        {hit.location.country}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+        {loading && <p role="status" data-testid="environmental-progress">{phase}. The last accepted input and result remain unchanged.</p>}
+        {notice && <p role="status" data-testid="environmental-notice">{notice}</p>}
+        {(error || exportError) && <p role="alert">{error ?? exportError}</p>}
       </div>
-    </Overlay>
-  );
+      <details><summary>Use a taxon from an abundance dataset</summary>
+        <p>Export a dataset from the Abundance associations &amp; niche factors view, then select that file and enter its exact taxon identifier.
+          Sample metadata joins by sample ID. Counts and relative abundance remain their original units; they are not containment.</p>
+        <label htmlFor={`${id}-abundance`}>Abundance dataset JSON</label>
+        <input id={`${id}-abundance`} type="file" accept=".json,application/json" disabled={loading}
+          onChange={event => { setAbundanceFile(event.currentTarget.files?.[0] ?? null); }} />
+        <label htmlFor={`${id}-taxon`}>Exact abundance taxon identifier</label>
+        <input id={`${id}-taxon`} type="text" style={inputStyle} value={taxon} disabled={loading} onChange={event => setTaxon(event.target.value)} />
+        <button type="button" disabled={loading || !abundanceFile || !taxon.trim()} onClick={() => {
+          const file = abundanceFile, selectedTaxon = taxon;
+          if (!file) return;
+          void session.run(async signal => {
+            const content = await readEnvironmentalFile(file);
+            if (signal.aborted) throw new DOMException('Abundance input cancelled', 'AbortError');
+            return { kind: 'abundance', content, taxon: selectedTaxon };
+          });
+        }}>Load selected abundance taxon</button>
+      </details>
+      <details><summary>Optional public reference context</summary>
+        <p>This explicit lookup contacts Serratus and NCBI SRA for broad phage-family sample metadata. It sends no local file, genome, or selected-phage name.
+          The records are not sequence matches for the selected phage; SRA metadata carries no sequence to compare against. Every record remains not assayed for the dataset query.</p>
+        <button type="button" disabled={loading} onClick={() => void session.run(async signal => ({ kind: 'import', content: JSON.stringify(await fetchPublicEnvironmentalContext(signal)) }))}>Fetch public phage-family context</button>
+      </details>
+      <details><summary>Dataset fields and interpretation</summary>
+        <p>Version 1 uses <code>format: phage-explorer-environmental</code>, a dataset name, an explicit <code>query</code> with ID/label/accession,
+          a <code>source</code> with kind/study/reference/version/license, and <code>measurement</code> with type/method/normalization.</p>
+        <p>Each sample has a unique ID, nullable accession, biome, nullable country/location/date, an occurrence value of detected, not-detected or not-assayed,
+          and nullable abundance. Location carries latitude, longitude and nullable uncertainty in kilometres. Dates preserve YYYY, YYYY-MM or YYYY-MM-DD precision.</p>
+        <p>Missing coordinates are not placed at country centroids; missing dates are not assigned a day; an unassayed sample is not an observed zero.
+          Export the explicitly labelled synthetic example to inspect the full input layout.</p>
+      </details>
+      {dataset && <section aria-label="Accepted environmental input">
+        <h3 data-testid="environmental-dataset-name">{dataset.name}</h3>
+        <p>Query: <strong>{dataset.query.label}</strong> (<code>{dataset.query.id}</code>){dataset.query.accession ? ` · ${dataset.query.accession}` : ''}.</p>
+        <p>{dataset.samples.length} sample records · {dataset.measurement.type} · method: {dataset.measurement.method} · normalization: {dataset.measurement.normalization}.</p>
+        <p>Study/source: {dataset.source.study} · version: {dataset.source.version} · license: {dataset.source.license ?? 'Not supplied'}.
+          {' '}Reference: {dataset.source.reference ?? 'Not supplied'}.</p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
+          <button type="button" disabled={loading} onClick={() => void session.run({ kind: 'analyze', dataset })}>Analyze environmental observations</button>
+          <button type="button" disabled={loading} onClick={() => save('dataset')}>Export environmental dataset</button>
+          <button type="button" disabled={loading || !accepted?.record} onClick={() => save('record')}>Export environmental evidence</button>
+          <button type="button" disabled={loading || !accepted?.analysis} onClick={() => save('tsv')}>Export all observations TSV</button>
+        </div>
+        {!accepted?.analysis && <p role="status">Input accepted. Review query, source and sample scope, then analyze. No environmental conclusion has been computed.</p>}
+      </section>}
+      {dataset && accepted?.analysis && accepted.record && <>
+        <div role="group" aria-label="Environmental evidence views" style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
+          {(Object.keys(VIEW_NAMES) as ViewMode[]).map(mode => <button key={mode} type="button" aria-pressed={view === mode}
+            onClick={() => setView(mode)}>{VIEW_NAMES[mode]}</button>)}
+        </div>
+        <EnvironmentalEvidenceResults dataset={dataset} analysis={accepted.analysis} record={accepted.record} view={view} colors={colors} page={currentPage} />
+        {view === 'observations' && pageCount > 1 && <div>
+          <button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous observations</button>
+          <span> Page {currentPage + 1}/{pageCount} </span>
+          <button type="button" disabled={currentPage + 1 === pageCount} onClick={() => setPage(currentPage + 1)}>Next observations</button>
+          <p>Showing at most {PAGE_SIZE} rows per page. JSON and TSV exports include every sample.</p>
+        </div>}
+      </>}
+      <CatalogueDistinctiveness repository={repository} currentPhage={currentPhage} open={open} />
+    </section>
+  </Overlay>;
 }
-
-export default EnvironmentalProvenanceOverlay;

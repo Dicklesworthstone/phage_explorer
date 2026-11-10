@@ -74,7 +74,7 @@ command palette or a menu.
 | `Alt+e` | Defense arms race | heuristic | Open defense arms race overlay |
 | `b` | DNA bendability |  | Open bendability analysis |
 | `Alt+o` | Dot plot analysis |  | Open dot plot analysis |
-| `Ctrl+Shift+e` | Environmental provenance | external → demo | Open environmental provenance overlay |
+| `Ctrl+Shift+e` | Environmental provenance | input | Import environmental observations, inspect missing data, and export or replay evidence |
 | `Alt+Shift+e` | Epistasis explorer |  | Open epistasis overlay |
 | `Alt+Shift+f` | Fold quickview |  | Open fold quickview overlay |
 | `g` | GC skew analysis |  | Open GC skew analysis |
