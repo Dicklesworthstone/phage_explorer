@@ -119,7 +119,7 @@ export const TUI_FUNCTION_KEYS: readonly TuiBinding[] = [
   { keys: ['F3'], display: 'F3', action: 'Comparison view', category: 'System', handler: "fKey === 'F3'" },
   { keys: ['F4'], display: 'F4', action: 'Toggle diff', category: 'View', handler: "fKey === 'F4'" },
   { keys: ['F5'], display: 'F5', action: 'Toggle 3D model', category: 'View', handler: "fKey === 'F5'" },
-  { keys: ['F6'], display: 'F6', action: 'Cycle theme', category: 'View', handler: "fKey === 'F6'" },
+  { keys: ['F6'], display: 'F6', action: 'CRISPR spacer evidence', category: 'View', handler: "fKey === 'F6'" },
   { keys: ['F7'], display: 'F7', action: 'Cycle reading frame', category: 'View', handler: "fKey === 'F7'" },
   { keys: ['F8'], display: 'F8', action: 'Cycle view mode', category: 'View', handler: "fKey === 'F8'" },
   { keys: ['F9'], display: 'F9', action: 'GC skew', category: 'Analysis', handler: "fKey === 'F9'" },

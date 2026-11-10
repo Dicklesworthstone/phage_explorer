@@ -228,7 +228,7 @@ reached by use over time or by manual promotion.
 | `F3` | Comparison view |
 | `F4` | Toggle diff |
 | `F5` | Toggle 3D model |
-| `F6` | Cycle theme |
+| `F6` | CRISPR spacer evidence |
 | `F7` | Cycle reading frame |
 | `F8` | Cycle view mode |
 | `F9` | GC skew |

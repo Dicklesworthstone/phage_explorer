@@ -13,6 +13,7 @@ import { parseAnalysisRecord } from '../../../core/src/analysis-result';
 import { createLocalGenomeRepository } from '../../../db-runtime/src/local-genomes';
 import type { SpacerRepository } from '../../../web/src/workers/SpacerReferenceSession';
 import { CRISPROverlay } from './CRISPROverlay';
+import { App } from './App';
 
 const guide = 'ACGATTCGGTACCTAGTGCA';
 const sequence = 'TTTT' + guide + 'AGG' + 'GAT'.repeat(60);
@@ -37,16 +38,20 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise(done => setTimeout(done, 10));
   }
 }
-function terminal(repository: SpacerRepository) {
-  let output = '', ready = false;
-  const stdout = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done(); } }), { columns: 80, rows: 24 });
+function terminal(repository: SpacerRepository, element = <CRISPROverlay repository={repository} />) {
+  let output = '', lastFrame = '', ready = false;
+  const stdout = Object.assign(new Writable({ write(chunk, _encoding, done) {
+    const frame = chunk.toString(); output += frame;
+    if (frame.includes('╭')) lastFrame = stripVTControlCharacters(frame).trimEnd();
+    done();
+  } }), { columns: 80, rows: 24 });
   const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() { ready = true; }, ref() {}, unref() {} });
-  const ui = render(<CRISPROverlay repository={repository} />, { stdout: stdout as unknown as NodeJS.WriteStream,
+  const ui = render(element, { stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream, stderr: stdout as unknown as NodeJS.WriteStream,
     debug: true, patchConsole: false, exitOnCtrlC: false });
-  return { ui, input: (value: string) => stdin.write(value), ready: () => ready,
+  return { ui, input: (value: string) => stdin.write(value), ready: () => ready, rawListeners: () => stdin.listenerCount('data'),
     output: () => stripVTControlCharacters(output), clear: () => { output = ''; },
-    frame: () => { const plain = stripVTControlCharacters(output); return plain.slice(plain.lastIndexOf('╭')).trimEnd(); } };
+    frame: () => lastFrame };
 }
 async function enterFile(test: ReturnType<typeof terminal>, key: string, prompt: string, path: string) {
   test.clear(); test.input(key); await waitFor(() => test.output().includes(prompt));
@@ -133,4 +138,34 @@ describe('native CRISPR reference workbench', () => {
       test.input('\u001b'); await waitFor(() => !usePhageStore.getState().overlays.includes('crispr'));
     } finally { test.ui.unmount(); usePhageStore.setState(prior); }
   });
+  it('opens F6 immediately through the real App without stealing modal input or retaining listeners', async () => {
+    const prior = usePhageStore.getState(), { repository } = await selection();
+    usePhageStore.setState({ overlays: [], error: null, experienceLevel: 'novice', quitConfirmPending: false });
+    const test = terminal(repository, <App repository={repository} />);
+    try {
+      await waitFor(test.ready);
+      test.input('\u001b[17;2~'); await new Promise(done => setTimeout(done, 20));
+      assert.deepEqual(usePhageStore.getState().overlays, [], 'Modified F6 is not the declared bare binding.');
+      test.input('\u001b[17~');
+      await waitFor(() => test.output().includes('CRISPR SPACER REFERENCE EVIDENCE'));
+      assert.deepEqual(usePhageStore.getState().overlays, ['crispr'], 'Exactly one F6 handler must open the overlay.');
+      assert.equal(usePhageStore.getState().experienceLevel, 'intermediate');
+      test.clear(); test.input('l'); await waitFor(() => test.output().includes('Spacer library JSON path'));
+      test.input('\u001b[17~'); await new Promise(done => setTimeout(done, 20));
+      assert(test.frame().includes('Spacer library JSON path'));
+      assert.deepEqual(usePhageStore.getState().overlays, ['crispr']);
+      test.input('\u001b'); await waitFor(() => test.frame().includes('[l] Library'));
+      test.input('\u001b'); await waitFor(() => usePhageStore.getState().overlays.length === 0);
+      usePhageStore.getState().setError('Function-key error ownership check');
+      await waitFor(() => test.output().includes('Function-key error ownership check'));
+      test.input('\u001b[17~'); await new Promise(done => setTimeout(done, 20));
+      assert.deepEqual(usePhageStore.getState().overlays, []);
+      assert.equal(usePhageStore.getState().error, 'Function-key error ownership check');
+      test.ui.unmount();
+      assert.equal(test.rawListeners(), 0);
+      usePhageStore.getState().setError(null); test.input('\u001b[17~');
+      assert.deepEqual(usePhageStore.getState().overlays, [], 'Unmounted input must not reopen the panel.');
+    } finally { test.ui.unmount(); usePhageStore.setState(prior); }
+  });
+
 });

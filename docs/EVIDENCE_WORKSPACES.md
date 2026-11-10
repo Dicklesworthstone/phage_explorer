@@ -193,8 +193,9 @@ The input validator, summarizer and replay method are defined in
 
 ## Spacer-reference evidence in the interactive terminal
 
-Select the genome to compare, then press **I** to open **CRISPR Spacer Reference
-Evidence**. This follows the terminal's existing intermediate-tier unlock.
+Select the genome to compare, then press **F6** from the main terminal screen
+to open **CRISPR Spacer Reference Evidence** immediately. **I** also opens the
+panel after the terminal's existing intermediate-tier unlock.
 The reference-library format is the same `phage-explorer-spacer-library`
 version `1` used by the browser CRISPR panel.
 
@@ -217,6 +218,7 @@ version `1` used by the browser CRISPR panel.
 
 | Key | Action |
 | --- | --- |
+| F6 | Open spacer evidence from the main screen, without a tier wait |
 | `l` | Load a local spacer-library JSON file |
 | `h` / `H` | Cycle host scope / enter an exact host ID; blank selects all |
 | `+` / `-` | Adjust allowed substitutions, from 0 through 5 |

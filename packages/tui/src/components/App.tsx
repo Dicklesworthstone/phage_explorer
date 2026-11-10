@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Text, useInput, useApp, useStdout } from 'ink';
+import { Box, Text, useInput, useApp, useStdout, useStdin } from 'ink';
 import { usePhageStore, useOverlayStack } from '@phage-explorer/state';
 import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
@@ -11,6 +11,7 @@ import { Model3DView } from './Model3DView';
 import { GeneMap } from './GeneMap';
 import { Footer } from './Footer';
 import { readTerminalSize } from './terminal-size';
+import { bindTerminalFunctionKeys } from './terminal-function-keys';
 import { HelpOverlay } from './HelpOverlay';
 import { AAKeyOverlay } from './AAKeyOverlay';
 import { SearchOverlay } from './SearchOverlay';
@@ -216,6 +217,7 @@ export function matchModifierBinding(
 export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
+  const { stdin } = useStdin();
   const overlayCacheRef = React.useRef<
     Map<number, { length: number; hash: number; refVersion: number; data: Record<string, unknown> }>
   >(new Map());
@@ -704,65 +706,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const gridWidth = Math.max(40, terminalCols - sidebarWidth - 4);
   const mainHeight = terminalRows - 12;
 
-  // F-key escape sequences (cross-terminal compatible)
-  const F_KEYS: Record<string, string> = {
-    '\x1bOP': 'F1', '\x1b[11~': 'F1',
-    '\x1bOQ': 'F2', '\x1b[12~': 'F2',
-    '\x1bOR': 'F3', '\x1b[13~': 'F3',
-    '\x1bOS': 'F4', '\x1b[14~': 'F4',
-    '\x1b[15~': 'F5',
-    '\x1b[17~': 'F6',
-    '\x1b[18~': 'F7',
-    '\x1b[19~': 'F8',
-    '\x1b[20~': 'F9',
-    '\x1b[21~': 'F10',
-    // F11 intentionally omitted (reserved for terminal fullscreen).
-    // F12 was listed here with no handler, so pressing it did nothing while the
-    // table implied it was bound. Removed rather than given an action: nothing
-    // needed it, and a table entry that resolves to no behaviour is the same
-    // class of defect as a documented shortcut that does not fire.
-  };
-
-  // Handle keyboard input (global layer is disabled while an overlay is open)
-  useInput((input, key) => {
-    if (error) {
-      if (key.escape) setError(null);
-      else if (input === 'q' || input === 'Q') exit();
-      return;
-    }
-    // Check for F-key escape sequences or Ink key flags
-    const fKey = F_KEYS[input];
-
-    // Clear quit confirm if user presses anything other than Esc
-    if (!key.escape && quitConfirmPending) {
-      setQuitConfirmPending(false);
-    }
-
-    // Global quit (only when no overlay is open)
-    if (input === 'q' || input === 'Q') {
-      if (quitConfirmPending) {
-        exit();
-      } else {
-        setQuitConfirmPending(true);
-      }
-      return;
-    }
-
-    // Escape: fullscreen exit or quit confirmation (overlay handling is above)
-    if (key.escape) {
-      if (quitConfirmPending) {
-        // Second Esc = quit
-        exit();
-        return;
-      }
-      if (model3DFullscreen) {
-        toggle3DModelFullscreen();
-      } else {
-        // No overlay, no fullscreen → start quit confirmation
-        setQuitConfirmPending(true);
-      }
-      return;
-    }
+  // Ink 8 intentionally omits function keys from useInput. One raw bridge owns them,
+  // including on older Ink versions; the ordinary input handler never dispatches F-keys.
+  useEffect(() => bindTerminalFunctionKeys(stdin, fKey => {
+    const state = usePhageStore.getState();
+    if (state.overlays.length > 0 || state.error) return;
+    state.setQuitConfirmPending(false);
+    const { toggleOverlay, toggle3DModel, promoteExperienceLevel, openComparison, openOverlay } = state;
 
     // F1: Help
     if (fKey === 'F1') {
@@ -797,7 +747,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       return;
     }
 
-    // F6: CRISPR Pressure map
+    // F6: CRISPR spacer-reference workbench
     if (fKey === 'F6') {
       promoteExperienceLevel('intermediate');
       toggleOverlay(CRISPR_ID);
@@ -828,6 +778,46 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     if (fKey === 'F10') {
       promoteExperienceLevel('intermediate');
       openOverlay(ANALYSIS_MENU_ID);
+      return;
+    }
+
+  }), [stdin]);
+
+  // Handle keyboard input (global layer is disabled while an overlay is open)
+  useInput((input, key) => {
+    if (error) {
+      if (key.escape) setError(null);
+      else if (input === 'q' || input === 'Q') exit();
+      return;
+    }
+    // Clear quit confirm if user presses anything other than Esc
+    if (!key.escape && quitConfirmPending) {
+      setQuitConfirmPending(false);
+    }
+
+    // Global quit (only when no overlay is open)
+    if (input === 'q' || input === 'Q') {
+      if (quitConfirmPending) {
+        exit();
+      } else {
+        setQuitConfirmPending(true);
+      }
+      return;
+    }
+
+    // Escape: fullscreen exit or quit confirmation (overlay handling is above)
+    if (key.escape) {
+      if (quitConfirmPending) {
+        // Second Esc = quit
+        exit();
+        return;
+      }
+      if (model3DFullscreen) {
+        toggle3DModelFullscreen();
+      } else {
+        // No overlay, no fullscreen → start quit confirmation
+        setQuitConfirmPending(true);
+      }
       return;
     }
 

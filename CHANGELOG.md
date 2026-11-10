@@ -8,6 +8,9 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ### Sourced spacer comparisons in the interactive terminal
 
+- **Direct access** — F6 opens spacer evidence immediately from the main
+  terminal screen. Function-key input is routed before terminal-library
+  normalization while active overlays retain keyboard ownership.
 - **Real local references** — the CRISPR panel accepts the browser's versioned
   spacer libraries, explicit host scope, mismatch limits and genome topology.
   Both-strand sequence hits retain supplied PAM/seed rules, exclusions and
