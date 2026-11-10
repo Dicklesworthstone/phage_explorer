@@ -5,7 +5,7 @@
  * Reference switches are exploratory evidence, not inferred recombination events.
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -23,11 +23,14 @@ import {
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
 import {
-  computeMosaicRadar,
-  type ReferenceSketch,
+  serializeAnalysisRecord, serializeMosaicDataset, exportMosaicTsv, resolveMosaicRadarConfig,
+  type MosaicRadarConfig,
   type MosaicRadarResult,
   type MosaicSegment,
 } from '@phage-explorer/core';
+import { MosaicSession, readMosaicFile, readMosaicSequence, readRepositoryMosaicDataset,
+  REPOSITORY_MOSAIC_PANEL } from '../../workers/MosaicSession';
+import { downloadString } from '../../utils/export';
 
 // Color palette for donors (distinct, accessible colors)
 const DONOR_PALETTE = [
@@ -46,60 +49,10 @@ interface MosaicRadarOverlayProps {
   currentPhage: PhageFull | null;
 }
 
-interface MosaicInputs {
-  repository: PhageRepository;
-  phage: PhageFull;
-  sequence: string;
-  references: ReferenceSketch[];
-}
-
 function segmentLabel(segment: MosaicSegment): string {
   if (segment.donor) return segment.donor;
   if (segment.status === 'ambiguous') return `Tied references: ${segment.tiedReferences.join(', ')}`;
   return segment.status === 'no-evidence' ? 'No comparable k-mers' : 'Below similarity threshold';
-}
-
-function requireActiveRead(signal: AbortSignal): void {
-  if (signal.aborted) throw new DOMException('Mosaic input read cancelled', 'AbortError');
-}
-
-async function readSequence(
-  repository: PhageRepository,
-  phageId: number,
-  signal: AbortSignal,
-  maxLength = Infinity
-): Promise<string> {
-  requireActiveRead(signal);
-  const length = await repository.getFullGenomeLength(phageId);
-  requireActiveRead(signal);
-  const sequence = await repository.getSequenceWindow(phageId, 0, Math.min(length, maxLength));
-  requireActiveRead(signal);
-  return sequence;
-}
-
-// Build reference list from phage database
-async function buildReferenceList(
-  repository: PhageRepository,
-  currentPhageId: number,
-  signal: AbortSignal
-): Promise<ReferenceSketch[]> {
-  requireActiveRead(signal);
-  const phages = await repository.listPhages();
-  requireActiveRead(signal);
-  // Preserve the bounded panel: at most 30 other genomes, up to 150kb each.
-  const limited = phages.filter((p) => p.id !== currentPhageId).sort((a, b) => a.id - b.id).slice(0, 30);
-  const results = await Promise.all(limited.map(async (p) => {
-    try {
-      const sequence = await readSequence(repository, p.id, signal, 150000);
-      return { label: `${p.name || 'Phage'} #${p.id}`, sequence };
-    } catch {
-      // A failed reference can be skipped, but a superseded panel must stop reading.
-      requireActiveRead(signal);
-      return null;
-    }
-  }));
-  requireActiveRead(signal);
-  return results.filter((r): r is ReferenceSketch => r !== null);
 }
 
 // Get donor statistics from result
@@ -146,20 +99,68 @@ export function MosaicRadarOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('mosaicRadar');
 
-  // Query and donor panel must be accepted together from the exact current source.
-  // Numeric phage IDs are reused by replacement private repositories.
-  const [inputSnapshot, setInputSnapshot] = useState<MosaicInputs | null>(null);
-  const inputs = overlayOpen && inputSnapshot?.repository === repository &&
-    inputSnapshot?.phage === currentPhage ? inputSnapshot : null;
-  const sequence = inputs?.sequence ?? '';
-  const references = inputs?.references ?? [];
-  const loading = overlayOpen && !!repository && !!currentPhage && !inputs;
-
-  // Analysis parameters
-  const [k, setK] = useState(5);
-  const [windowSize, setWindowSize] = useState(2000);
-  const [minSimilarity, setMinSimilarity] = useState(0.05);
+  // Repository and phage object identity matter: private repositories reuse numeric IDs.
+  const scope = useMemo(() => ({ repository, currentPhage, overlayOpen }), [repository, currentPhage, overlayOpen]);
+  const session = useMemo(() => new MosaicSession(() => new Worker(
+    new URL('../../workers/mosaic.worker.ts', import.meta.url), { type: 'module' })), []);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const accepted = snapshot.scope === scope ? snapshot.accepted : null;
+  const dataset = snapshot.scope === scope ? snapshot.dataset : null;
+  const analysis = accepted?.result ?? null;
+  const sequence = accepted?.dataset.query.sequence ?? '';
+  const references = accepted?.dataset.references ?? [];
+  const loading = snapshot.scope === scope && snapshot.busy;
+  const [options, setOptions] = useState(() => resolveMosaicRadarConfig({ k: 5, window: 2000, step: 1000, minSimilarity: 0.05 }));
+  const optionsRef = useRef(options);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const { k, window: windowSize, minSimilarity } = options;
   const [showBreakpoints, setShowBreakpoints] = useState(true);
+
+  const changeOptions = useCallback((change: (previous: Required<MosaicRadarConfig>) => MosaicRadarConfig) => {
+    const state = session.getSnapshot();
+    if (state.scope !== scope || !state.dataset) return;
+    const next = resolveMosaicRadarConfig(change(optionsRef.current));
+    optionsRef.current = next; setOptions(next); setExportError(null);
+    void session.run(scope, { kind: 'analyze', dataset: state.dataset, options: next });
+  }, [scope, session]);
+  const setK = useCallback((update: (value: number) => number) => changeOptions(previous => ({ ...previous, k: update(previous.k) })), [changeOptions]);
+  const setWindowSize = useCallback((update: (value: number) => number) => changeOptions(previous => {
+    const window = update(previous.window); return { ...previous, window, step: Math.floor(window / 2) };
+  }), [changeOptions]);
+  const setMinSimilarity = useCallback((update: (value: number) => number) => changeOptions(previous => ({ ...previous, minSimilarity: update(previous.minSimilarity) })), [changeOptions]);
+
+  const importFile = useCallback((kind: 'panel' | 'import' | 'replay', file: File) => {
+    setExportError(null);
+    void session.run(scope, async signal => {
+      const content = await readMosaicFile(file);
+      if (signal.aborted) throw new DOMException('Mosaic import cancelled.', 'AbortError');
+      if (kind === 'replay') return { kind, content };
+      if (kind === 'import') return { kind, content, options: optionsRef.current };
+      const current = session.getSnapshot();
+      const query = current.scope === scope ? current.dataset?.query : null;
+      if (!query && (!repository || !currentPhage)) throw new Error('Select a query genome or import a complete mosaic dataset first.');
+      return { kind, content, name: file.name, query: query ?? await readMosaicSequence(repository!, currentPhage!, signal), options: optionsRef.current };
+    }).then(succeeded => {
+      const current = session.getSnapshot();
+      if (!succeeded || current.scope !== scope || !current.accepted) return;
+      optionsRef.current = current.accepted.options; setOptions(current.accepted.options);
+    });
+  }, [currentPhage, repository, scope, session]);
+  const exportResult = useCallback((kind: 'record' | 'dataset' | 'windows' | 'segments' | 'switches') => {
+    if (!accepted || loading) return;
+    try {
+      if (kind === 'record') downloadString(serializeAnalysisRecord(accepted.record), 'mosaic-analysis.json', 'application/json');
+      else if (kind === 'dataset') downloadString(serializeMosaicDataset(accepted.dataset), 'mosaic-dataset.json', 'application/json');
+      else downloadString(exportMosaicTsv(accepted.record, kind), `mosaic-${kind}.tsv`, 'text/tab-separated-values');
+      setExportError(null);
+    } catch (cause) { setExportError(cause instanceof Error ? cause.message : String(cause)); }
+  }, [accepted, loading]);
+  const analyzeRepository = useCallback(() => {
+    if (!repository || !currentPhage) return;
+    setExportError(null);
+    void session.run(scope, async signal => ({ kind: 'analyze',
+      dataset: await readRepositoryMosaicDataset(repository, currentPhage, signal), options: optionsRef.current }));
+  }, [repository, currentPhage, scope, session]);
 
   const [hoverSnapshot, setHoverSnapshot] = useState<{
     analysis: MosaicRadarResult;
@@ -263,43 +264,16 @@ export function MosaicRadarOverlay({
 
     const unregister = manager.registerMany(definitions);
     return unregister;
-  }, [shouldCaptureHotkeys]);
+  }, [shouldCaptureHotkeys, setK, setWindowSize, setMinSimilarity]);
 
   // Fetch sequence and references when overlay opens
   useEffect(() => {
-    setInputSnapshot(null);
-    if (!overlayOpen || !repository || !currentPhage) return;
-
-    const controller = new AbortController();
-    const { signal } = controller;
-
-    Promise.all([
-      readSequence(repository, currentPhage.id, signal),
-      buildReferenceList(repository, currentPhage.id, signal),
-    ])
-      .then(([sequence, references]) => {
-        if (signal.aborted) return;
-        setInputSnapshot({ repository, phage: currentPhage, sequence, references });
-      })
-      .catch(() => {
-        if (signal.aborted) return;
-        setInputSnapshot({ repository, phage: currentPhage, sequence: '', references: [] });
-        controller.abort();
-      });
-
-    return () => controller.abort();
-  }, [overlayOpen, repository, currentPhage]);
-
-  // Run mosaic analysis
-  const analysis = useMemo<MosaicRadarResult | null>(() => {
-    if (!inputs?.sequence || inputs.references.length === 0) return null;
-    return computeMosaicRadar(inputs.sequence, inputs.references, {
-      k,
-      window: windowSize,
-      step: Math.floor(windowSize / 2),
-      minSimilarity,
-    });
-  }, [inputs, k, windowSize, minSimilarity]);
+    session.setScope(scope); setExportError(null);
+    if (!overlayOpen) { session.deactivate(); return; }
+    session.activate();
+    analyzeRepository();
+    return () => session.deactivate();
+  }, [overlayOpen, scope, session, analyzeRepository]);
   const hoverInfo = hoverSnapshot?.analysis === analysis ? hoverSnapshot.info : null;
   const selectedSegment = selectedSnapshot?.analysis === analysis ? selectedSnapshot.segment : null;
 
@@ -396,8 +370,71 @@ export function MosaicRadarOverlay({
           </div>
         </div>
 
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', fontSize: '0.8rem' }}>
+          <button type="button" disabled={!repository || !currentPhage} onClick={analyzeRepository}>Use selected genome and repository panel</button>
+          <label>Reference FASTA / GenBank
+            <input type="file" accept=".fa,.fna,.fasta,.gb,.gbk,.genbank,.txt" aria-label="Import mosaic reference sequences"
+              disabled={!dataset && (!repository || !currentPhage)}
+              onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) importFile('panel', file); }} />
+          </label>
+          <label>Exact query + reference dataset
+            <input type="file" accept=".json" aria-label="Import mosaic dataset"
+              onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) importFile('import', file); }} />
+          </label>
+          <label>Saved analysis
+            <input type="file" accept=".json" aria-label="Replay mosaic analysis"
+              onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) importFile('replay', file); }} />
+          </label>
+          {loading && <button type="button" onClick={session.cancel}>Cancel mosaic analysis</button>}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', fontSize: '0.8rem' }}>
+          <label>k-mer length <input aria-label="Mosaic k-mer length" type="number" min={1} max={16} value={k} disabled={!dataset}
+            onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isInteger(value) && value >= 1 && value <= 16) setK(() => value); }} /></label>
+          <label>Window (bp) <input aria-label="Mosaic window size" type="number" min={200} max={10000} step={100} value={windowSize} disabled={!dataset}
+            onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isInteger(value) && value >= 200 && value <= 10000) setWindowSize(() => value); }} /></label>
+          <label>Minimum similarity <input aria-label="Mosaic minimum similarity" type="number" min={0} max={1} step={0.01} value={minSimilarity} disabled={!dataset}
+            onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value) && value >= 0 && value <= 1) setMinSimilarity(() => value); }} /></label>
+        </div>
+        <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>
+          Private files are processed locally. Reference files retain complete supplied sequences; the catalogue panel is explicitly bounded.
+          Saved analyses embed the exact query, reference panel, parameters and source ranges, and are recomputed on replay.
+          Reference files use the displayed query; the selected-genome button reloads the current repository.
+        </div>
+        {snapshot.scope === scope && snapshot.error && <p role="alert">{snapshot.error}</p>}
+        {exportError && <p role="alert">{exportError}</p>}
+        {snapshot.scope === scope && snapshot.phase && !loading && <p role="status">{snapshot.phase}</p>}
+        {accepted && (
+          <>
+            <div style={{ color: colors.textDim, fontSize: '0.8rem' }}>
+              <strong>Analyzed query: {accepted.dataset.query.label}</strong>
+              <div>{accepted.dataset.query.accession ?? 'No accession'} · {accepted.dataset.query.sequence.length.toLocaleString()} bases · {accepted.dataset.query.source}</div>
+              <div>Panel: {accepted.dataset.name}. {accepted.dataset.references.length} supplied references; {accepted.dataset.excludedReferences.length} excluded before comparison.</div>
+              <div>{accepted.result.referencePanel.omitted} supplied references omitted by the saved maximum-reference setting.</div>
+              <div>Query source range: [{accepted.dataset.query.sourceStart.toLocaleString()}, {(accepted.dataset.query.sourceStart + accepted.dataset.query.sequence.length).toLocaleString()}) of {accepted.dataset.query.sourceLength.toLocaleString()} original bases.</div>
+              <div>Result identity: <code style={{ overflowWrap: 'anywhere' }}>{accepted.record.resultId}</code>{snapshot.verified ? ' · Replay verified' : ''}</div>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+              <button type="button" onClick={() => exportResult('record')}>Export replayable analysis</button>
+              <button type="button" onClick={() => exportResult('dataset')}>Export exact dataset</button>
+              <button type="button" onClick={() => exportResult('windows')}>Export windows TSV</button>
+              <button type="button" onClick={() => exportResult('segments')}>Export segments TSV</button>
+              <button type="button" onClick={() => exportResult('switches')}>Export switches TSV</button>
+            </div>
+            <details style={{ fontSize: '0.75rem', color: colors.textMuted }}>
+              <summary>Reference provenance and partial coverage</summary>
+              <ul>{accepted.dataset.references.map(reference => <li key={reference.id}>
+                <strong>{reference.label}</strong>: [{reference.sourceStart.toLocaleString()}, {(reference.sourceStart + reference.sequence.length).toLocaleString()}) of {reference.sourceLength.toLocaleString()} bases
+                {reference.sequence.length < reference.sourceLength ? ' — partial reference' : ' — complete supplied reference'}; {reference.source}; {reference.sourceDescription}
+              </li>)}</ul>
+              {accepted.dataset.excludedReferences.length > 0 && <ul>{accepted.dataset.excludedReferences.map(reference => <li key={reference.id}>
+                <strong>{reference.label}</strong>: excluded — {reference.reason}
+              </li>)}</ul>}
+            </details>
+          </>
+        )}
+
         {loading ? (
-          <OverlayLoadingState message="Loading sequence and references...">
+          <OverlayLoadingState message={snapshot.phase || 'Loading sequence and references...'}>
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
         ) : !analysis || analysis.windows.length === 0 ? (
@@ -411,7 +448,7 @@ export function MosaicRadarOverlay({
             }
             hint={
               !sequence
-                ? 'Select a phage to analyze.'
+                ? 'Select a phage, import an exact dataset, or replay a saved mosaic analysis.'
                 : references.length === 0
                   ? 'Reference comparison requires at least one other genome in the database.'
                   : 'Try adjusting analysis parameters.'
@@ -433,9 +470,9 @@ export function MosaicRadarOverlay({
                 borderRadius: '4px',
               }}
             >
-              <span>k={k}</span>
+              <span>k={accepted!.options.k}</span>
               <span>window={analysis.window}bp</span>
-              <span>minSim={minSimilarity}</span>
+              <span>minSim={accepted!.options.minSimilarity}</span>
               <span style={{ color: colors.textDim }}>
                 [+/-] window | [/] k | [b] reference switches {showBreakpoints ? 'on' : 'off'} | [m/M]
                 minSim
@@ -679,7 +716,9 @@ export function MosaicRadarOverlay({
               }}
             >
               {analysis.referencePanel.usable} of {analysis.referencePanel.selected} selected references
-              contain valid k-mers. Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.
+              {' contain valid k-mers. '}{accepted!.dataset.name === REPOSITORY_MOSAIC_PANEL
+                ? 'Panel: at most 30 other genomes by catalogue ID, first 150,000 bp each.'
+                : 'Panel: exact supplied reference sequences; inspect source ranges above.'}
             </div>
           </>
         )}

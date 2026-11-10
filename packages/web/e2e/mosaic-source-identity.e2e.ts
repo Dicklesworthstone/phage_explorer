@@ -1,6 +1,8 @@
 import { test, expect, type Locator } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 
 type ReadStage = 'queryLength' | 'querySequence' | 'referenceLength' | 'referenceSequence';
 declare global {
@@ -196,6 +198,55 @@ test('mosaic references, query reads and segment details belong to the current r
     await page.evaluate(() => window.mosaicIdentityFixture.select('b'));
     await ready(overlay, 'b');
     await expect(overlay.getByText('Tied references: tied matching donor #-2, tied unrelated donor #-3', { exact: true })).toHaveCount(0);
+
+    // A private reference upload computes from complete supplied bases in the
+    // worker. Dataset and record round-trips keep their own query, even while
+    // the background catalogue selection changes to another same-ID genome.
+    await overlay.getByLabel('Import mosaic reference sequences', { exact: true }).setInputFiles({
+      name: 'private-references.fa', mimeType: 'text/plain', buffer: Buffer.from('>private match\n' + 'C'.repeat(8000)),
+    });
+    await expect(overlay.getByText('private match [reference 1]', { exact: true }).first()).toBeVisible();
+    const download = async (button: string) => {
+      const pending = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: button, exact: true }).click();
+      const path = await (await pending).path();
+      if (!path) throw new Error('Browser did not produce the requested export.');
+      return readFile(path, 'utf8');
+    };
+    const exact = JSON.parse(await download('Export exact dataset'));
+    expect(exact.references[0].sequence).toBe('C'.repeat(8000));
+    expect(exact.references[0].sourceLength).toBe(8000);
+    exact.query.id = 'portable-query'; exact.query.label = 'Restored private query';
+    exact.query.sourceStart = 120; exact.query.sourceLength = 8500;
+    await overlay.getByLabel('Import mosaic dataset', { exact: true }).setInputFiles({
+      name: 'portable-mosaic.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(exact)),
+    });
+    await expect(overlay.getByText('Analyzed query: Restored private query', { exact: true })).toBeVisible();
+    const recorded = await download('Export replayable analysis');
+    const record = await parseAnalysisRecord(recorded);
+    const tsv = await download('Export windows TSV');
+    expect(tsv).toContain(record.resultId);
+    expect(tsv).toContain('source_start_0based\tsource_end_exclusive');
+    expect(tsv).toContain('\t120\t2620\tprivate match [reference 1]\tmatched\t1\t');
+    await page.evaluate(() => window.mosaicIdentityFixture.select('a'));
+    await ready(overlay, 'a');
+    await overlay.getByLabel('Replay mosaic analysis', { exact: true }).setInputFiles({
+      name: 'mosaic-analysis.json', mimeType: 'application/json', buffer: Buffer.from(recorded),
+    });
+    await expect(overlay.getByText('Analyzed query: Restored private query', { exact: true })).toBeVisible();
+    await expect(overlay.getByText('Replay verified: exact inputs and the recomputed result identity agree.', { exact: true })).toBeVisible();
+    expect(await download('Export replayable analysis')).toBe(recorded);
+    await expect(overlay.getByText('a matching donor #-2', { exact: true })).toHaveCount(0);
+
+    // Integrity is more than a valid checksum: freshly rehashed invented
+    // results must fail recomputation and cannot become visible/exportable.
+    const forged = structuredClone(record); forged.fields.mosaic.value = { invented: true };
+    const resigned = serializeAnalysisRecord(await createAnalysisRecord(forged));
+    await overlay.getByLabel('Replay mosaic analysis', { exact: true }).setInputFiles({
+      name: 'forged-mosaic.json', mimeType: 'application/json', buffer: Buffer.from(resigned),
+    });
+    await expect(overlay.getByRole('alert')).toContainText(/recomput|identity|differ/i);
+    await expect(overlay.getByRole('button', { name: 'Export replayable analysis', exact: true })).toHaveCount(0);
     expect(errors).toEqual([]);
   } finally {
     await page.close();
