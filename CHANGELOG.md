@@ -4,6 +4,37 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
+## Unreleased — source changes on main
+
+### Portable mosaic reference analysis
+
+- **Exact query and reference snapshots** — Mosaic Radar now records the supplied
+  sequences, source ranges, exclusions, effective settings and evidence coverage
+  in a portable experiment. Saved results replay through fresh computation;
+  regenerated checksums cannot make fabricated scores pass. Window, segment and
+  reference-switch TSV exports retain source coordinates. Reference switches
+  describe sampled similarity, not inferred donors or recombination events.
+  [Core implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/074e07a66a85a13f97d336610b212f14e44ab2c2).
+- **Private reference panels in the browser** — import a portable dataset,
+  FASTA/GenBank references or a saved experiment; export the accepted dataset,
+  experiment or tables. Computation and replay use cancellable workers, and an
+  imported query retains its own identity after background navigation.
+  [Browser implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/526788dc668433d6811d4114adc8aea16e0d0b2b).
+- **Terminal and database-free analysis** — `workflow mosaic-template`,
+  `inspect-mosaic` and `analyze-mosaic` expose the same input contract and method;
+  `replay-experiment` verifies saved Mosaic experiments. The terminal viewer uses
+  an owned worker and exports its accepted experiment with `e` or window TSV
+  with `t`. See the [workflow guide](docs/MOSAIC_REFERENCE_WORKFLOW.md).
+
+### Genome comparison correctness
+
+- **Exact bounded sequence differences** — genome comparison uses unit-edit
+  alignment with explicit insertion, deletion and substitution runs. When an
+  exact result exceeds its computation budget, the UI reports it as unavailable;
+  it no longer treats missing or partial diff evidence as identical sequences.
+  The highlighted mask and coordinate table come from the same alignment.
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/7d71d500d4f7be292bb8516415425e5b8ac58578).
+
 ## [v1.8.0] — 2026-10-14
 
 [Compare: v1.7.1...v1.8.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.7.1...v1.8.0)

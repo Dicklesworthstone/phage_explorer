@@ -9,8 +9,10 @@ import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis
 import { WORKFLOW_RESULTS_LIMITS, parseWorkflowResults, workflowResultIndex, type WorkflowResults } from '../packages/core/src/workflow-results';
 import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
 import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
+import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig, exportMosaicTsv,
+  type MosaicDataset, type MosaicRadarConfig, type MosaicRadarResult } from '../packages/core/src/analysis/recombination-radar';
 import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
-  terminalResultsInspection, terminalResultExtraction,
+  terminalResultsInspection, terminalResultExtraction, terminalMosaicInspection, terminalMosaicRequestSha256,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -37,6 +39,12 @@ bun run workflow extract-result --input complete-results.json --execution 2
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect-genomes --input genomes.fa
+bun run workflow mosaic-template
+bun run workflow inspect-mosaic --input panel.json
+bun run workflow analyze-mosaic --input panel.json [--output NEW_FILE]
+  [--format json|tsv] [--section windows|segments|switches]
+  [--k 5] [--window 2000] [--step 1000] [--min-similarity 0.05]
+  [--max-references 30] [--top-n 3] [--timeout-ms 300000]
 bun run workflow list-enzymes
 bun run workflow analyze-experiment --input genomes.fa --method dot-plot
   [--record CONTENT_ID] [--bins 120] [--window BP] [--output NEW_FILE]
@@ -175,8 +183,19 @@ dot plots and restriction digests. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
+Mosaic commands consume a version-1 phage-explorer-mosaic-dataset JSON containing
+the exact query/reference sequences, attribution, source ranges and explicit
+exclusions. mosaic-template prints an explicitly synthetic format example.
+inspect-mosaic checks the dataset and reports source coverage without computing.
+analyze-mosaic runs canonical k-mer Jaccard in an isolated worker and records all
+effective settings. JSON contains private sequence inputs; windows/segments/switches
+TSV retains source offsets and evidence coverage. Replay uses the embedded panel,
+never the current catalog. Unknown, tied and below-threshold evidence stays distinct;
+reference switches do not establish donors, recombination events or transfer age.
+
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
-GC-skew v2, linear/circular exact-repeat-pairs, plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
+GC-skew v2, linear/circular exact-repeat-pairs, mosaic reference-similarity,
+plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
@@ -202,7 +221,10 @@ input reading and final output handling. --progress emits metadata-only JSON lin
 to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTERM.
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
-export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'growth-template'; version: 1 | 2 } |
+export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'mosaic-template' } | { type: 'growth-template'; version: 1 | 2 } |
+  { type: 'inspect-mosaic'; input: string; timeoutMs: number } |
+  { type: 'analyze-mosaic'; input: string; options: Required<MosaicRadarConfig>; output?: string;
+    outputFormat: 'json' | 'tsv'; section: 'windows' | 'segments' | 'switches'; timeoutMs: number } |
   { type: 'fit-growth'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'fit-pfu-growth'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'record'; input: string; output: string; timeoutMs: number; progress: boolean; allResults?: boolean } |
@@ -218,6 +240,7 @@ export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { ty
 export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   if (args.length === 1 && args[0] === 'list-enzymes') return { type: 'list-enzymes' };
+  if (args.length === 1 && args[0] === 'mosaic-template') return { type: 'mosaic-template' };
   if (args[0] === 'growth-template') {
     if (args.length === 1) return { type: 'growth-template', version: 1 };
     if (args.length === 3 && args[1] === '--version' && (args[2] === '1' || args[2] === '2')) {
@@ -226,11 +249,12 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Use growth-template with no options or exactly --version 1|2.');
   }
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
-    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, fit-growth or fit-pfu-growth; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
+    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, fit-growth or fit-pfu-growth; see --help.');
   }
   const allowed = type === 'extract-result' ? ['--input', '--output', '--execution', '--timeout-ms']
-    : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
+    : type === 'analyze-mosaic' ? ['--input', '--output', '--format', '--section', '--k', '--window', '--step', '--min-similarity', '--max-references', '--top-n', '--timeout-ms']
+    : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false, allResults = false;
@@ -267,7 +291,26 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     if (!output) throw new Error('record requires --output NEW_WORKFLOW.json; authoring never replaces the plan.');
     return { type, input, output, timeoutMs, progress, ...(allResults ? { allResults: true } : {}) };
   }
-  if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results') return { type, input, timeoutMs };
+  if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic') return { type, input, timeoutMs };
+  if (type === 'analyze-mosaic') {
+    const outputFormat = values.get('--format') ?? 'json', section = values.get('--section') ?? 'windows';
+    if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
+    if (!['windows', 'segments', 'switches'].includes(section)) throw new Error('--section must be windows, segments or switches.');
+    if ((values.has('--format') || values.has('--section')) && !values.has('--output')) throw new Error('--format and --section require --output NEW_FILE.');
+    if (values.has('--section') && outputFormat !== 'tsv') throw new Error('--section selects a TSV table; use --format tsv.');
+    const similarity = values.get('--min-similarity');
+    if (similarity !== undefined && !/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/.test(similarity)) throw new Error('--min-similarity must be a decimal from 0 to 1.');
+    const options = resolveMosaicRadarConfig({
+      ...(values.has('--k') ? { k: integer('--k', 5, 16) } : {}),
+      ...(values.has('--window') ? { window: integer('--window', 2000, 5000000) } : {}),
+      ...(values.has('--step') ? { step: integer('--step', 1000, 5000000) } : {}),
+      ...(similarity === undefined ? {} : { minSimilarity: Number(similarity) }),
+      ...(values.has('--max-references') ? { maxReferences: integer('--max-references', 30, 30) } : {}),
+      ...(values.has('--top-n') ? { topN: integer('--top-n', 3, 30) } : {}),
+    });
+    return { type, input, timeoutMs, options, outputFormat, section: section as 'windows' | 'segments' | 'switches',
+      ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  }
   if (type === 'replay-experiment' || type === 'analyze-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth') {
     const outputFormat = values.get('--format') ?? 'json';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
@@ -427,6 +470,8 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   const submitted = structuredClone(request);
   const plan = submitted.type === 'record' ? parseCommandPlan(submitted.content) : null;
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
+  const mosaicDataset = submitted.type === 'inspect-mosaic' || submitted.type === 'analyze-mosaic'
+    ? parseMosaicDataset(submitted.content) : null;
   const archive = submitted.type === 'replay-results' || submitted.type === 'inspect-results' || submitted.type === 'extract-result'
     ? await parseWorkflowResults(submitted.content, signal)
     .catch(cause => { abort(signal); throw cause; }) : null;
@@ -485,6 +530,22 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
         if (value?.type === 'growth-fitted' && (submitted.type === 'fit-growth' || submitted.type === 'fit-pfu-growth') && value.inputFileSha256 === tapeSha256
           && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) finish(value);
+        else if (value?.type === 'mosaic-inspected' && submitted.type === 'inspect-mosaic' && mosaicDataset
+          && commandValuesEqual(value.report, terminalMosaicInspection(mosaicDataset, tapeSha256))) finish(value);
+        else if (value?.type === 'mosaic-analyzed' && submitted.type === 'analyze-mosaic' && mosaicDataset
+          && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalMosaicRequestSha256(submitted)
+          && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) {
+          validating = true;
+          void parseAnalysisRecord(value.recordJson, { methodId: MOSAIC_METHOD.id, methodVersion: MOSAIC_METHOD.version })
+            .then(record => {
+              abort(signal);
+              if (!commandValuesEqual(record.method, MOSAIC_METHOD) || !commandValuesEqual(record.parameters, submitted.options)
+                || record.inputs.length !== 1 || !commandValuesEqual(record.inputs[0].data, mosaicDataset)) {
+                throw new Error('Mosaic output differs from the submitted query, reference panel or effective settings.');
+              }
+              finish(value);
+            }).catch(cause => finish(undefined, cause));
+        }
         else if (value?.type === 'recorded' && submitted.type === 'record' && plan && recordingMatches(value, plan, tapeSha256, completed)) {
           if (submitted.captureResults) acceptComplete(value, value.tapeJson, 1);
           else if (value.allResultsJson !== undefined) throw new Error('Unrequested complete results were returned.');
@@ -583,6 +644,18 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
           + (command.version === 2 ? `,${t === 2 ? 'at-most' : t === 5 ? 'at-least' : 'exact'}` : '')).join('\n'),
       options: { infectedCentersPerMl: null, supportDeviance: 3.84 } };
   }
+  if (command.type === 'mosaic-template') {
+    if (runtime.signal) abort(runtime.signal);
+    const example = (id: string, sequence: string): MosaicDataset['query'] => ({
+      id, label: id, accession: null, sequence, source: 'demo',
+      sourceDescription: 'Hand-constructed format example; not an observed genome or evidence of recombination.',
+      sourceReference: null, sourceLicense: null, sourceLength: sequence.length, sourceStart: 0,
+    });
+    return { format: 'phage-explorer-mosaic-dataset', version: 1, name: 'Synthetic reference-similarity format example',
+      query: example('query', 'A'.repeat(400) + 'C'.repeat(400)),
+      references: [example('reference-A', 'A'.repeat(400)), example('reference-C', 'C'.repeat(400))],
+      excludedReferences: [] } satisfies MosaicDataset;
+  }
   if (command.type === 'list-enzymes') {
     if (runtime.signal) abort(runtime.signal);
     const { RESTRICTION_ENZYMES } = await import('../packages/core/src/data/restriction-enzymes');
@@ -600,7 +673,8 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   try {
     const archiveInput = command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'extract-result';
     const content = await readInput(command.input, signal, archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
-    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'inspect-mosaic' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+      : command.type === 'analyze-mosaic' ? { type: 'analyze-mosaic', content, options: command.options }
       : command.type === 'extract-result' ? { type: 'extract-result', content, execution: command.execution }
       : command.type === 'record' ? { type: 'record', content, ...(command.allResults ? { captureResults: true } : {}) }
       : command.type === 'analyze-experiment' ? { type: 'analyze-experiment', content, contentId: command.contentId, analysis: command.analysis,
@@ -610,6 +684,23 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
         ...(command.allResults ? { captureResults: true } : {}) };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
+    if (result.type === 'mosaic-inspected') return result.report;
+    if (result.type === 'mosaic-analyzed') {
+      if (command.type !== 'analyze-mosaic') throw new Error('Unexpected mosaic analysis result.');
+      const record = await parseAnalysisRecord(result.recordJson, { methodId: MOSAIC_METHOD.id, methodVersion: MOSAIC_METHOD.version });
+      abort(signal);
+      const mosaic = record.fields.mosaic.value as unknown as MosaicRadarResult;
+      if (command.output !== undefined) {
+        const text = command.outputFormat === 'json' ? result.recordJson : exportMosaicTsv(record, command.section);
+        await writeNewOutput(command.output, text, signal);
+      }
+      return { format: 'phage-explorer-mosaic-analysis', version: 1, headless: true,
+        inputFileSha256: result.inputFileSha256, requestSha256: result.requestSha256,
+        method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
+        summary: { sampledWindows: mosaic.windows.length, displaySegments: mosaic.segments.length,
+          referenceSwitches: mosaic.referenceSwitches.length, coverage: mosaic.coverage, referencePanel: mosaic.referencePanel },
+        interpretation: 'Fresh canonical k-mer reference similarity. Reference switches are exploratory and do not establish donors, recombination events or transfer age.' };
+    }
     if (result.type === 'growth-fitted') {
       if (command.type !== 'fit-growth' && command.type !== 'fit-pfu-growth') throw new Error('Unexpected growth fit.');
       const { plaqueGrowthMethod, parsePlaqueGrowthInput, exportPlaqueGrowthTsv } = await import('../packages/core/src/analysis/plaque-growth');

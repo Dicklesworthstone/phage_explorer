@@ -12,6 +12,30 @@ import { GENOME_IMPORT_LIMITS, type LocalGenome } from '../../core/src/genome-im
 import { resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../core/src/analysis/restriction-digest';
 import { GC_SKEW_METHOD, GC_SKEW_LIMITS, resolveGCSkewOptions, type ResolvedGCSkewOptions, type GCSkewScan } from '../../core/src/analysis/gc-skew';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ExactRepeatScan } from '../../core/src/analysis/exact-repeat-pairs';
+import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig,
+  type MosaicDataset, type MosaicRadarConfig } from '../../core/src/analysis/recombination-radar';
+
+export interface TerminalMosaicInspection {
+  format: 'phage-explorer-mosaic-inspection'; version: 1; headless: true;
+  inputFileSha256: string;
+  query: { id: string; accession: string | null; bases: number; sourceStart: number; sourceLength: number };
+  references: Array<{ id: string; accession: string | null; bases: number; sourceStart: number; sourceLength: number }>;
+  excludedReferences: number;
+  interpretation: string;
+}
+
+/** Metadata-only inspection: validation does not establish similarity or source authenticity. */
+export function terminalMosaicInspection(dataset: MosaicDataset, inputFileSha256: string): TerminalMosaicInspection {
+  const summary = (item: MosaicDataset['query']) => ({ id: item.id, accession: item.accession,
+    bases: item.sequence.length, sourceStart: item.sourceStart, sourceLength: item.sourceLength });
+  return { format: 'phage-explorer-mosaic-inspection', version: 1, headless: true, inputFileSha256,
+    query: summary(dataset.query), references: dataset.references.map(summary), excludedReferences: dataset.excludedReferences.length,
+    interpretation: 'Validated local source ranges and reference identities; no similarity was computed and source attribution was not independently authenticated.' };
+}
+
+export function terminalMosaicRequestSha256(request: { content: string; options: Required<MosaicRadarConfig> }): string {
+  return hashText(JSON.stringify(analysisJson({ inputFileSha256: hashText(request.content), options: request.options })));
+}
 
 export interface TerminalGenomeSummary {
   contentId: string; sequenceSha256: string; accession: string | null;
@@ -214,6 +238,8 @@ export function terminalResultExtraction(archive: WorkflowResults, inputArchiveS
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'fit-pfu-growth'; content: string } |
+  { type: 'inspect-mosaic'; content: string } |
+  { type: 'analyze-mosaic'; content: string; options: Required<MosaicRadarConfig> } |
   { type: 'inspect'; content: string } |
   { type: 'record'; content: string; captureResults?: boolean } |
   { type: 'replay-results'; content: string } |
@@ -224,6 +250,8 @@ export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'mosaic-inspected'; report: TerminalMosaicInspection } |
+  { type: 'mosaic-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
   { type: 'inspection'; inspection: ResearchTapeInspection } |
   ({ type: 'recorded' } & ResearchRecordingResult) |
   { type: 'genomes-inspected'; report: TerminalGenomeInspection } |
@@ -238,7 +266,8 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
+    : request.type === 'analyze-mosaic' ? ['type', 'content', 'options']
     : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
@@ -249,12 +278,17 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
     }
   }
   const limit = ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
-  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
     throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
+  if (request.type === 'analyze-mosaic') {
+    if (!sameJson(request.options, resolveMosaicRadarConfig(request.options as MosaicRadarConfig))) {
+      throw new Error('Mosaic analysis requires all effective settings explicitly.');
+    }
+  }
   if (request.type === 'replay' && (typeof request.exportAnalysis !== 'boolean' || !Number.isSafeInteger(request.repetitions) ||
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
   if (request.type === 'extract-result' && (!Number.isSafeInteger(request.execution) || Number(request.execution) < 1
@@ -276,6 +310,15 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'inspect-mosaic' || request.type === 'analyze-mosaic') {
+    const dataset = parseMosaicDataset(request.content);
+    const inputFileSha256 = hashText(request.content);
+    if (request.type === 'inspect-mosaic') return { type: 'mosaic-inspected', report: terminalMosaicInspection(dataset, inputFileSha256) };
+    const { createMosaicExperiment } = await import('../../core/src/analysis/recombination-radar');
+    const experiment = await createMosaicExperiment(dataset, request.options);
+    return { type: 'mosaic-analyzed', inputFileSha256, requestSha256: terminalMosaicRequestSha256(request),
+      recordJson: serializeAnalysisRecord(experiment.record) };
+  }
   if (request.type === 'inspect-results' || request.type === 'extract-result') {
     const archive = await parseWorkflowResults(request.content), inputArchiveSha256 = hashText(request.content);
     return request.type === 'inspect-results'
@@ -419,8 +462,12 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const { replayExactRepeatRecord, exportExactRepeatPairsTsv } = await import('../../core/src/analysis/exact-repeat-pairs');
       fresh = await replayExactRepeatRecord(request.content);
       table = exportExactRepeatPairsTsv;
+    } else if (saved.method.id === MOSAIC_METHOD.id) {
+      const { replayMosaicExperiment, exportMosaicTsv } = await import('../../core/src/analysis/recombination-radar');
+      fresh = (await replayMosaicExperiment(request.content)).record;
+      table = exportMosaicTsv;
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, plaque-count and corrected-PFU growth.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, plaque-count and corrected-PFU growth.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

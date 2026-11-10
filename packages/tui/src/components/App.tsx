@@ -56,8 +56,8 @@ import { FoldQuickview } from './FoldQuickview';
 import { HGTOverlay } from './HGTOverlay';
 import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { analyzeHGTProvenance, analyzeTailFiberTropism } from '@phage-explorer/comparison';
-import type { FoldEmbedding, StructuralConstraintReport } from '@phage-explorer/core';
-import { analyzeStructuralConstraints, reverseComplement, translateSequence } from '@phage-explorer/core';
+import type { FoldEmbedding, StructuralConstraintReport, MosaicDataset, MosaicSequenceInput, PhageSummary, PhageFull } from '@phage-explorer/core';
+import { analyzeStructuralConstraints, reverseComplement, translateSequence, MOSAIC_LIMITS } from '@phage-explorer/core';
 import { initializeCommands } from '../commands/definitions';
 import {
   findNextGenePosition,
@@ -220,6 +220,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     Map<number, { length: number; hash: number; refVersion: number; data: Record<string, unknown> }>
   >(new Map());
   const referenceSketchesRef = React.useRef<Record<string, string>>({});
+  const mosaicReferencesRef = React.useRef<{ repository: PhageRepository; phages: PhageSummary[]; records: MosaicSequenceInput[];
+    excluded: MosaicDataset['excludedReferences'] } | null>(null);
   const referenceVersionRef = React.useRef(0);
   const [referenceVersion, setReferenceVersion] = useState(0);
 
@@ -296,7 +298,26 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Sequence state
   const [sequence, setSequence] = useState<string>('');
+  const [mosaicQuery, setMosaicQuery] = useState<{ repository: PhageRepository; phage: PhageFull; input: MosaicSequenceInput } | null>(null);
   const [analysisProgress, setAnalysisProgress] = useState<string>('');
+
+  const mosaicDataset = React.useMemo<MosaicDataset | null>(() => {
+    const panel = mosaicReferencesRef.current;
+    if (!mosaicQuery || mosaicQuery.repository !== repository || panel?.repository !== repository || panel.phages !== phages
+      || currentPhage !== mosaicQuery.phage || phages[currentPhageIndex]?.id !== mosaicQuery.phage.id) return null;
+    const references = panel.records.filter(item => item.id !== mosaicQuery.input.id);
+    const selected: MosaicSequenceInput[] = [];
+    const excluded = panel.excluded.filter(item => item.id !== mosaicQuery.input.id);
+    let remainingBases = MOSAIC_LIMITS.bases - mosaicQuery.input.sequence.length;
+    for (const reference of [...references].sort((a, b) => a.label < b.label ? -1 : a.label > b.label ? 1 : 0)) {
+      const reason = selected.length >= MOSAIC_LIMITS.references ? 'Omitted by the 30-reference terminal panel limit.'
+        : reference.sequence.length > remainingBases ? 'Omitted: reference would exceed the 5,000,000-base portable panel budget.' : null;
+      if (reason) excluded.push({ id: reference.id, label: reference.label, accession: reference.accession, reason });
+      else { selected.push(reference); remainingBases -= reference.sequence.length; }
+    }
+    return { format: 'phage-explorer-mosaic-dataset', version: 1, name: 'Terminal reference-similarity panel',
+      query: mosaicQuery.input, references: selected, excludedReferences: excluded };
+  }, [mosaicQuery, repository, currentPhage, phages, currentPhageIndex, referenceVersion]);
 
   // Fold Quickview corpus (all phage fold embeddings)
   const [foldCorpus, setFoldCorpus] = useState<FoldEmbedding[]>(foldEmbeddings);
@@ -411,7 +432,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Preload reference sketches (lightweight sampled genomes) for donor inference in HGT tracer
   useEffect(() => {
     if (phages.length === 0) return;
-    if (Object.keys(referenceSketchesRef.current).length > 0) return;
+    if (mosaicReferencesRef.current?.repository === repository && mosaicReferencesRef.current.phages === phages
+      && Object.keys(referenceSketchesRef.current).length > 0) return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -422,19 +444,40 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         };
 
         const entries = await Promise.all(
-          phages.slice(0, 50).map(async (p) => {
-            const len = await repository.getFullGenomeLength(p.id);
-            const seq = await repository.getSequenceWindow(p.id, 0, len);
+          phages.slice(0, 50).map(async (p): Promise<{ label: string; sketch: string; input: MosaicSequenceInput }
+            | { excluded: MosaicDataset['excludedReferences'][number] }> => {
             const label = `${p.name ?? `phage-${p.id}`} (${p.host ?? 'unknown host'}) #${p.id}`;
-            return { label, sketch: sampleSequence(seq) };
+            try {
+              const len = await repository.getFullGenomeLength(p.id);
+              const seq = await repository.getSequenceWindow(p.id, 0, Math.min(len, 200_000));
+              if (!Number.isSafeInteger(len) || len < seq.length || !seq.length || /[^ACGTRYSWKMBDHVN]/i.test(seq)) {
+                throw new Error('Reference sequence or length is unavailable.');
+              }
+              const sketch = sampleSequence(seq);
+              const input: MosaicSequenceInput = { id: `phage-${p.id}`, label, accession: p.accession || null,
+                sequence: sketch.slice(0, 150_000), source: p.localGenome ? 'local' : 'catalog',
+                sourceDescription: 'Contiguous terminal repository snapshot; source range is recorded explicitly.',
+                sourceReference: p.localGenome ? null : p.accession || null, sourceLicense: null,
+                sourceStart: 0, sourceLength: len };
+              return { label, sketch, input };
+            } catch {
+              // One missing shard must not prevent useful references from being
+              // analyzed. Its omission remains part of the exact saved evidence.
+              return { excluded: { id: `phage-${p.id}`, label, accession: p.accession || null,
+                reason: 'Reference sequence could not be read as a nonempty IUPAC DNA slice from this repository snapshot.' } };
+            }
           })
         );
         const sketches: Record<string, string> = {};
-        for (const { label, sketch } of entries) {
-          sketches[label] = sketch;
+        for (const entry of entries) {
+          if ('input' in entry) sketches[entry.label] = entry.sketch;
         }
         if (!cancelled) {
           referenceSketchesRef.current = sketches;
+          mosaicReferencesRef.current = { repository, phages, records: entries.flatMap(entry => 'input' in entry ? [entry.input] : []),
+            excluded: [...entries.flatMap(entry => 'excluded' in entry ? [entry.excluded] : []), ...phages.slice(50).map(p => ({ id: `phage-${p.id}`,
+              label: `${p.name ?? `phage-${p.id}`} (${p.host ?? 'unknown host'}) #${p.id}`,
+              accession: p.accession || null, reason: 'Not loaded: terminal reference preload is limited to 50 genomes.' }))] };
           referenceVersionRef.current += 1;
           setReferenceVersion(v => v + 1);
         }
@@ -477,6 +520,13 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           if (isStale()) return;
           setSequence(seq);
           setCurrentPhage(phage);
+          setMosaicQuery({ repository, phage, input: {
+            id: `phage-${phage.id}`, label: `${phage.name ?? `phage-${phage.id}`} (${phage.host ?? 'unknown host'}) #${phage.id}`,
+            accession: phage.accession || null, sequence: seq, source: phage.localGenome ? 'local' : 'catalog',
+            sourceDescription: 'Query from the selected terminal repository snapshot; source range is recorded explicitly.',
+            sourceReference: phage.localGenome ? null : phage.accession || null, sourceLicense: null,
+            sourceStart: 0, sourceLength: length,
+          } });
           
           // Check cache
           const seqHash = hashSeq(seq);
@@ -1412,9 +1462,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginTop={Math.max(0, Math.floor((terminalRows - 20) / 2))}
         >
           <MosaicRadarView
-            sequence={sequence}
-            references={referenceSketchesRef.current}
-            currentPhageId={currentPhage?.id}
+            dataset={mosaicDataset}
           />
         </Box>
       )}

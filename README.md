@@ -512,7 +512,7 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 |-----------|-------------|------------|
 | **Dot Plot** | Downsampled self-homology comparison with direct & inverted (reverse-complement) scoring | O(bins² × window) |
 | **Chaos Game Representation** | Fractal IFS-based genomic fingerprinting; maps DNA to 2D coordinates using corner mappings (A→0,0 T→1,0 C→0,1 G→1,1) | O(N) |
-| **Recombination Radar** | k-mer Jaccard similarity against reference panel; detects mosaic segments & HGT breakpoints | O(N × refs) |
+| **Mosaic / Reference Similarity** | Canonical k-mer Jaccard against an explicit reference panel, with ties, coverage and sampled switch intervals | Bounded windows × references |
 | **Hilbert Curve Atlas** | Maps 1D sequence to 2D via space-filling curve; preserves locality for visual pattern recognition | O(N) |
 
 ### Codon & Translation Analysis
@@ -793,12 +793,22 @@ Maps a genome to a 2D fractal image:
 
 ### Recombination Radar
 
-Detects horizontal gene transfer and mosaic genomes:
-1. Slide a window across the query genome
-2. Compute k-mer Jaccard similarity to each reference
-3. Plot "donor" assignment along the genome
+Explores local similarity to an explicit panel of reference sequences:
 
-**Output:** Identifies breakpoints where the genome switches from one "parent" to another—direct evidence of recombination events.
+1. Slide linear windows across the query and form exact canonical DNA k-mer sets.
+2. Compare each window to the supplied reference sequences using Jaccard overlap.
+3. Show unique closest references, ties, below-threshold matches and missing evidence separately.
+
+Reference switches span the centers of supporting windows; their midpoint is a
+navigation aid. They do not establish biological donors, recombination events or
+transfer age. Display segments partition the query without double-counting
+overlapping windows, and their lengths are not alignment coverage.
+
+Portable experiments retain exact query/reference slices, source attribution,
+omissions and all effective parameters. Browser exports can be recomputed with
+`phage-explorer workflow replay-experiment`, and terminal exports use the same
+method. See the [mosaic workflow guide](docs/MOSAIC_REFERENCE_WORKFLOW.md) for
+local input, TSV exports, limits and terminal commands.
 
 ---
 
