@@ -8,6 +8,8 @@ import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOp
 import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
 import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
+import { MOSAIC_METHOD, MOSAIC_LIMITS, resolveMosaicRadarConfig, validateMosaicDataset,
+  type MosaicDataset, type MosaicRadarConfig, type MosaicSequenceInput } from '../../../core/src/analysis/recombination-radar';
 import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowResultIndex,
   type WorkflowResults } from '../../../core/src/workflow-results';
@@ -15,7 +17,7 @@ import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGra
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -37,6 +39,45 @@ export interface ResearchEnvironment {
   gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+  mosaic?: (dataset: MosaicDataset, options: Required<MosaicRadarConfig>, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+/** Store source genomes once in the workflow bundle. Each command selects exact
+ * complete inputs and effective settings; replay never consults a catalogue.
+ */
+export interface ResearchMosaicParameters {
+  queryContentId: string;
+  referenceContentIds: string[];
+  options: Required<MosaicRadarConfig>;
+}
+export function researchMosaicParameters(queryContentId: string, referenceContentIds: readonly string[],
+  options: MosaicRadarConfig = {}): ResearchMosaicParameters {
+  const value = { queryContentId, referenceContentIds: [...referenceContentIds].sort(), options: resolveMosaicRadarConfig(options) };
+  validateResearchMosaic(analysisJson(value));
+  return value;
+}
+export function validateResearchMosaic(value: CommandValue): void {
+  fields(value, ['queryContentId', 'referenceContentIds', 'options']); contentId(value.queryContentId);
+  const ids = value.referenceContentIds;
+  if (!Array.isArray(ids) || ids.length > MOSAIC_LIMITS.references || new Set(ids).size !== ids.length
+    || ids.includes(value.queryContentId)) throw new Error('Choose at most 30 distinct reference genomes, excluding the query.');
+  ids.forEach(contentId);
+  if (!commandValuesEqual(ids, [...ids].sort())) throw new Error('Record reference content IDs in canonical order.');
+  if (!commandValuesEqual(value.options, resolveMosaicRadarConfig(value.options as unknown as MosaicRadarConfig))) {
+    throw new Error('Record all effective mosaic settings explicitly.');
+  }
+}
+export function researchMosaicDataset(genomes: readonly LocalGenome[], parameters: ResearchMosaicParameters): MosaicDataset {
+  validateResearchMosaic(analysisJson(parameters));
+  const source = (id: string): MosaicSequenceInput => {
+    const matches = genomes.filter(genome => genome.phage.localGenome?.contentId === id);
+    if (matches.length !== 1) throw new Error('Every mosaic source must identify exactly one bundled genome.');
+    const genome = matches[0];
+    return { id: `local-${id}`, label: `${genome.phage.name.slice(0, 180)} [${id}]`, accession: genome.phage.accession,
+      sequence: genome.sequence, source: 'local', sourceDescription: 'Complete imported genome from the recorded workflow bundle.',
+      sourceReference: null, sourceLicense: null, sourceStart: 0, sourceLength: genome.sequence.length };
+  };
+  return validateMosaicDataset({ format: 'phage-explorer-mosaic-dataset', version: 1, name: 'Workflow mosaic reference panel',
+    query: source(parameters.queryContentId), references: parameters.referenceContentIds.map(source), excludedReferences: [] });
 }
 /** A null comparison selects the self method. An explicit second ID, even the
  * same ID, selects the ordered pairwise method; the axes must never be sorted.
@@ -409,8 +450,28 @@ export class ResearchWorkflow {
         return this.result(record, [genome], signal);
       },
     });
+    if ((ids.mosaic === undefined) !== (environment.mosaic === undefined)) throw new Error('Mosaic action and executor must be supplied together.');
+    if (ids.mosaic !== undefined) adapters.set(ids.mosaic, {
+      validate: validateResearchMosaic,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchMosaicParameters;
+        const genomes = await this.selectedGenomes([values.queryContentId, ...values.referenceContentIds], signal);
+        const dataset = researchMosaicDataset(genomes, values), options = resolveMosaicRadarConfig(values.options);
+        const result = await environment.mosaic!(structuredClone(dataset), { ...options }, signal);
+        abort(signal);
+        const record = await parseAnalysisRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        if (!commandValuesEqual(record.method, MOSAIC_METHOD) || record.seed !== null || record.inputs.length !== 1
+          || record.inputs[0].id !== 'dataset' || record.inputs[0].source !== 'local'
+          || record.inputs[0].accession !== dataset.query.accession || !commandValuesEqual(record.inputs[0].data, dataset)
+          || !commandValuesEqual(record.parameters, options)) {
+          throw new Error('Mosaic evidence does not match the submitted query, reference panel, method or settings.');
+        }
+        return this.result(record, genomes, signal);
+      },
+    });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
-      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {
       this.commandRevision++;

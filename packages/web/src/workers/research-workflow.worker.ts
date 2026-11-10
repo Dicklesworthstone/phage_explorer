@@ -7,8 +7,10 @@ import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../
 import { createGCSkewRecord, replayGCSkewRecord, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { createRestrictionDigestRecord, replayRestrictionDigestRecord, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
+import type { MosaicDataset, MosaicRadarConfig } from '../../../core/src/analysis/recombination-radar';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
+  { type: 'mosaic'; dataset: MosaicDataset; options: Required<MosaicRadarConfig> } |
   { type: 'dot-plot'; genome: LocalGenome; comparison: LocalGenome | null; options: { bins: number; window: number } } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
   { type: 'reference-codons'; genome: LocalGenome; referenceText: string; options: ReferenceCodonOptions } |
@@ -21,6 +23,10 @@ export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult 
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'mosaic') {
+    const { createMosaicExperiment } = await import('../../../core/src/analysis/recombination-radar');
+    return { type: 'analysis', record: (await createMosaicExperiment(request.dataset, request.options)).record };
+  }
   if (request.type === 'dot-plot') {
     const input = (genome: LocalGenome) => ({ sequence: genome.sequence, accession: genome.phage.accession, source: 'local' as const });
     const result = request.comparison === null
