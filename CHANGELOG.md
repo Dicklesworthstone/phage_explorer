@@ -6,6 +6,21 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Sourced spacer comparisons in the interactive terminal
+
+- **Real local references** — the CRISPR panel accepts the browser's versioned
+  spacer libraries, explicit host scope, mismatch limits and genome topology.
+  Both-strand sequence hits retain supplied PAM/seed rules, exclusions and
+  coverage instead of presenting missing references as zero immune pressure.
+- **Portable accepted evidence** — a cancellable native worker supports fresh
+  replay against the selected genome, complete JSON/TSV exports and retained
+  source attribution. Draft settings, navigation and late reads cannot relabel
+  an old result.
+- **Separate Acr shortlist** — an optional worker action retains the existing
+  size/charge heuristic for eligible gene spans, with exclusions and explicit
+  uncalibrated-score limits. It makes no immunity or confirmed activity claim.
+  See the [interactive workflow and key guide](docs/EVIDENCE_WORKSPACES.md#spacer-reference-evidence-in-the-interactive-terminal).
+
 ### Environmental sample evidence
 
 - **Explicit local observations** — import a versioned sample dataset with its

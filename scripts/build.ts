@@ -11,6 +11,7 @@ export const EXECUTABLE_WORKERS = [
   { source: 'packages/tui/src/workers/host-metabolism-worker.ts', bundle: 'host-metabolism-worker.js', define: 'PHAGE_HOST_METABOLISM_WORKER' },
   { source: 'packages/tui/src/local-genome-import.worker.ts', bundle: 'local-genome-import.worker.js', define: 'PHAGE_LOCAL_GENOME_WORKER' },
   { source: 'packages/tui/src/research-replay.worker.ts', bundle: 'research-replay.worker.js', define: 'PHAGE_RESEARCH_WORKER' },
+  { source: 'packages/tui/src/workers/spacer-reference-worker.ts', bundle: 'spacer-reference-worker.js', define: 'PHAGE_SPACER_WORKER' },
 ] as const;
 
 /** The production first stage, also used for isolated executable integration tests. */

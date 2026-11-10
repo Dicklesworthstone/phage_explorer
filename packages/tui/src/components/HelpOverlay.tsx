@@ -157,7 +157,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'F3', desc: 'Phase Portraits', note: 'AA PCA' },
             { key: 'F4', desc: 'Bias PCA', note: 'dinuc/codon' },
             { key: 'F5', desc: 'HGT Passport' },
-            { key: 'F6', desc: 'CRISPR Pressure' },
+            { key: 'F6', desc: 'CRISPR Spacer Evidence' },
             { key: 'F7', desc: 'Compare Genomes' },
             { key: 'F8', desc: 'Simulation Hub' },
             { key: 'F9', desc: 'GC Skew' },

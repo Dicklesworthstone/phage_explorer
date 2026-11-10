@@ -54,7 +54,7 @@ export function EnvironmentalBiomeFigure({ dataset, analysis, colors }: {
     <SourceLabel dataset={dataset} />
     <svg viewBox={`0 0 720 ${height}`} role="img" aria-label="Environmental observations by biome and assay status"
       style={{ width: '100%', maxHeight: 470, background: colors.backgroundAlt }}>
-      <title>{dataset.query.label}: sample counts by biome</title>
+      <title>{`${dataset.query.label}: sample counts by biome`}</title>
       <desc>Stacked counts of detected, not detected, and not assayed observations. These are sample counts, not ecological prevalence.</desc>
       <text x={14} y={22} fill={colors.text} fontSize={12}>{dataset.source.kind === 'demo' ? 'DEMO DATA — synthetic sample set' : `${dataset.source.kind.toUpperCase()} INPUT — sample metadata`}</text>
       <text x={14} y={42} fill={colors.textDim} fontSize={11}>Query: {dataset.query.label.slice(0, 80)}</text>
@@ -89,7 +89,7 @@ export function EnvironmentalGeographyFigure({ dataset, analysis, colors }: {
     <SourceLabel dataset={dataset} />
     <svg viewBox="0 0 720 400" role="img" aria-label="Reported environmental sample coordinates"
       style={{ width: '100%', maxHeight: 420, background: colors.backgroundAlt }}>
-      <title>{dataset.query.label}: reported sample locations</title>
+      <title>{`${dataset.query.label}: reported sample locations`}</title>
       <desc>Coordinate grid of supplied sample positions. Countries without reported coordinates are not assigned a centroid. Marker size does not represent abundance or coordinate precision.</desc>
       <text x={14} y={22} fill={colors.text} fontSize={12}>{dataset.source.kind === 'demo' ? 'DEMO DATA — synthetic sample set' : `${dataset.source.kind.toUpperCase()} INPUT — reported coordinates only`}</text>
       <text x={14} y={42} fill={colors.textDim} fontSize={11}>Query: {dataset.query.label.slice(0, 80)}</text>

@@ -190,3 +190,97 @@ prevalence.
 
 The input validator, summarizer and replay method are defined in
 [environmental-evidence.ts](../packages/core/src/analysis/environmental-evidence.ts).
+
+## Spacer-reference evidence in the interactive terminal
+
+Select the genome to compare, then press **I** to open **CRISPR Spacer Reference
+Evidence**. This follows the terminal's existing intermediate-tier unlock.
+The reference-library format is the same `phage-explorer-spacer-library`
+version `1` used by the browser CRISPR panel.
+
+1. Press **l**, enter a local library JSON path, and press Enter. Review its
+   source, hosts and scope in **4: Source**. No DNA search runs merely by loading
+   a library.
+2. Use **h** to cycle between all hosts and individual hosts, or **H** to enter
+   an exact library host ID. Use **+/-** to choose 0–5 substitutions.
+3. Choose topology with **o** when it is unspecified. Known topology from an
+   imported genome is retained. Unknown topology does not imply circular
+   origin-spanning sequence.
+4. Press **Enter** to read the complete selected genome and run the comparison.
+   Inspect hits, coverage and excluded references separately.
+5. Export accepted spacer evidence with **e** (replayable JSON) or **t**
+   (complete hit TSV). Use **b** to export the loaded reference library.
+   Each export asks for a new output path.
+6. Press **r** and supply saved evidence JSON to recompute and verify it against
+   the current genome identity, exact DNA and selected topology. A saved result
+   is accepted only when fresh evidence agrees.
+
+| Key | Action |
+| --- | --- |
+| `l` | Load a local spacer-library JSON file |
+| `h` / `H` | Cycle host scope / enter an exact host ID; blank selects all |
+| `+` / `-` | Adjust allowed substitutions, from 0 through 5 |
+| `o` | Cycle unknown/linear/circular topology when source metadata has not fixed it |
+| Enter | Search with the displayed draft settings |
+| `1` / `2` / `3` / `4` | Hits / Coverage / Excluded / Source |
+| `A` / `5` | Run the optional Acr heuristic / inspect its separate shortlist |
+| Arrows, Page Up/Down, Home/End | Page through all displayed rows |
+| `r` | Verify a saved spacer experiment through fresh computation |
+| `e` / `t` / `b` | Export accepted spacer JSON / all hit TSV / loaded library JSON |
+| `c` | Cancel current work, preserving prior accepted spacer evidence |
+| Esc | Cancel a path prompt, cancel active work, or close an idle panel |
+| `I` | Close the panel and cancel its owned work |
+
+The panel distinguishes draft settings from those used by the accepted result.
+Changing a host, mismatch allowance or topology does not relabel old hits.
+Switching the repository or selected genome invalidates old accepted evidence;
+a reference library may be retained for the next comparison.
+
+Paths are local regular UTF-8 files. Library input is limited to 2 MiB and saved
+spacer evidence to 10 MiB. Output paths are created exclusively with owner-only
+permissions; existing files and symlinks are refused. All file-path input is
+literal: these prompts do not execute shell commands or expand shell syntax.
+
+### Reference scope and interpretation
+
+A library declares a source kind/reference/version/license/scope, named hosts
+and strains with accessions, and spacer records with host IDs and array
+accessions. Each spacer explicitly declares DNA/RNA/unknown target,
+guide-equivalent/unknown orientation, and an optional system designation.
+A PAM or seed rule includes its source reference; no rule is guessed from a
+host or system name. See the
+[spacer-library interfaces and validator](../packages/core/src/analysis/spacer-reference.ts)
+for the complete field contract.
+
+The matcher searches both genome strands using supported, unambiguous
+20–128-base DNA spacers in guide-equivalent orientation. Unsupported references
+remain visible as exclusions. Up to 500 hosts, 10,000 records and a
+5,000,000-base genome are accepted; additional hit/work limits fail explicitly
+instead of accepting a truncated search. The five-minute worker timeout and
+cancellation keep the terminal responsive.
+
+Coordinates are zero-based, half-open intervals on the forward genome.
+Circular hits retain traversal-ordered segments when crossing the origin.
+Mismatch offsets and PAM/seed interpretation follow guide-equivalent
+orientation. The TSV includes all accepted hits, source metadata, rule outcomes
+and coordinate conventions.
+
+A sequence match is not proof of immunity, host range or anti-CRISPR activity.
+No supplied data, unsupported references, no usable DNA windows and no sequence
+match are distinct results. Review host/reference coverage and PAM/seed
+limitations before interpreting a hit or absence of hits.
+
+### Optional Acr candidate heuristic
+
+Press **A** to run the independent sequence-only size/charge heuristic for the
+current genome's eligible annotated genes; inspect **5: Acr heuristic**.
+It requires no spacer library. Work runs in the native worker and can be
+cancelled with **c**. Genome changes invalidate its result.
+
+The shortlist reports a heuristic score and its size/charge rationale.
+These scores are uncalibrated, not probabilities or confirmed anti-CRISPR
+annotations. The method handles a bounded set of short contiguous coding
+spans; unsupported annotations are reported separately rather than silently
+flattened into a sequence. Its simple translation assumptions limit coverage.
+The spacer JSON and hit TSV exports describe the accepted spacer comparison;
+the Acr shortlist is a separate analysis.

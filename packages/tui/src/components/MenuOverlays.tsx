@@ -240,8 +240,8 @@ export function AnalysisMenuOverlay({ onClose }: MenuOverlayProps): React.ReactE
           },
           {
             id: 'analysis-crispr',
-            label: 'CRISPR Pressure / Anti-CRISPR',
-            description: 'Spacer hits, PAMs, and Acr candidates (I)',
+            label: 'CRISPR Spacer Reference Evidence',
+            description: 'Load sourced spacers, inspect matches and verify replay (I)',
             icon: '🛡️',
           shortcut: 'I',
           action: () => openOverlay('crispr'),

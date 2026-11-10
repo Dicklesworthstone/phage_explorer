@@ -1438,10 +1438,10 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       {activeOverlay === CRISPR_ID && (
         <Box
           position="absolute"
-          marginLeft={Math.max(0, Math.floor((terminalCols - 74) / 2))}
-          marginTop={Math.max(0, Math.floor((terminalRows - 18) / 2))}
+          marginLeft={Math.max(0, Math.floor((terminalCols - Math.min(94, terminalCols - 2)) / 2))}
+          marginTop={2}
         >
-          <CRISPROverlay sequence={sequence} genes={currentPhage?.genes ?? []} host={currentPhage?.host ?? undefined} />
+          <CRISPROverlay repository={repository} />
         </Box>
       )}
 
