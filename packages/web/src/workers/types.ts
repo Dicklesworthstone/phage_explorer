@@ -27,7 +27,7 @@ import type {
   PhageFull,
   AnalysisRecord,
 } from '@phage-explorer/core';
-import type { GenomeComparisonResult } from '@phage-explorer/comparison';
+import type { GenomeComparisonResult, SequenceDiffResult } from '@phage-explorer/comparison';
 
 // Re-export simulation types
 export type {
@@ -561,18 +561,6 @@ export interface ComparisonWorkerMessage {
   jobId?: string;
   ok: boolean;
   result?: GenomeComparisonResult;
-  diffMask?: Uint8Array;
-  diffPositions?: number[];
-  diffStats?: ComparisonDiffStats;
+  diff?: SequenceDiffResult;
   error?: string;
-}
-
-export interface ComparisonDiffStats {
-  insertions: number;
-  deletions: number;
-  substitutions: number;
-  matches: number;
-  lengthA: number;
-  lengthB: number;
-  identity: number;
 }

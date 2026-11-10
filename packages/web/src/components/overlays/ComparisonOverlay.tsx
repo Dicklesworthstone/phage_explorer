@@ -4,18 +4,13 @@ import { Overlay } from './Overlay';
 import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
-import type { GenomeComparisonResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
+import type { GenomeComparisonResult, SequenceDiffResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
 import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
-import DiffHighlighter, { type DiffStats as DiffStatsType } from '../DiffHighlighter';
+import DiffHighlighter from '../DiffHighlighter';
 import { OverlayEmptyState, OverlayErrorState, OverlayLoadingState, OverlayStack } from './primitives';
 import { SharedSequencePool } from '../../workers/SharedSequencePool';
 import type { ComparisonWorkerMessage } from '../../workers/types';
-
-const formatPercent = (value: number | null | undefined, digits = 2): string => {
-  if (value === null || value === undefined || Number.isNaN(value)) return '—';
-  return `${value.toFixed(digits)}%`;
-};
 
 function formatBpRange(start: number, end: number): string {
   const lo = Math.min(start, end);
@@ -57,10 +52,44 @@ interface ComparisonOverlayProps {
 
 type ComparisonWorkerPayload = {
   result: GenomeComparisonResult;
-  diffMask?: Uint8Array;
-  diffPositions?: number[];
-  diffStats?: DiffStatsType | null;
+  diff: SequenceDiffResult;
 };
+
+export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
+  diff: SequenceDiffResult | null; sequenceA: string; sequenceB: string;
+}): React.ReactElement {
+  if (!diff) return <div className="text-dim">Run a comparison to view diff highlights.</div>;
+  if (diff.status === 'unavailable') return <div role="status">
+    <h3>Exact sequence diff unavailable</h3><p>{diff.reason}</p>
+    <p className="text-dim">Other comparison metrics remain available. No partial or approximate diff is displayed.</p>
+  </div>;
+  const changes = diff.runs.filter(run => run.operation !== 'match');
+  const interval = (start: number, end: number) => start === end ? `between bases ${start} and ${start + 1}`
+    : `${(start + 1).toLocaleString()}–${end.toLocaleString()}`;
+  return <div>
+    <p>{diff.method}. Edit distance: <strong>{diff.stats.distance.toLocaleString()}</strong>.
+      {' '}Each substituted, inserted or deleted base costs one.</p>
+    <p className="text-dim">Alignment uses the submitted strand and origin. Alternative optimal alignments can place edits differently in repeats.
+      {' '}Identity counts equal symbols over alignment columns; ambiguous IUPAC symbols match literally, without resolving their bases.
+      {diff.stats.ambiguousColumns > 0 && ` ${diff.stats.ambiguousColumns.toLocaleString()} columns contain ambiguous bases.`}</p>
+    {diff.stats.distance === 0 ? <p data-testid="comparison-identical">Sequences have identical symbols (ignoring letter case).</p>
+      : <>
+        <DiffHighlighter sequence={sequenceA} diffSequence={sequenceB} diffMask={diff.mask}
+          diffPositions={diff.positions} stats={diff.stats} />
+        <details><summary>Aligned edit coordinates ({changes.length.toLocaleString()} runs)</summary>
+          <p>Base ranges are 1-based and inclusive. Insertions/deletions use interbase boundaries on the empty side.
+            {' '}Insertion highlights anchor to the next A base, or the last A base at the end; these coordinates give the exact boundary.</p>
+          {changes.length > 100 && <p>Showing the first 100 runs. Counts and highlights include the complete alignment.</p>}
+          <table aria-label="Aligned sequence edit coordinates"><thead><tr><th>Change</th><th>Genome A</th><th>Genome B</th><th>Bases</th></tr></thead>
+            <tbody>{changes.slice(0, 100).map((run, index) => <tr key={index}>
+              <td>{run.operation}</td><td>{interval(run.startA, run.endA)}</td><td>{interval(run.startB, run.endB)}</td>
+              <td>{Math.max(run.endA - run.startA, run.endB - run.startB).toLocaleString()}</td>
+            </tr>)}</tbody>
+          </table>
+        </details>
+      </>}
+  </div>;
+}
 
 export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository }) => {
   const { isOpen } = useOverlay();
@@ -83,9 +112,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
   const cancelWorkerRef = useRef<(() => void) | null>(null);
   const [sequenceA, setSequenceA] = useState<string>('');
   const [sequenceB, setSequenceB] = useState<string>('');
-  const [diffMask, setDiffMask] = useState<Uint8Array | null>(null);
-  const [diffPositions, setDiffPositions] = useState<number[]>([]);
-  const [diffStats, setDiffStats] = useState<DiffStatsType | null>(null);
+  const [diff, setDiff] = useState<SequenceDiffResult | null>(null);
   const activeJobIdRef = useRef<string | null>(null);
 
   const phageA = phageAIndex !== null ? phages[phageAIndex] : null;
@@ -117,9 +144,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     cancelWorkerRef.current?.();
     setComparisonLoading(true);
     setError(null);
-    setDiffMask(null);
-    setDiffPositions([]);
-    setDiffStats(null);
+    setDiff(null);
     try {
       const [fullA, fullB] = await Promise.all([
         repository.getPhageById(phageA.id),
@@ -170,12 +195,10 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
           const handleMessage = (event: MessageEvent<ComparisonWorkerMessage>) => {
             if (event.data.jobId && event.data.jobId !== jobId) return;
             dispose();
-            if (event.data.ok && event.data.result) {
+            if (event.data.ok && event.data.result && event.data.diff) {
               resolve({
                 result: event.data.result,
-                diffMask: event.data.diffMask,
-                diffPositions: event.data.diffPositions ?? [],
-                diffStats: (event.data.diffStats as DiffStatsType | undefined) ?? null,
+                diff: event.data.diff,
               });
             } else {
               reject(new Error(event.data.error ?? 'Worker comparison failed'));
@@ -188,11 +211,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
           catch (err) { dispose(); reject(err); }
         });
       if (activeJobIdRef.current !== jobId) return;
-      if (payload.diffMask) {
-        setDiffMask(payload.diffMask);
-      }
-      setDiffPositions(payload.diffPositions ?? []);
-      setDiffStats(payload.diffStats ?? null);
+      setDiff(payload.diff);
       setComparisonResult(payload.result);
     } catch (err) {
       if (activeJobIdRef.current !== jobId) return;
@@ -648,33 +667,14 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       );
     }
     if (comparisonTab === 'diff') {
-      const editDistance = comparisonResult.editDistance;
-      if (!sequenceA || !sequenceB || !diffMask || !diffStats) {
-        return <div className="text-dim">Run a comparison to view diff highlights.</div>;
-      }
-      if (diffPositions.length === 0) {
-        return (
-          <div className="text-dim">
-            Sequences appear identical ({formatPercent(editDistance.levenshteinSimilarity * 100)} identity).
-          </div>
-        );
-      }
-      return (
-        <DiffHighlighter
-          sequence={sequenceA}
-          diffSequence={sequenceB}
-          diffMask={diffMask}
-          diffPositions={diffPositions}
-          stats={diffStats}
-        />
-      );
+      return <ComparisonDiffView diff={diff} sequenceA={sequenceA} sequenceB={sequenceB} />;
     }
     return (
       <div className="text-dim">
         Tab <strong>{comparisonTab}</strong> not yet implemented. Results available in summary above.
       </div>
     );
-  }, [comparisonLoading, comparisonResult, comparisonTab, diffMask, diffPositions, diffStats, error, phageA, phageB, repository, runComparison, sequenceA, sequenceB]);
+  }, [comparisonLoading, comparisonResult, comparisonTab, diff, error, phageA, phageB, repository, runComparison, sequenceA, sequenceB]);
 
   return (
     <Overlay

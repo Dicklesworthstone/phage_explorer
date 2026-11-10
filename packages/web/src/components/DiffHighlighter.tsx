@@ -60,7 +60,9 @@ export function DiffHighlighter({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
       <SequenceView
         sequence={sequence}
-        diffSequence={diffSequence}
+        // B's raw position is not A's aligned position after an indel. With an
+        // exact A-axis mask, never enable the renderer's positional fallback.
+        diffSequence={diffMask ? null : diffSequence}
         diffMask={diffMask}
         diffPositions={diffPositions}
         diffEnabledOverride
@@ -86,7 +88,7 @@ export function DiffHighlighter({
         </div>
         {summary && (
           <span style={{ color: '#9ca3af' }}>
-            Identity: <span className="font-data">{summary.identity.toFixed(2)}%</span> · Changes: <span className="font-data">{summary.totalChanges.toLocaleString()}</span>
+            Aligned symbol identity: <span className="font-data">{summary.identity.toFixed(2)}%</span> · Changes: <span className="font-data">{summary.totalChanges.toLocaleString()}</span>
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.4rem' }}>
