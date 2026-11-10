@@ -6,6 +6,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Environmental evidence in the standalone terminal binary
+
+- **Local inspect, analyze and replay commands** — `phage-explorer environment`
+  now runs the browser's environmental evidence method without a catalog or a
+  source checkout. Accepted records retain exact sample inputs, source attribution,
+  assay units, partial dates, location uncertainty, unassayed records and observed
+  zeros. Saved records are recomputed before acceptance.
+- **Complete portable outputs** — JSON preserves the experiment for browser or
+  terminal replay; TSV contains every sample. An explicit `from-abundance`
+  command adapts one exact taxon from a supplied abundance dataset or verified
+  analysis. Native workers support cancellation and deadlines, and output files
+  are created privately without replacing existing files. See the
+  [environmental workflow guide](docs/EVIDENCE_WORKSPACES.md).
+
 ### Sourced spacer comparisons in the interactive terminal
 
 - **Direct access** — F6 opens spacer evidence immediately from the main

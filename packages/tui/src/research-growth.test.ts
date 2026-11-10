@@ -10,7 +10,6 @@ import { createPlaqueGrowthRecord, parsePlaqueGrowthInput, replayPlaqueGrowthRec
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest } from './research-replay.worker';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker, type WorkflowRuntime } from '../../../scripts/research-workflow';
-const signal = () => new AbortController().signal;
 async function cli(args: string[], runtime: WorkflowRuntime = {}) {
   let output = '', error = '';
   const code = await researchWorkflowMain(args, text => { output += text; }, text => { error += text; }, runtime);

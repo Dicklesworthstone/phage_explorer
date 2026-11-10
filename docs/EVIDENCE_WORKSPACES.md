@@ -191,6 +191,55 @@ prevalence.
 The input validator, summarizer and replay method are defined in
 [environmental-evidence.ts](../packages/core/src/analysis/environmental-evidence.ts).
 
+## Environmental observations from the command line
+
+The installed executable exposes the same local dataset, producer and replay
+contracts without opening a catalog or requiring a browser:
+
+```bash
+phage-explorer environment inspect samples.json --output reviewed-samples.json
+phage-explorer environment analyze reviewed-samples.json --output sample-evidence.json
+phage-explorer environment replay sample-evidence.json --output verified-evidence.json
+phage-explorer environment replay sample-evidence.json --format tsv --output all-samples.tsv
+```
+
+`inspect` validates and exports a dataset without creating an analysis. `analyze`
+creates the portable evidence record. `replay` recalculates every summary and
+checks the complete original result identity; even a changed result with fresh
+checksums is refused. Browser and terminal records can be replayed in either
+surface. TSV contains every observation, including not-assayed records and
+missing dates, coordinates or abundance. Its empty fields are not zeros, and it
+is a table rather than a replayable experiment.
+
+To derive environmental observations from an abundance matrix, choose an exact
+taxon ID and join any metadata using the existing abundance importer:
+
+```bash
+phage-explorer abundance inspect counts.csv --metadata samples.csv --output community.json
+phage-explorer environment from-abundance community.json --taxon query-id --output query-samples.json
+phage-explorer environment analyze query-samples.json --output query-evidence.json
+```
+
+`from-abundance` also accepts CSV/TSV or a saved abundance analysis. A saved
+analysis must pass fresh abundance replay before its inputs are used. The
+conversion selects only the exact supplied taxon, joins metadata by sample ID,
+and produces a dataset for review. A missing taxon is an error; source kinds,
+zeros, missing metadata, measurement units and declared location/date precision
+retain the same meaning as in the browser. No public metadata lookup occurs.
+
+Use `-` as the input for UTF-8 stdin. Output goes to stdout unless `--output`
+names a new path; structured progress and errors go to stderr. Files are bounded
+to 10 MiB and source datasets to 4 MiB/5,000 samples. Only regular files are read;
+existing output files and symlinks are refused, and new output files use
+owner-only permissions. Computation runs in an owned native worker embedded in
+the compiled executable. Ctrl-C or `--timeout-ms` cancels before publication;
+once publication begins, the complete accepted output is written. The default
+timeout is 300,000 milliseconds, with an explicit range of 1–3,600,000.
+
+For a source checkout, prefix the same arguments with
+`bun packages/tui/src/index.tsx environment`. Run
+`phage-explorer environment --help` for the full command contract.
+
 ## Spacer-reference evidence in the interactive terminal
 
 Select the genome to compare, then press **F6** from the main terminal screen

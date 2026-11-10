@@ -11,6 +11,7 @@ import { analysisJson, createAnalysisRecord } from '../../core/src/analysis-resu
 import { serializeCommandPlan, parseCommandTape, serializeCommandTape, COMMAND_LIMITS } from '../../core/src/command-session';
 import { parseWorkflowResults, workflowAnalysisAt, workflowResultIndex, WORKFLOW_RESULTS_LIMITS } from '../../core/src/workflow-results';
 import { recordResearchPlan } from './research-replay';
+import type { ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest, type TerminalResearchMessage,
   type TerminalResearchRequest } from './research-replay.worker';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker, type WorkflowRuntime, type TerminalWorker } from '../../../scripts/research-workflow';
@@ -84,7 +85,7 @@ describe('complete workflow results in the terminal', () => {
       if (result.type !== 'analysis') throw new Error('Expected browser worker evidence');
       return result.record;
     };
-    let view: import('../../web/src/keyboard/ResearchWorkflow').ResearchView | null = null;
+    let view: ResearchView | null = null;
     const browser = new ResearchWorkflow({ view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation',
       dotPlot: 'overlay.dotPlot', digest: 'overlay.gel' }, {
       genomes: () => parsed.genomes, bundle: () => bundle,
