@@ -3,6 +3,7 @@ import { useHotkey } from '../../hooks';
 import { useTheme } from '../../hooks/useTheme';
 import { ActionIds } from '../../keyboard';
 import { Overlay } from './Overlay';
+import { ProteinEvidencePanel } from './ProteinEvidencePanel';
 import { useOverlay } from './OverlayProvider';
 import { usePhageStore } from '../../store';
 import {
@@ -72,10 +73,7 @@ export function ProteinReferenceCoverage({ inputs }: { inputs: ProteinReferenceI
         <p>Snapshot identity: {bundle.bundleSha256}</p>
       </details>
       <button type="button" onClick={() => {
-        const url = URL.createObjectURL(new Blob([JSON.stringify({
-          format: 'phage-explorer-protein-inputs', version: 1, geneId: inputs.gene.id,
-          genomeAccession: bundle.cds.genomeAccession, reference: bundle,
-        }, null, 2)], { type: 'application/json' }));
+        const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
         const link = document.createElement('a');
         link.href = url;
         link.download = `${bundle.id}-inputs.json`;
@@ -91,22 +89,24 @@ export function HostInteractionOverlay({ repository }: { repository?: PhageRepos
   const { theme } = useTheme();
   const colors = theme.colors;
   const phage = usePhageStore((s) => s.currentPhage);
-  const [reference, setReference] = useState<{ phage: typeof phage; inputs: ProteinReferenceInputs } | null>(null);
-  const referenceInputs = reference?.phage === phage ? reference?.inputs ?? null : null;
+  const selectedGeneId = usePhageStore(s => s.selectedGeneId);
+  const selectGene = usePhageStore(s => s.setSelectedGeneId);
+  const [reference, setReference] = useState<{ phage: typeof phage; repository: typeof repository; inputs: ProteinReferenceInputs } | null>(null);
+  const referenceInputs = reference?.phage === phage && reference?.repository === repository ? reference?.inputs ?? null : null;
 
   useEffect(() => {
     if (!isOpen('hostInteractions') || !phage) return;
     let cancelled = false;
     setReference(null);
     if (!repository || phage.localGenome) {
-      setReference({ phage, inputs: { status: 'unavailable', reason: phage.localGenome
+      setReference({ phage, repository, inputs: { status: 'unavailable', reason: phage.localGenome
         ? 'References are not automatically applied to private imported genomes.' : 'Genome repository is unavailable.' } });
       return;
     }
     void import('../../../../../data/protein-references/lambda-lamb-v1.json')
       .then(module => loadProteinReferenceInputs(repository, phage.id, module.default))
-      .then(inputs => { if (!cancelled) setReference({ phage, inputs }); })
-      .catch(error => { if (!cancelled) setReference({ phage, inputs: { status: 'unavailable',
+      .then(inputs => { if (!cancelled) setReference({ phage, repository, inputs }); })
+      .catch(error => { if (!cancelled) setReference({ phage, repository, inputs: { status: 'unavailable',
         reason: error instanceof Error ? error.message : 'Could not load protein references.' } }); });
     return () => { cancelled = true; };
   }, [isOpen, phage, repository]);
@@ -161,6 +161,7 @@ export function HostInteractionOverlay({ repository }: { repository?: PhageRepos
         <OverlayEmptyState
           message="Select a bacteriophage from the sidebar or catalog to view its host effector interactions."
         />
+        <ProteinEvidencePanel repository={repository} phage={null} selectedGeneId={selectedGeneId} inputs={null} onSelectGene={selectGene} />
       </Overlay>
     );
   }
@@ -169,13 +170,14 @@ export function HostInteractionOverlay({ repository }: { repository?: PhageRepos
     return (
       <Overlay
         id="hostInteractions"
-        title={`Host–Phage Interactions: ${phage.name}`}
+        title="Host interactions and protein reference evidence"
         size="lg"
       >
         <OverlayDescription title="Host interaction evidence">
           Physical affinities and mutation effects require mapped protein structures and validated interaction evidence. The current pseudo-vector model cannot establish these quantities for the selected phage.
         </OverlayDescription>
         <ProteinReferenceCoverage inputs={referenceInputs} />
+        <ProteinEvidencePanel repository={repository} phage={phage} selectedGeneId={selectedGeneId} inputs={referenceInputs} onSelectGene={selectGene} />
         <OverlayEmptyState
           message={demonstration ? 'No illustrative interactions exceed the selected threshold.' : `${phage.genes.length} gene annotations are available. Stored receptor-candidate evidence can be explored in the tropism panel.`}
         />

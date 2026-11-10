@@ -10,10 +10,12 @@ import { loadProteinReferenceInputs, type PhageFull, type ProteinReferenceReposi
 import snapshot from '../../../../../data/protein-references/lambda-lamb-v1.json';
 import { SqlJsRepository } from '../../db/SqlJsRepository';
 import { ProteinReferenceCoverage } from './HostInteractionOverlay';
+import { ProteinEvidencePanel, ProteinEvidenceResults } from './ProteinEvidencePanel';
+import { createProteinStructureExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
 
 const root = resolve(import.meta.dir, '../../../../..');
 const require = createRequire(import.meta.url);
-const catalog = new BunSqliteRepository(resolve(root, 'phage.db'), { readonly: true });
+const catalog = new BunSqliteRepository(resolve(root, 'packages/web/public/phage.db'), { readonly: true });
 afterAll(() => catalog.close());
 const getPhage = async () => {
   const phage = await catalog.getPhageById(1);
@@ -123,5 +125,43 @@ describe('Actual catalog → repository → source input service → production 
     }, 1, snapshot);
     expect(inputs.status).toBe('unavailable');
     if (inputs.status === 'unavailable') expect(inputs.reason).toContain('coverage is incomplete');
+  });
+});
+
+
+describe('production protein evidence presentation', () => {
+  test('requires the verified mapped CDS instead of applying a reference to another selected gene', async () => {
+    const inputs = await loadProteinReferenceInputs(catalog, 1, snapshot);
+    if (inputs.status !== 'ready') throw new Error(inputs.reason);
+    const html = renderToStaticMarkup(<ProteinEvidencePanel repository={catalog} phage={await getPhage()}
+      selectedGeneId={41} inputs={inputs} onSelectGene={() => {}} />);
+    expect(html).toContain('Selected gene: 41');
+    expect(html).toContain('Select mapped protein CDS');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Analyze mapped protein CDS/);
+    expect(html).not.toContain('Protein evidence results');
+  });
+  test('exposes real full-length coverage, source identity and unexamined interchain geometry', async () => {
+    const experiment = await createProteinStructureExperiment(snapshot, { contactScope: 'chain' });
+    const html = renderToStaticMarkup(<ProteinEvidenceResults experiment={experiment}
+      origin={{ kind: 'reference-file', name: 'standalone.json' }} verified={false} />);
+    expect(html).toContain('P03749: reference-derived residue evidence');
+    expect(html).toContain('1132 complete protein residues');
+    expect(html).toContain('1096 / 1132');
+    expect(html).toContain('420 / 1132');
+    expect(html).toContain('958');
+    expect(html).toContain('not compared');
+    expect(html).toContain('no current genome or selected CDS was verified');
+    expect(html).toContain('Export protein experiment JSON');
+    expect(html).toContain('Export residue TSV'); expect(html).toContain('Export contact TSV');
+  });
+  test('retains standalone source labels and genuine missing geometry for alignment-only analysis', async () => {
+    const experiment = await createProteinStructureExperiment(snapshot, { chainLabelAsymId: null });
+    const html = renderToStaticMarkup(<ProteinEvidenceResults experiment={experiment}
+      origin={{ kind: 'saved-experiment', name: 'restored.json' }} verified={true} />);
+    expect(html).toContain('Standalone saved experiment: restored.json');
+    expect(html).toContain('Fresh replay verified');
+    expect(html).toContain('No chain selected: geometry is unavailable');
+    expect(html).toContain('unavailable');
+    expect(html).not.toContain('Verified against the loaded genome');
   });
 });

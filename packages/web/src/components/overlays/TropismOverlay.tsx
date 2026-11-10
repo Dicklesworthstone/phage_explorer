@@ -468,7 +468,9 @@ export function TropismOverlay({ repository, phage }: TropismOverlayProps): Reac
                   textAlign: 'center',
                 }}
               >
-                Structural results require a homologous protein alignment and a mapped experimental or validated 3D structure. Sequence alone does not establish surface areas, binding energies, mutation effects or donor compatibility. You can inspect the available receptor evidence, or explicitly select the illustrative model above.
+                Structural results require a homologous protein alignment and a mapped experimental or validated 3D structure. Sequence alone does not establish surface areas, binding energies, mutation effects or donor compatibility.
+                <p>The protein evidence workbench computes observed alignment diversity and C-alpha neighborhoods from validated references, including portable import and replay.</p>
+                <button type="button" onClick={() => toggle('hostInteractions')}>Open protein evidence workbench</button>
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
