@@ -5,14 +5,237 @@
 import { describe, it, expect } from 'bun:test';
 import {
   computeMosaicRadar,
+  createMosaicExperiment,
+  exportMosaicTsv,
+  MOSAIC_LIMITS,
+  mosaicResultFromRecord,
+  parseMosaicDataset,
+  replayMosaicExperiment,
+  resolveMosaicRadarConfig,
+  serializeMosaicDataset,
+  validateMosaicDataset,
+  type MosaicDataset,
+  type MosaicSequenceInput,
   type ReferenceSketch,
   type MosaicRadarConfig,
 } from './recombination-radar';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../analysis-result';
 
 // Helper to create a simple reference
 function makeRef(label: string, sequence: string): ReferenceSketch {
   return { label, sequence };
 }
+
+function source(id: string, sequence: string, changes: Partial<MosaicSequenceInput> = {}): MosaicSequenceInput {
+  return { id, label: id, accession: null, sequence, source: 'local', sourceDescription: 'Hand-enumerated numerical fixture',
+    sourceReference: null, sourceLicense: null, sourceLength: sequence.length, sourceStart: 0, ...changes };
+}
+function dataset(query = 'AAAC', references = [source('reference', 'AAGT')]): MosaicDataset {
+  return { format: 'phage-explorer-mosaic-dataset', version: 1, name: 'Local exact reference panel',
+    query: source('query', query), references, excludedReferences: [] };
+}
+
+describe('portable mosaic experiments', () => {
+  it('carries independently enumerated Jaccard and exact source attribution through JSON and recomputation', async () => {
+    const input = dataset();
+    input.query = source('query', 'AAAC', { accession: 'local.query', sourceLength: 10, sourceStart: 3,
+      label: 'Private α query', sourceDescription: 'Private slice, not uploaded', sourceLicense: 'CC0', sourceReference: 'local source' });
+    const experiment = await createMosaicExperiment(input, { k: 2 });
+    // {AA, AC} intersects {AA, AG, AC} in exactly two of three canonical words.
+    expect(experiment.result.windows[0].score).toBe(2 / 3);
+    expect(experiment.result.windows[0].validKmerCount).toBe(3);
+    expect(experiment.record.fields.mosaic.kind).toBe('sequence-score');
+    expect(experiment.record.inputs).toHaveLength(1);
+    expect(experiment.record.inputs[0].data).toEqual(analysisJson(experiment.dataset));
+    expect(experiment.record.parameters).toEqual({ k: 2, window: 2000, step: 1000, minSimilarity: 0.05, topN: 3, maxReferences: 30 });
+    const coverage = experiment.record.fields.coverage.value as any;
+    expect(coverage.query).toMatchObject({ sourceLength: 10, sourceStart: 3, sourceEnd: 7, analyzedBases: 4, omittedBases: 6 });
+    expect(coverage.truncation).toBe(true);
+    expect(await replayMosaicExperiment(serializeAnalysisRecord(experiment.record))).toEqual(experiment);
+    expect(parseMosaicDataset(serializeMosaicDataset(input))).toEqual(experiment.dataset);
+    expect(mosaicResultFromRecord(experiment.record)).toEqual(experiment.result);
+  });
+
+  it('makes empty panels and short queries explicitly unavailable without invented observed windows', async () => {
+    for (const input of [dataset('ACGT', []), dataset('A')]) {
+      const experiment = await createMosaicExperiment(input, { k: 2 });
+      expect(experiment.result.windows).toEqual([]);
+      expect(experiment.result.segments).toEqual([]);
+      expect(experiment.result.coverage).toEqual({ matched: 0, ambiguous: 0, 'below-threshold': 0, 'no-evidence': input.query.sequence.length });
+      expect(experiment.record.fields.coverage.value).toMatchObject({ unobservedQueryBases: input.query.sequence.length });
+      expect(experiment.record.fields.mosaic.coverage).toEqual({ available: 0, total: 0, unit: 'records' });
+      expect((await replayMosaicExperiment(serializeAnalysisRecord(experiment.record))).result).toEqual(experiment.result);
+    }
+  });
+
+  it('retains explicit ties, missing evidence and nonoverlapping planted-mosaic coverage', async () => {
+    const experiment = await createMosaicExperiment(dataset('A'.repeat(300) + 'C'.repeat(300),
+      [source('C', 'C'.repeat(300)), source('A', 'A'.repeat(300))]), { k: 3, window: 200, step: 100 });
+    expect(experiment.result.windows.map(window => window.score)).toEqual([1, 1, 1 / 4, 1, 1]);
+    expect(experiment.result.segments.map(segment => [segment.start, segment.end, segment.donor])).toEqual([[0, 250, 'A'], [250, 350, null], [350, 600, 'C']]);
+    expect(experiment.result.referenceSwitches).toEqual([{ from: 'A', to: 'C', start: 200, end: 400, position: 300 }]);
+    expect(Object.values(experiment.result.coverage).reduce((sum, bases) => sum + bases, 0)).toBe(600);
+    const missing = await createMosaicExperiment(dataset('N'.repeat(600), [source('unknown', 'N'.repeat(300))]));
+    expect(missing.result.coverage['no-evidence']).toBe(600);
+    expect(missing.result.referencePanel).toMatchObject({ supplied: 1, selected: 1, usable: 0, excludedLabels: ['unknown'] });
+    expect(missing.result.referenceSwitches).toEqual([]);
+  });
+
+  it('canonicalizes panel order while preserving omissions, failed reads and exact slice lengths', async () => {
+    const input = dataset('AAAA', [source('z', 'TTTT'), source('a', 'AAAA'), source('m', 'NNNN')]);
+    input.references[1].sourceLength = 20;
+    input.excludedReferences = [{ id: 'unreadable', label: 'Unavailable reference', accession: 'failed.1', reason: 'Local sequence read failed' }];
+    const first = await createMosaicExperiment(input, { k: 2, maxReferences: 2 });
+    const reordered = await createMosaicExperiment({ ...input, references: [...input.references].reverse() }, { maxReferences: 2, k: 2 });
+    expect(first.record).toEqual(reordered.record);
+    expect(first.dataset.references.map(item => item.id)).toEqual(['a', 'm', 'z']);
+    expect(first.result.referencePanel).toEqual({ supplied: 3, selected: 2, usable: 1, omitted: 1, excludedLabels: ['m'] });
+    expect(first.record.fields.coverage.coverage).toEqual({ available: 1, total: 4, unit: 'records' });
+    expect(first.record.fields.coverage.value).toMatchObject({
+      selectedReferences: [{ id: 'a', analyzedBases: 4, omittedBases: 16 }, { id: 'm', analyzedBases: 4, omittedBases: 0 }],
+      omittedReferences: [{ id: 'z', reason: 'Excluded by explicit maxReferences after label ordering.' }],
+      excludedReferences: input.excludedReferences,
+    });
+  });
+
+  it('binds query, reference, provenance and effective option changes to distinct identities', async () => {
+    const input = dataset();
+    const baseline = await createMosaicExperiment(input, { k: 2 });
+    for (const changed of [
+      { ...input, query: { ...input.query, sequence: 'AACC' } },
+      { ...input, references: [{ ...input.references[0], sequence: 'AAAA' }] },
+      { ...input, references: [{ ...input.references[0], sourceReference: 'Changed source release' }] },
+    ]) {
+      const result = await createMosaicExperiment(changed, { k: 2 });
+      expect(result.record.cacheKey).not.toBe(baseline.record.cacheKey);
+      expect(result.record.resultId).not.toBe(baseline.record.resultId);
+    }
+    expect((await createMosaicExperiment(input, { k: 2, minSimilarity: 0.7 })).record.cacheKey).not.toBe(baseline.record.cacheKey);
+    expect(resolveMosaicRadarConfig({ window: 10, step: 1 })).toMatchObject({ window: 200, step: 100 });
+    expect((await createMosaicExperiment(input, { k: 2, window: 10, step: 1 })).record)
+      .toEqual((await createMosaicExperiment(input, { k: 2, window: 200, step: 100 })).record);
+  });
+
+  it('snapshots caller-owned input before its first asynchronous hash', async () => {
+    const input = dataset();
+    const config = { k: 2 };
+    const promised = createMosaicExperiment(input, config);
+    input.query.sequence = 'CCCC';
+    input.references[0].sequence = 'CCCC';
+    config.k = 3;
+    const result = await promised;
+    expect(result.dataset.query.sequence).toBe('AAAC');
+    expect(result.dataset.references[0].sequence).toBe('AAGT');
+    expect(result.options.k).toBe(2);
+    expect(result.result.windows[0].score).toBe(2 / 3);
+    expect((await replayMosaicExperiment(serializeAnalysisRecord(result.record))).record).toEqual(result.record);
+  });
+
+  it('rejects corrupted hashes and correctly rehashed fabricated numerical evidence', async () => {
+    const { record } = await createMosaicExperiment(dataset(), { k: 2 });
+    const forged = structuredClone(record);
+    (forged.fields.mosaic.value as any).windows[0].score = 1;
+    await expect(replayMosaicExperiment(serializeAnalysisRecord(forged))).rejects.toThrow('checksum');
+    const rehashed = await createAnalysisRecord({ method: forged.method,
+      inputs: forged.inputs.map(({ sha256: _sha256, ...input }) => input), parameters: forged.parameters,
+      seed: forged.seed, references: forged.references, fields: forged.fields });
+    // Establish that envelope-only verification accepts the attack fixture.
+    expect(await parseAnalysisRecord(serializeAnalysisRecord(rehashed))).toEqual(rehashed);
+    await expect(replayMosaicExperiment(serializeAnalysisRecord(rehashed))).rejects.toThrow('Fresh mosaic calculation');
+  });
+
+  it('rejects valid-checksum changes to evidence contracts and incompatible methods', async () => {
+    const { record } = await createMosaicExperiment(dataset(), { k: 2 });
+    for (const alteration of ['implementation', 'reference', 'seed', 'parameters', 'description', 'kind']) {
+      const changed = structuredClone(record);
+      if (alteration === 'implementation') changed.method.implementation = 'Other backend';
+      if (alteration === 'reference') changed.references[0].version = 'future';
+      if (alteration === 'seed') changed.seed = 1;
+      if (alteration === 'parameters') delete changed.parameters.maxReferences;
+      if (alteration === 'description') changed.inputs[0].description = 'Concealed source bounds';
+      if (alteration === 'kind') changed.inputs[0].source = 'external';
+      const rehashed = await createAnalysisRecord({ method: changed.method,
+        inputs: changed.inputs.map(({ sha256: _sha256, ...input }) => input), parameters: changed.parameters,
+        seed: changed.seed, references: changed.references, fields: changed.fields });
+      await expect(replayMosaicExperiment(serializeAnalysisRecord(rehashed))).rejects.toThrow();
+    }
+  });
+
+  it('keeps demonstration inputs and their resulting tables explicitly demonstrative', async () => {
+    const input = dataset();
+    input.references[0].source = 'demo';
+    const { record } = await createMosaicExperiment(input, { k: 2 });
+    expect(record.inputs[0].source).toBe('demo');
+    expect(record.fields.mosaic.kind).toBe('demo');
+    expect(record.fields.coverage.kind).toBe('demo');
+    expect(record.fields.mosaic).toHaveProperty('assumptions');
+    expect(exportMosaicTsv(record)).toContain('"source":"demo"');
+    expect((await replayMosaicExperiment(serializeAnalysisRecord(record))).record.fields.mosaic.kind).toBe('demo');
+  });
+
+  it('exports three useful TSV tables with source offsets, exact boundaries and safe metadata', async () => {
+    const input = dataset('A'.repeat(300) + 'C'.repeat(300), [source('A', 'A'.repeat(300)), source('C', 'C'.repeat(300))]);
+    input.query.sourceStart = 40;
+    input.query.sourceLength = 1000;
+    const { record } = await createMosaicExperiment(input, { k: 3, window: 200, step: 100 });
+    expect(exportMosaicTsv(record)).toContain('0\t200\t40\t240\tA\tmatched\t1\t198\t');
+    expect(exportMosaicTsv(record, 'segments')).toContain('250\t350\t290\t390\t\tambiguous\t0.25\t1\t');
+    expect(exportMosaicTsv(record, 'switches')).toContain('A\tC\t200\t400\t300\t240\t440\t340\n');
+    expect(exportMosaicTsv(record)).toContain(record.inputs[0].sha256);
+    expect(exportMosaicTsv(record)).toContain('omittedBases');
+    expect(() => exportMosaicTsv(record, 'unknown' as any)).toThrow('Choose mosaic');
+    const formula = await createMosaicExperiment(dataset('AAAA', [source('safe-id', 'AAAA', { label: '=1+1' })]), { k: 2 });
+    expect(exportMosaicTsv(formula.record)).toContain("\t'=1+1\tmatched\t");
+  });
+
+  it('rejects malformed or colliding source identities without silently repairing private inputs', () => {
+    const input = dataset();
+    const bad: unknown[] = [
+      { ...input, version: 2 }, { ...input, unexpected: true },
+      { ...input, references: [{ ...input.references[0], id: input.query.id }] },
+      { ...input, references: [{ ...input.references[0], label: ` ${input.query.label} ` }] },
+      { ...input, excludedReferences: [{ id: input.query.id, label: 'missing', accession: null, reason: 'Unavailable' }] },
+      { ...input, excludedReferences: [{ id: 'missing', label: 'missing', accession: null }] },
+      { ...input, query: { ...input.query, sequence: '' } },
+      { ...input, query: { ...input.query, sequence: 'A-AC' } },
+      { ...input, query: { ...input.query, sequence: 'AAßC' } },
+      { ...input, query: { ...input.query, sourceStart: 1 } },
+      { ...input, query: { ...input.query, sourceLength: 3 } },
+      { ...input, query: { ...input.query, sourceLength: Infinity } },
+      { ...input, query: { ...input.query, sourceDescription: 'Embedded\nnewline' } },
+      { ...input, query: { ...input.query, source: 'unknown' } },
+      { ...input, query: { ...input.query, id: 'bad/source' } },
+      { ...input, query: { ...input.query, sourceLicense: '' } },
+    ];
+    for (const value of bad) expect(() => validateMosaicDataset(value)).toThrow();
+    expect(() => parseMosaicDataset('null')).toThrow();
+    expect(() => parseMosaicDataset('{broken')).toThrow();
+    expect(parseMosaicDataset('\uFEFF' + serializeMosaicDataset(input))).toEqual(validateMosaicDataset(input));
+  });
+
+  it('rejects oversized inputs, excessive windows and bounded computation before starting the kernel', async () => {
+    expect(() => parseMosaicDataset(' '.repeat(MOSAIC_LIMITS.bytes + 1))).toThrow('6 MiB');
+    expect(() => validateMosaicDataset(dataset('A', Array.from({ length: 31 }, (_, i) => source(`r${i}`, 'A'))))).toThrow('30');
+    expect(() => validateMosaicDataset(dataset('A'.repeat(3_000_000), [source('reference', 'A'.repeat(3_000_000))]))).toThrow('5,000,000');
+    await expect(createMosaicExperiment(dataset('A'.repeat(600_000)), { window: 200, step: 100 })).rejects.toThrow('5,000 windows');
+    const workload = dataset('A'.repeat(1_000_000), Array.from({ length: 10 }, (_, i) => source(`r${i}`, 'C'.repeat(100_000))));
+    await expect(createMosaicExperiment(workload, { k: 16, window: 10_000, step: 1000 })).rejects.toThrow('50,000,000');
+    for (const options of [{ extra: 1 }, { k: null }, { topN: 31 }, { maxReferences: 31 }, { window: 5_000_001 }, { minSimilarity: NaN }]) {
+      expect(() => resolveMosaicRadarConfig(options as any)).toThrow();
+    }
+  });
+
+  it('does not publish an experiment after cancellation before or during hashing', async () => {
+    const before = new AbortController(); before.abort();
+    await expect(createMosaicExperiment(dataset(), {}, before.signal)).rejects.toHaveProperty('name', 'AbortError');
+    const pending = new AbortController();
+    const promise = createMosaicExperiment(dataset(), {}, pending.signal);
+    pending.abort();
+    await expect(promise).rejects.toHaveProperty('name', 'AbortError');
+    const { record } = await createMosaicExperiment(dataset());
+    await expect(replayMosaicExperiment(serializeAnalysisRecord(record), before.signal)).rejects.toHaveProperty('name', 'AbortError');
+  });
+});
 
 describe('computeMosaicRadar', () => {
   describe('edge cases', () => {
