@@ -115,3 +115,49 @@ panel/window. Portable analysis records must also fit the shared 10 MiB limit.
 JSON exports contain private sequences and provenance. TSV omits sequence bases
 but retains identifying metadata, exact source ranges, coverage and result hashes.
 This workflow performs no implicit source fetch or genome upload.
+
+## Recorded multi-step workflows
+
+Mosaic is also available in the browser's Research workflows recorder. Import
+the genomes you want to use and start recording. Choose an explicit query and
+reference panel, set the analysis parameters, and run Mosaic. Combine it with
+navigation or other supported analyses before stopping the recording. The saved
+workflow contains the original genome bundle and each command's complete settings.
+
+The recorder's result view and exports use the accepted analysis's own query,
+reference panel and parameters. Editing the draft query, reference selections or
+settings does not relabel an earlier result. When an input is removed or replaced
+during computation, the obsolete result cannot become the current analysis.
+
+Export a recorded workflow and verify it headlessly:
+
+```bash
+bun run workflow inspect --input recorded-workflow.json
+bun run workflow replay --input recorded-workflow.json --repetitions 2 --results --output complete-results.json
+bun run workflow inspect-results --input complete-results.json
+bun run workflow replay-results --input complete-results.json --output verified-results.json
+```
+
+To extract an individual analysis, use the execution number reported by
+`inspect-results`. For example, if execution 2 is the desired Mosaic analysis:
+
+```bash
+bun run workflow extract-result --input complete-results.json --execution 2 --output mosaic-experiment.json
+bun run workflow replay-experiment --input mosaic-experiment.json --format tsv --output mosaic-windows.tsv
+```
+
+Navigation executions have no analysis to extract. Repeated executions keep their
+own step numbers, while identical analysis records are stored once. A later
+navigation step does not change the identity of the most recent analysis.
+
+For command-plan authors, the canonical action is `overlay.mosaicRadar`.
+Its parameters are `queryContentId`, sorted distinct `referenceContentIds`, and
+`options` containing all six effective settings: `k`, `window`, `step`,
+`minSimilarity`, `maxReferences` and `topN`. The query cannot also appear in the
+reference list. IDs must identify exact genomes in the plan's existing
+`context.bundle`; replay never resolves a missing source from the catalog.
+
+Recorded workflows use complete bundled sequences. They do not inherit the
+interactive catalog panel's prefix selection. The portable Mosaic input and
+computation limits still apply, and unsupported or changed inputs fail before an
+analysis is accepted.

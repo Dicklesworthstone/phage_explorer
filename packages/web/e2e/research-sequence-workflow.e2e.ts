@@ -70,7 +70,7 @@ const test = base.extend<{ workflowFixture: void }>({
           });
         },
       }],
-    }) as InlineConfig);
+    } satisfies InlineConfig));
     const pageErrors: string[] = [];
     page.on('pageerror', error => pageErrors.push(error.message));
     try {
@@ -119,6 +119,84 @@ async function captureMixed(page: Page) {
   await page.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
   return { selfId, pairId, tape: await download(page, 'Export research workflow') };
 }
+
+async function configureMosaic(page: Page) {
+  await page.getByRole('checkbox', { name: /Workflow mosaic reference column / }).check();
+  await page.getByLabel('Workflow mosaic k-mer length', { exact: true }).fill('2');
+  await page.getByLabel('Workflow mosaic window (bp)', { exact: true }).fill('200');
+  await page.getByLabel('Workflow mosaic step (bp)', { exact: true }).fill('100');
+  await page.getByLabel('Workflow mosaic minimum similarity', { exact: true }).fill('0');
+  await page.getByLabel('Workflow mosaic maximum references', { exact: true }).fill('1');
+  await page.getByLabel('Workflow mosaic retained candidates per window', { exact: true }).fill('1');
+}
+
+test('records actual mosaic evidence, preserves accepted source labels through draft edits and round-trips all executions', async ({ page }) => {
+  await start(page); await configureMosaic(page);
+  await page.getByRole('button', { name: 'Run and record mosaic similarity', exact: true }).click();
+  await recorded(page, 1);
+  const accepted = await page.getByTestId('workflow-result').getAttribute('data-result-id');
+  const result = page.getByRole('region', { name: 'Recorded mosaic results', exact: true });
+  const row = page.getByRole('table', { name: 'Recorded mosaic window evidence', exact: true }).locator('tbody tr').first();
+  // Independent canonical sets: GAATTCAA={GA,AA,AT,CA}; CCAATTAA={CC,CA,AA,AT,TA}.
+  // Their intersection has three words and their union has six.
+  await expect(row.locator('td').nth(0)).toHaveText('[0, 8)');
+  await expect(row.locator('td').nth(1)).toHaveText('matched');
+  await expect(row.locator('td').nth(2)).toContainText('column');
+  await expect(row.locator('td').nth(3)).toHaveText('0.500000');
+  const contentIds = await page.evaluate(() => (window as unknown as WorkflowFixture).workflowIds);
+  await page.getByLabel('Workflow genome', { exact: true }).selectOption(contentIds[1]);
+  await expect(result).toContainText('Analyzed query: row');
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+  await page.getByLabel('Workflow genome', { exact: true }).selectOption(contentIds[0]);
+  await configureMosaic(page);
+  await page.getByLabel('Workflow mosaic minimum similarity', { exact: true }).fill('1');
+  await page.getByRole('button', { name: 'Run and record mosaic similarity', exact: true }).click();
+  await recorded(page, 2); await expect(row.locator('td').nth(1)).toHaveText('below-threshold');
+  await page.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
+  const tapeText = await download(page, 'Export research workflow'), tape = parseCommandTape(tapeText);
+  expect(tape.commands.map(command => command.actionId)).toEqual(['overlay.mosaicRadar', 'overlay.mosaicRadar']);
+  expect(tape.commands[0].parameters).toEqual({ queryContentId: contentIds[0], referenceContentIds: [contentIds[1]],
+    options: { k: 2, window: 200, step: 100, minSimilarity: 0, maxReferences: 1, topN: 1 } });
+  await page.getByLabel('Workflow replay repetitions', { exact: true }).fill('2');
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-complete-results')).toContainText('4 executions · 2 distinct analyses');
+  const archiveText = await download(page, 'Export complete workflow results JSON');
+  const archive = await parseWorkflowResults(archiveText);
+  await page.getByLabel('Inspect workflow execution', { exact: true }).selectOption('3');
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+  expect(await parseAnalysisRecord(await download(page, 'Export workflow analysis'))).toEqual(workflowAnalysisAt(archive, 1));
+  const tsv = await download(page, 'Export workflow mosaic windows TSV');
+  expect(tsv).toContain(accepted!); expect(tsv).toContain('\tmatched\t0.5\t');
+  expect(tsv).not.toContain('GAATTCAA'); expect(tsv).not.toContain('CCAATTAA');
+  for (const section of ['segments', 'switches']) expect(await download(page, `Export workflow mosaic ${section} TSV`)).toContain(accepted!);
+  await page.reload();
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({ name: 'mosaic-results.json', mimeType: 'application/json', buffer: Buffer.from(archiveText) });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('2 distinct analyses and 2 repetitions');
+  await expect(page.getByTestId('workflow-result')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archiveText);
+});
+
+test('never records a cancelled mosaic calculation or accepts a reference removed while its worker reply is pending', async ({ page }) => {
+  await start(page); await configureMosaic(page);
+  await page.getByRole('button', { name: 'Run and record mosaic similarity', exact: true }).click();
+  await recorded(page, 1);
+  const accepted = await page.getByTestId('workflow-result').getAttribute('data-result-id');
+  await page.getByLabel('Workflow mosaic minimum similarity', { exact: true }).fill('1');
+  await page.evaluate(() => { (window as unknown as WorkflowFixture).holdWorkflowReply = true; });
+  await page.getByRole('button', { name: 'Run and record mosaic similarity', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel workflow', exact: true }).click();
+  await page.evaluate(() => (window as unknown as WorkflowFixture).releaseWorkflowReply());
+  await recorded(page, 1); await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+  await page.evaluate(() => { (window as unknown as WorkflowFixture).holdWorkflowReply = true; (window as unknown as WorkflowFixture).workflowReplyHeld = false; });
+  await page.getByRole('button', { name: 'Run and record mosaic similarity', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.evaluate(() => { (window as unknown as WorkflowFixture).removeWorkflowComparison(); (window as unknown as WorkflowFixture).releaseWorkflowReply(); });
+  await expect(page.getByRole('alert')).toContainText('Missing local genome');
+  await recorded(page, 1); await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+});
 
 test('records self plot, circular digest and ordered comparison, then reloads and replays the actual browser tape', async ({ page }) => {
   const saved = await captureMixed(page), tape = parseCommandTape(saved.tape);

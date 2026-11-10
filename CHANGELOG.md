@@ -26,6 +26,14 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   an owned worker and exports its accepted experiment with `e` or window TSV
   with `t`. See the [workflow guide](docs/MOSAIC_REFERENCE_WORKFLOW.md).
 
+- **Mosaic in recorded research workflows** — choose exact query/reference
+  content IDs and all effective settings in the browser recorder or a typed
+  command plan. Browser and terminal replay use the embedded complete genomes,
+  preserve every analysis through repetitions and navigation, and support
+  per-execution extraction from complete result archives. The browser exposes
+  explicit panel controls and window/segment/switch TSV exports.
+  [Shared workflow implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/781c4d279dce26a54561a097f3ec69451fc6f5de).
+
 ### Genome comparison correctness
 
 - **Exact bounded sequence differences** — genome comparison uses unit-edit

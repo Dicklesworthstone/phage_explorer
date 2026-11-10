@@ -179,7 +179,7 @@ Plans and the completed tape must each fit 10 MiB; allow room for recorded outpu
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
 pangenome/CDS experiments, portable GC-skew counts, exact-pairs repeats, self/pairwise
-dot plots and restriction digests. Source-corpus references are freshly
+dot plots, restriction digests and Mosaic reference panels. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
 
@@ -192,6 +192,15 @@ effective settings. JSON contains private sequence inputs; windows/segments/swit
 TSV retains source offsets and evidence coverage. Replay uses the embedded panel,
 never the current catalog. Unknown, tied and below-threshold evidence stays distinct;
 reference switches do not establish donors, recombination events or transfer age.
+
+Recorded Mosaic commands use the canonical actionId overlay.mosaicRadar and
+parameters {queryContentId, referenceContentIds, options}. The options object must
+include k, window, step, minSimilarity, maxReferences and topN explicitly.
+Reference content IDs are sorted, distinct and exclude the query. All selected
+genomes must exist in context.bundle; their complete sequences are retained.
+No current catalog or background selection supplies missing inputs. These steps
+work with record, replay, replay-results and extract-result, including repeated
+executions and analysis steps followed by navigation.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, mosaic reference-similarity,

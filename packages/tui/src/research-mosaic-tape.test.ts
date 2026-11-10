@@ -200,4 +200,23 @@ describe('Mosaic commands use exact bundled inputs across browser and terminal h
     assert((await readFile(tsv, 'utf8')).includes('0.6666666666666666'));
     assert.equal(serializeAnalysisRecord(workflowAnalysisAt(await parseWorkflowResults(await readFile(archive, 'utf8')), 7)), serializeAnalysisRecord(f.below));
   });
+
+  it('uses the production browser binding and an actual research worker for recording and complete replay', async () => {
+    const { createBrowserResearchWorkflow } = await import('../../web/src/components/overlays/ResearchWorkflowPanel');
+    const { useLocalGenomes } = await import('../../web/src/db/local-genomes');
+    const previous = useLocalGenomes.getState(), f = await fixture();
+    useLocalGenomes.setState({ genomes: structuredClone(f.genomes), requestedId: null });
+    const binding = createBrowserResearchWorkflow(async () => { throw new Error('Mosaic must not navigate implicitly'); });
+    binding.activate();
+    try {
+      binding.workflow.start('Browser worker mosaic');
+      await binding.workflow.commands.dispatch(ids.mosaic, analysisJson(f.parameters));
+      const record = binding.workflow.getSnapshot().result!;
+      assert.equal(mosaicResultFromRecord(record).windows[0].score, 2 / 3);
+      binding.workflow.commands.stop();
+      const archive = await parseWorkflowResults(await binding.workflow.replayWithResults(2));
+      assert.deepEqual(archive.records, [record]);
+      assert.deepEqual(workflowAnalysisAt(archive, 2), record);
+    } finally { binding.dispose(); useLocalGenomes.setState(previous); }
+  }, 15000);
 });

@@ -4,7 +4,7 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
-  readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
+  researchMosaicParameters, researchMosaicDataset, readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
 import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
@@ -13,6 +13,7 @@ import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOp
 import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
 import { exportDotPlotExperimentTsv, exportPairwiseDotPlotExperimentTsv } from '../../../../core/src/analysis/dot-plot';
 import { resolveRestrictionDigestOptions, exportRestrictionDigestTsv, type RestrictionDigestFragment } from '../../../../core/src/analysis/restriction-digest';
+import { MOSAIC_METHOD, mosaicResultFromRecord, validateMosaicDataset, exportMosaicTsv } from '../../../../core/src/analysis/recombination-radar';
 import { RESTRICTION_ENZYMES } from '../../../../core/src/data/restriction-enzymes';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
@@ -58,7 +59,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
     pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
-    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel }, {
+    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -127,6 +128,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected portable restriction-digest evidence.');
       return response.record;
     },
+    mosaic: async (dataset, options, signal) => {
+      const response = await runResearchWorker({ type: 'mosaic', dataset, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected portable mosaic evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -192,7 +198,30 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [dotBins, setDotBins] = useState('80'), [dotWindow, setDotWindow] = useState('20');
   const [digestNames, setDigestNames] = useState('EcoRI');
   const [digestTopology, setDigestTopology] = useState<'' | 'linear' | 'circular'>('');
+  const [mosaicIds, setMosaicIds] = useState<string[]>([]);
+  const [mosaicK, setMosaicK] = useState('5'), [mosaicWindow, setMosaicWindow] = useState('2000');
+  const [mosaicStep, setMosaicStep] = useState('1000'), [mosaicSimilarity, setMosaicSimilarity] = useState('0.05');
+  const [mosaicMaximum, setMosaicMaximum] = useState('30'), [mosaicTopN, setMosaicTopN] = useState('3');
   useEffect(() => { setDigestTopology(''); }, [selected]);
+  useEffect(() => { setMosaicIds(ids => ids.filter(id => id !== selected && genomes.some(g => g.phage.localGenome?.contentId === id))); }, [genomes, selected]);
+  const mosaicDraft = useMemo(() => {
+    try {
+      const values = [mosaicK, mosaicWindow, mosaicStep, mosaicSimilarity, mosaicMaximum, mosaicTopN];
+      if (values.some(value => !value.trim())) throw new Error('Enter every mosaic setting explicitly.');
+      const parameters = researchMosaicParameters(selected, mosaicIds, { k: Number(mosaicK), window: Number(mosaicWindow),
+        step: Number(mosaicStep), minSimilarity: Number(mosaicSimilarity), maxReferences: Number(mosaicMaximum), topN: Number(mosaicTopN) });
+      if (parameters.options.window !== Number(mosaicWindow) || parameters.options.step !== Number(mosaicStep)) {
+        throw new Error('Mosaic windows must be at least 200 bp and steps at least 100 bp.');
+      }
+      const dataset = researchMosaicDataset(genomes, parameters);
+      return { parameters, bases: dataset.query.sequence.length + dataset.references.reduce((sum, reference) => sum + reference.sequence.length, 0), error: null };
+    } catch (cause) { return { parameters: null, bases: 0, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [selected, mosaicIds, genomes, mosaicK, mosaicWindow, mosaicStep, mosaicSimilarity, mosaicMaximum, mosaicTopN]);
+  const mosaicResult = useMemo(() => {
+    const record = acceptedAnalysis;
+    if (!record || record.method.id !== MOSAIC_METHOD.id || record.method.version !== MOSAIC_METHOD.version) return null;
+    return { record, dataset: validateMosaicDataset(record.inputs[0].data), result: mosaicResultFromRecord(record) };
+  }, [acceptedAnalysis]);
   const gcDraft = useMemo(() => {
     try {
       if (!gcWindow.trim() || !gcStep.trim()) throw new Error('Enter the GC-skew window and step sizes.');
@@ -401,7 +430,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, mosaic reference similarity, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -478,6 +507,34 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         const task = workflow.commands.dispatch(ActionIds.OverlayGel, analysisJson(digestDraft.parameters));
         invoke(() => task);
       }}>Run and record restriction digest</button>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record mosaic reference similarity</legend>
+      <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Choose up to 30 other imported genomes below.
+        Complete supplied sequences are stored once in the workflow bundle; each command records the selected content identities and all effective settings.</p>
+      <div style={{ maxHeight: 180, overflowY: 'auto' }}>{genomes.filter(g => g.phage.localGenome!.contentId !== selected).map(g => {
+        const id = g.phage.localGenome!.contentId;
+        return <label key={id} style={{ display: 'block' }}><input type="checkbox" aria-label={`Workflow mosaic reference ${g.phage.name} ${id.slice(0, 12)}`}
+          checked={mosaicIds.includes(id)} disabled={!mosaicIds.includes(id) && mosaicIds.length >= 30}
+          onChange={event => setMosaicIds(current => event.target.checked ? [...current, id] : current.filter(value => value !== id))} />
+          {g.phage.name} · {g.sequence.length.toLocaleString()} bp · {id.slice(0, 12)}</label>;
+      })}</div>
+      <p>{mosaicIds.length} reference genomes selected. {mosaicIds.length === 0
+        ? 'An empty panel is an explicit no-evidence control; no catalogue reference will be substituted.'
+        : `${mosaicDraft.bases.toLocaleString()} total query/reference bases; at most 5,000,000 are accepted without truncation.`}</p>
+      <label>Workflow mosaic k-mer length <input type="number" min={1} max={16} value={mosaicK} onChange={event => setMosaicK(event.target.value)} /></label>
+      <label>Workflow mosaic window (bp) <input type="number" min={200} max={5000000} value={mosaicWindow} onChange={event => setMosaicWindow(event.target.value)} /></label>
+      <label>Workflow mosaic step (bp) <input type="number" min={100} max={5000000} value={mosaicStep} onChange={event => setMosaicStep(event.target.value)} /></label>
+      <label>Workflow mosaic minimum similarity <input type="number" min={0} max={1} step={0.01} value={mosaicSimilarity} onChange={event => setMosaicSimilarity(event.target.value)} /></label>
+      <label>Workflow mosaic maximum references <input type="number" min={1} max={30} value={mosaicMaximum} onChange={event => setMosaicMaximum(event.target.value)} /></label>
+      <label>Workflow mosaic retained candidates per window <input type="number" min={1} max={30} value={mosaicTopN} onChange={event => setMosaicTopN(event.target.value)} /></label>
+      <p>A lower maximum compares the first selected references in recorded label order and reports the omissions.
+        Ambiguous DNA breaks k-mers. Tied, below-threshold and missing evidence remain distinct; reference switches do not establish recombination events or donors.</p>
+      {mosaicDraft.error && <p>{mosaicDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !mosaicDraft.parameters} onClick={() => {
+        if (busy || !active || !mosaicDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayMosaicRadar, analysisJson(mosaicDraft.parameters));
+        invoke(() => task);
+      }}>Run and record mosaic similarity</button>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable GC skew</legend>
       <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Complete linear windows only; topology is not inferred from a circular annotation.</p>
@@ -642,6 +699,29 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
           <thead><tr><th>Start</th><th>End</th><th>Length</th><th>Crosses origin</th></tr></thead>
           <tbody>{digestResult.fragments.slice(0, 50).map((fragment, index) => <tr key={index}><td>{fragment.start}</td><td>{fragment.end}</td>
             <td>{fragment.length}</td><td>{fragment.wrapsOrigin ? 'Yes' : 'No'}</td></tr>)}</tbody>
+        </table></div>
+      </section>}
+      {mosaicResult && <section aria-label="Recorded mosaic results">
+        <h4>Accepted mosaic reference-similarity experiment</h4>
+        <p>Analyzed query: {mosaicResult.dataset.query.label} · {mosaicResult.dataset.query.sequence.length.toLocaleString()} bp.
+          {' '}{mosaicResult.dataset.references.length} supplied references; {mosaicResult.result.referencePanel.selected} selected by the accepted maximum;
+          {' '}{mosaicResult.result.referencePanel.omitted} omitted. Draft selections above do not change this evidence.</p>
+        <p>Accepted settings: k={String(mosaicResult.record.parameters.k)}, window={String(mosaicResult.record.parameters.window)} bp,
+          step={String(mosaicResult.record.parameters.step)} bp, minimum similarity={String(mosaicResult.record.parameters.minSimilarity)},
+          maximum references={String(mosaicResult.record.parameters.maxReferences)}, retained candidates={String(mosaicResult.record.parameters.topN)}.</p>
+        <p>{mosaicResult.result.windows.length} sampled windows; {mosaicResult.result.referenceSwitches.length} reference-switch intervals.
+          {' '}Unresolved display coverage: {mosaicResult.result.coverage.ambiguous} bp tied, {mosaicResult.result.coverage['below-threshold']} bp below threshold,
+          {' '}{mosaicResult.result.coverage['no-evidence']} bp without evidence. Coordinates are 0-based, end-exclusive within the complete supplied query.</p>
+        <p>Canonical k-mer Jaccard compares sequence sets. It is not aligned identity, host range, a donor assignment or a biological breakpoint.
+          The preview shows at most 50 windows; the record and TSV tables retain all accepted evidence.</p>
+        {(['windows', 'segments', 'switches'] as const).map(section => <button key={section} type="button" disabled={busy}
+          onClick={() => invoke(() => downloadString(exportMosaicTsv(mosaicResult.record, section), `workflow-mosaic-${section}.tsv`, 'text/tab-separated-values'))}>
+          Export workflow mosaic {section} TSV
+        </button>)}
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded mosaic window evidence">
+          <thead><tr><th>Query interval</th><th>Status</th><th>Closest reference</th><th>Jaccard</th></tr></thead>
+          <tbody>{mosaicResult.result.windows.slice(0, 50).map(row => <tr key={row.start}><td>[{row.start}, {row.end})</td>
+            <td>{row.status}</td><td>{row.donor ?? (row.tiedReferences.length ? row.tiedReferences.join(', ') : 'Unresolved')}</td><td>{row.score.toFixed(6)}</td></tr>)}</tbody>
         </table></div>
       </section>}
       {gcResult && <section aria-label="Recorded GC-skew results">
