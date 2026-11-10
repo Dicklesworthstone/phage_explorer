@@ -557,6 +557,9 @@ export type ComparisonJob =
       codonUsageB?: any | null;
     };
 
+/** Preserve the public worker name while sharing the exact alignment statistics contract. */
+export type ComparisonDiffStats = Extract<SequenceDiffResult, { status: 'complete' }>['stats'];
+
 export interface ComparisonWorkerMessage {
   jobId?: string;
   ok: boolean;

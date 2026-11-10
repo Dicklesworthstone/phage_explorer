@@ -8,7 +8,7 @@ const metadata = { jobId: 'literal-alignment', phageA: { id: 1, name: 'A', acces
 function bytes(sequence: string, shared = false): SequenceBytesRef {
   const buffer = shared ? new SharedArrayBuffer(sequence.length + 4) : new ArrayBuffer(sequence.length + 4);
   new Uint8Array(buffer, 2, sequence.length).set(new TextEncoder().encode(sequence));
-  return { buffer, byteOffset: 2, byteLength: sequence.length, length: sequence.length, encoding: 'ascii' };
+  return { buffer, byteOffset: 2, byteLength: sequence.length, length: sequence.length, encoding: 'ascii', isShared: shared };
 }
 
 describe('comparison worker exact diff transport', () => {
