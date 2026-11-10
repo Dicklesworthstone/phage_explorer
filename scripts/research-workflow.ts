@@ -11,8 +11,14 @@ import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
 import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
 import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig, exportMosaicTsv,
   type MosaicDataset, type MosaicRadarConfig, type MosaicRadarResult } from '../packages/core/src/analysis/recombination-radar';
+import { parseProteinReferenceBundle } from '../packages/core/src/protein-reference';
+import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
+  proteinStructureResultFromRecord, exportProteinStructureTsv, type ProteinStructureOptions } from '../packages/core/src/analysis/tail-fiber-structure';
+import type { PlaqueGrowthResult } from '../packages/core/src/analysis/plaque-growth';
+import type { GrowthCurveFit } from '../packages/core/src/analysis/one-step-growth';
 import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
   terminalResultsInspection, terminalResultExtraction, terminalMosaicInspection, terminalMosaicRequestSha256,
+  terminalProteinReferenceInspection, terminalProteinStructureRequestSha256,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -39,6 +45,11 @@ bun run workflow extract-result --input complete-results.json --execution 2
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect-genomes --input genomes.fa
+bun run workflow inspect-protein-reference --input reference.json
+bun run workflow analyze-protein-structure --input reference.json [--protein ID]
+  [--chain LABEL_CHAIN_ID|none] [--cutoff 8] [--min-separation 3]
+  [--contact-scope chain|assembly] [--output NEW_FILE] [--format json|tsv]
+  [--section residues|contacts] [--timeout-ms 300000]
 bun run workflow mosaic-template
 bun run workflow inspect-mosaic --input panel.json
 bun run workflow analyze-mosaic --input panel.json [--output NEW_FILE]
@@ -202,9 +213,28 @@ No current catalog or background selection supplies missing inputs. These steps
 work with record, replay, replay-results and extract-result, including repeated
 executions and analysis steps followed by navigation.
 
+Protein structure commands consume a version-1 phage-explorer-protein-reference
+snapshot. inspect-protein-reference checks its source identities, alignment and
+observed coordinate mappings without computing distances or printing sequences.
+analyze-protein-structure derives unweighted observed-column entropy and C-alpha
+neighborhoods from those exact inputs. --protein selects a source protein ID;
+the default is the declared CDS protein. --chain uses the mmCIF LABEL chain ID;
+none explicitly requests alignment-only output. An omitted chain is chosen only
+when the selected protein has a unique mapped chain. --cutoff is in Angstroms;
+--min-separation applies only within the selected chain. Assembly scope includes
+that chain's proximity to other supplied chains in the same validated assembly;
+it never constructs missing chains, atoms or symmetry mates. Source protein,
+label-sequence and author-residue positions remain distinct in exports.
+Single-observation alignment columns have unavailable entropy, and missing
+coordinates have unavailable geometry. These are finite-sample diversity and
+C-alpha distances, not population conservation, SASA, docking or mutation effects.
+No catalog is opened and the declared CDS is not checked against a current genome.
+Use replay-experiment to recompute a saved protein-structure experiment; its TSV
+export is the residue table. All analysis settings are resolved before dispatch.
+
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, mosaic reference-similarity,
-plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
+reference protein-structure, plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
@@ -231,6 +261,9 @@ to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTER
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
 export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'mosaic-template' } | { type: 'growth-template'; version: 1 | 2 } |
+  { type: 'inspect-protein-reference'; input: string; timeoutMs: number } |
+  { type: 'analyze-protein-structure'; input: string; options: ProteinStructureOptions; output?: string;
+    outputFormat: 'json' | 'tsv'; section: 'residues' | 'contacts'; timeoutMs: number } |
   { type: 'inspect-mosaic'; input: string; timeoutMs: number } |
   { type: 'analyze-mosaic'; input: string; options: Required<MosaicRadarConfig>; output?: string;
     outputFormat: 'json' | 'tsv'; section: 'windows' | 'segments' | 'switches'; timeoutMs: number } |
@@ -258,12 +291,13 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Use growth-template with no options or exactly --version 1|2.');
   }
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
-    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, fit-growth or fit-pfu-growth; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'inspect-protein-reference' && type !== 'analyze-protein-structure' && type !== 'fit-growth' && type !== 'fit-pfu-growth') {
+    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, inspect-protein-reference, analyze-protein-structure, fit-growth or fit-pfu-growth; see --help.');
   }
   const allowed = type === 'extract-result' ? ['--input', '--output', '--execution', '--timeout-ms']
+    : type === 'analyze-protein-structure' ? ['--input', '--output', '--format', '--section', '--protein', '--chain', '--cutoff', '--min-separation', '--contact-scope', '--timeout-ms']
     : type === 'analyze-mosaic' ? ['--input', '--output', '--format', '--section', '--k', '--window', '--step', '--min-similarity', '--max-references', '--top-n', '--timeout-ms']
-    : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
+    : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' || type === 'inspect-protein-reference' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
     ? ['--input', '--timeout-ms', '--output', '--format', '--method', '--record', '--compare-record', '--bins', '--window', '--enzymes', '--topology', '--step', '--arm-length', '--max-gap', '--max-pairs'] : type === 'replay-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth'
     ? ['--input', '--timeout-ms', '--output', '--format'] : ['--input', '--timeout-ms', '--output', '--repetitions'];
   const values = new Map<string, string>(); let progress = false, allResults = false;
@@ -300,7 +334,30 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     if (!output) throw new Error('record requires --output NEW_WORKFLOW.json; authoring never replaces the plan.');
     return { type, input, output, timeoutMs, progress, ...(allResults ? { allResults: true } : {}) };
   }
-  if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic') return { type, input, timeoutMs };
+  if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' || type === 'inspect-protein-reference') return { type, input, timeoutMs };
+  if (type === 'analyze-protein-structure') {
+    const outputFormat = values.get('--format') ?? 'json', section = values.get('--section') ?? 'residues';
+    if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
+    if (section !== 'residues' && section !== 'contacts') throw new Error('--section must be residues or contacts.');
+    if ((values.has('--format') || values.has('--section')) && !values.has('--output')) throw new Error('--format and --section require --output NEW_FILE.');
+    if (values.has('--section') && outputFormat !== 'tsv') throw new Error('--section selects a TSV table; use --format tsv.');
+    const contactScope = values.get('--contact-scope');
+    if (contactScope !== undefined && contactScope !== 'chain' && contactScope !== 'assembly') throw new Error('--contact-scope must be chain or assembly.');
+    const cutoff = values.get('--cutoff');
+    if (cutoff !== undefined && (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(cutoff) || !Number.isFinite(Number(cutoff)) || Number(cutoff) <= 0 || Number(cutoff) > 30)) {
+      throw new Error('--cutoff must be a positive finite decimal distance of at most 30 Angstroms.');
+    }
+    const separation = values.get('--min-separation');
+    const options: ProteinStructureOptions = {
+      ...(values.has('--protein') ? { proteinId: values.get('--protein')! } : {}),
+      ...(values.has('--chain') ? { chainLabelAsymId: values.get('--chain') === 'none' ? null : values.get('--chain')! } : {}),
+      ...(contactScope === undefined ? {} : { contactScope }),
+      ...(cutoff === undefined ? {} : { contactCutoffAngstrom: Number(cutoff) }),
+      ...(separation === undefined ? {} : { minSequenceSeparation: integer('--min-separation', 3, 10000) }),
+    };
+    return { type, input, timeoutMs, options, outputFormat, section,
+      ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  }
   if (type === 'analyze-mosaic') {
     const outputFormat = values.get('--format') ?? 'json', section = values.get('--section') ?? 'windows';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
@@ -481,6 +538,11 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
   const mosaicDataset = submitted.type === 'inspect-mosaic' || submitted.type === 'analyze-mosaic'
     ? parseMosaicDataset(submitted.content) : null;
+  const proteinReference = submitted.type === 'inspect-protein-reference' || submitted.type === 'analyze-protein-structure'
+    ? await parseProteinReferenceBundle(JSON.parse(submitted.content)) : null;
+  const proteinOptions = submitted.type === 'analyze-protein-structure' && proteinReference
+    ? resolveProteinStructureOptions(proteinReference, submitted.options) : null;
+  if (submitted.type === 'analyze-protein-structure' && proteinOptions) submitted.options = proteinOptions;
   const archive = submitted.type === 'replay-results' || submitted.type === 'inspect-results' || submitted.type === 'extract-result'
     ? await parseWorkflowResults(submitted.content, signal)
     .catch(cause => { abort(signal); throw cause; }) : null;
@@ -541,6 +603,26 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) finish(value);
         else if (value?.type === 'mosaic-inspected' && submitted.type === 'inspect-mosaic' && mosaicDataset
           && commandValuesEqual(value.report, terminalMosaicInspection(mosaicDataset, tapeSha256))) finish(value);
+        else if (value?.type === 'protein-reference-inspected' && submitted.type === 'inspect-protein-reference' && proteinReference
+          && commandValuesEqual(value.report, terminalProteinReferenceInspection(proteinReference, tapeSha256))) finish(value);
+        else if (value?.type === 'protein-structure-analyzed' && submitted.type === 'analyze-protein-structure' && proteinReference && proteinOptions
+          && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalProteinStructureRequestSha256({ content: submitted.content, options: proteinOptions })
+          && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) {
+          validating = true;
+          void parseAnalysisRecord(value.recordJson, { methodId: PROTEIN_STRUCTURE_METHOD.id, methodVersion: PROTEIN_STRUCTURE_METHOD.version })
+            .then(record => {
+              abort(signal);
+              const selectedProtein = proteinReference.proteins.find(protein => protein.id === proteinOptions.proteinId)!;
+              if (!commandValuesEqual(record.method, PROTEIN_STRUCTURE_METHOD) || !commandValuesEqual(record.parameters, proteinOptions)
+                || record.seed !== null || record.inputs.length !== 1 || record.inputs[0].id !== 'reference'
+                || record.inputs[0].source !== 'external' || record.inputs[0].accession !== selectedProtein.accession
+                || !commandValuesEqual(record.inputs[0].data, proteinReference)) {
+                throw new Error('Protein structure output differs from the submitted reference snapshot or effective settings.');
+              }
+              proteinStructureResultFromRecord(record);
+              finish(value);
+            }).catch(cause => finish(undefined, cause));
+        }
         else if (value?.type === 'mosaic-analyzed' && submitted.type === 'analyze-mosaic' && mosaicDataset
           && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalMosaicRequestSha256(submitted)
           && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) {
@@ -681,8 +763,11 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   const signal = controller.signal;
   try {
     const archiveInput = command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'extract-result';
-    const content = await readInput(command.input, signal, archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
-    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'inspect-mosaic' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+    const proteinInput = command.type === 'inspect-protein-reference' || command.type === 'analyze-protein-structure';
+    const content = await readInput(command.input, signal, proteinInput ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
+      : archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
+    const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'inspect-mosaic' || command.type === 'inspect-protein-reference' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' ? { type: command.type, content }
+      : command.type === 'analyze-protein-structure' ? { type: 'analyze-protein-structure', content, options: command.options }
       : command.type === 'analyze-mosaic' ? { type: 'analyze-mosaic', content, options: command.options }
       : command.type === 'extract-result' ? { type: 'extract-result', content, execution: command.execution }
       : command.type === 'record' ? { type: 'record', content, ...(command.allResults ? { captureResults: true } : {}) }
@@ -694,6 +779,22 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
     if (result.type === 'mosaic-inspected') return result.report;
+    if (result.type === 'protein-reference-inspected') return result.report;
+    if (result.type === 'protein-structure-analyzed') {
+      if (command.type !== 'analyze-protein-structure') throw new Error('Unexpected protein structure result.');
+      const record = await parseAnalysisRecord(result.recordJson, { methodId: PROTEIN_STRUCTURE_METHOD.id, methodVersion: PROTEIN_STRUCTURE_METHOD.version });
+      abort(signal);
+      const structure = proteinStructureResultFromRecord(record);
+      if (command.output !== undefined) {
+        const text = command.outputFormat === 'json' ? result.recordJson : exportProteinStructureTsv(record, command.section);
+        await writeNewOutput(command.output, text, signal);
+      }
+      return { format: 'phage-explorer-protein-structure-analysis', version: 1, headless: true,
+        inputFileSha256: result.inputFileSha256, requestSha256: result.requestSha256,
+        method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
+        summary: { protein: structure.protein, chain: structure.chain, alignment: structure.alignment, coverage: structure.coverage },
+        interpretation: 'Fresh reference-derived sample entropy and observed C-alpha distances. No selected genome was checked; distances do not establish affinity, accessibility or mutation effects.' };
+    }
     if (result.type === 'mosaic-analyzed') {
       if (command.type !== 'analyze-mosaic') throw new Error('Unexpected mosaic analysis result.');
       const record = await parseAnalysisRecord(result.recordJson, { methodId: MOSAIC_METHOD.id, methodVersion: MOSAIC_METHOD.version });
@@ -726,7 +827,7 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
         throw new Error('Growth output differs from the submitted measurements, source or settings.');
       }
       // Only bounded formatting runs here; all fitting and profiling ran in the worker.
-      const { fitted: _plates, ...summary } = record.fields.fit.value as unknown as import('../packages/core/src/analysis/plaque-growth').PlaqueGrowthResult | import('../packages/core/src/analysis/one-step-growth').GrowthCurveFit;
+      const { fitted: _plates, ...summary } = record.fields.fit.value as unknown as PlaqueGrowthResult | GrowthCurveFit;
       if (command.output !== undefined) {
         const text = command.outputFormat === 'json' ? result.recordJson : corrected ? exportGrowthCurveTsv(record) : exportPlaqueGrowthTsv(record);
         await writeNewOutput(command.output, text, signal);

@@ -14,6 +14,34 @@ import { GC_SKEW_METHOD, GC_SKEW_LIMITS, resolveGCSkewOptions, type ResolvedGCSk
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ExactRepeatScan } from '../../core/src/analysis/exact-repeat-pairs';
 import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig,
   type MosaicDataset, type MosaicRadarConfig } from '../../core/src/analysis/recombination-radar';
+import { parseProteinReferenceBundle, type ProteinReferenceBundle } from '../../core/src/protein-reference';
+import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
+  type ProteinStructureOptions, type ResolvedProteinStructureOptions } from '../../core/src/analysis/tail-fiber-structure';
+
+export interface TerminalProteinReferenceInspection {
+  format: 'phage-explorer-protein-reference-inspection'; version: 1; headless: true;
+  inputFileSha256: string; referenceId: string; bundleSha256: string;
+  declaredCds: ProteinReferenceBundle['cds'];
+  proteins: Array<{ id: string; accession: string; residues: number }>;
+  chains: Array<{ proteinId: string; pdbId: string; entryVersion: string; assemblyId: string;
+    labelAsymId: string; authAsymId: string; start: number; end: number; observedResidues: number }>;
+  alignment: { proteinIds: string[]; columns: number };
+  interpretation: string;
+}
+
+export function terminalProteinReferenceInspection(reference: ProteinReferenceBundle, inputFileSha256: string): TerminalProteinReferenceInspection {
+  return { format: 'phage-explorer-protein-reference-inspection', version: 1, headless: true,
+    inputFileSha256, referenceId: reference.id, bundleSha256: reference.bundleSha256, declaredCds: reference.cds,
+    proteins: reference.proteins.map(protein => ({ id: protein.id, accession: protein.accession, residues: protein.sequence.length })),
+    chains: reference.chains.map(({ proteinId, pdbId, entryVersion, assemblyId, labelAsymId, authAsymId, start, end, coordinates }) =>
+      ({ proteinId, pdbId, entryVersion, assemblyId, labelAsymId, authAsymId, start, end, observedResidues: coordinates.length })),
+    alignment: { proteinIds: reference.alignment.rows.map(row => row.proteinId), columns: reference.alignment.rows[0].alignedSequence.length },
+    interpretation: 'Validated reference snapshot integrity, alignment and observed coordinate mappings. No entropy or distances were computed; no selected genome was checked against the declared CDS.' };
+}
+
+export function terminalProteinStructureRequestSha256(request: { content: string; options: ResolvedProteinStructureOptions }): string {
+  return hashText(JSON.stringify(analysisJson({ inputFileSha256: hashText(request.content), options: request.options })));
+}
 
 export interface TerminalMosaicInspection {
   format: 'phage-explorer-mosaic-inspection'; version: 1; headless: true;
@@ -238,6 +266,8 @@ export function terminalResultExtraction(archive: WorkflowResults, inputArchiveS
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'fit-pfu-growth'; content: string } |
+  { type: 'inspect-protein-reference'; content: string } |
+  { type: 'analyze-protein-structure'; content: string; options: ProteinStructureOptions } |
   { type: 'inspect-mosaic'; content: string } |
   { type: 'analyze-mosaic'; content: string; options: Required<MosaicRadarConfig> } |
   { type: 'inspect'; content: string } |
@@ -250,6 +280,8 @@ export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'protein-reference-inspected'; report: TerminalProteinReferenceInspection } |
+  { type: 'protein-structure-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
   { type: 'mosaic-inspected'; report: TerminalMosaicInspection } |
   { type: 'mosaic-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
   { type: 'inspection'; inspection: ResearchTapeInspection } |
@@ -266,8 +298,8 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
-    : request.type === 'analyze-mosaic' ? ['type', 'content', 'options']
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'inspect-protein-reference' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
+    : request.type === 'analyze-mosaic' || request.type === 'analyze-protein-structure' ? ['type', 'content', 'options']
     : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
@@ -277,8 +309,9 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
       throw new Error('Choose complete workflow results or a last analysis, not both.');
     }
   }
-  const limit = ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
-  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  const limit = ['inspect-protein-reference', 'analyze-protein-structure'].includes(String(request.type)) ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
+    : ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
     throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
@@ -288,6 +321,14 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
     if (!sameJson(request.options, resolveMosaicRadarConfig(request.options as MosaicRadarConfig))) {
       throw new Error('Mosaic analysis requires all effective settings explicitly.');
     }
+  }
+  if (request.type === 'analyze-protein-structure') {
+    if (!request.options || typeof request.options !== 'object' || Array.isArray(request.options)) throw new Error('Protein structure settings must be an object.');
+    const keys = ['proteinId', 'chainLabelAsymId', 'contactScope', 'contactCutoffAngstrom', 'minSequenceSeparation'];
+    if (Object.keys(request.options).some(key => !keys.includes(key))) throw new Error('Unknown protein structure setting.');
+    // Exact source identities, numbers and defaults are resolved against the
+    // validated reference before a worker is allocated.
+    analysisJson(request.options);
   }
   if (request.type === 'replay' && (typeof request.exportAnalysis !== 'boolean' || !Number.isSafeInteger(request.repetitions) ||
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
@@ -310,6 +351,18 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'inspect-protein-reference' || request.type === 'analyze-protein-structure') {
+    const reference = await parseProteinReferenceBundle(JSON.parse(request.content));
+    const inputFileSha256 = hashText(request.content);
+    if (request.type === 'inspect-protein-reference') return { type: 'protein-reference-inspected',
+      report: terminalProteinReferenceInspection(reference, inputFileSha256) };
+    const options = resolveProteinStructureOptions(reference, request.options);
+    const { createProteinStructureExperiment } = await import('../../core/src/analysis/tail-fiber-structure');
+    const experiment = await createProteinStructureExperiment(reference, options);
+    return { type: 'protein-structure-analyzed', inputFileSha256,
+      requestSha256: terminalProteinStructureRequestSha256({ content: request.content, options }),
+      recordJson: serializeAnalysisRecord(experiment.record) };
+  }
   if (request.type === 'inspect-mosaic' || request.type === 'analyze-mosaic') {
     const dataset = parseMosaicDataset(request.content);
     const inputFileSha256 = hashText(request.content);
@@ -466,8 +519,12 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const { replayMosaicExperiment, exportMosaicTsv } = await import('../../core/src/analysis/recombination-radar');
       fresh = (await replayMosaicExperiment(request.content)).record;
       table = exportMosaicTsv;
+    } else if (saved.method.id === PROTEIN_STRUCTURE_METHOD.id) {
+      const { replayProteinStructureExperiment, exportProteinStructureTsv } = await import('../../core/src/analysis/tail-fiber-structure');
+      fresh = (await replayProteinStructureExperiment(request.content)).record;
+      table = exportProteinStructureTsv;
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, plaque-count and corrected-PFU growth.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, reference protein structure, plaque-count and corrected-PFU growth.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.
