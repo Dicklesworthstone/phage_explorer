@@ -17,6 +17,7 @@ import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig,
 import { parseProteinReferenceBundle, type ProteinReferenceBundle } from '../../core/src/protein-reference';
 import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
   type ProteinStructureOptions, type ResolvedProteinStructureOptions } from '../../core/src/analysis/tail-fiber-structure';
+import { SPACER_METHOD } from '../../core/src/analysis/spacer-reference';
 
 export interface TerminalProteinReferenceInspection {
   format: 'phage-explorer-protein-reference-inspection'; version: 1; headless: true;
@@ -523,8 +524,16 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const { replayProteinStructureExperiment, exportProteinStructureTsv } = await import('../../core/src/analysis/tail-fiber-structure');
       fresh = (await replayProteinStructureExperiment(request.content)).record;
       table = exportProteinStructureTsv;
+    } else if (saved.method.id === SPACER_METHOD.id) {
+      const { replaySpacerRecord, validateSpacerGenome } = await import('../../core/src/analysis/spacer-reference');
+      const { terminalSpacerHitsTsv } = await import('./commands/spacer-reference');
+      const source = saved.inputs.find(input => input.id === 'genome');
+      const genome = validateSpacerGenome(source?.data);
+      const experiment = await replaySpacerRecord(request.content, genome);
+      fresh = experiment.record;
+      table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, reference protein structure, plaque-count and corrected-PFU growth.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

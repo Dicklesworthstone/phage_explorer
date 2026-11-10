@@ -14,8 +14,9 @@ import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/wo
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
   codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
-  dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic];
+  dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
+  spacers: ActionIds.OverlayCRISPR };
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -151,6 +152,15 @@ function host(bundle: string) {
       const { createMosaicExperiment } = await import('../../core/src/analysis/recombination-radar');
       abort(signal);
       return (await createMosaicExperiment(dataset, options, signal)).record;
+    },
+    spacers: async (genome, library, options, signal) => {
+      abort(signal);
+      const { searchSpacerReferences, createSpacerRecord } = await import('../../core/src/analysis/spacer-reference');
+      abort(signal);
+      const result = searchSpacerReferences(genome, library, options);
+      abort(signal);
+      const record = await createSpacerRecord(genome, library, result);
+      abort(signal); return record;
     },
   });
   return { workflow, parse, view: () => view,

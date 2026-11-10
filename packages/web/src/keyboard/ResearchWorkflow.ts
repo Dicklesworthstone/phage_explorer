@@ -10,6 +10,8 @@ import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS }
 import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { MOSAIC_METHOD, MOSAIC_LIMITS, resolveMosaicRadarConfig, validateMosaicDataset,
   type MosaicDataset, type MosaicRadarConfig, type MosaicSequenceInput } from '../../../core/src/analysis/recombination-radar';
+import { SPACER_METHOD, parseSpacerLibrary, validateSpacerGenome, resolveSpacerOptions, spacerRecordReferences,
+  type SpacerGenome, type SpacerLibrary, type SpacerSearchOptions } from '../../../core/src/analysis/spacer-reference';
 import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, type CommandValue, type CommandAdapter } from '../../../core/src/command-session';
 import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowResultIndex,
   type WorkflowResults } from '../../../core/src/workflow-results';
@@ -17,7 +19,7 @@ import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGra
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -40,6 +42,43 @@ export interface ResearchEnvironment {
   dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   mosaic?: (dataset: MosaicDataset, options: Required<MosaicRadarConfig>, signal: AbortSignal) => Promise<AnalysisRecord>;
+  spacers?: (genome: SpacerGenome, library: SpacerLibrary, options: SpacerSearchOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+/** Embed the exact reference library and every effective search setting. Host
+ * labels, filenames and future defaults cannot stand in for recorded evidence.
+ */
+export interface ResearchSpacerParameters {
+  contentId: string;
+  libraryText: string;
+  topology: SpacerGenome['topology'];
+  hostId: string | null;
+  maxMismatches: number;
+}
+export function validateResearchSpacers(value: CommandValue): void {
+  fields(value, ['contentId', 'libraryText', 'topology', 'hostId', 'maxMismatches']);
+  contentId(value.contentId);
+  if (value.topology !== 'linear' && value.topology !== 'circular' && value.topology !== 'unknown') throw new Error('Record explicit spacer-search topology.');
+  if (typeof value.libraryText !== 'string') throw new Error('Supply embedded spacer-library JSON, not a reference path.');
+  const library = parseSpacerLibrary(value.libraryText);
+  const options = { hostId: value.hostId, maxMismatches: value.maxMismatches };
+  const resolved = resolveSpacerOptions(options as unknown as SpacerSearchOptions);
+  if (!commandValuesEqual(options, resolved)) throw new Error('Record all effective spacer settings explicitly.');
+  if (resolved.hostId !== null && !library.hosts.some(host => host.id === resolved.hostId)) {
+    throw new Error('Selected host is absent from the recorded spacer library.');
+  }
+}
+export function researchSpacerParameters(id: string, libraryText: string, topology: SpacerGenome['topology'],
+  options: Partial<SpacerSearchOptions> = {}): ResearchSpacerParameters {
+  const value = { contentId: id, libraryText, topology, ...resolveSpacerOptions(options) };
+  validateResearchSpacers(analysisJson(value));
+  return value;
+}
+export function researchSpacerGenome(genome: LocalGenome, topology: SpacerGenome['topology']): SpacerGenome {
+  const sourceTopology = genome.phage.localGenome?.topology;
+  if (!sourceTopology) throw new Error('Spacer workflows require a bundled local genome.');
+  if (sourceTopology !== 'unknown' && sourceTopology !== topology) throw new Error('Recorded spacer topology conflicts with the source annotation.');
+  return validateSpacerGenome({ name: genome.phage.name, accession: genome.phage.accession, sequence: genome.sequence,
+    topology, source: 'local' });
 }
 /** Store source genomes once in the workflow bundle. Each command selects exact
  * complete inputs and effective settings; replay never consults a catalogue.
@@ -470,8 +509,37 @@ export class ResearchWorkflow {
         return this.result(record, genomes, signal);
       },
     });
+    if ((ids.spacers === undefined) !== (environment.spacers === undefined)) throw new Error('Spacer action and executor must be supplied together.');
+    if (ids.spacers !== undefined) adapters.set(ids.spacers, {
+      validate: validateResearchSpacers,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchSpacerParameters;
+        const genome = await this.genome(values.contentId, signal);
+        const input = researchSpacerGenome(genome, values.topology), library = parseSpacerLibrary(values.libraryText);
+        const options = resolveSpacerOptions({ hostId: values.hostId, maxMismatches: values.maxMismatches });
+        const result = await environment.spacers!(structuredClone(input), structuredClone(library), { ...options }, signal);
+        abort(signal);
+        // Validate content and provenance without rerunning the search on the UI
+        // thread. Replay compares the freshly computed result identity as well.
+        const record = await parseAnalysisRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        if (!commandValuesEqual(record.method, SPACER_METHOD) || record.seed !== null || record.inputs.length !== 2
+          || record.inputs[0].id !== 'genome' || record.inputs[0].source !== 'local'
+          || record.inputs[0].accession !== input.accession || !commandValuesEqual(record.inputs[0].data, input)
+          || record.inputs[1].id !== 'spacerLibrary' || record.inputs[1].source !== library.source.kind
+          || record.inputs[1].accession !== null || !commandValuesEqual(record.inputs[1].data, library)
+          || !commandValuesEqual(record.parameters, options) || !commandValuesEqual(record.references, spacerRecordReferences(library))
+          || Object.keys(record.fields).sort().join('|') !== 'coverage|matches'
+          || Object.values(record.fields).some(field => field.kind !== (library.source.kind === 'demo' ? 'demo' : 'sequence-score')
+            || field.units !== 'records')) {
+          throw new Error('Spacer evidence does not match the submitted genome, reference library, method or settings.');
+        }
+        return this.result(record, [genome], signal);
+      },
+    });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
-      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
+      + Number(ids.spacers !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {
       this.commandRevision++;

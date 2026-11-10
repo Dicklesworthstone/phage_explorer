@@ -6,13 +6,15 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { parseWorkflowCommand, researchWorkflowMain, executeWorkflowCommand, runTerminalResearchWorker } from '../../../scripts/research-workflow';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { ResearchWorkflow, researchPangenomeParameters, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
+import { ResearchWorkflow, researchPangenomeParameters, researchSpacerParameters, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { executePangenomeRequest } from '../../web/src/workers/PangenomeSession';
-import { analysisJson, serializeAnalysisRecord } from '../../core/src/analysis-result';
+import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
-import { COMMAND_LIMITS, parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
+import { COMMAND_LIMITS, parseCommandTape, serializeCommandTape, serializeCommandPlan } from '../../core/src/command-session';
 import { replayAlignmentPangenome } from '../../core/src/analysis/alignment-pangenome';
 import { exportCdsConsequenceFasta } from '../../core/src/analysis/cds-consequences';
+import { SPACER_METHOD, type SpacerLibrary, type ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
+import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
 import { inspectResearchTape, replayResearchTape } from './research-replay';
 
 const ids = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
@@ -57,6 +59,141 @@ export async function recordedTerminalFixture(includeCodons = false) {
   workflow.commands.stop();
   return { content: workflow.commands.export(), workflow, genomes, navigation, parameters, graphRecord, codonRecord, reference, query };
 }
+
+const guide = 'ACGATTCGGTACCTAGTGCA';
+const linearQuery = 'TTTT' + guide + 'AGGTTTTCCTTGCACTAGGTACCGAATCGTAAAA';
+const circularQuery = 'ACCTAGTGCAAGGTTTTACGATTCGGT';
+async function recordedSpacerFixture() {
+  const { executeResearchRequest } = await import('../../web/src/workers/research-workflow.worker');
+  const linear = await importLocalGenomes({ name: 'linear.gb', text:
+    `LOCUS       SPACER_LINEAR ${linearQuery.length} bp DNA linear\nACCESSION   SPACER_LINEAR\nFEATURES             Location/Qualifiers\nORIGIN\n        1 ${linearQuery}\n//\n` });
+  const circular = await importLocalGenomes({ name: 'circle.fa', text: `>SPACER_CIRCLE\n${circularQuery}\n` });
+  const genomes = [...linear.genomes, ...circular.genomes], contentIds = genomes.map(genome => genome.phage.localGenome!.contentId);
+  const library: SpacerLibrary = { format: 'phage-explorer-spacer-library', version: 1, name: 'Synthetic workflow reference',
+    source: { kind: 'demo', reference: 'Private guide attribution sentinel', version: 'oracle-1', license: 'CC0', scope: 'Two synthetic hosts only' },
+    hosts: [{ id: 'h1', name: 'Synthetic host', strain: 'one', accession: 'synthetic:one' },
+      { id: 'h2', name: 'Synthetic host', strain: 'two', accession: 'synthetic:two' }],
+    spacers: [{ id: 'guide-1', hostId: 'h1', arrayAccession: 'synthetic:array', sequence: guide, system: null,
+      target: 'DNA', orientation: 'guide-equivalent', seed: null,
+      pam: { side: '3prime', motif: 'NGG', reference: 'Synthetic explicit orientation oracle' } }] };
+  const libraryText = JSON.stringify(library), parameters = researchSpacerParameters(contentIds[0], libraryText, 'linear', { hostId: 'h1', maxMismatches: 0 });
+  const circularParameters = researchSpacerParameters(contentIds[1], libraryText, 'circular', { hostId: 'h1', maxMismatches: 0 });
+  let view: ResearchView | null = null;
+  const workflow = new ResearchWorkflow({ view: ids.view, repeats: ids.repeats, codons: ids.codons,
+    spacers: ActionIds.OverlayCRISPR, gcSkew: ActionIds.OverlayGCSkew }, {
+    genomes: () => genomes, bundle: () => exportLocalGenomeBundle(genomes),
+    parseBundle: text => importLocalGenomes({ name: 'bundle.json', text }), currentView: () => view,
+    applyView: async next => { view = structuredClone(next); },
+    repeats: async () => { throw new Error('Unexpected repeats'); }, codons: async () => { throw new Error('Unexpected codons'); },
+    spacers: async (genome, reference, options) => {
+      const output = await executeResearchRequest({ type: 'spacers', genome, library: reference, options });
+      assert(output.type === 'analysis'); return output.record;
+    },
+    gcSkew: async (genome, options) => {
+      const output = await executeResearchRequest({ type: 'gc-skew', genome, options });
+      assert(output.type === 'analysis'); return output.record;
+    },
+  });
+  const navigation: ResearchView = { contentId: contentIds[0], viewMode: 'dna', readingFrame: 0, scrollPosition: 0, geneId: null };
+  workflow.start('Sourced spacers and sequence context');
+  await workflow.commands.dispatch(ids.view, analysisJson(navigation));
+  await workflow.commands.dispatch(ActionIds.OverlayCRISPR, analysisJson(parameters));
+  const linearRecord = workflow.getSnapshot().result!;
+  await workflow.commands.dispatch(ActionIds.OverlayGCSkew, { contentId: contentIds[0], windowSize: 20, stepSize: 20 });
+  await workflow.commands.dispatch(ActionIds.OverlayCRISPR, analysisJson(circularParameters));
+  const circularRecord = workflow.getSnapshot().result!;
+  await workflow.commands.dispatch(ids.view, analysisJson({ ...navigation, scrollPosition: 4 }));
+  workflow.commands.stop();
+  return { workflow, content: workflow.commands.export(), linearRecord, circularRecord, parameters, circularParameters, library, genomes };
+}
+
+describe('sourced spacers in portable native research workflows', () => {
+  it('replays exact both-strand and circular evidence with other methods through the real worker and retains every execution', async () => {
+    const f = await recordedSpacerFixture();
+    const linearHits = f.linearRecord.fields.matches.value as unknown as ReferenceSpacerHit[];
+    assert.deepEqual(linearHits.map(hit => [hit.start, hit.end, hit.strand, hit.protospacer, hit.pam.sequence]),
+      [[4, 24, '+', guide, 'AGG'], [34, 54, '-', guide, 'AGG']]);
+    assert.deepEqual(linearHits.map(hit => hit.pam.segments), [[{ start: 24, end: 27 }], [{ start: 31, end: 34 }]]);
+    const circleHits = f.circularRecord.fields.matches.value as unknown as ReferenceSpacerHit[];
+    assert.deepEqual(circleHits.map(hit => [hit.start, hit.end, hit.strand, hit.wrapsOrigin, hit.pam.status]), [[17, 37, '+', true, 'matched']]);
+    assert.deepEqual(circleHits[0].segments, [{ start: 17, end: 27 }, { start: 0, end: 10 }]);
+    assert.deepEqual(f.linearRecord.method, SPACER_METHOD);
+    const inspection = await inspectResearchTape(f.content);
+    assert.equal(inspection.canReplay, true); assert.equal(inspection.steps[1].actionId, ActionIds.OverlayCRISPR);
+    const result = await runTerminalResearchWorker({ type: 'replay', content: f.content, repetitions: 2,
+      exportAnalysis: false, captureResults: true }, new AbortController().signal);
+    assert(result.type === 'replayed');
+    assert.equal(result.report.completed, 10); assert.equal(result.report.lastAnalysisExecution, 9);
+    assert.equal(result.report.finalView!.scrollPosition, 4); assert.equal(result.report.steps[9].analysis, null);
+    const archive = await parseWorkflowResults(result.allResultsJson!);
+    assert.equal(archive.records.length, 3);
+    assert.deepEqual(workflowAnalysisAt(archive, 2), f.linearRecord);
+    assert.deepEqual(workflowAnalysisAt(archive, 7), f.linearRecord);
+    assert.deepEqual(workflowAnalysisAt(archive, 9), f.circularRecord);
+    const checked = await runTerminalResearchWorker({ type: 'replay-results', content: result.allResultsJson! }, new AbortController().signal);
+    assert(checked.type === 'results-replayed'); assert.equal(checked.archiveJson, result.allResultsJson);
+    assert(!JSON.stringify(result.report).includes(guide)); assert(!JSON.stringify(result.report).includes(f.library.source.reference));
+  });
+
+  it('rejects changed library, host, mismatch settings, source topology and bundled bases rather than replacing expectations', async () => {
+    const f = await recordedSpacerFixture();
+    const changedLibrary = structuredClone(f.library); changedLibrary.spacers[0].sequence = 'C'.repeat(20);
+    for (const parameters of [{ ...f.parameters, libraryText: JSON.stringify(changedLibrary) },
+      { ...f.parameters, hostId: 'h2' }, { ...f.parameters, maxMismatches: 1 }]) {
+      const tape = parseCommandTape(f.content); tape.commands[1].parameters = analysisJson(parameters);
+      await assert.rejects(replayResearchTape(serializeCommandTape(tape)), /Step 2.*differs/);
+    }
+    const topology = parseCommandTape(f.content);
+    topology.commands[1].parameters = analysisJson({ ...f.parameters, topology: 'circular' });
+    await assert.rejects(replayResearchTape(serializeCommandTape(topology)), /topology/);
+    const changedSource = parseCommandTape(f.content), context = changedSource.context as { bundle: string };
+    const bundle = JSON.parse(context.bundle); bundle.inputs[0].text = bundle.inputs[0].text.replace(linearQuery, 'A' + linearQuery.slice(1));
+    context.bundle = JSON.stringify(bundle);
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay', content: serializeCommandTape(changedSource),
+      repetitions: 1, exportAnalysis: true }, new AbortController().signal), /Step 1.*outside/);
+    assert.equal(f.content, f.workflow.commands.export());
+  });
+
+  it('authors a mixed plan, extracts source-bound spacer evidence and freshly exports JSON and complete hit TSV through the CLI', async () => {
+    const f = await recordedSpacerFixture(), tape = parseCommandTape(f.content), directory = await mkdtemp(join(tmpdir(), 'phage-spacer-workflow-'));
+    const input = join(directory, 'plan.json'), archive = join(directory, 'archive.json'), extracted = join(directory, 'spacers.json');
+    const replayed = join(directory, 'verified.json'), table = join(directory, 'hits.tsv');
+    await writeFile(input, serializeCommandPlan({ ...tape, format: 'phage-explorer-command-plan',
+      commands: tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })) }));
+    const cli = async (args: string[]) => {
+      let stdout = '', stderr = '';
+      const code = await researchWorkflowMain(args, text => { stdout += text; }, text => { stderr += text; });
+      assert.equal(code, 0, stderr); assert(!stdout.includes(guide)); assert(!stdout.includes(f.library.source.reference));
+      return JSON.parse(stdout);
+    };
+    await cli(['record', '--input', input, '--results', '--output', archive]);
+    assert.equal((await parseWorkflowResults(await readFile(archive, 'utf8'))).tapeJson, f.content);
+    await cli(['replay-results', '--input', archive]);
+    await cli(['extract-result', '--input', archive, '--execution', '4', '--output', extracted]);
+    assert.deepEqual(await parseAnalysisRecord(await readFile(extracted, 'utf8')), f.circularRecord);
+    await cli(['replay-experiment', '--input', extracted, '--output', replayed]);
+    assert.equal(await readFile(replayed, 'utf8'), serializeAnalysisRecord(f.circularRecord));
+    await cli(['replay-experiment', '--input', extracted, '--output', table, '--format', 'tsv']);
+    const rows = (await readFile(table, 'utf8')).trimEnd().split('\n');
+    assert.equal(rows.length, 3); assert.equal(JSON.parse(rows[0].slice(2)).topology, 'circular');
+    assert.equal(JSON.parse(rows[0].slice(2)).source.reference, f.library.source.reference);
+    const cells = rows[2].split('\t');
+    assert.deepEqual(cells.slice(2, 6), ['17', '37', '+', 'true']);
+    assert.deepEqual(JSON.parse(cells[6]), [{ start: 17, end: 27 }, { start: 0, end: 10 }]);
+    assert.equal(cells[7], guide); assert.equal(cells[10], 'matched'); assert.equal(cells[11], 'AGG');
+    if (process.platform !== 'win32') assert.equal((await stat(table)).mode & 0o777, 0o600);
+  });
+
+  it('terminates the owned worker when spacer replay is cancelled and leaves a later fresh replay usable', async () => {
+    const f = await recordedSpacerFixture(), controller = new AbortController();
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay', content: f.content,
+      repetitions: 2, exportAnalysis: false, captureResults: true }, controller.signal,
+    progress => { if (progress.completed === 2) controller.abort(); }), { name: 'AbortError' });
+    const fresh = await runTerminalResearchWorker({ type: 'replay', content: f.content,
+      repetitions: 1, exportAnalysis: true }, new AbortController().signal);
+    assert(fresh.type === 'replayed'); assert.equal(fresh.analysisJson, serializeAnalysisRecord(f.circularRecord));
+  });
+});
 
 describe('terminal replay of browser research tapes', () => {
   it('replays browser GC-skew recordings through the actual native worker and keeps the analysis across later navigation', async () => {

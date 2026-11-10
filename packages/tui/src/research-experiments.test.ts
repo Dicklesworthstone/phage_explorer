@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { createDotPlotExperiment, exportDotPlotExperimentTsv } from '../../core/src/analysis/dot-plot';
 import { createRestrictionDigestRecord, exportRestrictionDigestTsv } from '../../core/src/analysis/restriction-digest';
+import { createSpacerRecord, searchSpacerReferences, type SpacerGenome, type SpacerLibrary, type ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker,
   type TerminalWorker, type WorkflowRuntime } from '../../../scripts/research-workflow';
@@ -49,6 +50,44 @@ class ReplyWorker extends EventEmitter {
 }
 
 describe('terminal portable experiment replay', () => {
+  it('replays a standalone spacer experiment from embedded sources and exports all wrapped hit coordinates', async () => {
+    const genome: SpacerGenome = { name: 'Synthetic circular native control', accession: null, source: 'local',
+      topology: 'circular', sequence: 'ACCTAGTGCAAGGTTTTACGATTCGGT' };
+    const library: SpacerLibrary = { format: 'phage-explorer-spacer-library', version: 1, name: 'Synthetic native library',
+      source: { kind: 'demo', reference: 'Independent 20-base sequence fixture', version: '1', license: 'CC0', scope: 'Synthetic host only' },
+      hosts: [{ id: 'host', name: 'Test', strain: 'one', accession: 'synthetic:host' }],
+      spacers: [{ id: 'spacer', hostId: 'host', arrayAccession: 'synthetic:array', sequence: 'ACGATTCGGTACCTAGTGCA',
+        target: 'DNA', orientation: 'guide-equivalent', system: null, seed: null,
+        pam: { side: '3prime', motif: 'NGG', reference: 'Explicit synthetic rule' } }] };
+    const record = await createSpacerRecord(genome, library, searchSpacerReferences(genome, library, { hostId: 'host', maxMismatches: 0 }));
+    const content = serializeAnalysisRecord(record);
+    const replay = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'json' }, signal());
+    assert(replay.type === 'experiment-replayed'); assert.deepEqual(await parseAnalysisRecord(replay.exportText!), record);
+    const table = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'tsv' }, signal());
+    assert(table.type === 'experiment-replayed');
+    const lines = table.exportText!.trimEnd().split('\n'), hit = lines[2].split('\t');
+    assert.equal(lines.length, 3); assert.deepEqual(hit.slice(2, 6), ['17', '37', '+', 'true']);
+    assert.equal(hit[7], library.spacers[0].sequence); assert.equal(hit[10], 'matched'); assert.equal(hit[11], 'AGG');
+    assert.deepEqual(JSON.parse(hit[6]), [{ start: 17, end: 27 }, { start: 0, end: 10 }]);
+    assert.equal(JSON.parse(lines[0].slice(2)).status, 'sequence-matches');
+    assert(!JSON.stringify(table.report).includes(genome.sequence));
+
+    // All mutations have recomputed valid hashes. Numerical replay must still
+    // reject old findings tied to altered inputs, rules, settings or coordinates.
+    for (const change of [
+      (r: AnalysisRecord) => { (r.fields.matches.value as unknown as ReferenceSpacerHit[])[0].start = 16; },
+      (r: AnalysisRecord) => { r.parameters.hostId = 'absent-host'; },
+      (r: AnalysisRecord) => { (r.inputs[0].data as unknown as SpacerGenome).sequence = 'C'.repeat(27); },
+      (r: AnalysisRecord) => { (r.inputs[1].data as unknown as SpacerLibrary).spacers[0].pam!.motif = 'NAA'; },
+      (r: AnalysisRecord) => { r.references[0].version = 'changed'; },
+      (r: AnalysisRecord) => { r.method.version = '999'; },
+    ]) {
+      const altered = await resign(record, change);
+      await parseAnalysisRecord(altered);
+      await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: altered, outputFormat: 'tsv' }, signal()));
+    }
+  });
+
   it('parses the experiment subcommand without changing tape flags or allowing ambient settings', () => {
     assert.deepEqual(parseWorkflowCommand(['replay-experiment', '--input', 'source.json']), {
       type: 'replay-experiment', input: 'source.json', timeoutMs: 300000, outputFormat: 'json',
@@ -251,6 +290,8 @@ describe('terminal portable experiment replay', () => {
     assert.equal(help.code, 0);
     assert.match(help.output, /phage-explorer workflow replay-experiment/);
     assert.match(help.output, /not source authentication or biological validation/);
+    assert.match(help.output, /Recorded spacer comparisons use actionId overlay\.crispr/);
+    assert.match(help.output, /spacer hits include protospacer\/PAM bases/);
     assert.equal(help.error, '');
   });
 });

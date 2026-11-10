@@ -222,21 +222,25 @@ export function searchSpacerReferences(genomeInput: SpacerGenome, libraryInput: 
   return {options,hits,excluded,coverage,hosts,selectedRecords:selected.length,searchedRecords:usable.length,distinctSequences:cached.size,
     status:!selected.length?'no-spacer-data':!usable.length?'unsupported-references':!coverage.some(c=>c.unambiguousStarts)?'no-usable-windows':hits.length?'sequence-matches':'no-sequence-match',complete:true,warnings};
 }
-const METHOD={id:'sourced-spacer-dna-search',version:'1',implementation:'Pigeonhole-complete ungapped candidate search; full Hamming verification; guide-oriented user-supplied PAM/seed constraints; explicit circular coordinates'};
+export const SPACER_METHOD={id:'sourced-spacer-dna-search',version:'1',implementation:'Pigeonhole-complete ungapped candidate search; full Hamming verification; guide-oriented user-supplied PAM/seed constraints; explicit circular coordinates'};
+/** Expected evidence references, shared by producers and workflow publication guards. */
+export function spacerRecordReferences(library: SpacerLibrary): AnalysisRecord['references'] {
+  return [{ id: 'supplied-spacer-library', version: library.source.version, description: library.source.reference },
+    { id: 'comparison-convention', version: 'guide-equivalent-0-based-v1', description: 'Guide-equivalent DNA orientation; 0-based half-open intervals; wrapped hits have split forward-genome segments.' }];
+}
 export async function createSpacerRecord(genomeInput: SpacerGenome, libraryInput: SpacerLibrary, result: SpacerSearchResult): Promise<AnalysisRecord> {
   const genome=validateSpacerGenome(genomeInput),library=validateSpacerLibrary(libraryInput);
   const coverage={available:result.searchedRecords,total:result.selectedRecords,unit:'records' as const};
   const field=(label:string,value:unknown)=>library.source.kind==='demo'?{label,kind:'demo' as const,units:'records' as const,value:analysisJson(value),coverage,limitations:result.warnings,assumptions:['Explicit synthetic reference library; no measured immunity.']}:
     {label,kind:'sequence-score' as const,units:'records' as const,value:analysisJson(value),coverage,limitations:result.warnings};
-  return createAnalysisRecord({method:METHOD,inputs:[{id:'genome',accession:genome.accession,source:genome.source,description:'Exact searched DNA, identity and explicitly selected topology.',data:analysisJson(genome)},
+  return createAnalysisRecord({method:SPACER_METHOD,inputs:[{id:'genome',accession:genome.accession,source:genome.source,description:'Exact searched DNA, identity and explicitly selected topology.',data:analysisJson(genome)},
     {id:'spacerLibrary',accession:null,source:library.source.kind,description:'Exact host/array reference records, oriented constraints, version, scope and usage permission.',data:analysisJson(library)}],
     parameters:analysisJson(result.options) as AnalysisRecord['parameters'],seed:null,
-    references:[{id:'supplied-spacer-library',version:library.source.version,description:library.source.reference},
-      {id:'comparison-convention',version:'guide-equivalent-0-based-v1',description:'Guide-equivalent DNA orientation; 0-based half-open intervals; wrapped hits have split forward-genome segments.'}],
+    references:spacerRecordReferences(library),
     fields:{matches:field('DNA sequence matches and supplied rule checks',result.hits),coverage:field('Search coverage, host scope and excluded references',{status:result.status,hosts:result.hosts,windows:result.coverage,excluded:result.excluded,distinctSequences:result.distinctSequences,complete:result.complete})}});
 }
 export async function replaySpacerRecord(content:string,selectedGenome:SpacerGenome):Promise<{genome:SpacerGenome;library:SpacerLibrary;result:SpacerSearchResult;record:AnalysisRecord}> {
-  const saved=await parseAnalysisRecord(content,{methodId:METHOD.id,methodVersion:METHOD.version});
+  const saved=await parseAnalysisRecord(content,{methodId:SPACER_METHOD.id,methodVersion:SPACER_METHOD.version});
   if(saved.inputs.length!==2||saved.inputs[0].id!=='genome'||saved.inputs[1].id!=='spacerLibrary')throw new Error('Unsupported spacer evidence input contract.');
   const genome=validateSpacerGenome(selectedGenome);
   if(JSON.stringify(analysisJson(genome))!==JSON.stringify(analysisJson(saved.inputs[0].data)))throw new Error('Selected genome sequence, identity or topology differs from saved spacer evidence.');

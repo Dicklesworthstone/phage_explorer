@@ -190,9 +190,23 @@ Plans and the completed tape must each fit 10 MiB; allow room for recorded outpu
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
 pangenome/CDS experiments, portable GC-skew counts, exact-pairs repeats, self/pairwise
-dot plots, restriction digests and Mosaic reference panels. Source-corpus references are freshly
+dot plots, restriction digests, Mosaic reference panels and sourced spacer comparisons. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
+
+Recorded spacer comparisons use actionId overlay.crispr and parameters
+{contentId, libraryText, topology, hostId, maxMismatches}. libraryText embeds the
+complete version-1 phage-explorer-spacer-library JSON (at most 2 MiB), including
+source attribution, host/array identities and explicitly supplied PAM/seed rules.
+hostId is an exact library host ID or null for all listed hosts; maxMismatches is
+an integer from 0 to 5. topology is explicitly linear, circular or unknown and
+must agree with known source annotation. Unknown topology never wraps the origin.
+The exact query comes from context.bundle, never the catalog or a file path.
+Both-strand hits retain rule outcomes, missing reference coverage and exclusions;
+no match does not establish host susceptibility or anti-CRISPR activity.
+These steps work with record, replay, replay-results and extract-result. An
+extracted spacer record can be verified with replay-experiment and exported as
+complete hit TSV. Repeated runs preserve distinct execution identities.
 
 Mosaic commands consume a version-1 phage-explorer-mosaic-dataset JSON containing
 the exact query/reference sequences, attribution, source ranges and explicit
@@ -234,7 +248,7 @@ export is the residue table. All analysis settings are resolved before dispatch.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, mosaic reference-similarity,
-reference protein-structure, plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
+sourced spacer-comparison, reference protein-structure, plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
@@ -243,8 +257,10 @@ methods and verifies all saved evidence, not just file checksums. No catalog,
 external source lookup or current browser selection is needed. Unsupported
 methods/versions and changed outputs are rejected. This is numerical reproducibility,
 not source authentication or biological validation. --format requires --output;
-json (default) retains full source sequences, while tsv contains coordinates and
-scores/cut products without source bases. The report never includes raw sequences.
+json (default) retains full source sequences. TSV retains the method's complete
+evidence table; spacer hits include protospacer/PAM bases, original attribution,
+guide-oriented mismatches and wrapped coordinate segments. Neither format
+anonymizes the evidence. The stdout report never includes raw sequences.
 
 The JSON report goes to stdout only on success. --output exclusively creates the
 command tape for record, or the freshly computed/successfully replayed analysis
