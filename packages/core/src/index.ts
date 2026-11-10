@@ -99,6 +99,7 @@ export * from './analysis/phylodynamics';
 
 // Environmental & Geospatial Provenance
 export * from './analysis/environmental-provenance';
+export * from './analysis/environmental-evidence';
 
 // Exact repeat detection references
 export * from './analysis/repeats';
