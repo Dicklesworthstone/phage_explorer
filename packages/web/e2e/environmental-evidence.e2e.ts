@@ -64,6 +64,40 @@ async function download(page: Page, action: () => Promise<void>): Promise<string
   return Buffer.concat(chunks).toString('utf8');
 }
 
+test('private genome selection keeps local environmental evidence accessible without reference lookup', async ({ page }, info) => {
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  const requests: string[] = [];
+  page.on('request', request => requests.push(`${request.url()} ${request.postData() ?? ''}`));
+  try {
+    await start(page, info);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+k');
+    const palette = page.getByTestId('overlay-commandPalette');
+    await palette.getByRole('combobox').fill('Local genomes: import or export');
+    await palette.getByRole('option').filter({ hasText: 'Local genomes: import or export' }).first().click();
+    const importer = page.getByTestId('overlay-genomeImport');
+    await importer.getByRole('textbox', { name: 'Paste genome data' }).fill('>ENV_PRIVATE_GENOME\nACGTACGTGGCC\n');
+    await importer.getByRole('button', { name: 'Parse records', exact: true }).click();
+    await importer.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+    await expect(page.getByTestId('phage-list-item-selected')).toContainText('ENV_PRIVATE_GENOME');
+    const boundary = requests.length;
+    const panel = await open(page);
+    await load(panel, JSON.stringify(DATASET));
+    await expect(panel.getByTestId('environmental-dataset-name')).toHaveText(DATASET.name);
+    await panel.getByRole('button', { name: 'Analyze environmental observations', exact: true }).click();
+    await expect(panel.getByTestId('environmental-result')).toBeVisible();
+    const record = await parseAnalysisRecord(await download(page,
+      () => panel.getByRole('button', { name: 'Export environmental evidence', exact: true }).click()));
+    expect(record.inputs[0].data).toEqual(DATASET);
+    expect((record.fields.environment.value as unknown as EnvironmentalAnalysis).totals).toEqual({
+      samples: 57, assayed: 2, detected: 1, notDetected: 1, notAssayed: 55, located: 1, dated: 2,
+    });
+    expect(requests.slice(boundary).filter(request => CONTEXT_URL.test(request))).toEqual([]);
+    expect(requests.some(request => /ENV_PRIVATE_|private-environment|literal environmental query/.test(request))).toBe(false);
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 test('local environmental observations survive full export, verified replay, rejection and cancellation without uploads', async ({ page }, info) => {
   test.setTimeout(180000);
   const { pageErrors, finalize } = setupTestHarness(page, info);

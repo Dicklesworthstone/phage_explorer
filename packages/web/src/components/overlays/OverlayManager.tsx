@@ -356,9 +356,8 @@ function renderLazyOverlay(
   currentPhage: PhageFull | null,
   onSelectPhage: (index: number) => Promise<void>
 ): React.ReactElement | null {
-  if (currentPhage?.localGenome && id === 'environmentalProvenance') {
-    return <Overlay id={id} title={formatOverlayTitle(id)} size="lg"><p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p></Overlay>;
-  }
+  // Environmental observations belong to their supplied query, independently of
+  // the selected genome. Public reference lookup is explicit inside its workspace.
   switch (id) {
     case 'genomeImport':
       return <GenomeImportOverlay onSelectPhage={onSelectPhage} />;
