@@ -29,7 +29,13 @@ describe('growth command', () => {
     assert.equal(parseGrowthCommand(['--help']),null);
     assert.deepEqual(parseGrowthCommand(['fit','input.csv','--conditions','conditions.json','--params','params.json','--format','residuals','--output','-']),
       {operation:'fit',input:'input.csv',conditions:'conditions.json',parameters:'params.json',output:undefined,
-        format:'residuals',name:undefined,source:undefined,reference:undefined,demo:false});
+        format:'residuals',parameter:undefined,name:undefined,source:undefined,reference:undefined,demo:false});
+    assert.deepEqual(parseGrowthCommand(['profile','fit.json','--parameter','burstSize','--format','profile']),
+      {operation:'profile',input:'fit.json',conditions:undefined,parameters:undefined,output:undefined,
+        format:'profile',parameter:'burstSize',name:undefined,source:undefined,reference:undefined,demo:false});
+    assert.throws(()=>parseGrowthCommand(['profile','fit.json']));
+    assert.throws(()=>parseGrowthCommand(['profile','fit.json','--parameter','unknown']));
+    assert.throws(()=>parseGrowthCommand(['fit','input.csv','--format','profile']));
     assert.throws(()=>parseGrowthCommand(['replay','saved.json','--params','p.json']));
     assert.throws(()=>parseGrowthCommand(['inspect','x.csv','--format','residuals']));
   });
@@ -70,6 +76,23 @@ describe('growth command', () => {
     assert.match(streams.output(),/likelihood_deviance/);
     assert.match(streams.errors(),/"operation":"fit"/);
     assert.ok(!streams.errors().includes('100000'));
+  });
+
+  it('profiles a freshly verified fit and replays the profile identity', async () => {
+    const fit=await executeGrowthJob({operation:'fit',input:{name:'counts.csv',text:csv},conditions,parameters:params,
+      source:{description:'Profile assay',demo:false}});
+    const baseline=await parseAnalysisRecord(fit.content);
+    const profiled=await executeGrowthJob({operation:'profile',input:{name:'fit.json',text:fit.content},parameter:'burstSize'});
+    const record=await parseAnalysisRecord(profiled.content);
+    assert.equal(record.method.id,'mechanistic-growth-profile');
+    assert.equal(record.parameters.parameter,'burstSize');
+    assert.equal(record.parameters.baselineResultId,baseline.resultId);
+    assert.match(profiled.profile!,/parameter,value,objective,delta,conditional_objective,converged,reason/);
+    const replay=await executeGrowthJob({operation:'replay',input:{name:'profile.json',text:profiled.content}});
+    assert.equal(replay.verified,true);
+    assert.equal(replay.identity,record.resultId);
+    assert.equal((await parseAnalysisRecord(replay.content)).resultId,record.resultId);
+    assert.equal(replay.profile,profiled.profile);
   });
 
   it('canonical dataset JSON cannot be relabeled and existing outputs are never overwritten', async () => {

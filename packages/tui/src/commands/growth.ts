@@ -5,10 +5,11 @@ import { lstat, writeFile } from 'node:fs/promises';
 import type { Readable, Writable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import {
-  GROWTH_LIMITS, parseGrowthData, validateGrowthDataset, validateGrowthConditions,
+  GROWTH_LIMITS, GROWTH_PARAMETERS, parseGrowthData, validateGrowthDataset, validateGrowthConditions,
   resolveGrowthOptions, fitGrowthDataset, createGrowthRecord, replayGrowthRecord,
-  type GrowthConditions, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult,
+  type GrowthConditions, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult, type GrowthParameter,
 } from '../../../core/src/analysis/growth-inference';
+import { profileGrowthDataset, replayGrowthProfile, type GrowthProfileResult } from '../../../core/src/analysis/growth-profile';
 import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import { readAbundanceFile, readAbundanceStdin } from './abundance';
 
@@ -19,10 +20,11 @@ export const GROWTH_COMMAND_HELP = `Mechanistic infection growth fitting (local 
 
   phage-explorer growth inspect INPUT [--conditions FILE] [--name NAME] [--source TEXT] [--reference TEXT] [--demo]
   phage-explorer growth fit INPUT [--conditions FILE] [--params FILE] [--name NAME] [--source TEXT] [--reference TEXT] [--demo]
+  phage-explorer growth profile SAVED_FIT --parameter adsorptionRate|latentPeriod|burstSize
   phage-explorer growth replay SAVED_ANALYSIS
 
 Common options:
-  --format json|residuals   fit/replay output (default json)
+  --format json|residuals|profile   fitted/replayed output (default json)
   --output NEW_FILE         write a new file; existing files are never replaced
   -                         use stdin for at most one of INPUT, --conditions or --params
 
@@ -33,27 +35,31 @@ bacterialGrowthRate, phageDecayRate, odCellsPerMl and stages. Canonical
 phage-explorer-growth JSON already embeds conditions/source and cannot be relabeled.
 
 --params is a partial fit-options JSON object accepted by the core model. The fit
-uses the same bounded multistart mechanistic producer as the browser. replay
-recomputes the saved fit and rejects changed evidence. Residual export includes
+uses the same bounded multistart mechanistic producer as the browser. profile first
+re-verifies the saved baseline fit, then traces the bounded nuisance-refitted
+likelihood component for one estimated parameter. replay accepts either fit or
+profile records and recomputes them before publication. Residual export includes
 observed/predicted values, censoring and standardized residual/deviance fields.
 These conditional estimates do not by themselves establish biological latency,
 adsorption, burst size, host range or model validity.
 `;
 
-export type GrowthOperation = 'inspect' | 'fit' | 'replay';
+export type GrowthOperation = 'inspect' | 'fit' | 'profile' | 'replay';
 export interface GrowthCommand {
   operation: GrowthOperation; input: string; conditions?: string; parameters?: string; output?: string;
-  format: 'json' | 'residuals'; name?: string; source?: string; reference?: string; demo: boolean;
+  format: 'json' | 'residuals' | 'profile'; parameter?: GrowthParameter;
+  name?: string; source?: string; reference?: string; demo: boolean;
 }
 export interface GrowthJob {
   operation: GrowthOperation;
   input: { name: string; text: string };
   conditions?: string;
   parameters?: string;
+  parameter?: GrowthParameter;
   source?: { name?: string; description?: string; reference?: string; demo: boolean };
 }
 export interface GrowthJobResult {
-  content: string; residuals: string | null; identity: string | null; verified: boolean;
+  content: string; residuals: string | null; profile: string | null; identity: string | null; verified: boolean;
 }
 export type GrowthJobMessage =
   | { kind: 'progress'; message: string }
@@ -87,6 +93,20 @@ function residualCsv(result: GrowthFitResult): string {
     row.standardizedResidual, row.likelihoodDeviance,
   ].map(cell).join(','))].join('\n') + '\n';
 }
+function profileCsv(result: GrowthProfileResult): string {
+  const cell = (value: string | number | boolean | null | undefined) =>
+    value === null || value === undefined ? '' : String(value).replace(/[\r\n,"]/g, match => match === '"' ? '""' : ' ');
+  const header = ['parameter','value','objective','delta','conditional_objective','converged','reason'];
+  return [
+    '# baseline_result=' + result.baselineResultId,
+    '# cutoff=' + result.cutoff + '; interval95=' + JSON.stringify(result.interval95)
+      + '; lower=' + JSON.stringify(result.lower) + '; upper=' + JSON.stringify(result.upper),
+    header.join(','),
+    ...result.points.map(point => [
+      result.parameter, point.value, point.objective, point.delta, point.conditionalObjective, point.converged, point.reason,
+    ].map(cell).join(',')),
+  ].join('\n') + '\n';
+}
 function sourceOverrides(job: GrowthJob): boolean {
   return !!job.source && (job.source.name !== undefined || job.source.description !== undefined
     || job.source.reference !== undefined || job.source.demo);
@@ -108,31 +128,52 @@ function loadDataset(job: GrowthJob): GrowthDataset {
 }
 
 export async function executeGrowthJob(job: GrowthJob, progress: (message: string) => void = () => {}): Promise<GrowthJobResult> {
-  if (!job || !['inspect','fit','replay'].includes(job.operation) || !job.input || typeof job.input.name !== 'string') {
+  if (!job || !['inspect','fit','profile','replay'].includes(job.operation) || !job.input || typeof job.input.name !== 'string') {
     throw new Error('Unsupported growth job.');
   }
-  requireText(job.input.text, job.operation === 'replay' ? RECORD_LIMIT : GROWTH_LIMITS.bytes, 'Growth input');
+  requireText(job.input.text, job.operation === 'replay' || job.operation === 'profile' ? RECORD_LIMIT : GROWTH_LIMITS.bytes, 'Growth input');
   if (job.operation === 'replay') {
-    if (job.conditions !== undefined || job.parameters !== undefined || sourceOverrides(job)) {
-      throw new Error('Replay cannot override saved conditions, parameters or source attribution.');
+    if (job.conditions !== undefined || job.parameters !== undefined || job.parameter !== undefined || sourceOverrides(job)) {
+      throw new Error('Replay cannot override saved conditions, parameters, profile parameter or source attribution.');
+    }
+    const text = job.input.text.replace(/^\uFEFF/, '');
+    const envelope: unknown = JSON.parse(text);
+    const methodId = plainObject(envelope) && plainObject(envelope.method) ? envelope.method.id : undefined;
+    if (methodId === 'mechanistic-growth-profile') {
+      progress('Recomputing saved growth likelihood profile');
+      const replay = await replayGrowthProfile(text, progress);
+      return { content: serializeAnalysisRecord(replay.profileRecord), residuals: residualCsv(replay.result),
+        profile: profileCsv(replay.profile), identity: replay.profileRecord.resultId, verified: true };
     }
     progress('Recomputing saved growth fit');
-    const replay = await replayGrowthRecord(job.input.text.replace(/^\uFEFF/, ''), progress);
+    const replay = await replayGrowthRecord(text, progress);
     return { content: serializeAnalysisRecord(replay.record), residuals: residualCsv(replay.result),
-      identity: replay.record.resultId, verified: true };
+      profile: null, identity: replay.record.resultId, verified: true };
+  }
+  if (job.operation === 'profile') {
+    if (job.conditions !== undefined || job.parameters !== undefined || sourceOverrides(job)) {
+      throw new Error('Profile takes a saved fit and cannot override its conditions, fitting options or source attribution.');
+    }
+    if (!job.parameter || !GROWTH_PARAMETERS.includes(job.parameter)) throw new Error('Profile requires a supported --parameter.');
+    progress('Verifying baseline growth fit before profiling');
+    const baseline = await replayGrowthRecord(job.input.text.replace(/^\uFEFF/, ''), progress);
+    progress('Tracing nuisance-refitted growth likelihood profile');
+    const profiled = await profileGrowthDataset(baseline.dataset, baseline.options, job.parameter, progress, baseline.record.resultId);
+    return { content: serializeAnalysisRecord(profiled.profileRecord), residuals: residualCsv(profiled.result),
+      profile: profileCsv(profiled.profile), identity: profiled.profileRecord.resultId, verified: false };
   }
   progress('Validating local growth observations');
   const dataset = loadDataset(job);
   if (job.operation === 'inspect') {
     if (job.parameters !== undefined) throw new Error('inspect does not fit parameters; --params requires fit.');
-    return { content: JSON.stringify(dataset, null, 2), residuals: null, identity: null, verified: false };
+    return { content: JSON.stringify(dataset, null, 2), residuals: null, profile: null, identity: null, verified: false };
   }
   const options: GrowthFitOptions = resolveGrowthOptions(job.parameters === undefined ? {} : parseObject(job.parameters, 'Growth fit parameters'));
   progress('Solving mechanistic infection model');
   const result = fitGrowthDataset(dataset, options, progress);
   progress('Binding observations, conditions and fit settings to the result');
   const record = await createGrowthRecord(dataset, options, result);
-  return { content: serializeAnalysisRecord(record), residuals: residualCsv(result), identity: record.resultId, verified: false };
+  return { content: serializeAnalysisRecord(record), residuals: residualCsv(result), profile: null, identity: record.resultId, verified: false };
 }
 
 declare const PHAGE_GROWTH_WORKER: string | undefined;
@@ -171,28 +212,40 @@ export function runGrowthJob(job: GrowthJob, signal?: AbortSignal,
 export function parseGrowthCommand(args: string[]): GrowthCommand | null {
   const { values, positionals } = parseArgs({ args, strict: true, allowPositionals: true, options: {
     conditions: { type: 'string' }, params: { type: 'string' }, output: { type: 'string' },
-    format: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' },
+    format: { type: 'string' }, parameter: { type: 'string' }, name: { type: 'string' }, source: { type: 'string' },
     reference: { type: 'string' }, demo: { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h' },
   } });
   if (values.help || args.length === 0) return null;
   const [operation,input] = positionals;
-  if (positionals.length !== 2 || !['inspect','fit','replay'].includes(operation)) {
-    throw new Error('Expected growth inspect|fit|replay INPUT. See growth --help.');
+  if (positionals.length !== 2 || !['inspect','fit','profile','replay'].includes(operation)) {
+    throw new Error('Expected growth inspect|fit|profile|replay INPUT. See growth --help.');
   }
-  if (!input.trim() || [values.conditions,values.params,values.output,values.name,values.source,values.reference]
+  if (!input.trim() || [values.conditions,values.params,values.output,values.parameter,values.name,values.source,values.reference]
     .some(value => value !== undefined && !value.trim())) throw new Error('Paths, names and source fields must not be empty.');
   const format = values.format ?? 'json';
-  if (format !== 'json' && format !== 'residuals') throw new Error('--format must be json or residuals.');
-  if (operation === 'inspect' && format !== 'json') throw new Error('inspect emits canonical dataset JSON; residuals require fit or replay.');
-  if (operation === 'inspect' && values.params !== undefined) throw new Error('--params requires fit.');
-  if (operation === 'replay' && (values.conditions !== undefined || values.params !== undefined || values.name !== undefined
-    || values.source !== undefined || values.reference !== undefined || values.demo)) {
-    throw new Error('Replay cannot override saved conditions, parameters or source attribution.');
+  if (format !== 'json' && format !== 'residuals' && format !== 'profile') throw new Error('--format must be json, residuals or profile.');
+  if (operation === 'inspect' && format !== 'json') throw new Error('inspect emits canonical dataset JSON; fitted exports require fit, profile or replay.');
+  if (operation === 'inspect' && (values.params !== undefined || values.parameter !== undefined)) throw new Error('inspect does not fit or profile parameters.');
+  if (operation === 'fit' && values.parameter !== undefined) throw new Error('--parameter requires profile.');
+  if (operation === 'fit' && format === 'profile') throw new Error('--format profile requires profile or replay.');
+  if (operation === 'profile') {
+    if (values.conditions !== undefined || values.params !== undefined || values.name !== undefined
+      || values.source !== undefined || values.reference !== undefined || values.demo) {
+      throw new Error('profile takes a saved fit and cannot override its evidence.');
+    }
+    if (values.parameter === undefined || !GROWTH_PARAMETERS.includes(values.parameter as GrowthParameter)) {
+      throw new Error('--parameter must be adsorptionRate, latentPeriod or burstSize.');
+    }
+  }
+  if (operation === 'replay' && (values.conditions !== undefined || values.params !== undefined || values.parameter !== undefined
+    || values.name !== undefined || values.source !== undefined || values.reference !== undefined || values.demo)) {
+    throw new Error('Replay cannot override saved conditions, parameters, profile parameter or source attribution.');
   }
   if ([input,values.conditions,values.params].filter(value => value === '-').length > 1) throw new Error('Only one input may read from stdin (-).');
   return { operation: operation as GrowthOperation, input, conditions: values.conditions, parameters: values.params,
     output: values.output === '-' ? undefined : values.output, format: format as GrowthCommand['format'],
+    parameter: values.parameter as GrowthParameter | undefined,
     name: values.name, source: values.source, reference: values.reference, demo: values.demo };
 }
 
@@ -229,7 +282,7 @@ export async function runGrowthCommand(args: string[], io: GrowthCommandIO): Pro
     if (destination) await assertNewOutput(destination);
     const read = (filename: string, limit: number) => filename === '-'
       ? readAbundanceStdin(io.stdin,limit,io.signal) : readAbundanceFile(filename,limit,io.signal);
-    const input = await read(command.input, command.operation === 'replay' ? RECORD_LIMIT : GROWTH_LIMITS.bytes);
+    const input = await read(command.input, command.operation === 'replay' || command.operation === 'profile' ? RECORD_LIMIT : GROWTH_LIMITS.bytes);
     const conditions = command.conditions === undefined ? undefined : await read(command.conditions,AUX_LIMIT);
     const parameters = command.parameters === undefined ? undefined : await read(command.parameters,AUX_LIMIT);
     check(io.signal);
@@ -239,12 +292,15 @@ export async function runGrowthCommand(args: string[], io: GrowthCommandIO): Pro
     };
     const result = await (io.execute ?? runGrowthJob)({ operation: command.operation,
       input: { name: command.name ?? (command.input === '-' ? 'stdin growth data' : basename(command.input)), text: input },
-      conditions, parameters,
+      conditions, parameters, parameter: command.parameter,
       source: { name: command.name, description: command.source, reference: command.reference, demo: command.demo } },
       io.signal, progress);
     check(io.signal);
-    const output = command.format === 'residuals' ? result.residuals : result.content + '\n';
-    if (output === null) throw new Error('Residual export requires a fitted or replayed growth result.');
+    const output = command.format === 'residuals' ? result.residuals
+      : command.format === 'profile' ? result.profile : result.content + '\n';
+    if (output === null) throw new Error(command.format === 'profile'
+      ? 'Profile export requires a profiled or replayed profile result.'
+      : 'Residual export requires a fitted, profiled or replayed growth result.');
     if (destination) await writeFile(destination,output,{encoding:'utf8',flag:'wx',mode:0o600});
     else await writeStream(io.stdout,output);
     return 0;
