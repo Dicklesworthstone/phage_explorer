@@ -13,6 +13,7 @@ export const EXECUTABLE_WORKERS = [
   { source: 'packages/tui/src/workers/pfu-growth-worker.ts', bundle: 'pfu-growth-worker.js', define: 'PHAGE_PFU_GROWTH_WORKER' },
   { source: 'packages/tui/src/workers/plaque-growth-worker.ts', bundle: 'plaque-growth-worker.js', define: 'PHAGE_PLAQUE_GROWTH_WORKER' },
   { source: 'packages/tui/src/workers/protein-structure-worker.ts', bundle: 'protein-structure-worker.js', define: 'PHAGE_PROTEIN_STRUCTURE_WORKER' },
+  { source: 'packages/tui/src/workers/ancestral-worker.ts', bundle: 'ancestral-worker.js', define: 'PHAGE_ANCESTRAL_WORKER' },
   { source: 'packages/tui/src/workers/host-metabolism-worker.ts', bundle: 'host-metabolism-worker.js', define: 'PHAGE_HOST_METABOLISM_WORKER' },
   { source: 'packages/tui/src/local-genome-import.worker.ts', bundle: 'local-genome-import.worker.js', define: 'PHAGE_LOCAL_GENOME_WORKER' },
   { source: 'packages/tui/src/research-replay.worker.ts', bundle: 'research-replay.worker.js', define: 'PHAGE_RESEARCH_WORKER' },
