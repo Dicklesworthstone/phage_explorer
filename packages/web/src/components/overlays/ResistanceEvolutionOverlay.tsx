@@ -8,6 +8,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   makeResistanceSimulation,
+  createSeededRng,
   type ResistanceCocktailState,
 } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
@@ -66,6 +67,8 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
   const [state, setState] = useState<ResistanceCocktailState | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [cocktailSize, setCocktailSize] = useState(3);
+  const [seed, setSeed] = useState(1);
+  const rngRef = useRef<() => number>(createSeededRng('resistance-cocktail:1'));
   const rafRef = useRef<number | null>(null);
   const lastTimeRef = useRef<number>(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -83,11 +86,12 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
 
   // Initialize simulation
   const initSimulation = useCallback((size: number) => {
+    rngRef.current = createSeededRng('resistance-cocktail:' + seed);
     const initial = simulation.init(null, { cocktailSize: size });
     setState(initial);
     setIsRunning(false);
     lastTimeRef.current = 0;
-  }, []);
+  }, [seed]);
 
   // Initialize when overlay opens (not on every isOpen reference change)
   useEffect(() => {
@@ -114,6 +118,13 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
     prevCocktailSizeRef.current = cocktailSize;
   }, [overlayIsOpen, cocktailSize, initSimulation]);
 
+  // A new seed means a new experiment; never continue an old random stream under a new label.
+  const prevSeedRef = useRef(seed);
+  useEffect(() => {
+    if (overlayIsOpen && seed !== prevSeedRef.current) initSimulation(cocktailSize);
+    prevSeedRef.current = seed;
+  }, [overlayIsOpen, seed, cocktailSize, initSimulation]);
+
   // Track if state is initialized (to avoid putting state in deps)
   const hasStateRef = useRef(false);
   useEffect(() => {
@@ -135,7 +146,7 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
       if (elapsed > 50) {
         setState((prev) => {
           if (!prev || !prev.running) return prev;
-          const next = simulation.step(prev, 1, Math.random);
+          const next = simulation.step(prev, 1, rngRef.current);
           if (simulation.isComplete?.(next)) {
             return { ...next, running: false };
           }
@@ -324,9 +335,9 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
             fontSize: '0.9rem',
           }}
         >
-          <strong style={{ color: colors.primary }}>Gillespie Stochastic Simulation</strong>{' '}
-          models resistance emergence under phage therapy. Cocktails require bacteria to become
-          resistant to ALL phages, making full resistance exponentially less likely.
+          <strong style={{ color: colors.primary }}>Seeded illustrative stochastic simulation</strong>{' '}
+          explores resistance emergence under user-selected model assumptions. It is not fitted to the selected phage,
+          host, treatment or experiment. Reusing the same seed and parameters reproduces the same random trajectory.
         </div>
 
         {/* Controls */}
@@ -353,6 +364,13 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
             </select>
           </label>
 
+          <label style={{ color: colors.textDim, fontSize: '0.85rem' }}>
+            Seed:
+            <input type="number" min={0} max={0xffffffff} step={1} value={seed}
+              onChange={e => { const value=Number(e.target.value); if(Number.isSafeInteger(value)&&value>=0&&value<=0xffffffff) setSeed(value); }}
+              style={{ marginLeft:'0.5rem', width:'8rem', padding:'0.25rem', backgroundColor:colors.backgroundAlt,
+                color:colors.text, border:`1px solid ${colors.borderLight}`, borderRadius:'4px' }} />
+          </label>
           <button
             onClick={() => {
               if (isRunning) {

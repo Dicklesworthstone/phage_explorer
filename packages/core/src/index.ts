@@ -132,6 +132,9 @@ export * from './analysis/plaque-growth';
 export * from './analysis/host-interactions';
 export * from './analysis/host-interaction-evidence';
 
+// Reproducible illustrative resistance-evolution experiments
+export * from './analysis/resistance-evolution';
+
 // Pan-Phage Graph Pangenome & Variant Cards
 export * from './analysis/pangenome-graph';
 export * from './analysis/alignment-pangenome';
