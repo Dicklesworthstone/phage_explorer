@@ -8,6 +8,9 @@ import { useOverlay } from './OverlayProvider';
 import { usePhageStore } from '../../store';
 import {
   analyzeHostInteractions,
+  createDepositedHostInteractionRecord,
+  exportDepositedHostInteractionTsv,
+  serializeAnalysisRecord,
   loadProteinReferenceInputs,
   type PredictedHostInteraction,
   type InteractionFunctionalRole,
@@ -42,6 +45,7 @@ const ROLE_LABELS: Record<InteractionFunctionalRole, string> = {
 
 /** The same production presentation is exercised with real repository inputs. */
 export function ProteinReferenceCoverage({ inputs }: { inputs: ProteinReferenceInputs | null }): React.ReactElement {
+  const [exportError, setExportError] = useState<string | null>(null);
   if (!inputs) return <p role="status">Loading source-backed protein references…</p>;
   if (inputs.status === 'unavailable') return <p role="status">Protein reference inputs unavailable: {inputs.reason}</p>;
   const { bundle, protein, host } = inputs;
@@ -58,13 +62,38 @@ export function ProteinReferenceCoverage({ inputs }: { inputs: ProteinReferenceI
           PDB {chain.pdbId} chain {chain.authAsymId} (label {chain.labelAsymId}), assembly {chain.assemblyId}.
         </li>)}
       </ul>
-      <p>Published interaction: {bundle.domainInteractions[0].phageDomain} loops {bundle.domainInteractions[0].phageLoops.join(', ')}
-        {' → '}{bundle.domainInteractions[0].hostDomain} loops {bundle.domainInteractions[0].hostLoops.join(', ')}.
-        These assignments describe the deposited complex.</p>
+      <h4>Deposited complex interaction map</h4>
+      <p data-testid="deposited-interaction-context">Experimental host: {bundle.evidence.experimentalHost}.
+        Publication: {bundle.evidence.publicationDoi}. Evidence type: {bundle.evidence.method}.
+        No binding affinity or host-range extrapolation is implied.</p>
+      <div style={{ overflowX: 'auto' }}><table aria-label="Published deposited-complex domain and loop assignments">
+        <thead><tr><th>Phage domain / loops</th><th>Host domain / loops</th><th>Structure</th><th>Source section</th></tr></thead>
+        <tbody>{bundle.domainInteractions.map((interaction, index) => <tr key={index} data-testid="deposited-domain-interaction">
+          <td>{interaction.phageDomain} · {interaction.phageLoops.join(', ')}</td>
+          <td>{interaction.hostDomain} · {interaction.hostLoops.join(', ')}</td>
+          <td>{interaction.pdbId}</td><td>{interaction.sourceSection}</td>
+        </tr>)}</tbody>
+      </table></div>
       <p>{bundle.alignment.rows.length} source-identified homolog sequences in the alignment.
         Both reference vectors use {bundle.embeddingSpace.dimensions} features from the same pinned ESM2 implementation.
         Vector coverage is limited to the declared structure intervals.</p>
-      <p>Available inputs do not establish binding affinity, mutation benefit or host range.</p>
+      <p><strong>Unavailable from this deposited evidence:</strong> ΔG, Kd, buried surface area/SASA, mutation ΔΔG,
+        engineered host-range effects and binding affinity. These are not filled with model guesses.</p>
+      <div><button type="button" onClick={() => {
+        void createDepositedHostInteractionRecord(bundle).then(({ record }) => {
+          const url = URL.createObjectURL(new Blob([serializeAnalysisRecord(record)], { type: 'application/json' }));
+          const link = document.createElement('a'); link.href = url; link.download = 'deposited-host-interaction-evidence.json'; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 0); setExportError(null);
+        }).catch(cause => setExportError(cause instanceof Error ? cause.message : String(cause)));
+      }}>Export deposited interaction evidence JSON</button>
+      <button type="button" onClick={() => {
+        void createDepositedHostInteractionRecord(bundle).then(({ record }) => {
+          const url = URL.createObjectURL(new Blob([exportDepositedHostInteractionTsv(record)], { type: 'text/tab-separated-values' }));
+          const link = document.createElement('a'); link.href = url; link.download = 'deposited-host-interaction-evidence.tsv'; link.click();
+          setTimeout(() => URL.revokeObjectURL(url), 0); setExportError(null);
+        }).catch(cause => setExportError(cause instanceof Error ? cause.message : String(cause)));
+      }}>Export deposited interaction TSV</button></div>
+      {exportError && <p role="alert">{exportError}</p>}
       <details>
         <summary>Reference sources, versions and licenses</summary>
         <ul>{bundle.sources.map(source => <li key={source.id}>

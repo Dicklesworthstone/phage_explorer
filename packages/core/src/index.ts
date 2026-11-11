@@ -130,6 +130,7 @@ export * from './analysis/plaque-growth';
 
 // Host-Phage Protein Interaction & Effector Docking Map
 export * from './analysis/host-interactions';
+export * from './analysis/host-interaction-evidence';
 
 // Pan-Phage Graph Pangenome & Variant Cards
 export * from './analysis/pangenome-graph';
