@@ -8,6 +8,8 @@ import type { AnalysisRecord } from '../../../core/src/analysis-result';
 export type AbundanceRequest =
   | { kind: 'import'; content: string; filename: string }
   | { kind: 'metadata'; content: string; dataset: AbundanceDataset; options: Partial<AbundanceOptions> }
+  | { kind: 'source'; dataset: AbundanceDataset; source: AbundanceDataset['source'];
+      units: AbundanceDataset['units']; normalization?: AbundanceDataset['normalization']; options: Partial<AbundanceOptions> }
   | { kind: 'analyze'; dataset: AbundanceDataset; options: Partial<AbundanceOptions> }
   | { kind: 'demo'; seed: number };
 export interface AbundanceWorkResult {
@@ -42,6 +44,15 @@ export async function executeAbundanceRequest(request: AbundanceRequest, progres
   } else if (request.kind === 'metadata') {
     dataset = importAbundanceMetadata(request.content, request.dataset);
     options = request.options;
+  } else if (request.kind === 'source') {
+    const prior = validateAbundanceDataset(request.dataset);
+    // Attribution never changes a synthetic dataset into observed data, and a
+    // unit declaration never rescales the measurements supplied by the user.
+    const { normalization: _previousNormalization, ...measurements } = prior;
+    dataset = validateAbundanceDataset({ ...measurements, version: 2, units: request.units,
+      source: { ...request.source, kind: prior.source.kind },
+      ...(request.normalization === undefined ? {} : { normalization: request.normalization }) });
+    options = prior.units === dataset.units ? request.options : {};
   } else if (request.kind === 'demo') {
     if (!Number.isInteger(request.seed) || request.seed < 0 || request.seed > 0xffffffff) throw new Error('Example seed must be a uint32.');
     dataset = validateAbundanceDataset({ format: 'phage-explorer-abundance', version: 1,

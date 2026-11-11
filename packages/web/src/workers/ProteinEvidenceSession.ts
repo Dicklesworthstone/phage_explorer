@@ -1,9 +1,12 @@
 /** Portable, source-bound protein evidence computed in disposable workers. */
 import { analysisJson, parseAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
-import { parseProteinReferenceBundle, type ProteinReferenceBundle } from '../../../core/src/protein-reference';
+import { parseProteinReferenceBundle, parseProteinAlignmentFasta, PROTEIN_ALIGNMENT_LIMITS,
+  type ProteinReferenceBundle, type ProteinAlignmentInput } from '../../../core/src/protein-reference';
 import {
   createProteinStructureExperiment, replayProteinStructureExperiment, resolveProteinStructureOptions,
   PROTEIN_STRUCTURE_LIMITS, PROTEIN_STRUCTURE_METHOD, type ProteinStructureOptions,
+  createProteinAlignmentExperiment, replayProteinAlignmentExperiment, resolveProteinAlignmentOptions,
+  PROTEIN_ALIGNMENT_METHOD, type ProteinAlignmentOptions, type ProteinAlignmentExperiment,
 } from '../../../core/src/analysis/tail-fiber-structure';
 
 export type ProteinEvidenceExperiment = Awaited<ReturnType<typeof createProteinStructureExperiment>>;
@@ -12,10 +15,14 @@ export type ProteinEvidenceOrigin =
   | { kind: 'reference-file' | 'saved-experiment'; name: string };
 export type ProteinEvidenceRequest =
   | { kind: 'analyze'; reference: ProteinReferenceBundle; options: ProteinStructureOptions }
-  | { kind: 'inspect' | 'replay'; content: string };
+  | { kind: 'inspect' | 'replay' | 'replay-alignment'; content: string }
+  | { kind: 'inspect-alignment'; content: string; name: string; source: ProteinAlignmentInput['source'] }
+  | { kind: 'analyze-alignment'; input: ProteinAlignmentInput; options: ProteinAlignmentOptions };
 export type ProteinEvidenceResult =
   | { kind: 'reference'; reference: ProteinReferenceBundle }
-  | { kind: 'experiment'; experiment: ProteinEvidenceExperiment; verified: boolean };
+  | { kind: 'experiment'; experiment: ProteinEvidenceExperiment; verified: boolean }
+  | { kind: 'alignment'; input: ProteinAlignmentInput }
+  | { kind: 'alignment-experiment'; experiment: ProteinAlignmentExperiment; verified: boolean };
 export type ProteinEvidenceMessage = ProteinEvidenceResult
   | { kind: 'progress'; phase: string } | { kind: 'error'; message: string };
 export const PROTEIN_EXPERIMENT_FILE_LIMIT = 10 * 1024 * 1024;
@@ -26,8 +33,9 @@ function checkContent(content: unknown, maximum: number): asserts content is str
   }
 }
 
-export async function readProteinEvidenceFile(file: Pick<File, 'size' | 'arrayBuffer'>, kind: 'reference' | 'experiment'): Promise<string> {
-  const maximum = kind === 'reference' ? PROTEIN_STRUCTURE_LIMITS.referenceBytes : PROTEIN_EXPERIMENT_FILE_LIMIT;
+export async function readProteinEvidenceFile(file: Pick<File, 'size' | 'arrayBuffer'>, kind: 'reference' | 'experiment' | 'alignment'): Promise<string> {
+  const maximum = kind === 'reference' ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
+    : kind === 'alignment' ? PROTEIN_ALIGNMENT_LIMITS.bytes : PROTEIN_EXPERIMENT_FILE_LIMIT;
   if (!Number.isSafeInteger(file.size) || file.size < 0 || file.size > maximum) throw new Error('Protein input exceeds the ' + maximum / 1024 + ' KiB file limit.');
   const bytes = await file.arrayBuffer();
   if (bytes.byteLength > maximum) throw new Error('Protein input exceeds the ' + maximum / 1024 + ' KiB file limit.');
@@ -52,6 +60,20 @@ export async function executeProteinEvidenceRequest(request: ProteinEvidenceRequ
     progress('Recomputing the saved reference experiment and verifying its complete result identity');
     return { kind: 'experiment', experiment: await replayProteinStructureExperiment(request.content.replace(/^\uFEFF/, '')), verified: true };
   }
+  if (request.kind === 'inspect-alignment') {
+    checkContent(request.content, PROTEIN_ALIGNMENT_LIMITS.bytes);
+    progress('Validating supplied protein alignment rows and source attribution');
+    return { kind: 'alignment', input: parseProteinAlignmentFasta(request.content, request.name, request.source) };
+  }
+  if (request.kind === 'analyze-alignment') {
+    progress('Computing observed protein alignment diversity and missing-data coverage');
+    return { kind: 'alignment-experiment', experiment: await createProteinAlignmentExperiment(request.input, request.options), verified: false };
+  }
+  if (request.kind === 'replay-alignment') {
+    checkContent(request.content, PROTEIN_EXPERIMENT_FILE_LIMIT);
+    progress('Recomputing saved protein alignment diversity from its exact supplied rows');
+    return { kind: 'alignment-experiment', experiment: await replayProteinAlignmentExperiment(request.content.replace(/^\uFEFF/, '')), verified: true };
+  }
   throw new Error('Unsupported protein evidence operation.');
 }
 
@@ -66,6 +88,8 @@ interface ProteinEvidenceSnapshot {
   scope: object | null;
   reference: ProteinReferenceBundle | null;
   accepted: ProteinEvidenceExperiment | null;
+  alignment: ProteinAlignmentInput | null;
+  alignmentAccepted: ProteinAlignmentExperiment | null;
   origin: ProteinEvidenceOrigin | null;
   verified: boolean;
   busy: boolean;
@@ -90,7 +114,7 @@ export class ProteinEvidenceSession {
   private scope: object | null = null;
   private operation: AbortController | null = null;
   private readonly listeners = new Set<() => void>();
-  private snapshot: ProteinEvidenceSnapshot = { scope: null, reference: null, accepted: null, origin: null,
+  private snapshot: ProteinEvidenceSnapshot = { scope: null, reference: null, accepted: null, alignment: null, alignmentAccepted: null, origin: null,
     verified: false, busy: false, phase: '', error: null };
   constructor(private readonly factory: () => ProteinEvidenceWorker) {}
   getSnapshot = (): ProteinEvidenceSnapshot => this.snapshot;
@@ -104,7 +128,7 @@ export class ProteinEvidenceSession {
   setScope = (scope: object): void => {
     if (scope === this.scope) return;
     this.scope = scope; this.cancel();
-    this.publish({ scope, reference: null, accepted: null, origin: null, verified: false, error: null, phase: '' });
+    this.publish({ scope, reference: null, accepted: null, alignment: null, alignmentAccepted: null, origin: null, verified: false, error: null, phase: '' });
   };
   cancel = (): void => {
     const old = this.operation; this.operation = null; old?.abort();
@@ -119,20 +143,27 @@ export class ProteinEvidenceSession {
     try {
       const captured = typeof input === 'function' ? input : structuredClone(input);
       const capturedOrigin = structuredClone(origin);
-      this.publish({ accepted: null, reference: null, origin: null, verified: false, busy: true, error: null, phase: 'Reading exact protein inputs' });
+      this.publish({ accepted: null, reference: null, alignment: null, alignmentAccepted: null, origin: null, verified: false, busy: true, error: null, phase: 'Reading exact protein inputs' });
       if (!current()) return false;
       const request = await abortable(typeof captured === 'function'
         ? captured(owner.signal).then(value => structuredClone(value)) : Promise.resolve(captured), owner.signal);
       if (!current()) return false;
       // Bind replies to submitted inputs/settings; the worker performs every numerical calculation.
       let expectedReference: unknown = null;
+      let expectedAlignment: ProteinAlignmentInput | null = null;
       if (request.kind === 'analyze') expectedReference = request.reference;
       else if (request.kind === 'inspect') {
         checkContent(request.content, PROTEIN_STRUCTURE_LIMITS.referenceBytes);
         expectedReference = JSON.parse(request.content.replace(/^\uFEFF/, ''));
+      } else if (request.kind === 'analyze-alignment') expectedAlignment = request.input;
+      else if (request.kind === 'inspect-alignment') {
+        checkContent(request.content, PROTEIN_ALIGNMENT_LIMITS.bytes);
+        expectedAlignment = parseProteinAlignmentFasta(request.content, request.name, request.source);
       } else checkContent(request.content, PROTEIN_EXPERIMENT_FILE_LIMIT);
+      if (request.kind.endsWith('-alignment') && capturedOrigin.kind === 'current-cds') throw new Error('A standalone protein alignment cannot assert a verified genomic CDS.');
       const expectedOptions = request.kind === 'analyze' ? resolveProteinStructureOptions(request.reference, request.options) : null;
-      const saved: AnalysisRecord | null = request.kind === 'replay'
+      const expectedAlignmentOptions = request.kind === 'analyze-alignment' ? resolveProteinAlignmentOptions(request.input, request.options) : null;
+      const saved: AnalysisRecord | null = request.kind === 'replay' || request.kind === 'replay-alignment'
         ? await abortable(parseAnalysisRecord(request.content.replace(/^\uFEFF/, '')), owner.signal) : null;
       if (!current()) return false;
       const response = await new Promise<ProteinEvidenceResult>((resolve, reject) => {
@@ -153,7 +184,32 @@ export class ProteinEvidenceSession {
             if (message?.kind === 'progress' && typeof message.phase === 'string') { this.publish({ phase: message.phase }); return; }
             if (message?.kind === 'error' && typeof message.message === 'string') { finish(undefined, new Error(message.message)); return; }
             if (message?.kind === 'reference' && request.kind === 'inspect' && same(message.reference, expectedReference)) { finish(message); return; }
-            if (message?.kind !== 'experiment' || request.kind === 'inspect' || message.verified !== (request.kind === 'replay')
+            if (message?.kind === 'alignment' && request.kind === 'inspect-alignment' && same(message.input, expectedAlignment)) { finish(message); return; }
+            if (message?.kind === 'alignment-experiment') {
+              if ((request.kind !== 'analyze-alignment' && request.kind !== 'replay-alignment') || message.verified !== (request.kind === 'replay-alignment') ||
+                message.experiment?.record?.method?.id !== PROTEIN_ALIGNMENT_METHOD.id) {
+                finish(undefined, new Error('Unexpected protein alignment worker response.')); return;
+              }
+              validating = true;
+              void parseAnalysisRecord(JSON.stringify(message.experiment.record), { methodId: PROTEIN_ALIGNMENT_METHOD.id, methodVersion: PROTEIN_ALIGNMENT_METHOD.version })
+                .then(record => {
+                  if (done || !current()) return;
+                  const experiment = message.experiment;
+                  const selectedProtein = experiment.input.rows.find(row => row.id === experiment.options.proteinId);
+                  if (!same(record.method, PROTEIN_ALIGNMENT_METHOD) || record.seed !== null || record.inputs.length !== 1 || record.inputs[0].id !== 'alignment' ||
+                    record.inputs[0].accession !== null || record.inputs[0].source !== experiment.input.source.kind || !selectedProtein ||
+                    experiment.result.protein.id !== selectedProtein.id || experiment.result.protein.sequence !== selectedProtein.alignedSequence.replace(/-/g, '') ||
+                    !same(record.inputs[0].data, experiment.input) || !same(record.parameters, experiment.options) ||
+                    !same(record.fields.diversity?.value, experiment.result) || record.fields.geometry?.kind !== 'unavailable' ||
+                    (expectedAlignment !== null && (!same(expectedAlignment, experiment.input) || !same(expectedAlignmentOptions, experiment.options))) ||
+                    (saved !== null && saved.resultId !== record.resultId)) {
+                    throw new Error('Protein alignment reply differs from its submitted source, target or saved identity.');
+                  }
+                  finish(message);
+                }).catch(cause => finish(undefined, cause instanceof Error ? cause : new Error(String(cause))));
+              return;
+            }
+            if (message?.kind !== 'experiment' || (request.kind !== 'analyze' && request.kind !== 'replay') || message.verified !== (request.kind === 'replay')
               || message.experiment?.record?.method?.id !== PROTEIN_STRUCTURE_METHOD.id) {
               finish(undefined, new Error('Unexpected protein evidence worker response.')); return;
             }
@@ -183,6 +239,11 @@ export class ProteinEvidenceSession {
       if (!current()) return false;
       if (response.kind === 'reference') this.publish({ reference: response.reference, origin: capturedOrigin,
         phase: 'Reference loaded. Choose a protein and mapped chain, then analyze.' });
+      else if (response.kind === 'alignment') this.publish({ alignment: response.input, origin: capturedOrigin,
+        phase: 'Alignment loaded. Choose a target protein record, then analyze.' });
+      else if (response.kind === 'alignment-experiment') this.publish({ alignment: response.experiment.input, alignmentAccepted: response.experiment,
+        origin: capturedOrigin, verified: response.verified,
+        phase: response.verified ? 'Replay verified: fresh diversity and the saved complete result identity agree.' : 'Alignment analysis complete. Inspect observed counts and missing coverage.' });
       else this.publish({ reference: response.experiment.reference, accepted: response.experiment, origin: capturedOrigin, verified: response.verified,
         phase: response.verified ? 'Replay verified: fresh calculations and the saved complete result identity agree.' : 'Analysis complete. Inspect the observed coverage and missing residues.' });
       return true;

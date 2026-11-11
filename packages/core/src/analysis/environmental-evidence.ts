@@ -321,16 +321,19 @@ export function environmentalDatasetFromAbundance(input: AbundanceDataset, taxon
     return { id, accession: supplied?.accession === undefined ? null : text(supplied.accession, 'Metadata sample accession'), biome,
       country: supplied?.country === undefined ? null : text(supplied.country, 'Metadata country'), location,
       collectionDate: supplied?.collectionDate === undefined ? null : collectionDate(supplied.collectionDate),
-      occurrence: abundance > 0 ? 'detected' : 'not-detected', abundance };
+      occurrence: abundance === null ? 'not-assayed' : abundance > 0 ? 'detected' : 'not-detected', abundance };
   });
   return validateEnvironmentalDataset({ format: 'phage-explorer-environmental', version: 1,
     name: dataset.name,
     query: { id: taxon, label: taxon, accession: null },
-    source: { kind: dataset.source.kind, study: `${dataset.name}: ${dataset.source.description}`, reference: dataset.source.reference,
-      version: 'phage-explorer-abundance/v1', license: null },
+    source: { kind: dataset.source.kind, study: dataset.source.study ?? `${dataset.name}: ${dataset.source.description}`, reference: dataset.source.reference,
+      version: dataset.source.version ?? `phage-explorer-abundance/v${dataset.version}`, license: dataset.source.license ?? null },
     measurement: { type: dataset.units, method: 'Explicit selected row of the supplied abundance table; no sequence or taxonomic matching.',
-      normalization: dataset.units === 'counts' ? 'Original supplied counts; no rescaling. Count denominator and collection effort are not established by the table format.'
-        : 'Original supplied relative abundances; each nonempty input column sums to one. No rescaling or absolute-abundance inference.' }, samples });
+      normalization: dataset.normalization
+        ? `Declared ${dataset.normalization.kind}: ${dataset.normalization.description} Original supplied observations; no rescaling or imputation. This source declaration is not independently verified.`
+        : dataset.units === 'counts' ? 'Original supplied counts; no rescaling. Count denominator and collection effort are not established by the table format.'
+          : dataset.version === 2 ? 'Original supplied relative abundances; complete nonempty columns sum to one. Incomplete columns retain their reported fractions and missing observations. No rescaling or absolute-abundance inference.'
+            : 'Original supplied relative abundances; each nonempty input column sums to one. No rescaling or absolute-abundance inference.' }, samples });
 }
 
 /** Transparent format example. Its identities and observations never depend on the selected phage. */

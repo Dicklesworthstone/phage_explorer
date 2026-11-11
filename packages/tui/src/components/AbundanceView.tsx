@@ -4,7 +4,7 @@ import { Box, Text, render, useInput, useApp, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { TerminalSizeGate, useOverlayWidth, readTerminalSize, MIN_COLUMNS, MIN_ROWS } from './terminal-size';
 import { AbundanceWorkspace, abundanceTerminalLabel } from '../commands/abundance';
-import type { AbundanceAnalysis, AbundanceAssociation } from '../../../core/src/analysis/abundance';
+import { describeAbundanceMissingness, type AbundanceAnalysis, type AbundanceAssociation } from '../../../core/src/analysis/abundance';
 
 type Prompt = 'open' | 'metadata' | 'parameters' | 'export dataset' | 'export analysis';
 const PROMPT_KEYS = new Map<string, Prompt>([['o', 'open'], ['m', 'metadata'], ['p', 'parameters'], ['e', 'export analysis'], ['d', 'export dataset']]);
@@ -20,7 +20,7 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
   const [input, setInput] = useState('');
   const [page, setPage] = useState(0);
   const [taxon, setTaxon] = useState(0);
-  const [tab, setTab] = useState<'pairs' | 'profiles'>('pairs');
+  const [tab, setTab] = useState<'pairs' | 'profiles' | 'coverage'>('pairs');
   const { exit } = useApp(), { stdout } = useStdout();
   const width = useOverlayWidth(110);
   const pageSize = Math.max(2, Math.min(12, (readTerminalSize(stdout).rows ?? 24) - 17));
@@ -29,7 +29,22 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
   const factors = record?.fields.factors.value as unknown as { profiles: AbundanceAnalysis['profiles']; nmf: AbundanceAnalysis['nmfResult'] } | undefined;
   const coverage = record?.fields.coverage.value as unknown as { taxa: string[]; samples: string[]; diagnostics: AbundanceAnalysis['diagnostics'] } | undefined;
   const profile = factors?.profiles[taxon];
-  const pageCount = Math.max(1, Math.ceil(pairs.length / pageSize));
+  const observations = accepted ? describeAbundanceMissingness(accepted.dataset) : null;
+  const sourceLines = accepted && observations ? [
+    'Study: ' + (accepted.dataset.source.study ?? 'not supplied'),
+    'Source: ' + accepted.dataset.source.description,
+    'Reference: ' + (accepted.dataset.source.reference ?? 'not supplied'),
+    'Version: ' + (accepted.dataset.source.version ?? 'not supplied'),
+    'License: ' + (accepted.dataset.source.license ?? 'not supplied'),
+    'Normalization: ' + (accepted.dataset.normalization?.description ?? 'not declared'),
+    'Policy: use complete samples; missing cells are never imputed.',
+    observations.observedCells + ' observed cells; ' + observations.missingCells + ' missing cells.',
+    ...observations.incompleteSamples.map(id => 'Incomplete sample excluded: ' + id),
+    ...observations.allMissingTaxa.map(id => 'Entirely unobserved taxon: ' + id),
+    ...observations.observedZeroTaxa.map(id => 'Taxon with only observed zeros: ' + id),
+    ...observations.excludedCompleteSamples.map(id => 'Complete but empty sample excluded: ' + id),
+  ] : [];
+  const pageCount = Math.max(1, Math.ceil((tab === 'coverage' ? sourceLines.length : pairs.length) / pageSize));
   const currentPage = Math.min(page, pageCount - 1);
   const safe = abundanceTerminalLabel;
 
@@ -39,6 +54,7 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
     return workspace.deactivate;
   }, [workspace, initialPath]);
   useEffect(() => { setPage(0); setTaxon(0); }, [accepted]);
+  useEffect(() => { setPage(0); }, [tab]);
   useInput((key, info) => {
     if (publishing) return; // Do not truncate an already-authorized export.
     if (info.escape || info.ctrl && key === 'c') {
@@ -57,6 +73,7 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
     if (nextPrompt) { setInput(''); setPrompt(nextPrompt); return; }
     if (key === '1') setTab('pairs');
     if (key === '2') setTab('profiles');
+    if (key === '3') setTab('coverage');
     if (info.rightArrow || key === 'l') setPage(Math.min(currentPage + 1, pageCount - 1));
     if (info.leftArrow || key === 'h') setPage(Math.max(0, currentPage - 1));
     if (info.downArrow || key === 'j') setTaxon(Math.min(taxon + 1, (factors?.profiles.length ?? 1) - 1));
@@ -88,20 +105,25 @@ export function AbundanceView({ workspace, initialPath }: { workspace: Abundance
       <Text>[o] Open/verify  [m] Metadata  [p] Parameters  [Enter/a] Analyze</Text>
       <Text>[e] Export result  [d] Export dataset  [c] Cancel  [q] Quit</Text>
     </>}
-    <Text>[1] Pair statistics (all tests)  [2] Taxon factors/habitats</Text>
+    <Text>[1] Pair statistics  [2] Taxon factors/habitats  [3] Source/coverage</Text>
     {tab === 'pairs' ? <>
       <Text>Pairs {pairs.length ? currentPage + 1 : 0}/{pairs.length ? pageCount : 0} · ←/→ or h/l</Text>
       {pairs.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map((pair, i) => <Text key={i} wrap="truncate-end">
         {safe(pair.source)} / {safe(pair.target)} · r={pair.correlation.toPrecision(4)} p={pair.pvalue.toPrecision(4)} BH={pair.qvalue.toPrecision(4)}
       </Text>)}
       {!pairs.length && <Text>No tested nonconstant pairs. Load data and run an analysis.</Text>}
-    </> : <>
+    </> : tab === 'profiles' ? <>
       <Text wrap="truncate-end">Taxon {profile ? taxon + 1 : 0}/{factors?.profiles.length ?? 0} · ↑/↓ or j/k · {profile ? safe(profile.taxon) : 'No analysis'}</Text>
       <Text wrap="truncate-end">{profile ? profile.factorWeights.map((x, i) => `F${i + 1}=${(x * 100).toFixed(2)}%`).join(' ') : 'No factor memberships available.'}</Text>
       <Text wrap="truncate-end">Descriptive memberships, not probabilities. Residual: {factors?.nmf.error.toPrecision(6) ?? '—'}</Text>
       {profile?.habitats.slice(0, pageSize).map(h => <Text key={h.habitat} wrap="truncate-end">{safe(h.habitat)} · n={h.samples} · mean={(100 * h.meanRelativeAbundance).toFixed(4)}%</Text>)}
       {!!profile && profile.habitats.length === 0 && <Text>No matching habitat metadata.</Text>}
       {!!profile && profile.habitats.length > pageSize && <Text>More habitat groups are available in the complete exported record.</Text>}
+    </> : <>
+      <Text>Source/coverage {currentPage + 1}/{pageCount} · ←/→ or h/l</Text>
+      {sourceLines.slice(currentPage * pageSize, (currentPage + 1) * pageSize).map((line, i) =>
+        <Text key={i} wrap="truncate-end">{safe(line)}</Text>)}
+      {!accepted && <Text>Load a dataset to inspect its source and observation coverage.</Text>}
     </>}
     {coverage && <Text wrap="truncate-end">Retained {coverage.taxa.length} taxa/{coverage.samples.length} samples; {coverage.diagnostics.permutationMode} test; {coverage.diagnostics.constantTaxa.length} constant trajectories excluded.</Text>}
   </Box>;

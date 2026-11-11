@@ -228,10 +228,52 @@ describe('explicit abundance-to-environment integration', () => {
     }
   });
 
-  it('does not silently make missing abundance observations into zeros', () => {
-    const input = abundanceFixture() as unknown as { table: { counts: unknown[][] } };
+  it('continues to refuse null cells in the historical version-1 abundance format', () => {
+    const input = abundanceFixture();
     input.table.counts[0][0] = null;
-    expect(() => environmentalDatasetFromAbundance(input as unknown as AbundanceDataset, 'q')).toThrow(/missing values are not zeros/);
+    expect(() => environmentalDatasetFromAbundance(input, 'q')).toThrow(/missing values are not zeros/);
+  });
+
+  it('maps missing selected-taxon observations to not-assayed, preserves observed zeros and uses the correct denominators', async () => {
+    const input = abundanceFixture(); input.version = 2;
+    input.table.counts[0][1] = null;
+    input.table.counts[1][2] = null; // Other taxon missingness must not erase this taxon's observed abundance.
+    input.source = { ...input.source, study: 'Source community study', version: 'cohort-2026.11', license: 'CC-BY-4.0' };
+    input.normalization = { kind: 'none', description: 'Reported counts from equal-volume aliquots' };
+    const dataset = environmentalDatasetFromAbundance(input, 'q');
+    expect(dataset.samples.map(s => [s.id, s.abundance, s.occurrence])).toEqual([
+      ['s1', 2, 'detected'], ['s2', null, 'not-assayed'], ['s3', 5, 'detected'], ['s4', 0, 'not-detected'],
+    ]);
+    expect(dataset.source).toEqual({ kind: 'local', study: 'Source community study', reference: 'local-study:1', version: 'cohort-2026.11', license: 'CC-BY-4.0' });
+    expect(dataset.measurement.normalization).toContain('Reported counts from equal-volume aliquots');
+    expect(dataset.measurement.normalization).toContain('no rescaling or imputation');
+    const analysis = analyzeEnvironmentalDataset(dataset);
+    expect(analysis.totals).toEqual({ samples: 4, assayed: 3, detected: 2, notDetected: 1, notAssayed: 1, located: 1, dated: 2 });
+    expect(analysis.biomes.find(b => b.biome === 'unknown')).toMatchObject({ samples: 2, assayed: 1, notAssayed: 1, abundanceSamples: 1, meanAbundance: 0, detectionFraction: 0 });
+    const record = await createEnvironmentalAnalysisRecord(dataset, analysis);
+    expect(await replayEnvironmentalAnalysisRecord(serializeAnalysisRecord(record))).toEqual({ dataset, analysis, record });
+    const rows = environmentalEvidenceTsv(dataset, analysis).split('\n').filter(line => line && !line.startsWith('#')).map(line => line.split('\t'));
+    expect(rows[2][8]).toBe('not-assayed'); expect(rows[2][9]).toBe('');
+    expect(rows[4][8]).toBe('not-detected'); expect(rows[4][9]).toBe('0');
+  });
+
+  it('keeps incomplete relative-abundance fractions and explicit source declarations without rescaling', () => {
+    const input = abundanceFixture(); input.version = 2; input.units = 'relative-abundance';
+    input.table.counts = [[.2, null, .3, 0], [.8, .7, null, 0]];
+    const dataset = environmentalDatasetFromAbundance(input, 'q');
+    expect(dataset.samples.map(s => s.abundance)).toEqual([.2, null, .3, 0]);
+    expect(dataset.source.version).toBe('phage-explorer-abundance/v2');
+    expect(dataset.source.license).toBeNull();
+    expect(dataset.measurement.normalization).toContain('Incomplete columns retain their reported fractions');
+    input.normalization = { kind: 'sample-total', description: 'Fractions of original whole-sample totals before missingness' };
+    expect(environmentalDatasetFromAbundance(input, 'q').measurement.normalization).toContain('Fractions of original whole-sample totals before missingness');
+  });
+
+  it('does not turn an entirely unassayed selected taxon into biological absence', () => {
+    const input = abundanceFixture(); input.version = 2; input.table.counts[0] = [null, null, null, null];
+    const dataset = environmentalDatasetFromAbundance(input, 'q'), result = analyzeEnvironmentalDataset(dataset);
+    expect(result.totals.assayed).toBe(0); expect(result.totals.notDetected).toBe(0); expect(result.totals.notAssayed).toBe(4);
+    expect(result.biomes.every(b => b.detectionFraction === null && b.meanAbundance === null)).toBe(true);
   });
 });
 

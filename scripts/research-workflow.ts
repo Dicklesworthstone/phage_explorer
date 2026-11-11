@@ -712,7 +712,8 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
     try { abort(signal); worker.postMessage(submitted); } catch (cause) { finish(undefined, cause); }
   });
 }
-async function readInput(path: string, signal: AbortSignal, limit = COMMAND_LIMITS.bytes): Promise<string> {
+/** Shared by headless commands and the interactive terminal research workspace. */
+export async function readInput(path: string, signal: AbortSignal, limit = COMMAND_LIMITS.bytes): Promise<string> {
   abort(signal);
   const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
   try {
@@ -730,7 +731,8 @@ async function readInput(path: string, signal: AbortSignal, limit = COMMAND_LIMI
     abort(signal); return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, offset));
   } finally { await file.close(); }
 }
-async function writeNewOutput(path: string, content: string, signal: AbortSignal): Promise<void> {
+/** Exclusive creation preserves existing files, including symlink destinations. */
+export async function writeNewOutput(path: string, content: string, signal: AbortSignal): Promise<void> {
   abort(signal);
   const file = await open(path, 'wx', 0o600);
   try { abort(signal); await file.writeFile(content, 'utf8'); await file.sync(); }

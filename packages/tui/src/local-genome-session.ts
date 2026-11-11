@@ -2,6 +2,8 @@
 import { Worker } from 'node:worker_threads';
 import { open } from 'node:fs/promises';
 import { stripVTControlCharacters } from 'node:util';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { exportLocalGenomeBundle, GENOME_IMPORT_LIMITS, type GenomeImportResult, type LocalGenome, type LocalGenomeView } from '../../core/src/genome-import';
 import type { PhageFull, PhageSummary } from '../../core/src/types';
 import { createLocalGenomeRepository, mergeLocalGenomes } from '../../db-runtime/src/local-genomes';
@@ -11,6 +13,11 @@ declare const PHAGE_LOCAL_GENOME_WORKER: string | undefined;
 
 export const terminalGenomeLabel = (value: string): string =>
   stripVTControlCharacters(value).replace(/[\u0000-\u001f\u007f-\u009f]/g, '�');
+/** Literal filesystem paths only; neither shell commands nor environment variables are evaluated. */
+export function terminalGenomePath(value: string): string {
+  if (!value || /[\u0000-\u001f\u007f-\u009f]/.test(value)) throw new Error('Enter a local path without control characters.');
+  return resolve(value === '~' ? homedir() : value.startsWith('~/') ? homedir() + '/' + value.slice(2) : value);
+}
 function displayGenome(genome: LocalGenome): LocalGenome {
   const copy = structuredClone(genome);
   // Display copies only: original source, annotations and export identity stay untouched.
@@ -28,10 +35,16 @@ function check(signal: AbortSignal): void {
 }
 /** Each call owns its worker; cancellation cannot terminate another import. */
 export function loadTerminalGenomeFile(path: string, signal: AbortSignal): Promise<GenomeImportResult> {
+  return loadTerminalGenomeInput({ path }, signal);
+}
+export function loadTerminalGenomeBundle(content: string, signal: AbortSignal): Promise<GenomeImportResult> {
+  return loadTerminalGenomeInput({ content }, signal);
+}
+function loadTerminalGenomeInput(input: { path: string } | { content: string }, signal: AbortSignal): Promise<GenomeImportResult> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new DOMException('Local genome operation cancelled.', 'AbortError')); return; }
     let worker: Worker;
-    try { worker = new Worker(new URL(typeof PHAGE_LOCAL_GENOME_WORKER === 'string' ? PHAGE_LOCAL_GENOME_WORKER : './local-genome-import.worker.ts', import.meta.url), { workerData: { path } }); }
+    try { worker = new Worker(new URL(typeof PHAGE_LOCAL_GENOME_WORKER === 'string' ? PHAGE_LOCAL_GENOME_WORKER : './local-genome-import.worker.ts', import.meta.url), { workerData: input }); }
     catch (cause) { reject(cause); return; }
     let settled = false;
     const finish = (result?: GenomeImportResult, cause?: unknown) => {
@@ -60,6 +73,8 @@ export interface TerminalGenomeAccepted {
   phages: PhageSummary[];
   selected: PhageFull;
   view: LocalGenomeView;
+  /** Present when restoring an explicitly selected workflow feature. */
+  selectedGeneId?: number | null;
 }
 export interface TerminalGenomeSnapshot {
   repository: PhageRepository;
@@ -67,6 +82,7 @@ export interface TerminalGenomeSnapshot {
   localBases: number;
   busy: 'reading' | 'adding' | 'saving' | null;
   review: GenomeImportResult | null;
+  reviewGeneId: number | null;
   error: string | null;
   notice: string | null;
 }
@@ -81,7 +97,7 @@ export class TerminalGenomeSession {
     this.genomes = structuredClone([...initial]);
     this.state = { repository: this.repository(this.genomes), localCount: initial.length,
       localBases: initial.reduce((sum, genome) => sum + genome.sequence.length, 0),
-      busy: null, review: null, error: null, notice: null };
+      busy: null, review: null, reviewGeneId: null, error: null, notice: null };
   }
   private repository(genomes: readonly LocalGenome[]): PhageRepository {
     return createLocalGenomeRepository(this.base, genomes.map(displayGenome));
@@ -109,16 +125,48 @@ export class TerminalGenomeSession {
     operation?.abort();
     this.publish({ busy: null, ...(operation ? { notice: 'Cancelled; the accepted genomes and view are unchanged.' } : {}) });
   };
-  discardReview = (): void => { this.cancel(); this.publish({ review: null, error: null }); };
+  discardReview = (): void => { this.cancel(); this.publish({ review: null, reviewGeneId: null, error: null }); };
   prepare = async (path: string): Promise<void> => {
     const controller = this.begin('reading');
     // Never leave an old review under the name of a new, failed source.
-    this.publish({ review: null });
+    this.publish({ review: null, reviewGeneId: null });
     try {
       const result = await this.load(path, controller.signal);
       if (this.current(controller)) this.publish({ review: structuredClone(result), notice: 'Parsed for review only. Nothing has been added.' });
     } catch (cause) {
       if (this.current(controller)) this.publish({ error: terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause)) });
+    } finally {
+      if (this.current(controller)) { this.operation = null; this.publish({ busy: null }); }
+    }
+  };
+  /** Reparse original embedded sources off-thread, then stage the replayed view
+   * for the SAME explicit collision review used by filesystem imports.
+   */
+  prepareBundle = async (content: string, view?: LocalGenomeView & { geneId: number | null }): Promise<boolean> => {
+    const controller = this.begin('reading');
+    this.publish({ review: null, reviewGeneId: null });
+    try {
+      const result = await loadTerminalGenomeBundle(content, controller.signal);
+      check(controller.signal);
+      let geneId: number | null = null;
+      if (view) {
+        const selected = result.genomes.find(genome => genome.phage.localGenome?.contentId === view.contentId);
+        const positions = selected ? view.viewMode === 'aa' ? Math.ceil(selected.sequence.length / 3) : selected.sequence.length : 0;
+        if (!selected || !['dna', 'aa', 'dual'].includes(view.viewMode) || ![0, 1, 2, -1, -2, -3].includes(view.readingFrame)
+          || !Number.isSafeInteger(view.scrollPosition) || view.scrollPosition < 0 || view.scrollPosition >= positions
+          || view.geneId !== null && (!Number.isSafeInteger(view.geneId) || !selected.phage.genes.some(gene => gene.id === view.geneId))) {
+          throw new Error('The replayed view or selected feature is unavailable in its exact input bundle.');
+        }
+        result.view = { contentId: view.contentId, viewMode: view.viewMode, readingFrame: view.readingFrame, scrollPosition: view.scrollPosition };
+        geneId = view.geneId;
+      }
+      if (!this.current(controller)) return false;
+      this.publish({ review: result, reviewGeneId: geneId,
+        notice: 'Workflow sources and final view parsed for review only. Nothing has been added.' });
+      return true;
+    } catch (cause) {
+      if (this.current(controller)) this.publish({ error: terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause)) });
+      return false;
     } finally {
       if (this.current(controller)) { this.operation = null; this.publish({ busy: null }); }
     }
@@ -141,10 +189,14 @@ export class TerminalGenomeSession {
       const repository = this.repository(next);
       const phages = [...catalog, ...next.map(genome => displayGenome(genome).phage)];
       if (!this.current(controller)) return false;
-      install({ repository, phages, selected: displayGenome(selected).phage, view });
+      const selectedGeneId = this.state.reviewGeneId;
+      if (selectedGeneId !== null && !selected.phage.genes.some(gene => gene.id === selectedGeneId)) {
+        throw new Error('The selected workflow feature is not in the accepted genome.');
+      }
+      install({ repository, phages, selected: displayGenome(selected).phage, view, selectedGeneId });
       this.genomes = next;
       this.publish({ repository, localCount: next.length, localBases: next.reduce((sum, genome) => sum + genome.sequence.length, 0),
-        review: null, notice: 'Local records accepted. The curated catalog was not modified.' });
+        review: null, reviewGeneId: null, notice: 'Local records accepted. The curated catalog was not modified.' });
       return true;
     } catch (cause) {
       if (this.current(controller)) this.publish({ error: terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause)) });

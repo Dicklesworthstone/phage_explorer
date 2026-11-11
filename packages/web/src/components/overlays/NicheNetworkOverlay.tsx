@@ -1,6 +1,7 @@
 /** Local abundance workspace. Analysis is explicit, worker-backed and never falls back to synthetic input. */
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import { serializeAbundanceDataset, serializeAnalysisRecord, type AbundanceOptions, type AbundanceAnalysis } from '@phage-explorer/core';
+import { describeAbundanceMissingness, serializeAbundanceDataset, serializeAnalysisRecord,
+  type AbundanceDataset, type AbundanceOptions, type AbundanceAnalysis } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
 import { ActionIds } from '../../keyboard';
@@ -25,6 +26,20 @@ const toDraft = (options: AbundanceOptions): Draft => ({ ...Object.fromEntries(C
   includeNegative: options.includeNegative }) as Draft;
 const fromDraft = (draft: Draft): AbundanceOptions => ({ ...Object.fromEntries(CONTROLS.map(({ id }) =>
   [id, draft[id].trim() === '' ? NaN : Number(draft[id])])), includeNegative: draft.includeNegative }) as AbundanceOptions;
+
+interface SourceDraft {
+  description: string; reference: string; study: string; version: string; license: string;
+  units: AbundanceDataset['units']; normalization: string;
+}
+const SOURCE_FIELDS = [
+  ['description', 'Source description'], ['reference', 'Source reference or DOI'], ['study', 'Study identifier'],
+  ['version', 'Source dataset version'], ['license', 'Source license'], ['normalization', 'Normalization description'],
+] as const;
+const toSourceDraft = (dataset: AbundanceDataset): SourceDraft => ({
+  description: dataset.source.description, reference: dataset.source.reference ?? '', study: dataset.source.study ?? '',
+  version: dataset.source.version ?? '', license: dataset.source.license ?? '', units: dataset.units,
+  normalization: dataset.normalization?.description ?? '',
+});
 
 function AssociationNetwork({ analysis }: { analysis: AbundanceAnalysis }): React.ReactElement {
   const { theme } = useTheme();
@@ -60,6 +75,7 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   const session = useMemo(() => new AbundanceSession(() => new Worker(new URL('../../workers/abundance.worker.ts', import.meta.url), { type: 'module' })), []);
   const { accepted, loading, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [sourceDraft, setSourceDraft] = useState<SourceDraft | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [taxon, setTaxon] = useState('');
   const [page, setPage] = useState(0);
@@ -67,7 +83,7 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   useHotkey(ActionIds.OverlayNicheNetwork, () => toggle('nicheNetwork'), { modes: ['NORMAL'] });
   useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open, session]);
   useEffect(() => {
-    if (accepted) setDraft(toDraft(accepted.options));
+    if (accepted) { setDraft(toDraft(accepted.options)); setSourceDraft(toSourceDraft(accepted.dataset)); }
     setFileError(null); setPage(0); setTaxon(accepted?.analysis?.taxa[0] ?? '');
   }, [accepted]);
   useEffect(() => { setPage(0); }, [showAllPairs]);
@@ -80,10 +96,12 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   const pageCount = Math.max(1, Math.ceil(pairs.length / 100));
   const currentPage = Math.min(page, pageCount - 1);
   const profile = analysis?.profiles.find(item => item.taxon === taxon);
+  const missingness = accepted ? describeAbundanceMissingness(accepted.dataset) : null;
   const fieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '.3rem' };
   const inputStyle: React.CSSProperties = { padding: '.5rem', minHeight: 44, width: '100%', color: colors.text,
     background: colors.background, border: `1px solid ${colors.borderLight}`, borderRadius: 4 };
   const draftChanged = draft && accepted && (CONTROLS.some(({ id }) => Number(draft[id]) !== accepted.options[id]) || draft.includeNegative !== accepted.options.includeNegative);
+  const sourceChanged = sourceDraft && accepted && JSON.stringify(sourceDraft) !== JSON.stringify(toSourceDraft(accepted.dataset));
   const loadFile = (file: File | undefined, metadata: boolean) => {
     if (!file) return;
     setFileError(null);
@@ -133,19 +151,70 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
       <details>
         <summary>Input layout, metadata and supported scope</summary>
         <p>CSV/TSV header: <code>taxon,S1,S2,S3</code>. Subsequent rows: taxon identifier followed by finite nonnegative counts.
-          Quoted fields and Unicode identifiers are supported. Blank/NA measurements are not silently treated as zeros.</p>
+          Quoted fields and Unicode identifiers are supported. Blank or NA cells are missing measurements; use 0 for an observed zero.</p>
         <p>Load separate metadata with <code>sampleId,habitat,host,location</code> headers, or a JSON array of sampleId objects.
           Metadata joins by sample ID, not row order. Missing optional fields may be left blank.</p>
-        <p>Dataset JSON preserves name, source description/reference, metadata and explicit units. Export a dataset to inspect the schema.
-          Units are counts or relative-abundance (each nonempty sample sums to one); CSV/TSV defaults to counts.</p>
+        <p>Dataset JSON preserves source, study, version, license, normalization, sample metadata and missing cells.
+          Units are counts or relative-abundance; CSV/TSV defaults to counts. Complete relative-abundance samples must sum to one (or zero for an empty sample).
+          Incomplete samples retain the observed fractions without rescaling.</p>
+        <p>CLR associations and NMF use only samples observed for every submitted taxon. Incomplete samples are excluded as whole columns;
+          no missing measurement is imputed. Empty taxa and samples are then excluded before applying pseudocounts.</p>
         <p>Limits: 100 taxa, 500 samples, 4 MiB per dataset, 10 MiB per saved analysis, and a bounded pairwise computation budget.
-          At least two nonempty taxa and three nonempty samples are needed. No reference index is bundled or queried.</p>
+          At least two nonempty taxa and three complete, nonempty samples are needed. No reference index is bundled or queried.</p>
       </details>
       {accepted && <>
         <h3 data-testid="abundance-dataset-name">{accepted.dataset.name}</h3>
         <p>{accepted.dataset.source.description}{accepted.dataset.source.reference ? ` · ${accepted.dataset.source.reference}` : ' · No external reference supplied.'}</p>
         <p>{accepted.dataset.table.taxa.length} taxa × {accepted.dataset.table.samples.length} samples; units: {accepted.dataset.units}.
           {` ${accepted.dataset.metadata.length} sample metadata records.`}</p>
+        <p data-testid="abundance-attribution">Study: {accepted.dataset.source.study || 'not supplied'} ·
+          Version: {accepted.dataset.source.version || 'not supplied'} · License: {accepted.dataset.source.license || 'not supplied'} ·
+          Normalization: {accepted.dataset.normalization?.description || 'not declared'}.</p>
+        {missingness && <section aria-label="Abundance observation coverage" data-testid="abundance-missingness">
+          <p>{missingness.observedCells} observed cells; {missingness.missingCells} missing cells.
+            {` ${accepted.dataset.table.samples.length - missingness.incompleteSamples.length} complete samples before removing empty samples.`}</p>
+          <p>Analysis policy: use complete samples. Missing values remain unobserved; zeros remain observed zeros.</p>
+          {missingness.incompleteSamples.length > 0 && <details><summary>Samples excluded for missing measurements ({missingness.incompleteSamples.length})</summary>
+            <p>{missingness.incompleteSamples.join(', ')}</p></details>}
+          {missingness.allMissingTaxa.length > 0 && <p>Entirely unobserved taxa: {missingness.allMissingTaxa.join(', ')}.
+            Every sample is incomplete for these taxa; supply measurements or explicitly prepare a table with the taxa you intend to analyze.</p>}
+          {missingness.excludedCompleteSamples.length > 0 && <p>Complete but empty samples: {missingness.excludedCompleteSamples.join(', ')}.</p>}
+        </section>}
+        {sourceDraft && <details>
+          <summary>Study, source and normalization</summary>
+          <form onSubmit={event => {
+            event.preventDefault(); setFileError(null);
+            void session.run({ kind: 'source', dataset: accepted.dataset, units: sourceDraft.units,
+              source: { kind: accepted.dataset.source.kind, description: sourceDraft.description,
+                reference: sourceDraft.reference.trim() || null,
+                ...(sourceDraft.study.trim() ? { study: sourceDraft.study.trim() } : {}),
+                ...(sourceDraft.version.trim() ? { version: sourceDraft.version.trim() } : {}),
+                ...(sourceDraft.license.trim() ? { license: sourceDraft.license.trim() } : {}) },
+              normalization: sourceDraft.normalization.trim() ? {
+                kind: sourceDraft.units === 'counts' ? 'none' : 'sample-total', description: sourceDraft.normalization,
+              } : undefined, options: draft ? fromDraft(draft) : accepted.options });
+          }}>
+            <fieldset disabled={loading} style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
+              <legend>Attribution for the supplied measurements</legend>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '.75rem' }}>
+                {SOURCE_FIELDS.map(([id, label]) => <label key={id} style={fieldStyle}>{label}
+                  <input value={sourceDraft[id]} maxLength={512} required={id === 'description'} style={inputStyle}
+                    onChange={event => setSourceDraft({ ...sourceDraft, [id]: event.target.value })} />
+                </label>)}
+                <label style={fieldStyle}>Input units (values unchanged)
+                  <select value={sourceDraft.units} style={inputStyle}
+                    onChange={event => setSourceDraft({ ...sourceDraft, units: event.target.value as SourceDraft['units'] })}>
+                    <option value="counts">Counts</option><option value="relative-abundance">Relative abundance</option>
+                  </select>
+                </label>
+              </div>
+              <p>Describe the data as supplied. Applying attribution does not transform its values.
+                Leave unknown source fields blank. Only raw counts and fractions of each sample total are supported.</p>
+              {sourceChanged && <p>Source edits have not been applied. Exports still contain the accepted dataset and attribution.</p>}
+              <button type="submit" disabled={!sourceChanged}>Apply source details</button>
+            </fieldset>
+          </form>
+        </details>}
         <label style={fieldStyle}>Attach sample metadata CSV, TSV or JSON
           <input type="file" accept=".csv,.tsv,.json,text/csv,text/tab-separated-values,application/json" disabled={loading}
             onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadFile(file, true); }} />
@@ -178,8 +247,8 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
           {` ${analysis.diagnostics.permutationMode} pairing test (${analysis.diagnostics.permutationsUsed} pairings); `}
           |r| ≥ {analysis.options.correlationThreshold}, adjusted p ≤ {analysis.options.qvalueThreshold}.</p>
         <p>Matched metadata: {analysis.diagnostics.metadataSamples}/{analysis.samples.length} retained samples.
-          Empty taxa excluded: {analysis.diagnostics.excludedTaxa.join(', ') || 'none'}.
-          Empty samples excluded: {analysis.diagnostics.excludedSamples.join(', ') || 'none'}.
+          Taxa excluded after selecting complete samples: {analysis.diagnostics.excludedTaxa.join(', ') || 'none'}.
+          Samples excluded for missing or empty data: {analysis.diagnostics.excludedSamples.join(', ') || 'none'}.
           Undefined constant CLR trajectories: {analysis.diagnostics.constantTaxa.join(', ') || 'none'}.</p>
         <AssociationNetwork analysis={analysis} />
         <label><input type="checkbox" checked={showAllPairs} onChange={event => setShowAllPairs(event.target.checked)} /> Show all tested pairs, including filtered associations</label>

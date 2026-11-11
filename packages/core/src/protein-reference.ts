@@ -126,6 +126,97 @@ export type ProteinReferenceInputs =
       protein: ReferenceProtein; host: ReferenceProtein;
       chains: ReferenceChain[]; embeddings: ReferenceEmbedding[] };
 
+/** A supplied alignment is useful evidence without a deposited complex. It has
+ * its own contract: FASTA labels do not establish accessions, CDS mappings,
+ * structures, embeddings or experimentally demonstrated interactions.
+ */
+export interface ProteinAlignmentInput {
+  format: 'phage-explorer-protein-alignment';
+  version: 1;
+  name: string;
+  source: { kind: 'local' | 'demo'; description: string; reference: string | null };
+  rows: Array<{ id: string; description: string; alignedSequence: string }>;
+}
+export const PROTEIN_ALIGNMENT_LIMITS = { bytes: 2 * 1024 * 1024, rows: 256, columns: 20_000, cells: 1_000_000 } as const;
+const alignmentObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+function alignmentKeys(value: Record<string, unknown>, names: readonly string[], label: string): void {
+  if (Object.keys(value).length !== names.length || Object.keys(value).some(key => !names.includes(key))) {
+    throw new Error(label + ' has missing or unsupported fields.');
+  }
+}
+function alignmentText(value: unknown, label: string, empty = false, maximum = 512): string {
+  if (typeof value !== 'string' || value.length > maximum || (!empty && !value.trim()) || /[\u0000-\u001f\u007f-\u009f]/.test(value)) {
+    throw new Error(label + ' must be plain text, at most ' + maximum + ' characters.');
+  }
+  return value;
+}
+export function validateProteinAlignmentInput(value: unknown): ProteinAlignmentInput {
+  if (!alignmentObject(value) || value.format !== 'phage-explorer-protein-alignment' || value.version !== 1) {
+    throw new Error('Unsupported protein alignment format/version.');
+  }
+  alignmentKeys(value, ['format', 'version', 'name', 'source', 'rows'], 'Protein alignment');
+  const name = alignmentText(value.name, 'Alignment name');
+  if (!alignmentObject(value.source)) throw new Error('Protein alignment source attribution is required.');
+  alignmentKeys(value.source, ['kind', 'description', 'reference'], 'Alignment source');
+  if (value.source.kind !== 'local' && value.source.kind !== 'demo') throw new Error('Alignment source must be local or demo.');
+  const source: ProteinAlignmentInput['source'] = { kind: value.source.kind,
+    description: alignmentText(value.source.description, 'Source description'),
+    reference: value.source.reference === null ? null : alignmentText(value.source.reference, 'Source reference') };
+  if (!Array.isArray(value.rows) || value.rows.length < 2 || value.rows.length > PROTEIN_ALIGNMENT_LIMITS.rows) {
+    throw new Error('Provide 2–256 aligned protein records.');
+  }
+  const seen = new Set<string>(); let width = 0;
+  const rows = value.rows.map((row, index): ProteinAlignmentInput['rows'][number] => {
+    if (!alignmentObject(row)) throw new Error('Each protein alignment row must be an object.');
+    alignmentKeys(row, ['id', 'description', 'alignedSequence'], 'Alignment row');
+    const id = alignmentText(row.id, 'Protein record ID', false, 120);
+    if (/\s/.test(id) || seen.has(id)) throw new Error('Protein record IDs must be unique and cannot contain whitespace.');
+    seen.add(id);
+    const description = alignmentText(row.description, 'Protein record description', true);
+    const sequence = row.alignedSequence;
+    if (typeof sequence !== 'string' || sequence.length < 1 || sequence.length > PROTEIN_ALIGNMENT_LIMITS.columns ||
+        !/^[ACDEFGHIKLMNPQRSTVWYXBZJ-]+$/.test(sequence) || !/[A-Z]/.test(sequence)) {
+      throw new Error('Each aligned protein requires 1–20,000 uppercase amino-acid/gap columns and at least one residue. Use canonical amino acids, X/B/Z/J for unknown residues, and - for gaps; stops and dots are unsupported.');
+    }
+    if (index === 0) width = sequence.length;
+    if (sequence.length !== width) throw new Error('Protein FASTA rows must already be aligned to the same number of columns.');
+    return { id, description, alignedSequence: sequence };
+  });
+  if (width * rows.length > PROTEIN_ALIGNMENT_LIMITS.cells) throw new Error('Protein alignment exceeds 1,000,000 cells.');
+  for (let column = 0; column < width; column++) {
+    if (rows.every(row => row.alignedSequence[column] === '-')) throw new Error('Protein alignment contains an all-gap column at ' + (column + 1) + '.');
+  }
+  const result: ProteinAlignmentInput = { format: 'phage-explorer-protein-alignment', version: 1, name, source, rows };
+  if (new TextEncoder().encode(JSON.stringify(result)).length > PROTEIN_ALIGNMENT_LIMITS.bytes) throw new Error('Protein alignment exceeds 2 MiB.');
+  return result;
+}
+
+/** Import a complete supplied alignment; never align, fill, truncate or fetch
+ * sequences implicitly. The canonical rows and declared source are retained in
+ * every experiment. Whitespace and letter case are formatting, not residues.
+ */
+export function parseProteinAlignmentFasta(content: string, name: string,
+  source: ProteinAlignmentInput['source'] = { kind: 'local', description: name, reference: null }): ProteinAlignmentInput {
+  if (typeof content !== 'string' || content.length > PROTEIN_ALIGNMENT_LIMITS.bytes ||
+      new TextEncoder().encode(content).length > PROTEIN_ALIGNMENT_LIMITS.bytes) throw new Error('Protein alignment exceeds 2 MiB.');
+  const rows: ProteinAlignmentInput['rows'] = [];
+  for (const line of content.replace(/^\uFEFF/, '').split(/\r\n?|\n/)) {
+    if (!line.trim()) continue;
+    if (line.startsWith('>')) {
+      const header = line.slice(1).trim();
+      const split = header.search(/\s/);
+      rows.push({ id: split < 0 ? header : header.slice(0, split), description: split < 0 ? '' : header.slice(split).trim(), alignedSequence: '' });
+      if (rows.length > PROTEIN_ALIGNMENT_LIMITS.rows) throw new Error('Provide at most 256 aligned protein records.');
+    } else {
+      if (!rows.length) throw new Error('Expected aligned protein FASTA beginning with a >record header.');
+      rows[rows.length - 1].alignedSequence += line.replace(/[ \t]/g, '').toUpperCase();
+      if (rows[rows.length - 1].alignedSequence.length > PROTEIN_ALIGNMENT_LIMITS.columns) throw new Error('Protein alignment exceeds 20,000 columns.');
+    }
+  }
+  return validateProteinAlignmentInput({ format: 'phage-explorer-protein-alignment', version: 1, name, source, rows });
+}
+
 const AA = /^[ACDEFGHIKLMNPQRSTVWY]+$/;
 const HASH = /^[a-f0-9]{64}$/;
 const MAX_BYTES = 512 * 1024;

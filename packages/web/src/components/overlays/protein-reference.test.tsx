@@ -10,8 +10,9 @@ import { loadProteinReferenceInputs, type PhageFull, type ProteinReferenceReposi
 import snapshot from '../../../../../data/protein-references/lambda-lamb-v1.json';
 import { SqlJsRepository } from '../../db/SqlJsRepository';
 import { ProteinReferenceCoverage } from './HostInteractionOverlay';
-import { ProteinEvidencePanel, ProteinEvidenceResults } from './ProteinEvidencePanel';
-import { createProteinStructureExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
+import { ProteinEvidencePanel, ProteinEvidenceResults, ProteinAlignmentResults } from './ProteinEvidencePanel';
+import { createProteinStructureExperiment, createProteinAlignmentExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
+import { parseProteinAlignmentFasta } from '../../../../core/src/protein-reference';
 
 const root = resolve(import.meta.dir, '../../../../..');
 const require = createRequire(import.meta.url);
@@ -163,5 +164,36 @@ describe('production protein evidence presentation', () => {
     expect(html).toContain('No chain selected: geometry is unavailable');
     expect(html).toContain('unavailable');
     expect(html).not.toContain('Verified against the loaded genome');
+  });
+});
+
+
+describe('ordinary protein alignment presentation', () => {
+  test('offers aligned FASTA without requiring a loaded genome or deposited complex', () => {
+    const html = renderToStaticMarkup(<ProteinEvidencePanel phage={null} selectedGeneId={null}
+      inputs={{ status: 'unavailable', reason: 'No mapped complex for this genome.' }} onSelectGene={() => {}} />);
+    expect(html).toContain('Load aligned protein FASTA');
+    expect(html).toContain('Alignment source description');
+    expect(html).toContain('Alignment source citation');
+    expect(html).toContain('Replay alignment experiment JSON');
+    expect(html).toContain('No structure, embedding or known binding partner is required');
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Analyze supplied protein alignment/);
+  });
+  test('renders source-bound counts, missing entropy and complete exports with literal user labels', async () => {
+    const input = parseProteinAlignmentFasta('><b>target</b> supplied label\nAX\n>other\nCY', 'private.faa',
+      { kind: 'local', description: '<script>literal source</script>', reference: 'Notebook 17' });
+    const experiment = await createProteinAlignmentExperiment(input);
+    const html = renderToStaticMarkup(<ProteinAlignmentResults experiment={experiment} verified={true} />);
+    expect(html).toContain('Fresh replay verified');
+    expect(html).toContain('&lt;b&gt;target&lt;/b&gt;');
+    expect(html).toContain('&lt;script&gt;literal source&lt;/script&gt;');
+    expect(html).not.toContain('<script>literal source</script>');
+    expect(html).toContain('Notebook 17');
+    expect(html).toContain('1.0000');
+    expect(html).toContain('unavailable');
+    expect(html).toContain('Export alignment experiment JSON');
+    expect(html).toContain('Export alignment residue TSV');
+    expect(html).toContain('no current genome, accession or CDS mapping has been verified');
+    expect(html).not.toContain('Export contact TSV');
   });
 });

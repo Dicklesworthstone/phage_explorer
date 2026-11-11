@@ -14,7 +14,8 @@
 
 import type { PhageFull, GeneInfo } from '../types';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
-import { parseProteinReferenceBundle, type ProteinReferenceBundle, type ReferenceChain } from '../protein-reference';
+import { parseProteinReferenceBundle, validateProteinAlignmentInput, PROTEIN_ALIGNMENT_LIMITS,
+  type ProteinReferenceBundle, type ReferenceChain, type ProteinAlignmentInput } from '../protein-reference';
 
 /** Descriptive measurements from supplied homologs and observed coordinates.
  * The illustrative model below remains a separate, explicitly opted-in method.
@@ -59,6 +60,126 @@ export interface ProteinStructureResult {
 export interface ProteinStructureExperiment {
   reference: ProteinReferenceBundle; options: ResolvedProteinStructureOptions;
   result: ProteinStructureResult; record: AnalysisRecord;
+}
+
+export const PROTEIN_ALIGNMENT_METHOD = { id: 'supplied-protein-alignment-diversity', version: '1',
+  implementation: 'TypeScript unweighted observed-column Shannon entropy; canonical amino acids counted, gaps and X/B/Z/J excluded with explicit coverage' };
+export interface ProteinAlignmentOptions { proteinId?: string }
+export interface ResolvedProteinAlignmentOptions { proteinId: string }
+export interface ProteinAlignmentResult {
+  protein: { id: string; description: string; sequence: string; length: number };
+  alignment: { rows: number; columns: number };
+  residues: Array<{ position: number; aminoAcid: string; column: number; observed: number; total: number;
+    gaps: number; unknown: number; counts: Record<string, number>; entropyBits: number | null }>;
+  coverage: { targetResidues: number; entropyResidues: number; insufficientObservationResidues: number; unknownTargetResidues: number };
+  limitations: string[];
+}
+export interface ProteinAlignmentExperiment {
+  input: ProteinAlignmentInput; options: ResolvedProteinAlignmentOptions; result: ProteinAlignmentResult; record: AnalysisRecord;
+}
+const PROTEIN_ALIGNMENT_REFERENCE = { id: 'supplied-protein-alignment-conventions', version: '1',
+  description: 'One-based ungapped target positions and supplied alignment columns. Unweighted Shannon entropy in bits counts canonical amino acids, excludes gaps and X/B/Z/J, and requires at least two observed rows. Supplied row IDs do not establish biological accessions or homology.' };
+const PROTEIN_ALIGNMENT_LIMITATIONS = [
+  'The alignment and source attribution are user-supplied. The program does not verify accessions, homology, alignment quality or source authenticity, and does not align sequences automatically.',
+  'Entropy is unweighted finite-sample column diversity in bits, not population conservation or a calibrated evolutionary constraint. Duplicate or closely related rows retain their supplied weight.',
+  'Gaps and ambiguous/unknown amino acids X/B/Z/J are missing observations, reported separately. Fewer than two canonical amino-acid observations yields null entropy, not zero. Ungapped target positions retain unknown residues.',
+  'This input supplies no genomic CDS mapping, coordinates, embeddings or experimental interaction evidence. It cannot establish structural contacts, affinity, mutation effects or host range.',
+];
+
+/** Shared counting convention preserves the full-reference result contract. */
+function proteinColumnEvidence(rows: readonly { alignedSequence: string }[], column: number): {
+  observed: number; total: number; gaps: number; unknown: number; counts: Record<string, number>; entropyBits: number | null;
+} {
+  const counts = new Map<string, number>(); let observed = 0, gaps = 0, unknown = 0;
+  for (const row of rows) {
+    const aa = row.alignedSequence[column];
+    if (aa === '-') gaps++;
+    else if ('XBZJ'.includes(aa)) unknown++;
+    else { counts.set(aa, (counts.get(aa) ?? 0) + 1); observed++; }
+  }
+  let entropyBits: number | null = null;
+  if (observed >= 2) {
+    entropyBits = 0;
+    for (const count of counts.values()) { const p = count / observed; entropyBits -= p * Math.log2(p); }
+  }
+  return { observed, total: rows.length, gaps, unknown, counts: Object.fromEntries(counts), entropyBits };
+}
+
+export function resolveProteinAlignmentOptions(input: ProteinAlignmentInput, options: ProteinAlignmentOptions = {}): ResolvedProteinAlignmentOptions {
+  if (!proteinObject(options) || Object.keys(options).some(key => key !== 'proteinId')) throw new Error('Unsupported protein alignment settings.');
+  const proteinId = options.proteinId === undefined ? input.rows[0].id : options.proteinId;
+  if (typeof proteinId !== 'string' || !input.rows.some(row => row.id === proteinId)) throw new Error('Choose a target protein record present in the supplied alignment.');
+  return { proteinId };
+}
+
+export async function createProteinAlignmentExperiment(value: unknown, settings: ProteinAlignmentOptions = {}, signal?: AbortSignal): Promise<ProteinAlignmentExperiment> {
+  proteinActive(signal);
+  proteinJsonBudget(value, PROTEIN_ALIGNMENT_LIMITS.bytes);
+  const input = validateProteinAlignmentInput(value);
+  const options = resolveProteinAlignmentOptions(input, settings);
+  const target = input.rows.find(row => row.id === options.proteinId)!;
+  const residues: ProteinAlignmentResult['residues'] = [];
+  for (let column = 0; column < target.alignedSequence.length; column++) {
+    if (column % 256 === 0) proteinActive(signal);
+    const aminoAcid = target.alignedSequence[column];
+    if (aminoAcid === '-') continue;
+    residues.push({ position: residues.length + 1, aminoAcid, column: column + 1, ...proteinColumnEvidence(input.rows, column) });
+  }
+  const entropyResidues = residues.filter(row => row.entropyBits !== null).length;
+  const result: ProteinAlignmentResult = {
+    protein: { id: target.id, description: target.description, sequence: target.alignedSequence.replace(/-/g, ''), length: residues.length },
+    alignment: { rows: input.rows.length, columns: target.alignedSequence.length }, residues,
+    coverage: { targetResidues: residues.length, entropyResidues, insufficientObservationResidues: residues.length - entropyResidues,
+      unknownTargetResidues: residues.filter(row => 'XBZJ'.includes(row.aminoAcid)).length },
+    limitations: [...PROTEIN_ALIGNMENT_LIMITATIONS],
+  };
+  const context = { label: 'Observed amino-acid diversity at each ungapped target position', units: 'records' as const,
+    value: analysisJson(result), limitations: result.limitations,
+    coverage: { available: entropyResidues, total: residues.length, unit: 'residues' as const } };
+  const recordOptions = { method: PROTEIN_ALIGNMENT_METHOD,
+    inputs: [{ id: 'alignment', accession: null, source: input.source.kind,
+      description: 'Exact user-supplied aligned protein rows and declared source attribution. Record labels do not establish accessions or a genomic CDS mapping.', data: analysisJson(input) }],
+    parameters: { ...options }, seed: null, references: [PROTEIN_ALIGNMENT_REFERENCE], fields: {
+      diversity: input.source.kind === 'demo'
+        ? { ...context, kind: 'demo' as const, assumptions: ['The user explicitly identified these supplied alignment rows as a teaching demonstration.'] }
+        : { ...context, kind: 'sequence-score' as const },
+      geometry: { kind: 'unavailable' as const, label: 'Structural geometry', value: null, units: null,
+        coverage: { available: 0, total: residues.length, unit: 'residues' as const }, limitations: result.limitations,
+        missingInputs: ['An aligned protein FASTA contains no mapped observed coordinates.'] },
+    } };
+  proteinJsonBudget({ ...recordOptions, format: 'phage-explorer-analysis', version: 1, cacheKey: '0'.repeat(64), resultId: '0'.repeat(64),
+    inputs: recordOptions.inputs.map(item => ({ ...item, sha256: '0'.repeat(64) })) }, 10 * 1024 * 1024, true);
+  const record = await createAnalysisRecord(recordOptions);
+  proteinActive(signal);
+  return { input, options, result, record };
+}
+
+export async function replayProteinAlignmentExperiment(content: string, signal?: AbortSignal): Promise<ProteinAlignmentExperiment> {
+  proteinActive(signal);
+  const saved = await parseAnalysisRecord(content, { methodId: PROTEIN_ALIGNMENT_METHOD.id, methodVersion: PROTEIN_ALIGNMENT_METHOD.version });
+  proteinActive(signal);
+  if (proteinCanonical(saved.method) !== proteinCanonical(PROTEIN_ALIGNMENT_METHOD) || proteinCanonical(saved.references) !== proteinCanonical([PROTEIN_ALIGNMENT_REFERENCE]) ||
+    saved.seed !== null || saved.inputs.length !== 1 || saved.inputs[0].id !== 'alignment') throw new Error('Protein alignment method, references, seed or input contract differs.');
+  const fresh = await createProteinAlignmentExperiment(saved.inputs[0].data, saved.parameters, signal);
+  if (proteinCanonical(fresh.options) !== proteinCanonical(saved.parameters)) throw new Error('All effective protein alignment settings must be explicit.');
+  if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Fresh protein alignment calculation or source evidence differs from the saved experiment.');
+  return fresh;
+}
+
+/** Export only a producer/replay-accepted result; imported experiments must be replayed first. */
+export function exportProteinAlignmentTsv(record: AnalysisRecord): string {
+  proteinJsonBudget(record, 10 * 1024 * 1024, true);
+  const result = record.fields.diversity?.value as unknown as ProteinAlignmentResult;
+  const input = record.inputs[0]?.data as unknown as ProteinAlignmentInput;
+  if (proteinCanonical(record.method) !== proteinCanonical(PROTEIN_ALIGNMENT_METHOD) || !result?.protein || !Array.isArray(result.residues) ||
+    record.inputs.length !== 1 || record.inputs[0].id !== 'alignment' || input?.format !== 'phage-explorer-protein-alignment') throw new Error('Expected a produced or replayed protein alignment result.');
+  const comments = ['# method=' + record.method.id + '; version=' + record.method.version + '; result=' + record.resultId + '; inputSha256=' + record.inputs[0].sha256,
+    '# target_record=' + proteinCanonical(result.protein.id) + '; source_attribution=' + proteinCanonical(input.source),
+    '# Target positions and alignment columns are one-based. Gaps and X/B/Z/J are excluded from observed counts; empty entropy cells are unavailable, not zero.',
+    '# limitations=' + proteinCanonical(result.limitations)];
+  const header = ['target_record', 'protein_position_1based', 'amino_acid', 'alignment_column_1based', 'observed_rows', 'total_rows', 'gaps', 'unknown_rows', 'amino_acid_counts', 'entropy_bits'];
+  return [...comments, header.join('\t'), ...result.residues.map(row => [result.protein.id, row.position, row.aminoAcid, row.column,
+    row.observed, row.total, row.gaps, row.unknown, proteinCanonical(row.counts), row.entropyBits].map(proteinTsvCell).join('\t'))].join('\n') + '\n';
 }
 const PROTEIN_STRUCTURE_REFERENCE = { id: 'mapped-protein-reference-conventions', version: '1',
   description: 'One-based protein and alignment positions; label sequence IDs map through the declared chain interval. Author residue numbers and insertion codes retain source conventions. Entropy excludes gaps and requires at least two observations. Contacts include each eligible pair once within an inclusive C-alpha distance cutoff.' };
@@ -163,18 +284,8 @@ function proteinStructureResult(reference: ProteinReferenceBundle, options: Reso
     for (let column = 0; column < target.alignedSequence.length; column++) {
       if (column % 256 === 0) proteinActive(signal);
       if (target.alignedSequence[column] === '-') continue;
-      const counts = new Map<string, number>();
-      let observed = 0;
-      for (const row of rows) {
-        const aa = row.alignedSequence[column];
-        if (aa !== '-') { counts.set(aa, (counts.get(aa) ?? 0) + 1); observed++; }
-      }
-      let entropyBits: number | null = null;
-      if (observed >= 2) {
-        entropyBits = 0;
-        for (const count of counts.values()) { const p = count / observed; entropyBits -= p * Math.log2(p); }
-      }
-      residues[position++].alignment = { column: column + 1, observed, total: rows.length, gaps: rows.length - observed, entropyBits };
+      const { observed, total, gaps, entropyBits } = proteinColumnEvidence(rows, column);
+      residues[position++].alignment = { column: column + 1, observed, total, gaps, entropyBits };
     }
   }
   const identity = (source: ReferenceChain, atom: ReferenceChainCoordinate): ResidueIdentity => ({

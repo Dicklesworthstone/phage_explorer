@@ -1,5 +1,5 @@
 import proteinReferenceSnapshot from '../../../../data/protein-references/lambda-lamb-v1.json';
-import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle } from '../protein-reference';
+import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle, parseProteinAlignmentFasta } from '../protein-reference';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { describe, expect, it } from 'bun:test';
 import type { PhageFull, GeneInfo } from '../types';
@@ -16,6 +16,8 @@ import {
   PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS,
   resolveProteinStructureOptions, createProteinStructureExperiment, replayProteinStructureExperiment,
   proteinStructureResultFromRecord, exportProteinStructureTsv, type ProteinStructureOptions,
+  PROTEIN_ALIGNMENT_METHOD, createProteinAlignmentExperiment, replayProteinAlignmentExperiment,
+  resolveProteinAlignmentOptions, exportProteinAlignmentTsv,
 } from './tail-fiber-structure';
 
 function createMockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
@@ -345,6 +347,98 @@ describe('Tail fiber sequence analysis and illustrative structural model', () =>
       const analysis = analyzeTailFiberStructure(nonFiberPhage, null, null, { demonstration: true });
       expect(analysis).toBeNull();
     });
+  });
+});
+
+describe('Observed diversity from supplied aligned protein FASTA', () => {
+  const fasta = '>target complete protein\nA-CXG\n>h1\nA-CYG\n>h2\nC--ZX\n>h3\nXTC-W\n';
+  const input = () => parseProteinAlignmentFasta(fasta, 'homologs.faa', {
+    kind: 'local', description: 'Four supplied protein records', reference: 'Private alignment notebook',
+  });
+
+  it('matches independent column counts and entropy with gaps, unknowns and exact target positions', async () => {
+    const experiment = await createProteinAlignmentExperiment(input());
+    const { result, record } = experiment;
+    expect(result.protein).toEqual({ id: 'target', description: 'complete protein', sequence: 'ACXG', length: 4 });
+    expect(result.residues.map(row => [row.position, row.column, row.aminoAcid])).toEqual([[1, 1, 'A'], [2, 3, 'C'], [3, 4, 'X'], [4, 5, 'G']]);
+    expect(result.residues[0].counts).toEqual({ A: 2, C: 1 });
+    expect(result.residues[0].entropyBits).toBeCloseTo(0.9182958340544896, 14);
+    expect(result.residues[0]).toMatchObject({ observed: 3, total: 4, gaps: 0, unknown: 1 });
+    expect(result.residues[1]).toMatchObject({ observed: 3, gaps: 1, unknown: 0, counts: { C: 3 }, entropyBits: 0 });
+    expect(result.residues[2]).toMatchObject({ observed: 1, gaps: 1, unknown: 2, counts: { Y: 1 }, entropyBits: null });
+    expect(result.residues[3].entropyBits).toBeCloseTo(0.9182958340544896, 14);
+    expect(result.coverage).toEqual({ targetResidues: 4, entropyResidues: 3, insufficientObservationResidues: 1, unknownTargetResidues: 1 });
+    expect(record.method).toEqual(PROTEIN_ALIGNMENT_METHOD);
+    expect(record.inputs[0].source).toBe('local');
+    expect(record.inputs[0].accession).toBeNull();
+    expect(record.inputs[0].data).toEqual(input());
+    expect(record.fields.geometry.kind).toBe('unavailable');
+    expect(record.fields.geometry.value).toBeNull();
+    expect('chains' in result || 'contacts' in result || 'hostRange' in result).toBe(false);
+  });
+
+  it('maps the selected source row without truncating long proteins or treating absent evidence as zero', async () => {
+    const selected = await createProteinAlignmentExperiment(input(), { proteinId: 'h3' });
+    expect(selected.result.protein.sequence).toBe('XTCW');
+    expect(selected.result.residues[1]).toMatchObject({ position: 2, column: 2, aminoAcid: 'T', observed: 1, gaps: 3, entropyBits: null });
+    const long = parseProteinAlignmentFasta('>long\n' + 'A'.repeat(1201) + '\n>unknown\n' + 'X'.repeat(1201), 'long.faa');
+    const result = (await createProteinAlignmentExperiment(long)).result;
+    expect(result.protein.length).toBe(1201);
+    expect(result.coverage.entropyResidues).toBe(0);
+    expect(result.residues[1200]).toMatchObject({ position: 1201, observed: 1, unknown: 1, entropyBits: null });
+    expect(() => resolveProteinAlignmentOptions(input(), { proteinId: 'not-present' })).toThrow('target protein');
+    await expect(createProteinAlignmentExperiment(input(), { chainLabelAsymId: 'D' } as never)).rejects.toThrow('Unsupported');
+  });
+
+  it('recomputes exported evidence and rejects rehashed invented entropy or source claims', async () => {
+    const first = await createProteinAlignmentExperiment(input());
+    const replay = await replayProteinAlignmentExperiment(serializeAnalysisRecord(first.record));
+    expect(replay.record.resultId).toBe(first.record.resultId);
+    expect(replay.result).toEqual(first.result);
+    const forged = structuredClone(first.record);
+    (forged.fields.diversity.value as unknown as { residues: Array<{ entropyBits: number }> }).residues[0].entropyBits = 99;
+    await expect(replayProteinAlignmentExperiment(serializeAnalysisRecord(await createAnalysisRecord(forged)))).rejects.toThrow('Fresh protein alignment');
+    const relabeled = structuredClone(first.record);
+    relabeled.inputs[0].source = 'external';
+    await expect(replayProteinAlignmentExperiment(serializeAnalysisRecord(await createAnalysisRecord(relabeled)))).rejects.toThrow('source evidence differs');
+    const omitted = structuredClone(first.record); omitted.parameters = {};
+    await expect(replayProteinAlignmentExperiment(serializeAnalysisRecord(await createAnalysisRecord(omitted)))).rejects.toThrow('settings must be explicit');
+  });
+
+  it('binds identity to supplied metadata and rows, keeps demo labels, and exports all counts', async () => {
+    const first = await createProteinAlignmentExperiment(input());
+    const revised = input(); revised.source.reference = 'Updated notebook version';
+    const changed = await createProteinAlignmentExperiment(revised);
+    expect(changed.result).toEqual(first.result);
+    expect(changed.record.resultId).not.toBe(first.record.resultId);
+    const demo = input(); demo.source.kind = 'demo';
+    const demonstration = await createProteinAlignmentExperiment(demo);
+    expect(demonstration.record.inputs[0].source).toBe('demo');
+    expect(demonstration.record.fields.diversity.kind).toBe('demo');
+    const tsv = exportProteinAlignmentTsv(first.record);
+    expect(tsv).toContain('source_attribution=');
+    expect(tsv).toContain('unknown_rows');
+    const rows = tsv.trimEnd().split('\n').filter(line => !line.startsWith('#'));
+    expect(rows).toHaveLength(5);
+    expect(rows[3].split('\t').slice(0, 8)).toEqual(['target', '3', 'X', '4', '1', '4', '1', '2']);
+    expect(rows[3].endsWith('\t')).toBe(true);
+    const hostile = parseProteinAlignmentFasta('>=SUM(A1)\nAA\n>other\nAC', 'literal.faa');
+    expect(exportProteinAlignmentTsv((await createProteinAlignmentExperiment(hostile)).record)).toContain("'=SUM(A1)\t");
+  });
+
+  it('captures exact inputs and cancels before work or after hashing yields', async () => {
+    const value = input(), options = { proteinId: 'target' };
+    const work = createProteinAlignmentExperiment(value, options);
+    value.rows[0].alignedSequence = 'CCCCC'; options.proteinId = 'h1';
+    const result = await work;
+    expect(result.result.protein.sequence).toBe('ACXG');
+    expect(result.options.proteinId).toBe('target');
+    const stopped = new AbortController(); stopped.abort();
+    await expect(createProteinAlignmentExperiment(input(), {}, stopped.signal)).rejects.toThrow('cancelled');
+    const pending = new AbortController();
+    const computation = createProteinAlignmentExperiment(input(), {}, pending.signal); pending.abort();
+    await expect(computation).rejects.toThrow('cancelled');
+    await expect(replayProteinAlignmentExperiment('{}', stopped.signal)).rejects.toThrow('cancelled');
   });
 });
 

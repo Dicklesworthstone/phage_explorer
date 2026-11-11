@@ -19,7 +19,10 @@ export const ABUNDANCE_COMMAND_HELP = `Abundance analysis (local files only; no 
   phage-explorer abundance replay SAVED_ANALYSIS [--output NEW_FILE]
 
 view opens an interactive terminal workspace (requires a TTY).
-INPUT is a taxa-by-sample CSV/TSV or a version-1 abundance dataset JSON.
+INPUT is a taxa-by-sample CSV/TSV or a version-1/2 abundance dataset JSON.
+Blank/NA cells are unobserved; 0 is an observed zero. Version 2 preserves
+missing cells, source study/version/license and normalization declarations.
+CLR/NMF excludes whole incomplete samples, then empty samples and taxa.
 --metadata joins sampleId-keyed CSV/TSV/JSON to the dataset, not by row order.
 --params is a JSON object of the browser's analysis parameters (including seed).
 inspect emits a validated dataset; analyze emits a portable analysis record.
@@ -384,9 +387,10 @@ export class AbundanceWorkspace {
       const dataset = parseAbundanceDataset(result.content);
       return { accepted: { dataset, record: null }, options: resolveAbundanceOptions(dataset), notice: 'Dataset loaded. Press Enter to analyze.' };
     }
-    const record = await parseAnalysisRecord(result.content, { methodId: 'abundance-clr-nmf', methodVersion: '1' });
+    const record = await parseAnalysisRecord(result.content, { methodId: 'abundance-clr-nmf' });
     if (record.resultId !== result.identity) throw new Error('Worker result identity differs from its record.');
     const dataset = validateAbundanceDataset(record.inputs[0].data);
+    if (record.method.version !== String(dataset.version)) throw new Error('Abundance method version does not match its dataset.');
     return { accepted: { dataset, record }, options: resolveAbundanceOptions(dataset, record.parameters as Partial<AbundanceOptions>),
       notice: result.verified ? 'Verified replay: freshly recomputed result and evidence match.' : 'Analysis complete. Exports use these submitted parameters.' };
   }

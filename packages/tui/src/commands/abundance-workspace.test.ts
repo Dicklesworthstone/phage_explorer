@@ -65,12 +65,32 @@ describe('interactive terminal abundance workspace', () => {
     workspace.deactivate();
   });
   it('invalid replacement input preserves the complete accepted dataset and analysis', async () => {
-    const workspace = new AbundanceWorkspace(localExecutor, async path => path === 'bad.csv' ? 'taxon,S1\nA,NA' : text);
+    const workspace = new AbundanceWorkspace(localExecutor, async path => path === 'bad.csv' ? 'taxon,S1\nA,unknown' : text);
     await workspace.load('private.csv'); await workspace.analyze();
     const prior = workspace.getSnapshot().accepted;
     await workspace.load('bad.csv');
     assert.strictEqual(workspace.getSnapshot().accepted, prior);
     assert.ok(workspace.getSnapshot().error); assert.equal(workspace.getSnapshot().busy, false);
+    workspace.deactivate();
+  });
+  it('opens incomplete observations and accepts version-2 analyses without confusing missing and zero', async () => {
+    const incomplete = 'taxon,S1,S2,S3,UNKNOWN,EMPTY\nA,1,4,16,NA,0\nB,16,4,1,2,0';
+    let saved = '';
+    const workspace = new AbundanceWorkspace(localExecutor, async path => path === 'saved.json' ? saved : incomplete);
+    await workspace.load('incomplete.csv');
+    assert.equal(workspace.getSnapshot().accepted!.dataset.table.counts[0][3], null);
+    workspace.setParameters(JSON.stringify(options));
+    await workspace.analyze();
+    const first = workspace.getSnapshot().accepted!.record!;
+    assert.equal(workspace.getSnapshot().error, null);
+    assert.equal(first.method.version, '2');
+    saved = serializeAnalysisRecord(first);
+    await workspace.load('saved.json');
+    assert.equal(workspace.getSnapshot().accepted!.record!.resultId, first.resultId);
+    assert.match(workspace.getSnapshot().notice!, /Verified replay/);
+    const coverage = first.fields.coverage.value as unknown as { samples: string[]; diagnostics: { missingness: { incompleteSamples: string[] } } };
+    assert.deepEqual(coverage.samples, ['S1', 'S2', 'S3']);
+    assert.deepEqual(coverage.diagnostics.missingness.incompleteSamples, ['UNKNOWN']);
     workspace.deactivate();
   });
   it('automatically recognizes saved browser records, recomputes and preserves exact identity', async () => {

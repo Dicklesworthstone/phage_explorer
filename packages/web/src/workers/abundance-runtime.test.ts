@@ -67,6 +67,47 @@ describe('worker-backed local abundance workflow', () => {
     assert.equal(restored.verified, true); assert.deepEqual(restored.analysis, calculated.analysis);
     assert.equal(restored.record!.resultId, calculated.record!.resultId);
   });
+  it('preserves missing cells, attributed sources and independent complete-sample results through replay', async () => {
+    const content = 'taxon,S1,S2,S3,S4,S5,UNOBSERVED,EMPTY\nA,1,2,4,8,16,,0\nB,1,2,4,8,16,2,0\nC,256,64,16,4,1,0,0';
+    const loaded = await executeAbundanceRequest({ kind: 'import', content, filename: 'Incomplete.csv' });
+    assert.equal(loaded.dataset.version, 2);
+    assert.equal(loaded.dataset.table.counts[0][5], null);
+    assert.equal(loaded.dataset.table.counts[0][6], 0);
+    const described = await executeAbundanceRequest({ kind: 'source', dataset: loaded.dataset, units: 'counts',
+      source: { ...loaded.dataset.source, study: 'Independent mathematical fixture', version: '2026-11', license: 'CC0-1.0' },
+      normalization: { kind: 'none', description: 'Unnormalized count observations' },
+      options: { pseudocount: 0, numNiches: 1, seed: 0 } });
+    assert.deepEqual(described.dataset.table, loaded.dataset.table);
+    assert.equal(described.record, null);
+    const computed = await executeAbundanceRequest({ kind: 'analyze', dataset: described.dataset, options: described.options });
+    assert.equal(computed.record!.method.version, '2');
+    assert.deepEqual(computed.analysis!.samples, ['S1', 'S2', 'S3', 'S4', 'S5']);
+    assert.deepEqual(computed.analysis!.diagnostics.missingness!.incompleteSamples, ['UNOBSERVED']);
+    assert.deepEqual(computed.analysis!.diagnostics.missingness!.excludedCompleteSamples, ['EMPTY']);
+    assert.equal(computed.analysis!.diagnostics.missingness!.missingCells, 1);
+    assert.ok(Math.abs(computed.analysis!.associations[0].pvalue - 1 / 60) < 1e-12);
+    const restored = await executeAbundanceRequest({ kind: 'import', content: serializeAnalysisRecord(computed.record!), filename: 'Saved.json' });
+    assert.equal(restored.verified, true);
+    assert.equal(restored.record!.resultId, computed.record!.resultId);
+    assert.deepEqual(restored.dataset.source, described.dataset.source);
+    assert.deepEqual(restored.dataset.normalization, described.dataset.normalization);
+    assert.deepEqual(restored.dataset.table, loaded.dataset.table);
+  });
+  it('validates source updates without relabeling synthetic data or rescaling supplied values', async () => {
+    const { dataset } = await executeAbundanceRequest({ kind: 'demo', seed: 0 });
+    const update = { kind: 'source' as const, dataset, units: dataset.units,
+      source: { ...dataset.source, kind: 'local' as const, study: 'Teaching example' }, options: { seed: 7 } };
+    const result = await executeAbundanceRequest(update);
+    assert.equal(result.dataset.source.kind, 'demo');
+    assert.equal(result.options.seed, 7);
+    assert.deepEqual(result.dataset.table, dataset.table);
+    await assert.rejects(executeAbundanceRequest({ ...update, units: 'relative-abundance' }), /Relative abundances|relative abundance/);
+    await assert.rejects(executeAbundanceRequest({ ...update, normalization: { kind: 'sample-total', description: 'Wrong scale' } }), /Normalization/);
+    const withNormalization = await executeAbundanceRequest({ ...update,
+      normalization: { kind: 'none', description: 'Raw data' } });
+    const cleared = await executeAbundanceRequest({ ...update, dataset: withNormalization.dataset });
+    assert.equal(cleared.dataset.normalization, undefined);
+  });
   it('generates synthetic data only for an explicit demo command', async () => {
     const a = await executeAbundanceRequest({ kind: 'demo', seed: 0 });
     const b = await executeAbundanceRequest({ kind: 'demo', seed: 0 });
@@ -100,7 +141,7 @@ describe('abundance selection and cancellation lifecycle', () => {
     const session = new AbundanceSession(() => createEndpoint(new Endpoint(true)));
     session.activate(); await session.run({ kind: 'import', content: csv, filename: 'Counts.csv' });
     const accepted = session.getSnapshot().accepted;
-    await session.run({ kind: 'import', content: 'taxon,a,b,c\nT,NA,1,2', filename: 'Invalid.csv' });
+    await session.run({ kind: 'import', content: 'taxon,a,b,c\nT,unknown,1,2', filename: 'Invalid.csv' });
     assert.strictEqual(session.getSnapshot().accepted, accepted);
     assert.match(session.getSnapshot().error!, /not a nonnegative number/);
     assert.equal(session.getSnapshot().loading, false);

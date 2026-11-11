@@ -148,16 +148,18 @@ denominator.
 
 ### Reuse an abundance dataset
 
-Export a version-1 abundance dataset from **Abundance associations & niche
+Export a version-1 or version-2 abundance dataset from **Abundance associations & niche
 factors**. In **Use a taxon from an abundance dataset**, select that file, enter
 the **exact taxon identifier** from `table.taxa`, and choose **Load selected
 abundance taxon**. Review and analyze the resulting environmental input.
 
 The adapter selects exactly that table row, keeps sample IDs/order and joins
 metadata by `sampleId`, not row position. Positive values become detected;
-zero values become not detected. Original counts or relative abundances are
-preserved. The selected taxon ID becomes both query ID and label; the study
-description and reference come from the supplied abundance source.
+zero values become not detected. Version-2 missing cells become **not assayed**
+with no abundance value; they are excluded from detection and abundance denominators.
+Original counts or relative abundances are preserved. The selected taxon ID becomes
+both query ID and label. Supplied study, source version, license, reference and
+normalization are carried into the environmental input without invented attribution.
 
 Optional metadata keys are `accession`, `habitat`, `country`,
 `latitude`, `longitude`, `uncertaintyKm` and `collectionDate`.
@@ -166,6 +168,42 @@ either is supplied; uncertainty requires coordinates. Malformed supplied
 coordinates or dates fail validation. Recognized habitat labels map to biomes;
 generic `water` and unrecognized descriptions stay `unknown`.
 Missing metadata produces null location/date fields, not inferred values.
+
+### Incomplete abundance tables and source attribution
+
+The abundance workspace accepts blank or `NA` CSV/TSV cells as missing
+measurements, preserves them as JSON `null`, and assigns dataset version 2.
+Use numeric `0` for an observed zero. A complete CSV/TSV remains a version-1
+dataset; saved version-1 results retain their original method and replay identity.
+
+Review **Abundance observation coverage** before analysis. CLR correlations and
+NMF use a shared set of complete sample columns across every submitted taxon.
+A sample with any missing taxon measurement is excluded as a whole column.
+The analysis then removes empty samples and taxa without adding pseudocounts
+to missing or entirely empty data. It requires at least two retained taxa and
+three complete, nonempty samples. A wholly unobserved taxon therefore prevents
+this estimator from running; the input can still be inspected, exported, or
+converted to environmental observations for a selected taxon.
+
+The report identifies incomplete samples, wholly unobserved taxa and samples,
+taxa with observed zeros only, and complete but empty samples. Exclusion can
+bias the retained sample population; no missing-at-random assumption or
+ecological mechanism is established by this policy.
+
+Use **Study, source and normalization** to record study ID, source version,
+license, description and reference. Applying source details produces a version-2
+dataset and clears the obsolete result. Unsubmitted edits do not change exports.
+Declaring units never rescales measurements: counts remain counts, and relative
+abundances must already be fractions of each sample total. Complete nonempty
+relative columns sum to one; incomplete columns preserve their observed fractions
+and may sum to less than one. Mixed normalization and transformed scales are
+rejected. Unknown source fields remain absent.
+
+Version-2 analysis exports retain the original nullable table, source declarations,
+effective parameters, exact retained sample IDs and missingness policy. Reopening
+a saved analysis recomputes its values and verifies the result identity. Terminal
+`abundance inspect|analyze|replay` accepts the same files; the interactive
+`abundance view` workspace exposes source and observation coverage under **3**.
 
 ### Public context, examples and separate genome comparison
 

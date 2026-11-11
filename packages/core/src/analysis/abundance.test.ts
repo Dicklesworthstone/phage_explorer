@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 import {
   analyzeAbundanceDataset, parseAbundanceDataset, serializeAbundanceDataset,
   validateAbundanceDataset, resolveAbundanceOptions, adjustAbundancePValues,
-  createAbundanceAnalysisRecord, replayAbundanceAnalysis, ABUNDANCE_LIMITS,
+  createAbundanceAnalysisRecord, replayAbundanceAnalysis, describeAbundanceMissingness, ABUNDANCE_LIMITS,
   type AbundanceDataset,
 } from './abundance';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
-function dataset(counts: number[][], metadata: AbundanceDataset['metadata'] = []): AbundanceDataset {
+function dataset(counts: number[][], metadata: AbundanceDataset['metadata'] = []): AbundanceDataset & { table: { counts: number[][] } } {
   return { format: 'phage-explorer-abundance', version: 1, name: 'Independent fixture', units: 'counts',
     source: { kind: 'local', description: 'Hand-derived mathematical control, not an empirical community', reference: null },
     table: { taxa: counts.map((_, i) => `T${i}`), samples: counts[0].map((_, i) => `S${i}`), counts }, metadata };
+}
+function incompleteDataset(counts: Array<Array<number | null>>): AbundanceDataset {
+  return { ...dataset([[1]]), version: 2,
+    table: { taxa: counts.map((_, i) => `T${i}`), samples: counts[0].map((_, i) => `S${i}`), counts } };
 }
 function close(actual: number, expected: number, tolerance = 1e-10) {
   assert.ok(Math.abs(actual - expected) <= tolerance, `${actual} != ${expected} (tolerance ${tolerance})`);
@@ -37,8 +41,22 @@ describe('local abundance input', () => {
     input.units = 'relative-abundance'; input.source.reference = 'Study accession supplied by user';
     assert.deepEqual(parseAbundanceDataset(serializeAbundanceDataset(input)), input);
   });
-  it('rejects malformed CSV and refuses to interpret missing or invalid values as zero', () => {
-    for (const cell of ['', 'NA', 'null', '-1', 'Infinity', 'NaN', '0x10', '1e999', '1,2']) {
+  it('preserves historical version-1 labels for sanitized terminal display while version 2 rejects C1 controls', () => {
+    const input = dataset([[1, 2, 3], [3, 2, 1]]), label = '\u009b31mλ';
+    input.table.taxa[0] = label;
+    assert.equal(validateAbundanceDataset(input).table.taxa[0], label);
+    assert.deepEqual(parseAbundanceDataset(serializeAbundanceDataset(input)), input);
+    assert.throws(() => validateAbundanceDataset({ ...input, version: 2 }), /without control characters/);
+  });
+  it('preserves blank and NA cells as missing in version 2 without converting observed zero', () => {
+    const parsed = parseAbundanceDataset('taxon,s1,s2,s3,s4\nA,0,,NA,2\nB,na,  ,3,4\n');
+    assert.equal(parsed.version, 2);
+    assert.deepEqual(parsed.table.counts, [[0, null, null, 2], [null, null, 3, 4]]);
+    assert.deepEqual(parseAbundanceDataset(serializeAbundanceDataset(parsed)), parsed);
+    assert.equal(parseAbundanceDataset('taxon,s1,s2,s3\nA,0,1,2\nB,3,2,1').version, 1);
+  });
+  it('rejects malformed CSV and invalid numeric or ambiguous missing markers', () => {
+    for (const cell of ['null', 'N/A', '-1', 'Infinity', 'NaN', '0x10', '1e999', '1,2']) {
       assert.throws(() => parseAbundanceDataset(`taxon,a,b,c\nT,1,${cell},3`), /number|columns|nonnegative/);
     }
     for (const text of ['a,b,c\n1,2,3', 'taxon,a,b,c\n"unterminated,1,2,3', 'taxon,a,b,c\n"T"tail,1,2,3']) {
@@ -52,8 +70,51 @@ describe('local abundance input', () => {
       (x: AbundanceDataset) => { x.table.samples[1] = ' S0 '; },
       (x: AbundanceDataset) => { x.table.counts[1][0] = -1; },
       (x: AbundanceDataset) => { x.table.counts[1][0] = NaN; },
-      (x: AbundanceDataset) => { (x as unknown as { version: number }).version = 2; },
+      (x: AbundanceDataset) => { (x as unknown as { version: number }).version = 3; },
     ]) { const x = exactFixture(); mutate(x); assert.throws(() => validateAbundanceDataset(x)); }
+  });
+  it('requires version 2 for missing cells or new declarations and refuses undefined holes', () => {
+    const input = incompleteDataset([[null, 1, 2], [0, 2, 1]]);
+    assert.doesNotThrow(() => validateAbundanceDataset(input));
+    assert.throws(() => validateAbundanceDataset({ ...input, version: 1 }), /version 2/);
+    assert.throws(() => validateAbundanceDataset({ ...exactFixture(), normalization: { kind: 'none', description: 'Observed counts' } }), /version 2/);
+    assert.throws(() => validateAbundanceDataset({ ...exactFixture(), source: { ...exactFixture().source, study: 'Study' } }), /version 2/);
+    const holes = incompleteDataset([[1, 2, 3], [3, 2, 1]]);
+    Object.defineProperty(holes.table.counts[0], 1, { value: undefined });
+    assert.throws(() => validateAbundanceDataset(holes), /finite nonnegative/);
+  });
+  it('preserves declared study, version, license and whole-table normalization without inventing attribution', () => {
+    const input = incompleteDataset([[null, 1, 2], [0, 2, 1]]);
+    input.source = { ...input.source, study: 'Measured community study', version: '2026-11', license: 'CC-BY-4.0' };
+    input.normalization = { kind: 'none', description: 'Original observed counts from equal-volume aliquots' };
+    assert.deepEqual(parseAbundanceDataset(serializeAbundanceDataset(input)), input);
+    const undeclared = validateAbundanceDataset(incompleteDataset([[1, 2, 3], [3, 2, 1]]));
+    assert.equal(Object.hasOwn(undeclared.source, 'version'), false);
+    assert.equal(Object.hasOwn(undeclared.source, 'license'), false);
+    assert.equal(Object.hasOwn(undeclared, 'normalization'), false);
+    input.source.license = null;
+    assert.equal(validateAbundanceDataset(input).source.license, null);
+    for (const normalization of [
+      { kind: 'sample-total', description: 'Incorrect counts declaration' },
+      { kind: 'mixed', description: 'Several scales' }, { kind: 'none', description: '' },
+      { kind: 'none', description: 'Counts', bySample: { S0: 'none', S1: 'sample-total' } },
+      [{ kind: 'none', description: 'Counts' }],
+    ]) assert.throws(() => validateAbundanceDataset({ ...input, normalization }), /normalization|Normalization/);
+    assert.throws(() => validateAbundanceDataset({ ...input, source: { ...input.source, version: '\u0085' } }), /Source version/);
+    assert.throws(() => validateAbundanceDataset({ ...input, normalizationBySample: [] }), /Unsupported/);
+  });
+  it('retains partial relative-abundance fractions without closure or imputation', () => {
+    const input = incompleteDataset([[.2, null, 0, .6], [.8, .25, 0, null]]);
+    input.units = 'relative-abundance';
+    input.normalization = { kind: 'sample-total', description: 'Fractions of each original sample total' };
+    assert.deepEqual(validateAbundanceDataset(input).table.counts, input.table.counts);
+    assert.throws(() => validateAbundanceDataset({ ...input, normalization: { kind: 'none', description: 'Wrong scale' } }), /Normalization/);
+    input.table.counts[0][1] = .9;
+    assert.throws(() => validateAbundanceDataset(input), /sum/);
+    const tooLarge = incompleteDataset([[.6, 0, 0], [.6, 1, 1], [null, 0, 0]]); tooLarge.units = 'relative-abundance';
+    assert.throws(() => validateAbundanceDataset(tooLarge), /sum/);
+    tooLarge.table.counts[0][0] = 1.1;
+    assert.throws(() => validateAbundanceDataset(tooLarge), /between 0 and 1/);
   });
   it('requires metadata IDs to match known samples exactly once', () => {
     for (const metadata of [[{ sampleId: 'missing', habitat: 'soil' }], [{ sampleId: 'S0' }, { sampleId: 'S0' }]]) {
@@ -78,6 +139,58 @@ describe('local abundance input', () => {
 });
 
 describe('independently derived CLR and association controls', () => {
+  it('uses exactly the independently known complete columns for every estimator and habitat summary', () => {
+    const complete = exactFixture();
+    const input = incompleteDataset([...complete.table.counts.map(row => [...row]), [0, 0, 0, 0, 0]]);
+    input.table.taxa[3] = 'observed-zero';
+    input.table.samples.push('partial', 'unassayed', 'empty');
+    input.table.counts[0].push(null, null, 0);
+    input.table.counts[1].push(1e9, null, 0);
+    input.table.counts[2].push(1e8, null, 0);
+    input.table.counts[3].push(0, null, 0);
+    input.metadata = [{ sampleId: 'S0', habitat: 'soil' }, { sampleId: 'partial', habitat: 'unrepresented' }];
+    complete.metadata = [{ sampleId: 'S0', habitat: 'soil' }];
+    const options = { pseudocount: 0, numNiches: 1, permutations: 199, seed: 0 };
+    const expected = analyzeAbundanceDataset(complete, options), result = analyzeAbundanceDataset(input, options);
+    assert.deepEqual(result.samples, ['S0', 'S1', 'S2', 'S3', 'S4']);
+    assert.deepEqual(result.taxa, ['T0', 'T1', 'T2']);
+    assert.deepEqual(result.clr, expected.clr);
+    assert.deepEqual(result.relativeAbundance, expected.relativeAbundance);
+    assert.deepEqual(result.nmfResult, expected.nmfResult);
+    assert.deepEqual(result.associations, expected.associations);
+    assert.deepEqual(result.profiles, expected.profiles);
+    for (const edge of result.associations) { close(edge.pvalue, 1 / 60); close(edge.qvalue, 1 / 60); }
+    assert.equal(result.diagnostics.metadataSamples, 1);
+    assert.deepEqual(result.diagnostics.excludedSamples, ['partial', 'unassayed', 'empty']);
+    assert.deepEqual(result.diagnostics.excludedTaxa, ['observed-zero']);
+    assert.deepEqual(result.diagnostics.missingness, {
+      policy: 'complete-samples', observedCells: 27, missingCells: 5,
+      incompleteSamples: ['partial', 'unassayed'], allMissingSamples: ['unassayed'], allMissingTaxa: [],
+      observedZeroTaxa: ['observed-zero'], excludedCompleteSamples: ['empty'],
+    });
+    assert.deepEqual(describeAbundanceMissingness(input), result.diagnostics.missingness);
+    assert.equal(input.table.counts[1][5], 1e9, 'excluded observations are preserved in the original matrix');
+    assert.match(result.diagnostics.warnings.join(' '), /selection may bias/);
+  });
+  it('applies complete-sample filtering before removing all-zero retained taxa', () => {
+    const input = incompleteDataset([[1, 2, 4, 8], [8, 4, 2, 1], [0, 0, 0, null]]);
+    const result = analyzeAbundanceDataset(input, { pseudocount: 0 });
+    assert.deepEqual(result.samples, ['S0', 'S1', 'S2']);
+    assert.deepEqual(result.diagnostics.excludedTaxa, ['T2']);
+    assert.deepEqual(result.diagnostics.excludedSamples, ['S3']);
+    assert.equal(result.options.numNiches, 2, 'default factor count comes from retained dimensions');
+  });
+  it('reports wholly unassayed and observed-zero coverage and refuses unidentifiable analyses', () => {
+    const input = incompleteDataset([[1, 2, 3, null], [0, 0, 0, null], [null, null, null, null]]);
+    assert.deepEqual(describeAbundanceMissingness(input), {
+      policy: 'complete-samples', observedCells: 6, missingCells: 6,
+      incompleteSamples: ['S0', 'S1', 'S2', 'S3'], allMissingSamples: ['S3'], allMissingTaxa: ['T2'],
+      observedZeroTaxa: ['T1'], excludedCompleteSamples: [],
+    });
+    assert.throws(() => analyzeAbundanceDataset(input, { pseudocount: 100 }), /3 complete nonempty samples/);
+    assert.throws(() => analyzeAbundanceDataset(incompleteDataset([[1, 2, null], [3, 2, 1]])), /3 complete nonempty samples/);
+    assert.throws(() => analyzeAbundanceDataset(incompleteDataset([[1, 2, 3], [0, 0, 0]])), /at least 2/);
+  });
   it('centers each sample across taxa, not each taxon across samples', () => {
     const x = dataset([[1, 2, 3], [2, 2, 2], [4, 8, 12]]);
     const result = analyzeAbundanceDataset(x, { pseudocount: 0, numNiches: 1, permutations: 19 });
@@ -192,9 +305,37 @@ async function resign(content: string, change: (record: AnalysisRecord) => void)
   return serializeAnalysisRecord(await createAnalysisRecord({ ...record, inputs: record.inputs.map(({ sha256: _hash, ...input }) => input) }));
 }
 describe('reproducible abundance records', () => {
+  it('records nullable inputs and declared provenance under method v2 and verifies all recomputed coverage', async () => {
+    const input = incompleteDataset([[1, 2, 4, null], [4, 2, 1, 0]]);
+    input.source = { ...input.source, study: 'Independent fixture study', version: 'revision-7', license: 'CC0' };
+    input.normalization = { kind: 'none', description: 'Observed counts, without rescaling' };
+    const result = analyzeAbundanceDataset(input, { pseudocount: 0, numNiches: 1, permutations: 19 });
+    const record = await createAbundanceAnalysisRecord(input, result);
+    assert.equal(record.method.version, '2');
+    const content = serializeAnalysisRecord(record), replay = await replayAbundanceAnalysis(content);
+    assert.deepEqual(replay, { dataset: input, result, record });
+    assert.deepEqual(record.fields.coverage.coverage, { available: 3, total: 4, unit: 'records' });
+    assert.equal((record.inputs[0].data as unknown as AbundanceDataset).table.counts[0][3], null);
+    await assert.rejects(replayAbundanceAnalysis(await resign(content, saved => {
+      const coverage = saved.fields.coverage.value as { diagnostics: { missingness: { missingCells: number } } };
+      coverage.diagnostics.missingness.missingCells = 0;
+    })), /Recomputed abundance result differs/);
+    await assert.rejects(replayAbundanceAnalysis(await resign(content, saved => {
+      (saved.inputs[0].data as unknown as AbundanceDataset).table.counts[0][3] = 0;
+    })), /Recomputed abundance result differs/);
+    const attributed = structuredClone(input); attributed.source.license = 'Changed license';
+    const attributedRecord = await createAbundanceAnalysisRecord(attributed, analyzeAbundanceDataset(attributed, result.options));
+    assert.notEqual(attributedRecord.cacheKey, record.cacheKey, 'source attribution is bound into identity, not independently authenticated');
+    await assert.rejects(replayAbundanceAnalysis(await resign(content, saved => {
+      saved.method.version = '1';
+      saved.method.implementation = 'sample-wise CLR; Pearson |r| pairing permutation; BH; seeded multiplicative-update NMF';
+    })), /versions are incompatible/);
+  });
   it('recomputes exact values and record identity after export/import', async () => {
     const input = exactFixture(); const result = analyzeAbundanceDataset(input, { pseudocount: 0, numNiches: 1 });
     const record = await createAbundanceAnalysisRecord(input, result);
+    assert.equal(record.method.version, '1');
+    assert.equal(Object.hasOwn(result.diagnostics, 'missingness'), false);
     assert.equal(record.fields.associations.kind, 'fitted-estimate'); assert.equal(record.inputs[0].source, 'local');
     const replay = await replayAbundanceAnalysis(serializeAnalysisRecord(record));
     assert.deepEqual(replay.result, result); assert.equal(replay.record.resultId, record.resultId);

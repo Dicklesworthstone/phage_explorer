@@ -139,10 +139,48 @@ test('local abundance import, metadata, computation, export and verified replay 
     await load(serializeAnalysisRecord(resigned), 'forged.json');
     await expect(overlay.getByRole('alert')).toContainText('Recomputed abundance result differs');
     await expect(overlay.getByTestId('abundance-result')).toHaveAttribute('data-result-id', saved.resultId);
-    await load('taxon,S1,S2,S3\nPRIVATE_BAD,NA,1,2');
+    await load('taxon,S1,S2,S3\nPRIVATE_BAD,unknown,1,2');
     await expect(overlay.getByRole('alert')).toContainText('not a nonnegative number');
     await expect(overlay.getByTestId('abundance-result')).toHaveAttribute('data-result-id', saved.resultId);
     await expect(overlay.getByTestId('abundance-source')).toContainText('LOCAL DATA');
+
+    // Missingness and attribution survive the actual browser worker and saved-file replay.
+    const incomplete = 'taxon,S1,S2,S3,S4,S5,UNOBSERVED,EMPTY\nPRIVATE_A,1,2,4,8,16,,0\nPRIVATE_B,1,2,4,8,16,2,0\nPRIVATE_C,256,64,16,4,1,0,0';
+    await load(incomplete, 'incomplete.csv');
+    await expect(overlay.getByTestId('abundance-missingness')).toContainText('20 observed cells; 1 missing cells');
+    await overlay.getByText('Study, source and normalization', { exact: true }).click();
+    await overlay.getByLabel('Study identifier', { exact: true }).fill('Private mathematical control');
+    await overlay.getByLabel('Source dataset version', { exact: true }).fill('2026-11');
+    await overlay.getByLabel('Source license', { exact: true }).fill('CC0-1.0');
+    await overlay.getByLabel('Normalization description', { exact: true }).fill('Unnormalized counts');
+    await overlay.getByRole('button', { name: 'Apply source details', exact: true }).click();
+    await expect(overlay.getByTestId('abundance-attribution')).toContainText('CC0-1.0');
+    await overlay.getByLabel('Pseudocount (input units)', { exact: true }).fill('0');
+    await overlay.getByLabel('NMF factors', { exact: true }).fill('1');
+    await overlay.getByRole('button', { name: 'Run abundance analysis', exact: true }).click();
+    await expect(overlay.getByTestId('abundance-summary')).toContainText('5 retained samples');
+    const incompleteContent = await exportFile('Export abundance analysis');
+    const incompleteRecord = await parseAnalysisRecord(incompleteContent);
+    expect(incompleteRecord.method.version).toBe('2');
+    expect(incompleteRecord.inputs[0].data).toMatchObject({ version: 2,
+      source: { study: 'Private mathematical control', version: '2026-11', license: 'CC0-1.0' },
+      normalization: { kind: 'none', description: 'Unnormalized counts' } });
+    const incompleteDataset = JSON.parse(await exportFile('Export abundance dataset'));
+    expect(incompleteDataset.table.counts[0].slice(5)).toEqual([null, 0]);
+    expect(incompleteRecord.fields.coverage.value).toMatchObject({
+      samples: ['S1', 'S2', 'S3', 'S4', 'S5'],
+      diagnostics: { missingness: { incompleteSamples: ['UNOBSERVED'], excludedCompleteSamples: ['EMPTY'] } },
+    });
+    await load(incompleteContent, 'incomplete-saved.json');
+    await expect(overlay.getByTestId('abundance-result')).toHaveAttribute('data-result-id', incompleteRecord.resultId);
+    await expect(overlay).toContainText('Verified replay');
+    // A false unit declaration is rejected without replacing the accepted result.
+    await overlay.getByLabel('Input units (values unchanged)', { exact: true }).selectOption('relative-abundance');
+    await overlay.getByRole('button', { name: 'Apply source details', exact: true }).click();
+    await expect(overlay.getByRole('alert')).toContainText('relative abundance');
+    await expect(overlay.getByTestId('abundance-result')).toHaveAttribute('data-result-id', incompleteRecord.resultId);
+    await load(savedContent, 'saved.json');
+    await expect(overlay.getByTestId('abundance-result')).toHaveAttribute('data-result-id', saved.resultId);
 
     const beforeRead = await page.evaluate(() => (window as any).abundanceFixture.counts());
     await load(csv, 'delayed.csv');

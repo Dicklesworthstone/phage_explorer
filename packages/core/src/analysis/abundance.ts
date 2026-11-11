@@ -4,17 +4,43 @@
  * CLR definition: https://scikit.bio/docs/dev/generated/skbio.stats.composition.clr.html
  * Pairing null: https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats/permutation_test.html
  */
-import { nmf, createSeededRng, type AbundanceTable, type SampleMetadata, type NMFResult } from './metagenomic-niche';
+import { nmf, createSeededRng, type SampleMetadata, type NMFResult } from './metagenomic-niche';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 export const ABUNDANCE_LIMITS = { bytes: 4 * 1024 * 1024, taxa: 100, samples: 500, cells: 50000, pairOperations: 50000000 } as const;
+export interface AbundanceSource {
+  kind: 'local' | 'demo'; description: string; reference: string | null;
+  /** Optional declarations belong to dataset version 2; no source metadata is inferred. */
+  study?: string;
+  version?: string;
+  license?: string | null;
+}
+export interface AbundanceNormalization {
+  /** One declaration covers the whole table. Mixed normalization is unsupported. */
+  kind: 'none' | 'sample-total';
+  description: string;
+}
+export interface AbundanceMissingness {
+  policy: 'complete-samples';
+  observedCells: number;
+  missingCells: number;
+  incompleteSamples: string[];
+  allMissingSamples: string[];
+  allMissingTaxa: string[];
+  /** At least one observation exists, and every observed value is zero. */
+  observedZeroTaxa: string[];
+  /** Complete, observed all-zero columns, excluded before pseudocounts. */
+  excludedCompleteSamples: string[];
+}
 export interface AbundanceDataset {
   format: 'phage-explorer-abundance';
-  version: 1;
+  version: 1 | 2;
   name: string;
   units: 'counts' | 'relative-abundance';
-  source: { kind: 'local' | 'demo'; description: string; reference: string | null };
-  table: AbundanceTable;
+  source: AbundanceSource;
+  normalization?: AbundanceNormalization;
+  /** Null is unobserved, never zero; only dataset version 2 admits missing cells. */
+  table: { taxa: string[]; samples: string[]; counts: Array<Array<number | null>> };
   metadata: SampleMetadata[];
 }
 export interface AbundanceOptions {
@@ -39,18 +65,21 @@ export interface AbundanceAnalysis {
   profiles: Array<{ taxon: string; factorWeights: number[]; primaryFactor: number;
     habitats: Array<{ habitat: string; samples: number; meanRelativeAbundance: number }> }>;
   diagnostics: { excludedTaxa: string[]; excludedSamples: string[]; constantTaxa: string[]; metadataSamples: number;
-    permutationMode: 'exact' | 'monte-carlo'; permutationsUsed: number; warnings: string[] };
+    permutationMode: 'exact' | 'monte-carlo'; permutationsUsed: number; warnings: string[];
+    /** Omitted for method v1 so historical record identities remain reproducible. */
+    missingness?: AbundanceMissingness };
 }
 const object = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-function label(value: unknown, context: string): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > 512 || /[\u0000-\u001f]/.test(value)) {
+function label(value: unknown, context: string, strict = false): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 512 || /[\u0000-\u001f]/.test(value) ||
+    strict && /[\u007f-\u009f]/.test(value)) {
     throw new Error(`${context} must be nonempty text (at most 512 characters, without control characters).`);
   }
   return value.trim();
 }
-function names(value: unknown, context: string, limit: number): string[] {
+function names(value: unknown, context: string, limit: number, strict = false): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > limit) throw new Error(`${context} requires 1–${limit} identifiers.`);
-  const result = value.map(item => label(item, context));
+  const result = Array.from(value, item => label(item, context, strict));
   if (new Set(result).size !== result.length) throw new Error(`${context} contains duplicate identifiers.`);
   return result;
 }
@@ -60,28 +89,62 @@ function checkBytes(content: string): void {
 
 /** Validate and snapshot before hashing, worker admission, or replacing a user's dataset. */
 export function validateAbundanceDataset(value: unknown): AbundanceDataset {
-  if (!object(value) || value.format !== 'phage-explorer-abundance' || value.version !== 1 || !object(value.table) ||
+  if (!object(value) || value.format !== 'phage-explorer-abundance' || ![1, 2].includes(value.version as number) || !object(value.table) ||
     !object(value.source) || !['local', 'demo'].includes(String(value.source.kind)) ||
     !['counts', 'relative-abundance'].includes(String(value.units))) throw new Error('Unsupported abundance dataset format, version, source or units.');
-  const taxa = names(value.table.taxa, 'Taxa', ABUNDANCE_LIMITS.taxa);
-  const samples = names(value.table.samples, 'Samples', ABUNDANCE_LIMITS.samples);
+  const version = value.version as AbundanceDataset['version'];
+  const source: AbundanceSource = {
+    kind: value.source.kind as 'local' | 'demo', description: label(value.source.description, 'Source description', version === 2),
+    reference: value.source.reference === null ? null : label(value.source.reference, 'Source reference', version === 2),
+  };
+  const sourceFields = ['kind', 'description', 'reference', 'study', 'version', 'license'];
+  if (version === 2 && (Object.keys(value).some(key => !['format', 'version', 'name', 'units', 'source', 'normalization', 'table', 'metadata'].includes(key)) ||
+    Object.keys(value.source).some(key => !sourceFields.includes(key)) ||
+    Object.keys(value.table).some(key => !['taxa', 'samples', 'counts'].includes(key)))) {
+    throw new Error('Unsupported abundance dataset, source or table fields. One normalization must apply to the entire table.');
+  }
+  for (const key of ['study', 'version', 'license'] as const) {
+    if (!Object.hasOwn(value.source, key)) continue;
+    if (version === 1) throw new Error('Source study, version and license declarations require abundance dataset version 2.');
+    const declared = value.source[key];
+    if (key === 'license' && declared === null) source.license = null;
+    else source[key] = label(declared, `Source ${key}`, true);
+  }
+  let normalization: AbundanceNormalization | undefined;
+  if (Object.hasOwn(value, 'normalization')) {
+    if (version === 1) throw new Error('A normalization declaration requires abundance dataset version 2.');
+    const declared = value.normalization;
+    if (!object(declared) || Object.keys(declared).length !== 2 ||
+      !Object.hasOwn(declared, 'kind') || !Object.hasOwn(declared, 'description') ||
+      declared.kind !== (value.units === 'counts' ? 'none' : 'sample-total')) {
+      throw new Error('Normalization must be {kind, description}: none for counts or sample-total for relative-abundance. Mixed or transformed scales are unsupported.');
+    }
+    normalization = { kind: declared.kind as AbundanceNormalization['kind'], description: label(declared.description, 'Normalization description', true) };
+  }
+  const taxa = names(value.table.taxa, 'Taxa', ABUNDANCE_LIMITS.taxa, version === 2);
+  const samples = names(value.table.samples, 'Samples', ABUNDANCE_LIMITS.samples, version === 2);
   const matrix = value.table.counts;
   if (taxa.length * samples.length > ABUNDANCE_LIMITS.cells || !Array.isArray(matrix) || matrix.length !== taxa.length) {
     throw new Error('Abundance matrix dimensions do not match the taxon and sample identifiers.');
   }
-  const counts = matrix.map((row, i) => {
+  const counts = Array.from(matrix, (row, i) => {
     if (!Array.isArray(row) || row.length !== samples.length) throw new Error(`Abundance row ${i + 1} has the wrong number of samples.`);
-    return row.map((cell, j) => {
+    return Array.from(row, (cell, j) => {
+      if (cell === null && version === 2) return null;
       if (typeof cell !== 'number' || !Number.isFinite(cell) || cell < 0 || cell > 1e12) {
-        throw new Error(`Abundance row ${i + 1}, sample ${j + 1} requires a finite nonnegative value at most 1e12; missing values are not zeros.`);
+        throw new Error(`Abundance row ${i + 1}, sample ${j + 1} requires a finite nonnegative value at most 1e12; missing values are not zeros and require null in dataset version 2.`);
       }
+      if (version === 2 && value.units === 'relative-abundance' && cell > 1) throw new Error('Each observed relative abundance must be between 0 and 1.');
       return cell;
     });
   });
   if (value.units === 'relative-abundance') {
     for (let s = 0; s < samples.length; s++) {
-      const total = counts.reduce((sum, row) => sum + row[s], 0);
-      if (total !== 0 && Math.abs(total - 1) > 1e-6) throw new Error(`Relative abundances in sample ${s + 1} must sum to 1 (or 0 for an empty sample).`);
+      const total = counts.reduce((sum, row) => sum + (row[s] ?? 0), 0);
+      const incomplete = counts.some(row => row[s] === null);
+      if (incomplete ? total > 1 + 1e-6 : total !== 0 && Math.abs(total - 1) > 1e-6) {
+        throw new Error(`Relative abundances in sample ${s + 1} must sum to 1 (or 0 for an empty sample); observed fractions in incomplete samples cannot sum above 1.`);
+      }
     }
   }
   const rawMetadata = value.metadata ?? [];
@@ -89,22 +152,21 @@ export function validateAbundanceDataset(value: unknown): AbundanceDataset {
   const seen = new Set<string>();
   const metadata: SampleMetadata[] = rawMetadata.map(row => {
     if (!object(row)) throw new Error('Sample metadata must be objects keyed by sampleId.');
-    const sampleId = label(row.sampleId, 'Metadata sampleId');
+    const sampleId = label(row.sampleId, 'Metadata sampleId', version === 2);
     if (!samples.includes(sampleId) || seen.has(sampleId)) throw new Error('Metadata contains an unknown or duplicate sampleId.');
     seen.add(sampleId);
     const fields = Object.entries(row).map(([key, cell]) => {
-      label(key, 'Metadata field');
+      label(key, 'Metadata field', version === 2);
       if (typeof cell === 'number' && Number.isFinite(cell)) return [key, cell] as const;
-      return [key, label(cell, 'Metadata value')] as const;
+      return [key, label(cell, 'Metadata value', version === 2)] as const;
     });
     // sampleId is canonical even when surrounding whitespace was supplied.
     return { ...Object.fromEntries(fields), sampleId };
   });
   const result: AbundanceDataset = {
-    format: 'phage-explorer-abundance', version: 1, name: label(value.name, 'Dataset name'),
+    format: 'phage-explorer-abundance', version, name: label(value.name, 'Dataset name', version === 2),
     units: value.units as AbundanceDataset['units'],
-    source: { kind: value.source.kind as 'local' | 'demo', description: label(value.source.description, 'Source description'),
-      reference: value.source.reference === null ? null : label(value.source.reference, 'Source reference') },
+    source, ...(normalization === undefined ? {} : { normalization }),
     table: { taxa, samples, counts }, metadata,
   };
   checkBytes(JSON.stringify(result));
@@ -150,13 +212,14 @@ export function parseAbundanceDataset(content: string, filename = 'Local abundan
   const counts = rows.slice(1).map((row, i) => {
     if (row.length !== samples.length + 1) throw new Error(`Abundance row ${i + 2} has the wrong number of columns.`);
     return row.slice(1).map((cell, j) => {
+      if (cell.trim() === '' || /^NA$/i.test(cell.trim())) return null;
       if (!/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(cell.trim())) {
-        throw new Error(`Abundance row ${i + 2}, column ${j + 2} is not a nonnegative number; blank/NA values are not zeros.`);
+        throw new Error(`Abundance row ${i + 2}, column ${j + 2} is not a nonnegative number or an explicit blank/NA missing value.`);
       }
       return Number(cell);
     });
   });
-  return validateAbundanceDataset({ format: 'phage-explorer-abundance', version: 1, name: filename,
+  return validateAbundanceDataset({ format: 'phage-explorer-abundance', version: counts.some(row => row.includes(null)) ? 2 : 1, name: filename,
     units: 'counts', source: { kind: 'local', description: filename, reference: null },
     table: { taxa: rows.slice(1).map(row => row[0]), samples, counts }, metadata: [] });
 }
@@ -188,10 +251,32 @@ export function importAbundanceMetadata(content: string, input: AbundanceDataset
   return validateAbundanceDataset({ ...dataset, metadata });
 }
 
+/** Coverage of supplied observations, before filtering, pseudocounts or any computation. */
+export function describeAbundanceMissingness(input: AbundanceDataset): AbundanceMissingness {
+  const { table } = validateAbundanceDataset(input);
+  const missingCells = table.counts.reduce((total, row) => total + row.filter(cell => cell === null).length, 0);
+  return {
+    policy: 'complete-samples', observedCells: table.taxa.length * table.samples.length - missingCells, missingCells,
+    incompleteSamples: table.samples.filter((_, s) => table.counts.some(row => row[s] === null)),
+    allMissingSamples: table.samples.filter((_, s) => table.counts.every(row => row[s] === null)),
+    allMissingTaxa: table.taxa.filter((_, t) => table.counts[t].every(cell => cell === null)),
+    observedZeroTaxa: table.taxa.filter((_, t) => table.counts[t].some(cell => cell !== null) && table.counts[t].every(cell => cell === null || cell === 0)),
+    excludedCompleteSamples: table.samples.filter((_, s) => table.counts.every(row => row[s] === 0)),
+  };
+}
+
+/** One common observed sample set preserves the submitted composition for every pair and factor. */
+function retainedIndices(table: AbundanceDataset['table']): { taxa: number[]; samples: number[] } {
+  const samples = table.samples.map((_, s) => s).filter(s =>
+    table.counts.every(row => row[s] !== null) && table.counts.some(row => row[s]! > 0));
+  const taxa = table.taxa.map((_, t) => t).filter(t => samples.some(s => table.counts[t][s]! > 0));
+  return { taxa, samples };
+}
+
 export function resolveAbundanceOptions(dataset: AbundanceDataset, options: Partial<AbundanceOptions> = {}): AbundanceOptions {
+  const retained = retainedIndices(dataset.table);
   const resolved = { pseudocount: dataset.units === 'counts' ? 1 : 1e-6,
-    numNiches: Math.max(1, Math.min(3, dataset.table.counts.filter(row => row.some(x => x > 0)).length,
-      dataset.table.samples.filter((_, s) => dataset.table.counts.some(row => row[s] > 0)).length)), correlationThreshold: 0.3,
+    numNiches: Math.max(1, Math.min(3, retained.taxa.length, retained.samples.length)), correlationThreshold: 0.3,
     qvalueThreshold: 0.05, permutations: 199, seed: 42, includeNegative: true, ...options };
   for (const key of Object.keys(options)) if (!Object.hasOwn(resolved, key) || !['pseudocount', 'numNiches', 'correlationThreshold', 'qvalueThreshold', 'permutations', 'seed', 'includeNegative'].includes(key)) {
     throw new Error(`Unsupported abundance parameter: ${key}`);
@@ -262,15 +347,15 @@ export function analyzeAbundanceDataset(input: AbundanceDataset, options: Partia
   const dataset = validateAbundanceDataset(input);
   const config = resolveAbundanceOptions(dataset, options);
   const table = dataset.table;
-  const ti = table.taxa.map((_, i) => i).filter(i => table.counts[i].some(x => x > 0));
-  const si = table.samples.map((_, s) => s).filter(s => ti.some(i => table.counts[i][s] > 0));
-  if (ti.length < 2 || si.length < 3) throw new Error('Association analysis requires at least 2 nonempty taxa and 3 nonempty samples; empty data cannot become evidence via pseudocounts.');
+  const { taxa: ti, samples: si } = retainedIndices(table);
+  if (ti.length < 2 || si.length < 3) throw new Error('Association analysis requires at least 2 nonempty taxa and 3 complete nonempty samples; missing or empty data cannot become evidence via pseudocounts.');
   if (config.numNiches > Math.min(ti.length, si.length)) throw new Error('Number of factors exceeds the retained taxa/sample dimensions.');
   if (ti.length * (ti.length - 1) / 2 * si.length * config.permutations > ABUNDANCE_LIMITS.pairOperations) {
     throw new Error('Association workload exceeds the supported limit. Reduce taxa, samples or permutations.');
   }
   const taxa = ti.map(i => table.taxa[i]), samples = si.map(i => table.samples[i]);
-  const raw = ti.map(i => si.map(s => table.counts[i][s]));
+  // The shared sample mask above proves these cells are observed. Null never enters an estimator.
+  const raw = ti.map(i => si.map(s => table.counts[i][s]!));
   const totals = si.map((_, s) => raw.reduce((sum, row) => sum + row[s], 0));
   const relativeAbundance = raw.map(row => row.map((x, s) => x / totals[s]));
   // Each sample, NOT each taxon's trajectory, is a composition. Compute logs
@@ -326,13 +411,16 @@ export function analyzeAbundanceDataset(input: AbundanceDataset, options: Partia
     diagnostics: { excludedTaxa: table.taxa.filter((_, i) => !ti.includes(i)), excludedSamples: table.samples.filter((_, s) => !si.includes(s)),
       constantTaxa: taxa.filter((_, i) => !standardized[i]), metadataSamples: samples.filter(s => metadata.has(s)).length,
       permutationMode: mode, permutationsUsed: orders.length,
+      ...(dataset.version === 2 ? { missingness: describeAbundanceMissingness(dataset) } : {}),
       warnings: ['CLR correlations are exploratory associations, not SparCC, absolute-abundance correlations, host links or causal interactions.',
         'Unrestricted pairing permutations assume exchangeable samples; repeated measures, batches and time series need an appropriate design.',
         'BH adjustment covers all nonconstant taxon pairs; its FDR interpretation requires appropriate dependence assumptions.',
-        'Zeros, pseudocounts and retained taxa affect CLR coordinates. Factor weights are descriptive NMF memberships, not calibrated probabilities.'] } };
+        'Zeros, pseudocounts and retained taxa affect CLR coordinates. Factor weights are descriptive NMF memberships, not calibrated probabilities.',
+        ...(dataset.version === 2 ? ['Only samples observed for every submitted taxon enter CLR, NMF, associations and habitat summaries. Incomplete samples are excluded before removing zero taxa; missing values are never imputed. This complete-sample selection may bias results when observation coverage is selective.'] : [])] } };
 }
 
 const METHOD = { id: 'abundance-clr-nmf', version: '1', implementation: 'sample-wise CLR; Pearson |r| pairing permutation; BH; seeded multiplicative-update NMF' };
+const COMPLETE_SAMPLE_METHOD = { ...METHOD, version: '2', implementation: 'complete samples across all submitted taxa; sample-wise CLR; Pearson |r| pairing permutation; BH; seeded multiplicative-update NMF' };
 const REFERENCES = [
   { id: 'clr', version: 'Aitchison-1986', description: 'Per-sample log abundance minus mean log abundance across retained taxa.' },
   { id: 'permutation', version: 'Phipson-Smyth-2010', description: 'Exact pairing enumeration when feasible; otherwise (extreme + 1)/(draws + 1). Two-sided statistic is |Pearson r|.' },
@@ -348,7 +436,7 @@ export async function createAbundanceAnalysisRecord(dataset: AbundanceDataset, r
     ? { label, kind: 'demo' as const, value: analysisJson(value), units: 'records' as const, coverage, limitations,
       assumptions: ['Synthetic abundance data explicitly selected by the user.', ...limitations] }
     : { label, kind: 'fitted-estimate' as const, value: analysisJson(value), units: 'records' as const, coverage, limitations, fit };
-  return createAnalysisRecord({ method: METHOD, inputs: [{ id: 'abundanceData', accession: null, source: data.source.kind,
+  return createAnalysisRecord({ method: data.version === 1 ? METHOD : COMPLETE_SAMPLE_METHOD, inputs: [{ id: 'abundanceData', accession: null, source: data.source.kind,
     description: data.source.description, data: analysisJson(data) }], parameters: analysisJson(result.options) as AnalysisRecord['parameters'],
     seed: result.options.seed, references: REFERENCES,
     fields: { associations: inferred('Exploratory CLR associations (raw and BH-adjusted permutation p-values)', result.associations),
@@ -358,10 +446,13 @@ export async function createAbundanceAnalysisRecord(dataset: AbundanceDataset, r
 
 /** Recompute; never accept stored fitted outputs merely because their hashes agree. */
 export async function replayAbundanceAnalysis(content: string): Promise<{ dataset: AbundanceDataset; result: AbundanceAnalysis; record: AnalysisRecord }> {
-  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id, methodVersion: METHOD.version });
-  if (saved.method.implementation !== METHOD.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(REFERENCES)) ||
+  const saved = await parseAnalysisRecord(content, { methodId: METHOD.id });
+  if (![METHOD.version, COMPLETE_SAMPLE_METHOD.version].includes(saved.method.version)) throw new Error('Abundance method version is incompatible.');
+  const method = saved.method.version === METHOD.version ? METHOD : COMPLETE_SAMPLE_METHOD;
+  if (saved.method.implementation !== method.implementation || JSON.stringify(analysisJson(saved.references)) !== JSON.stringify(analysisJson(REFERENCES)) ||
     saved.inputs.length !== 1 || saved.inputs[0].id !== 'abundanceData') throw new Error('Abundance method, reference or input contract differs.');
   const dataset = validateAbundanceDataset(saved.inputs[0].data);
+  if (String(dataset.version) !== method.version) throw new Error('Abundance dataset and method versions are incompatible.');
   const result = analyzeAbundanceDataset(dataset, saved.parameters as Partial<AbundanceOptions>);
   const record = await createAbundanceAnalysisRecord(dataset, result);
   if (record.cacheKey !== saved.cacheKey || record.resultId !== saved.resultId) throw new Error('Recomputed abundance result differs from the saved analysis.');

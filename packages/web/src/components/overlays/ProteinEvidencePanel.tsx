@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
-import type { ProteinReferenceBundle, ProteinReferenceInputs } from '../../../../core/src/protein-reference';
+import type { ProteinReferenceBundle, ProteinReferenceInputs, ProteinAlignmentInput } from '../../../../core/src/protein-reference';
 import type { PhageFull } from '../../../../core/src/types';
-import { exportProteinStructureTsv, type ProteinStructureOptions } from '../../../../core/src/analysis/tail-fiber-structure';
+import { exportProteinStructureTsv, exportProteinAlignmentTsv, type ProteinStructureOptions,
+  type ProteinAlignmentExperiment } from '../../../../core/src/analysis/tail-fiber-structure';
 import { ProteinEvidenceSession, readProteinEvidenceFile, type ProteinEvidenceExperiment, type ProteinEvidenceOrigin } from '../../workers/ProteinEvidenceSession';
 import { OverlayStatCard, OverlayStatGrid } from './primitives';
 
@@ -107,6 +108,130 @@ export function ProteinEvidenceResults({ experiment, origin, verified }: {
   </section>;
 }
 
+
+export function ProteinAlignmentResults({ experiment, verified }: {
+  experiment: ProteinAlignmentExperiment; verified: boolean;
+}): React.ReactElement {
+  const { input, result, record } = experiment;
+  const [start, setStart] = useState(1), [error, setError] = useState<string | null>(null);
+  useEffect(() => { setStart(1); setError(null); }, [record.resultId]);
+  const first = Math.max(1, Math.min(result.protein.length, Number.isSafeInteger(start) ? start : 1));
+  const rows = result.residues.slice(first - 1, first + 24);
+  const filename = 'protein-alignment-' + result.protein.id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 80) + '-' + record.resultId.slice(0, 12);
+  const save = (format: 'json' | 'tsv') => {
+    try {
+      download(format === 'json' ? serializeAnalysisRecord(record) : exportProteinAlignmentTsv(record), filename + '.' + format,
+        format === 'json' ? 'application/json' : 'text/tab-separated-values');
+      setError(null);
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  return <section aria-label="Supplied protein alignment results">
+    <h4>{input.name}: observed protein alignment diversity</h4>
+    <p>{input.source.kind === 'demo' ? 'User-declared teaching demonstration.' : 'User-supplied local alignment.'}
+      {' '}{verified ? 'Fresh replay verified.' : 'Fresh analysis.'} Target record: {result.protein.id}
+      {result.protein.description ? ' — ' + result.protein.description : ''}.</p>
+    <p>Declared source: {input.source.description}. Reference: {input.source.reference ?? 'No citation supplied'}.
+      {' '}These are supplied labels and attribution; no current genome, accession or CDS mapping has been verified.</p>
+    <OverlayStatGrid columns={4}>
+      <OverlayStatCard label="Target residues" value={result.protein.length} />
+      <OverlayStatCard label="Residues with entropy" value={result.coverage.entropyResidues + ' / ' + result.protein.length} />
+      <OverlayStatCard label="Alignment rows / columns" value={result.alignment.rows + ' / ' + result.alignment.columns} />
+      <OverlayStatCard label="Unknown target residues" value={result.coverage.unknownTargetResidues} />
+    </OverlayStatGrid>
+    <p>Each canonical amino acid contributes one observation. Gaps and X/B/Z/J are excluded and counted separately.
+      {' '}Entropy is unavailable with fewer than two observations; zero means every observed amino acid is the same.
+      {' '}This alignment supplies no structural geometry or host-interaction evidence.</p>
+    <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+      <button type="button" onClick={() => save('json')}>Export alignment experiment JSON</button>
+      <button type="button" onClick={() => save('tsv')}>Export alignment residue TSV</button>
+    </div>
+    {error && <p role="alert">{error}</p>}
+    <label>First aligned protein residue <input aria-label="First aligned protein residue" type="number" min={1} max={result.protein.length}
+      value={first} onChange={event => setStart(Number(event.target.value))} /></label>
+    <button type="button" disabled={first === 1} onClick={() => setStart(Math.max(1, first - 25))}>Previous alignment residues</button>
+    <button type="button" disabled={first + 24 >= result.protein.length} onClick={() => setStart(Math.min(result.protein.length, first + 25))}>Next alignment residues</button>
+    <p>Showing target positions {first}–{Math.min(first + 24, result.protein.length)}. Target positions and alignment columns are one-based.
+      {' '}JSON and TSV retain every target residue, including missing observations.</p>
+    <div style={{ overflowX: 'auto' }}><table>
+      <caption>Observed amino-acid counts and diversity per target residue</caption>
+      <thead><tr><th>Target position</th><th>AA</th><th>Alignment column</th><th>Observed / rows</th><th>Gaps</th><th>Unknowns</th><th>Counts</th><th>Entropy (bits)</th></tr></thead>
+      <tbody>{rows.map(row => <tr key={row.position}>
+        <td>{row.position}</td><td>{row.aminoAcid}</td><td>{row.column}</td><td>{row.observed} / {row.total}</td>
+        <td>{row.gaps}</td><td>{row.unknown}</td><td>{Object.entries(row.counts).map(([aa, count]) => aa + ':' + count).join(', ') || 'No observations'}</td>
+        <td>{shown(row.entropyBits, 4)}</td>
+      </tr>)}</tbody>
+    </table></div>
+    <details><summary>Alignment method, attribution and limitations</summary>
+      <p>{record.method.id}, version {record.method.version}. {record.method.implementation}</p>
+      <ul>{result.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul>
+      <p>Input identity: {record.inputs[0].sha256}</p><p>Result identity: {record.resultId}</p>
+    </details>
+  </section>;
+}
+
+/** An ordinary local MSA is independent of the optional mapped-complex input. */
+function ProteinAlignmentWorkbench({ context }: { context: object }): React.ReactElement {
+  const session = useMemo(() => new ProteinEvidenceSession(() => new Worker(new URL('../../workers/protein-evidence.worker.ts', import.meta.url), { type: 'module' })), []);
+  const [revision, setRevision] = useState(0), [proteinId, setProteinId] = useState('');
+  const scope = useMemo(() => ({ context, revision }), [context, revision]);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const state = snapshot.scope === scope ? snapshot : null;
+  const [loaded, setLoaded] = useState<{ context: object; input: ProteinAlignmentInput; origin: Extract<ProteinEvidenceOrigin, { name: string }> } | null>(null);
+  const [description, setDescription] = useState(''), [reference, setReference] = useState(''), [demonstration, setDemonstration] = useState(false);
+  useEffect(() => { session.activate(); return session.deactivate; }, [session]);
+  useEffect(() => { session.setScope(scope); }, [session, scope]);
+  useEffect(() => {
+    if (snapshot.scope !== scope || !snapshot.alignment || !snapshot.origin || snapshot.origin.kind === 'current-cds') return;
+    setLoaded({ context, input: snapshot.alignment, origin: snapshot.origin });
+    setProteinId(snapshot.alignmentAccepted?.options.proteinId ?? snapshot.alignment.rows[0].id);
+  }, [snapshot.scope, snapshot.alignment, snapshot.alignmentAccepted, snapshot.origin, scope, context]);
+  const current = loaded?.context === context ? loaded : null;
+  const read = (file: File, replay: boolean) => {
+    const source: ProteinAlignmentInput['source'] = { kind: demonstration ? 'demo' : 'local',
+      description: description.trim() || file.name, reference: reference.trim() || null };
+    void session.run(scope, async () => replay
+      ? { kind: 'replay-alignment', content: await readProteinEvidenceFile(file, 'experiment') }
+      : { kind: 'inspect-alignment', content: await readProteinEvidenceFile(file, 'alignment'), name: file.name, source },
+    { kind: replay ? 'saved-experiment' : 'reference-file', name: file.name });
+  };
+  const select = (id: string) => { session.cancel(); setRevision(value => value + 1); setProteinId(id); };
+  return <section aria-label="Supplied protein alignment workbench">
+    <h4>Analyze your own aligned protein FASTA</h4>
+    <p>Load 2–256 already aligned protein records to measure observed amino-acid diversity. No structure, embedding or known binding partner is required.
+      {' '}Use canonical amino acids, X/B/Z/J for unknown residues and - for gaps. Files stay in this browser.</p>
+    <fieldset disabled={!!state?.busy}>
+      <legend>Attribution for the next FASTA import</legend>
+      <label>Alignment source description <input aria-label="Alignment source description" value={description} maxLength={512}
+        placeholder="Defaults to the selected filename" onChange={event => setDescription(event.target.value)} /></label>
+      <label>Alignment source citation <input aria-label="Alignment source citation" value={reference} maxLength={512}
+        placeholder="Optional source, publication or notebook reference" onChange={event => setReference(event.target.value)} /></label>
+      <label><input type="checkbox" checked={demonstration} onChange={event => setDemonstration(event.target.checked)} /> Synthetic teaching alignment</label>
+      <label>Load aligned protein FASTA <input aria-label="Load aligned protein FASTA" type="file" accept=".fa,.faa,.fasta,.fas,.afa,.txt,text/plain"
+        onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, false); }} /></label>
+      <label>Replay alignment experiment JSON <input aria-label="Replay alignment experiment JSON" type="file" accept=".json,application/json"
+        onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, true); }} /></label>
+    </fieldset>
+    <p>Attribution fields apply when a FASTA is loaded; saved experiments retain their embedded attribution. Limits: 2 MiB, 20,000 columns and 1,000,000 alignment cells.</p>
+    {current && <p>Loaded alignment: {current.input.name} · {current.input.rows.length} records · {current.input.rows[0].alignedSequence.length} columns.
+      {' '}Source: {current.input.source.description}; {current.input.source.kind === 'demo' ? 'teaching demonstration' : 'local data'}.
+      {' '}It is independent of the current genome and selected gene.</p>}
+    <fieldset disabled={!current || !!state?.busy}>
+      <legend>Target protein record</legend>
+      <label>Alignment target protein <select aria-label="Alignment target protein" value={proteinId} onChange={event => select(event.target.value)}>
+        {current?.input.rows.map(row => <option key={row.id} value={row.id}>{row.id}{row.description ? ' — ' + row.description : ''}</option>)}
+      </select></label>
+      <button type="button" disabled={!current || !proteinId} onClick={() => {
+        if (current && proteinId) void session.run(scope, { kind: 'analyze-alignment', input: current.input, options: { proteinId } },
+          { kind: 'reference-file', name: current.origin.name });
+      }}>Analyze supplied protein alignment</button>
+    </fieldset>
+    {state?.busy && <button type="button" onClick={session.cancel}>Cancel alignment analysis</button>}
+    {state?.phase && <p aria-live="polite">{state.phase}</p>}
+    {state?.error && <p role="alert">{state.error}</p>}
+    {state?.alignmentAccepted && <ProteinAlignmentResults experiment={state.alignmentAccepted} verified={state.verified} />}
+  </section>;
+}
+
 type Settings = { proteinId: string; chain: string; cutoff: string; separation: string; contactScope: 'chain' | 'assembly' };
 const defaults: Settings = { proteinId: '', chain: 'auto', cutoff: '8', separation: '3', contactScope: 'assembly' };
 
@@ -168,6 +293,7 @@ export function ProteinEvidencePanel({ repository, phage, selectedGeneId, inputs
     <h3>Protein alignment and structural evidence</h3>
     <p>Compute finite-sample amino-acid diversity and observed C-alpha neighborhoods from exact source-backed inputs. Files stay in this browser.
       {' '}The method reports mapped distances and missing coverage; it does not estimate surface area, affinity or mutation effects.</p>
+    <ProteinAlignmentWorkbench context={context} />
     <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
       <label>Load protein reference JSON <input aria-label="Load protein reference JSON" type="file" accept=".json,application/json"
         onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) read(file, 'reference'); }} /></label>

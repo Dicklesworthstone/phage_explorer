@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import snapshot from '../../../data/protein-references/lambda-lamb-v1.json';
-import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle } from './protein-reference';
+import { parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinReferenceBundle,
+  parseProteinAlignmentFasta, validateProteinAlignmentInput, PROTEIN_ALIGNMENT_LIMITS } from './protein-reference';
 
 async function changed(edit: (bundle: ProteinReferenceBundle) => void): Promise<ProteinReferenceBundle> {
   const bundle = structuredClone(snapshot) as ProteinReferenceBundle;
@@ -66,5 +67,46 @@ describe('Real protein input snapshot validation; not inference calibration', ()
     const bundle = structuredClone(snapshot);
     bundle.chains[0].coordinates[0].x = NaN;
     await expect(parseProteinReferenceBundle(bundle)).rejects.toThrow('finite');
+  });
+});
+
+describe('Supplied protein alignments without invented complex inputs', () => {
+  test('preserves complete rows, local labels, descriptions and declared source metadata', async () => {
+    const source = { kind: 'local' as const, description: 'Private laboratory MSA, run 17', reference: 'Alignment notebook 2026-11-11' };
+    const input = parseProteinAlignmentFasta('\uFEFF>sample-1 complete target\r\nac x-\r\nG\r\n>sample-2 homolog\r\nAZBCG\r\n', 'proteins.faa', source);
+    expect(input.rows).toEqual([
+      { id: 'sample-1', description: 'complete target', alignedSequence: 'ACX-G' },
+      { id: 'sample-2', description: 'homolog', alignedSequence: 'AZBCG' },
+    ]);
+    expect(input.source).toEqual(source);
+    expect(Object.keys(input).sort()).toEqual(['format', 'name', 'rows', 'source', 'version']);
+    expect('cds' in input || 'chains' in input || 'embeddings' in input).toBe(false);
+    expect(validateProteinAlignmentInput(JSON.parse(JSON.stringify(input)))).toEqual(input);
+    await expect(parseProteinReferenceBundle(input)).rejects.toThrow('Invalid protein reference');
+  });
+
+  test.each([
+    ['unaligned rows', '>one\nAC\n>two\nA'],
+    ['duplicate identifiers', '>same first\nAC\n>same second\nAC'],
+    ['all-gap columns', '>one\nA-C\n>two\nA-C'],
+    ['gap-only record', '>one\n--\n>two\nAC'],
+    ['stop codon', '>one\nA*\n>two\nAC'],
+    ['dot gap', '>one\nA.\n>two\nAC'],
+    ['missing header', 'AC\n>two\nAC'],
+    ['only one record', '>one\nAC'],
+    ['empty header', '>\nAC\n>two\nAC'],
+  ])('rejects %s instead of modifying evidence', (_name, content) => {
+    expect(() => parseProteinAlignmentFasta(content, 'bad.faa')).toThrow();
+  });
+
+  test('refuses unsupported source claims and unbounded input before computation', () => {
+    const input = parseProteinAlignmentFasta('>one\nAC\n>two\nAC', 'bounded.faa');
+    expect(() => validateProteinAlignmentInput({ ...input, chains: [] })).toThrow('unsupported');
+    expect(() => validateProteinAlignmentInput({ ...input, source: { ...input.source, kind: 'catalog' } })).toThrow('source');
+    expect(() => validateProteinAlignmentInput({ ...input, source: { ...input.source, reference: '' } })).toThrow('reference');
+    expect(() => parseProteinAlignmentFasta('>one\n' + 'A'.repeat(PROTEIN_ALIGNMENT_LIMITS.columns + 1), 'too-wide.faa')).toThrow('columns');
+    expect(() => parseProteinAlignmentFasta(' '.repeat(PROTEIN_ALIGNMENT_LIMITS.bytes + 1), 'too-large.faa')).toThrow('2 MiB');
+    expect(() => parseProteinAlignmentFasta(Array.from({ length: 257 }, (_, i) => '>r' + i + '\nAA').join('\n'), 'too-many.faa')).toThrow('256');
+    expect(() => validateProteinAlignmentInput({ ...input, rows: Array.from({ length: 51 }, (_, i) => ({ id: 'r' + i, description: '', alignedSequence: 'A'.repeat(20000) })) })).toThrow('cells');
   });
 });

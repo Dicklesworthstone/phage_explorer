@@ -26,9 +26,20 @@ export async function readTerminalGenomeFile(path: string): Promise<GenomeImport
   return importLocalGenomes({ name: basename(path), text });
 }
 
+/** Workflow sources are already in memory; never interpret them as file paths. */
+export async function readTerminalGenomeBundle(content: string): Promise<GenomeImportResult> {
+  if (typeof content !== 'string' || content.length > GENOME_IMPORT_LIMITS.bytes
+    || new TextEncoder().encode(content).length > GENOME_IMPORT_LIMITS.bytes) throw new Error('Genome bundle exceeds 10 MiB.');
+  const envelope: unknown = JSON.parse(content);
+  if (!envelope || typeof envelope !== 'object' || !('format' in envelope)
+    || envelope.format !== 'phage-explorer-local-genomes') throw new Error('Expected a portable local genome bundle.');
+  return importLocalGenomes({ name: 'workflow-genomes.json', text: content });
+}
+
 if (parentPort) {
   const port = parentPort;
-  void readTerminalGenomeFile(workerData?.path)
+  const fromBundle = workerData && typeof workerData === 'object' && Object.keys(workerData).join('|') === 'content';
+  void (fromBundle ? readTerminalGenomeBundle(workerData.content) : readTerminalGenomeFile(workerData?.path))
     .then(result => port.postMessage({ kind: 'result', result }))
     .catch((cause: unknown) => port.postMessage({ kind: 'error', message: cause instanceof Error ? cause.message : 'Genome import failed.' }));
 }

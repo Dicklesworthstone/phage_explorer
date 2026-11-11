@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import snapshot from '../../../../data/protein-references/lambda-lamb-v1.json';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { parseProteinReferenceBundle } from '../../../core/src/protein-reference';
+import { parseProteinReferenceBundle, parseProteinAlignmentFasta, PROTEIN_ALIGNMENT_LIMITS } from '../../../core/src/protein-reference';
 import { type ProteinStructureOptions } from '../../../core/src/analysis/tail-fiber-structure';
 import {
   ProteinEvidenceSession, executeProteinEvidenceRequest, readProteinEvidenceFile,
@@ -186,5 +186,117 @@ describe('actual protein evidence worker', () => {
       assert.equal(await session.run(scope, await request({ contactCutoffAngstrom: 30 }), origin), false);
       assert.equal(started, true); assert.equal(session.getSnapshot().busy, false); assert.equal(session.getSnapshot().accepted, null);
     } finally { stop(); session.deactivate(); }
+  }, 20000);
+});
+
+
+describe('standalone aligned protein evidence', () => {
+  const fasta = '>target supplied row\nA-CXG\n>h1\nA-CYG\n>h2\nC--ZX\n>h3\nXTC-W\n';
+  const input = () => parseProteinAlignmentFasta(fasta, 'local-proteins.faa',
+    { kind: 'local', description: 'Private source alignment', reference: 'Notebook 17' });
+  const alignmentRequest = (proteinId = 'target'): ProteinEvidenceRequest => ({ kind: 'analyze-alignment', input: input(), options: { proteinId } });
+
+  it('imports ordinary FASTA, computes independent counts, and replays exact source metadata', async () => {
+    const inspected = await executeProteinEvidenceRequest({ kind: 'inspect-alignment', content: fasta,
+      name: 'local-proteins.faa', source: input().source });
+    if (inspected.kind !== 'alignment') throw new Error('Expected supplied alignment');
+    assert.deepEqual(inspected.input, input());
+    assert.equal('chains' in inspected.input, false);
+    const first = await executeProteinEvidenceRequest(alignmentRequest());
+    if (first.kind !== 'alignment-experiment') throw new Error('Expected alignment experiment');
+    assert.deepEqual(first.experiment.result.residues[0].counts, { A: 2, C: 1 });
+    assert.ok(Math.abs(first.experiment.result.residues[0].entropyBits! - 0.9182958340544896) < 1e-14);
+    assert.equal(first.experiment.result.residues[2].entropyBits, null);
+    const text = serializeAnalysisRecord(first.experiment.record);
+    const replay = await executeProteinEvidenceRequest({ kind: 'replay-alignment', content: text });
+    if (replay.kind !== 'alignment-experiment') throw new Error('Expected alignment replay');
+    assert.equal(replay.verified, true);
+    assert.equal(replay.experiment.record.resultId, first.experiment.record.resultId);
+    assert.deepEqual(replay.experiment.input, input());
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'replay', content: text }), /method/i);
+    const forged = structuredClone(first.experiment.record);
+    forged.fields.diversity.value = { invented: true };
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'replay-alignment',
+      content: serializeAnalysisRecord(await createAnalysisRecord(forged)) }), /differs/);
+  });
+
+  it('binds accepted results to target and provenance, and clears them on changed view scope', async () => {
+    const { session, scope, workers } = workspace();
+    try {
+      const submitted = alignmentRequest(), wrong = await executeProteinEvidenceRequest(alignmentRequest('h3'));
+      const work = session.run(scope, submitted, origin); await tick();
+      workers[0].emit(wrong);
+      assert.equal(await work, false);
+      assert.match(session.getSnapshot().error!, /source|target|identity/);
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+      const good = session.run(scope, submitted, origin); await tick();
+      workers[1].emit(await executeProteinEvidenceRequest(submitted));
+      assert.equal(await good, true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().alignmentAccepted!.result.protein.id, 'target');
+      assert.equal(session.getSnapshot().accepted, null);
+      session.setScope({ ...scope, revision: 1 });
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+      assert.equal(session.getSnapshot().alignment, null);
+    } finally { session.deactivate(); }
+  });
+
+  it('captures inputs, refuses renamed source replies, and cannot claim a verified genomic CDS', async () => {
+    const { session, scope, workers } = workspace();
+    try {
+      const submitted = alignmentRequest();
+      const pending = session.run(scope, submitted, origin);
+      if (submitted.kind === 'analyze-alignment') submitted.input.source.description = 'Late mutation';
+      await tick();
+      const sent = workers[0].requests[0];
+      assert.equal(sent.kind === 'analyze-alignment' && sent.input.source.description, 'Private source alignment');
+      const response = await executeProteinEvidenceRequest(sent);
+      if (response.kind !== 'alignment-experiment') throw new Error('Expected experiment');
+      response.experiment.record.inputs[0].source = 'external';
+      response.experiment.record = await createAnalysisRecord(response.experiment.record);
+      workers[0].emit(response);
+      assert.equal(await pending, false);
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+      assert.equal(await session.run(scope, alignmentRequest(), { kind: 'current-cds',
+        genomeAccession: 'NC_001416.1', geneId: 42, proteinAccession: 'P03749' }), false);
+      assert.match(session.getSnapshot().error!, /cannot assert a verified genomic CDS/);
+      assert.equal(workers.length, 1);
+    } finally { session.deactivate(); }
+  });
+
+  it('rejects oversized or malformed alignment imports without accepting partial evidence', async () => {
+    let reads = 0;
+    await assert.rejects(readProteinEvidenceFile({ size: PROTEIN_ALIGNMENT_LIMITS.bytes + 1,
+      arrayBuffer: async () => { reads++; return new ArrayBuffer(0); } }, 'alignment'), /limit/);
+    assert.equal(reads, 0);
+    await assert.rejects(executeProteinEvidenceRequest({ kind: 'inspect-alignment', content: '>one\nA-C\n>two\nA-C',
+      name: 'bad.faa', source: input().source }), /all-gap/);
+    const { session, scope, workers } = workspace();
+    let release!: (value: ProteinEvidenceRequest) => void;
+    try {
+      const pending = session.run(scope, () => new Promise(done => { release = done; }), origin);
+      session.cancel(); assert.equal(await pending, false);
+      release(alignmentRequest()); await tick();
+      assert.equal(workers.length, 0);
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+    } finally { session.deactivate(); }
+  });
+
+  it('runs FASTA import, a selected target and fresh replay through the actual disposable worker', async () => {
+    const scope = {}, session = new ProteinEvidenceSession(() => new Worker(new URL('./protein-evidence.worker.ts', import.meta.url), { type: 'module' }));
+    session.activate(); session.setScope(scope);
+    try {
+      assert.equal(await session.run(scope, { kind: 'inspect-alignment', content: fasta, name: 'local-proteins.faa', source: input().source }, origin), true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().alignment!.rows.length, 4);
+      assert.equal(session.getSnapshot().alignmentAccepted, null);
+      assert.equal(await session.run(scope, alignmentRequest('h3'), origin), true, session.getSnapshot().error ?? '');
+      const first = session.getSnapshot().alignmentAccepted!;
+      assert.equal(first.result.protein.sequence, 'XTCW');
+      assert.equal(first.result.residues[1].entropyBits, null);
+      assert.equal(await session.run(scope, { kind: 'replay-alignment', content: serializeAnalysisRecord(first.record) },
+        { kind: 'saved-experiment', name: 'saved-alignment.json' }), true, session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().verified, true);
+      assert.equal(session.getSnapshot().alignmentAccepted!.record.resultId, first.record.resultId);
+      assert.equal(session.getSnapshot().accepted, null);
+    } finally { session.deactivate(); }
   }, 20000);
 });

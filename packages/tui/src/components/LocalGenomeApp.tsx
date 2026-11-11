@@ -1,21 +1,17 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
 import type { LocalGenomeView } from '../../../core/src/genome-import';
-import { terminalGenomeLabel, type TerminalGenomeSession, type TerminalGenomeAccepted } from '../local-genome-session';
+import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession, type TerminalGenomeAccepted } from '../local-genome-session';
+import { TerminalResearchSession } from '../terminal-research-session';
 import { registerCommand, unregisterCommand } from '../commands/registry';
 import { App } from './App';
 import { readTerminalSize } from './terminal-size';
+import { ResearchWorkflowView } from './ResearchWorkflowView';
 
 const IMPORT_COMMAND = 'overlay.genomeImport';
-/** Literal filesystem paths only; neither shell commands nor environment variables are evaluated. */
-export function terminalGenomePath(value: string): string {
-  if (!value || /[\u0000-\u001f\u007f-\u009f]/.test(value)) throw new Error('Enter a local path without control characters.');
-  return resolve(value === '~' ? homedir() : value.startsWith('~/') ? `${homedir()}/${value.slice(2)}` : value);
-}
+const WORKFLOW_COMMAND = 'research.workflow';
 export function currentTerminalGenomeView(): LocalGenomeView | undefined {
   const state = usePhageStore.getState();
   // App loads the selected record asynchronously. Never attach an old record's
@@ -33,7 +29,7 @@ export function installTerminalGenomes(accepted: TerminalGenomeAccepted): void {
   usePhageStore.setState({
     phages: accepted.phages, currentPhageIndex, currentPhage: accepted.selected,
     viewMode: accepted.view.viewMode, readingFrame: accepted.view.readingFrame, scrollPosition: accepted.view.scrollPosition,
-    selectedGeneId: null, overlays: [], overlayData: {}, model3DFullscreen: false, isLoadingPhage: false, error: null, quitConfirmPending: false,
+    selectedGeneId: accepted.selectedGeneId ?? null, overlays: [], overlayData: {}, model3DFullscreen: false, isLoadingPhage: false, error: null, quitConfirmPending: false,
     diffEnabled: false, diffReferencePhageId: null, diffReferenceSequence: null,
   });
 }
@@ -47,21 +43,29 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
   session: TerminalGenomeSession; initiallyOpen?: boolean;
 }): React.ReactElement {
   const [open, setOpen] = useState(initiallyOpen);
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [research] = useState(() => new TerminalResearchSession());
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   useEffect(() => {
     registerCommand({ id: IMPORT_COMMAND, label: 'Local genomes: import, restore or export',
       description: 'Review private FASTA/GenBank or save the current local inputs and view without restarting.',
       keywords: ['file', 'fasta', 'genbank', 'bundle', 'private', 'import', 'export'], category: 'Research',
-      action: () => { session.discardReview(); setOpen(true); } });
-    return () => { unregisterCommand(IMPORT_COMMAND); session.cancel(); };
-  }, [session]);
+      action: () => { session.discardReview(); setResearchOpen(false); setOpen(true); } });
+    registerCommand({ id: WORKFLOW_COMMAND, label: 'Research workflows: replay and inspect results',
+      description: 'Open a private browser workflow, verify its analyses and review its final genome view.',
+      keywords: ['workflow', 'replay', 'results', 'archive', 'research'], category: 'Research',
+      action: () => { session.discardReview(); setResearchOpen(true); setOpen(true); } });
+    return () => { unregisterCommand(IMPORT_COMMAND); unregisterCommand(WORKFLOW_COMMAND); session.cancel(); research.cancel(); };
+  }, [session, research]);
   return open
-    ? <TerminalGenomeView session={session} onReturn={() => setOpen(false)} />
+    ? researchOpen
+      ? <ResearchWorkflowView session={research} genomes={session} onReturn={() => setResearchOpen(false)} onReviewGenomes={() => setResearchOpen(false)} />
+      : <TerminalGenomeView session={session} onReturn={() => setOpen(false)} onWorkflow={() => { session.discardReview(); setResearchOpen(true); }} />
     : <App repository={state.repository} />;
 }
 
-export function TerminalGenomeView({ session, onReturn }: {
-  session: TerminalGenomeSession; onReturn: () => void;
+export function TerminalGenomeView({ session, onReturn, onWorkflow }: {
+  session: TerminalGenomeSession; onReturn: () => void; onWorkflow?: () => void;
 }): React.ReactElement {
   const { exit } = useApp(), { stdout } = useStdout();
   const { colors } = usePhageStore(state => state.currentTheme);
@@ -114,6 +118,7 @@ export function TerminalGenomeView({ session, onReturn }: {
     if (key.escape || input === 'q') { leave(); return; }
     if (input.toLowerCase() === 'i') { session.discardReview(); setMode('import'); setPath(''); setFormError(null); return; }
     if (input.toLowerCase() === 'e' && state.localCount) { setMode('export'); setPath(''); setFormError(null); return; }
+    if (input.toLowerCase() === 'w' && onWorkflow) { onWorkflow(); return; }
     if (!review) return;
     if (input.toLowerCase() === 'c') { setAllowCollisions(value => !value); return; }
     if (key.leftArrow) setPage(Math.max(0, currentPage - 1));
@@ -146,11 +151,13 @@ export function TerminalGenomeView({ session, onReturn }: {
       </Box>)}
       <Text>Page {currentPage + 1}/{pages} · Left/Right changes page</Text>
       <Text>{review.view ? `Restore saved ${review.view.viewMode} view, frame ${review.view.readingFrame}, position ${review.view.scrollPosition}.` : 'Select the first imported record in DNA view.'}</Text>
+      {state.reviewGeneId !== null && <Text>Restore selected feature {state.reviewGeneId} from the replayed annotation snapshot.</Text>}
       <Text>[C] Keep different records with matching accessions: {allowCollisions ? 'YES — keep both' : 'NO — reject collisions'}</Text>
       <Text bold>Enter: add reviewed records and return · I: choose another file · Esc: discard</Text>
     </> : <>
       <Text>[I] Import or restore a local file</Text>
       <Text dimColor={!state.localCount}>[E] Export ALL accepted original inputs and the current local view</Text>
+      {onWorkflow && <Text>[W] Open research workflows, verify and browse their results</Text>}
       <Text>[Esc] {canReturn ? 'Return to the current explorer session' : 'Quit (or import a file to begin)'}</Text>
       <Text color={colors.textDim}>Local records stay in memory. Export before quitting to retain them.</Text>
     </>}
