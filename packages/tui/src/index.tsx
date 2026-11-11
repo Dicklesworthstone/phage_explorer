@@ -152,6 +152,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runGrowthProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'spacer') {
+    const { runSpacerProcess } = await import('./commands/spacer-reference');
+    await runSpacerProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'abundance') {
     if (args[1] === 'view') {
       const { launchAbundanceView } = await import('./components/AbundanceView');
@@ -205,7 +210,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer host-range inspect|analyze|replay ...\n' +
       '  phage-explorer protein-alignment inspect|analyze|replay ...\n' +
       '  phage-explorer protein-structure inspect|analyze|replay ...\n' +
-      '  phage-explorer growth inspect|fit|replay ...\n' +
+      '  phage-explorer growth inspect|fit|profile|replay ...\n' +      '  phage-explorer spacer inspect|analyze|replay ...\n' +
       '  phage-explorer environment inspect|analyze|replay|from-abundance ...\n' +
       '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
       '  phage-explorer workflow inspect|replay ...\n' +
