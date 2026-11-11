@@ -15,6 +15,7 @@ export const EXECUTABLE_WORKERS = [
   { source: 'packages/tui/src/workers/protein-structure-worker.ts', bundle: 'protein-structure-worker.js', define: 'PHAGE_PROTEIN_STRUCTURE_WORKER' },
   { source: 'packages/tui/src/workers/ancestral-worker.ts', bundle: 'ancestral-worker.js', define: 'PHAGE_ANCESTRAL_WORKER' },
   { source: 'packages/tui/src/workers/mosaic-worker.ts', bundle: 'mosaic-worker.js', define: 'PHAGE_MOSAIC_WORKER' },
+  { source: 'packages/tui/src/workers/codon-selection-worker.ts', bundle: 'codon-selection-worker.js', define: 'PHAGE_CODON_SELECTION_WORKER' },
   { source: 'packages/tui/src/workers/host-metabolism-worker.ts', bundle: 'host-metabolism-worker.js', define: 'PHAGE_HOST_METABOLISM_WORKER' },
   { source: 'packages/tui/src/local-genome-import.worker.ts', bundle: 'local-genome-import.worker.js', define: 'PHAGE_LOCAL_GENOME_WORKER' },
   { source: 'packages/tui/src/research-replay.worker.ts', bundle: 'research-replay.worker.js', define: 'PHAGE_RESEARCH_WORKER' },

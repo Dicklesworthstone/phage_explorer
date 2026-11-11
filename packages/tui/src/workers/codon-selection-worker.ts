@@ -1,0 +1,3 @@
+import { parentPort } from 'node:worker_threads';
+import { executeCodonSelectionJob,type CodonSelectionJob,type CodonSelectionJobMessage } from '../commands/codon-selection';
+if(parentPort){const port=parentPort;port.on('message',(job:CodonSelectionJob)=>{void executeCodonSelectionJob(job,message=>port.postMessage({kind:'progress',message} satisfies CodonSelectionJobMessage)).then(result=>port.postMessage({kind:'result',result} satisfies CodonSelectionJobMessage)).catch(cause=>port.postMessage({kind:'error',message:cause instanceof Error?cause.message:String(cause)} satisfies CodonSelectionJobMessage));});}

@@ -162,6 +162,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runMosaicProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'codon-selection') {
+    const { runCodonSelectionProcess } = await import('./commands/codon-selection');
+    await runCodonSelectionProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'growth') {
     const { runGrowthProcess } = await import('./commands/growth');
     await runGrowthProcess(args.slice(1));
@@ -239,7 +244,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +
       '  phage-explorer protein-alignment inspect|analyze|replay ...\n' +
-      '  phage-explorer protein-structure inspect|analyze|replay ...\n' +      '  phage-explorer protein-interaction inspect|analyze|replay ...\n' +      '  phage-explorer ancestral prepare|inspect|analyze|replay ...\n' +      '  phage-explorer mosaic prepare|inspect|analyze|replay ...\n' +
+      '  phage-explorer protein-structure inspect|analyze|replay ...\n' +      '  phage-explorer protein-interaction inspect|analyze|replay ...\n' +      '  phage-explorer ancestral prepare|inspect|analyze|replay ...\n' +      '  phage-explorer mosaic prepare|inspect|analyze|replay ...\n' +      '  phage-explorer codon-selection prepare|inspect|analyze|replay ...\n' +
       '  phage-explorer growth inspect|fit|profile|replay ...\n' +      '  phage-explorer pfu-growth inspect|fit|replay ...\n' +      '  phage-explorer plaque-growth inspect|fit|replay ...\n' +      '  phage-explorer resistance-sim run|replay ...\n' +      '  phage-explorer spacer inspect|analyze|replay ...\n' +
       '  phage-explorer environment inspect|analyze|replay|from-abundance ...\n' +
       '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
