@@ -137,6 +137,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runHostMetabolismProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'protein-alignment') {
+    const { runProteinAlignmentProcess } = await import('./commands/protein-alignment');
+    await runProteinAlignmentProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'abundance') {
     if (args[1] === 'view') {
       const { launchAbundanceView } = await import('./components/AbundanceView');
@@ -188,6 +193,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +
+      '  phage-explorer protein-alignment inspect|analyze|replay ...\n' +
       '  phage-explorer environment inspect|analyze|replay|from-abundance ...\n' +
       '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
       '  phage-explorer workflow inspect|replay ...\n' +
