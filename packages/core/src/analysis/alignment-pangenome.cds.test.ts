@@ -27,6 +27,25 @@ describe('complete annotated pangenome producer and replay', () => {
     assert(!result.record.fields.codingConsequences.limitations.some(s => s.includes('does not rerun')));
     assert.deepEqual(await replayAlignmentPangenome(serializeAnalysisRecord(result.record)), result);
   });
+  it('replays graph and recoded CDS as one versioned experiment without relabeling old-method results', async () => {
+    const reference = 'ATGTAGTAA', query = 'ATGCAATAA';
+    const annotation = cdsSource(reference);
+    annotation.text = annotation.text.replace('/transl_table=11', '/transl_table=15');
+    const input = parsePangenomeInput(`>r\n${reference}\n>q\n${query}`, 'Recoded annotated pair');
+    const result = await createAnnotatedAlignmentPangenome(input, { referenceId: 'r', alignment: 'affine' }, annotation);
+    assert.equal(result.record.method.version, '7');
+    assert.equal(result.cds.record.method.version, '2');
+    assert.equal(result.cds.genes[0].protein, 'MQ*');
+    assert.equal(result.cds.consequences[0].queryProtein, 'MQ*');
+    assert.deepEqual(result.cds.consequences[0].effects, ['synonymous']);
+    assert(result.record.references.some(reference => reference.id === 'aligned-cds-consequences' && reference.version === '2'));
+    assert.deepEqual(await replayAlignmentPangenome(serializeAnalysisRecord(result.record)), result);
+    const oldMethod = structuredClone(result.record);
+    oldMethod.method = { id: 'alignment-pangenome', version: '5',
+      implementation: 'reproducible sequence graph and reference-GenBank whole-haplotype CDS consequences' };
+    const rehashed = await createAnalysisRecord(oldMethod);
+    await assert.rejects(replayAlignmentPangenome(serializeAnalysisRecord(rehashed)), /Recomputed/);
+  });
   it('normalizes a reverse-rotated 100kb input, applies the reference annotation, and retains original exports', async () => {
     const reference = randomDna(100000);
     const codingReference = reference.slice(0, 45000) + 'ATGAAAGCTTAA' + reference.slice(45012);

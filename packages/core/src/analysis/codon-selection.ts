@@ -5,10 +5,11 @@
  * NCBI genetic codes, 2024-09-23. Stop-path convention is recorded explicitly.
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { getGeneticCode, SUPPORTED_GENETIC_CODES, type GeneticCode } from '../codons';
 
 export const CODON_SELECTION_LIMITS = { bytes: 2 * 1024 * 1024, samples: 32, codons: 30000, pairs: 128, windows: 4096 } as const;
-export const CODON_GENETIC_CODES = [1, 4, 11, 15, 25] as const;
-export type CodonGeneticCode = typeof CODON_GENETIC_CODES[number];
+export const CODON_GENETIC_CODES = SUPPORTED_GENETIC_CODES;
+export type CodonGeneticCode = GeneticCode;
 export interface CodonSequence { id: string; description: string; sequence: string }
 export interface CodonAlignmentInput {
   format: 'phage-explorer-codon-alignment'; version: 1; name: string;
@@ -51,15 +52,7 @@ function size(v: string): void {
   if (new TextEncoder().encode(v).length > CODON_SELECTION_LIMITS.bytes) throw new Error('Codon alignment input exceeds 2 MiB.');
 }
 function codeTable(code: CodonGeneticCode): Readonly<Record<string, string>> {
-  if (!(CODON_GENETIC_CODES as readonly number[]).includes(code)) throw new Error('Unsupported genetic code; use 1, 4, 11, 15 or 25 explicitly.');
-  // NCBI order: first, second and third bases each in TCAG order.
-  const amino = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG';
-  const table: Record<string, string> = Object.create(null); let at = 0;
-  for (const a of 'TCAG') for (const b of 'TCAG') for (const c of 'TCAG') table[a + b + c] = amino[at++];
-  if (code === 4) table.TGA = 'W';
-  if (code === 15) table.TAG = 'Q';
-  if (code === 25) table.TGA = 'G';
-  return table;
+  return getGeneticCode(code).codons;
 }
 export function translateSelectionCodon(codon: string, code: CodonGeneticCode): string {
   return codeTable(code)[codon.toUpperCase()] ?? 'X';

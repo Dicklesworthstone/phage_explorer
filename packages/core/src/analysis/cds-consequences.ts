@@ -1,9 +1,9 @@
 /** Post-alignment CDS projection: evaluate whole query haplotypes, not isolated SNVs.
  * Locations/codon_start: https://www.insdc.org/submitting-standards/feature-table/
- * Tables 1/11 and initiators: https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi
+ * Genetic-code meanings/initiators: https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi
  * These descriptive sequence consequences are not functional/pathogenicity predictions.
  */
-import { reverseComplement, translateSequence } from '../codons';
+import { getGeneticCode, isSupportedGeneticCode, reverseComplement, SUPPORTED_GENETIC_CODES, translateSequence, type GeneticCode } from '../codons';
 import { getGeneMapSegments, importLocalGenomes, type GenomeInput } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import type { GeneInfo } from '../types';
@@ -45,6 +45,8 @@ export interface CdsConsequenceExperiment {
 }
 export const CDS_CONSEQUENCE_METHOD = { id: 'aligned-cds-consequences', version: '1',
   implementation: 'reference-coordinate transcript projection; whole-haplotype translation and alignment-conditional indel runs' };
+const RECODED_METHOD = { id: CDS_CONSEQUENCE_METHOD.id, version: '2',
+  implementation: 'reference-coordinate transcript projection; explicit NCBI tables 1/4/11/15/25; whole-haplotype translation and alignment-conditional indel runs' };
 const LIMITATIONS = [
   'Consequences are conditional on the supplied alignment and reference annotations, not independently validated gene function or phenotype predictions.',
   'All query changes within a CDS are evaluated together. No isolated-variant attribution, donor, clinical impact, expression or host-range inference is made.',
@@ -91,20 +93,19 @@ function validateOptions(value: CdsConsequenceOptions): Required<CdsConsequenceO
   return { referenceId: value.referenceId, terminalGaps: value.terminalGaps,
     annotationRecord: value.annotationRecord ?? null, geneIds: ids ? [...ids].sort((a, b) => a - b) : null };
 }
-// Initiator sets are NCBI's Starts rows, not the meanings of internal codons.
-const STARTS: Record<number, readonly string[]> = { 1: ['TTG', 'CTG', 'ATG'], 11: ['TTG', 'CTG', 'ATT', 'ATC', 'ATA', 'ATG', 'GTG'] };
 function protein(cds: string, code: number, initiation: boolean): string {
-  const translated = translateSequence(cds);
-  return initiation && STARTS[code]?.includes(cds.slice(0, 3)) ? 'M' + translated.slice(1) : translated;
+  const translated = translateSequence(cds, 0, code);
+  return initiation && getGeneticCode(code).starts.includes(cds.slice(0, 3)) ? 'M' + translated.slice(1) : translated;
 }
 /** Reconstruct a validated transcript without changing its original coordinate system. */
-export function reconstructCdsReference(gene: GeneInfo, genome: string): CdsReference {
+export function reconstructCdsReference(gene: GeneInfo, genome: string,
+  supportedCodes: readonly GeneticCode[] = SUPPORTED_GENETIC_CODES): CdsReference {
   const q = gene.qualifiers ?? {}, reasons: string[] = [];
   // Zero is an explicit unsupported sentinel; never export NaN from malformed qualifiers.
   const table = Number(q.transl_table ?? 1), start = Number(q.codon_start ?? 1);
   const geneticCode = Number.isSafeInteger(table) ? table : 0, codonStart = Number.isSafeInteger(start) ? start : 0;
   const raw = getGeneMapSegments(gene);
-  if (!STARTS[geneticCode]) reasons.push('Unsupported translation table.');
+  if (!isSupportedGeneticCode(geneticCode) || !supportedCodes.includes(geneticCode)) reasons.push('Unsupported translation table.');
   if (![1, 2, 3].includes(codonStart)) reasons.push('Unsupported codon_start.');
   for (const qualifier of ['pseudo', 'pseudogene', 'exception', 'transl_except', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']) {
     if (Object.hasOwn(q, qualifier)) reasons.push(`Unsupported /${qualifier} qualifier.`);
@@ -201,8 +202,9 @@ function project(reference: CdsReference, ref: string, query: string, sequenceId
   const firstStop = row.queryProtein.indexOf('*');
   if (firstStop >= 0 && firstStop < row.queryProtein.length - 1) row.effects.push('premature-stop');
   if (originalProtein.endsWith('*') && !row.queryProtein.endsWith('*')) row.effects.push('terminal-stop-lost');
-  if (reference.codonStart === 1 && STARTS[reference.geneticCode].includes(cds.slice(0, 3))
-    && !STARTS[reference.geneticCode].includes(row.queryCds.slice(0, 3))) row.effects.push('start-codon-lost');
+  const starts = getGeneticCode(reference.geneticCode).starts;
+  if (reference.codonStart === 1 && starts.includes(cds.slice(0, 3))
+    && !starts.includes(row.queryCds.slice(0, 3))) row.effects.push('start-codon-lost');
   if (!disrupted && row.queryProtein === originalProtein) row.effects.push('synonymous');
   else if (!row.effects.length) row.effects.push('amino-acid-change');
   if (row.queryProtein !== originalProtein) {
@@ -260,24 +262,34 @@ export async function createCdsConsequenceExperiment(input: CdsAlignment, annota
     unavailable: consequences.length - available.length };
   const reference = { sequenceId: ref.id, accession: genome.phage.accession, contentId: genome.phage.localGenome!.contentId, warnings: genome.warnings };
   const coverage = { available: summary.available, total: summary.comparisons, unit: 'records' as const };
+  // Keep the established 1/11 record identity unchanged. New tables have their
+  // own method/reference contract; old unavailable results cannot replay as new results.
+  const recoded = genes.some(gene => [4, 15, 25].includes(gene.geneticCode));
+  const method = recoded ? RECODED_METHOD : CDS_CONSEQUENCE_METHOD;
+  const limitations = recoded ? LIMITATIONS.map(value => value.startsWith('Tables 1 and 11 only.')
+    ? value.replace('Tables 1 and 11 only.', 'Tables 1, 4, 11, 15 and 25 only; the declared GenBank code applies to each CDS.') : value) : LIMITATIONS;
   const field = (label: string, value: unknown) => alignment.source === 'demo'
     ? { label, value: analysisJson(value), kind: 'demo' as const, units: 'records' as const, coverage,
-        limitations: LIMITATIONS, assumptions: ['User explicitly marked the alignment as synthetic.'] }
-    : { label, value: analysisJson(value), kind: 'sequence-score' as const, units: 'records' as const, coverage, limitations: LIMITATIONS };
-  const record = await createAnalysisRecord({ method: CDS_CONSEQUENCE_METHOD, seed: null,
+        limitations, assumptions: ['User explicitly marked the alignment as synthetic.'] }
+    : { label, value: analysisJson(value), kind: 'sequence-score' as const, units: 'records' as const, coverage, limitations };
+  const record = await createAnalysisRecord({ method, seed: null,
     inputs: [
       { id: 'alignment', accession: null, source: alignment.source, description: 'Exact submitted aligned sequences; upstream alignment is conditional input.', data: analysisJson(alignment) },
       { id: 'genbank', accession: genome.phage.accession, source: 'local', description: 'Original GenBank source, reparsed during replay; one exact sequence-matched record supplies CDS.', data: analysisJson(source) },
     ], parameters: analysisJson(options) as AnalysisRecord['parameters'],
     references: [{ id: 'insdc-feature-table', version: 'CDS-codon-start-1-2-3', description: 'Transcript-order joined/complement locations; codon_start locates the first complete codon.' },
-      { id: 'ncbi-genetic-codes', version: 'tables-1-and-11', description: 'Standard internal codon meanings and table-specific initiator methionine.' }],
+      recoded ? { id: 'ncbi-genetic-codes', version: 'tables-1-4-11-15-25', description: 'NCBI AAs and Starts rows: table 4 TGA=Trp; table 15 TAG=Gln; table 25 TGA=Gly; table-specific initiator methionine. https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi' }
+        : { id: 'ncbi-genetic-codes', version: 'tables-1-and-11', description: 'Standard internal codon meanings and table-specific initiator methionine.' }],
     fields: { reference: field('Matched reference annotation and parser coverage warnings', reference),
       genes: field('Reference coding transcripts and conceptual translation', genes),
       consequences: field('Combined query-haplotype coding consequences', consequences), summary: field('Available, changed and unavailable comparisons', summary) } });
   return { reference, genes, consequences, summary, record };
 }
 export async function replayCdsConsequenceExperiment(content: string): Promise<CdsConsequenceExperiment> {
-  const saved = await parseAnalysisRecord(content, { methodId: CDS_CONSEQUENCE_METHOD.id, methodVersion: CDS_CONSEQUENCE_METHOD.version });
+  const saved = await parseAnalysisRecord(content, { methodId: CDS_CONSEQUENCE_METHOD.id });
+  if (saved.method.version !== CDS_CONSEQUENCE_METHOD.version && saved.method.version !== RECODED_METHOD.version) {
+    throw new Error('Unsupported CDS consequence method version.');
+  }
   if (saved.inputs.length !== 2) throw new Error('Unexpected CDS experiment inputs.');
   const alignment = saved.inputs.find(i => i.id === 'alignment')?.data;
   const annotation = saved.inputs.find(i => i.id === 'genbank')?.data;

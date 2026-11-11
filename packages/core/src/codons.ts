@@ -1,6 +1,6 @@
 import type { AminoAcid, AminoAcidInfo, AminoAcidProperty } from './types';
 
-// Standard DNA codon table (Translation Table 1 / Bacterial Nuclear Code)
+// Standard DNA codon meanings (NCBI translation table 1).
 export const CODON_TABLE: Record<string, AminoAcid> = {
   // Phenylalanine (F)
   'TTT': 'F', 'TTC': 'F',
@@ -46,6 +46,36 @@ export const CODON_TABLE: Record<string, AminoAcid> = {
   'GGT': 'G', 'GGC': 'G', 'GGA': 'G', 'GGG': 'G',
 };
 
+export const SUPPORTED_GENETIC_CODES = [1, 4, 11, 15, 25] as const;
+export type GeneticCode = typeof SUPPORTED_GENETIC_CODES[number];
+export interface GeneticCodeTable {
+  readonly id: GeneticCode;
+  readonly codons: Readonly<Record<string, AminoAcid>>;
+  /** Initiators apply only at the annotated beginning of a complete CDS. */
+  readonly starts: readonly string[];
+}
+function geneticCode(id: GeneticCode, replacements: Record<string, AminoAcid>, starts: string[]): GeneticCodeTable {
+  return Object.freeze({ id, codons: Object.freeze({ ...CODON_TABLE, ...replacements }), starts: Object.freeze(starts) });
+}
+// NCBI AAs and Starts rows, verified 2026-11-11:
+// https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi
+// An explicit annotation selects the code; sequence composition never guesses it.
+const GENETIC_CODE_TABLES: Readonly<Record<GeneticCode, GeneticCodeTable>> = Object.freeze({
+  1: geneticCode(1, {}, ['TTG', 'CTG', 'ATG']),
+  4: geneticCode(4, { TGA: 'W' }, ['TTA', 'TTG', 'CTG', 'ATT', 'ATC', 'ATA', 'ATG', 'GTG']),
+  11: geneticCode(11, {}, ['TTG', 'CTG', 'ATT', 'ATC', 'ATA', 'ATG', 'GTG']),
+  15: geneticCode(15, { TAG: 'Q' }, ['ATG']),
+  25: geneticCode(25, { TGA: 'G' }, ['TTG', 'ATG', 'GTG']),
+});
+export function isSupportedGeneticCode(code: number): code is GeneticCode {
+  return (SUPPORTED_GENETIC_CODES as readonly number[]).includes(code);
+}
+/** Shared elongation/initiation definitions for CDS reconstruction and selection analysis. */
+export function getGeneticCode(code: number): GeneticCodeTable {
+  if (!isSupportedGeneticCode(code)) throw new Error('Unsupported genetic code; use 1, 4, 11, 15 or 25 explicitly.');
+  return GENETIC_CODE_TABLES[code];
+}
+
 // Amino acid metadata
 export const AMINO_ACIDS: Record<AminoAcid, AminoAcidInfo> = {
   'A': { letter: 'A', threeCode: 'Ala', name: 'Alanine', property: 'hydrophobic' },
@@ -78,19 +108,20 @@ export function getAminoAcidsByProperty(property: AminoAcidProperty): AminoAcidI
 }
 
 // Translate a single codon to amino acid
-export function translateCodon(codon: string): AminoAcid {
+export function translateCodon(codon: string, code: number = 1): AminoAcid {
   const upperCodon = codon.toUpperCase();
-  return CODON_TABLE[upperCodon] ?? 'X'; // Use 'X' for unknown codons
+  return getGeneticCode(code).codons[upperCodon] ?? 'X'; // Use 'X' for unknown codons
 }
 
-// Translate a DNA sequence to amino acids at a given reading frame
-export function translateSequence(seq: string, frame: 0 | 1 | 2 = 0): string {
+// Translate elongation codons; annotated initiator methionine is handled by CDS reconstruction.
+export function translateSequence(seq: string, frame: 0 | 1 | 2 = 0, code: number = 1): string {
   const result: string[] = [];
   const upperSeq = seq.toUpperCase();
+  const table = getGeneticCode(code).codons;
 
   for (let i = frame; i + 3 <= upperSeq.length; i += 3) {
     const codon = upperSeq.substring(i, i + 3);
-    const aa = CODON_TABLE[codon];
+    const aa = table[codon];
     result.push(aa ?? 'X'); // X for unknown codons (containing N, etc.)
   }
 

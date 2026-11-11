@@ -459,8 +459,9 @@ export async function createAlignmentPangenomeRecord(input: PangenomeInput, grap
 }
 export async function replayAlignmentPangenome(content: string): Promise<{ input: PangenomeInput; graph: AlignmentPangenome; record: AnalysisRecord; cds?: CdsConsequenceExperiment }> {
   const saved = await parseAnalysisRecord(content, { methodId: METHOD.id });
-  if (saved.method.version === ANNOTATED_METHOD.version) {
-    if (saved.method.implementation !== ANNOTATED_METHOD.implementation || saved.seed !== null || saved.inputs.length !== 2
+  if (saved.method.version === ANNOTATED_METHOD.version || saved.method.version === RECODED_ANNOTATED_METHOD.version) {
+    const annotatedMethod = saved.method.version === ANNOTATED_METHOD.version ? ANNOTATED_METHOD : RECODED_ANNOTATED_METHOD;
+    if (saved.method.implementation !== annotatedMethod.implementation || saved.seed !== null || saved.inputs.length !== 2
       || !isObject(saved.parameters.graph) || Object.keys(saved.parameters).some(key => !['graph', 'annotationRecord', 'geneIds'].includes(key))) {
       throw new Error('Annotated pangenome method or parameter contract differs.');
     }
@@ -485,6 +486,8 @@ export async function replayAlignmentPangenome(content: string): Promise<{ input
 
 const ANNOTATED_METHOD = { id: 'alignment-pangenome', version: '5',
   implementation: 'reproducible sequence graph and reference-GenBank whole-haplotype CDS consequences' };
+const RECODED_ANNOTATED_METHOD = { id: 'alignment-pangenome', version: '7',
+  implementation: 'reproducible sequence graph and reference-GenBank whole-haplotype CDS consequences with explicit NCBI tables 1/4/11/15/25' };
 export type PangenomeCdsSelection = Pick<CdsConsequenceOptions, 'annotationRecord' | 'geneIds'>;
 /** Compose the complete producer pipeline; never annotate a caller-supplied stale graph.
  * Unannotated v2/v3/v4 methods retain their existing identities and replay behavior.
@@ -503,13 +506,14 @@ export async function createAnnotatedAlignmentPangenome(value: PangenomeInput, s
       limit.startsWith('Replay recomputes CDS projection')
         ? 'This integrated experiment replays normalization/alignment, graph construction and CDS consequences from original sequence input and GenBank.' : limit) },
   ]));
-  const record = await createAnalysisRecord({ method: ANNOTATED_METHOD, seed: null,
+  const record = await createAnalysisRecord({ method: cds.record.method.version === CDS_CONSEQUENCE_METHOD.version
+    ? ANNOTATED_METHOD : RECODED_ANNOTATED_METHOD, seed: null,
     inputs: [...base.inputs, cds.record.inputs.find(i => i.id === 'genbank')!],
     parameters: { graph: analysisJson(graph.options), annotationRecord: cds.reference.contentId,
       geneIds: cds.record.parameters.geneIds },
     references: [...base.references, ...cds.record.references,
       { id: 'sequence-graph-method', version: base.method.version, description: base.method.implementation },
-      { id: CDS_CONSEQUENCE_METHOD.id, version: CDS_CONSEQUENCE_METHOD.version, description: CDS_CONSEQUENCE_METHOD.implementation }],
+      { id: cds.record.method.id, version: cds.record.method.version, description: cds.record.method.implementation }],
     fields: { ...base.fields, ...codingFields } });
   return { input, graph, record, cds };
 }

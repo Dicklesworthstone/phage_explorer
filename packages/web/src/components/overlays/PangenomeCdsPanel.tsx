@@ -106,6 +106,7 @@ export function PangenomeCdsPanel({ accepted, options, localGenomes, busy, run }
         const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; loadAnnotation(file);
       }} /></label>
       <p>File input accepts GenBank or a local genome bundle, up to 10 MiB. Multiple exact matches require an explicit record.
+        Genetic codes 1, 4, 11, 15 and 25 use each CDS annotation's declared table, including its initiator and stop meanings.
         Parsing and rebuilding run in the existing cancellable worker. Unsupported annotations remain visible as unavailable, never assumed unchanged.</p>
     </fieldset>
     {error && <p role="alert">{error}</p>}

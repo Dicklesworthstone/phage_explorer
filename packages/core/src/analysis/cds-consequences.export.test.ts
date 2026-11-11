@@ -70,7 +70,7 @@ describe('CDS consequence reports from actual GenBank projection', () => {
     assert(fasta(exportCdsConsequenceFasta(experiment, 'protein')).every(row => row.header.includes('source=demo')));
     const invalid = await createCdsConsequenceExperiment({ name: 'unsupported', source: 'local', sequences: [
       { id: 'ref', description: '', sequence: reference }, { id: 'q', description: '', sequence: reference },
-    ] }, { ...annotation, text: annotation.text.replaceAll('/gene=', '/transl_table=4\n                     /gene=') },
+    ] }, { ...annotation, text: annotation.text.replaceAll('/gene=', '/transl_table=2\n                     /gene=') },
     { referenceId: 'ref', terminalGaps: 'missing' });
     assert.throws(() => exportCdsConsequenceFasta(invalid, 'protein'), /No supported/);
     assert.match(exportCdsConsequenceTable(invalid), /Unsupported translation table/);

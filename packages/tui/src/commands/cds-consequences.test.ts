@@ -64,6 +64,23 @@ describe('cds-consequences command contracts', () => {
     assert.match(protein.output, /MS\*/);
   });
 
+  it('carries declared phage genetic codes through terminal analysis, replay and protein export', async () => {
+    const annotation = genbank('ATGTAGTAA');
+    annotation.text = annotation.text.replace('/locus_tag="gene1"', '/locus_tag="gene1"\n                     /transl_table=15\n                     /translation="MQ"');
+    const input = { name: 'recoded.json', text: JSON.stringify({ name: 'recoded haplotype', source: 'local', sequences: [
+      { id: 'ref', description: '', sequence: 'ATGTAGTAA' }, { id: 'query', description: '', sequence: 'ATGCAATAA' },
+    ] }) };
+    const first = await executeCdsConsequencesJob({ operation: 'analyze', input, annotation,
+      options: { referenceId: 'ref', terminalGaps: 'missing' }, format: 'json' });
+    const record = await parseAnalysisRecord(first.output);
+    assert.equal(record.method.version, '2');
+    const protein = await executeCdsConsequencesJob({ operation: 'replay', input: { name: 'saved.json', text: first.output }, format: 'protein-fasta' });
+    assert.equal(protein.verified, true);
+    assert.equal(protein.identity, record.resultId);
+    assert.equal(protein.output.split('\n').filter(line => line === 'MQ*').length, 2);
+    assert.match(protein.output, /effects=synonymous/);
+  });
+
   it('refuses a nonmatching GenBank source instead of trusting accession equality', async () => {
     await assert.rejects(executeCdsConsequencesJob({
       operation: 'analyze', input: { name: 'alignment.json', text: alignment }, annotation: genbank('ATGAAATAA'),

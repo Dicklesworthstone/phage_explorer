@@ -5,7 +5,7 @@ import { lstat, writeFile } from 'node:fs/promises';
 import { Worker } from 'node:worker_threads';
 import type { Readable, Writable } from 'node:stream';
 import {
-  CDS_CONSEQUENCE_LIMITS, validateCdsAlignment, createCdsConsequenceExperiment,
+  validateCdsAlignment, createCdsConsequenceExperiment,
   replayCdsConsequenceExperiment, parseCdsGeneIds, exportCdsConsequenceTable,
   exportCdsConsequenceFasta, type CdsAlignment, type CdsConsequenceOptions,
 } from '../../../core/src/analysis/cds-consequences';
@@ -42,7 +42,8 @@ missing treats uncovered terminal query gaps as missing evidence; alleles treats
 them as deletion alleles. --genes blank is not accepted here; omit it for all CDS.
 
 The method evaluates the complete query haplotype in each reference CDS, including
-joined/complement locations, codon_start and supported genetic codes. It reports
+joined/complement locations, codon_start and explicit NCBI genetic codes 1, 4, 11,
+15 and 25. Table-specific start/stop meanings come from each GenBank CDS. It reports
 frameshift/frame-restoration, in-frame indels, synonymous/amino-acid changes and
 stop/start consequences while preserving unsupported annotations as unavailable.
 

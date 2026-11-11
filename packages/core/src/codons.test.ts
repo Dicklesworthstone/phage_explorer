@@ -10,6 +10,8 @@ import {
   CODON_TABLE,
   AMINO_ACIDS,
   getAminoAcidsByProperty,
+  getGeneticCode,
+  isSupportedGeneticCode,
   translateCodon,
   translateSequence,
   sliceNucleotides,
@@ -39,6 +41,43 @@ describe('CODON_TABLE', () => {
     for (const [codon, aa] of Object.entries(CODON_TABLE)) {
       expect(codon).toHaveLength(3);
       expect(aa).toHaveLength(1);
+    }
+  });
+});
+
+describe('explicit genetic codes', () => {
+  test('matches all 64 elongation meanings and initiators against NCBI AAs/Starts rows', () => {
+    // Literal independent source oracle, in NCBI TCAG order (not the implementation's table layout).
+    // https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi, verified 2026-11-11.
+    const sourceRows = [
+      [1, 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG', '---M------**--*----M---------------M----------------------------'],
+      [4, 'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG', '--MM------**-------M------------MMMM---------------M------------'],
+      [11, 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG', '---M------**--*----M------------MMMM---------------M------------'],
+      [15, 'FFLLSSSSYY*QCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG', '----------*---*--------------------M----------------------------'],
+      [25, 'FFLLSSSSYY**CCGWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG', '---M------**-----------------------M---------------M------------'],
+    ] as const;
+    for (const [code, amino, starts] of sourceRows) {
+      let index = 0;
+      for (const first of 'TCAG') for (const second of 'TCAG') for (const third of 'TCAG') {
+        const codon = first + second + third;
+        expect(translateCodon(codon, code)).toBe(amino[index]);
+        expect(getGeneticCode(code).starts.includes(codon)).toBe(starts[index] === 'M');
+        index++;
+      }
+      expect(index).toBe(64);
+      expect(amino.length).toBe(64);
+      expect(starts.length).toBe(64);
+    }
+  });
+  test('keeps elongation separate from initiation and honors frames, ambiguity and explicit refusals', () => {
+    expect(translateSequence('ttgtgataa', 0, 25)).toBe('LG*');
+    expect(translateSequence('AATGTGATAA', 1, 4)).toBe('MW*');
+    expect(translateSequence('ATGTAGTAA', 0, 15)).toBe('MQ*');
+    expect(translateSequence('ATGNNNTAA', 0, 4)).toBe('MX*');
+    expect(translateSequence('ATGTGATAA')).toBe('M**');
+    for (const code of [0, 2, 6, 26, 4.5, NaN, Infinity]) {
+      expect(isSupportedGeneticCode(code)).toBe(false);
+      expect(() => translateSequence('ATGTGA', 0, code)).toThrow('Unsupported genetic code');
     }
   });
 });

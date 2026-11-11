@@ -88,15 +88,37 @@ including internal stops; no downstream extension is inferred. Headers distingui
 reference from projected-query roles, encode external labels, and bind to the CDS
 result ID. These are not deposited query protein annotations.
 
-**Complete pangenome experiments** use method version 5 and retain original genomes,
+**Complete pangenome experiments** use method version 5 for codes 1/11 and version 7
+when a selected CDS declares code 4, 15 or 25. They retain original genomes,
 GenBank input, selected annotation/CDS IDs and graph settings. Reopen via file import
 or the existing **Saved pangenome experiments** library to recompute alignment,
 normalization, graph, transcripts and effects before accepting the result. The
 graph's original-sequence exports and unannotated version-2/3/4 replay remain unchanged.
 Checksums bind content; they do not independently validate biological claims.
 
-Only genetic codes 1 and 11 are supported. Joined/reverse-strand CDS and codon_start
-are honored. Reference pseudogenes, translation exceptions, unsupported segments,
+Genetic codes 1, 4, 11, 15 and 25 are supported. The GenBank `/transl_table`
+qualifier selects the code for each CDS; absent qualifiers retain the standard
+code 1. Codon meanings and initiators follow the
+[NCBI genetic-code tables](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi):
+
+| Table | Internal codon difference from the standard code | Allowed initiators |
+| --- | --- | --- |
+| 1 | Standard | TTG, CTG, ATG |
+| 4 | TGA → tryptophan (W) | TTA, TTG, CTG, ATT, ATC, ATA, ATG, GTG |
+| 11 | Standard internal meanings | TTG, CTG, ATT, ATC, ATA, ATG, GTG |
+| 15 | TAG → glutamine (Q) | ATG |
+| 25 | TGA → glycine (G) | TTG, ATG, GTG |
+
+An allowed initiator becomes methionine only at the annotated beginning of a
+complete CDS. Internal codons and partial CDS with `codon_start=2` or `3` retain
+their elongation meanings. Start/stop consequences and deposited-translation
+validation use that same declared table. Joined/reverse-strand CDS and codon_start
+are honored. Standalone CDS records use method version 2 for the additional tables;
+existing code-1/11 records retain version 1 and their previous result identities.
+Replaying an older unavailable result never silently upgrades it to new evidence.
+The separate reference-codon/CAI corpus remains restricted to codes 1 and 11.
+
+Reference pseudogenes, translation exceptions, unsupported segments,
 incomplete reference codons and internal reference stops remain unavailable.
 Ambiguous query bases or missing terminal coverage prevent a complete consequence.
 Internal gaps are interpreted as deletions conditional on the alignment. Frameshift

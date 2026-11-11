@@ -103,7 +103,9 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
       if (!Number.isSafeInteger(extractedBases) || extractedBases > CODON_CORPUS_LIMITS.extractedBases) {
         throw new Error('Corpus exceeds the 25,000,000 extracted-base budget. Select fewer CDS.');
       }
-      const transcript = reconstructCdsReference(gene, genome.sequence);
+      // This corpus/CAI method remains restricted to standard internal meanings.
+      // A broader CDS consequence table must not change its exclusions or replay.
+      const transcript = reconstructCdsReference(gene, genome.sequence, [1, 11]);
       const reasons = [...transcript.reasons];
       if (transcript.geneticCode !== options.geneticCode) reasons.push('Annotation genetic code differs from the declared corpus code.');
       const key = JSON.stringify([raw, transcript.codonStart]);

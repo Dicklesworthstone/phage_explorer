@@ -120,9 +120,63 @@ describe('alignment-conditional coding consequences', () => {
     assert.equal(wrong.consequences[0].status, 'unavailable');
     assert.match(wrong.genes[0].reasons.join(' '), /translation differs/);
   });
+  it('translates recoded GenBank CDS with their declared elongation and initiation tables', async () => {
+    // Independent NCBI tables: 4 UGA=W, 15 UAG=Q, 25 UGA=G.
+    // Their initiators differ: TTA is allowed by 4, but 15 permits only ATG.
+    for (const [code, reference, query, expected] of [
+      [4, 'TTATGATAA', 'ATGTGGTAA', 'MW*'],
+      [15, 'ATGTAGTAA', 'ATGCAATAA', 'MQ*'],
+      [25, 'GTGTGATAA', 'TTGGGGTAA', 'MG*'],
+    ] as const) {
+      const qualifiers = `                     /transl_table=${code}\n                     /translation="${expected.slice(0, -1)}"\n`;
+      const result = await run(reference, query, genbank(reference, undefined, qualifiers));
+      assert.equal(result.genes[0].geneticCode, code);
+      assert.equal(result.genes[0].protein, expected);
+      assert.equal(result.consequences[0].status, 'available');
+      assert.equal(result.consequences[0].queryProtein, expected);
+      assert.deepEqual(result.consequences[0].effects, ['synonymous']);
+      assert.equal(result.record.method.version, '2');
+      assert.deepEqual(await replayCdsConsequenceExperiment(serializeAnalysisRecord(result.record)), result);
+    }
+  });
+  it('uses recoded start and stop meanings for consequences without applying initiation inside a partial CDS', async () => {
+    for (const [code, reference, query, expected] of [
+      [4, 'TTATGATAA', 'CTTTGATAA', 'LW*'],
+      [15, 'ATGTAGTAA', 'TTGTAGTAA', 'LQ*'],
+      [25, 'TTGTGATAA', 'CTGTGATAA', 'LG*'],
+    ] as const) {
+      const result = await run(reference, query, genbank(reference, undefined, `                     /transl_table=${code}\n`));
+      assert.deepEqual(result.consequences[0].effects, ['start-codon-lost']);
+      assert.equal(result.consequences[0].queryProtein, expected);
+    }
+    const stopped = await run('ATGTAGTAA', 'ATGTGATAA', genbank('ATGTAGTAA', undefined, '                     /transl_table=15\n'));
+    assert.deepEqual(stopped.consequences[0].effects, ['premature-stop']);
+    assert.equal(stopped.consequences[0].queryProtein, 'M**');
+    const lost = await run('ATGTGATAA', 'ATGTGATGA', genbank('ATGTGATAA', undefined, '                     /transl_table=4\n'));
+    assert.deepEqual(lost.consequences[0].effects, ['terminal-stop-lost']);
+    assert.equal(lost.consequences[0].queryProtein, 'MWW');
+    const partial = await run('AGTGTGATAA', 'AGTGTGATAA', genbank('AGTGTGATAA', undefined,
+      '                     /transl_table=25\n                     /codon_start=2\n                     /translation="VG"\n'));
+    assert.equal(partial.genes[0].protein, 'VG*');
+    assert.equal(partial.consequences[0].status, 'available');
+  });
+  it('projects recoded joined reverse-strand transcripts and still validates deposited translations', async () => {
+    // The middle CC is noncoding; reverse coordinates join(1..3,6..11) spells ATG TAG TAA.
+    const reference = 'ATGTAGCCTAA', query = 'ATGCAACCTAA';
+    const qualifiers = '                     /transl_table=15\n                     /translation="MQ"\n';
+    const result = await run(rc(reference), rc(query), genbank(rc(reference), ['complement(join(1..3,6..11))'], qualifiers));
+    assert.equal(result.genes[0].cds, 'ATGTAGTAA');
+    assert.equal(result.consequences[0].queryCds, 'ATGCAATAA');
+    assert.equal(result.consequences[0].queryProtein, 'MQ*');
+    assert.deepEqual(result.consequences[0].effects, ['synonymous']);
+    const wrong = await run('ATGTAGTAA', 'ATGCAATAA', genbank('ATGTAGTAA', undefined,
+      '                     /transl_table=15\n                     /translation="MK"\n'));
+    assert.equal(wrong.consequences[0].status, 'unavailable');
+    assert.match(wrong.genes[0].reasons.join(' '), /translation differs/);
+  });
   it('preserves unsupported gene and parser-coverage reasons instead of silently declaring identity', async () => {
     const r = 'ATGAAATAA';
-    for (const qualifier of ['/pseudo', '/exception="RNA editing"', '/transl_except=(pos:1..3,aa:Sec)', '/ribosomal_slippage', '/transl_table=4', '/codon_start=4', '/transl_table=bad', '/codon_start=unknown']) {
+    for (const qualifier of ['/pseudo', '/exception="RNA editing"', '/transl_except=(pos:1..3,aa:Sec)', '/ribosomal_slippage', '/transl_table=2', '/codon_start=4', '/transl_table=bad', '/codon_start=unknown']) {
       const result = await run(r, r, genbank(r, undefined, `                     ${qualifier}\n`));
       assert.equal(result.consequences[0].status, 'unavailable', qualifier);
       assert.deepEqual(result.consequences[0].effects, []);
