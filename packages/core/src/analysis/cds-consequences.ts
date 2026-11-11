@@ -61,7 +61,7 @@ function exactKeys(v: Record<string, unknown>, allowed: string[]): void {
 function label(v: unknown, maximum: number, empty = false): v is string {
   return typeof v === 'string' && (empty || !!v.trim()) && v.length <= maximum && !/[\u0000-\u001f\u007f-\u009f]/.test(v);
 }
-function validateAlignment(value: unknown): CdsAlignment {
+export function validateCdsAlignment(value: unknown): CdsAlignment {
   if (!object(value)) throw new Error('Invalid CDS alignment.');
   exactKeys(value, ['name', 'source', 'sequences']);
   if (!label(value.name, 512) || !['local', 'demo'].includes(String(value.source)) || !Array.isArray(value.sequences)
@@ -216,7 +216,7 @@ function project(reference: CdsReference, ref: string, query: string, sequenceId
 /** Exact GenBank/reference identity is mandatory; accession equality is insufficient. */
 export async function createCdsConsequenceExperiment(input: CdsAlignment, annotation: GenomeInput,
   settings: CdsConsequenceOptions): Promise<CdsConsequenceExperiment> {
-  const alignment = validateAlignment(input), options = validateOptions(settings);
+  const alignment = validateCdsAlignment(input), options = validateOptions(settings);
   const source = analysisJson(annotation) as unknown as GenomeInput; // capture before hashing/parsing awaits
   if (!object(source)) throw new Error('GenBank annotation source is missing.');
   exactKeys(source, ['name', 'text']);
