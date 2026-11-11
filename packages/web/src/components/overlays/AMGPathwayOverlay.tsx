@@ -35,6 +35,7 @@ import {
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment } from './primitives/types';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { HostMetabolismPanel } from './HostMetabolismPanel';
 import { copyToClipboard, downloadString } from '../../utils/export';
 
 /**
@@ -112,7 +113,7 @@ export function AMGPathwayOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('amgPathway');
 
-  const [activeTab, setActiveTab] = useState<'annotations' | 'flux'>('annotations');
+  const [activeTab, setActiveTab] = useState<'annotations' | 'flux' | 'hostModel'>('annotations');
   const [boostMultiplier, setBoostMultiplier] = useState<number>(5.0);
   const [showFullFluxTable, setShowFullFluxTable] = useState<boolean>(false);
   const [hostModel, setHostModel] = useState(createStandardHostMetabolicModel);
@@ -378,9 +379,40 @@ export function AMGPathwayOverlay({
               cursor: 'pointer',
             }}
           >
-            Flux Potential (Delta-FBA)
+            Illustrative AMG Delta-FBA
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('hostModel')}
+            style={{
+              padding: '0.4rem 0.8rem',
+              fontFamily: 'monospace',
+              fontSize: '0.85rem',
+              fontWeight: activeTab === 'hostModel' ? 'bold' : 'normal',
+              color: activeTab === 'hostModel' ? (colors.accent ?? '#38bdf8') : (colors.textMuted ?? '#64748b'),
+              background: 'transparent',
+              border: 'none',
+              borderBottom: activeTab === 'hostModel' ? `2px solid ${colors.accent ?? '#38bdf8'}` : '2px solid transparent',
+              cursor: 'pointer',
+            }}
+          >
+            Sourced Host Model
           </button>
         </div>
+
+        {activeTab === 'hostModel' && (
+          <div data-testid="amg-sourced-host-model" style={{ display: 'grid', gap: '0.75rem' }}>
+            <div style={{ padding: '0.75rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px', color: colors.textDim }}>
+              <strong style={{ color: colors.accent }}>Sourced host-model scenarios</strong>
+              <p>Load an explicit COBRA model and medium here for organism-specific or source-declared flux scenarios.
+                Marker names are not automatically converted into reaction-capacity changes: each bound change requires an explicit
+                what-if assumption or a sourced gene annotation plus a stated capacity-effect rationale.</p>
+              <p>The neighboring illustrative tab keeps the small teaching network and fixed marker-to-reaction rules separate,
+                so its arbitrary-unit gains are never presented as outputs from this sourced model.</p>
+            </div>
+            <HostMetabolismPanel />
+          </div>
+        )}
 
         {activeTab === 'annotations' && (
           <>
@@ -645,6 +677,12 @@ export function AMGPathwayOverlay({
         {/* Tab 2: Flux Potential (Delta-FBA) */}
         {activeTab === 'flux' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div role="note" data-testid="amg-illustrative-flux-warning"
+              style={{ padding: '0.75rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px', color: colors.textDim }}>
+              <strong style={{ color: colors.accent }}>Illustrative marker-driven network.</strong>{' '}
+              This mode applies fixed AMG marker-to-reaction mappings and assumed capacity multipliers to the small teaching model.
+              Use <strong>Sourced Host Model</strong> for explicit COBRA sources, media and reaction-change evidence.
+            </div>
             {/* Control bar */}
             <div
               style={{
