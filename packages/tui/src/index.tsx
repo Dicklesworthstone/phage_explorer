@@ -142,6 +142,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runProteinAlignmentProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'protein-structure') {
+    const { runProteinStructureProcess } = await import('./commands/protein-structure');
+    await runProteinStructureProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'growth') {
     const { runGrowthProcess } = await import('./commands/growth');
     await runGrowthProcess(args.slice(1));
@@ -199,6 +204,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +
       '  phage-explorer protein-alignment inspect|analyze|replay ...\n' +
+      '  phage-explorer protein-structure inspect|analyze|replay ...\n' +
       '  phage-explorer growth inspect|fit|replay ...\n' +
       '  phage-explorer environment inspect|analyze|replay|from-abundance ...\n' +
       '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
