@@ -1,16 +1,79 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { ResearchWorkflow, researchDigestParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
+import { ResearchWorkflow, researchDigestParameters, researchSpacerParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
 import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowAnalysisAt, workflowResultIndex } from '../../../core/src/workflow-results';
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
 import { createRestrictionDigestRecord } from '../../../core/src/analysis/restriction-digest';
+import type { ReferenceSpacerHit, SpacerLibrary } from '../../../core/src/analysis/spacer-reference';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation', dotPlot: 'overlay.dotPlot', digest: 'overlay.gel' };
 function latch() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+
+describe('production browser spacer workflow adapter', () => {
+  it('uses real workers to preserve exact spacer inputs, all results and terminal-compatible replay', async () => {
+    const { createBrowserResearchWorkflow } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { useLocalGenomes } = await import('../db/local-genomes');
+    const { ActionIds } = await import('./actionRegistry');
+    const { replayResearchTape } = await import('../../../tui/src/research-replay');
+    const before = useLocalGenomes.getState();
+    const dna = 'TTTTACGATTCGGTACCTAGTGCAAGGNNNNCCTTGCACTAGGTACCGAATCGTAAAA';
+    const parsed = await importLocalGenomes({ name: 'spacer.fa', text: `>private [topology=linear]\n${dna}\n` });
+    const library: SpacerLibrary = { format: 'phage-explorer-spacer-library', version: 1, name: 'Synthetic coordinate controls',
+      source: { kind: 'local', reference: 'Hand-constructed sequence fixture', version: 'test-1', license: 'CC0', scope: 'Two artificial strains' },
+      hosts: [{ id: 'one', name: 'Shared label', strain: 'with records', accession: 'synthetic:one' },
+        { id: 'two', name: 'Shared label', strain: 'no records', accession: 'synthetic:two' }],
+      spacers: [{ id: 'guide', hostId: 'one', arrayAccession: 'synthetic:array', sequence: 'ACGATTCGGTACCTAGTGCA', system: null,
+        target: 'DNA', orientation: 'guide-equivalent', pam: { side: '3prime', motif: 'NGG', reference: 'Oriented test rule' }, seed: null }] };
+    useLocalGenomes.setState({ genomes: parsed.genomes, requestedId: null });
+    const bindings = [createBrowserResearchWorkflow(async () => { throw new Error('No navigation requested'); })];
+    try {
+      const first = bindings[0].workflow, id = parsed.genomes[0].phage.localGenome!.contentId;
+      const text = JSON.stringify(library, null, 2), parameters = researchSpacerParameters(id, text, 'linear', { hostId: 'one', maxMismatches: 0 });
+      first.start('Sourced spacer sequence and no-data control');
+      await first.commands.dispatch(ActionIds.OverlayCRISPR, analysisJson(parameters));
+      const record = first.getSnapshot().lastAnalysis!;
+      assert.deepEqual((record.fields.matches.value as unknown as ReferenceSpacerHit[]).map(hit => [hit.start, hit.end, hit.strand, hit.pam.sequence, hit.pam.status]),
+        [[4, 24, '+', 'AGG', 'matched'], [34, 54, '-', 'AGG', 'matched']]);
+      assert.deepEqual(record.inputs[1].data, library);
+      assert.deepEqual(record.parameters, { hostId: 'one', maxMismatches: 0 });
+      await first.commands.dispatch(ActionIds.OverlayCRISPR, analysisJson({ ...parameters, hostId: 'two' }));
+      assert.equal((first.getSnapshot().lastAnalysis!.fields.coverage.value as { status: string }).status, 'no-spacer-data');
+      assert.deepEqual(first.getSnapshot().lastAnalysis!.fields.matches.coverage, { available: 0, total: 0, unit: 'records' });
+      first.commands.stop();
+      const tapeJson = first.commands.export(), archiveJson = await first.replayWithResults(2);
+      const archive = await parseWorkflowResults(archiveJson);
+      assert.equal(archive.records.length, 2); assert.equal(archive.repetitions, 2);
+      assert.equal((parseCommandTape(tapeJson).commands[0].parameters as { libraryText: string }).libraryText, text);
+      assert.equal(archive.records[0].resultId, record.resultId);
+      const terminal = await replayResearchTape(tapeJson, { captureResults: true, repetitions: 2 });
+      assert.equal(terminal.report.completed, 4); assert.equal(terminal.allResultsJson, archiveJson);
+
+      const next = createBrowserResearchWorkflow(async () => { throw new Error('No navigation requested'); }); bindings.push(next);
+      const review = await next.workflow.loadResultsAndReview(archiveJson, new AbortController().signal);
+      assert.equal(review.inputs.genomes[0].sequence, dna);
+      assert.equal(next.workflow.getSnapshot().lastAnalysis, null);
+      assert.equal(await next.workflow.verifyCompleteResults(archiveJson), archiveJson);
+      const forged = await parseWorkflowResults(archiveJson), fields = structuredClone(forged.records[0].fields);
+      (fields.matches.value as unknown as ReferenceSpacerHit[])[0].start = 123;
+      forged.records[0] = await createAnalysisRecord({ ...forged.records[0], fields });
+      const tape = parseCommandTape(forged.tapeJson), changed = forged.records[0];
+      tape.commands[0].expected = analysisJson({ method: changed.method, cacheKey: changed.cacheKey, resultId: changed.resultId });
+      forged.tapeJson = serializeCommandTape(tape);
+      const forgedJson = serializeWorkflowResults(forged);
+      await next.workflow.loadResultsAndReview(forgedJson, new AbortController().signal);
+      await assert.rejects(next.workflow.verifyCompleteResults(forgedJson), /differs/);
+      assert.equal(next.workflow.exportCompleteResults(), archiveJson);
+    } finally {
+      for (const binding of bindings) binding.dispose();
+      useLocalGenomes.setState(before);
+    }
+  });
+});
+
 async function fixture(overrides: Partial<ResearchEnvironment> = {}) {
   const { genomes } = await importLocalGenomes({ name: 'literal.fa', text: '>row\nAACC\n>column\nCCAATT\n>circle [topology=circular]\nGAATTCAA\n' });
   let view: ResearchView | null = null, calls = 0;

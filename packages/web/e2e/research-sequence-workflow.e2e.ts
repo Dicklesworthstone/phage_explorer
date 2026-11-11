@@ -3,8 +3,25 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
 import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
-import { parseAnalysisRecord } from '../../core/src/analysis-result';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
+import type { SpacerLibrary, ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
+
+// Independent coordinate oracle: [4,24) forward then AGG; [34,54)
+// reverse-complement target preceded by CCT, which is guide-oriented AGG.
+const SPACER_DNA = 'TTTTACGATTCGGTACCTAGTGCAAGGNNNNCCTTGCACTAGGTACCGAATCGTAAAA';
+const SPACER_LIBRARY: SpacerLibrary = {
+  format: 'phage-explorer-spacer-library', version: 1, name: 'Private workflow reference α',
+  source: { kind: 'local', version: 'fixture-1', reference: 'Hand-constructed coordinate fixture', license: 'CC0', scope: 'Artificial strains; no empirical immunity claim' },
+  hosts: [{ id: 'one', name: '<b>literal host</b>', strain: 'α strain', accession: 'synthetic:one' },
+    { id: 'two', name: 'Host without records', strain: 'no records', accession: 'synthetic:two' }],
+  spacers: [{ id: 'oriented', hostId: 'one', arrayAccession: 'synthetic:array', sequence: 'ACGATTCGGTACCTAGTGCA',
+    system: null, target: 'DNA', orientation: 'guide-equivalent',
+    pam: { side: '3prime', motif: 'NGG', reference: 'Synthetic oriented rule' },
+    seed: { start: 0, end: 4, maxMismatches: 0, reference: 'Synthetic interval' } },
+  { id: 'unsupported-rna', hostId: 'one', arrayAccession: 'synthetic:rna-array', sequence: 'ACGATTCGGTACCTAGTGCA',
+    system: 'VI', target: 'RNA', orientation: 'guide-equivalent', pam: null, seed: null }],
+};
 
 interface WorkflowFixture extends Window {
   workflowIds: string[];
@@ -41,7 +58,7 @@ const test = base.extend<{ workflowFixture: void }>({
             import { ResearchWorkflowPanel } from './components/overlays/ResearchWorkflowPanel';
             import './styles/index.css';
             const parsed = await importLocalGenomes({ name: 'workflow.fa',
-              text: '>row [topology=circular]\\nGAATTCAA\\n>column\\nCCAATTAA\\n' });
+              text: '>row [topology=circular]\\nGAATTCAA\\n>column\\nCCAATTAA\\n>spacer-query [topology=linear]\\n${SPACER_DNA}\\n' });
             useLocalGenomes.getState().add(parsed, false, []);
             useLocalGenomes.getState().acknowledgeSelection(parsed.genomes[0].phage.id);
             window.workflowIds = parsed.genomes.map(g => g.phage.localGenome.contentId);
@@ -129,6 +146,130 @@ async function configureMosaic(page: Page) {
   await page.getByLabel('Workflow mosaic maximum references', { exact: true }).fill('1');
   await page.getByLabel('Workflow mosaic retained candidates per window', { exact: true }).fill('1');
 }
+
+async function configureSpacers(page: Page) {
+  await start(page);
+  const id = await page.evaluate(() => (window as WorkflowFixture).workflowIds[2]);
+  await page.getByLabel('Workflow genome', { exact: true }).selectOption(id);
+  await expect(page.getByLabel('Workflow spacer genome topology', { exact: true })).toHaveValue('linear');
+  await expect(page.getByRole('button', { name: 'Run and record spacer comparison', exact: true })).toBeDisabled();
+  const text = JSON.stringify(SPACER_LIBRARY, null, 2);
+  await page.getByLabel('Workflow spacer reference library JSON', { exact: true }).setInputFiles({
+    name: 'private-workflow-spacers.json', mimeType: 'application/json', buffer: Buffer.from(text),
+  });
+  await expect(page.getByTestId('workflow-spacer-draft')).toContainText(SPACER_LIBRARY.name);
+  await recorded(page, 0);
+  await page.getByLabel('Workflow spacer host scope', { exact: true }).selectOption('one');
+  return { id, text };
+}
+
+test('records sourced spacer evidence and missing host coverage, then verifies the complete archive after reload', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => requests.push(`${request.url()} ${request.postData() ?? ''}`));
+  const fixture = await configureSpacers(page);
+  const run = page.getByRole('button', { name: 'Run and record spacer comparison', exact: true });
+  await page.getByLabel('Workflow spacer maximum substitutions', { exact: true }).fill('');
+  await expect(run).toBeDisabled();
+  await page.getByLabel('Workflow spacer maximum substitutions', { exact: true }).fill('0');
+  await run.click(); await recorded(page, 1);
+  const result = page.getByRole('region', { name: 'Recorded spacer results', exact: true });
+  const rows = page.getByRole('table', { name: 'Recorded spacer matches', exact: true }).locator('tbody tr');
+  await expect(page.getByTestId('workflow-spacer-outcome')).toContainText('Sequence matches found');
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(0).locator('td').nth(2)).toHaveText('[4,24) +');
+  await expect(rows.nth(1).locator('td').nth(2)).toHaveText('[34,54) -');
+  await expect(rows.nth(1).locator('td').nth(4)).toContainText('matched: AGG');
+  await expect(result).toContainText('1/2 reference records searched');
+  await expect(result.locator('b')).toHaveCount(0);
+  const original = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  expect(original.fields.matches.coverage).toEqual({ available: 1, total: 2, unit: 'records' });
+  expect((original.fields.matches.value as unknown as ReferenceSpacerHit[]).map(hit => [hit.start, hit.end, hit.strand, hit.pam.status])).toEqual([
+    [4, 24, '+', 'matched'], [34, 54, '-', 'matched'],
+  ]);
+  expect(original.inputs[0].data).toMatchObject({ sequence: SPACER_DNA, topology: 'linear', source: 'local' });
+  expect(original.inputs[1].data).toEqual(SPACER_LIBRARY);
+
+  await page.getByLabel('Workflow spacer host scope', { exact: true }).selectOption('two');
+  await expect(result).toContainText('host scope: synthetic:one');
+  expect((await parseAnalysisRecord(await download(page, 'Export workflow analysis'))).resultId).toBe(original.resultId);
+  await run.click(); await recorded(page, 2);
+  await expect(page.getByTestId('workflow-spacer-outcome')).toContainText('Nothing was searched');
+  await expect(rows).toHaveCount(0); await expect(result).toContainText('0/0 reference records searched');
+  const missing = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  await page.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
+  const tapeText = await download(page, 'Export research workflow'), tape = parseCommandTape(tapeText);
+  expect(tape.commands.map(command => command.actionId)).toEqual(['overlay.crispr', 'overlay.crispr']);
+  expect(tape.commands[0].parameters).toEqual({ contentId: fixture.id, libraryText: fixture.text, topology: 'linear', hostId: 'one', maxMismatches: 0 });
+  expect(await page.getByRole('list', { name: 'Recorded workflow commands', exact: true }).textContent()).not.toContain('synthetic:array');
+
+  await page.getByLabel('Workflow replay repetitions', { exact: true }).fill('2');
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-complete-results')).toContainText('4 executions · 2 distinct analyses');
+  const archiveText = await download(page, 'Export complete workflow results JSON'), archive = await parseWorkflowResults(archiveText);
+  expect(archive.records.map(record => record.resultId)).toEqual([original.resultId, missing.resultId]);
+  await page.getByLabel('Inspect workflow execution', { exact: true }).selectOption('1');
+  await expect(rows).toHaveCount(2); expect((await parseAnalysisRecord(await download(page, 'Export workflow analysis'))).resultId).toBe(original.resultId);
+  await page.reload();
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({
+    name: 'spacer-results.json', mimeType: 'application/json', buffer: Buffer.from(archiveText),
+  });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('2 distinct analyses and 2 repetitions');
+  await expect(page.getByTestId('workflow-result')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archiveText);
+
+  // Valid hashes are insufficient: change a retained output and its matching
+  // tape expectation, then require the browser worker to reject the invention.
+  const changed = await parseWorkflowResults(archiveText), fields = structuredClone(changed.records[0].fields);
+  (fields.matches.value as unknown as ReferenceSpacerHit[])[0].start = 123;
+  changed.records[0] = await createAnalysisRecord({ ...changed.records[0], fields });
+  const forgedTape = parseCommandTape(changed.tapeJson), forged = changed.records[0];
+  forgedTape.commands[0].expected = analysisJson({ method: forged.method, cacheKey: forged.cacheKey, resultId: forged.resultId });
+  changed.tapeJson = serializeCommandTape(forgedTape);
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({
+    name: 'forged-spacer-results.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(changed)),
+  });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('2 distinct analyses and 2 repetitions');
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Step 1 (overlay.crispr)');
+  await expect(page.getByRole('alert')).toContainText('differs');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archiveText);
+  expect(requests.some(request => request.includes(SPACER_DNA) || request.includes('private-workflow-spacers') || request.includes('literal host'))).toBe(false);
+});
+
+test('bounds spacer drafts and never records cancelled or stale genome worker results', async ({ page }) => {
+  await configureSpacers(page);
+  const run = page.getByRole('button', { name: 'Run and record spacer comparison', exact: true });
+  await run.click(); await recorded(page, 1);
+  const accepted = await page.getByTestId('workflow-result').getAttribute('data-result-id');
+  await page.getByLabel('Workflow spacer genome topology', { exact: true }).selectOption('circular');
+  await expect(run).toBeDisabled(); await expect(page.getByTestId('workflow-spacer-draft-error')).toContainText('conflicts with the source annotation');
+  await page.getByLabel('Workflow spacer genome topology', { exact: true }).selectOption('linear');
+  await page.getByLabel('Workflow spacer reference library JSON', { exact: true }).setInputFiles({
+    name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{"format":"wrong"}'),
+  });
+  await expect(page.getByRole('alert')).toContainText('Unsupported spacer library');
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+  await page.getByLabel('Workflow spacer reference library JSON', { exact: true }).setInputFiles({
+    name: 'oversize.json', mimeType: 'application/json', buffer: Buffer.alloc(2 * 1024 * 1024 + 1, ' '),
+  });
+  await expect(page.getByRole('alert')).toContainText('2 MiB limit');
+  await recorded(page, 1);
+  await page.getByLabel('Workflow spacer maximum substitutions', { exact: true }).fill('1');
+  await page.evaluate(() => { (window as WorkflowFixture).holdWorkflowReply = true; });
+  await run.click();
+  await expect.poll(() => page.evaluate(() => (window as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel workflow', exact: true }).click();
+  await page.evaluate(() => (window as WorkflowFixture).releaseWorkflowReply());
+  await recorded(page, 1); await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+  await page.evaluate(() => { (window as WorkflowFixture).holdWorkflowReply = true; (window as WorkflowFixture).workflowReplyHeld = false; });
+  await run.click();
+  await expect.poll(() => page.evaluate(() => (window as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.evaluate(() => { (window as WorkflowFixture).removeWorkflowComparison(); (window as WorkflowFixture).releaseWorkflowReply(); });
+  await expect(page.getByRole('alert')).toContainText('Missing local genome');
+  await recorded(page, 1); await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', accepted!);
+});
 
 test('records actual mosaic evidence, preserves accepted source labels through draft edits and round-trips all executions', async ({ page }) => {
   await start(page); await configureMosaic(page);

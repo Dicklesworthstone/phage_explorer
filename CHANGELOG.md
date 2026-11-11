@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Sourced spacer workflows across browser and terminal
+
+- **Browser recording and replay** — the saved research workflow panel now
+  registers the shared spacer adapter and accepts the same bounded, versioned
+  reference libraries as the terminal. Host scope, topology and substitution
+  settings travel with each recorded command and its exact reference inputs.
+- **Accepted evidence stays inspectable** — the panel displays forward/reverse
+  sequence matches, PAM/seed rules, per-host coverage and exclusions, with source
+  version, scope and license. Complete-result archives retain every row and can
+  be replayed by either interface. Changed draft controls cannot rename an
+  accepted result; missing reference data never becomes a susceptibility claim.
+  Builds on the [shared spacer workflow implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/22e0637bab529271521840d4124d349894e1656b).
+
 ### Environmental evidence in the standalone terminal binary
 
 - **Local inspect, analyze and replay commands** — `phage-explorer environment`

@@ -4,7 +4,8 @@ import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type Ge
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
-  researchMosaicParameters, researchMosaicDataset, readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
+  researchMosaicParameters, researchMosaicDataset, researchSpacerParameters, researchSpacerGenome,
+  readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
 import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
@@ -14,6 +15,8 @@ import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindo
 import { exportDotPlotExperimentTsv, exportPairwiseDotPlotExperimentTsv } from '../../../../core/src/analysis/dot-plot';
 import { resolveRestrictionDigestOptions, exportRestrictionDigestTsv, type RestrictionDigestFragment } from '../../../../core/src/analysis/restriction-digest';
 import { MOSAIC_METHOD, mosaicResultFromRecord, validateMosaicDataset, exportMosaicTsv } from '../../../../core/src/analysis/recombination-radar';
+import { SPACER_METHOD, SPACER_LIMITS, parseSpacerLibrary, validateSpacerLibrary, validateSpacerGenome,
+  type SpacerGenome, type SpacerLibrary, type ReferenceSpacerHit, type SpacerSearchResult } from '../../../../core/src/analysis/spacer-reference';
 import { RESTRICTION_ENZYMES } from '../../../../core/src/data/restriction-enzymes';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
@@ -24,6 +27,14 @@ import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { SavedResearchPanel } from './SavedResearchPanel';
+
+const SPACER_STATUS: Record<SpacerSearchResult['status'], string> = {
+  'no-spacer-data': 'No spacer records for this host scope. Nothing was searched.',
+  'unsupported-references': 'The supplied records do not support this DNA comparison. Inspect the exclusions.',
+  'no-usable-windows': 'No complete unambiguous genome windows were available for the supported spacers.',
+  'no-sequence-match': 'No sequence matches within the submitted mismatch allowance and searchable coverage.',
+  'sequence-matches': 'Sequence matches found. Supplied PAM and seed rules do not establish immunity.',
+};
 
 export function runResearchWorker(request: ResearchWorkerRequest, signal: AbortSignal): Promise<ResearchWorkerResult> {
   return new Promise((resolve, reject) => {
@@ -59,7 +70,8 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
     pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
-    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar }, {
+    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
+    spacers: ActionIds.OverlayCRISPR }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -133,6 +145,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected portable mosaic evidence.');
       return response.record;
     },
+    spacers: async (genome, library, options, signal) => {
+      const response = await runResearchWorker({ type: 'spacers', genome, library, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected sourced spacer evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -202,7 +219,13 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [mosaicK, setMosaicK] = useState('5'), [mosaicWindow, setMosaicWindow] = useState('2000');
   const [mosaicStep, setMosaicStep] = useState('1000'), [mosaicSimilarity, setMosaicSimilarity] = useState('0.05');
   const [mosaicMaximum, setMosaicMaximum] = useState('30'), [mosaicTopN, setMosaicTopN] = useState('3');
+  const [spacerLibrary, setSpacerLibrary] = useState<{ text: string; name: string; library: SpacerLibrary } | null>(null);
+  const [spacerHost, setSpacerHost] = useState(''), [spacerMismatches, setSpacerMismatches] = useState('0');
+  const [spacerTopology, setSpacerTopology] = useState<SpacerGenome['topology']>('unknown');
   useEffect(() => { setDigestTopology(''); }, [selected]);
+  useEffect(() => {
+    setSpacerTopology(genomes.find(g => g.phage.localGenome?.contentId === selected)?.phage.localGenome?.topology ?? 'unknown');
+  }, [selected, genomes]);
   useEffect(() => { setMosaicIds(ids => ids.filter(id => id !== selected && genomes.some(g => g.phage.localGenome?.contentId === id))); }, [genomes, selected]);
   const mosaicDraft = useMemo(() => {
     try {
@@ -298,6 +321,16 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [graphIds, graphReference, graphAlignment, graphTerminals, graphNormalization, graphMismatch, graphOpening, graphExtension, graphAnnotate, graphGeneIds, annotationGenome]);
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
+  const spacerDraft = useMemo(() => {
+    try {
+      if (!spacerLibrary) throw new Error('Import a sourced spacer library to record this comparison.');
+      if (!genome) throw new Error('Select an available workflow genome.');
+      const parameters = researchSpacerParameters(selected, spacerLibrary.text, spacerTopology,
+        { hostId: spacerHost || null, maxMismatches: spacerMismatches.trim() ? Number(spacerMismatches) : NaN });
+      researchSpacerGenome(genome, spacerTopology);
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, selected, spacerLibrary, spacerHost, spacerMismatches, spacerTopology]);
   const dotDraft = useMemo(() => {
     try {
       const column = dotComparison ? genomes.find(g => g.phage.localGenome?.contentId === dotComparison) : null;
@@ -335,6 +368,16 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const digestResult = acceptedAnalysis?.method.id === 'restriction-digest' && acceptedAnalysis.method.version === '1'
     ? { record: acceptedAnalysis, fragments: acceptedAnalysis.fields.fragments.value as unknown as RestrictionDigestFragment[],
       cuts: acceptedAnalysis.fields.cutSites.value as number[], summary: acceptedAnalysis.fields.summary.value as { sequenceLength: number; uncutCircular: boolean } } : null;
+  const spacerResult = useMemo(() => {
+    const record = acceptedAnalysis;
+    if (!record || record.method.id !== SPACER_METHOD.id || record.method.version !== SPACER_METHOD.version) return null;
+    return { record, genome: validateSpacerGenome(record.inputs[0].data), library: validateSpacerLibrary(record.inputs[1].data),
+      hits: record.fields.matches.value as unknown as ReferenceSpacerHit[],
+      coverage: record.fields.coverage.value as unknown as {
+        status: SpacerSearchResult['status']; hosts: SpacerSearchResult['hosts']; windows: SpacerSearchResult['coverage'];
+        excluded: SpacerSearchResult['excluded']; distinctSequences: number; complete: true;
+      } };
+  }, [acceptedAnalysis]);
   const commandBusy = inputBusy || !['idle', 'recording'].includes(state.mode);
   const busy = commandBusy || libraryBusy;
   const active = state.mode === 'recording';
@@ -413,6 +456,21 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       if (inputOperation.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Reference input could not be read.');
     } finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
   };
+  const loadSpacerLibrary = async (file: File | undefined) => {
+    if (!file || busy || !active) return;
+    inputOperation.current?.abort();
+    const controller = new AbortController(); inputOperation.current = controller;
+    setInputBusy(true); setError(null);
+    try {
+      if (file.size > SPACER_LIMITS.libraryBytes) throw new Error('Spacer library exceeds the 2 MiB limit.');
+      const text = await file.text();
+      if (inputOperation.current !== controller || controller.signal.aborted) return;
+      const library = parseSpacerLibrary(text);
+      setSpacerLibrary({ text, name: file.name, library }); setSpacerHost(''); setSpacerMismatches('0');
+    } catch (cause) {
+      if (inputOperation.current === controller && !controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Spacer library could not be read.');
+    } finally { if (inputOperation.current === controller) { inputOperation.current = null; setInputBusy(false); } }
+  };
   const view = (): ResearchView => ({ contentId: selected, geneId: gene === 'all' ? null : Number(gene), scrollPosition: position.trim() ? Number(position) : NaN, viewMode: mode, readingFrame: frame });
   const restoreLocal = async (content: string, signal: AbortSignal) => {
     if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -430,7 +488,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, mosaic reference similarity, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -535,6 +593,37 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         const task = workflow.commands.dispatch(ActionIds.OverlayMosaicRadar, analysisJson(mosaicDraft.parameters));
         invoke(() => task);
       }}>Run and record mosaic similarity</button>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record sourced spacer comparisons</legend>
+      <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Import the same versioned host/array library used by the CRISPR spacer view.
+        The exact library travels with each command; replay does not fetch references or follow a file path.</p>
+      <label>Workflow spacer reference library JSON <input type="file" accept=".json,application/json" onChange={event => {
+        const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; void loadSpacerLibrary(file);
+      }} /></label>
+      {spacerLibrary && <p data-testid="workflow-spacer-draft">Draft reference: {spacerLibrary.library.name} · {spacerLibrary.name} ·
+        {' '}{spacerLibrary.library.source.kind === 'demo' ? 'Synthetic demonstration library' : `${spacerLibrary.library.source.kind} source; attribution supplied by its author`} ·
+        {' '}version {spacerLibrary.library.source.version} · {spacerLibrary.library.hosts.length} hosts · {spacerLibrary.library.spacers.length} spacer records.
+        Loading does not run or record a comparison.</p>}
+      <label>Workflow spacer host scope <select value={spacerHost} onChange={event => setSpacerHost(event.target.value)}>
+        <option value="">All supplied hosts</option>
+        {spacerLibrary?.library.hosts.map(host => <option key={host.id} value={host.id}>{host.name} · {host.strain} · {host.accession}</option>)}
+      </select></label>
+      <label>Workflow spacer genome topology <select value={spacerTopology} onChange={event => setSpacerTopology(event.target.value as SpacerGenome['topology'])}>
+        <option value="unknown">Unknown — no origin-spanning comparisons</option>
+        <option value="linear">Linear molecule or partial assembly</option>
+        <option value="circular">I assert this is a complete circular molecule</option>
+      </select></label>
+      <label>Workflow spacer maximum substitutions <input type="number" min={0} max={5} value={spacerMismatches} onChange={event => setSpacerMismatches(event.target.value)} /></label>
+      <p>Topology must agree with an explicit source annotation and resets when the selected genome changes.
+        Unknown systems and missing PAM/seed rules remain unknown. No hit does not imply susceptibility; matches do not establish immunity.</p>
+      {spacerDraft.error && <p data-testid="workflow-spacer-draft-error">{spacerDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !spacerDraft.parameters} onClick={() => {
+        if (busy || !active || !spacerDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayCRISPR, analysisJson(spacerDraft.parameters));
+        invoke(() => task);
+      }}>Run and record spacer comparison</button>
+      <p>Libraries are limited to 2 MiB. All recorded commands and embedded inputs together must fit the 10 MiB workflow limit.
+        Search budgets fail explicitly without accepting a partial result.</p>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable GC skew</legend>
       <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Complete linear windows only; topology is not inferred from a circular annotation.</p>
@@ -656,10 +745,12 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     {(error || state.error) && <p role="alert">{error ?? state.error}</p>}
     <ol aria-label="Recorded workflow commands">{state.tape.commands.map((command, index) => {
       const parameters = command.parameters;
-      // A 10 MiB embedded corpus belongs in the export, not an enormous DOM node.
+      // Embedded references belong in the export, not enormous DOM nodes.
       const preview = parameters !== null && typeof parameters === 'object' && !Array.isArray(parameters)
         && parameters.method === 'reference-cai' && typeof parameters.referenceText === 'string'
-        ? { ...parameters, referenceText: `[${parameters.referenceText.length} characters embedded; retained exactly in the workflow export]` } : parameters;
+        ? { ...parameters, referenceText: `[${parameters.referenceText.length} characters embedded; retained exactly in the workflow export]` }
+        : parameters !== null && typeof parameters === 'object' && !Array.isArray(parameters) && typeof parameters.libraryText === 'string'
+          ? { ...parameters, libraryText: `[${parameters.libraryText.length} characters embedded; retained exactly in the workflow export]` } : parameters;
       return <li key={index}>{ActionRegistry[command.actionId as keyof typeof ActionRegistry]?.title ?? command.actionId} <code>{JSON.stringify(preview)}</code></li>;
     })}</ol>
     {research.view && <p data-testid="workflow-view">Saved view: {research.view.contentId.slice(0, 12)} · {research.view.viewMode} · frame {research.view.readingFrame} · position {research.view.scrollPosition} · CDS {research.view.geneId ?? 'all'}</p>}
@@ -670,6 +761,47 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
       <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. Coordinate TSV exports omit the source-sequence fields.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {spacerResult && <section aria-label="Recorded spacer results">
+        <h4>{spacerResult.genome.name}: accepted sourced spacer comparison</h4>
+        <p data-testid="workflow-spacer-outcome">{SPACER_STATUS[spacerResult.coverage.status]}</p>
+        <p>Accepted reference: {spacerResult.library.name} · version {spacerResult.library.source.version} ·
+          {' '}{spacerResult.library.source.kind === 'demo' ? 'Synthetic demonstration library' : `${spacerResult.library.source.kind} source; attribution supplied by its author`}.
+          {' '}Source: {spacerResult.library.source.reference}. Scope: {spacerResult.library.source.scope}. License/permission: {spacerResult.library.source.license}.</p>
+        <p>Accepted topology: {spacerResult.genome.topology}; maximum substitutions: {String(spacerResult.record.parameters.maxMismatches)};
+          {' '}host scope: {spacerResult.record.parameters.hostId === null ? 'All supplied hosts' : spacerResult.library.hosts.find(host => host.id === spacerResult.record.parameters.hostId)?.accession}.
+          {' '}{spacerResult.record.fields.matches.coverage.available}/{spacerResult.record.fields.matches.coverage.total} reference records searched;
+          {' '}{spacerResult.coverage.distinctSequences} distinct sequences; {spacerResult.hits.length} reference-hit rows.
+          Draft controls never relabel this accepted evidence.</p>
+        <p>Coordinates are 0-based, half-open forward-genome intervals. Wrapped hits list each covered segment.
+          The preview shows at most 50 matches; the analysis and complete-result exports preserve every match, exclusion and original reference.</p>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded spacer host coverage">
+          <thead><tr><th>Host / strain / accession</th><th>Records</th><th>Searched</th><th>Excluded</th><th>Hit records</th><th>Unique oriented loci</th></tr></thead>
+          <tbody>{spacerResult.coverage.hosts.map(row => {
+            const host = spacerResult.library.hosts.find(host => host.id === row.hostId);
+            return <tr key={row.hostId}><td>{host?.name} / {host?.strain} / {host?.accession}</td><td>{row.records}</td><td>{row.searched}</td>
+              <td>{row.excluded}</td><td>{row.hitRecords}</td><td>{row.uniqueLoci}</td></tr>;
+          })}</tbody>
+        </table></div>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded spacer matches">
+          <thead><tr><th>Spacer / array / system</th><th>Host accession</th><th>Genome interval / strand</th><th>Guide-oriented target / substitutions</th><th>PAM</th><th>Seed</th></tr></thead>
+          <tbody>{spacerResult.hits.slice(0, 50).map((hit, index) => {
+            const reference = spacerResult.library.spacers.find(spacer => spacer.id === hit.spacerId);
+            return <tr key={`${hit.spacerId}:${hit.start}:${hit.strand}:${index}`}><td>{hit.spacerId}<br />{reference?.arrayAccession}<br />{reference?.system ?? 'Unknown system'}</td>
+              <td>{spacerResult.library.hosts.find(host => host.id === hit.hostId)?.accession}</td>
+              <td>{hit.segments.map(segment => `[${segment.start},${segment.end})`).join(' + ')} {hit.strand}{hit.wrapsOrigin ? ' (origin crossing)' : ''}</td>
+              <td><code>{hit.protospacer}</code><br />{hit.mismatchPositions.length} substitutions: {hit.mismatchPositions.join(', ') || 'none'}</td>
+              <td>{hit.pam.status}: {hit.pam.sequence ?? '—'}<br />
+                {reference?.pam ? `${reference.pam.side} ${reference.pam.motif}; ${reference.pam.reference}` : 'No supplied rule'}
+                {hit.pam.reason ? ` · ${hit.pam.reason}` : ''}</td>
+              <td>{hit.seed.status}{hit.seed.mismatches === null ? '' : `: ${hit.seed.mismatches} substitutions`}<br />
+                {reference?.seed ? `[${reference.seed.start},${reference.seed.end}); ${reference.seed.reference}` : 'No supplied rule'}</td></tr>;
+          })}</tbody>
+        </table></div>
+        <details><summary>Recorded spacer search coverage and exclusions</summary>
+          <p>{spacerResult.coverage.windows.map(row => `${row.length} bp: ${row.unambiguousStarts}/${row.possibleStarts} starts have complete unambiguous DNA`).join('; ') || 'No supported spacer lengths.'}</p>
+          <ul>{spacerResult.coverage.excluded.map(row => <li key={row.spacerId}>{row.spacerId} ({row.hostId}): {row.reason}</li>)}</ul>
+        </details>
+      </section>}
       {dotResult && <section aria-label="Recorded dot-plot results">
         <h4>Accepted {dotResult.pairwise ? 'pairwise' : 'self'} dot-plot experiment</h4>
         <p>Row/Y: {dotResult.record.inputs[0].accession ?? dotResult.record.inputs[0].id}.
