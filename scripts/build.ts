@@ -9,6 +9,7 @@ import { join } from "node:path";
 export const EXECUTABLE_WORKERS = [
   { source: 'packages/tui/src/workers/environmental-worker.ts', bundle: 'environmental-worker.js', define: 'PHAGE_ENVIRONMENTAL_WORKER' },
   { source: 'packages/tui/src/workers/abundance-worker.ts', bundle: 'abundance-worker.js', define: 'PHAGE_ABUNDANCE_WORKER' },
+  { source: 'packages/tui/src/workers/growth-worker.ts', bundle: 'growth-worker.js', define: 'PHAGE_GROWTH_WORKER' },
   { source: 'packages/tui/src/workers/host-metabolism-worker.ts', bundle: 'host-metabolism-worker.js', define: 'PHAGE_HOST_METABOLISM_WORKER' },
   { source: 'packages/tui/src/local-genome-import.worker.ts', bundle: 'local-genome-import.worker.js', define: 'PHAGE_LOCAL_GENOME_WORKER' },
   { source: 'packages/tui/src/research-replay.worker.ts', bundle: 'research-replay.worker.js', define: 'PHAGE_RESEARCH_WORKER' },
