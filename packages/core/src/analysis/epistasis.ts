@@ -14,6 +14,7 @@
  */
 
 import type { GeneInfo } from '../types';
+import { reconstructCdsReference, type CdsReference } from './cds-consequences';
 
 // ============================================================================
 // BLOSUM62 Substitution Matrix
@@ -662,6 +663,39 @@ export function classifyProteinType(gene: GeneInfo): ProteinType {
     return 'polymerase';
   }
   return 'other';
+}
+
+export interface EpistasisProteinInput {
+  gene: GeneInfo;
+  type: ProteinType;
+  sequence: string;
+  reference: CdsReference;
+}
+
+/** Prepare exact, supported CDS translations before applying the illustrative scoring model. */
+export function prepareEpistasisProteins(genes: readonly GeneInfo[], genome: string): {
+  candidates: EpistasisProteinInput[];
+  excluded: Array<{ gene: GeneInfo; reasons: string[] }>;
+} {
+  const candidates: EpistasisProteinInput[] = [], excluded: Array<{ gene: GeneInfo; reasons: string[] }> = [];
+  const sequence = genome.toUpperCase();
+  for (const gene of genes) {
+    if (gene.type !== 'CDS') continue;
+    const type = classifyProteinType(gene);
+    if (type === 'other') continue;
+    const reference = reconstructCdsReference(gene, sequence);
+    const protein = reference.protein?.replace(/\*$/, '') ?? '';
+    const reasons = [...reference.reasons];
+    if (!reasons.length && protein.length < 50) reasons.push('At least 50 translated residues are required for this view.');
+    if (reasons.length) {
+      excluded.push({ gene, reasons });
+      continue;
+    }
+    candidates.push({ gene, type, sequence: protein, reference });
+  }
+  const priority: Record<ProteinType, number> = { capsid: 1, tail_fiber: 2, portal: 3, polymerase: 4, other: 5 };
+  candidates.sort((a, b) => priority[a.type] - priority[b.type] || a.gene.id - b.gene.id);
+  return { candidates, excluded };
 }
 
 /**

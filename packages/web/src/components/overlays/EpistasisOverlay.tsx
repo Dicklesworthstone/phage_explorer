@@ -24,15 +24,13 @@ import {
 } from './primitives';
 import {
   analyzeFitnessLandscape,
-  classifyProteinType,
-  translateSequence,
-  reverseComplement,
+  prepareEpistasisProteins,
   type FitnessLandscape,
   type EpistasisPair,
   type SingleMutantEffect,
   type FitnessRegion,
   type EscapeRoute,
-  type ProteinType,
+  type EpistasisProteinInput,
 } from '@phage-explorer/core';
 
 // ============================================================================
@@ -46,10 +44,14 @@ interface EpistasisOverlayProps {
 
 type ViewMode = 'heatmap' | 'mutants' | 'regions' | 'escape';
 
-interface ProteinCandidate {
-  gene: GeneInfo;
-  type: ProteinType;
+type ProteinCandidate = EpistasisProteinInput;
+
+interface EpistasisInputSnapshot {
+  repository: PhageRepository;
+  phage: PhageFull;
   sequence: string;
+  genes: GeneInfo[];
+  error: string | null;
 }
 
 // ============================================================================
@@ -331,12 +333,12 @@ function MutantDistribution({
   return (
     <div>
       <div style={{ marginBottom: '8px', fontSize: '12px', color: colors.textMuted }}>
-        Position-wise Average Fitness (ΔG)
+        Position-wise Average Substitution Score
       </div>
       <canvas
         ref={canvasRef}
         role="img"
-        aria-label="Position-wise average fitness chart showing mutational effects as bars, red for deleterious and green for beneficial"
+        aria-label="Position-wise average BLOSUM62 heuristic scores; lower scores are red and higher scores are green"
         style={{
           border: `1px solid ${colors.border}`,
           borderRadius: '4px',
@@ -344,7 +346,7 @@ function MutantDistribution({
       />
       <div style={{ marginTop: '16px' }}>
         <div style={{ fontSize: '12px', color: colors.textMuted, marginBottom: '4px' }}>
-          Fitness Distribution
+          Substitution Score Distribution
         </div>
         <div style={{ display: 'flex', alignItems: 'flex-end', height: '40px', gap: '1px' }}>
           {histogram.map((count, i) => {
@@ -371,9 +373,9 @@ function MutantDistribution({
             color: colors.textMuted,
           }}
         >
-          <span>Deleterious</span>
+          <span>Lower score</span>
           <span>Neutral</span>
-          <span>Beneficial</span>
+          <span>Higher score</span>
         </div>
       </div>
     </div>
@@ -397,7 +399,7 @@ function RegionsList({
   return (
     <div>
       <div style={{ marginBottom: '8px', fontSize: '12px', color: colors.textMuted }}>
-        Fitness Regions ({robustRegions.length} robust, {fragileRegions.length} fragile)
+        Heuristic Regions ({robustRegions.length} robust, {fragileRegions.length} fragile)
       </div>
       <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
         {allRegions.map((region, i) => (
@@ -437,9 +439,9 @@ function RegionsList({
                 color: colors.textMuted,
               }}
             >
-              <span>Avg ΔG: {region.averageFitness.toFixed(2)}</span>
+              <span>Mean heuristic score: {region.averageFitness.toFixed(2)}</span>
               <span>Tolerance: {(region.mutationalTolerance * 100).toFixed(0)}%</span>
-              <span>Conservation: {(region.conservationScore * 100).toFixed(0)}%</span>
+              <span>Intolerance score: {region.conservationScore.toFixed(2)}</span>
             </div>
           </div>
         ))}
@@ -463,7 +465,7 @@ function EscapeRoutesList({
   return (
     <div>
       <div style={{ marginBottom: '8px', fontSize: '12px', color: colors.textMuted }}>
-        Potential Escape Routes (Compensatory Mutations)
+        Illustrative Compensatory Mutation Pairs
       </div>
       <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
         {routes.map((route, i) => (
@@ -490,21 +492,21 @@ function EscapeRoutesList({
               }}
             >
               <span>
-                Fitness gain:{' '}
+                Heuristic score gain:{' '}
                 <span style={{ color: '#22c55e', fontWeight: 500 }}>
                   +{route.fitnessGain.toFixed(2)}
                 </span>
               </span>
               <span>
-                Escape probability:{' '}
-                <span style={{ fontWeight: 500 }}>{(route.escapeProbability * 100).toFixed(0)}%</span>
+                Uncalibrated route score:{' '}
+                <span style={{ fontWeight: 500 }}>{route.escapeProbability.toFixed(2)}</span>
               </span>
             </div>
           </div>
         ))}
         {routes.length === 0 && (
           <div style={{ color: colors.textMuted, fontStyle: 'italic' }}>
-            No escape routes detected
+            No compensatory pairs in this scoring model
           </div>
         )}
       </div>
@@ -572,9 +574,11 @@ export function EpistasisOverlay({
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
 
-  const sequenceCache = useRef<Map<number, string>>(new Map());
-  const [sequence, setSequence] = useState<string>('');
-  const [loading, setLoading] = useState(false);
+  const overlayOpen = isOpen('epistasis');
+  const [snapshot, setSnapshot] = useState<EpistasisInputSnapshot | null>(null);
+  // Repository identity matters: imported genomes can reuse numeric catalog IDs.
+  const accepted = overlayOpen && snapshot?.repository === repository && snapshot.phage === currentPhage ? snapshot : null;
+  const loading = overlayOpen && !!repository && !!currentPhage && !accepted;
   const [viewMode, setViewMode] = useState<ViewMode>('heatmap');
   const [selectedProtein, setSelectedProtein] = useState(0);
 
@@ -585,83 +589,35 @@ export function EpistasisOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Fetch sequence when overlay opens
+  // Capture annotations and bases from one repository; discard superseded loads.
   useEffect(() => {
-    if (!isOpen('epistasis')) return;
-    if (!repository || !currentPhage) {
-      setSequence('');
-      setLoading(false);
-      return;
-    }
-
-    const phageId = currentPhage.id;
-
-    // Check cache
-    if (sequenceCache.current.has(phageId)) {
-      setSequence(sequenceCache.current.get(phageId) ?? '');
-      setLoading(false);
-      return;
-    }
-
+    setSnapshot(null);
+    setSelectedProtein(0);
+    if (!overlayOpen || !repository || !currentPhage) return;
+    const source = repository, phage = currentPhage;
     let cancelled = false;
-    setLoading(true);
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length) => repository.getSequenceWindow(phageId, 0, length))
-      .then((seq) => {
+    void (async () => {
+      try {
+        const length = await source.getFullGenomeLength(phage.id);
         if (cancelled) return;
-        sequenceCache.current.set(phageId, seq);
-        setSequence(seq);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setSequence('');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, repository, currentPhage]);
-
-  // Identify protein candidates (capsid, tail fiber, portal, polymerase)
-  const proteinCandidates = useMemo((): ProteinCandidate[] => {
-    if (!currentPhage?.genes || !sequence) return [];
-
-    const candidates: ProteinCandidate[] = [];
-
-    for (const gene of currentPhage.genes) {
-      const type = classifyProteinType(gene);
-      if (type === 'other') continue;
-
-      // Extract protein sequence (translate CDS)
-      const start = gene.startPos - 1;
-      const end = gene.endPos;
-      if (start < 0 || end > sequence.length) continue;
-
-      const rawCds = sequence.slice(start, end);
-      const cds = gene.strand === '-' ? reverseComplement(rawCds) : rawCds;
-      const protein = translateSequence(cds, 0).replace(/\*$/, ''); // Remove trailing stop
-
-      if (protein.length >= 50) {
-        candidates.push({ gene, type, sequence: protein });
+        const [sequence, genes] = await Promise.all([
+          source.getSequenceWindow(phage.id, 0, length),
+          source.getGenes(phage.id),
+        ]);
+        if (!cancelled) setSnapshot({ repository: source, phage, sequence, genes, error: null });
+      } catch (error) {
+        if (!cancelled) setSnapshot({ repository: source, phage, sequence: '', genes: [],
+          error: error instanceof Error ? error.message : 'Unable to load the annotated genome.' });
       }
-    }
+    })();
+    return () => { cancelled = true; };
+  }, [overlayOpen, repository, currentPhage]);
 
-    // Sort by priority: capsid > tail_fiber > portal > polymerase
-    const priority: Record<ProteinType, number> = {
-      capsid: 1,
-      tail_fiber: 2,
-      portal: 3,
-      polymerase: 4,
-      other: 5,
-    };
-    candidates.sort((a, b) => priority[a.type] - priority[b.type]);
-
-    return candidates.slice(0, 8); // Limit to 8 proteins
-  }, [currentPhage, sequence]);
+  const prepared = useMemo(() => accepted && !accepted.error
+    ? prepareEpistasisProteins(accepted.genes, accepted.sequence)
+    : { candidates: [], excluded: [] }, [accepted]);
+  const proteinCandidates = prepared.candidates;
+  const selectedCandidate = proteinCandidates[selectedProtein];
 
   // Compute fitness landscape for selected protein
   const landscape = useMemo((): FitnessLandscape | null => {
@@ -676,7 +632,7 @@ export function EpistasisOverlay({
     });
   }, [proteinCandidates, selectedProtein]);
 
-  if (!isOpen('epistasis')) return null;
+  if (!overlayOpen) return null;
 
   const panelStyle: React.CSSProperties = {
     position: 'fixed',
@@ -735,11 +691,28 @@ export function EpistasisOverlay({
           />
         )}
 
-        {!loading && currentPhage && proteinCandidates.length === 0 && (
+        {!loading && currentPhage && !repository && (
+          <OverlayEmptyState message="Genome repository unavailable" hint="Load a genome source to inspect its annotated proteins." />
+        )}
+
+        {accepted?.error && (
+          <OverlayEmptyState message="Unable to load this genome" hint={accepted.error} />
+        )}
+
+        {!loading && accepted && !accepted.error && proteinCandidates.length === 0 && (
           <OverlayEmptyState
-            message="No suitable proteins found"
-            hint="Epistasis analysis requires capsid, tail fiber, portal, or polymerase proteins."
+            message="No supported CDS proteins found"
+            hint="This view requires an annotated capsid, tail fiber, portal, or polymerase CDS with at least 50 residues."
           />
+        )}
+
+        {prepared.excluded.length > 0 && (
+          <details style={{ marginBottom: '12px', fontSize: '12px' }}>
+            <summary>{prepared.excluded.length} candidate CDS features unavailable</summary>
+            <ul>{prepared.excluded.map(({ gene, reasons }) => (
+              <li key={gene.id}>{gene.name || gene.locusTag || `CDS ${gene.id}`}: {reasons.join(' ')}</li>
+            ))}</ul>
+          </details>
         )}
 
         {!loading && proteinCandidates.length > 0 && (
@@ -751,8 +724,17 @@ export function EpistasisOverlay({
               colors={{ text: colors.text, textMuted: colors.textMuted, accent: colors.accent, border: colors.border }}
             />
 
-            {landscape && (
+            {landscape && selectedCandidate && (
               <>
+                <p style={{ fontSize: '12px', color: colors.textMuted }}>
+                  Illustrative BLOSUM62 scores from one annotated protein. No measured fitness,
+                  free energy, statistical significance, or escape probability is inferred.
+                </p>
+                <p style={{ fontSize: '12px', color: colors.textMuted }}>
+                  NCBI table {selectedCandidate.reference.geneticCode} · codon_start {selectedCandidate.reference.codonStart} · {' '}
+                  {selectedCandidate.reference.segments.length} coding segment(s), in transcript order.{' '}
+                  Showing residues 1–{landscape.proteinSequence.length} of {selectedCandidate.sequence.length}.
+                </p>
                 <div
                   style={{
                     display: 'flex',
@@ -769,7 +751,7 @@ export function EpistasisOverlay({
                     Length: <strong style={{ color: colors.text }}>{landscape.proteinSequence.length}aa</strong>
                   </span>
                   <span>
-                    Avg ΔG: <strong style={{ color: colors.text }}>{landscape.averageFitness.toFixed(2)}</strong>
+                    Mean heuristic score: <strong style={{ color: colors.text }}>{landscape.averageFitness.toFixed(2)}</strong>
                   </span>
                 </div>
 

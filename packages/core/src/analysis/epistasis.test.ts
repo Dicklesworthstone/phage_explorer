@@ -25,12 +25,14 @@ import {
   identifyRegions,
   findEscapeRoutes,
   classifyProteinType,
+  prepareEpistasisProteins,
   analyzeFitnessLandscape,
   renderEpistasisHeatmap,
   type EpistasisPair,
   type SingleMutantEffect,
 } from './epistasis';
 import type { GeneInfo } from '../types';
+import { strict as assert } from 'node:assert';
 
 // ============================================================================
 // BLOSUM62 Matrix Tests
@@ -718,5 +720,83 @@ describe('renderEpistasisHeatmap', () => {
     const wideLines = wide.split('\n');
 
     expect(narrowLines[0].length).toBeLessThanOrEqual(wideLines[0].length);
+  });
+});
+
+describe('exact CDS inputs for the epistasis explorer', () => {
+  const gene = (overrides: Partial<GeneInfo> = {}): GeneInfo => ({
+    id: 1, name: 'capsid', locusTag: 'test_1', product: 'major capsid protein',
+    type: 'CDS', strand: '+', startPos: 0, endPos: 153, ...overrides,
+  });
+  const dna = 'ATG' + 'GCT'.repeat(49) + 'TAA';
+
+  test('includes a CDS at genomic zero and removes only its terminal stop', () => {
+    const result = prepareEpistasisProteins([gene()], dna.toLowerCase());
+    assert.equal(result.excluded.length, 0);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].sequence, 'M' + 'A'.repeat(49));
+    assert.equal(result.candidates[0].reference.cds, dna);
+    assert.deepEqual(result.candidates[0].reference.segments, [{ start: 0, end: 153, strand: '+' }]);
+  });
+
+  test('uses reverse joined segments, codon_start and recoded TAG without intervening genomic sequence', () => {
+    // Reverse complements are explicit independent fixture bytes:
+    // rc(GCT*49 + TAA) = TTA + AGC*49; rc(CTAG) = CTAG.
+    const genome = 'TTA' + 'AGC'.repeat(49) + 'C'.repeat(20) + 'CTAG';
+    const annotated = gene({ strand: '-', endPos: 174, qualifiers: {
+      codon_start: 2, transl_table: 15,
+      _segments: [{ start: 170, end: 174, strand: '-' }, { start: 0, end: 150, strand: '-' }],
+      translation: 'Q' + 'A'.repeat(49),
+    } });
+    const result = prepareEpistasisProteins([annotated], genome);
+    assert.equal(result.excluded.length, 0);
+    assert.equal(result.candidates[0].sequence, 'Q' + 'A'.repeat(49));
+    assert.equal(result.candidates[0].reference.geneticCode, 15);
+    assert.equal(result.candidates[0].reference.codonStart, 2);
+    assert.deepEqual(result.candidates[0].reference.segments, [
+      { start: 170, end: 173, strand: '-' }, { start: 0, end: 150, strand: '-' },
+    ]);
+  });
+
+  test('retains origin-spanning transcript order and excludes non-CDS annotation duplicates', () => {
+    const genome = 'GCT'.repeat(49) + 'TAA' + 'C'.repeat(20) + 'ATG';
+    const annotated = gene({ endPos: 173, qualifiers: {
+      _segments: [{ start: 170, end: 173, strand: '+' }, { start: 0, end: 150, strand: '+' }],
+    } });
+    const result = prepareEpistasisProteins([gene({ id: 2, type: 'gene' }), annotated], genome);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].sequence, 'M' + 'A'.repeat(49));
+  });
+
+  test('reports unsupported and inconsistent CDS inputs instead of scoring fabricated translations', () => {
+    const cases: Array<[GeneInfo, string, RegExp]> = [
+      [gene({ qualifiers: { transl_table: 2 } }), dna, /translation table/],
+      [gene({ qualifiers: { translation: 'W'.repeat(50) } }), dna, /translation differs/],
+      [gene({ qualifiers: { pseudo: '' } }), dna, /pseudo/],
+      [gene(), 'ATG' + 'TAG' + 'GCT'.repeat(48) + 'TAA', /internal stop/],
+      [gene(), 'ATG' + 'NNN' + 'GCT'.repeat(48) + 'TAA', /unresolved bases/],
+      [gene({ endPos: 150 }), 'ATG' + 'GCT'.repeat(48) + 'TAA', /At least 50/],
+      [gene({ endPos: 154 }), dna + 'A', /complete terminal codons/],
+    ];
+    for (const [annotation, genome, reason] of cases) {
+      const result = prepareEpistasisProteins([annotation], genome);
+      assert.equal(result.candidates.length, 0);
+      assert.equal(result.excluded.length, 1);
+      assert.match(result.excluded[0].reasons.join(' '), reason);
+    }
+  });
+
+  test('makes all supported candidate proteins selectable and keeps deterministic priority', () => {
+    const annotations = Array.from({ length: 12 }, (_, index) => gene({
+      id: 12 - index, product: index % 2 ? 'tail fiber' : 'major capsid protein', name: null, locusTag: null,
+    }));
+    const result = prepareEpistasisProteins(annotations, dna);
+    assert.equal(result.candidates.length, 12);
+    assert.deepEqual(result.candidates.map(row => row.gene.id), [2, 4, 6, 8, 10, 12, 1, 3, 5, 7, 9, 11]);
+    const selected = result.candidates[0];
+    const landscape = analyzeFitnessLandscape('exact CDS', selected.sequence, { maxPositions: 50, topEpistasisPairs: 20 });
+    assert.equal(landscape.proteinSequence, 'M' + 'A'.repeat(49));
+    assert.equal(landscape.singleMutants.length, 50 * 19);
+    assert.ok(landscape.singleMutants.every(m => m.wildType === selected.sequence[m.position]));
   });
 });
