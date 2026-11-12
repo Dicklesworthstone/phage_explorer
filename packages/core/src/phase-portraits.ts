@@ -1,7 +1,20 @@
 // Amino-acid property phase portraits
 // Compute sliding-window property vectors, PCA projection, and dominant property calls.
 
+import { reconstructCdsReference, type CdsReference } from './analysis/cds-consequences';
+import type { GeneInfo } from './types';
+
 export type DominantProperty = 'hydrophobic' | 'charged' | 'aromatic' | 'flexible' | 'disordered' | 'flat';
+
+/** Names describe the scoring rule, without inferring protein structure or function. */
+export const PHASE_PROPERTY_LABELS: Record<DominantProperty, string> = {
+  hydrophobic: 'Hydropathy magnitude',
+  charged: 'Charge magnitude',
+  aromatic: 'Aromatic fraction',
+  flexible: 'Flexibility propensity',
+  disordered: 'Disorder propensity',
+  flat: 'No dominant score',
+};
 
 export interface PropertyVector {
   hydropathy: number;
@@ -22,6 +35,42 @@ export interface PortraitPoint extends PropertyVector {
 export interface PhasePortraitResult {
   points: PortraitPoint[];
   explained: [number, number]; // approximate explained variance proportions
+}
+
+export interface CdsPhasePortraitInput {
+  reference: CdsReference;
+  /** Supported, verified CDS translation without its optional terminal stop. */
+  protein: string | null;
+}
+
+/** Both interfaces analyze the same annotated transcript, never its genomic envelope. */
+export function prepareCdsPhasePortraitInput(genome: string, gene: GeneInfo): CdsPhasePortraitInput {
+  const reference = reconstructCdsReference(gene, genome.toUpperCase());
+  if (gene.type !== 'CDS') reference.reasons.push('The selected feature is not an annotated CDS.');
+  const protein = reference.reasons.length === 0 ? reference.protein?.replace(/\*$/, '') ?? null : null;
+  if (protein === '') reference.reasons.push('The CDS has no translated protein residues.');
+  return { reference, protein: protein || null };
+}
+
+/** Map a zero-based, half-open residue window to genomic segments in transcript order.
+ * codon_start has already trimmed reference.segments. A codon may cross a join/origin;
+ * noncoding gaps are never substituted for those coding bases.
+ */
+export function mapCdsResidueRange(reference: CdsReference, start: number, end: number): CdsReference['segments'] {
+  const length = reference.protein?.replace(/\*$/, '').length ?? 0;
+  if (reference.reasons.length || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+    || start < 0 || end <= start || end > length) return [];
+  const segments: CdsReference['segments'] = [];
+  let offset = 0;
+  for (const segment of reference.segments) {
+    const size = segment.end - segment.start;
+    const from = Math.max(0, start * 3 - offset), to = Math.min(size, end * 3 - offset);
+    if (from < to) segments.push(segment.strand === '+'
+      ? { start: segment.start + from, end: segment.start + to, strand: '+' }
+      : { start: segment.end - to, end: segment.end - from, strand: '-' });
+    offset += size;
+  }
+  return segments;
 }
 
 // Kyte-Doolittle hydropathy
@@ -172,7 +221,13 @@ function project(matrix: number[][], eig1: number[], eig2: number[]): { coords: 
 }
 
 export function computePhasePortrait(aaSequence: string, window = 30, step = 5): PhasePortraitResult {
-  if (!aaSequence || aaSequence.length < 3) {
+  if (!Number.isSafeInteger(window) || window < 1 || !Number.isSafeInteger(step) || step < 1) {
+    throw new Error('Phase portrait window and step must be positive integers.');
+  }
+  if (/[^ACDEFGHIKLMNPQRSTVWY]/i.test(aaSequence)) {
+    throw new Error('Phase portraits require a supported protein sequence without stops or unresolved residues.');
+  }
+  if (!aaSequence || aaSequence.length < window) {
     return { points: [], explained: [0, 0] };
   }
 

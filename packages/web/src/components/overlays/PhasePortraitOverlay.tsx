@@ -3,11 +3,11 @@
  *
  * Visualizes protein property patterns using sliding window PCA analysis.
  * Shows hydropathy, charge, aromaticity, flexibility, and disorder patterns
- * across the translated genome, revealing functional domains and potential HGT events.
+ * across an explicitly selected, verified annotated CDS.
  */
 
 import React, { useMemo, useState, useCallback, useEffect } from 'react';
-import type { PhageFull } from '@phage-explorer/core';
+import { prepareCdsPhasePortraitInput, mapCdsResidueRange, PHASE_PROPERTY_LABELS, type CdsPhasePortraitInput, type PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks';
@@ -38,23 +38,23 @@ const PROPERTY_COLORS: Record<DominantProperty, string> = {
 
 // Property descriptions for tooltip
 const PROPERTY_DESCRIPTIONS: Record<DominantProperty, string> = {
-  hydrophobic: 'Hydrophobic core / membrane interaction',
-  charged: 'Charged surface / ion binding',
-  aromatic: 'Aromatic clusters / stacking interactions',
-  flexible: 'Flexible loops / hinge regions',
-  disordered: 'Intrinsically disordered / signaling',
+  hydrophobic: 'Window hydropathy score',
+  charged: 'Window charged-residue balance',
+  aromatic: 'Window aromatic-residue fraction',
+  flexible: 'Window flexibility propensity score',
+  disordered: 'Window disorder propensity score',
   flat: 'No dominant property',
 };
 
 // Helper component for tooltip content to avoid TypeScript issues with unknown data
-function TooltipContent({ point, colors }: { point: PortraitPoint; colors: { textMuted: string; textDim: string } }): React.ReactElement {
+function TooltipContent({ point, input, colors }: { point: PortraitPoint; input: CdsPhasePortraitInput; colors: { textMuted: string; textDim: string } }): React.ReactElement {
   return (
     <>
       <div style={{ fontWeight: 'bold', marginBottom: '0.25rem' }}>
-        Residues {point.start} - {point.end}
+        CDS residues {point.start + 1} - {point.end}
       </div>
       <div style={{ color: PROPERTY_COLORS[point.dominant] }}>
-        {point.dominant.toUpperCase()}
+        {PHASE_PROPERTY_LABELS[point.dominant]}
       </div>
       <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
         {PROPERTY_DESCRIPTIONS[point.dominant]}
@@ -62,7 +62,11 @@ function TooltipContent({ point, colors }: { point: PortraitPoint; colors: { tex
       <div style={{ marginTop: '0.25rem', color: colors.textDim }}>
         Hydropathy: {point.hydropathy.toFixed(2)}<br />
         Charge: {point.charge.toFixed(2)}<br />
-        Disorder: {point.disorder.toFixed(2)}
+        Disorder score: {point.disorder.toFixed(2)}
+      </div>
+      <div style={{ marginTop: '0.25rem', color: colors.textDim }}>
+        Genome (1-based): {mapCdsResidueRange(input.reference, point.start, point.end)
+          .map(segment => `${segment.start + 1}-${segment.end} (${segment.strand})`).join(', ')}
       </div>
     </>
   );
@@ -78,107 +82,90 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
   const overlayOpen = isOpen('phasePortrait');
-  const viewMode = usePhageStore((s) => s.viewMode);
+  const setViewMode = usePhageStore((s) => s.setViewMode);
   const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
-  const sequenceCache = useMemo(() => new Map<number, string>(), [repository]);
-  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phageId: number; sequence: string } | null>(null);
-  const sequence = loaded?.repository === repository && loaded?.phageId === currentPhage?.id ? loaded.sequence : '';
+  const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string; genes: PhageFull['genes'] } | null>(null);
+  const source = overlayOpen && loaded?.repository === repository && loaded?.phage === currentPhage ? loaded : null;
+  const sequence = source?.sequence ?? '';
+  const genes = useMemo(() => (source?.genes ?? []).filter(gene => gene.type === 'CDS'), [source]);
+  const [selectedGeneId, setSelectedGeneId] = useState<number | null>(null);
+  const gene = genes.find(candidate => candidate.id === selectedGeneId) ?? genes[0];
+  const portraitInput = useMemo(() => sequence && gene ? prepareCdsPhasePortraitInput(sequence, gene) : null, [sequence, gene]);
   const [loading, setLoading] = useState(false);
-  const [computed, setComputed] = useState<{ input: typeof loaded; windowSize: number; stepSize: number; result: PhasePortraitResult } | null>(null);
+  const [computed, setComputed] = useState<{ input: typeof loaded; cds: typeof portraitInput; windowSize: number; stepSize: number; result: PhasePortraitResult } | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
-
-  // Hover state for tooltip
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hovered, setHovered] = useState<{ analysis: PhasePortraitResult; point: ScatterHover } | null>(null);
-
-  // Analysis parameters
   const [windowSize, setWindowSize] = useState(30);
   const [stepSize] = useState(5);
   const [colorBy, setColorBy] = useState<'dominant' | 'hydropathy' | 'disorder'>('dominant');
-  const analysis = sequence && computed?.input === loaded && computed.windowSize === windowSize && computed.stepSize === stepSize ? computed.result : null;
+  const analysis = sequence && portraitInput?.protein && computed?.input === loaded && computed.cds === portraitInput
+    && computed.windowSize === windowSize && computed.stepSize === stepSize ? computed.result : null;
   const hoveredPoint = hovered?.analysis === analysis ? hovered.point : null;
 
-  // Hotkey to toggle overlay (Alt+Shift+P)
   useHotkey(
     ActionIds.OverlayPhasePortrait,
     () => toggle('phasePortrait'),
     { modes: ['NORMAL'] }
   );
 
-  // Fetch full genome when overlay opens or phage changes
+  // Sequence and canonical annotations are accepted together for one repository/selection.
   useEffect(() => {
     if (!overlayOpen) return;
     if (!repository || !currentPhage) {
       setLoaded(null);
       setLoading(false);
+      setLoadError(null);
       return;
     }
-
-    const phageId = currentPhage.id;
-
-    // Check cache first
-    if (sequenceCache.has(phageId)) {
-      setLoaded({ repository, phageId, sequence: sequenceCache.get(phageId) ?? '' });
-      setLoading(false);
-      return;
-    }
-
+    const phage = currentPhage;
     let cancelled = false;
     setLoading(true);
-    repository
-      .getFullGenomeLength(phageId)
-      .then((length: number) => cancelled ? null : repository.getSequenceWindow(phageId, 0, length))
-      .then((seq: string | null) => {
-        if (cancelled || seq === null) return;
-        sequenceCache.set(phageId, seq);
-        setLoaded({ repository, phageId, sequence: seq });
+    setLoadError(null);
+    repository.getFullGenomeLength(phage.id)
+      .then(length => cancelled ? null : Promise.all([
+        repository.getSequenceWindow(phage.id, 0, length),
+        repository.getGenes(phage.id),
+      ]))
+      .then(result => {
+        if (cancelled || result === null) return;
+        const [sequence, genes] = result;
+        setLoaded({ repository, phage, sequence, genes });
       })
-      .catch(() => {
+      .catch(error => {
         if (cancelled) return;
         setLoaded(null);
+        setLoadError(error instanceof Error ? error.message : 'Could not load the selected genome and CDS annotations.');
       })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [overlayOpen, repository, currentPhage]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [overlayOpen, repository, currentPhage, sequenceCache]);
-
-  // Compute phase portrait off the main thread (worker)
+  // The worker receives the exact supported protein, never a genome frame-zero translation.
   useEffect(() => {
-    if (!overlayOpen) return;
-    if (!currentPhage || !sequence) {
+    if (!overlayOpen || !portraitInput?.protein || !loaded || portraitInput.protein.length < windowSize) {
       setComputed(null);
       setAnalysisLoading(false);
       setAnalysisError(null);
       return;
     }
-    let cancelled = false;
+    const controller = new AbortController();
     setAnalysisLoading(true);
     setAnalysisError(null);
-
-    ComputeOrchestrator
-      .getInstance()
-      .computePhasePortraitWithSharedBuffer(currentPhage.id, sequence, windowSize, stepSize)
-      .then((result) => {
-        if (cancelled) return;
-        setComputed(result ? { input: loaded, windowSize, stepSize, result } : null);
+    ComputeOrchestrator.getInstance()
+      .computeProteinPhasePortrait(portraitInput.protein, windowSize, stepSize, controller.signal)
+      .then(result => {
+        if (!controller.signal.aborted) setComputed(result ? { input: loaded, cds: portraitInput, windowSize, stepSize, result } : null);
       })
-      .catch((err) => {
-        if (cancelled) return;
+      .catch(error => {
+        if (controller.signal.aborted) return;
         setComputed(null);
-        setAnalysisError(err instanceof Error ? err.message : 'Failed to compute phase portrait');
+        setAnalysisError(error instanceof Error ? error.message : 'Failed to compute phase portrait');
       })
-      .finally(() => {
-        if (!cancelled) setAnalysisLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [overlayOpen, currentPhage, sequence, loaded, windowSize, stepSize]);
+      .finally(() => { if (!controller.signal.aborted) setAnalysisLoading(false); });
+    return () => controller.abort();
+  }, [overlayOpen, portraitInput, loaded, windowSize, stepSize]);
 
   // Convert portrait points to scatter points for visualization
   const scatterPoints = useMemo((): ScatterPoint[] => {
@@ -207,7 +194,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
         x: point.coord.x,
         y: point.coord.y,
         id: `point-${index}`,
-        label: `Window ${point.start}-${point.end}`,
+        label: `CDS residues ${point.start + 1}-${point.end}`,
         value,
         color,
         size: 4,
@@ -221,19 +208,22 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
     setHovered(hover && analysis ? { analysis, point: hover } : null);
   }, [analysis]);
 
-  // Handle click - could navigate to position in main viewer
+  // Select the actual first coding base, including reverse/split codons. The raw
+  // genome AA view is a separate reading-frame visualization, so navigate in DNA.
   const handleClick = useCallback((hover: ScatterHover | null) => {
-    if (hover?.point?.data) {
-      const point = hover.point.data as PortraitPoint;
-      const target = viewMode === 'aa' ? point.start : point.start * 3;
-      setScrollPosition(target);
-    }
-  }, [setScrollPosition, viewMode]);
+    if (!analysis || !portraitInput || !hover?.point?.data) return;
+    const point = hover.point.data as PortraitPoint;
+    if (analysis.points[point.index] !== point) return;
+    const [segment] = mapCdsResidueRange(portraitInput.reference, point.start, point.end);
+    if (!segment) return;
+    setViewMode('dna');
+    setScrollPosition(segment.strand === '-' ? segment.end - 1 : segment.start);
+  }, [analysis, portraitInput, setScrollPosition, setViewMode]);
 
   if (!overlayOpen) return null;
 
   const legendItems = Object.entries(PROPERTY_COLORS).map(([key, color]) => ({
-    label: key.charAt(0).toUpperCase() + key.slice(1),
+    label: PHASE_PROPERTY_LABELS[key as DominantProperty],
     color,
   }));
 
@@ -254,34 +244,22 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
           fontSize: '0.85rem',
         }}>
           <strong style={{ color: colors.accent }}>Phase Portrait</strong>: PCA projection of amino acid
-          properties across the proteome. Points represent sliding windows of {windowSize} amino acids.
-          Clusters reveal functional domains; outliers may indicate HGT or specialized functions.
+          properties in one annotated CDS. Points represent complete windows of {windowSize} protein residues.
+          Translation follows its joined segments, strand, codon_start and declared genetic code.
+          Click a window to view its first coding base in the DNA viewer.
         </div>
 
-        {loading || analysisLoading ? (
-          <OverlayLoadingState message={loading ? 'Loading sequence data...' : 'Computing phase portrait...'}>
-            <AnalysisPanelSkeleton />
-          </OverlayLoadingState>
-        ) : analysisError ? (
-          <OverlayErrorState
-            message="Phase portrait analysis failed"
-            details={analysisError}
-          />
-        ) : !analysis ? (
-          <OverlayEmptyState
-            message={!sequence ? 'No sequence loaded' : 'Sequence too short for analysis'}
-            hint={!sequence ? 'Select a phage to analyze amino acid properties.' : 'Phase portrait requires sufficient protein sequence length.'}
-          />
-        ) : (
-          <>
-            {/* Controls */}
-            <div style={{
-              display: 'flex',
-              gap: '1rem',
-              flexWrap: 'wrap',
-              alignItems: 'center',
-              fontSize: '0.8rem',
-            }}>
+        <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center', fontSize: '0.8rem' }}>
+          <label style={{ color: colors.textMuted }}>
+            Annotated CDS:
+            <select value={gene?.id ?? ''} disabled={!genes.length} onChange={event => setSelectedGeneId(Number(event.target.value))}
+              style={{ marginLeft: '0.5rem', maxWidth: '100%', backgroundColor: colors.backgroundAlt, color: colors.text }}>
+              {!genes.length && <option value="">No annotated CDS</option>}
+              {genes.map(candidate => <option key={candidate.id} value={candidate.id}>
+                {candidate.locusTag || candidate.name || `CDS ${candidate.id}`} — {candidate.product || 'No product annotation'}
+              </option>)}
+            </select>
+          </label>
               <label style={{ color: colors.textMuted }}>
                 Window:
                 <select
@@ -302,7 +280,40 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
                   <option value={100}>100 residues</option>
                 </select>
               </label>
+        </div>
+        {portraitInput && (
+          <p data-testid="phase-portrait-cds" style={{ color: colors.textDim, fontSize: '0.8rem' }}>
+            {portraitInput.reference.name} · NCBI table {portraitInput.reference.geneticCode} · codon_start {portraitInput.reference.codonStart}
+            {' '}· {portraitInput.protein?.length ?? 0} protein residues; terminal stop excluded.
+          </p>
+        )}
 
+        {loading || analysisLoading ? (
+          <OverlayLoadingState message={loading ? 'Loading sequence data...' : 'Computing phase portrait...'}>
+            <AnalysisPanelSkeleton />
+          </OverlayLoadingState>
+        ) : analysisError || loadError ? (
+          <OverlayErrorState
+            message="Phase portrait analysis failed"
+            details={analysisError ?? loadError ?? undefined}
+          />
+        ) : !analysis ? (
+          <OverlayEmptyState
+            message={!sequence ? 'No sequence loaded' : !gene ? 'No annotated CDS available'
+              : !portraitInput?.protein ? 'Selected CDS is unavailable' : 'Protein is shorter than the selected window'}
+            hint={!sequence ? 'Select a phage to analyze amino acid properties.' : !gene ? 'Import a GenBank record with CDS features.'
+              : !portraitInput?.protein ? portraitInput?.reference.reasons.join(' ') : 'Lower the window size or choose another CDS.'}
+          />
+        ) : (
+          <>
+            {/* Controls */}
+            <div style={{
+              display: 'flex',
+              gap: '1rem',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              fontSize: '0.8rem',
+            }}>
               <label style={{ color: colors.textMuted }}>
                 Color by:
                 <select
@@ -370,7 +381,7 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
                     maxWidth: '200px',
                   }}
                 >
-                  <TooltipContent point={hoveredPoint.point.data as PortraitPoint} colors={colors} />
+                  <TooltipContent point={hoveredPoint.point.data as PortraitPoint} input={portraitInput!} colors={colors} />
                 </div>
               )}
             </div>
@@ -405,9 +416,9 @@ export function PhasePortraitOverlay({ repository, currentPhage }: PhasePortrait
               fontSize: '0.75rem',
               color: colors.textDim,
             }}>
-              <strong>Interpretation:</strong> Tight clusters = conserved functional domains.
-              Outliers = potential HGT, recent acquisitions, or specialized functions.
-              PC1 typically captures hydrophobicity; PC2 reflects charge/size patterns.
+              <strong>Interpretation:</strong> Distances describe the five window property scores in this selected protein.
+              PCA axes depend on this input and its settings. Clusters and outliers do not establish functional domains,
+              conservation, disorder, or horizontal gene transfer.
             </div>
           </>
         )}

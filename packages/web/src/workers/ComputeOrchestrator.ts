@@ -269,20 +269,16 @@ export class ComputeOrchestrator {
     }, signal);
   }
 
-  async computePhasePortraitWithSharedBuffer(
-    phageId: number,
-    sequence: string,
+  async computeProteinPhasePortrait(
+    protein: string,
     windowSize: number,
     stepSize: number,
     signal?: AbortSignal,
   ): Promise<PhasePortraitResult | null> {
     return this.runTask('analysis', 'phase-portrait', async instance => {
       const api = instance.api as SharedAnalysisWorkerAPI;
-      const { ref: sequenceRef, transfer } = this.sequencePool.getOrCreateRef(phageId, sequence);
-      const request: PhasePortraitRequest = { sequenceRef, windowSize, stepSize };
-      return transfer.length > 0
-        ? api.computePhasePortrait(Comlink.transfer(request, transfer))
-        : api.computePhasePortrait(request);
+      const request: PhasePortraitRequest = { protein, windowSize, stepSize };
+      return api.computePhasePortrait(request);
     }, signal);
   }
 

@@ -15,7 +15,6 @@ import {
   decomposeBias,
   performPCA,
   simulateTranscriptionFlow,
-  translateSequence,
   detectPalindromesJS,
   detectTandemRepeatsJS,
   type PalindromeHit,
@@ -1192,29 +1191,9 @@ async function computeBiasDecompositionImpl(request: BiasDecompositionRequest): 
 }
 
 async function computePhasePortraitImpl(request: PhasePortraitRequest) {
-  const { sequenceRef, windowSize, stepSize } = request;
-  if (!sequenceRef) return null;
-
-  const win = Math.max(1, Math.floor(windowSize));
-  const step = Math.max(1, Math.floor(stepSize));
-
-  const sequence = decodeSequenceRef(sequenceRef);
-  if (!sequence || sequence.length < 100) return null;
-
-  const wasm = await getWasmCompute();
-  let aaSequence: string;
-  if (wasm && typeof wasm.translate_sequence === 'function') {
-    try {
-      aaSequence = wasm.translate_sequence(sequence, 0);
-    } catch {
-      aaSequence = translateSequence(sequence, 0);
-    }
-  } else {
-    aaSequence = translateSequence(sequence, 0);
-  }
-  if (!aaSequence || aaSequence.length < win) return null;
-
-  return computePhasePortrait(aaSequence, win, step);
+  // The caller reconstructed the exact annotated CDS with its declared genetic
+  // code. A genome-frame or standard-code WASM translation would change the input.
+  return computePhasePortrait(request.protein, request.windowSize, request.stepSize);
 }
 
 /**

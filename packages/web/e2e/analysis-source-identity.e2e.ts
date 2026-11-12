@@ -130,7 +130,14 @@ for (const id of overlays) test(`${id} owns its repository, pending reads and re
             }
           };
           async function entry(name, sequence, donors = 1) {
-            const imported = await importLocalGenomes({ name: name + '.fasta', text: '>input\\n' + sequence });
+            const input = '${id}' === 'phasePortrait' && name !== 'unannotated'
+              ? { name: name + '.gb', text: 'LOCUS       ' + name + ' ' + sequence.length + ' bp DNA linear\\nFEATURES             Location/Qualifiers\\n' +
+                  '     CDS             1..' + sequence.length + '\\n                     /locus_tag="full"\\n' +
+                  '     CDS             complement(join(1..30,61..90))\\n                     /locus_tag="short"\\n' +
+                  '     CDS             1..90\\n                     /locus_tag="unsupported"\\n                     /transl_table=2\\n' +
+                  'ORIGIN\\n        1 ' + sequence.toLowerCase() + '\\n//\\n' }
+              : { name: name + '.fasta', text: '>input\\n' + sequence };
+            const imported = await importLocalGenomes(input);
             const genome = imported.genomes[0];
             genome.phage = { ...genome.phage, id: -1 };
             const genomes = [genome, ...Array.from({ length: donors }, (_, i) => ({
@@ -158,6 +165,7 @@ for (const id of overlays) test(`${id} owns its repository, pending reads and re
             b: await entry('b', 'GC'.repeat(2250) + 'A'.repeat(4500), 2),
             c: await entry('c', 'CAG'.repeat(2200)),
             delayed: await entry('delayed', 'AGTC'.repeat(2100)),
+            unannotated: await entry('unannotated', 'ATG'.repeat(100)),
           };
           const components = { cgr: CGROverlay, hilbert: HilbertOverlay, anomaly: AnomalyOverlay, phasePortrait: PhasePortraitOverlay, hgt: HGTOverlay };
           const Component = components['${id}'];
@@ -229,6 +237,31 @@ for (const id of overlays) test(`${id} owns its repository, pending reads and re
       await expect.poll(() => page.evaluate(() => window.analysisIdentityFixture.replyReleased)).toBe(true);
       await expectPendingPlot(overlay, id);
       await page.evaluate(() => { window.analysisIdentityFixture.select('b'); window.analysisIdentityFixture.releaseRead(); });
+      await expectReady(overlay, id, 'b');
+    }
+    if (id === 'phasePortrait') {
+      const cds = overlay.getByRole('combobox', { name: 'Annotated CDS:', exact: true });
+      const chooseCds = async (label: string) => {
+        const value = await cds.locator('option').filter({ hasText: label }).getAttribute('value');
+        expect(value).not.toBeNull();
+        await cds.selectOption(value!);
+      };
+      await expect(overlay.getByTestId('phase-portrait-cds')).toContainText('3000 protein residues');
+      await chooseCds('short');
+      await expect(overlay.getByTestId('phase-portrait-cds')).toContainText('20 protein residues');
+      await expect(overlay).toContainText('Protein is shorter than the selected window');
+      await overlay.getByRole('combobox', { name: 'Window:', exact: true }).selectOption('15');
+      await expect(overlay.getByText(/\d+ windows \|/)).toContainText('2 windows');
+      await chooseCds('unsupported');
+      await expect(overlay).toContainText('Selected CDS is unavailable');
+      await expect(overlay).toContainText('Unsupported translation table.');
+      await expect(overlay.getByText(/\d+ windows \|/)).toHaveCount(0);
+      await page.evaluate(() => window.analysisIdentityFixture.select('unannotated'));
+      await expect(overlay).toContainText('No annotated CDS available');
+      await expect(overlay.getByText(/\d+ windows \|/)).toHaveCount(0);
+      await page.evaluate(() => window.analysisIdentityFixture.select('b'));
+      await chooseCds('full');
+      await overlay.getByRole('combobox', { name: 'Window:', exact: true }).selectOption('50');
       await expectReady(overlay, id, 'b');
     }
     expect(errors).toEqual([]);

@@ -194,7 +194,8 @@ export interface BiasDecompositionWorkerResult {
 }
 
 export interface PhasePortraitRequest {
-  sequenceRef: SequenceBytesRef;
+  /** Exact annotated CDS translation; never interpret whole-genome frame zero as protein. */
+  protein: string;
   windowSize: number;
   stepSize: number;
 }
