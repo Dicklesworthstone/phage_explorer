@@ -69,7 +69,7 @@ export function terminalMosaicRequestSha256(request: { content: string; options:
 export interface TerminalGenomeSummary {
   contentId: string; sequenceSha256: string; accession: string | null;
   bases: number; resolvedBases: number; mappedFeatures: number; warningCount: number;
-  format: 'fasta' | 'genbank'; topology: 'linear' | 'circular' | 'unknown';
+  format: NonNullable<LocalGenome['phage']['localGenome']>['format']; topology: 'linear' | 'circular' | 'unknown';
 }
 export interface TerminalGenomeInspection {
   format: 'phage-explorer-genome-inspection'; version: 1; headless: true;
@@ -155,7 +155,7 @@ export function isTerminalGenomeSummary(value: unknown): value is TerminalGenome
     && Number.isSafeInteger(row.resolvedBases) && Number(row.resolvedBases) >= 0 && Number(row.resolvedBases) <= Number(row.bases)
     && Number.isSafeInteger(row.mappedFeatures) && Number(row.mappedFeatures) >= 0 && Number(row.mappedFeatures) <= GENOME_IMPORT_LIMITS.features
     && Number.isSafeInteger(row.warningCount) && Number(row.warningCount) >= 0
-    && ['fasta', 'genbank'].includes(String(row.format)) && ['linear', 'circular', 'unknown'].includes(String(row.topology));
+    && ['fasta', 'genbank', 'catalog-snapshot'].includes(String(row.format)) && ['linear', 'circular', 'unknown'].includes(String(row.topology));
 }
 function genomeSummary(genome: LocalGenome): TerminalGenomeSummary {
   const local = genome.phage.localGenome!;

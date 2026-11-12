@@ -1,4 +1,5 @@
 import type { GeneInfo, PhageFull, ReadingFrame, ViewMode } from './types';
+import { analysisJson } from './analysis-result';
 
 export const GENOME_IMPORT_LIMITS = { bytes: 10 * 1024 * 1024, records: 100, bases: 5_000_000, features: 50_000, segments: 1000 } as const;
 export interface GenomeInput { name: string; text: string }
@@ -15,6 +16,129 @@ export interface LocalGenomeView {
   scrollPosition: number;
 }
 export interface GenomeImportResult { genomes: LocalGenome[]; view?: LocalGenomeView }
+
+/** A self-contained copy of catalog sequence and annotations, not original GenBank. */
+export interface CatalogGenomeSnapshot {
+  format: 'phage-explorer-catalog-snapshot';
+  version: 1;
+  provenance: { phageId: number; slug: string | null; contentVersion: string | null };
+  genome: Pick<PhageFull, 'name' | 'accession' | 'family' | 'host' | 'morphology' | 'lifecycle' |
+    'description' | 'baltimoreGroup' | 'genomeType' | 'genes'> & { sequence: string };
+}
+
+function snapshotObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+function snapshotKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Unsupported catalog snapshot ' + label + ' field');
+}
+
+function snapshotText(value: unknown, nullable = false): boolean {
+  return nullable && value === null ||
+    typeof value === 'string' && value.length <= 10_000 && (nullable || value.trim().length > 0);
+}
+
+/** Clone canonical JSON before validating or sorting so callers retain ownership. */
+function validateCatalogSnapshot(value: unknown): CatalogGenomeSnapshot {
+  const canonical = analysisJson(value);
+  if (!snapshotObject(canonical) || canonical.format !== 'phage-explorer-catalog-snapshot' || canonical.version !== 1) {
+    throw new Error('Unsupported catalog snapshot format or version');
+  }
+  snapshotKeys(canonical, ['format', 'version', 'provenance', 'genome'], 'root');
+  const provenance = canonical.provenance;
+  if (!snapshotObject(provenance) || !Number.isSafeInteger(provenance.phageId) || Number(provenance.phageId) < 1 ||
+    !snapshotText(provenance.slug, true) || !(provenance.contentVersion === null ||
+      typeof provenance.contentVersion === 'string' && /^[a-f0-9]{64}$/.test(provenance.contentVersion))) {
+    throw new Error('Invalid catalog snapshot provenance');
+  }
+  snapshotKeys(provenance, ['phageId', 'slug', 'contentVersion'], 'provenance');
+  const genome = canonical.genome;
+  if (!snapshotObject(genome) || !snapshotText(genome.name) || !snapshotText(genome.accession) ||
+    String(genome.name).length > 2000 || String(genome.accession).length > 2000) {
+    throw new Error('Catalog snapshot requires a genome name and accession');
+  }
+  const metadata = ['family', 'host', 'morphology', 'lifecycle', 'description', 'baltimoreGroup', 'genomeType'] as const;
+  snapshotKeys(genome, ['name', 'accession', 'sequence', 'genes', ...metadata], 'genome');
+  if (metadata.some(key => !snapshotText(genome[key], true))) throw new Error('Invalid catalog snapshot metadata');
+  if (typeof genome.sequence !== 'string' || validateSequence(genome.sequence, String(genome.accession)) !== genome.sequence) {
+    throw new Error('Catalog snapshot sequence must be exact uppercase IUPAC DNA');
+  }
+  if (!Array.isArray(genome.genes) || genome.genes.length > GENOME_IMPORT_LIMITS.features) {
+    throw new Error('Catalog snapshot exceeds the 50,000-feature limit');
+  }
+  const ids = new Set<number>();
+  for (const gene of genome.genes) {
+    if (!snapshotObject(gene)) throw new Error('Invalid catalog snapshot gene');
+    snapshotKeys(gene, ['id', 'name', 'locusTag', 'startPos', 'endPos', 'strand', 'product', 'type', 'domains', 'qualifiers'], 'gene');
+    if (!Number.isSafeInteger(gene.id) || Number(gene.id) < 1 || ids.has(Number(gene.id)) ||
+      !Number.isSafeInteger(gene.startPos) || !Number.isSafeInteger(gene.endPos) ||
+      Number(gene.startPos) < 0 || Number(gene.endPos) <= Number(gene.startPos) ||
+      Number(gene.endPos) > genome.sequence.length || !['+', '-', null].includes(gene.strand as '+' | '-' | null) ||
+      ['name', 'locusTag', 'product', 'type'].some(key => !snapshotText(gene[key], true)) ||
+      gene.qualifiers !== undefined && gene.qualifiers !== null && !snapshotObject(gene.qualifiers) ||
+      gene.domains !== undefined && (!Array.isArray(gene.domains) || gene.domains.length > 1000 ||
+        gene.domains.some(domain => !snapshotText(domain)))) {
+      throw new Error('Invalid catalog snapshot gene identifiers, coordinates or annotations');
+    }
+    ids.add(Number(gene.id));
+  }
+  const snapshot = canonical as unknown as CatalogGenomeSnapshot;
+  snapshot.genome.genes.sort((a, b) => a.id - b.id);
+  return snapshot;
+}
+
+/** No reference lookups: only the supplied catalog bases and annotation rows are copied. */
+export async function exportCatalogGenomeSnapshot(
+  phage: PhageFull,
+  sequence: string,
+  provenance: { contentVersion?: string | null } = {},
+): Promise<GenomeInput> {
+  if (phage.localGenome) throw new Error('Select a catalog genome to create a session copy');
+  if (phage.genomeLength !== sequence.length) throw new Error('Catalog snapshot requires the complete declared genome sequence');
+  const snapshot = validateCatalogSnapshot({
+    format: 'phage-explorer-catalog-snapshot', version: 1,
+    provenance: { phageId: phage.id, slug: phage.slug, contentVersion: provenance.contentVersion ?? null },
+    genome: {
+      name: phage.name, accession: phage.accession, family: phage.family, host: phage.host,
+      morphology: phage.morphology, lifecycle: phage.lifecycle, description: phage.description,
+      baltimoreGroup: phage.baltimoreGroup, genomeType: phage.genomeType, sequence, genes: phage.genes,
+    },
+  });
+  const text = JSON.stringify(snapshot, null, 2);
+  if (new TextEncoder().encode(text).length > GENOME_IMPORT_LIMITS.bytes) throw new Error('Catalog snapshot exceeds the 10 MiB limit');
+  return { name: 'catalog-' + phage.id + '.json', text };
+}
+
+function parseCatalogRecord(input: GenomeInput): ParsedRecord {
+  const catalog = validateCatalogSnapshot(JSON.parse(input.text.replace(/^\uFEFF/, '')));
+  return {
+    name: catalog.genome.name, accession: catalog.genome.accession, sequence: catalog.genome.sequence,
+    topology: 'unknown', format: 'catalog-snapshot', features: [], catalog, original: input,
+    warnings: [
+      'Catalog session copy: preserves supplied bases and annotations, not the original GenBank source. Provenance is a recorded claim, not independent source authentication.',
+      'External reference results, structure models and precomputed codon statistics are not copied. Genome topology is not recorded in the catalog and remains unknown.',
+    ],
+  };
+}
+
+function catalogMappedGenes(record: ParsedRecord): GeneInfo[] {
+  return record.catalog!.genome.genes.filter(gene => {
+    const raw = gene.qualifiers?._segments;
+    if (gene.qualifiers && Object.hasOwn(gene.qualifiers, '_segments')) {
+      const segments = getGeneMapSegments(gene);
+      if (!Array.isArray(raw) || !raw.length || raw.length > GENOME_IMPORT_LIMITS.segments ||
+        segments.length !== raw.length || segments.some(segment => segment.end > record.sequence.length) ||
+        Math.min(...segments.map(segment => segment.start)) !== gene.startPos ||
+        Math.max(...segments.map(segment => segment.end)) !== gene.endPos) {
+        record.warnings.push('Catalog gene ' + gene.id + ' has an unsupported or split segment annotation; excluded from mapped genes, while its exact source row remains in the snapshot.');
+        return false;
+      }
+    }
+    return true;
+  });
+}
 
 /** Preserve transcript segments so neither frontend paints an intron or circular-origin gap as CDS. */
 export function getGeneMapSegments(gene: GeneInfo): { start: number; end: number; strand: GeneInfo['strand'] }[] {
@@ -35,7 +159,8 @@ interface Segment { start: number; end: number; strand: '+' | '-' }
 interface Feature { type: string; location: string; qualifiers: Record<string, string>; segments?: Segment[] }
 interface ParsedRecord {
   name: string; accession: string; sequence: string; topology: 'linear' | 'circular' | 'unknown';
-  format: 'fasta' | 'genbank'; features: Feature[]; warnings: string[]; original: GenomeInput;
+  format: 'fasta' | 'genbank' | 'catalog-snapshot'; features: Feature[]; warnings: string[]; original: GenomeInput;
+  catalog?: CatalogGenomeSnapshot;
 }
 
 /** INSDC locations are 1-based inclusive; internal intervals are 0-based half-open.
@@ -204,17 +329,23 @@ export async function importLocalGenomes(input: GenomeInput, onProgress?: (compl
   let view: LocalGenomeView | undefined;
   if (text.startsWith('{')) {
     const bundle = JSON.parse(text) as Record<string, unknown>;
-    if (bundle.format !== 'phage-explorer-local-genomes' || bundle.version !== 1 || !Array.isArray(bundle.inputs)
-      || !bundle.inputs.length || bundle.inputs.length > GENOME_IMPORT_LIMITS.records) throw new Error('Unsupported local genome bundle');
-    inputs = bundle.inputs.map(item => {
-      if (!item || typeof item !== 'object' || typeof item.name !== 'string' || item.name.length > 2000 || typeof item.text !== 'string') throw new Error('Invalid bundled input');
-      if (item.text.trimStart().startsWith('{')) throw new Error('Nested input bundles are not supported');
-      return { name: item.name, text: item.text };
-    });
-    view = validateView(bundle.view);
+    if (bundle.format !== 'phage-explorer-catalog-snapshot') {
+      if (bundle.format !== 'phage-explorer-local-genomes' || bundle.version !== 1 || !Array.isArray(bundle.inputs)
+        || !bundle.inputs.length || bundle.inputs.length > GENOME_IMPORT_LIMITS.records) throw new Error('Unsupported local genome bundle');
+      inputs = bundle.inputs.map(item => {
+        if (!item || typeof item !== 'object' || typeof item.name !== 'string' || item.name.length > 2000 || typeof item.text !== 'string') throw new Error('Invalid bundled input');
+        if (item.text.replace(/^\uFEFF/, '').trimStart().startsWith('{') &&
+          JSON.parse(item.text.replace(/^\uFEFF/, '')).format !== 'phage-explorer-catalog-snapshot') {
+          throw new Error('Nested input bundles are not supported');
+        }
+        return { name: item.name, text: item.text };
+      });
+      view = validateView(bundle.view);
+    }
   }
   const records = inputs.flatMap(source => {
     const normalized = source.text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim();
+    if (normalized.startsWith('{')) return [parseCatalogRecord(source)];
     if (normalized.startsWith('>')) return parseFastaRecords({ name: source.name, text: normalized }).map(record => ({ ...record, original: source }));
     if (normalized.startsWith('LOCUS')) {
       const raws = normalized.split(/\n\/\/\s*(?:\n|$)/);
@@ -222,20 +353,20 @@ export async function importLocalGenomes(input: GenomeInput, onProgress?: (compl
       if (raws.length - 1 > GENOME_IMPORT_LIMITS.records) throw new Error('Import requires 1–100 records');
       return raws.slice(0, -1).map(raw => ({ ...parseGenbankRecord(`${raw.trim()}\n//`, source.name), original: source }));
     }
-    throw new Error('Expected FASTA, GenBank or a version 1 local genome bundle');
+    throw new Error('Expected FASTA, GenBank, a catalog snapshot or a version 1 local genome bundle');
   });
   if (!records.length || records.length > GENOME_IMPORT_LIMITS.records) throw new Error('Import requires 1–100 records');
-  if (records.reduce((sum, record) => sum + record.features.length, 0) > GENOME_IMPORT_LIMITS.features) throw new Error('Import exceeds the 50,000-feature total limit');
+  if (records.reduce((sum, record) => sum + (record.catalog?.genome.genes.length ?? record.features.length), 0) > GENOME_IMPORT_LIMITS.features) throw new Error('Import exceeds the 50,000-feature total limit');
   if (records.reduce((sum, record) => sum + record.sequence.length, 0) > GENOME_IMPORT_LIMITS.bases) throw new Error('Input exceeds the 5,000,000-base total limit');
   const genomes: LocalGenome[] = [];
   for (const record of records) {
-    const contentId = await sha256(JSON.stringify({ version: 1, format: record.format, accession: record.accession, name: record.name, sequence: record.sequence, topology: record.topology, features: record.features }));
+    const contentId = await sha256(JSON.stringify(record.catalog ?? { version: 1, format: record.format, accession: record.accession, name: record.name, sequence: record.sequence, topology: record.topology, features: record.features }));
     const sequenceSha256 = await sha256(record.sequence);
     const id = -(Number.parseInt(contentId.slice(0, 13), 16) + 1);
     const existing = genomes.find(genome => genome.phage.id === id);
     if (existing && existing.phage.localGenome?.contentId !== contentId) throw new Error('Local identifier collision; records were not imported');
     if (existing) continue;
-    const genes: GeneInfo[] = record.features.filter(feature => feature.segments && feature.type !== 'source').map((feature, index) => {
+    const genes: GeneInfo[] = record.catalog ? catalogMappedGenes(record) : record.features.filter(feature => feature.segments && feature.type !== 'source').map((feature, index) => {
       const segments = feature.segments!;
       const strands = new Set(segments.map(segment => segment.strand));
       return {
@@ -259,8 +390,11 @@ export async function importLocalGenomes(input: GenomeInput, onProgress?: (compl
       phage: {
         id, slug: `local-${contentId}`, name: record.name, accession: record.accession,
         genomeLength: record.sequence.length, gcContent: known ? 100 * gc / known : null,
-        family: null, host: null, morphology: null, lifecycle: null, description: `Local ${record.format} record; ${record.topology} topology.`,
-        baltimoreGroup: null, genomeType: 'DNA', pdbIds: [], genes, codonUsage: null, hasModel: false,
+        family: record.catalog?.genome.family ?? null, host: record.catalog?.genome.host ?? null,
+        morphology: record.catalog?.genome.morphology ?? null, lifecycle: record.catalog?.genome.lifecycle ?? null,
+        description: record.catalog ? record.catalog.genome.description : `Local ${record.format} record; ${record.topology} topology.`,
+        baltimoreGroup: record.catalog?.genome.baltimoreGroup ?? null,
+        genomeType: record.catalog ? record.catalog.genome.genomeType : 'DNA', pdbIds: [], genes, codonUsage: null, hasModel: false,
         localGenome: { contentId, sequenceSha256, format: record.format, topology: record.topology },
       },
     });
