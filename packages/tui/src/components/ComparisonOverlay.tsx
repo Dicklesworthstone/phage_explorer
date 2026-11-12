@@ -12,6 +12,8 @@ import {
 } from '@phage-explorer/comparison';
 import { Worker } from 'node:worker_threads';
 
+declare const PHAGE_COMPARISON_WORKER: string | undefined;
+
 interface ComparisonOverlayProps {
   repository: PhageRepository;
 }
@@ -175,7 +177,8 @@ export function ComparisonOverlay({ repository }: ComparisonOverlayProps): React
     }): Promise<GenomeComparisonResult> => {
       return new Promise((resolve, reject) => {
         try {
-          const worker = new Worker(new URL('../workers/comparison-worker.ts', import.meta.url));
+          const worker = new Worker(new URL(typeof PHAGE_COMPARISON_WORKER === 'string'
+            ? PHAGE_COMPARISON_WORKER : '../workers/comparison-worker.ts', import.meta.url));
           const cleanup = () => {
             worker.terminate().catch(() => {});
           };
