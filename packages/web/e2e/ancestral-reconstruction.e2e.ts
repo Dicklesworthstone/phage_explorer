@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
-import type { AncestralResult } from '../../core/src/analysis/ancestral-reconstruction';
+import { createAncestralRecord, reconstructAncestors, type AncestralDataset, type AncestralOptions, type AncestralResult } from '../../core/src/analysis/ancestral-reconstruction';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 const length=.75*Math.log(3);
@@ -94,4 +94,60 @@ test('private homologous alignments reach actual workers, node and joint-edge pr
     expect(requests.some(request=>request.includes('private-no-upload-ancestral-29'))).toBe(false);
     expect(pageErrors).toEqual([]);
   }finally{release?.();await finalize();}
+});
+
+
+test('imported reversible models and site rates survive browser reruns and invalid drafts',async({page},info)=>{
+  test.setTimeout(180000);const {pageErrors,finalize}=setupTestHarness(page,info);
+  await page.addInitScript(()=>localStorage.setItem('phage-explorer-main-prefs',JSON.stringify({experienceLevel:'power'})));
+  try{
+    await page.goto('/?phage=lambda&model=0');await expectExplorerIdentity(page,info);
+    const welcome=page.getByRole('dialog',{name:'Welcome to Phage Explorer'});
+    if(await welcome.isVisible())await welcome.getByRole('button',{name:'Skip',exact:true}).click();
+    const panel=await open(page);
+    const models:NonNullable<AncestralOptions['substitution']>[]=[
+      {model:'HKY85',source:'Declared synthetic HKY assumption',frequencies:[.3,.2,.2,.3],kappa:3,
+        siteRates:[{rate:.5,weight:.5},{rate:1.5,weight:.5}]},
+      {model:'GTR',source:'Declared synthetic GTR assumption',frequencies:[.3,.2,.2,.3],
+        exchangeabilities:[1,2,1,1,2,1],siteRates:[{rate:0,weight:.5},{rate:2,weight:.5}]},
+    ];
+    for(const model of models){
+      const input:AncestralDataset={format:'phage-explorer-ancestral',version:1,name:'Supplied '+model.model+' experiment',
+        source:{kind:'demo',description:'Independent browser model-preservation fixture',reference:'Synthetic aligned observations',license:'CC0'},
+        tree:{newick:tree,units:'substitutions/site',method:'Fixed synthetic tree',rooting:'Prespecified synthetic root'},
+        alignment:{fasta,homologous:true,method:'Prespecified homologous columns',reference:'Synthetic fixture'}};
+      const result=reconstructAncestors(input,{substitution:model}),record=await createAncestralRecord(input,result);
+      await panel.getByLabel('Import ancestral dataset or saved evidence JSON',{exact:true})
+        .setInputFiles({name:'supplied-model.json',mimeType:'application/json',buffer:Buffer.from(serializeAnalysisRecord(record))});
+      await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id',record.resultId);
+      await expect(panel.getByTestId('ancestral-model')).toContainText('Accepted model: '+model.model);
+      await expect(panel.getByTestId('ancestral-model')).toContainText(model.source);
+      await panel.getByLabel('Consensus posterior threshold',{exact:true}).fill('0.8');
+      await panel.getByRole('button',{name:'Run ancestral reconstruction',exact:true}).click();
+      const expected=await createAncestralRecord(input,reconstructAncestors(input,{...result.options,minPosterior:.8}));
+      await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id',expected.resultId);
+      const saved=await download(page,()=>panel.getByRole('button',{name:'Export ancestral evidence',exact:true}).click());
+      const exported=await parseAnalysisRecord(saved);
+      expect(exported.parameters.substitution).toEqual(model);
+      expect(exported.resultId).not.toBe(record.resultId);
+      const details=panel.locator('details').filter({has:page.getByText('Substitution model and site-rate assumptions',{exact:true})});
+      await details.locator('summary').click();
+      const settings=panel.getByLabel('Substitution model settings (JSON)',{exact:true});
+      expect(JSON.parse(await settings.inputValue())).toEqual(model);
+      await settings.fill(JSON.stringify({...model,siteRates:[{rate:2,weight:1}]}));
+      await panel.getByRole('button',{name:'Run ancestral reconstruction',exact:true}).click();
+      await expect(panel.getByRole('alert')).toContainText('weighted mean rate');
+      await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id',expected.resultId);
+      await expect(panel.getByTestId('ancestral-model')).toContainText('Accepted model: '+model.model);
+      await panel.getByRole('button',{name:'Use default JC69 settings',exact:true}).click();
+      await panel.getByRole('button',{name:'Run ancestral reconstruction',exact:true}).click();
+      await expect(panel.getByTestId('ancestral-model')).toContainText('Accepted model: JC69');
+      const defaultSaved=await download(page,()=>panel.getByRole('button',{name:'Export ancestral evidence',exact:true}).click());
+      const defaultRecord=await parseAnalysisRecord(defaultSaved);
+      expect(defaultRecord.method.id).toBe('ancestral-jc69');
+      expect(defaultRecord.parameters.substitution).toBeUndefined();
+      await details.locator('summary').click();
+    }
+    expect(pageErrors).toEqual([]);
+  }finally{await finalize();}
 });

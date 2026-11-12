@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from
 import { ancestralConsensus, ancestralFasta, NUCLEOTIDES,
   type AncestralOptions, type AncestralResult } from '../../../../core/src/analysis/ancestral-reconstruction';
 import type { TemporalDataset } from '../../../../core/src/analysis/temporal-signal';
+import { resolveNucleotideModel } from '../../../../core/src/analysis/nucleotide-model';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { AncestralSession, type AncestralRequest } from '../../workers/AncestralSession';
 import { downloadString } from '../../utils/export';
@@ -36,9 +37,10 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
   const [metadata,setMetadata]=useState<Metadata>(()=>Object.fromEntries(Object.keys(LABELS).map(k=>[k,''])) as Metadata);
   const [newick,setNewick]=useState(''),[fasta,setFasta]=useState(''),[treeFile,setTreeFile]=useState<File|null>(null),[alignmentFile,setAlignmentFile]=useState<File|null>(null);
   const [confirmed,setConfirmed]=useState(false),[start,setStart]=useState('1'),[end,setEnd]=useState('1'),[threshold,setThreshold]=useState('0.9');
+  const [substitution,setSubstitution]=useState('');
   const [gap,setGap]=useState<AncestralOptions['gapPolicy']>('missing'),[node,setNode]=useState(0),[siteIndex,setSiteIndex]=useState(0),[page,setPage]=useState(0),[localError,setLocalError]=useState<string|null>(null);
   useEffect(()=>{session.activate();return session.deactivate;},[session]);
-  useEffect(()=>{if(accepted){setStart(String(accepted.options.startColumn));setEnd(String(accepted.options.endColumn));setThreshold(String(accepted.options.minPosterior));setGap(accepted.options.gapPolicy);}setNode(0);setSiteIndex(0);setPage(0);setLocalError(null);},[accepted]);
+  useEffect(()=>{if(accepted){setStart(String(accepted.options.startColumn));setEnd(String(accepted.options.endColumn));setThreshold(String(accepted.options.minPosterior));setGap(accepted.options.gapPolicy);setSubstitution(accepted.options.substitution?JSON.stringify(accepted.options.substitution,null,2):'');}setNode(0);setSiteIndex(0);setPage(0);setLocalError(null);},[accepted]);
   const run=(request:AncestralRequest|Promise<AncestralRequest>)=>{setLocalError(null);void session.run(request);};
   const save=(kind:'dataset'|'record'|'fasta')=>{
     if(!accepted)return;
@@ -55,10 +57,10 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
   const different=edge?.reduce((sum,v,i)=>sum+(Math.floor(i/4)!==i%4?v:0),0);
   const grid:React.CSSProperties={display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:'.75rem'};
   const field:React.CSSProperties={display:'flex',flexDirection:'column',gap:'.25rem'};
-  const changed=accepted&&(start!==String(accepted.options.startColumn)||end!==String(accepted.options.endColumn)||threshold!==String(accepted.options.minPosterior)||gap!==accepted.options.gapPolicy);
+  const changed=accepted&&(start!==String(accepted.options.startColumn)||end!==String(accepted.options.endColumn)||threshold!==String(accepted.options.minPosterior)||gap!==accepted.options.gapPolicy||substitution!==(accepted.options.substitution?JSON.stringify(accepted.options.substitution,null,2):''));
   return <section aria-label="Ancestral nucleotide reconstruction" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
     <h3>Alignment-based ancestral nucleotide reconstruction</h3>
-    <p>Supply a homologous DNA alignment and an explicitly rooted phylogram in substitutions/site. JC69 is conditional on that tree, with equal base frequencies and substitution rates.
+    <p>Supply a homologous DNA alignment and an explicitly rooted phylogram in substitutions/site. Reconstruction is conditional on the supplied tree and the chosen JC69, HKY85 or GTR model.
       This does not align raw genomes, fit branch lengths, infer a mutation timeline, or estimate selection. Input stays local. Export before closing this panel.</p>
     <label htmlFor={`${id}-import`}>Import ancestral dataset or saved evidence JSON</label><input id={`${id}-import`} type="file" accept=".json,application/json" disabled={busy} onChange={event=>{
       const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
@@ -94,15 +96,34 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
     {accepted&&<>
       <h4 data-testid="ancestral-name">{accepted.input.name}</h4><p>{accepted.tips} matched tips; {accepted.columns} alignment columns. {accepted.input.source.kind==='demo'?'Synthetic example':'User-supplied local data'}.
         {` ${accepted.input.source.description}; ${accepted.input.source.reference}; ${accepted.input.source.license}`}</p>
-      <form onSubmit={event=>{event.preventDefault();run({kind:'analyze',input:accepted.input,options:{startColumn:Number(start),endColumn:Number(end),minPosterior:Number(threshold),gapPolicy:gap}});}}>
+      <form onSubmit={event=>{
+        event.preventDefault();
+        try{
+          const model=substitution.trim()?resolveNucleotideModel(JSON.parse(substitution)):undefined;
+          run({kind:'analyze',input:accepted.input,options:{startColumn:Number(start),endColumn:Number(end),minPosterior:Number(threshold),gapPolicy:gap,
+            ...(model?{substitution:model}:{})}});
+        }catch(cause){setLocalError(cause instanceof Error?cause.message:String(cause));}
+      }}>
         <fieldset disabled={busy}><legend>Conditional reconstruction settings</legend><div style={grid}>
           <label style={field}>First alignment column<input type="number" min={1} max={accepted.columns} step={1} required value={start} onChange={e=>setStart(e.target.value)}/></label>
           <label style={field}>Last alignment column<input type="number" min={1} max={accepted.columns} step={1} required value={end} onChange={e=>setEnd(e.target.value)}/></label>
           <label style={field}>Consensus posterior threshold<input type="number" min={0.25} max={1} step="any" required value={threshold} onChange={e=>setThreshold(e.target.value)}/></label>
           <div><label htmlFor={`${id}-gap`}>Alignment gap policy</label><select id={`${id}-gap`} value={gap} onChange={e=>setGap(e.target.value as typeof gap)}>
             <option value="missing">Treat gaps as missing observations</option><option value="exclude-column">Exclude columns containing any gap</option></select></div>
-        </div><p>Unresolved or tied states remain N. A posterior is conditional on JC69 and the supplied tree, not empirical confidence.</p>
-          {changed&&<p>Draft reconstruction settings are not applied. Results and exports retain the accepted window, gap policy and threshold.</p>}
+        </div>
+          <details><summary>Substitution model and site-rate assumptions</summary>
+            <label style={field}>Substitution model settings (JSON)
+              <textarea value={substitution} onChange={event=>setSubstitution(event.target.value)} rows={12} maxLength={20000} spellCheck={false}
+                placeholder='{"model":"HKY85","source":"State the source or assumption","frequencies":[0.25,0.25,0.25,0.25],"kappa":2,"siteRates":[{"rate":1,"weight":1}]}'/>
+            </label>
+            <p>Leave empty for the original equal-frequency, equal-rate JC69 model. An explicit model requires a source or assumption.
+              HKY85 requires A, C, G, T frequencies and kappa. GTR requires those frequencies and six exchangeabilities in AC, AG, AT, CG, CT, GT order.</p>
+            <p>Optional siteRates contains one to eight rate/weight pairs shared by each whole site. Weights must sum to one and the weighted mean rate must equal one.
+              Frequencies, rates and branch lengths are supplied assumptions; they are not fitted or silently rescaled.</p>
+            <button type="button" onClick={()=>setSubstitution('')}>Use default JC69 settings</button>
+          </details>
+          <p>Unresolved or tied states remain N. A posterior is conditional on the accepted substitution model and supplied tree, not empirical confidence.</p>
+          {changed&&<p>Draft reconstruction settings are not applied. Results and exports retain the accepted model, site rates, window, gap policy and threshold.</p>}
           <button type="submit">Run ancestral reconstruction</button>
         </fieldset>
       </form>
@@ -111,7 +132,12 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
         <button type="button" disabled={busy||!result?.analyzedColumns} onClick={()=>save('fasta')}>Export conditional ancestral FASTA</button></div>
     </>}
     {result&&accepted?.record&&<section data-testid="ancestral-result" data-result-id={accepted.record.resultId} style={{display:'grid',gap:'.75rem'}}>
-      <h4>Conditional node and branch evidence</h4><p data-testid="ancestral-coverage">{result.analyzedColumns} analyzed columns; {result.excludedColumns} gap/all-missing exclusions; {result.impossibleColumns} zero-likelihood columns.
+      <h4>Conditional node and branch evidence</h4>
+      <p data-testid="ancestral-model">Accepted model: {result.options.substitution?.model??'JC69'}.
+        {result.options.substitution
+          ?' '+result.options.substitution.source+'; '+result.options.substitution.siteRates.length+' whole-site rate categories.'
+          :' Equal stationary base frequencies and substitution rates; one site-rate category.'}</p>
+      <p data-testid="ancestral-coverage">{result.analyzedColumns} analyzed columns; {result.excludedColumns} gap/all-missing exclusions; {result.impossibleColumns} zero-likelihood columns.
         Window log likelihood: {show(result.logLikelihood)}.</p>
       {result.impossibleColumns>0&&<p role="status">Some observations are impossible under the exact supplied tree. No probabilities are invented for those columns.</p>}
       <TreeInspector result={result} selected={node} onSelect={setNode}/>
