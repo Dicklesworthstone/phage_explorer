@@ -42,7 +42,7 @@ const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 
-function normalize(row: CodingGeneRow): { gene: GeneInfo; splitKey: string | null } {
+function normalize(row: CodingGeneRow): { gene: GeneInfo; splitKey: string | null; legacyUnstranded: boolean } {
   const value: unknown = typeof row.qualifiers === 'string' ? JSON.parse(row.qualifiers) : row.qualifiers ?? {};
   if (!object(value)) throw new Error('CDS qualifiers are not an object.');
   const qualifiers = { ...value };
@@ -54,18 +54,20 @@ function normalize(row: CodingGeneRow): { gene: GeneInfo; splitKey: string | nul
     }
   }
   let splitKey: string | null = null;
+  let legacyUnstranded = false;
   if (Object.hasOwn(qualifiers, '_segments')) {
     const encoded = typeof qualifiers._segments === 'string';
     const segments: unknown = encoded ? JSON.parse(qualifiers._segments as string) : qualifiers._segments;
     if (!Array.isArray(segments) || !segments.length || segments.length > 1000) {
       throw new Error('Invalid CDS segment list.');
     }
+    legacyUnstranded = encoded && segments.every(segment => object(segment) && !Object.hasOwn(segment, 'strand'));
     qualifiers._segments = segments.map(segment => {
       if (!object(segment) || !Number.isSafeInteger(segment.start) || !Number.isSafeInteger(segment.end)) {
         throw new Error('Invalid CDS segment coordinates.');
       }
-      // The old catalog representation lacked per-segment strands. Its order
-      // is retained, and the complete reconstruction must match /translation.
+      // Old catalogs omitted per-segment strands and used either genomic or
+      // transcript order; the deposited translation resolves that below.
       const strand = segment.strand ?? (encoded ? row.strand : null);
       if (strand !== '+' && strand !== '-') throw new Error('Missing CDS segment strand.');
       return { start: segment.start, end: segment.end, strand };
@@ -74,7 +76,7 @@ function normalize(row: CodingGeneRow): { gene: GeneInfo; splitKey: string | nul
       splitKey = JSON.stringify([row.phageId, row.name, row.locusTag, row.product, row.strand, qualifiers]);
     }
   }
-  return { gene: { ...row, qualifiers }, splitKey };
+  return { gene: { ...row, qualifiers }, splitKey, legacyUnstranded };
 }
 
 /**
@@ -85,7 +87,7 @@ function normalize(row: CodingGeneRow): { gene: GeneInfo; splitKey: string | nul
 export function collectProteinInputs(genome: string, rows: readonly CodingGeneRow[]): ProteinInputs {
   const result: ProteinInputs = { format: 'phage-explorer-protein-inputs', version: 1,
     method: PROTEIN_INPUT_METHOD, proteins: [], excluded: [], warnings: [] };
-  const groups = new Map<string, Array<{ row: CodingGeneRow; gene: GeneInfo; split: boolean }>>();
+  const groups = new Map<string, Array<{ row: CodingGeneRow; gene: GeneInfo; split: boolean; legacyUnstranded: boolean }>>();
   const seen = new Set<number>();
   let ownerId: number | undefined;
   let legacyAnnotations = false;
@@ -102,11 +104,11 @@ export function collectProteinInputs(genome: string, rows: readonly CodingGeneRo
     ownerId = row.phageId;
     seen.add(row.id);
     try {
-      const { gene, splitKey } = normalize(row);
+      const { gene, splitKey, legacyUnstranded } = normalize(row);
       if (typeof gene.qualifiers?._location !== 'string' || !Number.isSafeInteger(gene.qualifiers?._sourceFeatureIndex)) legacyAnnotations = true;
       const key = splitKey === null ? `gene:${row.id}` : `split:${splitKey}`;
       const group = groups.get(key) ?? [];
-      group.push({ row, gene, split: splitKey !== null });
+      group.push({ row, gene, split: splitKey !== null, legacyUnstranded });
       groups.set(key, group);
     } catch (error) {
       exclude(row, [error instanceof Error ? error.message : 'Invalid CDS annotations.']);
@@ -131,7 +133,18 @@ export function collectProteinInputs(genome: string, rows: readonly CodingGeneRo
         continue;
       }
     }
-    const reference = reconstructCdsReference(gene, sequenceSource);
+    let reference = reconstructCdsReference(gene, sequenceSource);
+    if (reference.reasons.length && row.strand === '-' && group.every(item => item.legacyUnstranded)) {
+      // Older catalogs retained genomic order for complement(join(...));
+      // later catalogs already stored transcript order. Preserve a validated
+      // order, and recover only when the complete alternate reconstruction
+      // matches the deposited protein. Explicit per-segment strands remain
+      // authoritative and are never reordered to make a translation fit.
+      const segments = gene.qualifiers!._segments as Array<{ start: number; end: number; strand: '+' | '-' }>;
+      const reversed = reconstructCdsReference({ ...gene,
+        qualifiers: { ...gene.qualifiers, _segments: [...segments].reverse() } }, sequenceSource);
+      if (!reversed.reasons.length) reference = reversed;
+    }
     const sequence = reference.protein?.replace(/\*$/, '') ?? '';
     if (reference.reasons.length || !reference.cds || !sequence || /[^ACDEFGHIKLMNPQRSTVWY]/.test(sequence)) {
       const reasons = reference.reasons.length ? reference.reasons : ['CDS does not yield a complete unambiguous protein.'];

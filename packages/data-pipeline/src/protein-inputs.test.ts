@@ -93,6 +93,48 @@ describe('validated CDS annotation inputs', () => {
     expect(collectProteinInputs('ATGCCAAATAA', noTranslation).proteins).toEqual([]);
   });
 
+  test('validates either legacy minus-strand order without sorting circular-origin joins', () => {
+    for (const { genome, parts } of [
+      { genome: 'TTATTTCCCAT', parts: [{ start: 0, end: 6 }, { start: 8, end: 11 }] },
+      { genome: 'TTATTTCCCAT', parts: [{ start: 8, end: 11 }, { start: 0, end: 6 }] },
+      { genome: 'CATCCCTTATTT', parts: [{ start: 0, end: 3 }, { start: 6, end: 12 }] },
+      { genome: 'CATCCCTTATTT', parts: [{ start: 6, end: 12 }, { start: 0, end: 3 }] },
+    ]) {
+      const qualifiers = JSON.stringify({ _segments: JSON.stringify(parts), translation: 'MK', transl_table: '11' });
+      const rows = parts.map((part, index) => row({ id: 10 + index, startPos: part.start,
+        endPos: part.end, strand: '-', qualifiers }));
+      const before = JSON.stringify(rows);
+      const report = collectProteinInputs(genome, rows);
+      expect(report.excluded).toEqual([]);
+      expect(report.proteins).toHaveLength(1);
+      expect(report.proteins[0]).toMatchObject({ geneId: 10, sourceGeneIds: [10, 11], cds: 'ATGAAATAA', sequence: 'MK' });
+      expect(JSON.stringify(rows)).toBe(before);
+    }
+  });
+
+  test('never recovers legacy minus-strand joins without an exact deposited translation', () => {
+    const parts = [{ start: 0, end: 6 }, { start: 8, end: 11 }];
+    const qualifiers = { _segments: JSON.stringify(parts), translation: 'MN' };
+    const rows = parts.map((part, index) => row({ id: 10 + index, startPos: part.start,
+      endPos: part.end, strand: '-', qualifiers }));
+    const report = collectProteinInputs('TTATTTCCCAT', rows);
+    expect(report.proteins).toEqual([]);
+    expect(report.excluded.map(item => item.geneId)).toEqual([10, 11]);
+  });
+
+  test('keeps explicit segment strands authoritative even when serialized as a string', () => {
+    const parts = [{ start: 0, end: 6, strand: '-' }, { start: 8, end: 11, strand: '-' }];
+    for (const encoded of [false, true]) {
+      const qualifiers = { _segments: encoded ? JSON.stringify(parts) : parts, translation: 'MK' };
+      const rows = encoded
+        ? parts.map((part, index) => row({ id: 10 + index, startPos: part.start, endPos: part.end, strand: '-', qualifiers }))
+        : [row({ endPos: 11, strand: '-', qualifiers })];
+      const report = collectProteinInputs('TTATTTCCCAT', rows);
+      expect(report.proteins).toEqual([]);
+      expect(report.excluded).toHaveLength(rows.length);
+    }
+  });
+
   test('requires unique owned gene IDs and ignores non-CDS features', () => {
     expect(() => collectProteinInputs('ATGAAATAA', [row(), row()])).toThrow('unique integer gene IDs');
     expect(collectProteinInputs('ATGAAATAA', [row({ type: 'source' })]).proteins).toEqual([]);
