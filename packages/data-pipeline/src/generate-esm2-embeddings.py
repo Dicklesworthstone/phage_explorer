@@ -2,20 +2,24 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import sqlite3
 import struct
 import time
 from datetime import datetime, timezone
 
-import torch
-from transformers import AutoModel, AutoTokenizer
+from contextlib import closing
+
+from protein_inputs import annotation_transaction, load_protein_inputs, protein_input_metadata
 
 
 def reference_embeddings(input_path: str, output_path: str, checkpoint: str, revision: str):
     """Explicit offline-file input mode; never opens or writes a catalog database."""
     from huggingface_hub import hf_hub_download
+    import torch
     import transformers
+    from transformers import AutoModel, AutoTokenizer
 
     if len(revision) != 40 or any(char not in "0123456789abcdef" for char in revision):
         raise ValueError("Reference mode requires an immutable checkpoint revision")
@@ -96,43 +100,130 @@ def reference_embeddings(input_path: str, output_path: str, checkpoint: str, rev
         output.write("\n")
 
 
-def reverse_complement(sequence: str) -> str:
-    return sequence.translate(str.maketrans("ACGTNacgtn", "TGCANtgcan"))[::-1]
+def _input_matches(metadata, item, method):
+    return isinstance(metadata, dict) and metadata.get("inputMethod") == method and all(
+        metadata.get(key) == item[key] for key in
+        ["sourceGeneIds", "sequenceSha256", "cdsSha256", "geneticCode", "codonStart"])
 
 
-def translate(sequence: str) -> str:
-    table = {
-        "TTT":"F","TTC":"F","TTA":"L","TTG":"L","CTT":"L","CTC":"L","CTA":"L","CTG":"L",
-        "ATT":"I","ATC":"I","ATA":"I","ATG":"M","GTT":"V","GTC":"V","GTA":"V","GTG":"V",
-        "TCT":"S","TCC":"S","TCA":"S","TCG":"S","CCT":"P","CCC":"P","CCA":"P","CCG":"P",
-        "ACT":"T","ACC":"T","ACA":"T","ACG":"T","GCT":"A","GCC":"A","GCA":"A","GCG":"A",
-        "TAT":"Y","TAC":"Y","TAA":"*","TAG":"*","CAT":"H","CAC":"H","CAA":"Q","CAG":"Q",
-        "AAT":"N","AAC":"N","AAA":"K","AAG":"K","GAT":"D","GAC":"D","GAA":"E","GAG":"E",
-        "TGT":"C","TGC":"C","TGA":"*","TGG":"W","CGT":"R","CGC":"R","CGA":"R","CGG":"R",
-        "AGT":"S","AGC":"S","AGA":"R","AGG":"R","GGT":"G","GGC":"G","GGA":"G","GGG":"G",
-    }
-    sequence = sequence.upper()
-    return "".join(table.get(sequence[i:i + 3], "X") for i in range(0, len(sequence) - 2, 3)).rstrip("*")
-
-
-def load_proteins(connection: sqlite3.Connection):
-    genomes = {
-        row[0]: "".join(chunk[0] for chunk in connection.execute(
-            "SELECT sequence FROM sequences WHERE phage_id = ? ORDER BY chunk_index", (row[0],)
-        ))
-        for row in connection.execute("SELECT id FROM phages")
-    }
-    proteins = []
-    for gene_id, phage_id, start, end, strand, locus_tag in connection.execute(
-        "SELECT id, phage_id, start_pos, end_pos, strand, locus_tag FROM genes WHERE type = 'CDS' ORDER BY id"
+def _check_partial_embeddings(connection, expected, rows, metadata, model, method):
+    if not rows:
+        raise ValueError("A partial embedding update requires at least one selected protein")
+    revision = metadata[0].get("revision")
+    if not isinstance(revision, str) or len(revision) != 40 or any(c not in "0123456789abcdef" for c in revision):
+        raise ValueError("Partial embedding updates require an immutable checkpoint revision; run a full annotation")
+    signature = (revision, metadata[0].get("pooling"), metadata[0].get("normalized"), rows[0][3])
+    for row, meta in zip(rows, metadata):
+        if (meta.get("revision"), meta.get("pooling"), meta.get("normalized"), row[3]) != signature:
+            raise ValueError("An embedding run cannot mix model revisions or pooling methods")
+    selected = {row[1] for row in rows}
+    for gene_id, phage_id, dimensions, value in connection.execute(
+        "SELECT gene_id, phage_id, dims, meta FROM fold_embeddings WHERE model = ?", (model,)
     ):
-        dna = genomes[phage_id][start:end]
-        if strand == "-":
-            dna = reverse_complement(dna)
-        amino_acids = translate(dna).replace("*", "X")
-        if amino_acids:
-            proteins.append((gene_id, phage_id, locus_tag, amino_acids))
-    return proteins
+        if gene_id in selected:
+            continue
+        prior = json.loads(value) if value else {}
+        if (gene_id not in expected or phage_id != expected[gene_id]["phageId"]
+                or not _input_matches(prior, expected[gene_id], method)
+                or (prior.get("revision"), prior.get("pooling"), prior.get("normalized"), dimensions) != signature):
+            raise ValueError("Partial embedding update would mix stale inputs or model revisions; run a full annotation")
+
+
+def publish_embeddings(connection, report, rows, model, now, *, partial=False):
+    """Replace vectors only after all inference and source validation succeeds."""
+    expected = {item["geneId"]: item for item in report["proteins"]}
+    produced = [row[1] for row in rows]
+    if len(set(produced)) != len(produced) or any(
+        row[1] not in expected or row[0] != expected[row[1]]["phageId"] or row[2] != model
+        or type(row[3]) is not int or row[3] < 1 or len(row[4]) != row[3] * 4 for row in rows
+    ) or (not partial and set(produced) != set(expected)):
+        raise ValueError("Embedding rows must exactly describe the selected validated proteins")
+    metadata = [json.loads(row[5]) for row in rows]
+    for row, meta in zip(rows, metadata):
+        if not _input_matches(meta, expected[row[1]], report["method"]) or not all(
+            math.isfinite(value) for value in struct.unpack(f"<{row[3]}f", row[4])
+        ):
+            raise ValueError("Embedding provenance and finite vector values must match their validated input")
+    with annotation_transaction(connection, report):
+        if partial:
+            _check_partial_embeddings(connection, expected, rows, metadata, model, report["method"])
+        else:
+            connection.execute("DELETE FROM fold_embeddings WHERE model = ?", (model,))
+        connection.executemany(
+            "INSERT INTO fold_embeddings (phage_id, gene_id, model, dims, vector, meta, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(gene_id, model) DO UPDATE SET "
+            "phage_id=excluded.phage_id, dims=excluded.dims, vector=excluded.vector, meta=excluded.meta, created_at=excluded.created_at",
+            rows,
+        )
+        # Coordinates of prior vectors cannot represent the newly published set.
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fold_embedding_coords'").fetchone():
+            connection.execute("DELETE FROM fold_embedding_coords WHERE model = ?", (model,))
+        connection.execute(
+            "DELETE FROM annotation_meta WHERE key = 'latent_space_atlas' AND "
+            "CASE WHEN json_valid(value) THEN json_extract(value, '$.model') END = ?", (model,))
+
+        # This screening metadata is derived specifically from the default model.
+        if model == "facebook/esm2_t6_8M_UR50D":
+            connection.execute("DELETE FROM annotation_meta WHERE key = 'anti_crispr_esm2'")
+            if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='defense_systems'").fetchone():
+                if partial:
+                    connection.executemany("DELETE FROM defense_systems WHERE source = 'esm2-nn' AND gene_id = ?",
+                        [(gene_id,) for gene_id in produced])
+                else:
+                    connection.execute("DELETE FROM defense_systems WHERE source = 'esm2-nn'")
+        count = connection.execute("SELECT COUNT(*) FROM fold_embeddings WHERE model = ?", (model,)).fetchone()[0]
+        connection.execute(
+            "INSERT OR REPLACE INTO annotation_meta (key, value, updated_at) VALUES (?, ?, ?)",
+            ("esm2_embeddings", json.dumps({"model": model, "count": count, "updated": len(rows),
+                "partial": partial, "updatedGeneIds": produced, "inputScope": "eligible-CDS-set",
+                "input": protein_input_metadata(report), "atlasNeedsRebuild": True,
+                "screeningNeedsRebuild": model == "facebook/esm2_t6_8M_UR50D"}), now),
+        )
+
+
+def catalog_embeddings(connection, args):
+    import torch
+    from transformers import AutoModel, AutoTokenizer
+
+    report = load_protein_inputs(connection)
+    proteins = report["proteins"][:args.limit] if args.limit is not None else report["proteins"]
+    revision = {"revision": args.revision} if args.revision else {}
+    tokenizer = AutoTokenizer.from_pretrained(args.model, **revision)
+    model = AutoModel.from_pretrained(args.model, **revision)
+    model.eval()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    now = int(time.time() * 1000)
+    rows = []
+
+    with torch.inference_mode():
+        for offset in range(0, len(proteins), args.batch_size):
+            batch = proteins[offset:offset + args.batch_size]
+            sequences = [item["sequence"][:1022] for item in batch]
+            inputs = tokenizer(sequences, return_tensors="pt", padding=True, truncation=True, max_length=1024)
+            inputs = {key: value.to(device) for key, value in inputs.items()}
+            hidden = model(**inputs).last_hidden_state
+            masks = inputs["attention_mask"].unsqueeze(-1)
+            pooled = (hidden * masks).sum(dim=1) / masks.sum(dim=1).clamp(min=1)
+            pooled = torch.nn.functional.normalize(pooled, dim=1).cpu().float()
+            if len(pooled) != len(batch) or not torch.isfinite(pooled).all():
+                raise ValueError("The model produced incomplete or non-finite embeddings")
+            for item, sequence, vector in zip(batch, sequences, pooled):
+                metadata = json.dumps({
+                    "source": "esm2", "checkpoint": args.model,
+                    "revision": getattr(model.config, "_commit_hash", None),
+                    "pooling": "attention-mean-including-special-tokens-l2", "normalized": True,
+                    "sequenceLength": len(item["sequence"]), "truncated": len(item["sequence"]) > 1022,
+                    "encodedResidues": len(sequence), "encodedSequenceSha256": hashlib.sha256(sequence.encode()).hexdigest(),
+                    "inputMethod": report["method"], "sourceGeneIds": item["sourceGeneIds"],
+                    "sequenceSha256": item["sequenceSha256"], "cdsSha256": item["cdsSha256"],
+                    "geneticCode": item["geneticCode"], "codonStart": item["codonStart"],
+                }, separators=(",", ":"))
+                blob = struct.pack(f"<{vector.numel()}f", *vector.tolist())
+                rows.append((item["phageId"], item["geneId"], args.model, vector.numel(), blob, metadata, now))
+            print(f"Embedded {len(rows)}/{len(proteins)} proteins", flush=True)
+
+    publish_embeddings(connection, report, rows, args.model, now, partial=args.limit is not None)
 
 
 def main():
@@ -151,60 +242,14 @@ def main():
             parser.error("Reference mode requires --reference-input, --reference-output and --revision")
         reference_embeddings(args.reference_input, args.reference_output, args.model, args.revision)
         return
-
-    connection = sqlite3.connect(args.database)
-    proteins = load_proteins(connection)
-    if args.limit:
-        proteins = proteins[:args.limit]
-
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModel.from_pretrained(args.model)
-    model.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    now = int(time.time() * 1000)
-    inserted = 0
-
-    with torch.inference_mode():
-        for offset in range(0, len(proteins), args.batch_size):
-            batch = proteins[offset:offset + args.batch_size]
-            sequences = [item[3][:1022] for item in batch]
-            inputs = tokenizer(sequences, return_tensors="pt", padding=True, truncation=True, max_length=1024)
-            inputs = {key: value.to(device) for key, value in inputs.items()}
-            hidden = model(**inputs).last_hidden_state
-            masks = inputs["attention_mask"].unsqueeze(-1)
-            pooled = (hidden * masks).sum(dim=1) / masks.sum(dim=1).clamp(min=1)
-            pooled = torch.nn.functional.normalize(pooled, dim=1).cpu().float()
-
-            rows = []
-            for (gene_id, phage_id, locus_tag, sequence), vector in zip(batch, pooled):
-                metadata = json.dumps({
-                    "source": "esm2",
-                    "checkpoint": args.model,
-                    "pooling": "mean",
-                    "normalized": True,
-                    "sequenceLength": len(sequence),
-                    "truncated": len(sequence) > 1022,
-                }, separators=(",", ":"))
-                blob = struct.pack(f"<{vector.numel()}f", *vector.tolist())
-                rows.append((phage_id, gene_id, args.model, vector.numel(), blob, metadata, now))
-
-            connection.executemany(
-                "INSERT INTO fold_embeddings (phage_id, gene_id, model, dims, vector, meta, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(gene_id, model) DO UPDATE SET "
-                "dims=excluded.dims, vector=excluded.vector, meta=excluded.meta, created_at=excluded.created_at",
-                rows,
-            )
-            connection.commit()
-            inserted += len(rows)
-            print(f"Embedded {inserted}/{len(proteins)} proteins", flush=True)
-
-    connection.execute(
-        "INSERT OR REPLACE INTO annotation_meta (key, value, updated_at) VALUES (?, ?, ?)",
-        ("esm2_embeddings", json.dumps({"model": args.model, "count": inserted}), now),
-    )
-    connection.commit()
-    connection.close()
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be positive")
+    if args.batch_size < 1:
+        parser.error("--batch-size must be positive")
+    # Refuse an absent catalog instead of silently creating an empty database.
+    uri = Path(args.database).resolve().as_uri() + "?mode=rw"
+    with closing(sqlite3.connect(uri, uri=True)) as connection:
+        catalog_embeddings(connection, args)
 
 
 if __name__ == "__main__":

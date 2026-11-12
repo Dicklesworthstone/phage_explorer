@@ -22,12 +22,12 @@ import {
 import {
   countCodonUsage,
   countAminoAcidUsage,
-  translateSequence,
-  reverseComplement,
+  getGeneticCode,
   encodeFloat32VectorLE,
 } from '@phage-explorer/core';
 import { PHAGE_CATALOG } from './phage-catalog';
-import { fetchPhageSequence, type NCBISequenceResult } from './ncbi-fetcher';
+import { fetchPhageSequence, type NCBIFeature, type NCBISequenceResult } from './ncbi-fetcher';
+import { collectProteinInputs, PROTEIN_INPUT_METHOD } from './protein-inputs';
 import { readFileSync, existsSync } from 'fs';
 import { updateAntiCrisprInDatabase } from './update-anti-crispr';
 import { updateDomainAnnotations } from './domain-annotations';
@@ -37,43 +37,30 @@ const CHUNK_SIZE = 10000; // 10kb chunks
 const TROPISM_PATH = './data/tropism-embeddings.json';
 const BATCH_INSERT_SIZE = 100; // Batch inserts for 5-10x faster writes
 
-interface CodingRegion {
-  startPos: number;
-  endPos: number;
-  strand: string | null;
-  qualifiers: string | null;
+function canMapFeature(feature: NCBIFeature): boolean {
+  return feature.type !== 'source' && feature.segments.length > 0
+    && Number.isSafeInteger(feature.start) && Number.isSafeInteger(feature.end)
+    && feature.start >= 0 && feature.start < feature.end;
 }
 
-/**
- * Reconstruct the spliced coding sequence for a gene row.
- * Multi-segment features store the exon structure in the `_segments` qualifier.
- */
-function getSplicedCodingSequence(seq: string, region: CodingRegion): string {
-  let segments: Array<{ start: number; end: number }> | undefined;
-  if (region.qualifiers) {
-    try {
-      const parsed = JSON.parse(region.qualifiers) as Record<string, unknown>;
-      if (Array.isArray(parsed._segments)) {
-        segments = parsed._segments as Array<{ start: number; end: number }>;
-      }
-    } catch {
-      // Fall through to single-segment reconstruction
-    }
-  }
+/** One deposited feature is one gene row; the map already renders its segments. */
+export function featureGeneValues(phageId: number, features: readonly NCBIFeature[]) {
+  return features.flatMap((feature, sourceFeatureIndex) => canMapFeature(feature) ? [{
+    phageId, name: feature.gene ?? null, locusTag: feature.locusTag ?? null,
+    startPos: feature.start, endPos: feature.end, strand: feature.strand,
+    product: feature.product ?? null, type: feature.type,
+    qualifiers: JSON.stringify({ ...feature.qualifiers, _segments: feature.segments,
+      _location: feature.location, _sourceFeatureIndex: sourceFeatureIndex }),
+  }] : []);
+}
 
-  let cds = '';
-  if (segments && segments.length > 1) {
-    for (const segment of segments) {
-      cds += seq.substring(segment.start, segment.end);
-    }
-  } else {
-    cds = seq.substring(region.startPos, region.endPos);
-  }
-
-  if (region.strand === '-') {
-    cds = reverseComplement(cds);
-  }
-  return cds;
+/** Preserve annotations without valid gene geometry, including the source feature. */
+export function retainedCatalogFeatures(features: readonly NCBIFeature[]) {
+  return features.flatMap((feature, sourceFeatureIndex) => canMapFeature(feature) ? [] : [{
+    sourceFeatureIndex, feature,
+    reason: feature.type === 'source' ? 'Record source annotation; not a gene.'
+      : 'Unsupported location; no local gene interval or protein inferred.',
+  }]);
 }
 
 /**
@@ -81,26 +68,8 @@ function getSplicedCodingSequence(seq: string, region: CodingRegion): string {
  * A lower value means stronger codon bias; the maximum is 61 (no bias,
  * assuming all synonymous codons are used equally).
  */
-function calculateNc(codonCounts: Record<string, number>): number {
-  // Standard genetic code: amino acid -> codons
-  const codonToAa: Record<string, string> = {
-    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
-    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
-    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
-    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
-    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
-    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
-    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
-    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
-    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
-    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
-    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
-    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
-    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
-    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
-    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
-    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
-  };
+export function calculateNc(codonCounts: Record<string, number>, geneticCode = 1): number {
+  const codonToAa = getGeneticCode(geneticCode).codons;
 
   // Group counts by amino acid (skip stop codons)
   const aaGroups: Record<string, string[]> = {};
@@ -138,7 +107,8 @@ function calculateNc(codonCounts: Record<string, number>): number {
     }
   }
 
-  return Math.max(1, Math.min(61, nc));
+  const senseCodons = Object.values(codonToAa).filter(aa => aa !== '*').length;
+  return Math.max(1, Math.min(senseCodons, nc));
 }
 
 /**
@@ -231,26 +201,10 @@ export function findTrnaPool(host: string): typeof DEFAULT_TRNA_POOLS[keyof type
  */
 export function calculateIntrinsicCai(
   geneCodonCounts: Record<string, number>,
-  phageCodonCounts: Record<string, number>
+  phageCodonCounts: Record<string, number>,
+  geneticCode = 1,
 ): number {
-  const codonToAa: Record<string, string> = {
-    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
-    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
-    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
-    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
-    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
-    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
-    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
-    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
-    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
-    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
-    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
-    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
-    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
-    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
-    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
-    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
-  };
+  const codonToAa = getGeneticCode(geneticCode).codons;
 
   // Determine the most-used codon per amino acid from phage counts.
   const maxByAa: Record<string, number> = {};
@@ -285,26 +239,10 @@ export function calculateIntrinsicCai(
  */
 export function calculateTai(
   geneCodonCounts: Record<string, number>,
-  pool: typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS]
+  pool: typeof DEFAULT_TRNA_POOLS[keyof typeof DEFAULT_TRNA_POOLS],
+  geneticCode = 1,
 ): number {
-  const codonToAa: Record<string, string> = {
-    TTT: 'F', TTC: 'F', TTA: 'L', TTG: 'L',
-    CTT: 'L', CTC: 'L', CTA: 'L', CTG: 'L',
-    ATT: 'I', ATC: 'I', ATA: 'I', ATG: 'M',
-    GTT: 'V', GTC: 'V', GTA: 'V', GTG: 'V',
-    TCT: 'S', TCC: 'S', TCA: 'S', TCG: 'S',
-    CCT: 'P', CCC: 'P', CCA: 'P', CCG: 'P',
-    ACT: 'T', ACC: 'T', ACA: 'T', ACG: 'T',
-    GCT: 'A', GCC: 'A', GCA: 'A', GCG: 'A',
-    TAT: 'Y', TAC: 'Y', TAA: '*', TAG: '*',
-    CAT: 'H', CAC: 'H', CAA: 'Q', CAG: 'Q',
-    AAT: 'N', AAC: 'N', AAA: 'K', AAG: 'K',
-    GAT: 'D', GAC: 'D', GAA: 'E', GAG: 'E',
-    TGT: 'C', TGC: 'C', TGA: '*', TGG: 'W',
-    CGT: 'R', CGC: 'R', CGA: 'R', CGG: 'R',
-    AGT: 'S', AGC: 'S', AGA: 'R', AGG: 'R',
-    GGT: 'G', GGC: 'G', GGA: 'G', GGG: 'G',
-  };
+  const codonToAa = getGeneticCode(geneticCode).codons;
 
   const weightByCodon: Record<string, number> = {};
   for (const entry of pool) {
@@ -805,55 +743,7 @@ async function main() {
       console.log(`  Inserted ${numChunks} sequence chunks`);
 
       // Insert gene annotations (batched for performance)
-      const geneValues: Array<{
-        phageId: number;
-        name: string | null;
-        locusTag: string | null;
-        startPos: number;
-        endPos: number;
-        strand: string | null;
-        product: string | null;
-        type: string | null;
-        qualifiers: string;
-      }> = [];
-
-      for (const feature of sequenceData.features) {
-        const qualObj = feature.qualifiers || {};
-        
-        // If segments exist, store them in qualifiers so we don't lose the structure
-        if (feature.segments && feature.segments.length > 1) {
-          qualObj['_segments'] = JSON.stringify(feature.segments);
-          
-          // Multi-segment feature (e.g. wrap-around or join)
-          // Insert a row for each segment to avoid implying coverage of the gap/intron
-          for (const segment of feature.segments) {
-            geneValues.push({
-              phageId,
-              name: feature.gene || null,
-              locusTag: feature.locusTag || null,
-              startPos: segment.start,
-              endPos: segment.end,
-              strand: feature.strand,
-              product: feature.product || null,
-              type: feature.type,
-              qualifiers: JSON.stringify(qualObj),
-            });
-          }
-        } else {
-          // Single feature
-          geneValues.push({
-            phageId,
-            name: feature.gene || null,
-            locusTag: feature.locusTag || null,
-            startPos: feature.start,
-            endPos: feature.end,
-            strand: feature.strand,
-            product: feature.product || null,
-            type: feature.type,
-            qualifiers: JSON.stringify(qualObj),
-          });
-        }
-      }
+      const geneValues = featureGeneValues(phageId, sequenceData.features);
 
       for (let i = 0; i < geneValues.length; i += BATCH_INSERT_SIZE) {
         const batch = geneValues.slice(i, i + BATCH_INSERT_SIZE);
@@ -866,6 +756,7 @@ async function main() {
       const insertedGenes = await db
         .select({
           id: genes.id,
+          phageId: genes.phageId,
           startPos: genes.startPos,
           endPos: genes.endPos,
           strand: genes.strand,
@@ -881,6 +772,29 @@ async function main() {
       const embeddingModel = 'protein-k3-hash-v1';
       const embeddingDims = 256;
       const now = Date.now();
+      const codingInputs = collectProteinInputs(seq, insertedGenes);
+      const retainedFeatures = retainedCatalogFeatures(sequenceData.features);
+      sqlite.query('INSERT INTO annotation_meta (key, value, updated_at) VALUES (?, ?, ?)').run(
+        'catalog_features:' + phageId,
+        JSON.stringify({ accession: sequenceData.accession, metadata: sequenceData.metadata,
+          retainedFeatures }),
+        now,
+      );
+      sqlite.query('INSERT INTO annotation_meta (key, value, updated_at) VALUES (?, ?, ?)').run(
+        `coding_inputs:${phageId}`,
+        JSON.stringify({ method: PROTEIN_INPUT_METHOD, accession: sequenceData.accession,
+          warnings: JSON.parse(sequenceData.metadata.warnings ?? '[]'),
+          coverage: { totalSourceCdsFeatures: sequenceData.features.filter(feature => feature.type === 'CDS').length,
+            totalCdsRows: insertedGenes.filter(gene => gene.type === 'CDS').length,
+            unmappedSourceCdsFeatures: retainedFeatures.filter(item => item.feature.type === 'CDS').length,
+            acceptedProteins: codingInputs.proteins.length, excludedCdsRows: codingInputs.excluded.length,
+            metricsScope: 'validated-transcripts-only' },
+          proteins: codingInputs.proteins.map(({ geneId, sourceGeneIds, geneticCode, codonStart, cdsSha256, sequenceSha256 }) =>
+            ({ geneId, sourceGeneIds, geneticCode, codonStart, cdsSha256, sequenceSha256 })),
+          excluded: codingInputs.excluded }),
+        now,
+      );
+      if (codingInputs.excluded.length) console.log(`  Excluded ${codingInputs.excluded.length} unsupported CDS inputs; reasons retained in annotation_meta`);
       const embeddingValues: Array<{
         phageId: number;
         geneId: number;
@@ -891,18 +805,17 @@ async function main() {
         createdAt: number;
       }> = [];
 
-      for (const g of insertedGenes) {
-        if (g.type !== 'CDS') continue;
-        const dna = getSplicedCodingSequence(seq, g);
-        const aa = translateSequence(dna, 0);
-        const vector = proteinKmerHashEmbedding(aa, { k: 3, dims: embeddingDims });
+      for (const input of codingInputs.proteins) {
+        const vector = proteinKmerHashEmbedding(input.sequence, { k: 3, dims: embeddingDims });
         embeddingValues.push({
           phageId,
-          geneId: g.id,
+          geneId: input.geneId,
           model: embeddingModel,
           dims: embeddingDims,
           vector: encodeFloat32VectorLE(vector),
-          meta: JSON.stringify({ k: 3, dims: embeddingDims, source: 'hash-kmer' }),
+          meta: JSON.stringify({ k: 3, dims: embeddingDims, source: 'hash-kmer', inputMethod: PROTEIN_INPUT_METHOD,
+            sequenceLength: input.sequence.length, sequenceSha256: input.sequenceSha256, cdsSha256: input.cdsSha256,
+            geneticCode: input.geneticCode, codonStart: input.codonStart }),
           createdAt: now,
         });
       }
@@ -952,35 +865,18 @@ async function main() {
       // We must calculate this from the CDS features, not the raw genome frame 0
       const totalCodonCounts: Record<string, number> = {};
       const totalAACounts: Record<string, number> = {};
-
-      for (const feature of sequenceData.features) {
-        if (feature.type === 'CDS') {
-          let cdsSeq = '';
-          
-          if (feature.segments && feature.segments.length > 1) {
-             // Concatenate segments
-             for (const segment of feature.segments) {
-                cdsSeq += seq.substring(segment.start, segment.end);
-             }
-          } else {
-             cdsSeq = seq.substring(feature.start, feature.end);
-          }
-          
-          if (feature.strand === '-') {
-            cdsSeq = reverseComplement(cdsSeq);
-          }
-          
-          const codonCounts = countCodonUsage(cdsSeq, 0);
-          const aaSeq = translateSequence(cdsSeq, 0);
-          const aaCounts = countAminoAcidUsage(aaSeq);
-          
-          // Accumulate
-          for (const [codon, count] of Object.entries(codonCounts)) {
-            totalCodonCounts[codon] = (totalCodonCounts[codon] || 0) + count;
-          }
-          for (const [aa, count] of Object.entries(aaCounts)) {
-            totalAACounts[aa] = (totalAACounts[aa] || 0) + count;
-          }
+      const countsByCode = new Map<number, Record<string, number>>();
+      for (const input of codingInputs.proteins) {
+        const codonCounts = countCodonUsage(input.cds, 0);
+        const aaCounts = countAminoAcidUsage(input.sequence);
+        const codeCounts = countsByCode.get(input.geneticCode) ?? {};
+        countsByCode.set(input.geneticCode, codeCounts);
+        for (const [codon, count] of Object.entries(codonCounts)) {
+          totalCodonCounts[codon] = (totalCodonCounts[codon] ?? 0) + count;
+          codeCounts[codon] = (codeCounts[codon] ?? 0) + count;
+        }
+        for (const [aa, count] of Object.entries(aaCounts)) {
+          totalAACounts[aa] = (totalAACounts[aa] ?? 0) + count;
         }
       }
 
@@ -989,10 +885,11 @@ async function main() {
         aaCounts: JSON.stringify(totalAACounts),
         codonCounts: JSON.stringify(totalCodonCounts),
       });
-      console.log(`  Calculated codon usage from CDS features`);
+      console.log(`  Calculated codon usage from ${codingInputs.proteins.length} validated CDS features`);
 
       // Compute intrinsic codon-adaptation metrics from the phage's own codon usage.
-      const nc = calculateNc(totalCodonCounts);
+      const codes = [...countsByCode.keys()];
+      const nc = codes.length === 1 ? calculateNc(totalCodonCounts, codes[0]) : null;
       await db.insert(codonAdaptation).values({
         phageId,
         hostName: 'intrinsic',
@@ -1003,7 +900,7 @@ async function main() {
         cpb: null,
         encPrime: nc,
       });
-      console.log(`  Computed intrinsic Nc (enc_prime): ${nc.toFixed(2)}`);
+      console.log(`  Intrinsic Nc (enc_prime): ${nc === null ? 'unavailable without one common CDS genetic code' : nc.toFixed(2)}`);
 
       // Per-gene intrinsic CAI and host-specific tAI (where a default pool exists).
       const trnaPool = findTrnaPool(entry.host);
@@ -1018,17 +915,16 @@ async function main() {
         encPrime: number | null;
       }> = [];
 
-      for (const g of insertedGenes) {
-        if (g.type !== 'CDS') continue;
-        const dna = getSplicedCodingSequence(seq, g);
-        const geneCodonCounts = countCodonUsage(dna, 0);
-        const cai = calculateIntrinsicCai(geneCodonCounts, totalCodonCounts);
-        const tai = trnaPool ? calculateTai(geneCodonCounts, trnaPool) : null;
+      for (const input of codingInputs.proteins) {
+        const geneCodonCounts = countCodonUsage(input.cds, 0);
+        const cai = calculateIntrinsicCai(geneCodonCounts, countsByCode.get(input.geneticCode)!, input.geneticCode);
+        // The supplied host pools describe standard-code decoding only.
+        const tai = trnaPool && [1, 11].includes(input.geneticCode) ? calculateTai(geneCodonCounts, trnaPool, input.geneticCode) : null;
         caiValues.push({
           phageId,
           hostName: trnaPool ? entry.host : 'self-reference',
-          geneId: g.id,
-          locusTag: g.locusTag,
+          geneId: input.geneId,
+          locusTag: input.locusTag,
           cai,
           tai,
           cpb: null,

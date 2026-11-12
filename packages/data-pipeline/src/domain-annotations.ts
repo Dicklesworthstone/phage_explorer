@@ -5,7 +5,7 @@
  * from Pfam protein domains rather than product name heuristics.
  */
 
-import type { Database } from 'bun:sqlite';
+import { Database } from 'bun:sqlite';
 
 export interface DomainDefenseRule {
   domainId: string;
@@ -353,4 +353,46 @@ export function refreshDomainAnnotationMetadata(
     amgCount: amgStats.count,
     amgPhages: amgStats.phages,
   };
+}
+
+/**
+ * Derive calls for an explicit set of newly scanned Pfam rows. This uses the
+ * same curated rules as the catalog builder without opening a catalog file.
+ * The Python scanner can publish domains and these dependent calls atomically.
+ */
+export function derivePfamAnnotationRows(value: unknown): {
+  format: 'phage-explorer-pfam-derived'; version: 1;
+  defenseHits: DerivedDefenseHit[]; amgHits: DerivedAmgHit[];
+} {
+  if (!Array.isArray(value) || value.length > 1000000) throw new Error('Expected a bounded Pfam row list.');
+  const db = new Database(':memory:');
+  try {
+    db.exec('CREATE TABLE protein_domains (phage_id INTEGER, gene_id INTEGER, locus_tag TEXT, domain_id TEXT, domain_name TEXT, description TEXT, e_value REAL, score REAL)');
+    const insert = db.prepare('INSERT INTO protein_domains VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    for (const row of value) {
+      if (!row || typeof row !== 'object' || Array.isArray(row)
+        || !Number.isSafeInteger(row.phageId) || !Number.isSafeInteger(row.geneId)
+        || row.phageId < 1 || row.geneId < 1
+        || typeof row.domainId !== 'string' || !row.domainId.length
+        || !Number.isFinite(row.eValue) || row.eValue < 0 || !Number.isFinite(row.score)
+        || [row.locusTag, row.domainName, row.description].some(item => item !== null && typeof item !== 'string')) {
+        throw new Error('Invalid explicit Pfam domain row.');
+      }
+      insert.run(row.phageId, row.geneId, row.locusTag, row.domainId, row.domainName, row.description, row.eValue, row.score);
+    }
+    return { format: 'phage-explorer-pfam-derived', version: 1,
+      defenseHits: detectDomainDefenseSystems(db), amgHits: detectDomainAmgs(db) };
+  } finally {
+    db.close();
+  }
+}
+
+if (import.meta.main) {
+  try {
+    if (Bun.argv.slice(2).join(' ') !== '--derive-pfam-input') throw new Error('Supply --derive-pfam-input and a JSON row list on stdin.');
+    console.log(JSON.stringify(derivePfamAnnotationRows(JSON.parse(await Bun.stdin.text()))));
+  } catch (error) {
+    console.error('Pfam derivation failed:', error instanceof Error ? error.message : 'invalid input');
+    process.exitCode = 1;
+  }
 }
