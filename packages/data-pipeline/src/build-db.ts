@@ -25,10 +25,14 @@ import {
   getGeneticCode,
   encodeFloat32VectorLE,
 } from '@phage-explorer/core';
-import { PHAGE_CATALOG } from './phage-catalog';
+import { PHAGE_CATALOG, type PhageCatalogEntry } from './phage-catalog';
 import { fetchPhageSequence, type NCBIFeature, type NCBISequenceResult } from './ncbi-fetcher';
 import { collectProteinInputs, PROTEIN_INPUT_METHOD } from './protein-inputs';
 import { readFileSync, existsSync } from 'fs';
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, mkdtemp, readFile, rename } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 import { updateAntiCrisprInDatabase } from './update-anti-crispr';
 import { updateDomainAnnotations } from './domain-annotations';
 
@@ -439,32 +443,139 @@ function detectDefenseSystems(
   return hits;
 }
 
-async function main() {
-  console.log('Building phage database...\n');
+export interface BuildDatabaseOptions {
+  output?: string;
+  catalog?: readonly PhageCatalogEntry[];
+  fetchSequence?: (accession: string) => Promise<NCBISequenceResult>;
+  tropismPath?: string;
+}
 
-  // Create/overwrite database
-  const sqlite = new Database(DB_PATH);
+interface SequenceIdentity {
+  length: number;
+  sha256: string;
+}
+
+/** Refuse live SQLite sidecars and concurrent replacement of the destination. */
+async function destinationIdentity(path: string): Promise<string | null> {
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    try {
+      await lstat(path + suffix);
+      throw new Error(`Database destination has a SQLite sidecar (${suffix}); close its readers/writers before rebuilding.`);
+    } catch (error) {
+      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
+    }
+  }
+  try {
+    const info = await lstat(path);
+    if (!info.isFile()) throw new Error('Database destination must be a regular file, not a directory or symbolic link.');
+    return createHash('sha256').update(await readFile(path)).digest('hex');
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+/** Build a fresh, complete generation without touching the last usable database. */
+export async function buildDatabase(options: BuildDatabaseOptions = {}): Promise<{ output: string; phageCount: number }> {
+  const output = resolve(options.output ?? DB_PATH);
+  const catalog = options.catalog ?? PHAGE_CATALOG;
+  if (!catalog.length || new Set(catalog.map(entry => entry.accession)).size !== catalog.length
+    || new Set(catalog.map(entry => entry.slug)).size !== catalog.length) {
+    throw new Error('A database build requires a nonempty catalog with unique accessions and slugs.');
+  }
+  await mkdir(dirname(output), { recursive: true });
+  const previousIdentity = await destinationIdentity(output);
+  const stagingDirectory = await mkdtemp(join(dirname(output), `.${basename(output)}-build-`));
+  const candidate = join(stagingDirectory, 'phage.db');
+  console.log(`Building complete phage database in ${stagingDirectory}...\n`);
+  const sqlite = new Database(candidate, { create: true });
+  let expected: Map<string, SequenceIdentity>;
+  try {
+    sqlite.exec('PRAGMA foreign_keys=ON');
+    expected = await populateDatabase(sqlite, catalog, options.fetchSequence ?? fetchPhageSequence,
+      options.tropismPath ?? TROPISM_PATH);
+  } finally {
+    sqlite.close();
+  }
+
+  // Derived annotations belong to the same candidate generation. Failure in any
+  // producer leaves the destination untouched, including its previous annotations.
+  updateAntiCrisprInDatabase(candidate);
+  const annotated = new Database(candidate);
+  try {
+    const stats = updateDomainAnnotations(annotated);
+    validateBuiltDatabase(annotated, catalog, expected);
+    console.log(`Derived domain annotations: ${stats.defenseCount} defense hits (${stats.defensePhages} phages), ${stats.amgCount} AMG hits (${stats.amgPhages} phages)`);
+  } finally {
+    annotated.close();
+  }
+  if (await destinationIdentity(output) !== previousIdentity) {
+    throw new Error('Database destination changed during the build; the new candidate was not published.');
+  }
+  // Both paths are on the same filesystem. Readers see either complete generation;
+  // failed candidates are retained for diagnosis instead of replacing good data.
+  await rename(candidate, output);
+  console.log(`\nDatabase created: ${output}\nTotal phages: ${expected.size}\n`);
+  return { output, phageCount: expected.size };
+}
+
+function validateBuiltDatabase(
+  sqlite: Database, catalog: readonly PhageCatalogEntry[], expected: ReadonlyMap<string, SequenceIdentity>,
+): void {
+  const integrity = sqlite.query<{ integrity_check: string }, []>('PRAGMA integrity_check').all();
+  if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') throw new Error('Built database failed SQLite integrity validation.');
+  if (sqlite.query('PRAGMA foreign_key_check').all().length) throw new Error('Built database contains orphan annotations.');
+  const rows = sqlite.query<{ id: number; accession: string; slug: string; genome_length: number }, []>(
+    'SELECT id, accession, slug, genome_length FROM phages ORDER BY id',
+  ).all();
+  if (rows.length !== catalog.length || expected.size !== catalog.length) throw new Error('Built database is missing catalog genomes.');
+  for (let i = 0; i < rows.length; i++) {
+    const phage = rows[i], entry = catalog[i], identity = expected.get(phage.accession);
+    if (phage.accession !== entry.accession || phage.slug !== entry.slug || !identity || phage.genome_length !== identity.length) {
+      throw new Error('Built database catalog identity differs from the requested inputs.');
+    }
+    const chunks = sqlite.query<{ chunk_index: number; sequence: string }, [number]>(
+      'SELECT chunk_index, sequence FROM sequences WHERE phage_id=? ORDER BY chunk_index',
+    ).all(phage.id);
+    const hash = createHash('sha256');
+    let length = 0;
+    for (let index = 0; index < chunks.length; index++) {
+      const chunk = chunks[index];
+      if (chunk.chunk_index !== index || !chunk.sequence.length) throw new Error('Built database has missing sequence chunks.');
+      hash.update(chunk.sequence); length += chunk.sequence.length;
+    }
+    if (length !== identity.length || hash.digest('hex') !== identity.sha256) throw new Error('Built database sequence differs from its fetched input.');
+  }
+  if (sqlite.query(`SELECT g.id FROM genes g JOIN phages p ON p.id=g.phage_id
+    WHERE g.start_pos<0 OR g.end_pos<=g.start_pos OR g.end_pos>p.genome_length LIMIT 1`).get()) {
+    throw new Error('Built database has a gene outside its genome.');
+  }
+  for (const table of ['fold_embeddings', 'protein_domains', 'tropism_predictions', 'defense_systems', 'amg_annotations', 'codon_adaptation']) {
+    if (sqlite.query(`SELECT a.id FROM ${table} a JOIN genes g ON g.id=a.gene_id WHERE a.phage_id<>g.phage_id LIMIT 1`).get()) {
+      throw new Error(`Built database has incorrectly owned ${table} annotations.`);
+    }
+  }
+  if (sqlite.query(`SELECT id FROM fold_embeddings WHERE dims<=0 OR length(vector)<>dims*4 LIMIT 1`).get()) {
+    throw new Error('Built database has an invalid protein embedding.');
+  }
+  if (sqlite.query(`SELECT p.id FROM phages p LEFT JOIN codon_usage c ON c.phage_id=p.id
+    LEFT JOIN annotation_meta m ON m.key='coding_inputs:' || p.id
+    WHERE c.phage_id IS NULL OR m.key IS NULL LIMIT 1`).get()) {
+    throw new Error('Built database is missing coding-input coverage metadata.');
+  }
+}
+
+async function populateDatabase(
+  sqlite: Database, catalog: readonly PhageCatalogEntry[],
+  fetchSequence: (accession: string) => Promise<NCBISequenceResult>, tropismPath: string,
+): Promise<Map<string, SequenceIdentity>> {
   const db = drizzle(sqlite);
+  const expected = new Map<string, SequenceIdentity>();
 
   // Create tables using raw SQL (Drizzle's createTable isn't available in all versions)
   console.log('Creating tables...');
 
   sqlite.exec(`
-    DROP TABLE IF EXISTS codon_adaptation;
-    DROP TABLE IF EXISTS host_trna_pools;
-    DROP TABLE IF EXISTS defense_systems;
-    DROP TABLE IF EXISTS amg_annotations;
-    DROP TABLE IF EXISTS protein_domains;
-    DROP TABLE IF EXISTS annotation_meta;
-    DROP TABLE IF EXISTS preferences;
-    DROP TABLE IF EXISTS fold_embeddings;
-    DROP TABLE IF EXISTS tropism_predictions;
-    DROP TABLE IF EXISTS models;
-    DROP TABLE IF EXISTS codon_usage;
-    DROP TABLE IF EXISTS genes;
-    DROP TABLE IF EXISTS sequences;
-    DROP TABLE IF EXISTS phages;
-
     CREATE TABLE phages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE,
@@ -662,18 +773,26 @@ async function main() {
   }
 
   // Process each phage in the catalog
-  for (const entry of PHAGE_CATALOG) {
+  for (const entry of catalog) {
     console.log(`\nProcessing ${entry.name} (${entry.accession})...`);
 
     let sequenceData: NCBISequenceResult;
 
     try {
       // Fetch sequence from NCBI
-      sequenceData = await fetchPhageSequence(entry.accession);
+      sequenceData = await fetchSequence(entry.accession);
+      if (!Number.isSafeInteger(sequenceData.length) || sequenceData.length < 1
+        || sequenceData.sequence.length !== sequenceData.length || /[^ACGTRYSWKMBDHVN]/.test(sequenceData.sequence)) {
+        throw new Error('Fetched record has an invalid or incomplete nucleotide sequence.');
+      }
+      const accession = entry.accession.replace(/\.\d+$/, '');
+      if (sequenceData.accession.replace(/\.\d+$/, '') !== accession
+        || (/\.\d+$/.test(entry.accession) && (sequenceData.metadata.version ?? sequenceData.accession) !== entry.accession)) {
+        throw new Error('Fetched accession/version does not match the requested catalog record.');
+      }
       console.log(`  Fetched: ${sequenceData.length} bp, ${sequenceData.features.length} features`);
     } catch (error) {
-      console.error(`  ERROR fetching ${entry.accession}:`, error);
-      continue;
+      throw new Error(`Failed to fetch complete catalog record ${entry.accession}; previous database preserved.`, { cause: error });
     }
 
     // Run database operations in a transaction
@@ -939,9 +1058,11 @@ async function main() {
       console.log(`  Computed per-gene CAI${trnaPool ? ' and tAI' : ''} for ${caiValues.length} CDS genes`);
 
       sqlite.exec('COMMIT');
+      expected.set(entry.accession, { length: sequenceData.length,
+        sha256: createHash('sha256').update(sequenceData.sequence).digest('hex') });
     } catch (txError) {
       sqlite.exec('ROLLBACK');
-      console.error(`  ERROR inserting ${entry.accession} into DB:`, txError);
+      throw new Error(`Failed to insert catalog record ${entry.accession}; previous database preserved.`, { cause: txError });
     }
 
     // Small delay between fetches to be nice to NCBI
@@ -953,10 +1074,10 @@ async function main() {
   await db.insert(preferences).values({ key: 'show3DModel', value: 'true' });
 
   // Optional: load precomputed tropism predictions (embedding-based) if available
-  if (existsSync(TROPISM_PATH)) {
-    console.log('\nLoading tropism predictions from', TROPISM_PATH);
+  if (existsSync(tropismPath)) {
+    console.log('\nLoading tropism predictions from', tropismPath);
     try {
-      const raw = readFileSync(TROPISM_PATH, 'utf8');
+      const raw = readFileSync(tropismPath, 'utf8');
       const data = JSON.parse(raw) as Array<{
         phageSlug?: string;
         accession?: string;
@@ -1024,27 +1145,22 @@ async function main() {
       }
       console.log(`Inserted ${tropismValues.length} tropism predictions`);
     } catch (err) {
-      console.error('Failed to load tropism predictions:', err);
+      throw new Error('Failed to load supplied tropism predictions; previous database preserved.', { cause: err });
     }
   } else {
     console.log('\nNo tropism embedding file found; skipping tropism_predictions import.');
   }
 
-  sqlite.close();
-
-  // Populate or update anti-CRISPR annotations if ESM2 fold_embeddings exist
-  updateAntiCrisprInDatabase(DB_PATH);
-
-  // Derive domain-based defense and AMG annotations from Pfam protein_domains
-  const domainSqlite = new Database(DB_PATH);
-  const domainStats = updateDomainAnnotations(domainSqlite);
-  domainSqlite.close();
-  console.log(`Derived domain annotations: ${domainStats.defenseCount} defense hits (${domainStats.defensePhages} phages), ${domainStats.amgCount} AMG hits (${domainStats.amgPhages} phages)`);
-
-  console.log('\n========================================');
-  console.log(`Database created: ${DB_PATH}`);
-  console.log(`Total phages: ${PHAGE_CATALOG.length}`);
-  console.log('========================================\n');
+  return expected;
 }
 
-if (import.meta.main) main().catch(console.error);
+if (import.meta.main) {
+  try {
+    const { values } = parseArgs({ args: Bun.argv.slice(2), strict: true, allowPositionals: false,
+      options: { output: { type: 'string', default: DB_PATH }, tropism: { type: 'string', default: TROPISM_PATH } } });
+    await buildDatabase({ output: values.output, tropismPath: values.tropism });
+  } catch (error) {
+    console.error('Database build failed:', error);
+    process.exitCode = 1;
+  }
+}
