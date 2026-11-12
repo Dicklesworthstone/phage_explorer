@@ -7,9 +7,8 @@ import {
   buildEmbeddingMap,
   computeNovelty,
   computeProteinSelfSimilarityMatrix,
-  reverseComplement,
-  translateSequence,
 } from '@phage-explorer/core';
+import { reconstructCdsReference } from '../../../core/src/analysis/cds-consequences';
 
 interface FoldQuickviewProps {
   embeddings: FoldEmbedding[];
@@ -66,7 +65,7 @@ export function FoldQuickview({
     // the curated corpus is not evidence for this protein's structure.
     if (phage?.localGenome) return [];
     const map = buildEmbeddingMap(embeddings);
-    return (phage?.genes ?? []).filter(g => map.has(g.id)).map(g => ({
+    return (phage?.genes ?? []).filter(g => g.type === 'CDS' && map.has(g.id)).map(g => ({
       ...g,
       embedding: map.get(g.id)!,
     }));
@@ -99,15 +98,19 @@ export function FoldQuickview({
     return computeNovelty(selected.embedding!, embeddings, 8);
   }, [selected, embeddings]);
 
-  const selectedAa = useMemo(() => {
+  const selectedCds = useMemo(() => {
     if (!selected || !genomeSequence) return null;
-    const window = genomeSequence.slice(selected.startPos, selected.endPos);
-    const dna = selected.strand === '-' ? reverseComplement(window) : window;
-    return translateSequence(dna, 0);
+    return reconstructCdsReference(selected, genomeSequence);
   }, [genomeSequence, selected]);
+  const selectedAa = selectedCds && selectedCds.reasons.length === 0
+    ? selectedCds.protein?.replace(/\*$/, '') ?? null : null;
+  const thumbnailUnavailable = selectedCds?.reasons.length
+    ? selectedCds.reasons.join(' ')
+    : selectedAa !== null && selectedAa.length < 3
+      ? 'At least three amino-acid residues are required for a 3-mer thumbnail.' : null;
 
   const selfSim = useMemo(() => {
-    if (!selectedAa) return null;
+    if (!selectedAa || selectedAa.length < 3) return null;
     const sim = computeProteinSelfSimilarityMatrix(selectedAa, { k: 3 });
     if (sim.bins <= 0) return null;
     return {
@@ -155,7 +158,7 @@ export function FoldQuickview({
         <>
           {corpusSource === 'computed' && (
             <Box marginBottom={1}>
-              <Text color={colors.textDim}>Using computed embeddings (fallback). Neighbors may be noisier than DB-backed embeddings.</Text>
+              <Text color={colors.textDim}>Using computed embeddings from supported, unambiguous annotated CDS translations with at least three residues. Neighbors may be noisier than DB-backed embeddings.</Text>
             </Box>
           )}
           <Box marginBottom={1}>
@@ -191,6 +194,11 @@ export function FoldQuickview({
                 </Text>
               ))}
 
+              {thumbnailUnavailable && (
+                <Box marginTop={1}>
+                  <Text color={colors.textDim}>Protein thumbnail unavailable: {thumbnailUnavailable}</Text>
+                </Box>
+              )}
               {selfSim && (
                 <Box flexDirection="column" marginTop={1}>
                   <Text color={colors.accent} bold>Self-similarity thumbnail</Text>

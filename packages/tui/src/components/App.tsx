@@ -58,7 +58,8 @@ import { HGTOverlay } from './HGTOverlay';
 import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { analyzeHGTProvenance, analyzeTailFiberTropism } from '@phage-explorer/comparison';
 import type { FoldEmbedding, StructuralConstraintReport, MosaicDataset, MosaicSequenceInput, PhageSummary, PhageFull } from '@phage-explorer/core';
-import { analyzeStructuralConstraints, reverseComplement, translateSequence, MOSAIC_LIMITS } from '@phage-explorer/core';
+import { analyzeStructuralConstraints, MOSAIC_LIMITS } from '@phage-explorer/core';
+import { reconstructCdsReference } from '../../../core/src/analysis/cds-consequences';
 import { initializeCommands } from '../commands/definitions';
 import {
   findNextGenePosition,
@@ -137,7 +138,7 @@ function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: num
   return vec;
 }
 
-async function computeEmbeddingsForPhage(args: {
+export async function computeEmbeddingsForPhage(args: {
   repository: PhageRepository;
   phageId: number;
   model: string;
@@ -150,9 +151,11 @@ async function computeEmbeddingsForPhage(args: {
   const embeddings: FoldEmbedding[] = [];
   for (const gene of genes) {
     if (gene.type !== 'CDS') continue;
-    const window = genome.slice(gene.startPos, gene.endPos);
-    const dna = gene.strand === '-' ? reverseComplement(window) : window;
-    const aa = translateSequence(dna, 0);
+    const cds = reconstructCdsReference(gene, genome);
+    if (cds.reasons.length > 0 || !cds.protein) continue;
+    const aa = cds.protein.replace(/\*$/, '');
+    // A terminal stop is not a residue; fewer than three residues have no 3-mers.
+    if (aa.length < 3) continue;
     embeddings.push({
       geneId: gene.id,
       vector: proteinKmerHashEmbedding(aa, { k: 3, dims: 256 }),

@@ -8,15 +8,14 @@
  * - Fallback: on-the-fly lightweight protein k-mer hash embeddings computed from sequences.
  */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { PhageFull, FoldEmbedding, GeneInfo } from '@phage-explorer/core';
 import {
   buildEmbeddingMap,
   computeNovelty,
   computeProteinSelfSimilarityMatrix,
-  reverseComplement,
-  translateSequence,
 } from '@phage-explorer/core';
+import { reconstructCdsReference } from '../../../../core/src/analysis/cds-consequences';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { useHotkey } from '../../hooks/useHotkey';
@@ -75,7 +74,7 @@ function proteinKmerHashEmbedding(aa: string, options?: { k?: number; dims?: num
   return vec;
 }
 
-async function computeEmbeddingsForPhage(args: {
+export async function computeEmbeddingsForPhage(args: {
   repository: PhageRepository;
   phageId: number;
   model: string;
@@ -91,9 +90,11 @@ async function computeEmbeddingsForPhage(args: {
   const embeddings: FoldEmbedding[] = [];
   for (const gene of genes) {
     if (gene.type !== 'CDS') continue;
-    const window = genome.slice(gene.startPos, gene.endPos);
-    const dna = gene.strand === '-' ? reverseComplement(window) : window;
-    const aa = translateSequence(dna, 0);
+    const cds = reconstructCdsReference(gene, genome);
+    if (cds.reasons.length > 0 || !cds.protein) continue;
+    const aa = cds.protein.replace(/\*$/, '');
+    // A terminal stop is not a residue; fewer than three residues have no 3-mers.
+    if (aa.length < 3) continue;
     embeddings.push({
       geneId: gene.id,
       vector: proteinKmerHashEmbedding(aa, { k: 3, dims: 256 }),
@@ -158,13 +159,28 @@ export function FoldQuickviewOverlay({
   const shouldCaptureHotkeys = overlayOpen && isTopmost;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [corpus, setCorpus] = useState<FoldEmbedding[]>([]);
-  const [corpusSource, setCorpusSource] = useState<'db' | 'computed'>('computed');
+  const [loadedCorpus, setLoadedCorpus] = useState<{
+    repository: PhageRepository;
+    embeddings: FoldEmbedding[];
+    source: 'db' | 'computed';
+  } | null>(null);
+  const corpus = loadedCorpus && loadedCorpus.repository === repository ? loadedCorpus.embeddings : [];
+  const corpusSource = loadedCorpus && loadedCorpus.repository === repository ? loadedCorpus.source : 'computed';
   const [selectedGeneIdx, setSelectedGeneIdx] = useState(0);
 
-  const cacheRef = useRef<Map<string, { embeddings: FoldEmbedding[]; source: 'db' | 'computed' }>>(new Map());
-  const genomeCacheRef = useRef<Map<number, string>>(new Map());
-  const [genome, setGenome] = useState('');
+  // Numeric gene/phage IDs are meaningful only within their repository snapshot.
+  const corpusCache = useMemo(
+    () => new Map<string, { embeddings: FoldEmbedding[]; source: 'db' | 'computed' }>(),
+    [repository]
+  );
+  const genomeCache = useMemo(() => new WeakMap<PhageFull, string>(), [repository]);
+  const [loadedGenome, setLoadedGenome] = useState<{
+    repository: PhageRepository;
+    phage: PhageFull;
+    sequence: string;
+  } | null>(null);
+  const genome = loadedGenome && loadedGenome.repository === repository && loadedGenome.phage === currentPhage
+    ? loadedGenome.sequence : '';
   const [genomeLoading, setGenomeLoading] = useState(false);
   const [genomeError, setGenomeError] = useState<string | null>(null);
 
@@ -176,19 +192,19 @@ export function FoldQuickviewOverlay({
 
   // Load embeddings when opened.
   useEffect(() => {
-    if (!isOpen('foldQuickview')) return;
+    if (!overlayOpen) return;
     if (!repository || !currentPhage || currentPhage.localGenome) {
-      setCorpus([]);
+      setLoadedCorpus(null);
       setError(null);
       setLoading(false);
       return;
     }
 
     const cacheKey = `model:${EMBEDDING_MODEL}`;
-    const cached = cacheRef.current.get(cacheKey);
+    const cached = corpusCache.get(cacheKey);
     if (cached) {
-      setCorpus(cached.embeddings);
-      setCorpusSource(cached.source);
+      setLoadedCorpus({ repository, ...cached });
+      setError(null);
       setLoading(false);
       return;
     }
@@ -201,37 +217,34 @@ export function FoldQuickviewOverlay({
       try {
         const loaded = await loadEmbeddingCorpus({ repository, model: EMBEDDING_MODEL });
         if (cancelled) return;
-        cacheRef.current.set(cacheKey, loaded);
-        setCorpus(loaded.embeddings);
-        setCorpusSource(loaded.source);
+        corpusCache.set(cacheKey, loaded);
+        setLoadedCorpus({ repository, ...loaded });
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Failed to load embeddings');
-        setCorpus([]);
+        setLoadedCorpus(null);
       } finally {
         if (cancelled) return;
         setLoading(false);
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [currentPhage?.id, currentPhage?.localGenome, isOpen, repository]);
+    return () => { cancelled = true; };
+  }, [currentPhage, overlayOpen, repository, corpusCache]);
 
-  // Load current genome for contact-like thumbnail.
+  // Load the exact current snapshot for the protein thumbnail.
   useEffect(() => {
-    if (!isOpen('foldQuickview')) return;
+    if (!overlayOpen) return;
     if (!repository || !currentPhage || currentPhage.localGenome) {
-      setGenome('');
+      setLoadedGenome(null);
       setGenomeError(null);
       setGenomeLoading(false);
       return;
     }
 
-    const cached = genomeCacheRef.current.get(currentPhage.id);
-    if (cached) {
-      setGenome(cached);
+    const cached = genomeCache.get(currentPhage);
+    if (cached !== undefined) {
+      setLoadedGenome({ repository, phage: currentPhage, sequence: cached });
       setGenomeError(null);
       setGenomeLoading(false);
       return;
@@ -244,13 +257,14 @@ export function FoldQuickviewOverlay({
     void (async () => {
       try {
         const length = await repository.getFullGenomeLength(currentPhage.id);
+        if (cancelled) return;
         const seq = await repository.getSequenceWindow(currentPhage.id, 0, length);
         if (cancelled) return;
-        genomeCacheRef.current.set(currentPhage.id, seq);
-        setGenome(seq);
+        genomeCache.set(currentPhage, seq);
+        setLoadedGenome({ repository, phage: currentPhage, sequence: seq });
       } catch (err) {
         if (cancelled) return;
-        setGenome('');
+        setLoadedGenome(null);
         setGenomeError(err instanceof Error ? err.message : 'Failed to load genome');
       } finally {
         if (cancelled) return;
@@ -258,23 +272,21 @@ export function FoldQuickviewOverlay({
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
-  }, [currentPhage?.id, currentPhage?.localGenome, isOpen, repository]);
+    return () => { cancelled = true; };
+  }, [currentPhage, overlayOpen, repository, genomeCache]);
 
-  // Reset selection when phage changes or overlay opens.
+  // Reset selection when the source snapshot changes or the overlay opens.
   useEffect(() => {
-    if (!isOpen('foldQuickview')) return;
+    if (!overlayOpen) return;
     setSelectedGeneIdx(0);
-  }, [currentPhage?.id, isOpen]);
+  }, [currentPhage, repository, overlayOpen]);
 
   const genesWithEmbeddings = useMemo(() => {
     const phageGenes = currentPhage?.genes ?? [];
     if (currentPhage?.localGenome || phageGenes.length === 0 || corpus.length === 0) return [];
     const map = buildEmbeddingMap(corpus);
     return phageGenes
-      .filter((g) => map.has(g.id))
+      .filter((g) => g.type === 'CDS' && map.has(g.id))
       .map((g) => ({ gene: g, embedding: map.get(g.id)! }));
   }, [currentPhage?.genes, currentPhage?.localGenome, corpus]);
 
@@ -284,16 +296,19 @@ export function FoldQuickviewOverlay({
     return computeNovelty(selected.embedding, corpus, 8);
   }, [selected, corpus]);
 
-  const selectedAa = useMemo(() => {
+  const selectedCds = useMemo(() => {
     if (!selected || !genome) return null;
-    const gene = selected.gene;
-    const window = genome.slice(gene.startPos, gene.endPos);
-    const dna = gene.strand === '-' ? reverseComplement(window) : window;
-    return translateSequence(dna, 0);
+    return reconstructCdsReference(selected.gene, genome);
   }, [genome, selected]);
+  const selectedAa = selectedCds && selectedCds.reasons.length === 0
+    ? selectedCds.protein?.replace(/\*$/, '') ?? null : null;
+  const thumbnailUnavailable = selectedCds?.reasons.length
+    ? selectedCds.reasons.join(' ')
+    : selectedAa !== null && selectedAa.length < 3
+      ? 'At least three amino-acid residues are required for a 3-mer thumbnail.' : null;
 
   const selfSimilarity = useMemo(() => {
-    if (!selectedAa) return null;
+    if (!selectedAa || selectedAa.length < 3) return null;
     const sim = computeProteinSelfSimilarityMatrix(selectedAa, { k: 3 });
     if (sim.bins <= 0) return null;
     return heatmap(sim.matrix, sim.bins);
@@ -343,7 +358,7 @@ export function FoldQuickviewOverlay({
 
         {!currentPhage?.localGenome && corpusSource === 'computed' && (
           <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
-            Using lightweight on-the-fly embeddings ({FALLBACK_EMBEDDING_MODEL}). Run `bun run build:esm2` to add ESM2 embeddings to the database.
+            Using lightweight on-the-fly embeddings ({FALLBACK_EMBEDDING_MODEL}) from supported, unambiguous annotated CDS translations with at least three residues. Run `bun run build:esm2` to add ESM2 embeddings to the database.
           </div>
         )}
 
@@ -452,6 +467,11 @@ export function FoldQuickviewOverlay({
                 </div>
               )}
 
+              {thumbnailUnavailable && (
+                <div role="status" style={{ marginTop: 10, color: colors.textMuted, fontFamily: 'monospace', fontSize: '0.85rem' }}>
+                  Protein thumbnail unavailable: {thumbnailUnavailable}
+                </div>
+              )}
               {!selfSimilarity && genomeLoading && (
                 <div style={{ marginTop: 10, color: colors.textMuted, fontFamily: 'monospace', fontSize: '0.85rem' }}>
                   Loading genome for thumbnail…
