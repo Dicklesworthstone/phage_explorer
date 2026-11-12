@@ -6,7 +6,7 @@ import { basename } from 'node:path';
 import { serializeAnalysisRecord, type AnalysisRecord } from '../packages/core/src/analysis-result';
 import { PHYLOGENY_LIMITS, parseAlignedDNA, resolvePhylogenyOptions, createAlignedPhylogenyExperiment,
   replayAlignedPhylogenyExperiment, type PhylogenyOptions, type AlignedPhylogenyExperiment } from '../packages/core/src/analysis/aligned-phylogeny';
-import { ROOTED_PHYLOGENY_METHOD, resolveOutgroupRooting, rootAlignedPhylogenyExperiment,
+import { ROOTED_PHYLOGENY_METHOD, ROOTED_ANCESTRAL_METHOD, resolveOutgroupRooting, rootAlignedPhylogenyExperiment,
   replayRootedPhylogenyExperiment, type OutgroupRooting, type RootedPhylogenyExperiment } from '../packages/core/src/analysis/phylogeny-rooting';
 import { resolveTemporalOptions, type TemporalOptions } from '../packages/core/src/analysis/temporal-signal';
 import { resolveDatingOptions, exportDatedNewick, type DatingOptions } from '../packages/core/src/analysis/strict-clock';
@@ -21,6 +21,8 @@ bun scripts/phylogeny.ts infer --alignment aligned.fasta --source CITATION --out
   [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--demo]
 bun scripts/phylogeny.ts root --experiment experiment.json --outgroup A,B --fraction 0.25
   --rooting-evidence 'Outgroup and branch-placement rationale' --date-independent --output rooted.json
+bun scripts/phylogeny.ts ancestral --experiment rooted.json --license ALIGNMENT_LICENSE
+  [--options ancestral-options.json] --output ancestral.json [--timeout-ms 300000]
 bun scripts/phylogeny.ts temporal --experiment rooted.json --dates samples.csv --name COHORT
   --source DESCRIPTION --license LICENSE --date-independent --output temporal.json
   [--reference CITATION] [--demo-dates] [--permutations 19..9999] [--seed UINT32]
@@ -29,7 +31,8 @@ bun scripts/phylogeny.ts date --experiment temporal.json --output dated.json
   [--rate-mode estimate|fixed] [--fixed-rate RATE --rate-source CITATION]
   [--minimum-rate RATE] [--maximum-rate RATE] [--iterations 1..20000]
 bun scripts/phylogeny.ts replay --experiment experiment.json [--output verified.json]
-bun scripts/phylogeny.ts export --experiment experiment.json --format newick|distances|splits --output NEW_FILE
+bun scripts/phylogeny.ts export --experiment experiment.json --format FORMAT --output NEW_FILE
+  FORMAT: newick|distances|splits|dated-newick|alignment-fasta|ancestral-fasta
 
 Input must already be aligned DNA: 3–64 unique taxa, equal nonzero lengths,
 up to 100000 sites and 2 MiB UTF-8. Gaps and ambiguity exclude the entire column
@@ -54,6 +57,17 @@ Rooting retains every taxon and pairwise tree path. It does not estimate or
 validate a biological root or molecular clock. Original split support gives
 no root support. The original alignment and settings remain in rooted.json.
 
+ancestral uses the existing terminable worker to reconstruct conditional states
+from a verified JC69 or K80 rooted experiment and its original aligned columns.
+--license records explicit alignment permission; --options is a bounded JSON
+object containing startColumn, endColumn, gapPolicy, minPosterior, and optionally
+a fully sourced substitution model/site-rate mixture. Defaults are columns
+1..min(length,4096), missing gaps, threshold 0.9 and conditional JC69. A K80
+distance tree does not silently supply a fitted ancestral model. No tree, root
+or branch length is refitted. Full JSON retains and replays every parent stage;
+ancestral-fasta exports thresholded consensus only, not a replayable experiment.
+The standalone ancestral replay command also accepts this linked record.
+
 Temporal analysis accepts only a verified JC69 or K80 rooted experiment and an exact
 collection-date table. The user must declare that dates did not guide alignment,
 cohort selection, tree inference or rooting. The temporal record retains and
@@ -61,7 +75,7 @@ recomputes the complete alignment/root/date lineage. Strict-clock dating consume
 that verified temporal record and preserves its diagnostic settings; date-based
 diagnostic exclusions are not silently reused as clock-fit pruning.
 
-Replay accepts original, rooted, temporal OR dated experiment JSON and verifies
+Replay accepts original, rooted, ancestral, temporal OR dated experiment JSON and verifies
 hashes AND recomputes the complete result. Newick from a rooted record uses the
 specified root; distance and split exports remain the original UNROOTED results.
 root requires the original unrooted record; rerooting is an explicit new operation
@@ -74,16 +88,18 @@ export type PhylogenyCommand = { type: 'help' }
   | { type: 'inspect'; alignment: string }
   | { type: 'infer'; alignment: string; output: string; source: string; name?: string; demo: boolean; options: PhylogenyOptions }
   | { type: 'root'; experiment: string; output: string; rooting: OutgroupRooting }
+  | { type: 'ancestral'; experiment: string; output: string; license: string; optionsPath?: string; timeoutMs: number }
   | { type: 'temporal'; experiment: string; dates: string; output: string; metadata: Omit<RootedTemporalMetadata, 'sampleTable'>; options: TemporalOptions }
   | { type: 'date'; experiment: string; output: string; options: DatingOptions }
   | { type: 'replay'; experiment: string; output?: string }
-  | { type: 'export'; experiment: string; output: string; format: 'newick' | 'distances' | 'splits' | 'dated-newick' };
+  | { type: 'export'; experiment: string; output: string; format: 'newick' | 'distances' | 'splits' | 'dated-newick' | 'alignment-fasta' | 'ancestral-fasta' };
 export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
-  if (!['inspect', 'infer', 'root', 'temporal', 'date', 'replay', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, temporal, date, replay or export; use --help for usage.');
+  if (!['inspect', 'infer', 'root', 'ancestral', 'temporal', 'date', 'replay', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, ancestral, temporal, date, replay or export; use --help for usage.');
   const allowed = type === 'infer' ? ['--alignment', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--demo']
     : type === 'root' ? ['--experiment', '--output', '--outgroup', '--fraction', '--rooting-evidence', '--date-independent']
+    : type === 'ancestral' ? ['--experiment', '--output', '--license', '--options', '--timeout-ms']
     : type === 'temporal' ? ['--experiment', '--dates', '--output', '--name', '--source', '--reference', '--license', '--date-independent', '--demo-dates', '--permutations', '--seed', '--scheme', '--exclude']
     : type === 'date' ? ['--experiment', '--output', '--rate-mode', '--fixed-rate', '--rate-source', '--minimum-rate', '--maximum-rate', '--iterations']
     : type === 'inspect' ? ['--alignment'] : type === 'export' ? ['--experiment', '--output', '--format'] : ['--experiment', '--output'];
@@ -105,6 +121,14 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
     const rooting = resolveOutgroupRooting({ outgroup: required('--outgroup').split(','), fractionFromOutgroup: Number(fraction),
       evidence: required('--rooting-evidence'), dateIndependent: true });
     return { type, experiment: required('--experiment'), output: required('--output'), rooting };
+  }
+  if (type === 'ancestral') {
+    const timeout = values.get('--timeout-ms') ?? '300000';
+    if (!/^\d+$/.test(timeout) || !Number.isSafeInteger(Number(timeout)) || Number(timeout) < 1 || Number(timeout) > 3600000) {
+      throw new Error('--timeout-ms must be an integer from 1 to 3600000.');
+    }
+    return { type, experiment: required('--experiment'), output: required('--output'), license: required('--license'), timeoutMs: Number(timeout),
+      ...(values.has('--options') ? { optionsPath: required('--options') } : {}) };
   }
   if (type === 'temporal') {
     if (!values.has('--date-independent')) throw new Error('Declare --date-independent for alignment/cohort selection, inference and rooting.');
@@ -143,7 +167,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   if (type === 'replay') return { type, experiment: required('--experiment'), ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
   if (type === 'export') {
     const format = required('--format');
-    if (format !== 'newick' && format !== 'distances' && format !== 'splits' && format !== 'dated-newick') throw new Error('Export format must be newick, distances, splits or dated-newick.');
+    if (format !== 'newick' && format !== 'distances' && format !== 'splits' && format !== 'dated-newick'
+      && format !== 'alignment-fasta' && format !== 'ancestral-fasta') throw new Error('Export format must be newick, distances, splits, dated-newick, alignment-fasta or ancestral-fasta.');
     return { type, experiment: required('--experiment'), output: required('--output'), format };
   }
   const number = (key: string, fallback: number): number => {
@@ -229,6 +254,14 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
     await writeOutput(command.output, serializeAnalysisRecord(rooted.record));
     return summary(rooted, false);
   }
+  if (command.type === 'ancestral') {
+    const { runPhylogenyCommand } = await import('../packages/tui/src/headless-phylogeny');
+    const result = await runPhylogenyCommand(['ancestral', '--experiment', command.experiment, '--license', command.license,
+      '--output', command.output, '--timeout-ms', String(command.timeoutMs),
+      ...(command.optionsPath ? ['--options', command.optionsPath] : [])]);
+    if (typeof result === 'string') throw new Error('Ancestral worker returned no result summary.');
+    return { ...result, verified: false };
+  }
   if (command.type === 'temporal') {
     const sampleTable = await readPhylogenyInput(command.dates, 2 * 1024 * 1024);
     const experiment = await createRootedTemporalExperiment(await readPhylogenyInput(command.experiment, 10 * 1024 * 1024),
@@ -241,7 +274,22 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
     await writeOutput(command.output, serializeAnalysisRecord(experiment.datingRecord));
     return summary(experiment, false);
   }
-  const experiment = await replay(await readPhylogenyInput(command.experiment, 10 * 1024 * 1024));
+  const savedContent = await readPhylogenyInput(command.experiment, 10 * 1024 * 1024);
+  const selected: unknown = JSON.parse(savedContent);
+  const method = selected && typeof selected === 'object' && 'method' in selected ? selected.method : null;
+  if (method && typeof method === 'object' && 'id' in method && method.id === ROOTED_ANCESTRAL_METHOD.id
+    || command.type === 'export' && (command.format === 'ancestral-fasta' || command.format === 'alignment-fasta')) {
+    const { executePhylogenyTask } = await import('../packages/tui/src/headless-phylogeny');
+    const result = await executePhylogenyTask(command.type === 'replay' ? { type: 'verify', content: savedContent }
+      : { type: 'export', content: savedContent, format: command.format === 'distances' ? 'distances-tsv'
+        : command.format === 'splits' ? 'splits-json' : command.format }, 300000);
+    if (command.output !== undefined) {
+      if (result.output === undefined) throw new Error('Ancestral worker returned no export.');
+      await writeOutput(command.output, result.output);
+    }
+    return { ...result.summary, verified: true };
+  }
+  const experiment = await replay(savedContent);
   if (command.type === 'replay') {
     if (command.output) await writeOutput(command.output, serializeAnalysisRecord(replayRecord(experiment)));
   } else {

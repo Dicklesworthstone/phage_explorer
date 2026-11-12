@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { createAlignedPhylogenyExperiment } from '../../core/src/analysis/aligned-phylogeny';
-import { rootAlignedPhylogenyExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { rootAlignedPhylogenyExperiment, createRootedAncestralExperiment, replayRootedAncestralExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { ancestralFasta } from '../../core/src/analysis/ancestral-reconstruction';
 import { createRootedTemporalExperiment, createRootedDatingExperiment, replayRootedDatingExperiment } from '../../core/src/analysis/phylogeny-temporal';
 import { executePhylogenyTask, parsePhylogenyCommand, performPhylogenyTask, runPhylogenyCommand,
-  type PhylogenyTask } from './headless-phylogeny';
+  type PhylogenyTask, type HeadlessPhylogenyFormat } from './headless-phylogeny';
 
 // Disjoint private substitutions: pairwise difference counts are i+j+2.
 // Independent NJ quartet formulas give paths from the explicitly chosen root.
@@ -43,6 +44,124 @@ async function rehash(record: AnalysisRecord) {
     parameters: record.parameters, seed: record.seed, references: record.references, fields: record.fields });
 }
 const temporary = () => mkdtemp(join(tmpdir(), 'phage-cli-workflow-'));
+
+const ancestralAlignment = '\uFEFF' + ['A', 'B', 'C', 'D'].map((id, i) =>
+  `>${id} private fixture\r\n${'A'.repeat(i * 5)}${'G'.repeat(i + 1)}${'A'.repeat(100 - i * 5 - i - 1)}${['N-', 'RN', '--', 'AA'][i]}\r\n`).join('');
+const ancestralOptions = { startColumn: 1, endColumn: 102, gapPolicy: 'missing' as const, minPosterior: .8 };
+async function ancestralInput(distance: 'jc69' | 'k80' = 'k80') {
+  const unrooted = await createAlignedPhylogenyExperiment({ ...source, fasta: ancestralAlignment }, { distance, bootstrap: 20, seed: 42 });
+  const rooted = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(unrooted.record), decision);
+  const task: Extract<PhylogenyTask, { type: 'ancestral' }> = { type: 'ancestral', content: serializeAnalysisRecord(rooted.record),
+    license: metadata.license, optionsContent: JSON.stringify(ancestralOptions) };
+  return { unrooted, rooted, task };
+}
+
+test('ancestral parsing requires explicit parent and license and forbids replay overrides', () => {
+  const args = ['ancestral', '--experiment', 'root.json', '--license', 'Permission for this alignment', '--options', 'settings.json', '--output', 'ancestors.json'];
+  assert.deepEqual(parsePhylogenyCommand(args), { type: 'ancestral', experimentPath: 'root.json', license: 'Permission for this alignment',
+    optionsPath: 'settings.json', outputPath: 'ancestors.json', timeoutMs: 300000 });
+  for (const flag of ['--experiment', '--license', '--output']) {
+    const missing = [...args], at = missing.indexOf(flag); missing.splice(at, 2);
+    assert.throws(() => parsePhylogenyCommand(missing));
+  }
+  for (const bad of [[...args, '--license', 'other'], [...args, '--tree', 'override.nwk'], [...args, '--timeout-ms', '0'],
+    ['verify', '--experiment', 'ancestral.json', '--options', 'override.json']]) assert.throws(() => parsePhylogenyCommand(bad));
+});
+
+test('real ancestral worker preserves JC69/K80 parents and every original alignment column', async () => {
+  for (const distance of ['jc69', 'k80'] as const) {
+    const { unrooted, rooted, task } = await ancestralInput(distance);
+    const actual = await executePhylogenyTask(task, 10000);
+    const expected = await createRootedAncestralExperiment(task.content, task.license, ancestralOptions);
+    assert.equal(actual.output, serializeAnalysisRecord(expected.record));
+    assert.equal(unrooted.result.usedSites, 100); assert.equal(expected.result.alignmentColumns, 102);
+    assert.equal(expected.result.analyzedColumns, 102); assert.equal(expected.result.sites[100].ambiguousTips, 1);
+    assert.equal(expected.input.tree.newick, rooted.result.newick);
+    assert.match(expected.input.tree.method, new RegExp(distance.toUpperCase()));
+    assert.equal(actual.summary.conditionalModel, 'JC69');
+    assert.equal(actual.summary.unrootedResultId, unrooted.record.resultId);
+    assert.equal(actual.summary.rootedResultId, rooted.record.resultId);
+    assert.deepEqual(expected.record.inputs[1].data, JSON.parse(task.content));
+    assert.deepEqual(await executePhylogenyTask({ type: 'verify', content: '\uFEFF' + actual.output! }, 10000), actual);
+  }
+});
+
+test('ancestral exports retain original inputs, source identities and conditional consensus', async () => {
+  const { unrooted, rooted, task } = await ancestralInput();
+  const accepted = await performPhylogenyTask(task), expected = await replayRootedAncestralExperiment(accepted.output!);
+  const view = async (format: HeadlessPhylogenyFormat) => performPhylogenyTask({
+    type: 'export', content: accepted.output!, format,
+  });
+  assert.equal((await view('ancestral-fasta')).output, ancestralFasta(expected.result));
+  assert.equal((await view('alignment-fasta')).output, ancestralAlignment);
+  assert.equal((await view('newick')).output, `[&R][&branch_units=substitutions/site]\n${rooted.result.newick}\n`);
+  assert.deepEqual(JSON.parse((await view('rooting-json')).output!), decision);
+  for (const format of ['distances-tsv', 'splits-tsv'] as const) {
+    const text = (await view(format)).output!;
+    assert.ok(text.includes(`# selected_result_id\t${expected.record.resultId}\n`));
+    assert.ok(text.includes(`# rooted_result_id\t${rooted.record.resultId}\n`));
+    assert.ok(text.includes(`# result_id\t${unrooted.record.resultId}\n`));
+  }
+  const splits = JSON.parse((await view('splits-json')).output!);
+  assert.equal(splits.selectedResultId, expected.record.resultId);
+  assert.equal(splits.sourceResultId, unrooted.record.resultId); assert.deepEqual(splits.splits, unrooted.result.splits);
+  await assert.rejects(view('dated-newick'), /requires a fitted/);
+  await assert.rejects(performPhylogenyTask({ type: 'export', content: task.content, format: 'ancestral-fasta' }), /requires a linked ancestral/);
+});
+
+test('ancestral worker rejects rehashed output forgeries before verification or any export', async () => {
+  const { task } = await ancestralInput(), result = await performPhylogenyTask(task);
+  const copy = JSON.parse(result.output!) as AnalysisRecord;
+  (copy.fields.reconstruction.value as { logLikelihood: number }).logLikelihood += 1;
+  const forged = serializeAnalysisRecord(await rehash(copy));
+  await parseAnalysisRecord(forged);
+  await assert.rejects(executePhylogenyTask({ type: 'verify', content: forged }, 10000), /differs/);
+  for (const format of ['ancestral-fasta', 'alignment-fasta', 'newick', 'unrooted-newick', 'distances-tsv', 'splits-tsv', 'splits-json', 'rooting-json'] as const) {
+    await assert.rejects(performPhylogenyTask({ type: 'export', content: forged, format }), /differs/);
+  }
+});
+
+test('ancestral filesystem pipeline verifies before writing and refuses invalid settings, deadlines and cancellation', async () => {
+  const { task } = await ancestralInput(), dir = await temporary(), path = (name: string) => join(dir, name);
+  await writeFile(path('rooted.json'), task.content); await writeFile(path('settings.json'), task.optionsContent!);
+  const args = ['ancestral', '--experiment', path('rooted.json'), '--license', task.license, '--options', path('settings.json'), '--output', path('ancestors.json')];
+  await runPhylogenyCommand(args);
+  const saved = await readFile(path('ancestors.json'), 'utf8');
+  assert.equal(saved, (await performPhylogenyTask(task)).output);
+  await runPhylogenyCommand(['verify', '--experiment', path('ancestors.json'), '--output', path('verified.json')]);
+  assert.equal(await readFile(path('verified.json'), 'utf8'), saved);
+  if (process.platform !== 'win32') assert.equal((await stat(path('ancestors.json'))).mode & 0o077, 0);
+  await assert.rejects(runPhylogenyCommand(args), /EEXIST/);
+  const failed = args.map(value => value === path('ancestors.json') ? path('failed.json') : value);
+  for (const content of ['[]', '{"endColumn":103}', '{"unknown":true}', '{"substitution":{"model":"HKY85"}}']) {
+    await writeFile(path('settings.json'), content);
+    await assert.rejects(runPhylogenyCommand(failed)); await assert.rejects(access(path('failed.json')), /ENOENT/);
+  }
+  await writeFile(path('settings.json'), task.optionsContent!);
+  await assert.rejects(runPhylogenyCommand([...failed, '--timeout-ms', '1']), /exceeded 1 ms/);
+  const controller = new AbortController(), work = runPhylogenyCommand(failed, controller.signal); controller.abort();
+  await assert.rejects(work, { name: 'AbortError' }); await assert.rejects(access(path('failed.json')), /ENOENT/);
+  const active = new AbortController(), pending = executePhylogenyTask(task, 10000, active.signal); active.abort();
+  await assert.rejects(pending, { name: 'AbortError' });
+});
+
+test('ancestral settings remain explicit and private when a supplied model differs from the tree distance model', async () => {
+  const { task } = await ancestralInput();
+  const supplied = { ...ancestralOptions, substitution: { model: 'HKY85', frequencies: [.3, .2, .2, .3], kappa: 3,
+    source: 'Private model assumption sentinel', siteRates: [{ rate: 1, weight: 1 }] } };
+  const request = { ...task, optionsContent: JSON.stringify(supplied) };
+  const expected = await performPhylogenyTask({ ...request });
+  const pending = performPhylogenyTask(request);
+  request.content = 'changed'; request.license = ''; request.optionsContent = '{}';
+  assert.deepEqual(await pending, expected);
+  assert.equal(expected.summary.conditionalModel, 'HKY85');
+  const summary = JSON.stringify(expected.summary);
+  for (const secret of [source.reference, decision.evidence, supplied.substitution.source, ancestralAlignment]) assert.ok(!summary.includes(secret));
+  const replay = await replayRootedAncestralExperiment(expected.output!);
+  assert.deepEqual(replay.result.options.substitution, supplied.substitution);
+  const filtered = await performPhylogenyTask({ ...task, optionsContent: JSON.stringify({ ...ancestralOptions, gapPolicy: 'exclude-column' }) });
+  assert.equal(filtered.summary.excludedColumns, 2);
+});
 
 test('temporal/date parsing requires their own inputs and rejects irrelevant or repeated flags', () => {
   const args = ['temporal', '--experiment', 'root.json', '--metadata', 'cohort.json', '--samples', 'dates.tsv', '--output', 'result.json'];

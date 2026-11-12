@@ -1,7 +1,9 @@
 /** Explicit root hypotheses on a verified NJ tree, without estimating a biological root. */
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
-import { createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, PHYLOGENY_LIMITS,
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
+import { createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, parseAlignedDNA, PHYLOGENY_LIMITS,
   type AlignedPhylogenyExperiment, type NeighborJoiningTree, type PhylogenyOptions, type PhylogenySource } from './aligned-phylogeny';
+import { createAncestralRecord, parseAncestralFasta, reconstructAncestors, resolveAncestralOptions, validateAncestralDataset,
+  type AncestralDataset, type AncestralOptions, type AncestralResult } from './ancestral-reconstruction';
 
 export const ROOTED_PHYLOGENY_METHOD = { id: 'explicit-outgroup-rooted-nj', version: '1.0.0', implementation: 'typescript' } as const;
 export interface OutgroupRooting {
@@ -144,5 +146,112 @@ export async function replayRootedPhylogenyExperiment(content: string, signal?: 
   const unrooted = await createAlignedPhylogenyExperiment(saved.inputs[0].data as unknown as PhylogenySource, options as unknown as PhylogenyOptions, signal);
   const replayed = await bindRoot(unrooted, rooting, signal);
   if (replayed.record.cacheKey !== saved.cacheKey || replayed.record.resultId !== saved.resultId) throw new Error('Recomputed rooted phylogeny differs from the saved experiment.');
+  return replayed;
+}
+
+export const ROOTED_ANCESTRAL_METHOD = { id: 'rooted-nj-ancestral', version: '1.0.0', implementation: 'typescript' } as const;
+export interface RootedAncestralSource { content: string; license: string }
+export interface PreparedRootedAncestral {
+  input: AncestralDataset;
+  rootedSource: RootedAncestralSource;
+  rootedResultId: string;
+  unrootedResultId: string;
+}
+export interface RootedAncestralExperiment extends PreparedRootedAncestral {
+  result: AncestralResult;
+  record: AnalysisRecord;
+}
+
+/** Derive a fixed substitution-length tree and the SAME alignment columns.
+ * Original bytes, header descriptions and the entire inference/root decision
+ * remain in rootedSource. FASTA IDs, case, row order and line formatting are
+ * normalized to the ancestral parser's exact-tip contract; no columns or taxa
+ * are removed, including sites omitted from the parent distance calculation.
+ */
+export async function prepareRootedAncestralDataset(content: string, license: string,
+  signal?: AbortSignal): Promise<PreparedRootedAncestral> {
+  active(signal);
+  if (typeof license !== 'string' || !license.trim() || license.length > 2000
+    || new TextEncoder().encode(license).length > 2000 || /[\u0000-\u001f\u007f-\u009f]/.test(license)) {
+    throw new Error('State the alignment license or usage permission; it is not supplied by the phylogeny record.');
+  }
+  if (typeof content !== 'string' || content.length > 10 * 1024 * 1024
+    || new TextEncoder().encode(content).length > 10 * 1024 * 1024) {
+    throw new Error('Rooted phylogeny exceeds the 10 MiB limit.');
+  }
+  const rooted = await replayRootedPhylogenyExperiment(content.replace(/^\uFEFF/, ''), signal);
+  active(signal);
+  if (rooted.unrooted.options.distance !== 'jc69' && rooted.unrooted.options.distance !== 'k80') {
+    throw new Error('Ancestral handoff requires model-corrected substitution/site branches. Re-infer with JC69 or K80; p-distance is not silently relabeled.');
+  }
+  const { source, options } = rooted.unrooted;
+  const rootedResultId = rooted.record.resultId, unrootedResultId = rooted.unrooted.record.resultId;
+  const singleLine = (value: string) => value.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim();
+  const input = validateAncestralDataset({ format: 'phage-explorer-ancestral', version: 1, name: singleLine(source.name),
+    source: { kind: source.kind, description: `Conditional reconstruction from verified rooted phylogeny ${rootedResultId}.`,
+      reference: singleLine(source.reference), license: license.trim() },
+    tree: { newick: rooted.result.newick, units: 'substitutions/site',
+      method: `${options.distance.toUpperCase()} neighbor joining ${rooted.unrooted.record.method.version}; original substitution-length branches, not a dated/clock-fitted tree.`,
+      rooting: `User-specified root ${rootedResultId}; ${rooted.result.rooting.outgroup.length} outgroup tips; fraction ${rooted.result.rooting.fractionFromOutgroup} from outgroup endpoint. Full choice and evidence retained in the parent.` },
+    alignment: { fasta: parseAlignedDNA(source.fasta).map(row => `>${row.id}\n${row.sequence}`).join('\n') + '\n', homologous: true,
+      method: 'Original user-supplied homologous columns; normalized FASTA IDs, case, row order and line formatting. No realignment, taxon removal or site deletion.',
+      reference: singleLine(source.reference) } });
+  active(signal);
+  return { input, rootedResultId, unrootedResultId,
+    rootedSource: { content: serializeAnalysisRecord(rooted.record), license: license.trim() } };
+}
+
+/** Portable lineage binds original aligned DNA, the explicit root and the
+ * conditional reconstruction. Replay verifies every numerical stage; a cached
+ * rooted Newick or a time-scaled tree cannot replace the parent experiment.
+ */
+export async function createRootedAncestralExperiment(content: string, license: string,
+  supplied: Partial<AncestralOptions> = {}, signal?: AbortSignal,
+  progress: (phase: string) => void = () => {}): Promise<RootedAncestralExperiment> {
+  active(signal);
+  const settings = structuredClone(supplied);
+  const report = (phase: string) => { active(signal); progress(phase); active(signal); };
+  report('Recomputing original aligned phylogeny and explicit root');
+  const prepared = await prepareRootedAncestralDataset(content, license, signal);
+  const options = resolveAncestralOptions(parseAncestralFasta(prepared.input.alignment.fasta)[0].sequence.length, settings);
+  const result = reconstructAncestors(prepared.input, options, report);
+  const parent = JSON.parse(prepared.rootedSource.content) as AnalysisRecord;
+  result.warnings.push(
+    'The original alignment, neighbor-joining settings and explicit root are retained and recomputed on replay. Reproducibility does not establish homology or root accuracy.',
+    'Reconstruction uses the original alignment columns, including columns excluded from distance inference. Its recorded gap/window policy applies separately.',
+    'The ancestral substitution model is a separate recorded assumption; the tree distance model does not supply ancestral model parameters. No dating fit or calendar-year branches are reused.',
+    ...parent.fields.rooting.limitations,
+  );
+  active(signal);
+  const reconstruction = await createAncestralRecord(prepared.input, result);
+  active(signal);
+  const record = await createAnalysisRecord({ method: ROOTED_ANCESTRAL_METHOD,
+    inputs: [...reconstruction.inputs.map(({ sha256: _sha, ...input }) => input),
+      { id: 'rootedPhylogeny', accession: null, source: parent.inputs[0].source,
+        description: 'Verified original alignment, phylogeny settings and explicit rooting decision', data: analysisJson(parent) }],
+    parameters: reconstruction.parameters, seed: parent.seed,
+    references: [...parent.references, ...reconstruction.references],
+    fields: { ...reconstruction.fields, lineage: { kind: 'sequence-score', label: 'Verified parent identities', units: 'records',
+      value: analysisJson({ rootedResultId: prepared.rootedResultId, unrootedResultId: prepared.unrootedResultId }),
+      coverage: { available: 2, total: 2, unit: 'records' },
+      limitations: ['Parent verification establishes a reproducible computation, not biological homology, root truth or empirical confidence.'] } } });
+  active(signal);
+  return { ...prepared, result, record };
+}
+
+export async function replayRootedAncestralExperiment(content: string, signal?: AbortSignal,
+  progress: (phase: string) => void = () => {}): Promise<RootedAncestralExperiment> {
+  active(signal);
+  const saved = await parseAnalysisRecord(content.replace(/^\uFEFF/, ''), { methodId: ROOTED_ANCESTRAL_METHOD.id, methodVersion: ROOTED_ANCESTRAL_METHOD.version });
+  active(signal);
+  if (saved.inputs.length !== 2 || saved.inputs[0].id !== 'alignmentTree' || saved.inputs[1].id !== 'rootedPhylogeny') {
+    throw new Error('Linked ancestral replay requires the original rooted phylogeny and derived alignment/tree input.');
+  }
+  const input = validateAncestralDataset(saved.inputs[0].data);
+  const replayed = await createRootedAncestralExperiment(JSON.stringify(saved.inputs[1].data), input.source.license,
+    saved.parameters, signal, progress);
+  if (saved.cacheKey !== replayed.record.cacheKey || saved.resultId !== replayed.record.resultId) {
+    throw new Error('Fresh linked ancestral evidence differs from the saved experiment.');
+  }
   return replayed;
 }

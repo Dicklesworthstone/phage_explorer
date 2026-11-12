@@ -38,6 +38,8 @@ analyze runs the same log-space two-pass conditional likelihood producer as the
 browser. replay recomputes every conditional probability and rejects changed
 alignment/tree/settings/results. FASTA export contains accepted-threshold
 conditional internal-node consensus; it is not itself a replay record.
+replay also accepts linked rooted-nj-ancestral records created by phylogeny
+ancestral, recomputing and retaining the original alignment/root/result chain.
 
 These are model-conditional state probabilities, not empirical confidence,
 mutation times, event counts or selection estimates.
@@ -77,7 +79,11 @@ export async function executeAncestralJob(job:AncestralJob,
   if(job.operation==='replay'){
     if(job.params!==undefined)throw new Error('Replay cannot override saved ancestral settings.');
     progress('Recomputing conditional ancestral states from exact saved inputs');
-    const replay=await replayAncestralRecord(job.input.text.replace(/^\uFEFF/,''),progress);
+    const content=job.input.text.replace(/^\uFEFF/,''), selected:unknown=JSON.parse(content);
+    const method=plain(selected)&&plain(selected.method)?selected.method.id:null;
+    const replay=method==='rooted-nj-ancestral'
+      ?await(await import('../../../core/src/analysis/phylogeny-rooting')).replayRootedAncestralExperiment(content,undefined,progress)
+      :await replayAncestralRecord(content,progress);
     return{content:serializeAnalysisRecord(replay.record),fasta:ancestralFasta(replay.result),identity:replay.record.resultId,verified:true};
   }
   progress('Validating homologous alignment and fixed rooted tree');

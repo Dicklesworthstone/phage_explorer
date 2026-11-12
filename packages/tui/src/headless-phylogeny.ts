@@ -6,13 +6,15 @@ import { ALIGNED_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, createAlignedPhylogenyExper
   replayAlignedPhylogenyExperiment, resolvePhylogenyOptions, type AlignedPhylogenyExperiment,
   type PhylogenyOptions, type PhylogenySource } from '../../core/src/analysis/aligned-phylogeny';
 import { exportPhylogeny, PHYLOGENY_EXPORT_FORMATS, type PhylogenyExportFormat } from '../../core/src/analysis/phylogeny-export';
-import { ROOTED_PHYLOGENY_METHOD, rootAlignedPhylogenyExperiment, replayRootedPhylogenyExperiment,
-  type RootedPhylogenyExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { ROOTED_PHYLOGENY_METHOD, ROOTED_ANCESTRAL_METHOD, rootAlignedPhylogenyExperiment, replayRootedPhylogenyExperiment,
+  createRootedAncestralExperiment, replayRootedAncestralExperiment,
+  type RootedPhylogenyExperiment, type RootedAncestralExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { ancestralFasta } from '../../core/src/analysis/ancestral-reconstruction';
 import { serializeAnalysisRecord } from '../../core/src/analysis-result';
 import type { RootedTemporalExperiment, RootedDatingExperiment, RootedTemporalMetadata } from '../../core/src/analysis/phylogeny-temporal';
 
 export const HEADLESS_PHYLOGENY_FORMATS = [...PHYLOGENY_EXPORT_FORMATS, 'unrooted-newick', 'rooting-json',
-  'dated-newick', 'temporal-tsv', 'dates-tsv', 'samples-table'] as const;
+  'dated-newick', 'temporal-tsv', 'dates-tsv', 'samples-table', 'ancestral-fasta', 'splits-json'] as const;
 export type HeadlessPhylogenyFormat = typeof HEADLESS_PHYLOGENY_FORMATS[number];
 export const PHYLOGENY_HELP = `Aligned DNA phylogeny, private computation and verified exports
 
@@ -23,6 +25,8 @@ bun run phylogeny infer --input aligned.fa --alignment provided
   [--seed 1] [--timeout-ms 300000]
 bun run phylogeny root --experiment unrooted.json --rooting decision.json
   --output NEW_ROOTED_EXPERIMENT.json [--timeout-ms 300000]
+bun run phylogeny ancestral --experiment rooted.json --license ALIGNMENT_LICENSE
+  [--options ancestral-options.json] --output NEW_ANCESTRAL.json [--timeout-ms 300000]
 bun run phylogeny temporal --experiment rooted.json --metadata cohort.json
   --samples dates.tsv [--options temporal-options.json] --output NEW_TEMPORAL.json
   [--timeout-ms 300000]
@@ -33,7 +37,7 @@ bun run phylogeny verify --experiment experiment.json [--output NEW_COPY.json]
 bun run phylogeny export --experiment experiment.json --format FORMAT --output NEW_FILE
   [--timeout-ms 300000]
   FORMAT: newick|unrooted-newick|distances-tsv|splits-tsv|alignment-fasta|rooting-json
-          dated-newick|temporal-tsv|dates-tsv|samples-table
+          dated-newick|temporal-tsv|dates-tsv|samples-table|ancestral-fasta|splits-json
 
 Input is an ALREADY ALIGNED homologous DNA FASTA, not raw genomes or proteins.
 --alignment provided is a declaration, not an automatic alignment or homology test.
@@ -54,6 +58,22 @@ existing core rejects unsuitable trees rather than clipping or rearranging them.
 Rooting retains every taxon, the original alignment, settings and pairwise paths.
 It is a user-conditioned root hypothesis, not an independently inferred ancestor.
 Decision files are limited to 64 KiB and decoded as strict UTF-8.
+
+ancestral reconstructs conditional nucleotide states from a VERIFIED JC69 or K80
+rooted experiment. --license explicitly records the alignment license/permission.
+The original alignment, including columns excluded from distance inference, and
+the fixed rooted substitutions/site tree are retained. This does not refit the
+tree or infer a new root. Settings are a JSON object (at most 64 KiB) with
+startColumn, endColumn (inclusive, 1-based window, at most 4096 columns),
+gapPolicy (missing|exclude-column), minPosterior (0.25..1), and optionally a fully
+sourced substitution model/site-rate mixture accepted by the ancestral core.
+Defaults: columns 1..min(alignment length,4096), missing gaps, threshold 0.9, JC69.
+The ancestral model is a separate conditional assumption: K80 distance inference
+does not silently estimate a transition/transversion ratio for reconstruction.
+ancestral-fasta exports thresholded internal-node consensus, with N for excluded,
+impossible, tied or below-threshold sites. It is not a complete replay record or
+an empirical confidence interval. Full JSON verifies the entire alignment/root/
+reconstruction chain; both phylogeny verify and ancestral replay accept it.
 
 temporal joins collection dates to a VERIFIED JC69 or K80 rooted experiment. cohort.json
 requires exactly name, kind (local|demo), description, reference (text|null),
@@ -76,7 +96,7 @@ prune the clock fit. All tips need sourced dates/intervals. No clock validation,
 confidence intervals or population inference is claimed. Boundary/unresolved
 fits retain a replayable record and explicit status, but publish no node dates.
 
-verify and export recognize unrooted, rooted, linked temporal and linked dating
+verify and export recognize unrooted, rooted, linked ancestral, temporal and dating
 experiment JSON, including browser downloads. newick exports the recorded tree: [&U] for unrooted or [&R]
 for an explicit root. Rooted Newick does not invent root or clade support labels;
 splits-tsv and unrooted-newick retain the ORIGINAL unrooted bootstrap evidence.
@@ -121,6 +141,7 @@ export type PhylogenyCommand = { type: 'help' }
   | ({ type: 'inspect'; inputPath: string } & JobOptions)
   | ({ type: 'infer'; inputPath: string; outputPath: string; source: Omit<PhylogenySource, 'fasta'>; options: PhylogenyOptions } & JobOptions)
   | ({ type: 'root'; experimentPath: string; rootingPath: string; outputPath: string } & JobOptions)
+  | ({ type: 'ancestral'; experimentPath: string; license: string; optionsPath?: string; outputPath: string } & JobOptions)
   | ({ type: 'temporal'; experimentPath: string; metadataPath: string; samplesPath: string; optionsPath?: string; outputPath: string } & JobOptions)
   | ({ type: 'date'; experimentPath: string; optionsPath?: string; outputPath: string } & JobOptions)
   | ({ type: 'verify'; experimentPath: string; outputPath?: string } & JobOptions)
@@ -128,6 +149,7 @@ export type PhylogenyCommand = { type: 'help' }
 export type PhylogenyTask = { type: 'inspect'; content: string }
   | { type: 'infer'; content: string; source: Omit<PhylogenySource, 'fasta'>; options: PhylogenyOptions }
   | { type: 'root'; content: string; rootingContent: string }
+  | { type: 'ancestral'; content: string; license: string; optionsContent?: string }
   | { type: 'temporal'; content: string; metadataContent: string; sampleTable: string; optionsContent?: string }
   | { type: 'date'; content: string; optionsContent?: string }
   | { type: 'verify'; content: string }
@@ -140,10 +162,11 @@ const ROOTING_BYTES = 64 * 1024;
 export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand {
   if (!args.length || args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
-  if (!['inspect', 'infer', 'root', 'temporal', 'date', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, temporal, date, verify or export. Use --help for usage.');
+  if (!['inspect', 'infer', 'root', 'ancestral', 'temporal', 'date', 'verify', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, ancestral, temporal, date, verify or export. Use --help for usage.');
   const allowed = type === 'inspect' ? ['--input', '--timeout-ms'] : type === 'infer'
     ? ['--input', '--alignment', '--name', '--reference', '--source', '--distance', '--bootstrap', '--seed', '--output', '--timeout-ms']
     : type === 'root' ? ['--experiment', '--rooting', '--output', '--timeout-ms']
+    : type === 'ancestral' ? ['--experiment', '--license', '--options', '--output', '--timeout-ms']
     : type === 'temporal' ? ['--experiment', '--metadata', '--samples', '--options', '--output', '--timeout-ms']
     : type === 'date' ? ['--experiment', '--options', '--output', '--timeout-ms']
     : type === 'verify' ? ['--experiment', '--output', '--timeout-ms'] : ['--experiment', '--format', '--output', '--timeout-ms'];
@@ -166,6 +189,8 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   if (timeoutMs < 1 || timeoutMs > 3600000) throw new Error('--timeout-ms must be from 1 to 3600000.');
   if (type === 'inspect') return { type, inputPath: required('--input'), timeoutMs };
   if (type === 'root') return { type, experimentPath: required('--experiment'), rootingPath: required('--rooting'), outputPath: required('--output'), timeoutMs };
+  if (type === 'ancestral') return { type, experimentPath: required('--experiment'), license: required('--license'), outputPath: required('--output'), timeoutMs,
+    ...(flags.has('--options') ? { optionsPath: required('--options') } : {}) };
   if (type === 'temporal' || type === 'date') {
     const common = { experimentPath: required('--experiment'), outputPath: required('--output'), timeoutMs,
       ...(flags.has('--options') ? { optionsPath: required('--options') } : {}) };
@@ -208,8 +233,14 @@ function summarizeRooted(experiment: RootedPhylogenyExperiment): Record<string, 
 function exportRooted(experiment: RootedPhylogenyExperiment, format: HeadlessPhylogenyFormat): string {
   if (format === 'newick') return `[&R]${experiment.result.newick}\n`;
   if (format === 'rooting-json') return JSON.stringify(experiment.result.rooting, null, 2) + '\n';
+  if (format === 'splits-json') return JSON.stringify({ resultId: experiment.record.resultId,
+    sourceResultId: experiment.unrooted.record.resultId, bootstrap: experiment.unrooted.result.bootstrap,
+    splits: experiment.unrooted.result.splits, warnings: experiment.unrooted.result.warnings,
+    rooting: experiment.result.rooting, rootingWarnings: experiment.result.warnings,
+    supportScope: 'Original unrooted splits; no root-placement support.' }, null, 2) + '\n';
   if (format === 'dated-newick' || format === 'dates-tsv') throw new Error(`${format} requires a fitted linked dating experiment.`);
   if (format === 'temporal-tsv' || format === 'samples-table') throw new Error(`${format} requires a linked temporal or dating experiment.`);
+  if (format === 'ancestral-fasta') throw new Error('ancestral-fasta requires a linked ancestral experiment.');
   const parentFormat: PhylogenyExportFormat = format === 'unrooted-newick' ? 'newick' : format;
   const content = exportPhylogeny(experiment.unrooted, parentFormat);
   return format === 'distances-tsv' || format === 'splits-tsv'
@@ -221,6 +252,31 @@ function parseJobObject(content: string, context: string): Record<string, unknow
   const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ''));
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${context} must be a JSON object.`);
   return value as Record<string, unknown>;
+}
+
+/** Omit sequence bases, tip IDs and free-text model/provenance fields from stdout. */
+async function ancestralOutput(experiment: RootedAncestralExperiment,
+  format?: HeadlessPhylogenyFormat): Promise<PhylogenyTaskResult> {
+  const { record, result, input } = experiment;
+  const summary = { method: record.method, resultId: record.resultId, cacheKey: record.cacheKey,
+    sourceKind: input.source.kind, rootedResultId: experiment.rootedResultId, unrootedResultId: experiment.unrootedResultId,
+    taxa: result.tipOrder.length, internalNodes: result.nodes.filter(node => node.children.length).length,
+    alignmentColumns: result.alignmentColumns, analyzedColumns: result.analyzedColumns,
+    excludedColumns: result.excludedColumns, impossibleColumns: result.impossibleColumns,
+    startColumn: result.options.startColumn, endColumn: result.options.endColumn,
+    gapPolicy: result.options.gapPolicy, minPosterior: result.options.minPosterior,
+    conditionalModel: result.options.substitution?.model ?? 'JC69',
+    rateCategories: result.options.substitution?.siteRates.length ?? 1,
+    logLikelihood: result.logLikelihood, branchLengthsRefitted: false, conditionalProbabilities: true };
+  if (!format) return { summary, output: serializeAnalysisRecord(record) };
+  if (format === 'ancestral-fasta') return { summary, output: ancestralFasta(result) };
+  if (format === 'newick') return { summary, output: `[&R][&branch_units=substitutions/site]\n${input.tree.newick}\n` };
+  const rooted = await replayRootedPhylogenyExperiment(experiment.rootedSource.content);
+  const output = exportRooted(rooted, format);
+  if (format === 'splits-json') return { summary,
+    output: JSON.stringify({ ...JSON.parse(output), selectedResultId: record.resultId }, null, 2) + '\n' };
+  return { summary, output: format === 'distances-tsv' || format === 'splits-tsv'
+    ? `# selected_result_id\t${record.resultId}\n` + output : output };
 }
 
 /** Summaries deliberately omit sample IDs, sequence bases and free-text provenance. */
@@ -316,6 +372,12 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
     return { summary: { taxa: taxa.map(taxon => taxon.id), alignmentSites: columns, completeColumns,
       excludedColumns: columns - completeColumns, homologyVerified: false } };
   }
+  if (task.type === 'ancestral') {
+    const request = { ...task };
+    if (typeof request.content !== 'string' || Buffer.byteLength(request.content) > RECORD_BYTES) throw new Error('Saved phylogeny exceeds 10 MiB.');
+    const options = parseJobObject(request.optionsContent === undefined ? '{}' : request.optionsContent, 'Ancestral settings');
+    return ancestralOutput(await createRootedAncestralExperiment(request.content.replace(/^\uFEFF/, ''), request.license, options));
+  }
   if (task.type === 'temporal' || task.type === 'date') {
     // These task fields are strings; capture them before a dynamic import yields.
     const request = { ...task };
@@ -340,6 +402,9 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
     if (Buffer.byteLength(task.content) > RECORD_BYTES) throw new Error('Saved phylogeny exceeds 10 MiB.');
     const content = task.content.replace(/^\uFEFF/, ''), parsed: unknown = JSON.parse(content);
     const method = parsed && typeof parsed === 'object' && 'method' in parsed ? parsed.method : null;
+    if (method && typeof method === 'object' && 'id' in method && method.id === ROOTED_ANCESTRAL_METHOD.id) {
+      return ancestralOutput(await replayRootedAncestralExperiment(content), task.type === 'export' ? task.format : undefined);
+    }
     if (method && typeof method === 'object' && 'id' in method
       && (method.id === 'rooted-nj-temporal-signal' || method.id === 'rooted-nj-strict-clock-dating')) {
       const api = await import('../../core/src/analysis/phylogeny-temporal');
@@ -359,6 +424,10 @@ export async function performPhylogenyTask(task: PhylogenyTask): Promise<Phyloge
   if (task.type === 'export' && (task.format === 'dated-newick' || task.format === 'dates-tsv')) throw new Error(`${task.format} requires a fitted linked dating experiment.`);
   if (task.type === 'export' && (task.format === 'temporal-tsv' || task.format === 'samples-table')) throw new Error(`${task.format} requires a linked temporal or dating experiment.`);
   if (task.type === 'export' && task.format === 'rooting-json') throw new Error('rooting-json requires an explicitly rooted experiment.');
+  if (task.type === 'export' && task.format === 'ancestral-fasta') throw new Error('ancestral-fasta requires a linked ancestral experiment.');
+  if (task.type === 'export' && task.format === 'splits-json') return { summary: summarize(experiment),
+    output: JSON.stringify({ resultId: experiment.record.resultId, bootstrap: experiment.result.bootstrap,
+      splits: experiment.result.splits, warnings: experiment.result.warnings }, null, 2) + '\n' };
   return { summary: summarize(experiment), output: task.type === 'export'
     ? exportPhylogeny(experiment, task.format === 'unrooted-newick' ? 'newick' : task.format as PhylogenyExportFormat)
     : serializeAnalysisRecord(experiment.record) };
@@ -426,6 +495,8 @@ export async function runPhylogenyCommand(args: readonly string[], signal?: Abor
   const task: PhylogenyTask = command.type === 'infer'
     ? { type: 'infer', content, source: command.source, options: command.options }
     : command.type === 'root' ? { type: 'root', content, rootingContent: await readBounded(command.rootingPath, ROOTING_BYTES) }
+    : command.type === 'ancestral' ? { type: 'ancestral', content, license: command.license,
+      optionsContent: command.optionsPath ? await readBounded(command.optionsPath, ROOTING_BYTES) : '{}' }
     : command.type === 'temporal' ? { type: 'temporal', content,
       metadataContent: await readBounded(command.metadataPath, ROOTING_BYTES),
       sampleTable: await readBounded(command.samplesPath, PHYLOGENY_LIMITS.bytes, true),

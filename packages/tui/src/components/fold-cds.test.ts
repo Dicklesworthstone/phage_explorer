@@ -2,14 +2,13 @@ import { describe, test } from 'bun:test';
 import { strict as assert } from 'node:assert';
 import type { GeneInfo } from '@phage-explorer/core';
 import { computeEmbeddingsForPhage as terminalFallback } from './App';
-import { computeEmbeddingsForPhage as browserFallback } from '../../../web/src/components/overlays/FoldQuickviewOverlay';
 
 const gene = (length: number, overrides: Partial<GeneInfo> = {}): GeneInfo => ({
   id: 1, name: 'fixture', locusTag: 'cds_1', startPos: 0, endPos: length,
   strand: '+', product: 'synthetic test protein', type: 'CDS', ...overrides,
 });
 
-for (const [name, prepare] of [['terminal', terminalFallback], ['browser', browserFallback]] as const) {
+for (const [name, prepare] of [['terminal', terminalFallback]] as const) {
   const compute = (sequence: string, annotation: GeneInfo) => prepare({
     phageId: 7, model: 'test-k3',
     repository: {

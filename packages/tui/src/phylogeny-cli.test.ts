@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { executeAlignedPhylogenyRequest } from '../../web/src/workers/AlignedPhylogenySession';
+import { replayRootedAncestralExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { ancestralFasta } from '../../core/src/analysis/ancestral-reconstruction';
 import { parsePhylogenyCommand, executePhylogenyCommand, phylogenyMain, readPhylogenyInput } from '../../../scripts/phylogeny';
 const alignment = '>A\nAAAAAAAA\n>B\nAAAAAAAA\n>C\nCCCCAAAA\n>D\nCCCCAAAA';
 async function fixture() {
@@ -257,4 +259,57 @@ test('K80 transition saturation creates no partial terminal experiment', async (
   assert.equal(result.code, 1);
   assert.match(result.stderr, /K80 is undefined/);
   await assert.rejects(stat(f.output), { code: 'ENOENT' });
+});
+
+test('actual launcher connects rooted phylogeny to ancestry and both replay commands retain its full lineage', async () => {
+  const f = await fixture(), input = join(f.dir, 'ancestry.fa'), rootedPath = join(f.dir, 'rooted.json');
+  const original = ['A', 'B', 'C', 'D'].map((id, i) => `>${id} original description\r\n${i < 2 ? 'A'.repeat(80) : 'G'.repeat(10) + 'A'.repeat(70)}${['N-', 'RN', '--', 'AA'][i]}\r\n`).join('');
+  await writeFile(input, original, { flag: 'wx' });
+  const infer = launch(['phylogeny', ...f.args.map(value => value === f.input ? input : value), '--distance', 'k80'], f.dir);
+  assert.equal(infer.status, 0, infer.stderr);
+  const rooted = launch(['phylogeny', ...rootArgs(f.output, rootedPath)], f.dir);
+  assert.equal(rooted.status, 0, rooted.stderr);
+  const settings = join(f.dir, 'ancestral-settings.json'), output = join(f.dir, 'ancestral.json');
+  await writeFile(settings, JSON.stringify({ startColumn: 2, endColumn: 82, gapPolicy: 'missing', minPosterior: .75 }), { flag: 'wx' });
+  const args = ['phylogeny', 'ancestral', '--experiment', rootedPath, '--license', 'CC0 synthetic terminal fixture', '--options', settings, '--output', output];
+  const ancestral = launch(args, f.dir);
+  assert.equal(ancestral.status, 0, ancestral.stderr);
+  const content = await readFile(output, 'utf8'), summary = JSON.parse(ancestral.stdout);
+  const accepted = await replayRootedAncestralExperiment(content);
+  assert.equal(summary.resultId, accepted.record.resultId); assert.equal(summary.conditionalModel, 'JC69');
+  assert.equal(accepted.result.alignmentColumns, 82); assert.equal(accepted.result.analyzedColumns, 81);
+  assert.match(accepted.input.tree.method, /K80/); assert.equal(accepted.rootedSource.license, 'CC0 synthetic terminal fixture');
+  assert.deepEqual(accepted.record.inputs[1].data, JSON.parse(await readFile(rootedPath, 'utf8')));
+  for (const command of [['phylogeny', 'replay', '--experiment', output], ['ancestral', 'replay', output]]) {
+    const copy = join(f.dir, `${command[0]}-verified.json`);
+    const replayed = launch([...command, '--output', copy], f.dir);
+    assert.equal(replayed.status, 0, replayed.stderr);
+    assert.deepEqual(JSON.parse(await readFile(copy, 'utf8')), accepted.record);
+  }
+  for (const format of ['ancestral-fasta', 'alignment-fasta', 'splits']) {
+    const destination = join(f.dir, `ancestral-${format}`);
+    const exported = launch(['phylogeny', 'export', '--experiment', output, '--format', format, '--output', destination], f.dir);
+    assert.equal(exported.status, 0, exported.stderr);
+    const value = await readFile(destination, 'utf8');
+    if (format === 'ancestral-fasta') assert.equal(value, ancestralFasta(accepted.result));
+    if (format === 'alignment-fasta') assert.equal(value, original);
+    if (format === 'splits') {
+      const table = JSON.parse(value); assert.equal(table.selectedResultId, accepted.record.resultId);
+      assert.deepEqual(table.splits, JSON.parse(await readFile(f.output, 'utf8')).fields.phylogeny.value.splits);
+    }
+  }
+  assert.equal(launch(args, f.dir).status, 1); assert.equal(await readFile(output, 'utf8'), content);
+}, 20000);
+
+test('launcher ancestry rejects missing license, unrooted or p-distance parents, invalid settings and deadlines without output', async () => {
+  const f = await fixture(); assert.equal((await run(f.args)).code, 0);
+  const root = join(f.dir, 'rooted.json'); assert.equal((await run(rootArgs(f.output, root))).code, 0);
+  const output = join(f.dir, 'must-not-exist.json');
+  const args = ['ancestral', '--experiment', root, '--license', 'CC0 synthetic fixture', '--output', output];
+  const badSettings = join(f.dir, 'bad-settings.json'); await writeFile(badSettings, '[]', { flag: 'wx' });
+  for (const rejected of [args.filter(value => value !== '--license' && value !== 'CC0 synthetic fixture'),
+    args.map(value => value === root ? f.output : value), args, [...args, '--options', badSettings], [...args, '--timeout-ms', '1']]) {
+    const result = await run(rejected);
+    assert.equal(result.code, 1); assert.equal(result.stdout, ''); await assert.rejects(stat(output), { code: 'ENOENT' });
+  }
 });

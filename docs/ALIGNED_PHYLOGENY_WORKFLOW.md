@@ -143,6 +143,87 @@ original experiment and the derived record when comparing alternative roots.
 The built-in 12-column teaching quartet can contain tiny negative NJ limbs due
 to roundoff; it is subject to the same no-clipping rule as every other input.
 
+## Conditional ancestral reconstruction from a verified root
+
+An explicitly rooted JC69 or K80 experiment can now supply its alignment and
+fixed tree directly to the ancestral reconstruction method. The complete
+original inference and rooting decision are retained in the new experiment.
+Supply the alignment's license or usage permission explicitly; the phylogeny
+record does not establish it.
+
+For example, save these ancestral settings as `ancestral-options.json`:
+
+```json
+{
+  "startColumn": 1,
+  "endColumn": 100,
+  "gapPolicy": "missing",
+  "minPosterior": 0.9
+}
+```
+
+The window is inclusive and uses original 1-based alignment columns. Set its
+end to a column present in your alignment; a window is limited to 4096 columns.
+Without an options file, the method uses columns 1 through the smaller of the
+alignment length and 4096, treats gaps as missing, and uses a 0.9 consensus
+threshold. A supplied `substitution` object can record the existing ancestral
+method's sourced JC69, HKY85 or GTR model and site-rate categories. These are
+fixed assumptions. K80 distance inference does not estimate a global ancestral
+transition/transversion ratio or silently change the reconstruction model.
+
+```sh
+bun run phylogeny ancestral --experiment rooted.json \
+  --license 'License or permission for this alignment' \
+  --options ancestral-options.json --output ancestors.json
+bun run phylogeny verify --experiment ancestors.json --output verified-ancestors.json
+bun run phylogeny export --experiment ancestors.json \
+  --format ancestral-fasta --output conditional-ancestors.fasta
+bun run phylogeny export --experiment ancestors.json \
+  --format alignment-fasta --output original-alignment.fasta
+```
+
+The terminal launcher exposes the same new command and accepts the linked
+record through both replay entry points:
+
+```sh
+bun packages/tui/src/index.tsx phylogeny ancestral --experiment rooted.json \
+  --license 'License or permission for this alignment' \
+  --options ancestral-options.json --output terminal-ancestors.json
+bun packages/tui/src/index.tsx phylogeny replay --experiment terminal-ancestors.json
+bun packages/tui/src/index.tsx ancestral replay terminal-ancestors.json \
+  --format fasta --output terminal-conditional-ancestors.fasta
+```
+
+All calculations use the existing terminable worker. The phylogeny commands
+accept `--timeout-ms` on reconstruction, defaulting to 300000. Missing licenses,
+unrooted or p-distance parents, inconsistent saved evidence, invalid settings,
+timeouts and cancellation fail before creating output. Existing output files
+and symlinks are never replaced.
+
+Reconstruction retains every original column, including gaps and ambiguous
+bases excluded by complete deletion during tree inference. Its own gap/window
+policy applies separately. FASTA identifiers, letter case, row order and line
+formatting are normalized for the ancestral parser; the full original text,
+including descriptions and line endings, remains in the parent evidence and is
+recovered by `alignment-fasta`. No taxa are pruned and no alignment, topology,
+root or branch length is refitted.
+
+The `rooted-nj-ancestral` JSON record binds the parent alignment/root chain to the
+conditional state probabilities and joint branch endpoint probabilities. Every
+replay and export recomputes those stages. `ancestral-fasta` is a thresholded
+internal-node consensus view, using `N` for excluded, impossible, tied or
+below-threshold sites; it cannot replace the JSON record for replay. These
+conditional probabilities are not empirical confidence, event counts, mutation
+dates or selection estimates.
+
+For a linked ancestral record, `newick` exports the fixed rooted tree in
+substitutions/site. The headless `unrooted-newick`, `distances-tsv`, `splits-tsv`,
+`splits-json` and `rooting-json` views preserve the original inference or root
+decision. Distance/split tables identify the selected ancestral result and its
+parent results. The terminal launcher's existing `distances` and `splits`
+formats remain a matrix and JSON split report, respectively. Bootstrap split
+support is not ancestral-state or root-placement confidence.
+
 ### K80 transition/transversion distances
 
 K80 (Kimura's two-parameter model) counts A↔G and C↔T transitions separately

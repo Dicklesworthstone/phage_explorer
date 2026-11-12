@@ -1,5 +1,9 @@
 import{describe,it}from'bun:test';import assert from'node:assert/strict';import{Readable,Writable}from'node:stream';
 import{parseAnalysisRecord}from'../../../core/src/analysis-result';import{runAncestralCommand,parseAncestralCommand,executeAncestralJob,type AncestralIO}from'./ancestral';
+import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { createAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
+import { rootAlignedPhylogenyExperiment, createRootedAncestralExperiment } from '../../../core/src/analysis/phylogeny-rooting';
+import { ancestralFasta } from '../../../core/src/analysis/ancestral-reconstruction';
 const fasta='>A\nAAAA\n>B\nAAGA\n>C\nAGGA\n';const tree='((A:0.01,B:0.01):0.01,C:0.02);';
 function cap(){let v='';const stream=new Writable({write(c,_e,d){v+=c.toString();d();}});return{stream,value:()=>v};}
 function io(input=''){const o=cap(),e=cap();return{stdin:Readable.from([Buffer.from(input)]),stdout:o.stream,stderr:e.stream,output:o.value,errors:e.value};}
@@ -33,4 +37,29 @@ describe('ancestral command',()=>{
   assert.match(streams.output(),/>n0 conditional-JC69/);assert.ok(!streams.errors().includes('AAAA'));
   void pio;
  });
+});
+
+it('standalone ancestral replay uses its real worker and retains the verified phylogeny lineage', async () => {
+  const alignment = ['A', 'B', 'C', 'D'].map((id, i) => `>${id} original description\n${'A'.repeat(i * 5)}${'G'.repeat(i + 1)}${'A'.repeat(100 - i * 5 - i - 1)}`).join('\n');
+  const original = await createAlignedPhylogenyExperiment({ name: 'Synthetic linked ancestry', kind: 'demo',
+    reference: 'Explicit synthetic aligned columns', fasta: alignment }, { distance: 'k80' });
+  const rooted = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(original.record), { outgroup: ['A'],
+    fractionFromOutgroup: .25, evidence: 'Synthetic explicit root hypothesis', dateIndependent: true });
+  const expected = await createRootedAncestralExperiment(serializeAnalysisRecord(rooted.record), 'CC0 synthetic fixture', { endColumn: 20 });
+  const content = serializeAnalysisRecord(expected.record);
+  const streams = io('\uFEFF' + content);
+  assert.equal(await runAncestralCommand(['replay', '-'], streams), 0, streams.errors());
+  assert.deepEqual(JSON.parse(streams.output()), expected.record);
+  assert.deepEqual(JSON.parse(streams.output()).inputs[1].data, rooted.record);
+  const fastaStreams = io(content);
+  assert.equal(await runAncestralCommand(['replay', '-', '--format', 'fasta'], fastaStreams), 0, fastaStreams.errors());
+  assert.equal(fastaStreams.output(), ancestralFasta(expected.result));
+  assert.ok(!streams.errors().includes(alignment));
+  const changed = structuredClone(expected.record);
+  (changed.fields.reconstruction.value as { logLikelihood: number }).logLikelihood += 1;
+  const forged = serializeAnalysisRecord(await createAnalysisRecord(changed));
+  await parseAnalysisRecord(forged);
+  const rejected = io(forged);
+  assert.equal(await runAncestralCommand(['replay', '-', '--format', 'fasta'], rejected), 1);
+  assert.equal(rejected.output(), ''); assert.match(rejected.errors(), /differs/);
 });
