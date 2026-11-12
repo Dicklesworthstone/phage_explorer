@@ -16,7 +16,7 @@ columns. It does not run a multiple-sequence aligner. The original input text is
 retained in the portable experiment; provenance and homology are user assertions,
 not independently verified evidence.
 
-Choose p-distance or JC69, 0 or 20–200 bootstrap replicates, and an unsigned
+Choose p-distance, JC69 or K80, 0 or 20–200 bootstrap replicates, and an unsigned
 32-bit seed (including zero). Common complete deletion excludes any column with
 a gap, missing or ambiguous base in any taxon from every pair. Work is bounded
 by the core method's declared operation budget; exceeding it is an explicit error,
@@ -32,7 +32,7 @@ unrooted splits, resampling counts/proportions, excluded columns and paginated
 pairwise distances. The topology drawing is **not to branch-length or time
 scale**. Its display root has no ancestral meaning. Zero/nonpositive edges are
 dashed rather than shown as supported resolutions, and negative lengths are not
-clipped in the exported tree. JC69 saturation is an error; if any bootstrap is
+clipped in the exported tree. JC69 or K80 saturation is an error; if any bootstrap is
 saturated, all split supports are withheld by the core method.
 
 Export the complete experiment JSON for reproducibility, or Newick, the distance
@@ -142,3 +142,27 @@ the temporal workspace or treated as a validated biological root. Keep both the
 original experiment and the derived record when comparing alternative roots.
 The built-in 12-column teaching quartet can contain tiny negative NJ limbs due
 to roundoff; it is subject to the same no-clipping rule as every other input.
+
+### K80 transition/transversion distances
+
+K80 (Kimura's two-parameter model) counts A↔G and C↔T transitions separately
+from transversions in the same complete-deletion columns used for every pair.
+It assumes equal equilibrium nucleotide frequencies and homogeneous independent
+sites. It does not fit a global transition/transversion rate ratio or establish
+that this model describes the supplied alignment.
+
+For transition fraction P and transversion fraction Q, the corrected distance is
+`-0.5 × ln(1 - 2P - Q) - 0.25 × ln(1 - 2Q)` substitutions per site. The method
+refuses either saturated logarithm; it never clamps a divergent pair to a finite
+estimate. If any resampled pair saturates, every bootstrap support is withheld.
+JSON retains each pair's compared sites, transition count and transversion count
+in `k80Comparisons`, and replay recomputes them. Existing p-distance and JC69
+records retain their identities.
+
+Select **K80 transition/transversion correction** in the browser, or pass
+`--distance k80` to `phage-explorer phylogeny infer` (or `bun scripts/phylogeny.ts infer`).
+After an explicit outgroup root, the same substitution-length tree can be used
+for temporal diagnostics. Dates do not select or justify the root. K80 distance
+correction alone establishes neither temporal signal nor a calibrated clock.
+
+Method reference: [Kimura (1980), equation 10](https://doi.org/10.1007/BF01731581).

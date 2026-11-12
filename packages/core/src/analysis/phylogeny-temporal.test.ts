@@ -17,7 +17,7 @@ const metadata: RootedTemporalMetadata = { name: 'Synthetic dated quartet', kind
   reference: null, license: 'CC0 synthetic fixture', dateIndependent: true,
   sampleTable: 'sampleId,collectionDate,dateSource,permutationGroup\nD,2003.0,synthetic,two\nB,2001.0,synthetic,one\nA,2000.0,synthetic,one\nC,2002.0,synthetic,two\n' };
 const options = { permutations: 24, seed: 42 };
-async function parent(distance: 'jc69' | 'p-distance' = 'jc69', kind: 'demo' | 'local' = 'demo', fraction = .25) {
+async function parent(distance: 'jc69' | 'p-distance' | 'k80' = 'jc69', kind: 'demo' | 'local' = 'demo', fraction = .25) {
   // Power-of-two length gives exact p-distances and avoids unrelated roundoff-negative limbs.
   const fasta = distance === 'p-distance' ? source.fasta.split('\n').map(line => line && !line.startsWith('>') ? line + 'A'.repeat(28) : line).join('\n') : source.fasta;
   const original = await createAlignedPhylogenyExperiment({ ...source, kind, fasta }, { distance, bootstrap: 20, seed: 42 });
@@ -174,4 +174,17 @@ describe('alignment-backed temporal experiment', () => {
     for (const input of bad) await assert.rejects(prepareRootedTemporalDataset(content, input as unknown as RootedTemporalMetadata));
     await assert.rejects(prepareRootedTemporalDataset('x'.repeat(10 * 1024 * 1024 + 1), metadata), /10 MiB/);
   });
+});
+
+it('preserves K80 substitution units, method provenance and replay through the rooted temporal handoff', async () => {
+  const { original, rooted, content } = await parent('k80');
+  const experiment = await createRootedTemporalExperiment(content, metadata, options);
+  assert.equal(experiment.dataset.tree.units, 'substitutions/site');
+  assert.match(experiment.dataset.tree.method, /^K80 neighbor joining /);
+  assert.equal(experiment.dataset.tree.newick, rooted.result.newick);
+  assert.equal(experiment.unrootedResultId, original.record.resultId);
+  assert.equal(experiment.rootedResultId, rooted.record.resultId);
+  assert.ok(experiment.record.references.some(ref => ref.id === '10.1007/BF01731581'));
+  assert.equal(experiment.result.clockCalibrated, false);
+  assert.deepEqual(await replayRootedTemporalExperiment(serializeAnalysisRecord(experiment.record)), experiment);
 });

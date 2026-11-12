@@ -229,3 +229,32 @@ test('root requires an original inference instead of accumulating rerooting edit
   const rejected = await run(rootArgs(rooted, output)); assert.equal(rejected.code, 1); assert.match(rejected.stderr, /incompatible/);
   await assert.rejects(stat(output), { code: 'ENOENT' });
 });
+
+test('actual launcher infers K80 and browser replay preserves its source, model and result identity', async () => {
+  const f = await fixture(), input = join(f.dir, 'k80.fa');
+  const content = ['A', 'B', 'C', 'D'].map((id, i) => '>' + id + '\n' + (i < 2 ? 'A'.repeat(80) : 'G'.repeat(10) + 'A'.repeat(70))).join('\n');
+  await writeFile(input, content, { flag: 'wx' });
+  const args = [...f.args.map(value => value === f.input ? input : value), '--distance', 'k80'];
+  const inferred = launch(['phylogeny', ...args], f.dir);
+  assert.equal(inferred.status, 0, inferred.stderr);
+  const saved = await readFile(f.output, 'utf8'), record = JSON.parse(saved);
+  const accepted = await executeAlignedPhylogenyRequest({ kind: 'replay', content: saved });
+  assert.equal(accepted.options.distance, 'k80');
+  assert.equal(accepted.source.fasta, content);
+  assert.equal(accepted.record.resultId, JSON.parse(inferred.stdout).resultId);
+  assert.equal(record.parameters.distance, 'k80');
+  assert.ok(record.references.some((reference: { id: string }) => reference.id === '10.1007/BF01731581'));
+  assert.equal(accepted.result.k80Comparisons?.find(pair => pair.taxonA === 'A' && pair.taxonB === 'C')?.transitions, 10);
+  const replayed = launch(['phylogeny', 'replay', '--experiment', f.output], f.dir);
+  assert.equal(replayed.status, 0, replayed.stderr);
+  assert.equal(JSON.parse(replayed.stdout).resultId, accepted.record.resultId);
+});
+
+test('K80 transition saturation creates no partial terminal experiment', async () => {
+  const f = await fixture(), input = join(f.dir, 'k80-saturated.fa');
+  await writeFile(input, '>A\nAAAA\n>B\nGGAA\n>C\nAAAA\n', { flag: 'wx' });
+  const result = await run(['infer', '--alignment', input, '--source', 'Synthetic transition saturation', '--distance', 'k80', '--output', f.output]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /K80 is undefined/);
+  await assert.rejects(stat(f.output), { code: 'ENOENT' });
+});

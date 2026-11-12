@@ -59,15 +59,16 @@ export async function prepareRootedTemporalDataset(content: string, supplied: Ro
   const samples = parseTemporalSampleTable(metadata.sampleTable);
   const rooted = await replayRootedPhylogenyExperiment(content.replace(/^\uFEFF/, ''), signal);
   active(signal);
-  if (rooted.unrooted.options.distance !== 'jc69') {
-    throw new Error('Temporal handoff requires a JC69 phylogeny. Re-infer with JC69 and explicitly root it; p-distance branches are not silently relabeled as substitutions/site.');
+  const distance = rooted.unrooted.options.distance;
+  if (distance !== 'jc69' && distance !== 'k80') {
+    throw new Error('Temporal handoff requires a JC69 or K80 phylogeny. Re-infer with one of these substitution models and explicitly root it; p-distance branches are not silently relabeled as substitutions/site.');
   }
   const rootedResultId = rooted.record.resultId, unrootedResultId = rooted.unrooted.record.resultId;
   const dataset = validateTemporalDataset({ format: 'phage-explorer-temporal-signal', version: 1, name: metadata.name,
     source: { kind: rooted.unrooted.source.kind === 'demo' || metadata.kind === 'demo' ? 'demo' : 'local',
       description: metadata.description, reference: metadata.reference, license: metadata.license },
     tree: { newick: rooted.result.newick, units: 'substitutions/site', inferredWithoutDates: true,
-      method: `JC69 neighbor joining ${rooted.unrooted.record.method.version}; fixed branches, no clock calibration`,
+      method: `${distance === 'k80' ? 'K80' : 'JC69'} neighbor joining ${rooted.unrooted.record.method.version}; fixed branches, no clock calibration`,
       rooting: `User-specified outgroup hypothesis ${rootedResultId}; ${rooted.result.rooting.outgroup.length} outgroup tips; fraction ${rooted.result.rooting.fractionFromOutgroup} from the outgroup endpoint. Full decision retained in the parent record.`,
       alignmentProvenance: `Original alignment and provenance retained in parent ${rootedResultId}; unrooted inference ${unrootedResultId}. Date-independence of input selection is user-declared, not independently verified.` }, samples });
   active(signal);

@@ -1,6 +1,7 @@
 /**
  * Neighbor joining of explicitly aligned DNA, not a molecular-clock estimator.
  * Saitou & Nei (1987), doi:10.1093/oxfordjournals.molbev.a040454.
+ * Kimura (1980), doi:10.1007/BF01731581, Eq. 10 (K80 distance).
  * Site resampling: Felsenstein (1985), doi:10.1111/j.1558-5646.1985.tb00420.x.
  * A shared complete-deletion mask retains homologous A/C/G/T columns in every
  * taxon. This module does not align sequences or establish their homology.
@@ -11,14 +12,19 @@ export const ALIGNED_PHYLOGENY_METHOD = { id: 'aligned-dna-neighbor-joining', ve
 export const PHYLOGENY_LIMITS = { bytes: 2 * 1024 * 1024, taxa: 64, sites: 100000, bootstrap: 200, work: 100000000 } as const;
 export interface AlignedTaxon { id: string; sequence: string }
 export interface PhylogenySource { name: string; fasta: string; kind: 'local' | 'demo'; reference: string }
-export interface PhylogenyOptions { distance: 'p-distance' | 'jc69'; deletion: 'complete'; bootstrap: number; seed: number }
+export interface PhylogenyOptions { distance: 'p-distance' | 'jc69' | 'k80'; deletion: 'complete'; bootstrap: number; seed: number }
 export interface PhylogenyNode { id: number; label: string | null }
 export interface PhylogenyEdge { a: number; b: number; length: number }
 /** Flat storage keeps long, unbalanced trees within the shared JSON depth bound. */
 export interface NeighborJoiningTree { nodes: PhylogenyNode[]; edges: PhylogenyEdge[]; serializationRoot: number; tiedSteps: number }
 export interface PhylogenySplit { side: string[]; other: string[]; length: number; bootstrapCount: number | null; support: number | null }
+export interface K80PairComparison {
+  taxonA: string; taxonB: string; comparedSites: number; transitions: number; transversions: number;
+}
 export interface AlignedPhylogenyResult {
   taxa: string[]; alignmentSites: number; usedSites: number; excludedColumns: number[]; variableSites: number;
+  /** Present only for K80: observed evidence for each complete-deletion pair. */
+  k80Comparisons?: K80PairComparison[];
   distances: number[][]; tree: NeighborJoiningTree; splits: PhylogenySplit[]; newick: string;
   bootstrap: { requested: number; completed: number; saturated: number; supportAvailable: boolean };
   negativeEdges: number; zeroEdges: number; distanceResidualRMSE: number; warnings: string[];
@@ -36,7 +42,7 @@ function integer(value: unknown, min: number, max: number, label: string): asser
 export function resolvePhylogenyOptions(input: Partial<PhylogenyOptions> = {}): PhylogenyOptions {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !['distance', 'deletion', 'bootstrap', 'seed'].includes(key))) throw new Error('Unsupported phylogeny options.');
   const options = { distance: 'p-distance', deletion: 'complete', bootstrap: 0, seed: 1, ...input } as PhylogenyOptions;
-  if (options.distance !== 'p-distance' && options.distance !== 'jc69') throw new Error('Choose p-distance or jc69.');
+  if (options.distance !== 'p-distance' && options.distance !== 'jc69' && options.distance !== 'k80') throw new Error('Choose p-distance, jc69 or k80.');
   if (options.deletion !== 'complete') throw new Error('Only explicit complete-column deletion is supported.');
   integer(options.bootstrap, 0, PHYLOGENY_LIMITS.bootstrap, 'Bootstrap count');
   if (options.bootstrap > 0 && options.bootstrap < 20) throw new Error('Use at least 20 bootstrap replicates, or 0 to disable support.');
@@ -145,11 +151,31 @@ function randomFor(seed: number): () => number {
     value ^= value + Math.imul(value ^ value >>> 7, 61 | value); return ((value ^ value >>> 14) >>> 0) / 4294967296; };
 }
 class SaturatedDistance extends Error {}
-function distanceMatrix(taxa: AlignedTaxon[], sites: number[], options: PhylogenyOptions, weights?: Uint32Array): number[][] {
+function distanceMatrix(taxa: AlignedTaxon[], sites: number[], options: PhylogenyOptions, weights?: Uint32Array,
+  k80Comparisons?: K80PairComparison[]): number[][] {
   const matrix = taxa.map(() => taxa.map(() => 0));
   for (let a = 0; a < taxa.length; a++) for (let b = a + 1; b < taxa.length; b++) {
-    let differences = 0;
-    for (let i = 0; i < sites.length; i++) if (taxa[a].sequence[sites[i]] !== taxa[b].sequence[sites[i]]) differences += weights ? weights[i] : 1;
+    let differences = 0, transitions = 0;
+    for (let i = 0; i < sites.length; i++) {
+      const left = taxa[a].sequence[sites[i]], right = taxa[b].sequence[sites[i]];
+      if (left === right) continue;
+      const count = weights ? weights[i] : 1;
+      differences += count;
+      // A/G are purines and C/T are pyrimidines. Only retained A/C/G/T columns reach this loop.
+      if (options.distance === 'k80' && (left === 'A' || left === 'G') === (right === 'A' || right === 'G')) transitions += count;
+    }
+    if (options.distance === 'k80') {
+      const transversions = differences - transitions;
+      // Integer comparisons preserve both exact saturation boundaries before division.
+      if (2 * transitions + transversions >= sites.length || 2 * transversions >= sites.length) {
+        throw new SaturatedDistance(`K80 is undefined when 2P + Q >= 1 or 2Q >= 1 (${taxa[a].id}, ${taxa[b].id}; ${transitions} transitions, ${transversions} transversions, ${sites.length} sites). No finite branch estimate is available.`);
+      }
+      // Kimura Eq. 10: P is the transition fraction, Q the transversion fraction.
+      matrix[a][b] = matrix[b][a] = -0.5 * Math.log1p(-(2 * transitions + transversions) / sites.length)
+        - 0.25 * Math.log1p(-2 * transversions / sites.length);
+      k80Comparisons?.push({ taxonA: taxa[a].id, taxonB: taxa[b].id, comparedSites: sites.length, transitions, transversions });
+      continue;
+    }
     const p = differences / sites.length;
     if (options.distance === 'jc69' && p >= 0.75) throw new SaturatedDistance(`JC69 is undefined at divergence >= 0.75 (${taxa[a].id}, ${taxa[b].id}). No finite branch estimate is available.`);
     matrix[a][b] = matrix[b][a] = options.distance === 'jc69' ? -0.75 * Math.log1p(-4 * p / 3) : p;
@@ -180,7 +206,8 @@ export function inferAlignedPhylogeny(fasta: string, supplied: Partial<Phylogeny
   const pairs = taxa.length * (taxa.length - 1) / 2;
   const work = (options.bootstrap + 1) * (sites.length * pairs + taxa.length ** 3);
   if (work > PHYLOGENY_LIMITS.work) throw new Error('Requested alignment/bootstrap exceeds the computation budget; reduce taxa, sites or bootstrap count explicitly.');
-  const ids = taxa.map(taxon => taxon.id), distances = distanceMatrix(taxa, sites, options), tree = neighborJoining(ids, distances);
+  const k80Comparisons = options.distance === 'k80' ? [] as K80PairComparison[] : undefined;
+  const ids = taxa.map(taxon => taxon.id), distances = distanceMatrix(taxa, sites, options, undefined, k80Comparisons), tree = neighborJoining(ids, distances);
   const epsilonFor = (matrix: number[][]) => Number.EPSILON * 256 * Math.max(...matrix.flat());
   const epsilon = epsilonFor(distances), splits = treeSplits(tree, epsilon), counts = new Map(splits.map(split => [JSON.stringify(split.side), 0]));
   const random = randomFor(options.seed); let completed = 0, saturated = 0;
@@ -205,16 +232,19 @@ export function inferAlignedPhylogeny(fasta: string, supplied: Partial<Phylogeny
     'No molecular clock, transmission history, host range, immune escape or population-size estimate is inferred.',
     'Common complete deletion removes every column with a gap, missing value or ambiguous DNA in any taxon. Indels contribute no distance.',
     'Bootstrap proportions resample retained alignment columns and count positive-length unrooted bipartitions, not probabilities that a clade is true. Linked sites and recombination can invalidate independent-site interpretation.',
-    options.distance === 'jc69' ? 'JC69 assumes equal base frequencies and substitution rates; saturated distances cannot be estimated.' : 'p-distance is the observed difference fraction; multiple substitutions at a site are not corrected.',
+    options.distance === 'jc69' ? 'JC69 assumes equal base frequencies and substitution rates; saturated distances cannot be estimated.'
+      : options.distance === 'k80' ? 'K80 (Kimura two-parameter) distinguishes A↔G/C↔T transitions from transversions, with equal equilibrium base frequencies and homogeneous independent sites. Distances are conditional expected substitutions/site, not a test of model adequacy; either saturated logarithm is unavailable.'
+      : 'p-distance is the observed difference fraction; multiple substitutions at a site are not corrected.',
   ];
   if (excludedColumns.length) warnings.push(`${excludedColumns.length} columns were excluded (0-based positions are retained in the result).`);
   if (!variableSites) warnings.push('No variable usable sites: all taxa are unresolved; zero-length binary resolutions have no supported splits.');
   if (tree.tiedSteps) warnings.push('NJ encountered equal minimum criteria. Deterministic tie-breaking is not independent evidence of a resolved topology.');
   if (negativeEdges) warnings.push('Negative NJ branch lengths are preserved and reported, not clipped. This tree is not suitable for tools requiring nonnegative branch lengths.');
-  if (saturated) warnings.push(`${saturated} bootstrap samples had saturated JC69 distances. All split supports are withheld rather than conditioning on successful samples.`);
+  if (saturated) warnings.push(`${saturated} bootstrap samples had saturated ${options.distance === 'k80' ? 'K80' : 'JC69'} distances. All split supports are withheld rather than conditioning on successful samples.`);
   abort(signal);
   return { taxa: ids, alignmentSites: length, usedSites: sites.length, excludedColumns, variableSites, distances, tree, splits, newick: newickFor(tree),
-    bootstrap: { requested: options.bootstrap, completed, saturated, supportAvailable }, negativeEdges, zeroEdges, distanceResidualRMSE: treeResidual(tree, distances), warnings };
+    bootstrap: { requested: options.bootstrap, completed, saturated, supportAvailable }, negativeEdges, zeroEdges, distanceResidualRMSE: treeResidual(tree, distances), warnings,
+    ...(k80Comparisons ? { k80Comparisons } : {}) };
 }
 function validateSource(input: PhylogenySource): PhylogenySource {
   if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).sort().join('|') !== 'fasta|kind|name|reference') throw new Error('Supply name, fasta, kind and reference for the alignment source.');
@@ -228,7 +258,8 @@ export async function createAlignedPhylogenyExperiment(input: PhylogenySource, s
     inputs: [{ id: 'alignment', accession: null, source: source.kind, description: 'Original aligned DNA FASTA and submitted provenance', data: analysisJson(source) }],
     parameters: analysisJson(options) as AnalysisRecord['parameters'], seed: options.seed,
     references: [{ id: '10.1093/oxfordjournals.molbev.a040454', version: '1987', description: 'Saitou and Nei: neighbor joining' },
-      { id: '10.1111/j.1558-5646.1985.tb00420.x', version: '1985', description: 'Felsenstein: site bootstrap for phylogenies' }],
+      { id: '10.1111/j.1558-5646.1985.tb00420.x', version: '1985', description: 'Felsenstein: site bootstrap for phylogenies' },
+      ...(options.distance === 'k80' ? [{ id: '10.1007/BF01731581', version: '1980', description: 'Kimura: two-parameter distance, Eq. 10; transition and transversion fractions over the retained homologous sites' }] : [])],
     fields: { phylogeny: { kind: 'sequence-score', label: 'Alignment-derived unrooted distance tree and split resampling frequencies', units: 'dimensionless',
       value: analysisJson(result), coverage: { available: result.usedSites, total: result.alignmentSites, unit: 'bases' }, limitations: result.warnings } } });
   abort(signal); return { record, source, options, result };

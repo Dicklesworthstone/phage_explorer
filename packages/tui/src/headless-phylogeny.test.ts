@@ -144,3 +144,21 @@ test('physical FASTA import/export preserves a UTF-8 BOM while saved JSON accept
   await runPhylogenyCommand(['export', '--experiment', withBom, '--format', 'alignment-fasta', '--output', original]);
   assert.deepEqual(await readFile(original), await readFile(input));
 });
+
+test('K80 parses, runs in the headless worker and exports the original model with verified identity', async () => {
+  const parsed = parsePhylogenyCommand([...inferArgs, '--distance', 'k80']);
+  assert.ok(parsed.type === 'infer');
+  assert.equal(parsed.options.distance, 'k80');
+  const content = ['A', 'B', 'C', 'D'].map((id, i) => '>' + id + '\n' + (i < 2 ? 'A'.repeat(80) : 'G'.repeat(10) + 'A'.repeat(70))).join('\n');
+  const options = resolvePhylogenyOptions({ distance: 'k80', bootstrap: 20, seed: 0 });
+  const request: PhylogenyTask = { type: 'infer', content, source, options };
+  const direct = await createAlignedPhylogenyExperiment({ ...source, fasta: content }, options);
+  const performed = await performPhylogenyTask(request);
+  assert.equal(performed.output, serializeAnalysisRecord(direct.record));
+  assert.deepEqual(await executePhylogenyTask(request, 10000), performed);
+  assert.deepEqual(await performPhylogenyTask({ type: 'verify', content: performed.output! }), performed);
+  const exported = await performPhylogenyTask({ type: 'export', content: performed.output!, format: 'distances-tsv' });
+  assert.match(exported.output!, /# distance_method\tk80\n/);
+  assert.ok(Math.abs(direct.result.distances[0][2] - 0.14384103622589045) < 1e-12);
+  await assert.rejects(executePhylogenyTask({ ...request, content: '>A\nAAAA\n>B\nGGAA\n>C\nAAAA\n' }, 10000), /K80 is undefined/);
+});

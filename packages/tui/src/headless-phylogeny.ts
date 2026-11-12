@@ -19,7 +19,7 @@ export const PHYLOGENY_HELP = `Aligned DNA phylogeny, private computation and ve
 bun run phylogeny inspect --input aligned.fa
 bun run phylogeny infer --input aligned.fa --alignment provided
   --name NAME --reference ALIGNMENT_PROVENANCE --output NEW_EXPERIMENT.json
-  [--source local|demo] [--distance p-distance|jc69] [--bootstrap 0|20..200]
+  [--source local|demo] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200]
   [--seed 1] [--timeout-ms 300000]
 bun run phylogeny root --experiment unrooted.json --rooting decision.json
   --output NEW_ROOTED_EXPERIMENT.json [--timeout-ms 300000]
@@ -39,7 +39,8 @@ Input is an ALREADY ALIGNED homologous DNA FASTA, not raw genomes or proteins.
 --alignment provided is a declaration, not an automatic alignment or homology test.
 3-64 unique taxa, at most 100000 columns and 2 MiB; the shared computation budget
 also applies. Complete deletion removes a column when any taxon has a gap,
-ambiguous base or missing value. No usable columns and saturated JC69 fail.
+ambiguous base or missing value. No usable columns and saturated JC69/K80 fail.
+K80 distinguishes transitions from transversions under equal equilibrium base frequencies.
 Defaults are observed p-distance, no bootstrap, and seed 1. Bootstrap resamples
 retained columns; any saturated replicate withholds ALL support, not just that
 replicate. Linked sites and recombination limit its interpretation.
@@ -54,7 +55,7 @@ Rooting retains every taxon, the original alignment, settings and pairwise paths
 It is a user-conditioned root hypothesis, not an independently inferred ancestor.
 Decision files are limited to 64 KiB and decoded as strict UTF-8.
 
-temporal joins collection dates to a VERIFIED JC69 rooted experiment. cohort.json
+temporal joins collection dates to a VERIFIED JC69 or K80 rooted experiment. cohort.json
 requires exactly name, kind (local|demo), description, reference (text|null),
 license and dateIndependent (true: dates did not guide cohort/alignment selection
 or rooting). --samples supplies the ORIGINAL CSV/TSV; do not embed sampleTable
@@ -182,7 +183,7 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   const kind = flags.get('--source') ?? 'local';
   if (kind !== 'local' && kind !== 'demo') throw new Error('--source must be local or demo.');
   const distance = flags.get('--distance') ?? 'p-distance';
-  if (distance !== 'p-distance' && distance !== 'jc69') throw new Error('--distance must be p-distance or jc69.');
+  if (distance !== 'p-distance' && distance !== 'jc69' && distance !== 'k80') throw new Error('--distance must be p-distance, jc69 or k80.');
   return { type: 'infer', inputPath: required('--input'), outputPath: required('--output'), timeoutMs,
     source: { name: required('--name'), reference: required('--reference'), kind },
     options: resolvePhylogenyOptions({ distance, bootstrap: integer('--bootstrap', 0), seed: integer('--seed', 1) }) };

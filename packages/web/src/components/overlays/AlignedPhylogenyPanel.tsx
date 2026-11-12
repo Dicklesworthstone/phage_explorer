@@ -127,7 +127,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot }: {
     } catch (cause) { report(cause); }
   };
   const handoffTemporalRoot = () => {
-    if (!onTemporalRoot || !accepted || !acceptedRoot || rootChanged || busy || accepted.options.distance !== 'jc69') return;
+    if (!onTemporalRoot || !accepted || !acceptedRoot || rootChanged || busy || accepted.options.distance === 'p-distance') return;
     try {
       onTemporalRoot({ content: serializeAnalysisRecord(acceptedRoot.record), name: accepted.source.name, kind: accepted.source.kind });
       setLocalError(null);
@@ -150,7 +150,7 @@ export function AlignedPhylogenyPanel({ onTemporalRoot }: {
         <label style={label}>Alignment provenance type<select style={control} value={source.kind} onChange={e => editSource('kind', e.target.value as PhylogenySource['kind'])}>
           <option value="local">User-supplied local alignment — not independently verified</option><option value="demo">Synthetic demonstration — not experimental evidence</option></select></label>
         <label style={label}>Sequence distance<select style={control} value={distance} onChange={e => { invalidate(); setDistance(e.target.value as PhylogenyOptions['distance']); }}>
-          <option value="p-distance">Observed p-distance</option><option value="jc69">JC69 correction (rejects saturation)</option></select></label>
+          <option value="p-distance">Observed p-distance</option><option value="jc69">JC69 correction (rejects saturation)</option><option value="k80">K80 transition/transversion correction (rejects saturation)</option></select></label>
         <label style={label}>Site-bootstrap replicates (0 or 20–200)<input style={control} type="number" required min={0} max={200} step={1} value={bootstrap} onChange={e => { invalidate(); setBootstrap(e.target.value); }} /></label>
         <label style={label}>Phylogeny seed (0–4294967295)<input style={control} type="number" required min={0} max={0xffffffff} step={1} value={seed} onChange={e => { invalidate(); setSeed(e.target.value); }} /></label>
       </div>
@@ -233,10 +233,10 @@ bun run phylogeny export --experiment aligned-phylogeny-experiment.json --format
           <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy} onClick={() => exportRoot('newick')}>Export explicit-root Newick</button>
         </div>
         {onTemporalRoot && <div>
-          <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy || accepted.options.distance !== 'jc69'}
+          <button type="button" style={control} disabled={!acceptedRoot || rootChanged || busy || accepted.options.distance === 'p-distance'}
             onClick={handoffTemporalRoot}>Use this rooted experiment for temporal diagnostics</button>
           <p>The handoff keeps the original alignment and rooting evidence. Supply collection dates and their provenance in the dated-tree form.
-            It requires JC69 branches; p-distance is not silently reinterpreted as substitutions/site.</p>
+            It requires JC69 or K80 branches; p-distance is not silently reinterpreted as substitutions/site.</p>
         </div>}
         {acceptedRoot && !rootChanged && <section aria-label="Accepted root hypothesis" data-root-result-id={acceptedRoot.record.resultId}>
           <p><strong>USER-CONDITIONED ROOT — NOT INDEPENDENTLY INFERRED</strong>{accepted.source.kind === 'demo' ? ' · SYNTHETIC INPUT' : ''}</p>

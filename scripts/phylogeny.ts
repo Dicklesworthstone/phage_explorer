@@ -18,7 +18,7 @@ export const PHYLOGENY_HELP = `Aligned DNA neighbor joining (offline, unrooted)
 
 bun scripts/phylogeny.ts inspect --alignment aligned.fasta
 bun scripts/phylogeny.ts infer --alignment aligned.fasta --source CITATION --output experiment.json
-  [--name NAME] [--distance p-distance|jc69] [--bootstrap 0|20..200] [--seed UINT32] [--demo]
+  [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--demo]
 bun scripts/phylogeny.ts root --experiment experiment.json --outgroup A,B --fraction 0.25
   --rooting-evidence 'Outgroup and branch-placement rationale' --date-independent --output rooted.json
 bun scripts/phylogeny.ts temporal --experiment rooted.json --dates samples.csv --name COHORT
@@ -35,7 +35,8 @@ Input must already be aligned DNA: 3–64 unique taxa, equal nonzero lengths,
 up to 100000 sites and 2 MiB UTF-8. Gaps and ambiguity exclude the entire column
 from every pair. All retained columns, including invariant ones, are resampled.
 Inference defaults: observed p-distance, complete deletion, bootstrap 0, seed 1.
-JC69 rejects saturated distances; any saturated bootstrap withholds all support.
+JC69 and K80 reject saturated distances; any saturated bootstrap withholds all support.
+K80 distinguishes transitions from transversions under equal equilibrium base frequencies.
 
 The inferred tree is unrooted: its Newick serialization root is not an ancestor
 or date. Negative NJ limbs are retained, not repaired silently. Bootstrap
@@ -53,7 +54,7 @@ Rooting retains every taxon and pairwise tree path. It does not estimate or
 validate a biological root or molecular clock. Original split support gives
 no root support. The original alignment and settings remain in rooted.json.
 
-Temporal analysis accepts only a verified JC69 rooted experiment and an exact
+Temporal analysis accepts only a verified JC69 or K80 rooted experiment and an exact
 collection-date table. The user must declare that dates did not guide alignment,
 cohort selection, tree inference or rooting. The temporal record retains and
 recomputes the complete alignment/root/date lineage. Strict-clock dating consumes

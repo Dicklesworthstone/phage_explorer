@@ -141,3 +141,101 @@ describe('unrooted split support, identifiability and replay', () => {
     await assert.rejects(createAlignedPhylogenyExperiment({ ...source, reference: '' }), /provenance/);
   });
 });
+
+describe('Kimura two-parameter aligned distances', () => {
+  test('classifies all twelve directed base changes against separate analytical oracles', () => {
+    const transitions = new Set(['AG', 'GA', 'CT', 'TC']);
+    for (const left of 'ACGT') for (const right of 'ACGT') {
+      if (left === right) continue;
+      const result = inferAlignedPhylogeny(fasta({ A: left.repeat(10), B: right + left.repeat(9), C: left.repeat(10) }), { distance: 'k80' });
+      const transition = transitions.has(left + right);
+      near(result.distances[0][1], transition ? 0.11157177565710488 : 0.10846614565746557);
+      assert.equal(result.distances[1][0], result.distances[0][1]); assert.equal(result.distances[0][2], 0);
+      assert.deepEqual(result.k80Comparisons?.[0], { taxonA: 'A', taxonB: 'B', comparedSites: 10,
+        transitions: transition ? 1 : 0, transversions: transition ? 0 : 1 });
+    }
+  });
+  test('recovers known evolutionary distance from Kimura forward transition probabilities', () => {
+    // Independent forward-model oracle: Kimura (1980), Eqs. 5–6 and 9.
+    // alpha*t=.1, beta*t=.025 imply K=2*alpha*t+4*beta*t=.3.
+    const n = 100000, alphaT = .1, betaT = .025;
+    const p = .25 - .5 * Math.exp(-4 * (alphaT + betaT)) + .25 * Math.exp(-8 * betaT);
+    const q = .5 - .5 * Math.exp(-8 * betaT);
+    const transitions = Math.round(n * p), transversions = Math.round(n * q);
+    const result = inferAlignedPhylogeny(fasta({ A: 'A'.repeat(n),
+      B: 'G'.repeat(transitions) + 'C'.repeat(transversions) + 'A'.repeat(n - transitions - transversions),
+      C: 'A'.repeat(n) }), { distance: 'k80' });
+    near(result.distances[0][1], 2 * alphaT + 4 * betaT, 1e-5);
+    assert.equal(result.k80Comparisons?.[0].transitions, 15142);
+    assert.equal(result.k80Comparisons?.[0].transversions, 9063);
+  });
+  test('matches the published 438-site example with 58 transitions and 63 transversions', () => {
+    const changed = 'G'.repeat(58) + 'C'.repeat(63) + 'A'.repeat(317);
+    const result = inferAlignedPhylogeny(fasta({ A: 'A'.repeat(438), B: changed, C: changed }), { distance: 'k80' });
+    near(result.distances[0][1], 0.3474993549801952);
+    assert.deepEqual(result.k80Comparisons?.[0],
+      { taxonA: 'A', taxonB: 'B', comparedSites: 438, transitions: 58, transversions: 63 });
+  });
+  test('reduces to JC69 when the observed transition fraction is half the transversion fraction', () => {
+    const input = fasta({ A: 'A'.repeat(100), B: 'G'.repeat(10) + 'C'.repeat(20) + 'A'.repeat(70), C: 'A'.repeat(100) });
+    near(inferAlignedPhylogeny(input, { distance: 'k80' }).distances[0][1],
+      inferAlignedPhylogeny(input, { distance: 'jc69' }).distances[0][1]);
+  });
+  test('counts substitutions only on the common complete-deletion mask', () => {
+    const result = inferAlignedPhylogeny(fasta({ A: 'A'.repeat(10) + 'ACA', B: 'G' + 'A'.repeat(9) + 'GTC',
+      C: 'A'.repeat(10) + 'N-?' }), { distance: 'k80' });
+    assert.equal(result.usedSites, 10); assert.deepEqual(result.excludedColumns, [10, 11, 12]);
+    near(result.distances[0][1], 0.11157177565710488);
+    assert.deepEqual(result.k80Comparisons?.[0], { taxonA: 'A', taxonB: 'B', comparedSites: 10, transitions: 1, transversions: 0 });
+  });
+  test('rejects both exact saturation boundaries, including mixed transition and transversion counts', () => {
+    for (const [n, transitions, transversions] of [[8, 4, 0], [8, 0, 4], [13, 6, 1]]) {
+      const input = fasta({ A: 'A'.repeat(n), B: 'G'.repeat(transitions) + 'C'.repeat(transversions) + 'A'.repeat(n - transitions - transversions), C: 'A'.repeat(n) });
+      assert.throws(() => inferAlignedPhylogeny(input, { distance: 'k80' }), /K80 is undefined/);
+      assert.equal(inferAlignedPhylogeny(input).distances[0][1], (transitions + transversions) / n);
+    }
+    const nearBoundary = fasta({ A: 'A'.repeat(101), B: 'G'.repeat(50) + 'A'.repeat(51), C: 'A'.repeat(101) });
+    assert.ok(Number.isFinite(inferAlignedPhylogeny(nearBoundary, { distance: 'k80' }).distances[0][1]));
+  });
+  test('uses weighted transition counts and withholds all support if any replicate is saturated', () => {
+    const input = fasta({ A: 'AAAA', B: 'AAAA', C: 'GAAA', D: 'GAAA' });
+    const k80 = inferAlignedPhylogeny(input, { distance: 'k80', bootstrap: 200, seed: 0 });
+    const jc69 = inferAlignedPhylogeny(input, { distance: 'jc69', bootstrap: 200, seed: 0 });
+    assert.ok(k80.bootstrap.saturated > jc69.bootstrap.saturated);
+    assert.equal(k80.bootstrap.completed + k80.bootstrap.saturated, 200);
+    assert.equal(k80.bootstrap.supportAvailable, false);
+    for (const split of k80.splits) { assert.equal(split.support, null); assert.equal(split.bootstrapCount, null); }
+    assert.ok(k80.warnings.some(warning => warning.includes('K80') && warning.includes('saturated')));
+    assert.deepEqual(k80, inferAlignedPhylogeny(input, { distance: 'k80', bootstrap: 200, seed: 0 }));
+    assert.deepEqual(k80.k80Comparisons?.find(pair => pair.taxonA === 'A' && pair.taxonB === 'C'),
+      { taxonA: 'A', taxonB: 'C', comparedSites: 4, transitions: 1, transversions: 0 });
+  });
+  test('replays K80 evidence and rejects rehashed false counts or a substituted model', async () => {
+    const input = { ...source, fasta: fasta({ A: 'A'.repeat(80), B: 'A'.repeat(80),
+      C: 'G'.repeat(10) + 'A'.repeat(70), D: 'G'.repeat(10) + 'A'.repeat(70) }) };
+    const experiment = await createAlignedPhylogenyExperiment(input, { distance: 'k80', bootstrap: 20, seed: 0 });
+    assert.deepEqual(experiment.result.bootstrap, { requested: 20, completed: 20, saturated: 0, supportAvailable: true });
+    assert.equal(experiment.result.splits[0].support, 1);
+    assert.ok(experiment.record.references.some(reference => reference.id === '10.1007/BF01731581'));
+    assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(experiment.record)), experiment);
+    const counts = experiment.result.k80Comparisons!.map((pair, i) => i ? pair : { ...pair, transitions: pair.transitions + 1 });
+    const forged = await createAnalysisRecord({ ...experiment.record, fields: { ...experiment.record.fields,
+      phylogeny: { ...experiment.record.fields.phylogeny, value: analysisJson({ ...experiment.result, k80Comparisons: counts }) } as AnalysisField } });
+    await assert.rejects(replayAlignedPhylogenyExperiment(serializeAnalysisRecord(forged)), /Recomputed/);
+    const changedModel = await createAnalysisRecord({ ...experiment.record, parameters: { ...experiment.record.parameters, distance: 'jc69' } });
+    await assert.rejects(replayAlignedPhylogenyExperiment(serializeAnalysisRecord(changedModel)), /Recomputed/);
+  });
+  test('preserves pre-K80 portable p-distance and JC69 identities byte for byte', async () => {
+    // Captured from unchanged main f065740 with the original quartet and explicit seed zero.
+    const fixtures = [
+      ['p-distance', '58646638e0fbe9f6e775001f8cfa2652dfb4118b5a138321a046284624556ac1', 'c23eacea034087b890a20da2680794ea103c67838e08f41d94c5c6040e5e776c'],
+      ['jc69', '5289eec35702c1b0200713eb943b916504aaae53483cfea0f8e34850d225dd0c', 'a5a25d01435c2d51f37e43864b91e39c2b52d2dce2599041eaa6f23cc3d3348b'],
+    ] as const;
+    for (const [distance, cacheKey, resultId] of fixtures) {
+      const experiment = await createAlignedPhylogenyExperiment(source, { distance, bootstrap: 20, seed: 0 });
+      assert.equal(experiment.record.cacheKey, cacheKey); assert.equal(experiment.record.resultId, resultId);
+      assert.ok(!('k80Comparisons' in experiment.result));
+      assert.deepEqual(await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(experiment.record)), experiment);
+    }
+  });
+});
