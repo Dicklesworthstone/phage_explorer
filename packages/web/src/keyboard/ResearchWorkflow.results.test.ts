@@ -8,10 +8,70 @@ import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults,
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
 import { createRestrictionDigestRecord } from '../../../core/src/analysis/restriction-digest';
 import type { ReferenceSpacerHit, SpacerLibrary } from '../../../core/src/analysis/spacer-reference';
+import { BunSqliteRepository } from '@phage-explorer/db-runtime';
+import { fileURLToPath } from 'node:url';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation', dotPlot: 'overlay.dotPlot', digest: 'overlay.gel' };
 function latch() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+
+describe('captured catalog research workflows', () => {
+  it('replays captured catalog sequence and CDS analysis in real browser workers and native hosts after the catalog closes', async () => {
+    const { createBrowserResearchWorkflow, runResearchWorker } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { prepareCatalogGenomeSnapshot, useLocalGenomes } = await import('../db/local-genomes');
+    const { ActionIds } = await import('./actionRegistry');
+    const { replayResearchTape } = await import('../../../tui/src/research-replay');
+    const before = useLocalGenomes.getState();
+    const repo = new BunSqliteRepository(fileURLToPath(new URL('../../public/phage.db', import.meta.url)), { readonly: true });
+    const { phage, captured } = await (async () => {
+      try {
+        const phage = await repo.getPhageBySlug('lambda');
+        if (!phage) throw new Error('Expected the curated Lambda genome');
+        const captured = await prepareCatalogGenomeSnapshot(repo, phage, {
+          signal: new AbortController().signal, isCurrent: () => true,
+          parse: async (input, signal) => {
+            const result = await runResearchWorker({ type: 'parse', input }, signal);
+            if (result.type !== 'parsed') throw new Error('Expected parsed catalog snapshot');
+            return result.result;
+          },
+        });
+        return { phage, captured };
+      } finally { await repo.close(); }
+    })();
+    const genes = [...phage.genes].sort((a, b) => a.id - b.id);
+    const genome = captured.genomes[0], contentId = genome.phage.localGenome!.contentId;
+    const gene = genome.phage.genes.find(g => g.type === 'CDS' && g.locusTag === 'lambdap01');
+    if (!gene) throw new Error('Expected Lambda terminase small subunit CDS');
+    assert.equal(gene.id, 2);
+    useLocalGenomes.setState({ genomes: captured.genomes, requestedId: null });
+    const binding = createBrowserResearchWorkflow(async () => { throw new Error('No navigation requested'); });
+    try {
+      binding.workflow.start('Captured catalog GC and coding sequence');
+      await binding.workflow.commands.dispatch(ActionIds.OverlayGCSkew, { contentId, windowSize: 500, stepSize: 500 });
+      const window = (binding.workflow.getSnapshot().lastAnalysis!.fields.windows.value as Array<{ g: number; c: number }>)[0];
+      assert.equal(window.g, genome.sequence.slice(0, 500).split('G').length - 1);
+      assert.equal(window.c, genome.sequence.slice(0, 500).split('C').length - 1);
+      await binding.workflow.commands.dispatch(ActionIds.OverlayCodonAdaptation, { contentId, geneId: gene.id });
+      const codons = binding.workflow.getSnapshot().lastAnalysis!;
+      assert.equal((codons.fields.codingSequences.value as Array<{ geneId: number }>)[0].geneId, gene.id);
+      assert.equal(codons.fields.hostRankings.kind, 'demo');
+      binding.workflow.commands.stop();
+      const tapeJson = binding.workflow.commands.export();
+      const archiveJson = await binding.workflow.replayWithResults(2);
+      const native = await replayResearchTape(tapeJson, { repetitions: 2, captureResults: true });
+      assert.equal(native.report.completed, 4);
+      assert.equal(native.allResultsJson, archiveJson);
+      const archive = await parseWorkflowResults(archiveJson);
+      assert.equal(archive.records.length, 2);
+      const context = parseCommandTape(archive.tapeJson).context as { bundle: string };
+      const restored = await importLocalGenomes({ name: 'detached-catalog-workflow.json', text: context.bundle });
+      assert.deepEqual(restored.genomes[0].phage.genes, genes);
+      assert.deepEqual(JSON.parse(restored.genomes[0].original.text).genome.genes, genes);
+      assert.equal(restored.genomes[0].phage.localGenome!.contentId, contentId);
+      assert.equal(restored.genomes[0].sequence, genome.sequence);
+    } finally { binding.dispose(); useLocalGenomes.setState(before); }
+  });
+});
 
 describe('production browser spacer workflow adapter', () => {
   it('uses real workers to preserve exact spacer inputs, all results and terminal-compatible replay', async () => {

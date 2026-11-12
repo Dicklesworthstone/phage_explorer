@@ -360,7 +360,7 @@ function renderLazyOverlay(
   // the selected genome. Public reference lookup is explicit inside its workspace.
   switch (id) {
     case 'genomeImport':
-      return <GenomeImportOverlay onSelectPhage={onSelectPhage} />;
+      return <GenomeImportOverlay repository={repository} onSelectPhage={onSelectPhage} />;
     // Simulation & comparison
     case 'simulationHub':
       return <SimulationHub />;

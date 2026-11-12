@@ -2,6 +2,8 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { parseAnalysisRecord } from '../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
+import { importLocalGenomes } from '../../core/src/genome-import';
+import type { PhageFull } from '../../core/src/types';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 const GENBANK = `LOCUS       PRIVATE1                  24 bp    DNA     circular
@@ -53,6 +55,143 @@ test.beforeEach(async ({ page }) => {
     // Exercise the browser download fallback, not an OS picker inaccessible to automation.
     Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
     Object.defineProperty(window, 'showOpenFilePicker', { value: undefined, configurable: true });
+  });
+});
+
+test.describe('catalog snapshots', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('catalog capture preserves annotations through review, export and a fresh research replay', async ({ page }, info) => {
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    const requests: Array<{ url: string; body: string | null }> = [];
+    page.on('request', request => requests.push({ url: request.url(), body: request.postData() }));
+    try {
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, info);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      const originalFasta = await downloadText(page, () => palette(page, 'Export as FASTA'));
+      const sequence = originalFasta.replace(/^>.*\n/, '').replace(/\s/g, '');
+      const original = JSON.parse(await downloadText(page, () => palette(page, 'Export analysis JSON'))) as { phage: PhageFull };
+      const genes = [...original.phage.genes].sort((a, b) => a.id - b.id);
+      expect(sequence).toHaveLength(48502);
+      expect(original.phage.accession).toBe('NC_001416.1');
+      expect(genes).toHaveLength(174);
+
+      let overlay = await importPanel(page);
+      await overlay.getByRole('button', { name: 'Capture selected catalog genome', exact: true }).click();
+      await expect(overlay.getByRole('status').filter({ hasText: 'Catalog snapshot prepared' })).toBeVisible();
+      await expect(overlay).toContainText('separate session copy');
+      await expect(overlay).toContainText('GenBank-only analyses require a separately supplied original GenBank record');
+      await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(overlay.getByRole('alert')).toContainText('already exists');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+      await overlay.getByRole('checkbox', { name: /Keep different records separately/ }).check();
+      await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(overlay).toBeHidden();
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(25);
+
+      overlay = await importPanel(page);
+      await expect(overlay.getByRole('button', { name: 'Capture selected catalog genome', exact: true })).toBeDisabled();
+      const bundleText = await downloadText(page, () => overlay.getByRole('button', { name: 'Export local genome bundle', exact: true }).click());
+      const bundle = JSON.parse(bundleText);
+      const imported = await importLocalGenomes({ name: 'captured-lambda.json', text: bundleText });
+      expect(imported.genomes).toHaveLength(1);
+      const genome = imported.genomes[0];
+      expect(genome.phage.localGenome?.format).toBe('catalog-snapshot');
+      expect(genome.phage.localGenome?.topology).toBe('unknown');
+      expect(genome.sequence).toBe(sequence);
+      expect(genome.phage.genes).toEqual(genes);
+      expect(JSON.parse(genome.original.text).genome.genes).toEqual(genes);
+      expect(bundle.view.contentId).toBe(genome.phage.localGenome!.contentId);
+
+      const panel = page.getByRole('region', { name: 'Saved research workflows', exact: true });
+      const button = (name: string) => panel.getByRole('button', { name, exact: true });
+      const activate = async (name: string) => { await button(name).focus(); await button(name).press('Enter'); };
+      await panel.getByLabel('Workflow name', { exact: true }).fill('Catalog Lambda sequence and CDS');
+      await activate('Start workflow recording');
+      await panel.getByLabel('Workflow GC-skew window (bp)', { exact: true }).fill('500');
+      await panel.getByLabel('Workflow GC-skew step (bp)', { exact: true }).fill('500');
+      await activate('Run and record GC skew');
+      await expect(panel.getByTestId('workflow-status')).toContainText('1 recorded commands');
+      const gc = await parseAnalysisRecord(await downloadText(page, () => button('Export workflow analysis').click()));
+      expect((gc.fields.windows.value as Array<{ g: number; c: number }>)[0]).toMatchObject({
+        g: sequence.slice(0, 500).split('G').length - 1, c: sequence.slice(0, 500).split('C').length - 1,
+      });
+      await panel.getByLabel('Workflow CDS', { exact: true }).selectOption('2');
+      await activate('Run and record CDS analysis');
+      await expect(panel.getByTestId('workflow-status')).toContainText('2 recorded commands');
+      const cds = await parseAnalysisRecord(await downloadText(page, () => button('Export workflow analysis').click()));
+      expect((cds.fields.codingSequences.value as Array<{ geneId: number }>)[0].geneId).toBe(2);
+      await activate('Stop workflow recording');
+      const saved = await downloadText(page, () => button('Export research workflow').click());
+      const tape = parseCommandTape(saved);
+      expect(tape.commands.map(command => command.actionId)).toEqual(['overlay.gcSkew', 'overlay.codonAdaptation']);
+      expect(JSON.parse((tape.context as { bundle: string }).bundle).inputs).toEqual(bundle.inputs);
+
+      await page.reload();
+      await expectExplorerIdentity(page, info);
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+      await palette(page, 'Enterobacteria phage lambda');
+      const retainedFasta = await downloadText(page, () => palette(page, 'Export as FASTA'));
+      expect(retainedFasta.replace(/^>.*\n/, '').replace(/\s/g, '')).toBe(sequence);
+      overlay = await importPanel(page);
+      await panel.getByLabel('Load research workflow JSON', { exact: true }).setInputFiles({
+        name: 'catalog-workflow.json', mimeType: 'application/json', buffer: Buffer.from(saved),
+      });
+      await expect(panel).toContainText('1 bundled genomes validated');
+      await expect(panel.getByTestId('workflow-result')).toHaveCount(0);
+      await button('Add workflow genomes').click();
+      await expect(panel.getByRole('alert')).toContainText('already exists');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+      await panel.getByRole('checkbox', { name: 'Keep distinct records with matching accessions', exact: true }).check();
+      await button('Add workflow genomes').click();
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(25);
+      await expect(overlay.getByRole('button', { name: 'Capture selected catalog genome', exact: true })).toBeDisabled();
+      await button('Replay research workflow').click();
+      await expect(panel.getByTestId('workflow-status')).toContainText('Verified 2 commands');
+      const replayed = await parseAnalysisRecord(await downloadText(page, () => button('Export workflow analysis').click()));
+      expect(replayed.resultId).toBe(cds.resultId);
+      expect(replayed.fields).toEqual(cds.fields);
+      expect(replayed.inputs).toEqual(cds.inputs);
+      expect(requests.some(request => request.body?.includes('phage-explorer-catalog-snapshot') || request.url.includes(sequence.slice(0, 128)))).toBe(false);
+      expect(pageErrors).toEqual([]);
+    } finally { await finalize(); }
+  });
+
+  test('changing the catalog selection cancels an unfinished capture before publishing its records', async ({ page }, info) => {
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    let releaseWorker: (() => void) | undefined;
+    try {
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, info);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      const overlay = await importPanel(page);
+      const workerUrl = /research-workflow\.worker(?:-[^/]+\.js|\.ts)/;
+      let workerRequested = false;
+      const gate = new Promise<void>(resolve => { releaseWorker = resolve; });
+      await page.route(workerUrl, async route => {
+        workerRequested = true;
+        await gate;
+        await route.continue().catch(() => {});
+      });
+      await overlay.getByRole('button', { name: 'Capture selected catalog genome', exact: true }).click();
+      await expect.poll(() => workerRequested).toBe(true);
+      await palette(page, 'Enterobacteria phage T4');
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Enterobacteria phage T4');
+      await expect(overlay.getByRole('status').filter({ hasText: 'catalog selection changed' })).toBeVisible();
+      releaseWorker!();
+      await page.unroute(workerUrl);
+      await expect(overlay.getByRole('button', { name: 'Add records to explorer', exact: true })).toHaveCount(0);
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+      await overlay.getByRole('button', { name: 'Capture selected catalog genome', exact: true }).click();
+      await expect(overlay.getByRole('status').filter({ hasText: 'Catalog snapshot prepared' })).toBeVisible();
+      await expect(overlay).toContainText('168,903 bases');
+      await expect(overlay).toContainText('excluded from mapped genes');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
+      expect(pageErrors).toEqual([]);
+    } finally { releaseWorker?.(); await finalize(); }
   });
 });
 
