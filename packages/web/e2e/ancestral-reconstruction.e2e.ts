@@ -151,3 +151,79 @@ test('imported reversible models and site rates survive browser reruns and inval
     expect(pageErrors).toEqual([]);
   }finally{await finalize();}
 });
+
+test('a verified rooted phylogeny reaches ancestral reconstruction and survives complete-record replay', async ({ page }, info) => {
+  test.setTimeout(180000);
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  const { createAlignedPhylogenyExperiment } = await import('../../core/src/analysis/aligned-phylogeny');
+  const { rootAlignedPhylogenyExperiment, createRootedAncestralExperiment, replayRootedAncestralExperiment } = await import('../../core/src/analysis/phylogeny-rooting');
+  const rows = [
+    { id: 'A', sequence: 'AAAAAAAAAAAAAAAAR-N?' },
+    { id: 'B', sequence: 'AAAAAAAAAAAAAAAAAANN' },
+    { id: 'C', sequence: 'CCCCAAAAAAAAAAAAY-??' },
+    { id: 'D', sequence: 'CCCCAAAAAAAAAAAACANN' },
+  ];
+  const alignment = '\uFEFF' + [3, 1, 0, 2].map(index => {
+    const row = rows[index];
+    return `>${row.id} supplied description ${row.id}\r\n${row.sequence.slice(0, 8).toLowerCase()} ${row.sequence.slice(8).toLowerCase()}`;
+  }).join('\r\n') + '\r\n';
+  const marker = 'private-rooted-ancestry-source-53';
+  const permission = 'Synthetic alignment; CC0 test fixture.';
+  const unrooted = await createAlignedPhylogenyExperiment({ name: 'Private linked quartet', kind: 'demo',
+    reference: marker, fasta: alignment }, { distance: 'jc69', bootstrap: 0, seed: 17 });
+  const rooted = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(unrooted.record), {
+    outgroup: ['A', 'B'], fractionFromOutgroup: .25,
+    evidence: 'Synthetic outgroup and quarter-edge placement, chosen without dates.', dateIndependent: true,
+  });
+  const content = serializeAnalysisRecord(rooted.record);
+  const expected = await createRootedAncestralExperiment(content, permission, { minPosterior: .7 });
+  let privateLeak = false;
+  page.on('request', request => { if (request.url().includes(marker) || request.postData()?.includes(marker)) privateLeak = true; });
+  await page.addInitScript(() => localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' })));
+  try {
+    await page.goto('/?phage=lambda&model=0'); await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    await page.keyboard.press('Control+Shift+y');
+    await page.getByRole('button', { name: 'Infer an unrooted tree from aligned DNA', exact: true }).click();
+    const phylogeny = page.getByRole('region', { name: 'Aligned DNA · unrooted phylogeny', exact: true });
+    await phylogeny.getByLabel('Restore verified phylogeny experiment JSON (up to 10 MiB)', { exact: true })
+      .setInputFiles({ name: 'rooted-parent.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+    await expect(phylogeny.getByRole('region', { name: 'Accepted root hypothesis', exact: true }))
+      .toHaveAttribute('data-root-result-id', rooted.record.resultId);
+    await phylogeny.getByRole('button', { name: 'Use this rooted experiment for ancestral reconstruction', exact: true }).click();
+    let panel = page.getByRole('region', { name: 'Ancestral nucleotide reconstruction', exact: true });
+    await expect(panel).toBeVisible(); await expect(panel.getByTestId('ancestral-result')).toHaveCount(0);
+    await panel.getByLabel('Rooted alignment license or permission', { exact: true }).fill(permission);
+    await panel.getByRole('button', { name: 'Prepare ancestral input from this root', exact: true }).click();
+    await expect(panel.getByTestId('ancestral-lineage')).toContainText(unrooted.record.resultId);
+    await expect(panel.getByTestId('ancestral-lineage')).toContainText(rooted.record.resultId);
+    await expect(panel.getByTestId('ancestral-result')).toHaveCount(0);
+    await expect(panel.getByLabel('Last alignment column', { exact: true })).toHaveValue('20');
+    await panel.getByLabel('Consensus posterior threshold', { exact: true }).fill('0.7');
+    await panel.getByRole('button', { name: 'Run ancestral reconstruction', exact: true }).click();
+    await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id', expected.record.resultId);
+    await expect(panel.getByTestId('ancestral-coverage')).toContainText('18 analyzed columns; 2 gap/all-missing exclusions');
+    const exportEvidence = () => download(page, () => panel.getByRole('button', { name: 'Export ancestral evidence', exact: true }).click());
+    const saved = await exportEvidence();
+    const record = await parseAnalysisRecord(saved);
+    expect(record.method.id).toBe('rooted-nj-ancestral');
+    expect(record.inputs.find(input => input.id === 'rootedPhylogeny')?.data).toEqual(JSON.parse(content));
+    expect(record.fields.lineage.value).toEqual({ rootedResultId: rooted.record.resultId, unrootedResultId: unrooted.record.resultId });
+    const replay = await replayRootedAncestralExperiment(saved);
+    expect(replay.rootedSource).toEqual({ content, license: permission });
+    expect(replay.result.alignmentColumns).toBe(20);
+    expect((JSON.parse(replay.rootedSource.content).inputs[0].data as { fasta: string }).fasta).toBe(alignment);
+    // Draft changes cannot relabel the accepted experiment or its embedded parent.
+    await panel.getByLabel('Consensus posterior threshold', { exact: true }).fill('0.99');
+    expect((await parseAnalysisRecord(await exportEvidence())).resultId).toBe(record.resultId);
+    await page.reload(); await expectExplorerIdentity(page, info); panel = await open(page);
+    await panel.getByLabel('Import ancestral dataset or saved evidence JSON', { exact: true })
+      .setInputFiles({ name: 'linked-ancestral.json', mimeType: 'application/json', buffer: Buffer.from(saved) });
+    await expect(panel.getByTestId('ancestral-status')).toContainText('Verified ancestral replay');
+    await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id', record.resultId);
+    await expect(panel.getByTestId('ancestral-lineage')).toContainText(rooted.record.resultId);
+    expect(await exportEvidence()).toBe(saved);
+    expect(privateLeak).toBe(false); expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});

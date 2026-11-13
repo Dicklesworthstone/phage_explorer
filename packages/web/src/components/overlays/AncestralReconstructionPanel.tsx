@@ -4,7 +4,7 @@ import { ancestralConsensus, ancestralFasta, NUCLEOTIDES,
 import type { TemporalDataset } from '../../../../core/src/analysis/temporal-signal';
 import { resolveNucleotideModel } from '../../../../core/src/analysis/nucleotide-model';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
-import { AncestralSession, type AncestralRequest } from '../../workers/AncestralSession';
+import { AncestralSession, ancestralAnalysisRequest, type AncestralRequest } from '../../workers/AncestralSession';
 import { downloadString } from '../../utils/export';
 import { useTheme } from '../../hooks/useTheme';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
@@ -30,7 +30,7 @@ type Metadata=Record<keyof typeof LABELS,string>;
 const read=(file:File|null,fallback:string):Promise<string>=>file&&file.size>2*1024*1024?Promise.reject(new Error('Alignment and tree files must each fit within 2 MiB.')):file?file.text():Promise.resolve(fallback);
 
 /** No catalog genome, external request or raw-sequence alignment is implicitly substituted. */
-export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:TemporalDataset}):React.ReactElement{
+export function AncestralReconstructionPanel({temporalInput,rootedInput}:{temporalInput?:TemporalDataset;rootedInput?:{content:string;name:string;kind:'local'|'demo'}}):React.ReactElement{
   const id=useId(),{theme}=useTheme();
   const session=useMemo(()=>new AncestralSession(()=>new Worker(new URL('../../workers/ancestral.worker.ts',import.meta.url),{type:'module'})),[]);
   const {accepted,busy,phase,error,notice}=useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
@@ -38,9 +38,11 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
   const [newick,setNewick]=useState(''),[fasta,setFasta]=useState(''),[treeFile,setTreeFile]=useState<File|null>(null),[alignmentFile,setAlignmentFile]=useState<File|null>(null);
   const [confirmed,setConfirmed]=useState(false),[start,setStart]=useState('1'),[end,setEnd]=useState('1'),[threshold,setThreshold]=useState('0.9');
   const [substitution,setSubstitution]=useState('');
+  const [rootDraft,setRootDraft]=useState<typeof rootedInput>(rootedInput),[rootLicense,setRootLicense]=useState('');
   const [gap,setGap]=useState<AncestralOptions['gapPolicy']>('missing'),[node,setNode]=useState(0),[siteIndex,setSiteIndex]=useState(0),[page,setPage]=useState(0),[localError,setLocalError]=useState<string|null>(null);
   useEffect(()=>{session.activate();return session.deactivate;},[session]);
-  useEffect(()=>{if(accepted){setStart(String(accepted.options.startColumn));setEnd(String(accepted.options.endColumn));setThreshold(String(accepted.options.minPosterior));setGap(accepted.options.gapPolicy);setSubstitution(accepted.options.substitution?JSON.stringify(accepted.options.substitution,null,2):'');}setNode(0);setSiteIndex(0);setPage(0);setLocalError(null);},[accepted]);
+  useEffect(()=>{if(rootedInput){session.cancel();setRootDraft(rootedInput);setRootLicense('');setLocalError(null);}},[rootedInput,session]);
+  useEffect(()=>{if(accepted){setStart(String(accepted.options.startColumn));setEnd(String(accepted.options.endColumn));setThreshold(String(accepted.options.minPosterior));setGap(accepted.options.gapPolicy);setSubstitution(accepted.options.substitution?JSON.stringify(accepted.options.substitution,null,2):'');setRootDraft(undefined);setRootLicense('');}setNode(0);setSiteIndex(0);setPage(0);setLocalError(null);},[accepted]);
   const run=(request:AncestralRequest|Promise<AncestralRequest>)=>{setLocalError(null);void session.run(request);};
   const save=(kind:'dataset'|'record'|'fasta')=>{
     if(!accepted)return;
@@ -69,7 +71,17 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
     <button type="button" disabled={!busy} onClick={session.cancel}>Cancel ancestral work</button>
     <p role="status" data-testid="ancestral-status">{busy?`${phase}. Accepted evidence remains unchanged.`:notice??'No ancestral alignment loaded.'}</p>
     {(error||localError)&&<p role="alert">{localError??error}</p>}
-    <details open={!accepted}><summary>Prepare homologous FASTA and rooted Newick input</summary>
+    {rootDraft&&<form onSubmit={event=>{
+      event.preventDefault();run({kind:'prepare-rooted',content:rootDraft.content,license:rootLicense});
+    }}><fieldset disabled={busy} style={{display:'grid',gap:'.75rem'}}><legend>Prepare linked ancestral input</legend>
+      <p><strong>Pending rooted experiment: {rootDraft.name}</strong>{rootDraft.kind==='demo'?' · Synthetic input':''}</p>
+      <p>The original alignment, NJ inference and explicit root will be recomputed before this input is accepted.
+        All original alignment columns are retained, including those excluded from tree distances. The reconstruction model is chosen separately.</p>
+      <label style={field}>Rooted alignment license or permission<input required maxLength={2000} value={rootLicense} onChange={event=>setRootLicense(event.target.value)}/></label>
+      <button type="submit">Prepare ancestral input from this root</button>
+      <button type="button" onClick={()=>{setRootDraft(undefined);setRootLicense('');}}>Discard pending rooted input</button>
+    </fieldset></form>}
+    <details open={!accepted&&!rootDraft}><summary>Prepare homologous FASTA and rooted Newick input</summary>
       <form onSubmit={event=>{
         event.preventDefault();if(!confirmed)return;
         const {name,description,reference,license,treeMethod,rooting,alignmentMethod,alignmentReference}=metadata;
@@ -100,8 +112,8 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
         event.preventDefault();
         try{
           const model=substitution.trim()?resolveNucleotideModel(JSON.parse(substitution)):undefined;
-          run({kind:'analyze',input:accepted.input,options:{startColumn:Number(start),endColumn:Number(end),minPosterior:Number(threshold),gapPolicy:gap,
-            ...(model?{substitution:model}:{})}});
+          run(ancestralAnalysisRequest(accepted,{startColumn:Number(start),endColumn:Number(end),minPosterior:Number(threshold),gapPolicy:gap,
+            ...(model?{substitution:model}:{})}));
         }catch(cause){setLocalError(cause instanceof Error?cause.message:String(cause));}
       }}>
         <fieldset disabled={busy}><legend>Conditional reconstruction settings</legend><div style={grid}>
@@ -127,9 +139,12 @@ export function AncestralReconstructionPanel({temporalInput}:{temporalInput?:Tem
           <button type="submit">Run ancestral reconstruction</button>
         </fieldset>
       </form>
-      <div><button type="button" disabled={busy} onClick={()=>save('dataset')}>Export ancestral input</button>{' '}
+      <div><button type="button" disabled={busy} onClick={()=>save('dataset')}>{accepted.rootedSource?'Export alignment/tree only (no parent lineage)':'Export ancestral input'}</button>{' '}
         <button type="button" disabled={busy||!accepted.record} onClick={()=>save('record')}>Export ancestral evidence</button>{' '}
         <button type="button" disabled={busy||!result?.analyzedColumns} onClick={()=>save('fasta')}>Export conditional ancestral FASTA</button></div>
+      {accepted.rootedSource&&<p data-testid="ancestral-lineage">Original inference: {accepted.unrootedResultId}; explicit root: {accepted.rootedResultId}.
+        Export ancestral evidence after reconstruction to preserve and replay the entire alignment, tree, root and reconstruction chain.
+        Alignment/tree-only JSON and consensus FASTA do not retain that complete lineage.</p>}
     </>}
     {result&&accepted?.record&&<section data-testid="ancestral-result" data-result-id={accepted.record.resultId} style={{display:'grid',gap:'.75rem'}}>
       <h4>Conditional node and branch evidence</h4>

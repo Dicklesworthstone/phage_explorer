@@ -3,15 +3,26 @@ import { createAncestralRecord, parseAncestralFasta, reconstructAncestors, repla
   resolveAncestralOptions, validateAncestralDataset, type AncestralDataset, type AncestralOptions,
   type AncestralResult } from '../../../core/src/analysis/ancestral-reconstruction';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import type { RootedAncestralSource } from '../../../core/src/analysis/phylogeny-rooting';
 
 export type AncestralRequest = { kind:'load'; input:AncestralDataset }
   | { kind:'import'; content:string }
+  | { kind:'prepare-rooted'; content:string; license:string }
+  | { kind:'analyze-rooted'; rootedSource:RootedAncestralSource; options:Partial<AncestralOptions> }
   | { kind:'analyze'; input:AncestralDataset; options:Partial<AncestralOptions> };
 export interface AncestralWork {
   input:AncestralDataset; columns:number; tips:number; options:AncestralOptions;
   result:AncestralResult|null; record:AnalysisRecord|null; verified:boolean;
+  rootedSource?:RootedAncestralSource; rootedResultId?:string; unrootedResultId?:string;
 }
 export type AncestralMessage = {kind:'progress';phase:string}|{kind:'result';value:AncestralWork}|{kind:'error';message:string};
+
+/** Re-analysis keeps the accepted alignment and explicit root as its source. */
+export function ancestralAnalysisRequest(accepted:AncestralWork, options:Partial<AncestralOptions>):AncestralRequest {
+  return accepted.rootedSource ? {kind:'analyze-rooted',rootedSource:accepted.rootedSource,options}
+    : {kind:'analyze',input:accepted.input,options};
+}
+
 export async function executeAncestralRequest(request:AncestralRequest, progress:(phase:string)=>void=()=>{}):Promise<AncestralWork>{
   if(!request||typeof request!=='object')throw new Error('Unsupported ancestral request.');
   progress('Validating homologous alignment, tree and provenance');
@@ -21,11 +32,31 @@ export async function executeAncestralRequest(request:AncestralRequest, progress
     const content=request.content.replace(/^\uFEFF/,''), decoded:unknown=JSON.parse(content);
     if(decoded&&typeof decoded==='object'&&'format' in decoded&&decoded.format==='phage-explorer-analysis'){
       progress('Verifying saved inputs and recomputing ancestral evidence');
-      const replay=await replayAncestralRecord(content,progress);
+      const method='method' in decoded?decoded.method:null;
+      const replay=method&&typeof method==='object'&&'id' in method&&method.id==='rooted-nj-ancestral'
+        ?await (await import('../../../core/src/analysis/phylogeny-rooting')).replayRootedAncestralExperiment(content,undefined,progress)
+        :await replayAncestralRecord(content,progress);
       const rows=parseAncestralFasta(replay.input.alignment.fasta);
       return {...replay,columns:rows[0].sequence.length,tips:rows.length,options:replay.result.options,verified:true};
     }
     input=validateAncestralDataset(decoded);
+  }else if(request.kind==='prepare-rooted'){
+    const {content,license}=request;
+    progress('Recomputing the original alignment and explicit root before preparing ancestral input');
+    const {prepareRootedAncestralDataset}=await import('../../../core/src/analysis/phylogeny-rooting');
+    const prepared=await prepareRootedAncestralDataset(content,license);
+    const rows=parseAncestralFasta(prepared.input.alignment.fasta);
+    return {...prepared,columns:rows[0].sequence.length,tips:rows.length,
+      options:resolveAncestralOptions(rows[0].sequence.length),result:null,record:null,verified:false};
+  }else if(request.kind==='analyze-rooted'){
+    if(!request.rootedSource||typeof request.rootedSource!=='object'||Array.isArray(request.rootedSource)
+      ||Object.keys(request.rootedSource).sort().join('|')!=='content|license')throw new Error('A rooted source requires its exact content and alignment license.');
+    // Capture the parent and nested model assumptions before loading the producer.
+    const {content,license}=request.rootedSource, options=structuredClone(request.options);
+    const {createRootedAncestralExperiment}=await import('../../../core/src/analysis/phylogeny-rooting');
+    const experiment=await createRootedAncestralExperiment(content,license,options,undefined,progress);
+    const rows=parseAncestralFasta(experiment.input.alignment.fasta);
+    return {...experiment,columns:rows[0].sequence.length,tips:rows.length,options:experiment.result.options,verified:false};
   }else if(request.kind==='load'||request.kind==='analyze')input=validateAncestralDataset(request.input);
   else throw new Error('Unsupported ancestral operation.');
   const rows=parseAncestralFasta(input.alignment.fasta);

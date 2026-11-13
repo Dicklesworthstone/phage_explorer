@@ -56,6 +56,7 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
   const [permutations,setPermutations]=useState('999'),[seed,setSeed]=useState('42');
   const [scheme,setScheme]=useState<TemporalOptions['permutationScheme']>('unrestricted'),[excluded,setExcluded]=useState<string[]>([]);
   const [ancestralOpen,setAncestralOpen]=useState(false);
+  const [ancestralRoot,setAncestralRoot]=useState<{content:string;name:string;kind:'local'|'demo'}>();
   const [phylogenyOpen,setPhylogenyOpen]=useState(false);
   const [rootDraft,setRootDraft]=useState<{content:string;name:string;kind:'local'|'demo'}|null>(null);
   const [dateKind,setDateKind]=useState<'local'|'demo'>('local');
@@ -95,11 +96,11 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
       {phylogenyOpen&&<Suspense fallback={<p>Loading local aligned-DNA inference…</p>}><AlignedPhylogenyPanel onTemporalRoot={root=>{
         session.cancel();setRootDraft(root);setName(root.name);setConfirmed(false);setDateKind(root.kind);setExportError(null);
         if(draftRef.current){draftRef.current.open=true;draftRef.current.scrollIntoView({block:'start'});}
-      }}/></Suspense>}
-      <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>setAncestralOpen(!ancestralOpen)}>
+      }} onAncestralRoot={root=>{setAncestralRoot(root);setAncestralOpen(true);}}/></Suspense>}
+      <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>{setAncestralOpen(!ancestralOpen);if(ancestralOpen)setAncestralRoot(undefined);}}>
         {ancestralOpen?'Close ancestral reconstruction (export first)':'Open ancestral nucleotide reconstruction'}
       </button>
-      {ancestralOpen&&<Suspense fallback={<p>Loading alignment-based reconstruction…</p>}><AncestralReconstructionPanel temporalInput={accepted?.dataset}/></Suspense>}
+      {ancestralOpen&&<Suspense fallback={<p>Loading alignment-based reconstruction…</p>}><AncestralReconstructionPanel temporalInput={accepted?.dataset} rootedInput={ancestralRoot}/></Suspense>}
       {localGenome&&<p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p>}
       <details><summary>Existing catalog search and method scope</summary>
         <p>The existing NCBI sequence search and alignment-free Mash/UPGMA tree viewer remain available separately. They do not supply this workflow's date-independent rooted phylogram.

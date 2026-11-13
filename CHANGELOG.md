@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Linked ancestral reconstruction in the browser
+
+- **Root-to-ancestor workflow** — a verified JC69 or K80 rooted experiment can
+  supply its original alignment and explicit root directly to ancestral
+  reconstruction. Preparation recomputes both parents; saved evidence retains
+  the complete chain for fresh replay and subsequent parameter changes.
+- **Preserved substitution assumptions** — imported JC69, HKY85 and GTR models,
+  their source attribution and site-rate categories populate an editable model
+  draft. Reruns preserve those settings, and invalid drafts leave accepted
+  evidence intact. The accepted model is displayed separately from draft edits.
+  [Model-preservation fix](https://github.com/Dicklesworthstone/phage_explorer/commit/28e988224bb05a4c7f5c446c88bc67c60bd07f21).
+  See the [aligned phylogeny workflow](docs/ALIGNED_PHYLOGENY_WORKFLOW.md#conditional-ancestral-reconstruction-from-a-verified-root).
+
 ### Sourced spacer workflows across browser and terminal
 
 - **Browser recording and replay** — the saved research workflow panel now

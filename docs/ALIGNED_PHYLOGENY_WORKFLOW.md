@@ -145,6 +145,26 @@ to roundoff; it is subject to the same no-clipping rule as every other input.
 
 ## Conditional ancestral reconstruction from a verified root
 
+In the browser's aligned-phylogeny workspace, create or restore an explicit root,
+then choose **Use this rooted experiment for ancestral reconstruction**. Enter the
+alignment license or permission and prepare the linked input. This replays the
+original inference and root before accepting their alignment and tree. Choose
+the reconstruction settings and run the analysis; **Export ancestral evidence**
+retains the complete parent chain. The same import control accepts linked records
+created by the terminal, and changing reconstruction settings retains their
+original alignment and root.
+
+The browser also accepts supplied JC69, HKY85 and GTR assumptions through
+**Substitution model and site-rate assumptions**. This editor records the model's
+source, frequencies, kappa or exchangeabilities, and whole-site rate categories.
+Imported settings populate the editor and survive window or threshold changes.
+Blank settings select the original default JC69 contract. Invalid model drafts
+leave the accepted result and its exports intact. The displayed model describes
+the accepted result, even while a different draft is being edited.
+
+Exporting only the alignment/tree dataset or consensus FASTA omits the full
+parent chain; use the complete evidence JSON for linked replay.
+
 An explicitly rooted JC69 or K80 experiment can now supply its alignment and
 fixed tree directly to the ancestral reconstruction method. The complete
 original inference and rooting decision are retained in the new experiment.
