@@ -11,7 +11,7 @@ const reference = (counts: Record<string, number> = { AAA: 8, AAG: 2 }): CodonRe
   geneticCode: 11, source: { citation: 'Literal test counts, not an experimental organism profile', version: 'fixture-1' }, counts,
 });
 const json = (counts?: Record<string, number>) => JSON.stringify(reference(counts));
-const close = (actual: number | null, expected: number) => { assert.notEqual(actual, null); assert(Math.abs(actual! - expected) < 1e-12, `${actual} != ${expected}`); };
+const close = (actual: number | null, expected: number) => { assert.notEqual(actual, null); assert(Math.abs(actual! - expected) < 1e-12, `${actual} differs from ${expected}`); };
 // RC(TTTG) + RC(CTT) = CAAA + AAG. /codon_start=2 -> AAA AAG.
 const joinedGenBank = `LOCUS       REFERENCE_QUERY           11 bp DNA circular
 ACCESSION   REFERENCE_QUERY
@@ -282,8 +282,10 @@ describe('reference analysis with explicitly reassigned genetic codes', () => {
       assert.equal(unavailable.analysis.summary.cai, null);
       assert.match(unavailable.analysis.genes[0].reasons.join(' '), /Translation exceptions/);
     }
+    const pooledCai = result.record.fields.pooledCai;
+    assert(pooledCai.kind === 'sequence-score');
     const forged = await createAnalysisRecord({ ...result.record, inputs: result.record.inputs, fields: {
-      ...result.record.fields, pooledCai: { ...result.record.fields.pooledCai, value: 0.9 },
+      ...result.record.fields, pooledCai: { ...pooledCai, value: 0.9 },
     } });
     await assert.rejects(replayReferenceCodonExperiment(serializeAnalysisRecord(forged)), /Recomputed/);
   });
