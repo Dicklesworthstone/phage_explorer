@@ -109,6 +109,61 @@ describe('local repository with actual curated SQLite', () => {
     expect(() => useLocalGenomes.getState().add(second, false, [])).toThrow('portable bundle limit');
     expect(useLocalGenomes.getState().genomes).toEqual(first.genomes);
   });
+
+  test('admits exactly 50,000 preserved features and atomically rejects source or unmapped feature overflow', async () => {
+    const input = (accession: string, features: string) => ({ name: `${accession}.gb`, text:
+      `LOCUS       ${accession} 4 bp DNA linear\nACCESSION   ${accession}\nFEATURES             Location/Qualifiers\n${features}ORIGIN\n        1 acgt\n//\n` });
+    // Only one CDS per record is mapped. The source rows and unsupported order()
+    // location are nevertheless retained, and count toward the parser's budget.
+    const features = '     source          1..4\n'.repeat(24998)
+      + '     CDS             1..3\n     misc_feature    order(1..2,3..4)\n';
+    const first = await importLocalGenomes(input('FEATURE_A', features));
+    const second = await importLocalGenomes(input('FEATURE_B', features));
+    expect(first.genomes[0].phage.genes).toHaveLength(1);
+    expect(second.genomes[0].phage.genes).toHaveLength(1);
+    expect(first.genomes[0].warnings).toHaveLength(1);
+    const view = { contentId: second.genomes[0].phage.localGenome!.contentId,
+      viewMode: 'dna' as const, readingFrame: 0 as const, scrollPosition: 2 };
+    useLocalGenomes.getState().add(first, false, []);
+    useLocalGenomes.getState().add({ ...second, view }, false, []);
+    // Re-adding an already accepted source must not consume its budget again.
+    useLocalGenomes.getState().add({ ...second, view }, false, []);
+    const accepted = useLocalGenomes.getState();
+    const bundle = exportLocalGenomeBundle(accepted.genomes, accepted.requestedView);
+    const reopened = await importLocalGenomes({ name: 'combined-features.json', text: bundle });
+    expect(reopened.genomes).toEqual([...first.genomes, ...second.genomes]);
+    expect(reopened.view).toEqual(view);
+
+    for (const [accession, feature] of [
+      ['SOURCE_OVERFLOW', '     source          1..4\n'],
+      ['UNMAPPED_OVERFLOW', '     misc_feature    order(1..2,3..4)\n'],
+    ]) {
+      const extra = await importLocalGenomes(input(accession, feature));
+      expect(extra.genomes[0].phage.genes).toHaveLength(0);
+      // Establish the real rejection that a saved bundle would otherwise hit.
+      await expect(importLocalGenomes({ name: 'overflow.json',
+        text: exportLocalGenomeBundle([...accepted.genomes, ...extra.genomes], view) })).rejects.toThrow('50,000-feature total limit');
+      expect(() => useLocalGenomes.getState().add(extra, false, [])).toThrow('50,000-feature total limit');
+      expect(useLocalGenomes.getState()).toBe(accepted);
+      expect(exportLocalGenomeBundle(useLocalGenomes.getState().genomes, useLocalGenomes.getState().requestedView)).toBe(bundle);
+    }
+  });
+
+  test('counts original duplicate records before accepting a combined portable session', async () => {
+    const first = await importLocalGenomes({ name: 'first.fa', text: '>FIRST\nACGT\n'.repeat(60) });
+    const second = await importLocalGenomes({ name: 'second.fa', text: '>SECOND\nTGCA\n'.repeat(40) });
+    const extra = await importLocalGenomes({ name: 'third.fa', text: '>THIRD\nGGCC\n' });
+    useLocalGenomes.getState().add(first, false, []);
+    useLocalGenomes.getState().add(second, false, []);
+    const accepted = useLocalGenomes.getState();
+    expect(accepted.genomes).toHaveLength(2);
+    const reopened = await importLocalGenomes({ name: 'hundred-records.json', text: exportLocalGenomeBundle(accepted.genomes) });
+    expect(reopened.genomes).toEqual(accepted.genomes);
+    await expect(importLocalGenomes({ name: 'overflow.json',
+      text: exportLocalGenomeBundle([...accepted.genomes, ...extra.genomes]) })).rejects.toThrow('1–100 records');
+    expect(() => useLocalGenomes.getState().add(extra, false, [])).toThrow('1–100 records');
+    expect(useLocalGenomes.getState()).toBe(accepted);
+  });
 });
 
 describe('catalog snapshots enter the existing research repository', () => {

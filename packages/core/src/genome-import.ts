@@ -319,8 +319,10 @@ function validateView(value: unknown): LocalGenomeView | undefined {
   return { contentId: view.contentId, viewMode: view.viewMode as ViewMode, readingFrame: view.readingFrame as ReadingFrame, scrollPosition: view.scrollPosition as number };
 }
 
-/** No network or filesystem operations. Run in a worker to permit hard cancellation. */
-export async function importLocalGenomes(input: GenomeInput, onProgress?: (completed: number, total: number) => void): Promise<GenomeImportResult> {
+/** Read the preserved sources before deduplicating genomes or excluding unmapped
+ * features. Import and session admission must enforce the same aggregate limits.
+ */
+function parseInputRecords(input: GenomeInput): { records: ParsedRecord[]; view?: LocalGenomeView } {
   if (typeof input.name !== 'string' || input.name.length > 2000 || typeof input.text !== 'string') throw new Error('Invalid local input');
   if (new TextEncoder().encode(input.text).length > GENOME_IMPORT_LIMITS.bytes) throw new Error('Input exceeds the 10 MiB limit');
   const text = input.text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').trim();
@@ -358,6 +360,20 @@ export async function importLocalGenomes(input: GenomeInput, onProgress?: (compl
   if (!records.length || records.length > GENOME_IMPORT_LIMITS.records) throw new Error('Import requires 1–100 records');
   if (records.reduce((sum, record) => sum + (record.catalog?.genome.genes.length ?? record.features.length), 0) > GENOME_IMPORT_LIMITS.features) throw new Error('Import exceeds the 50,000-feature total limit');
   if (records.reduce((sum, record) => sum + record.sequence.length, 0) > GENOME_IMPORT_LIMITS.bases) throw new Error('Input exceeds the 5,000,000-base total limit');
+  return { records, ...(view ? { view } : {}) };
+}
+
+/** Check actual source counts and parsing limits without deriving content IDs.
+ * A mapped-gene count is insufficient: source/unsupported annotations and
+ * duplicate records still occupy space in the portable input and must reimport.
+ */
+export function validateLocalGenomeInputLimits(input: GenomeInput): void {
+  parseInputRecords(input);
+}
+
+/** No network or filesystem operations. Run in a worker to permit hard cancellation. */
+export async function importLocalGenomes(input: GenomeInput, onProgress?: (completed: number, total: number) => void): Promise<GenomeImportResult> {
+  const { records, view } = parseInputRecords(input);
   const genomes: LocalGenome[] = [];
   for (const record of records) {
     const contentId = await sha256(JSON.stringify(record.catalog ?? { version: 1, format: record.format, accession: record.accession, name: record.name, sequence: record.sequence, topology: record.topology, features: record.features }));

@@ -1,4 +1,4 @@
-import { exportLocalGenomeBundle, GENOME_IMPORT_LIMITS } from '@phage-explorer/core';
+import { exportLocalGenomeBundle, GENOME_IMPORT_LIMITS, validateLocalGenomeInputLimits } from '@phage-explorer/core';
 import type { GenomeImportResult, LocalGenome, PhageFull, PhageSummary } from '@phage-explorer/core';
 import type { PhageRepository } from './types';
 
@@ -16,9 +16,14 @@ export function mergeLocalGenomes(existing: readonly LocalGenome[], result: Geno
   const next = existing.slice();
   for (const genome of result.genomes) if (!next.some(item => item.phage.id === genome.phage.id)) next.push(genome);
   if (next.length > GENOME_IMPORT_LIMITS.records || next.reduce((sum, genome) => sum + genome.sequence.length, 0) > GENOME_IMPORT_LIMITS.bases) throw new Error('This session supports at most 100 local records and 5,000,000 bases; export and start a new session.');
-  if (new TextEncoder().encode(exportLocalGenomeBundle(next, result.view)).length > GENOME_IMPORT_LIMITS.bytes - 1024) {
+  const bundle = exportLocalGenomeBundle(next, result.view);
+  if (new TextEncoder().encode(bundle).length > GENOME_IMPORT_LIMITS.bytes - 1024) {
     throw new Error('The combined original inputs exceed the 10 MiB portable bundle limit; export this session and start a new one.');
   }
+  // Validate the exact originals that export and workflow replay will parse.
+  // Deduplicated genomes/mapped genes omit repeated records, source features
+  // and unsupported annotations, so their counts cannot establish reimportability.
+  validateLocalGenomeInputLimits({ name: 'local-genomes.json', text: bundle });
   return next;
 }
 
