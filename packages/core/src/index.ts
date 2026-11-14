@@ -89,6 +89,7 @@ export * from './analysis/rna-structure';
 
 // Epistasis & Fitness Landscape analysis
 export * from './analysis/epistasis';
+export * from './analysis/epistasis-evidence';
 
 // Metagenomic Niche Analysis
 export * from './analysis/metagenomic-niche';
