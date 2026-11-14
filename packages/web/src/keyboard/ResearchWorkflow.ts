@@ -1,9 +1,8 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
 import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { CODON_REFERENCE_METHOD, parseCodonReference, referenceGenomeFromPhage,
+import { inspectCodonReferenceInput, referenceCodonMethod, referenceGenomeFromPhage,
   type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
-import { CODON_CORPUS_METHOD } from '../../../core/src/analysis/codon-reference-corpus';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
@@ -173,12 +172,7 @@ export function validateResearchCodons(value: CommandValue): void {
   if (value.zeroCountReplacement !== 0 && value.zeroCountReplacement !== 0.5) throw new Error('Record an explicit zero-count policy of 0 or 0.5.');
   if (typeof value.referenceText !== 'string' || !value.referenceText.trim() || value.referenceText.length > COMMAND_LIMITS.bytes
     || new TextEncoder().encode(value.referenceText).length > COMMAND_LIMITS.bytes) throw new Error('Supply bounded reference JSON, not a reference path.');
-  const reference: unknown = JSON.parse(value.referenceText);
-  if (reference && typeof reference === 'object' && 'format' in reference && reference.format === 'phage-explorer-analysis') {
-    const method = 'method' in reference ? reference.method : null;
-    if (!method || typeof method !== 'object' || !('id' in method) || method.id !== CODON_CORPUS_METHOD.id
-      || !('version' in method) || method.version !== CODON_CORPUS_METHOD.version) throw new Error('A source reference must be a supported GenBank codon corpus experiment.');
-  } else parseCodonReference(value.referenceText);
+  inspectCodonReferenceInput(value.referenceText);
 }
 export function researchReferenceCodonParameters(id: string, referenceText: string, geneIds: number[] | null,
   zeroCountReplacement: ZeroCountReplacement): ResearchReferenceCodonParameters {
@@ -364,10 +358,11 @@ export class ResearchWorkflow {
           const options = { geneIds: values.geneIds === null ? null : [...values.geneIds].sort((a, b) => a - b), zeroCountReplacement: values.zeroCountReplacement };
           const record = await environment.referenceCodons!(structuredClone(genome), values.referenceText, structuredClone(options), signal);
           abort(signal);
-          const sourceBacked = JSON.parse(values.referenceText).format === 'phage-explorer-analysis';
+          const { geneticCode, sourceBacked } = inspectCodonReferenceInput(values.referenceText);
+          const expectedMethod = referenceCodonMethod(geneticCode, sourceBacked);
           const queryInput = record.inputs.find(i => i.id === 'genome'), annotationInput = record.inputs.find(i => i.id === 'annotations');
           const referenceInput = record.inputs.find(i => i.id === 'reference');
-          if (record.method.id !== CODON_REFERENCE_METHOD.id || record.method.version !== (sourceBacked ? '2' : CODON_REFERENCE_METHOD.version)
+          if (!commandValuesEqual(analysisJson(record.method), analysisJson(expectedMethod))
             || record.inputs.length !== 3 || !commandValuesEqual(analysisJson(record.parameters), analysisJson(options))
             || queryInput?.data !== genome.sequence || queryInput.accession !== genome.phage.accession || queryInput.source !== 'local'
             || !commandValuesEqual(annotationInput?.data, analysisJson(referenceGenomeFromPhage(genome.phage)))

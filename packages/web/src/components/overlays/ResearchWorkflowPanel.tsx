@@ -8,7 +8,7 @@ import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonPa
   readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
-import { CODON_REFERENCE_METHOD, CODON_REFERENCE_SOURCE_METHOD,
+import { CODON_REFERENCE_METHOD, inspectCodonReferenceInput, referenceCodonMethod,
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
@@ -279,12 +279,18 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   }, [selected, gene, codonReference, referenceZeroPolicy]);
   const referenceResult = useMemo(() => {
     const record = acceptedAnalysis;
-    if (!record || record.method.id !== CODON_REFERENCE_METHOD.id
-      || ![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version].includes(record.method.version)) return null;
-    return { record, sourceBacked: record.method.version === CODON_REFERENCE_SOURCE_METHOD.version,
-      summary: record.fields.summary.value as unknown as ReferenceCodonAnalysis['summary'],
-      genes: record.fields.geneScores.value as unknown as ReferenceCodonAnalysis['genes'],
-      reference: record.references[1], corpus: record.references.find(item => item.id === 'genbank-codon-reference') };
+    if (!record || record.method.id !== CODON_REFERENCE_METHOD.id) return null;
+    const referenceText = record.inputs.find(input => input.id === 'reference')?.data;
+    if (typeof referenceText !== 'string') return null;
+    try {
+      const { geneticCode, sourceBacked } = inspectCodonReferenceInput(referenceText);
+      const expected = referenceCodonMethod(geneticCode, sourceBacked);
+      if (record.method.version !== expected.version || record.method.implementation !== expected.implementation) return null;
+      return { record, sourceBacked, geneticCode,
+        summary: record.fields.summary.value as unknown as ReferenceCodonAnalysis['summary'],
+        genes: record.fields.geneScores.value as unknown as ReferenceCodonAnalysis['genes'],
+        reference: record.references[1], corpus: record.references.find(item => item.id === 'genbank-codon-reference') };
+    } catch { return null; }
   }, [acceptedAnalysis]);
   const [graphIds, setGraphIds] = useState<string[]>([]);
   const [graphReference, setGraphReference] = useState('');
@@ -871,7 +877,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       </section>}
       {referenceResult && <section aria-label="Recorded reference-codon results">
         <h4>Accepted reference-backed CDS analysis</h4>
-        <p>Reference: {referenceResult.reference.id} · {referenceResult.reference.version}. {referenceResult.reference.description}</p>
+        <p>Reference: {referenceResult.reference.id} · {referenceResult.reference.version} · NCBI table {referenceResult.geneticCode}. {referenceResult.reference.description}</p>
         <p>{referenceResult.sourceBacked ? 'Original reference corpus was reparsed and recounted before scoring.' : 'Counts were supplied directly; original source extraction is not verified.'}
           {' '}Attribution and reference suitability remain author assertions.</p>
         {referenceResult.corpus && <p>Verified corpus result: <code>{referenceResult.corpus.version}</code></p>}

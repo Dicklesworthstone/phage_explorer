@@ -6,6 +6,23 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Reference codon analysis across explicit genetic codes
+
+- **Reassigned codons in sourced analyses** — reference-count construction and
+  reference-relative CAI now use the shared NCBI tables 1, 4, 11, 15 and 25.
+  Table-4 Trp becomes a scored two-codon family; table-15 Gln and table-25 Gly
+  include their reassigned codons. Missing family counts remain unavailable,
+  and query/source annotations must declare compatible codes.
+- **Complete browser and terminal workflows** — corpus controls and the
+  command-line producer accept the expanded tables. Recorded commands retain
+  exact reference inputs and use shared method selection for fresh replay,
+  while result panels display the accepted code. Standard valid records retain
+  their existing method identities; expanded methods have distinct versions.
+  [Core implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/4e3242ffb25a44efed8db6821724dc8cab53ff26).
+  See the [reference workflow](docs/CODON_REFERENCE_WORKFLOW.md) and
+  [source-corpus guide](docs/CODON_REFERENCE_CORPUS.md).
+
+
 ### Linked ancestral reconstruction in the browser
 
 - **Root-to-ancestor workflow** — a verified JC69 or K80 rooted experiment can

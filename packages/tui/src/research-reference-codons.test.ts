@@ -23,8 +23,8 @@ async function sourceReference() {
     name: 'Recounted source fixture', organism: 'Synthetic', geneticCode: 1, version: '1', citation: 'Three AAA and one AAG, independently counted',
   });
 }
-async function fixture() {
-  const { genomes } = await importLocalGenomes(gb('QUERY', 'ATGAAAAAGTAA'));
+async function fixture(querySource = gb('QUERY', 'ATGAAAAAGTAA'), referenceText = counts) {
+  const { genomes } = await importLocalGenomes(querySource);
   let view: ResearchView | null = null;
   const env: ResearchEnvironment = {
     genomes: () => genomes, bundle: () => exportLocalGenomeBundle(genomes),
@@ -41,8 +41,8 @@ async function fixture() {
   };
   const workflow = new ResearchWorkflow(ids, env);
   workflow.start('Recorded reference experiment');
-  const parameters = researchReferenceCodonParameters(genomes[0].phage.localGenome!.contentId, counts, [1], 0.5);
-  const run = (referenceText = counts) => workflow.commands.dispatch(ids.codons, analysisJson({ ...parameters, referenceText }));
+  const parameters = researchReferenceCodonParameters(genomes[0].phage.localGenome!.contentId, referenceText, [1], 0.5);
+  const run = (text = referenceText) => workflow.commands.dispatch(ids.codons, analysisJson({ ...parameters, referenceText: text }));
   return { env, genomes, workflow, parameters, run };
 }
 const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; };
@@ -152,5 +152,47 @@ describe('recorded supplied-reference codon experiments', () => {
     if (result.type !== 'replayed') throw new Error('Expected replay.');
     assert.equal(result.report.completed, 1); assert.equal(result.report.verified, true);
     assert.equal(JSON.parse(result.analysisJson!).resultId, f.workflow.getSnapshot().result!.resultId);
+  });
+});
+
+
+describe('recorded code-aware reference workflows', () => {
+  it('records and replays recoded count-only and source-backed CAI with the correct method identity', async () => {
+    const recoded = (id: string, sequence: string) => {
+      const input = gb(id, sequence);
+      return { ...input, text: input.text.replace('ORIGIN\n', '                     /transl_table=4\nORIGIN\n') };
+    };
+    const source = await createCodonReferenceCorpus(recoded('SOURCE4', 'ATGTGATGATGATGATGGTAA'), {
+      name: 'Table-4 count oracle', organism: 'Synthetic', geneticCode: 4, version: '1',
+      citation: 'Four TGA and one TGG; no expression claim',
+    });
+    for (const referenceText of [JSON.stringify(source.reference), serializeAnalysisRecord(source.record)]) {
+      const f = await fixture(recoded('QUERY4', 'ATGTGATGGTAA'), referenceText);
+      await f.run(); f.workflow.commands.stop();
+      const record = f.workflow.getSnapshot().result!, tape = f.workflow.commands.export();
+      assert.equal(record.method.version, referenceText === JSON.stringify(source.reference) ? '3' : '4');
+      assert(Math.abs(Number(record.fields.pooledCai.value) - 0.5) < 1e-12);
+      assert.equal((await inspectResearchTape(tape)).canReplay, true);
+      const replay = await replayResearchTape(tape, { repetitions: 2 });
+      assert.equal(replay.report.completed, 2);
+      assert.deepEqual(replay.lastAnalysis, record);
+    }
+  });
+  it('rejects a code/version mismatch before recording and a substituted worker method before acceptance', async () => {
+    const input = gb('SOURCE4', 'ATGTGATGGTAA');
+    input.text = input.text.replace('ORIGIN\n', '                     /transl_table=4\nORIGIN\n');
+    const source = await createCodonReferenceCorpus(input, {
+      name: 'Recoded input binding', organism: 'Synthetic', geneticCode: 4, version: '1', citation: 'Literal fixture',
+    });
+    const text = serializeAnalysisRecord(source.record), f = await fixture(input, text);
+    const malformed = structuredClone(source.record); malformed.method.version = '1';
+    assert.throws(() => researchReferenceCodonParameters(f.parameters.contentId, serializeAnalysisRecord(malformed), [1], 0.5),
+      /declared genetic code|supported GenBank/);
+    await f.run(); const previous = f.workflow.getSnapshot().result!;
+    f.env.referenceCodons = async () => ({ ...structuredClone(previous), method: {
+      ...previous.method, version: '2', implementation: 'reference-count CAI after fresh original-GenBank corpus replay',
+    } });
+    await assert.rejects(f.run(), /does not match/);
+    assert.strictEqual(f.workflow.getSnapshot().result, previous);
   });
 });
