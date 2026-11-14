@@ -18,7 +18,95 @@ import { Model3DView } from './Model3DView';
 import { FoldQuickview } from './FoldQuickview';
 import { GelView } from './GelView';
 import { RepeatOverlay } from './RepeatOverlay';
+import { GCOverlay, computeTerminalGCSkew } from './GCOverlay';
 import { computeRepeatMarks, findTerminalPalindromes } from '../overlay-computations';
+
+describe('terminal GC count evidence', () => {
+  const renderGC = (sequence: string) => stripVTControlCharacters(
+    renderToString(React.createElement(GCOverlay, { sequence }), { columns: 100 })
+  );
+
+  it('counts ambiguous input separately from AT and preserves inclusive per-base prefixes', () => {
+    // Eight input bases: two ambiguous, two G, two C, one A and one T.
+    const result = computeTerminalGCSkew('nnGGccAt');
+    expect(result.scan.sequenceLength).toBe(8);
+    expect(result.scan.resolvedBases).toBe(6);
+    expect(result.scan.gcBases).toBe(4);
+    expect([result.gcPercent, result.atPercent, result.ambiguousPercent]).toEqual([50, 25, 25]);
+    expect(result.values).toEqual([0, 0, 1, 2, 1, 0, 0, 0]);
+    expect(result.scan.originPosition).toBe(0);
+    expect(result.scan.terminusPosition).toBe(3);
+    const rendered = renderGC('nnGGccAt');
+    expect(rendered).toMatch(/GC Content:\s+50\.0%/);
+    expect(rendered).toMatch(/AT Content:\s+25\.0%/);
+    expect(rendered).toMatch(/Ambiguous:\s+25\.0%/);
+    expect(rendered).toContain('Percent of all 8 bases; 6 resolved A/C/G/T.');
+  });
+
+  it('plots literal cumulative counts even when normalized window ratios are cached', () => {
+    const saved = usePhageStore.getState();
+    try {
+      usePhageStore.setState({ overlayData: {} });
+      const fresh = renderGC('GGGCCC');
+      usePhageStore.setState({ overlayData: { gcSkew: {
+        id: 'gcSkew', label: 'GC skew', values: [0, 1], width: 2,
+      } } });
+      const cached = renderGC('GGGCCC');
+      // Hand counts are [1, 2, 3, 2, 1, 0], not the cached [0, 1].
+      expect(cached).toBe(fresh);
+      expect(cached).toContain('min: 0.00 │ max: 3.00');
+      expect(cached).toContain('First sampled minimum: 6 bp');
+      expect(cached).toContain('First sampled maximum: 3 bp');
+      expect(cached).not.toContain('Origin (min skew)');
+      expect(cached).not.toContain('Terminus (max skew)');
+      const changed = renderGC('CCCGGG');
+      expect(changed).toContain('min: -3.00 │ max: 0.00');
+      expect(changed).toContain('First sampled minimum: 3 bp');
+      expect(changed).toContain('First sampled maximum: 6 bp');
+    } finally { usePhageStore.setState(saved); }
+  });
+
+  it('withholds extrema for missing GC information and distinguishes unknown from AT', () => {
+    for (const [sequence, expectedAT, expectedAmbiguous] of [['NNRY', 0, 100], ['ATAT', 100, 0]] as const) {
+      const result = computeTerminalGCSkew(sequence);
+      expect([result.gcPercent, result.atPercent, result.ambiguousPercent]).toEqual([0, expectedAT, expectedAmbiguous]);
+      expect(result.scan.originPosition).toBeNull();
+      expect(result.scan.terminusPosition).toBeNull();
+      const rendered = renderGC(sequence);
+      expect(rendered).toContain('First sampled minimum: unavailable');
+      expect(rendered).toContain('First sampled maximum: unavailable');
+      expect(rendered).not.toContain('NaN');
+      expect(rendered).not.toContain('Infinity');
+    }
+    expect(renderGC('NNRY')).toMatch(/AT Content:\s+0\.0%/);
+    expect(renderGC('')).toContain('No sequence loaded');
+    expect(renderGC('')).not.toContain('First sampled minimum:');
+    expect(renderGC('G')).toContain('First sampled minimum: unavailable');
+  });
+
+  it('uses the first tied sampled coordinate and keeps its 1-based display separate', () => {
+    const result = computeTerminalGCSkew('GCGC');
+    expect(result.values).toEqual([1, 0, 1, 0]);
+    expect(result.scan.originPosition).toBe(1);
+    expect(result.scan.terminusPosition).toBe(0);
+    const rendered = renderGC('GCGC');
+    expect(rendered).toContain('First sampled minimum: 2 bp');
+    expect(rendered).toContain('First sampled maximum: 1 bp');
+  });
+
+  it('bounds long-genome sampling without dropping intervening bases from prefix counts', () => {
+    const result = computeTerminalGCSkew('G' + 'C'.repeat(40000));
+    expect(result.stepSize).toBe(3);
+    expect(result.values.length).toBe(13334);
+    expect(result.values.length).toBeLessThanOrEqual(20000);
+    expect(result.scan.resolvedBases).toBe(40001);
+    expect(result.scan.gcBases).toBe(40001);
+    expect(result.values.slice(0, 4)).toEqual([1, -2, -5, -8]);
+    expect(result.values.at(-1)).toBe(-39998);
+    expect(result.scan.originPosition).toBe(39999);
+    expect(result.scan.terminusPosition).toBe(0);
+  });
+});
 
 describe('imported terminal genome views', () => {
   it('rejects unknown/odd-center palindrome marks and preserves real cached lengths', () => {
