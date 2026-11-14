@@ -6,6 +6,24 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Measured virion inactivation
+
+- **Exposure-aware infectious-loss estimates** — fit exact integer plaque counts
+  with explicit dilution fractions and plated volumes for one preparation at
+  fixed conditions. Profile reference concentration at every nonnegative decay
+  rate, retain every plate residual, and report finite, zero-boundary, unbounded
+  and unidentified fits separately. Rate support is descriptive likelihood
+  support; conditional half-life and one-log reduction time do not imply
+  calibrated confidence, shelf life or storage advice.
+- **Browser and native experiments** — the stability overlay now opens a
+  measured workspace with CSV/JSON input, explicit preparation and condition
+  metadata, cancellable fitting, complete tables and input/evidence/TSV export.
+  The native workflow commands provide a synthetic template, fitting and fresh
+  replay through the existing embedded worker. Draft edits cannot relabel
+  accepted results, and a rehashed numerical forgery still fails replay.
+  The old catalog illustration is opt-in and no longer offers storage advice.
+  See the [measured inactivation guide](docs/VIRION_INACTIVATION_WORKFLOW.md).
+
 ### Measured mutant assay contrasts
 
 - **Explicit WT/single/double observations** — import a local assay with its

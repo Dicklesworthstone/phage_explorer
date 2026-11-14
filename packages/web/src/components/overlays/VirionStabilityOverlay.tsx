@@ -6,6 +6,7 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useHotkey } from '../../hooks/useHotkey';
 import { ActionIds } from '../../keyboard';
+import { VirionInactivationPanel } from './VirionInactivationPanel';
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 const clamp01 = (v: number) => clamp(v, 0, 1);
@@ -14,7 +15,7 @@ function Gauge({ value, color }: { value: number; color: string }): React.ReactE
   const pct = clamp01(value) * 100;
   return (
     <div
-      aria-label={`Integrity ${pct.toFixed(1)}%`}
+      aria-label={`Illustrative score ${pct.toFixed(1)}%`}
       style={{
         width: '100%',
         height: '14px',
@@ -67,21 +68,13 @@ function phageSummary(phage: PhageFull | null): string {
   return parts.join(' · ');
 }
 
-export function VirionStabilityOverlay(): React.ReactElement | null {
+function StabilityIllustration(): React.ReactElement {
   const { theme } = useTheme();
   const colors = theme.colors;
-  const { isOpen, toggle } = useOverlay();
   const phage = usePhageStore((s) => s.currentPhage);
 
   const [temperatureC, setTemperatureC] = useState(4);
   const [saltMilliMolar, setSaltMilliMolar] = useState(100);
-
-  // Hotkey: Alt+V (avoid conflict with packaging pressure 'v')
-  useHotkey(
-    ActionIds.OverlayVirionStability,
-    () => toggle('stability'),
-    { modes: ['NORMAL'] }
-  );
 
   const estimate = useMemo(
     () => predictVirionStabilityFromPhage(phage, { temperatureC, saltMilliMolar }),
@@ -115,10 +108,6 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
     };
   }, [phage?.codonUsage?.aaCounts]);
 
-  if (!isOpen('stability')) {
-    return null;
-  }
-
   const statusColor =
     estimate.status === 'robust'
       ? colors.success
@@ -131,12 +120,10 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
   const saltScore = clamp01(estimate.saltFactor);
 
   return (
-    <Overlay
-      id="stability"
-      title="VIRION STABILITY"
-      hotkey="Alt+V"
-      size="lg"
-    >
+    <section aria-label="Legacy stability illustration">
+      <h3>Legacy stability illustration</h3>
+      <p>These heuristic scores use catalog composition and illustrative coefficients. They are not measured
+        infectious survival, validated molecular integrity, or predictions for the experiment above.</p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
           <Pill label="Phage" value={summary || '—'} />
@@ -163,7 +150,7 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
             }}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>Integrity</div>
+              <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>Illustrative stability index</div>
               <div style={{ color: statusColor, fontWeight: 700 }}>
                 {(estimate.integrity * 100).toFixed(1)}% ({estimate.status})
               </div>
@@ -188,7 +175,7 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
               gap: '0.75rem',
             }}
           >
-            <div style={{ color: colors.text, fontWeight: 700 }}>Environment controls</div>
+            <div style={{ color: colors.text, fontWeight: 700 }}>Illustration controls</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '0.5rem' }}>
               <div style={{ color: colors.textMuted, fontSize: '0.85rem' }}>
                 Temperature fitness
@@ -226,24 +213,8 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
               <div style={{ color: colors.text, fontFamily: 'monospace' }}>{saltMilliMolar.toFixed(0)} mM</div>
             </label>
             <div style={{ color: colors.textMuted, fontSize: '0.9rem', lineHeight: 1.4 }}>
-              Melting onset ~{estimate.meltingTempC.toFixed(1)}&deg;C.
-              {/* Storage advice used to read "4 °C, 100 mM" for every phage in
-                  the catalogue, presented as a per-phage recommendation inside
-                  the therapy-screening story the README tells. It is now shown
-                  only where the catalogue supports it. */}
-              {estimate.recommendedStorage ? (
-                <>
-                  {' '}Recommended storage: {estimate.recommendedStorage.temperatureC}&deg;C,{' '}
-                  {estimate.recommendedStorage.saltMilliMolar} mM.{' '}
-                  {estimate.recommendedStorage.rationale}
-                </>
-              ) : (
-                <>
-                  {' '}No storage recommendation is given: it depends on buffer, titre and
-                  isolate, none of which this app knows. A constant was shown here
-                  previously and was not computed from anything.
-                </>
-              )}
+              Illustrative model temperature midpoint: {estimate.meltingTempC.toFixed(1)}&deg;C.
+              {' '}These illustrative scores do not establish storage conditions or measured survival.
             </div>
           </div>
 
@@ -258,7 +229,7 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
               gap: '0.6rem',
             }}
           >
-            <div style={{ color: colors.text, fontWeight: 700 }}>Capsid chemistry snapshot</div>
+            <div style={{ color: colors.text, fontWeight: 700 }}>Genome-wide translation composition</div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.5rem' }}>
               <div style={{ color: colors.textMuted }}>Hydrophobic content</div>
               <div style={{ color: colors.text, fontFamily: 'monospace' }}>
@@ -270,11 +241,11 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
               </div>
               <div style={{ color: colors.textMuted }}>Cysteines</div>
               <div style={{ color: colors.text, fontFamily: 'monospace' }}>
-                {propertyStats.cysteineCount} (potential {Math.floor(propertyStats.cysteineCount / 2)} disulfides)
+                {propertyStats.cysteineCount}
               </div>
             </div>
             <div style={{ color: colors.textMuted, fontSize: '0.85rem', lineHeight: 1.4 }}>
-              Based on codon usage composition; refine with protein models when available.
+              Based on aggregate codon usage. Capsid-specific composition and observed disulfide bonds are not established.
             </div>
           </div>
         </div>
@@ -324,8 +295,23 @@ export function VirionStabilityOverlay(): React.ReactElement | null {
           </div>
         )}
       </div>
-    </Overlay>
+    </section>
   );
+}
+
+export function VirionStabilityOverlay(): React.ReactElement | null {
+  const { isOpen, toggle } = useOverlay();
+  const [showIllustration, setShowIllustration] = useState(false);
+  useHotkey(ActionIds.OverlayVirionStability, () => toggle('stability'), { modes: ['NORMAL'] });
+  if (!isOpen('stability')) return null;
+  return <Overlay id="stability" title="VIRION STABILITY" hotkey="Alt+V" size="lg">
+    <VirionInactivationPanel />
+    <hr />
+    <button type="button" aria-expanded={showIllustration} onClick={() => setShowIllustration(value => !value)}>
+      {showIllustration ? 'Hide legacy stability illustration' : 'Show legacy stability illustration'}
+    </button>
+    {showIllustration && <StabilityIllustration />}
+  </Overlay>;
 }
 
 export default VirionStabilityOverlay;

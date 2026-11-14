@@ -75,7 +75,7 @@ command palette or a menu.
 | `b` | DNA bendability |  | Open bendability analysis |
 | `Alt+o` | Dot plot analysis |  | Open dot plot analysis |
 | `Ctrl+Shift+e` | Environmental provenance | input | Import environmental observations, inspect missing data, and export or replay evidence |
-| `Alt+Shift+e` | Epistasis explorer |  | Open epistasis overlay |
+| `Alt+Shift+e` | Epistasis explorer | input | Analyze supplied WT, single and double mutant assays with exact evidence replay |
 | `Alt+Shift+f` | Fold quickview |  | Open fold quickview overlay |
 | `g` | GC skew analysis |  | Open GC skew analysis |
 | `Alt+p` | Genomic signature PCA |  | Open genomic signature PCA |
@@ -102,7 +102,7 @@ command palette or a menu.
 | `Alt+s` | Synteny analysis |  | Open synteny analysis |
 | `y` | Transcription flow |  | Open the transcription flow overlay |
 | `0` | Tropism atlas | heuristic | Open the tropism overlay |
-| `Alt+v` | Virion stability | heuristic | Open virion stability overlay |
+| `Alt+v` | Virion stability | input | Fit measured virion inactivation from exact plaque counts |
 | `Alt+g` | Virtual gel electrophoresis |  | Open virtual gel overlay |
 
 ### Simulation

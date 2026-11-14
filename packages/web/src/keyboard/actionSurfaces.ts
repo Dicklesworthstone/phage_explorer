@@ -52,7 +52,7 @@ export const ANALYSIS_SIDEBAR_CATEGORIES: ActionSurfaceCategoryConfig[] = [
     level: 'intermediate',
     tools: [
       { actionId: ActionIds.OverlayPackagingPressure, description: 'Capsid fill & pressure' },
-      { actionId: ActionIds.OverlayVirionStability, description: 'Capsid robustness' },
+      { actionId: ActionIds.OverlayVirionStability, description: 'Measured infectivity loss' },
       { actionId: ActionIds.OverlayNonBDNA, description: 'Z-DNA, G-quadruplexes' },
       {
         actionId: ActionIds.OverlayStructureConstraint,

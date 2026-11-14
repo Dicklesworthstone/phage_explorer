@@ -1,10 +1,11 @@
-/** One accepted growth experiment and one interruptible operation per panel.
+/** One accepted experiment and one interruptible operation per panel.
  * Observation models share ownership/transport, not statistical assumptions.
  */
 import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parsePlaqueGrowthInput, exportPlaqueGrowthTsv, PLAQUE_GROWTH_METHOD, plaqueGrowthMethod, type PlaqueGrowthInput } from '../../../core/src/analysis/plaque-growth';
 import { parseGrowthCurveRecordInput, parseGrowthCurveCSV, exportGrowthCurveTsv, GROWTH_CURVE_METHOD,
   GROWTH_CURVE_RECORD_METHOD, type GrowthCurveExperiment } from '../../../core/src/analysis/one-step-growth';
+import { parseInactivationInput, exportInactivationTsv, INACTIVATION_METHOD, type InactivationInput } from '../../../core/src/analysis/virion-stability';
 import { validatePlaqueGrowthRequest, type PlaqueGrowthRequest, type PlaqueGrowthResponse } from './plaque-growth.worker';
 
 interface GrowthSource { provenance: { kind: 'user-supplied' | 'synthetic' }; options: object }
@@ -29,6 +30,11 @@ export const CORRECTED_PFU_GROWTH_MODEL: GrowthModel<GrowthCurveExperiment> = {
   operations: { fit: 'pfu-fit', replay: 'pfu-replay' }, observationsField: 'observations', seed: input => input.options.seed,
   fitting: 'Fitting corrected PFU/mL and bootstrapping in a worker…',
 };
+export const VIRION_INACTIVATION_MODEL: GrowthModel<InactivationInput> = {
+  methodId: INACTIVATION_METHOD.id, method: () => INACTIVATION_METHOD, parse: parseInactivationInput, table: exportInactivationTsv,
+  operations: { fit: 'stability-fit', replay: 'stability-replay' }, observationsField: 'plates', seed: () => null,
+  fitting: 'Fitting measured inactivation and profiling likelihood in a worker…',
+};
 export interface AcceptedGrowth<Input extends GrowthSource> {
   record: AnalysisRecord;
   input: Input;
@@ -46,7 +52,7 @@ export interface GrowthSnapshot<Input extends GrowthSource> {
 }
 export type PlaqueGrowthWorker = Pick<Worker, 'onmessage' | 'onerror' | 'onmessageerror' | 'postMessage' | 'terminate'>;
 const canonical = (value: unknown) => JSON.stringify(analysisJson(value));
-const cancelled = () => new DOMException('Growth operation cancelled.', 'AbortError');
+const cancelled = () => new DOMException('Experiment operation cancelled.', 'AbortError');
 function check(signal: AbortSignal): void { if (signal.aborted) throw cancelled(); }
 
 /** Settles even when a file provider ignores abort. Its late result is discarded. */
@@ -90,7 +96,7 @@ export class GrowthExperimentSession<Input extends GrowthSource> {
   private active = false;
   private owner: AbortController | null = null;
   private listeners = new Set<() => void>();
-  private snapshot: GrowthSnapshot<Input> = { busy: false, phase: 'No growth experiment accepted.', error: null, accepted: null };
+  private snapshot: GrowthSnapshot<Input> = { busy: false, phase: 'No experiment accepted.', error: null, accepted: null };
   constructor(private readonly createWorker: () => PlaqueGrowthWorker, private readonly model: GrowthModel<Input>) {}
   getSnapshot = (): GrowthSnapshot<Input> => this.snapshot;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -120,7 +126,7 @@ export class GrowthExperimentSession<Input extends GrowthSource> {
       check(signal);
       const inputText = saved ? saved.inputs[0]?.data : content;
       if (typeof inputText !== 'string' || saved && (saved.inputs.length !== 1 || saved.inputs[0].id !== 'experiment')) {
-        throw new Error('Saved evidence must embed one original growth experiment.');
+        throw new Error('Saved evidence must embed one original experiment.');
       }
       const input = this.model.parse(inputText);
       const method = this.model.method(input);
@@ -152,7 +158,7 @@ export class GrowthExperimentSession<Input extends GrowthSource> {
     } catch (cause) {
       if (this.active && this.owner === owner) {
         this.owner = null;
-        this.publish({ busy: false, error: cause instanceof Error ? cause.message : 'Growth operation failed.',
+        this.publish({ busy: false, error: cause instanceof Error ? cause.message : 'Experiment operation failed.',
           phase: 'Operation failed. The previously accepted result is unchanged.' });
       }
       return false;
@@ -215,5 +221,34 @@ export function correctedPfuGrowthDraftContent(draft: CorrectedPfuGrowthDraft): 
   // analysisJson rejects nonfinite values before they can become valid nulls.
   const content = JSON.stringify(analysisJson(experiment), null, 2);
   parseGrowthCurveRecordInput(content);
+  return content;
+}
+
+export interface InactivationDraft {
+  title: string; source: string; reference: string; license: string;
+  kind: 'user-supplied' | 'synthetic';
+  phageId: string; accession: string; batchId: string;
+  temperatureC: string; buffer: string; pH: string; assayHost: string; description: string;
+  csv: string; support: string;
+}
+/** Blank optional pH remains missing; malformed numbers cannot become JSON null. */
+export function inactivationDraftContent(draft: InactivationDraft): string {
+  const numeric = (text: string, name: string): number => {
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(text.trim())) throw new Error(`Provide a finite ${name}.`);
+    const value = Number(text);
+    if (!Number.isFinite(value)) throw new Error(`Provide a finite ${name}.`);
+    return value;
+  };
+  const input: InactivationInput = {
+    format: 'phage-explorer-inactivation-input', version: 1, measurement: 'infectious-plaque-counts',
+    title: draft.title,
+    provenance: { kind: draft.kind, source: draft.source, reference: draft.reference.trim() || null, license: draft.license },
+    preparation: { phageId: draft.phageId, accession: draft.accession.trim() || null, batchId: draft.batchId },
+    conditions: { temperatureC: numeric(draft.temperatureC, 'measured temperature in °C'), buffer: draft.buffer,
+      pH: draft.pH.trim() ? numeric(draft.pH, 'measured pH') : null, assayHost: draft.assayHost, description: draft.description },
+    csv: draft.csv, options: { supportDeviance: numeric(draft.support, 'likelihood support cutoff') },
+  };
+  const content = JSON.stringify(input, null, 2);
+  parseInactivationInput(content);
   return content;
 }

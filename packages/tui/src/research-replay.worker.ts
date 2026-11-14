@@ -267,6 +267,7 @@ export function terminalResultExtraction(archive: WorkflowResults, inputArchiveS
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'fit-pfu-growth'; content: string } |
+  { type: 'fit-stability'; content: string } |
   { type: 'inspect-protein-reference'; content: string } |
   { type: 'analyze-protein-structure'; content: string; options: ProteinStructureOptions } |
   { type: 'inspect-mosaic'; content: string } |
@@ -281,6 +282,7 @@ export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'stability-fitted'; inputFileSha256: string; recordJson: string } |
   { type: 'protein-reference-inspected'; report: TerminalProteinReferenceInspection } |
   { type: 'protein-structure-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
   { type: 'mosaic-inspected'; report: TerminalMosaicInspection } |
@@ -299,7 +301,7 @@ export type TerminalResearchMessage = TerminalResearchResult | { type: 'progress
 export function validateTerminalResearchRequest(value: unknown): asserts value is TerminalResearchRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
-  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'inspect-protein-reference' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' ? ['type', 'content']
+  const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'inspect-protein-reference' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' || request.type === 'fit-stability' ? ['type', 'content']
     : request.type === 'analyze-mosaic' || request.type === 'analyze-protein-structure' ? ['type', 'content', 'options']
     : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
@@ -312,12 +314,13 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
   }
   const limit = ['inspect-protein-reference', 'analyze-protein-structure'].includes(String(request.type)) ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
     : ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
-  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth', 'fit-stability'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
     throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
+  if (request.type === 'fit-stability' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Inactivation input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'analyze-mosaic') {
     if (!sameJson(request.options, resolveMosaicRadarConfig(request.options as MosaicRadarConfig))) {
       throw new Error('Mosaic analysis requires all effective settings explicitly.');
@@ -383,6 +386,11 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     const { createGrowthCurveRecord } = await import('../../core/src/analysis/one-step-growth');
     const record = await createGrowthCurveRecord(request.content);
     return { type: 'growth-fitted', inputFileSha256: hashText(request.content), recordJson: serializeAnalysisRecord(record) };
+  }
+  if (request.type === 'fit-stability') {
+    const { createInactivationRecord } = await import('../../core/src/analysis/virion-stability');
+    const record = await createInactivationRecord(request.content);
+    return { type: 'stability-fitted', inputFileSha256: hashText(request.content), recordJson: serializeAnalysisRecord(record) };
   }
   if (request.type === 'fit-growth') {
     const { createPlaqueGrowthRecord } = await import('../../core/src/analysis/plaque-growth');
@@ -504,6 +512,9 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     } else if (saved.method.id === 'plaque-count-growth') {
       const { replayPlaqueGrowthRecord, exportPlaqueGrowthTsv } = await import('../../core/src/analysis/plaque-growth');
       fresh = await replayPlaqueGrowthRecord(request.content); table = exportPlaqueGrowthTsv;
+    } else if (saved.method.id === 'plaque-count-inactivation') {
+      const { replayInactivationRecord, exportInactivationTsv } = await import('../../core/src/analysis/virion-stability');
+      fresh = await replayInactivationRecord(request.content); table = exportInactivationTsv;
     } else if (saved.method.id === 'restriction-digest') {
       const { replayRestrictionDigestRecord, exportRestrictionDigestTsv } = await import('../../core/src/analysis/restriction-digest');
       fresh = await replayRestrictionDigestRecord(request.content);
@@ -533,7 +544,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = experiment.record;
       table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

@@ -979,6 +979,14 @@ above is what a build produces today.
 | **Ecology** | Host Tropism (precomputed trigram), Defense Arms Race, Cocktail Compatibility, AMG Pathways (conservative KEGG mappings) |
 | **Simulation** | All 7 interactive simulations |
 
+**Virion stability** (`Alt+V`) opens a measured inactivation workspace. Supply
+exact plaque counts and exposures for one preparation at fixed conditions to
+fit an exponential infectivity-loss rate, inspect likelihood support and every
+plate residual, export complete evidence, or verify a saved experiment by fresh
+replay. Unidentified and unbounded rates remain explicit. The same method runs
+in `phage-explorer workflow fit-stability`; see the
+[measured inactivation guide](docs/VIRION_INACTIVATION_WORKFLOW.md).
+
 The AMG Pathways **Flux Potential** tab is an FBA sandbox. Its default precursor
 network is illustrative, with arbitrary flux units and user-adjusted reaction
 capacities. Import a small model as JSON (up to 100 reactions and metabolites),

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { Worker as NativeWorker, isMainThread, parentPort } from 'node:worker_threads';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { createPlaqueGrowthRecord, type PlaqueGrowthInput, type PlaqueGrowthFit } from '../../../core/src/analysis/plaque-growth';
+import { createInactivationTemplate, createInactivationRecord, type InactivationFit } from '../../../core/src/analysis/virion-stability';
 import { GrowthExperimentSession, PLAQUE_GROWTH_MODEL, CORRECTED_PFU_GROWTH_MODEL, correctedPfuGrowthDraftContent,
+  VIRION_INACTIVATION_MODEL, inactivationDraftContent, type InactivationDraft,
   plaqueGrowthDraftContent, readPlaqueGrowthFile, type PlaqueGrowthDraft, type PlaqueGrowthWorker } from './PlaqueGrowthSession';
 import { executePlaqueGrowthRequest, validatePlaqueGrowthRequest, type PlaqueGrowthRequest } from './plaque-growth.worker';
 
@@ -165,6 +167,11 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     };
     const fit = new GrowthExperimentSession(() => make(false), PLAQUE_GROWTH_MODEL); fit.activate();
     assert.equal(await fit.run('fit', content()), true, fit.getSnapshot().error ?? 'Expected accepted fit'); assert(fit.getSnapshot().accepted); await exited;
+    const decay = new GrowthExperimentSession(() => make(false), VIRION_INACTIVATION_MODEL); decay.activate();
+    assert.equal(await decay.run('fit', JSON.stringify(createInactivationTemplate())), true, decay.getSnapshot().error ?? 'Expected accepted inactivation');
+    assert(Math.abs((decay.getSnapshot().accepted!.record.fields.fit.value as unknown as InactivationFit).halfLifeMin! - 10) < 1e-9);
+    await exited;
+    assert.equal(await decay.run('replay', decay.getSnapshot().accepted!.json), true); await exited;
     native = null; exited = null;
     const busy = new GrowthExperimentSession(() => make(true), PLAQUE_GROWTH_MODEL); busy.activate(); const pending = busy.run('fit', content());
     assert(native); busy.cancel(); assert.equal(await pending, false); await exited; assert.equal(busy.getSnapshot().accepted, null);
@@ -204,6 +211,91 @@ if (isMainThread) describe('browser plaque-count execution and ownership', () =>
     controller.abort(); file.resolve(new ArrayBuffer(0)); await assert.rejects(pending, { name: 'AbortError' });
   });
 
+});
+
+if (isMainThread) describe('measured inactivation through the shared experiment session', () => {
+  const source = () => JSON.stringify(createInactivationTemplate(), null, 2) + '\n';
+  function decay(factory = () => new Endpoint()) {
+    const workers: Endpoint[] = [];
+    const state = new GrowthExperimentSession(() => { const worker = factory(); workers.push(worker); return worker; }, VIRION_INACTIVATION_MODEL);
+    state.activate(); return { state, workers };
+  }
+  it('routes the explicit decay model and retains original bytes, rate support and complete replay identity', async () => {
+    const requests: string[] = [];
+    const { state, workers } = decay(() => new Endpoint(async request => {
+      requests.push(request.type); return { type: 'result', record: await executePlaqueGrowthRequest(request) };
+    }));
+    assert.equal(await state.run('fit', source()), true, state.getSnapshot().error ?? '');
+    const accepted = state.getSnapshot().accepted!, fit = accepted.record.fields.fit.value as unknown as InactivationFit;
+    assert.deepEqual(requests, ['stability-fit']); assert.equal(accepted.inputText, source());
+    assert.equal(accepted.record.inputs[0].data, source()); assert.equal(accepted.verifiedReplay, false);
+    assert(Math.abs(fit.decayRatePerMin! - Math.LN2 / 10) < 1e-12);
+    assert(Math.abs(fit.referencePFUPerMl - 1600000) < 1e-6);
+    assert(fit.support.lowerRatePerMin < fit.decayRatePerMin! && fit.support.upperRatePerMin! > fit.decayRatePerMin!);
+    assert.match(accepted.tsv, /log_expected_count/); assert.match(accepted.tsv, /synthetic-preparation/);
+    assert.equal(workers[0].terminations, 1);
+    assert.equal(await state.run('replay', accepted.json), true);
+    assert.deepEqual(requests, ['stability-fit', 'stability-replay']);
+    assert.equal(state.getSnapshot().accepted!.json, accepted.json); assert.equal(state.getSnapshot().accepted!.tsv, accepted.tsv);
+    assert.equal(state.getSnapshot().accepted!.verifiedReplay, true);
+  });
+  it('keeps observation models separate and rejects rehashed false decay support', async () => {
+    const d = decay(), g = session(); await d.state.run('fit', source()); await g.state.run('fit', content());
+    const accepted = d.state.getSnapshot().accepted!;
+    assert.equal(await d.state.run('replay', g.state.getSnapshot().accepted!.json), false);
+    assert.equal(await g.state.run('replay', accepted.json), false);
+    assert.equal(await d.state.run('fit', content()), false);
+    const falseRecord = await resign(accepted.record, r => { (r.fields.fit.value as unknown as InactivationFit).support.upperRatePerMin = 0; });
+    await parseAnalysisRecord(serializeAnalysisRecord(falseRecord));
+    assert.equal(await d.state.run('replay', serializeAnalysisRecord(falseRecord)), false);
+    assert.equal(d.state.getSnapshot().accepted, accepted);
+    const wrong = decay(() => new Endpoint(async () => ({ type: 'result', record: await createInactivationRecord(JSON.stringify(createInactivationTemplate())) })));
+    assert.equal(await wrong.state.run('fit', source()), false); assert.equal(wrong.state.getSnapshot().accepted, null);
+    assert.match(wrong.state.getSnapshot().error!, /differs/);
+  });
+  it('keeps zero-rate and unidentified supplied observations distinct from synthetic evidence', async () => {
+    const input = createInactivationTemplate(); input.provenance.kind = 'user-supplied';
+    input.csv = 'time_min,plaque_count,dilution_fraction,volume_ml\n0,0,1,1\n20,0,1,1\n';
+    const { state } = decay(); assert.equal(await state.run('fit', JSON.stringify(input)), true);
+    const accepted = state.getSnapshot().accepted!, fit = accepted.record.fields.fit.value as unknown as InactivationFit;
+    assert.equal(accepted.record.fields.plates.kind, 'observation'); assert.equal(accepted.record.fields.fit.kind, 'fitted-estimate');
+    assert.equal(fit.status, 'unidentifiable'); assert.equal(fit.decayRatePerMin, null); assert.equal(fit.support.upperRatePerMin, null);
+    assert.equal(fit.fitted[0].count, 0); assert.equal(fit.fitted[1].count, 0);
+    input.csv = 'time_min,plaque_count,dilution_fraction,volume_ml\n0,10,1,1\n20,20,1,1\n';
+    assert.equal(await state.run('fit', JSON.stringify(input)), true);
+    const boundary = state.getSnapshot().accepted!.record.fields.fit.value as unknown as InactivationFit;
+    assert.equal(boundary.status, 'zero-rate-boundary'); assert.equal(boundary.decayRatePerMin, 0);
+    assert.equal(boundary.halfLifeMin, null); assert(boundary.support.upperRatePerMin! > 0);
+  });
+  it('cancels delayed reads and late replies without replacing subsequent accepted measurements', async () => {
+    const file = latch<string>(), delayed = latch<unknown>(), started = latch<void>(); let calls = 0;
+    const { state, workers } = decay(() => new Endpoint(async request => {
+      if (++calls === 1) { started.resolve(); return delayed.promise; }
+      return { type: 'result', record: await executePlaqueGrowthRequest(request) };
+    }));
+    const reading = state.run('fit', () => file.promise); await immediate(); state.cancel();
+    assert.equal(await reading, false); file.resolve(source()); await immediate(); assert.equal(workers.length, 0);
+    const old = state.run('fit', source()); await started.promise; state.cancel(); assert.equal(await old, false);
+    const next = createInactivationTemplate(); next.preparation.batchId = 'new-preparation';
+    assert.equal(await state.run('fit', JSON.stringify(next)), true); const accepted = state.getSnapshot().accepted;
+    delayed.resolve({ type: 'result', record: await createInactivationRecord(source()) }); await immediate();
+    assert.equal(state.getSnapshot().accepted, accepted); assert.equal(accepted!.input.preparation.batchId, 'new-preparation');
+    assert.equal(workers[0].terminations, 1);
+  });
+  it('validates numeric conditions before JSON encoding and never turns blank temperature or malformed pH into missing data', () => {
+    const input = createInactivationTemplate();
+    const draft: InactivationDraft = { title: input.title, kind: input.provenance.kind, source: input.provenance.source,
+      license: input.provenance.license, reference: '', ...input.preparation, accession: '',
+      ...input.conditions, temperatureC: '25', pH: '', csv: input.csv, support: '3.84' };
+    assert.deepEqual(JSON.parse(inactivationDraftContent(draft)), input);
+    for (const update of [{ temperatureC: '' }, { temperatureC: 'Infinity' }, { temperatureC: 'NaN' }, { temperatureC: '0x10' },
+      { pH: 'NaN' }, { pH: 'Infinity' }, { pH: '15' }, { support: '' }, { support: '-1' }, { support: '0' },
+      { phageId: '' }, { batchId: '' }, { buffer: '' }, { assayHost: '' }, { license: '' },
+      { csv: input.csv.replace('160', 'TNTC') }]) assert.throws(() => inactivationDraftContent({ ...draft, ...update }));
+    assert.equal(JSON.parse(inactivationDraftContent({ ...draft, temperatureC: '-20', pH: '0' })).conditions.pH, 0);
+    assert.equal(JSON.parse(inactivationDraftContent({ ...draft, temperatureC: '-20' })).conditions.temperatureC, -20);
+    assert.throws(() => validatePlaqueGrowthRequest({ type: 'stability-fit', content: 'α'.repeat(500001) }));
+  });
 });
 
 if (isMainThread) describe('corrected-PFU execution through the shared growth session', () => {
