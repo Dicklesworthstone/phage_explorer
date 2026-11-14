@@ -52,8 +52,23 @@ Up to 128 KiB. Provide uppercase DNA codons and **integer counts**, not percenta
 
 Every codon in a consumed synonymous family must be explicitly reported, with at least one observation in that family. Omitted counts are unavailable, not zeros. Reported zeros receive either the chosen 0.5 replacement (default) or remain zero. An entirely zero family remains unavailable under either policy.
 
-Weights are counts divided by the maximum count in the synonymous family; CAI is their geometric mean. Met, Trp and terminal stops are excluded. Joined segments, reverse strands, circular-origin joins and `codon_start` use the existing CDS extractor. Only genetic codes 1 and 11 are supported. Ambiguous triplets, partial terminal codons, internal stops, pseudogenes, unsupported recoding or incomplete reference coverage prevent a full gene score. The pooled value is codon-weighted over fully scorable CDS only, with its denominator displayed.
+Weights are counts divided by the maximum count in the synonymous family; CAI is their geometric mean. Singleton amino-acid families and terminal stops are excluded according to the reference's explicit NCBI genetic code. Supported tables are:
 
-Method basis: Sharp and Li (1987), DOI `10.1093/nar/15.3.1281`. A justified highly expressed reference-gene set is preferable when interpreting CAI as adaptation to that set. No expression status is inferred from a user-supplied label.
+| NCBI table | Relevant codon meanings | Consequence for reference weights |
+|---|---|---|
+| 1 and 11 | Standard elongation meanings | Met and Trp are singletons; 18 scored families |
+| 4 | TGA encodes Trp | TGA and TGG form a scored family; 19 scored families |
+| 15 | TAG encodes Gln | The Gln family requires CAA, CAG and TAG counts |
+| 25 | TGA encodes Gly | The Gly family requires GGT, GGC, GGA, GGG and TGA counts |
+
+Every codon in a scored family must have a reported count, including reassigned codons. For example, table-4 counts TGA=8 and TGG=2 give weights 1 and 1/4; a query containing one of each has a reference-relative score of 1/2. Omitting TGG leaves the family unavailable, rather than supplying a zero.
+
+Joined segments, reverse strands, circular-origin joins and `codon_start` use the shared CDS extractor. Query annotations must have the reference's codon meanings: tables 1 and 11 are compatible for this score; tables 4, 15 and 25 require the same explicit annotation. An absent `transl_table` remains table 1 and never inherits a recoded reference's table. The original initiation triplet is retained; this method does not estimate initiation efficiency.
+
+Ambiguous triplets, partial terminal codons, internal stops under the declared table, pseudogenes, unsupported recoding or incomplete reference coverage prevent a full gene score. The pooled value is codon-weighted over fully scorable CDS only, with its denominator displayed. The illustrative built-in host profiles retain their existing standard-code scope.
+
+Standard-code count-only and source-backed records keep method versions 1 and 2. Reassigned-code equivalents use versions 3 and 4 and are recomputed from the saved inputs during replay. These code-aware extensions are sequence scores; their support for a translation table does not establish biological calibration.
+
+Method basis: [Sharp and Li (1987)](https://doi.org/10.1093/nar/15.3.1281), with synonymous families from the [NCBI genetic-code tables](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi). A justified highly expressed reference-gene set is preferable when interpreting CAI as adaptation to that set. No expression status is inferred from a user-supplied label.
 
 Inputs are limited to 5,000,000 genome bases, 20,000 annotations and 25,000,000 total extracted CDS bases. Portable experiments retain the existing 10 MiB AnalysisRecord limit. Checksums identify content; fresh replay also rejects saved outputs that do not match recomputation, but neither check establishes the biological validity of the reference.

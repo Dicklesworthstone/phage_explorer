@@ -1,11 +1,12 @@
 /**
  * Reference-backed codon adaptation, separate from the illustrative host model.
  * Sharp & Li (1987), doi:10.1093/nar/15.3.1281: normalize counts within synonymous
- * families and take a geometric mean, excluding Met, Trp and termination codons.
+ * families and take a geometric mean, excluding singleton families and stops.
+ * NCBI tables 4/15/25 extend the same rule to explicitly reassigned codons.
  * The optional 0.5 replacement applies to REPORTED zero counts, never missing data.
  */
-import { CODON_TABLE } from '../codons';
-import { replayCodonReferenceCorpus, type CodonReferenceCorpus } from './codon-reference-corpus';
+import { getGeneticCode, isSupportedGeneticCode, type GeneticCode } from '../codons';
+import { codonCorpusMethod, replayCodonReferenceCorpus, type CodonReferenceCorpus } from './codon-reference-corpus';
 import { extractGeneSequence } from './codon-pair-adaptation';
 import { getGeneMapSegments } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
@@ -19,7 +20,7 @@ export interface CodonReference {
   version: 1;
   name: string;
   organism: string;
-  geneticCode: 1 | 11;
+  geneticCode: GeneticCode;
   source: { citation: string; version: string };
   /** Omitted codons are unavailable, NOT zero. Units are integer codon counts. */
   counts: Record<string, number>;
@@ -69,11 +70,15 @@ export interface ReferenceCodonOptions { geneIds?: number[] | null; zeroCountRep
 export interface ReferenceCodonExperiment { analysis: ReferenceCodonAnalysis; record: AnalysisRecord }
 
 const object = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
-const families = new Map<string, string[]>();
-for (const [codon, aminoAcid] of Object.entries(CODON_TABLE)) {
-  if (aminoAcid === '*' || aminoAcid === 'M' || aminoAcid === 'W') continue;
-  families.set(aminoAcid, [...(families.get(aminoAcid) ?? []), codon]);
+function synonymousFamilies(code: GeneticCode): Map<string, string[]> {
+  const all = new Map<string, string[]>();
+  for (const [codon, aminoAcid] of Object.entries(getGeneticCode(code).codons)) {
+    if (aminoAcid === '*') continue;
+    all.set(aminoAcid, [...(all.get(aminoAcid) ?? []), codon]);
+  }
+  return new Map([...all].filter(([, codons]) => codons.length > 1));
 }
+function standardMeanings(code: GeneticCode): boolean { return code === 1 || code === 11; }
 function exactKeys(value: Record<string, unknown>, allowed: string[], label: string): void {
   if (Object.keys(value).sort().join('|') !== [...allowed].sort().join('|')) throw new Error(`${label}: unsupported or missing fields.`);
 }
@@ -92,7 +97,7 @@ export function parseCodonReference(content: string): CodonReference {
   if (!object(value)) throw new Error('Expected a codon reference JSON object.');
   exactKeys(value, ['format', 'version', 'name', 'organism', 'geneticCode', 'source', 'counts'], 'Codon reference');
   if (value.format !== 'phage-explorer-codon-reference' || value.version !== 1) throw new Error('Unsupported codon reference format/version.');
-  if (value.geneticCode !== 1 && value.geneticCode !== 11) throw new Error('Only genetic codes 1 and 11 are supported.');
+  if (!isSupportedGeneticCode(value.geneticCode as number)) throw new Error('Choose genetic code 1, 4, 11, 15 or 25 explicitly.');
   printable(value.name, 'Reference name'); printable(value.organism, 'Reference organism');
   if (!object(value.source)) throw new Error('Reference citation and version are required.');
   exactKeys(value.source, ['citation', 'version'], 'Reference source');
@@ -109,7 +114,7 @@ export function parseCodonReference(content: string): CodonReference {
   }
   if (total === 0) throw new Error('Reference counts contain no observations.');
   return { format: 'phage-explorer-codon-reference', version: 1, name: value.name as string, organism: value.organism as string,
-    geneticCode: value.geneticCode, source: { citation: value.source.citation as string, version: value.source.version as string }, counts };
+    geneticCode: value.geneticCode as GeneticCode, source: { citation: value.source.citation as string, version: value.source.version as string }, counts };
 }
 /** Validate public object inputs too; caller mutation cannot change an in-flight experiment. */
 function copyReference(reference: CodonReference): CodonReference {
@@ -120,7 +125,7 @@ export function buildCodonReferenceWeights(reference: CodonReference, zeroCountR
   const checked = copyReference(reference);
   const weights: Record<string, number | null> = {};
   const coveredFamilies: string[] = [], missingFamilies: string[] = [];
-  for (const [aminoAcid, codons] of families) {
+  for (const [aminoAcid, codons] of synonymousFamilies(checked.geneticCode)) {
     const covered = codons.every(codon => Object.hasOwn(checked.counts, codon)) && codons.some(codon => checked.counts[codon] > 0);
     (covered ? coveredFamilies : missingFamilies).push(aminoAcid);
     // An entirely unobserved family cannot become perfect adaptation via pseudocounts.
@@ -129,7 +134,8 @@ export function buildCodonReferenceWeights(reference: CodonReference, zeroCountR
   }
   return { weights, coveredFamilies: coveredFamilies.sort(), missingFamilies: missingFamilies.sort() };
 }
-function scoreSequence(sequence: string, reference: CodonReferenceWeights): ReferenceCodonScore {
+function scoreSequence(sequence: string, reference: CodonReferenceWeights, code: GeneticCode): ReferenceCodonScore {
+  const table = getGeneticCode(code).codons;
   const score: ReferenceCodonScore = { cai: null, completeCodons: Math.floor(sequence.length / 3), eligibleCodons: 0, scoredCodons: 0,
     ambiguousCodons: 0, singleCodonAminoAcids: 0, stopCodons: 0, internalStops: 0, trailingBases: sequence.length % 3,
     zeroWeightCodons: 0, missingReferenceCodons: {}, reasons: [] };
@@ -138,13 +144,13 @@ function scoreSequence(sequence: string, reference: CodonReferenceWeights): Refe
     // Never filter ambiguity or uppercase Unicode expansions across coordinates.
     const original = sequence.slice(offset, offset + 3);
     if (!/^[ACGT]{3}$/i.test(original)) { score.ambiguousCodons++; continue; }
-    const codon = original.toUpperCase(), aminoAcid = CODON_TABLE[codon];
+    const codon = original.toUpperCase(), aminoAcid = table[codon];
     if (aminoAcid === '*') {
       score.stopCodons++;
       if (offset + 3 !== sequence.length) score.internalStops++;
       continue;
     }
-    if (aminoAcid === 'M' || aminoAcid === 'W') { score.singleCodonAminoAcids++; continue; }
+    if (!Object.hasOwn(reference.weights, codon)) { score.singleCodonAminoAcids++; continue; }
     score.eligibleCodons++;
     const weight = reference.weights[codon];
     if (weight === null || weight === undefined) { score.missingReferenceCodons[codon] = (score.missingReferenceCodons[codon] ?? 0) + 1; continue; }
@@ -154,14 +160,17 @@ function scoreSequence(sequence: string, reference: CodonReferenceWeights): Refe
   if (score.trailingBases) score.reasons.push('Incomplete terminal codon.');
   if (score.ambiguousCodons) score.reasons.push('Unresolved triplets remain in the coding sequence.');
   if (score.internalStops) score.reasons.push('Internal stop codon; translation exceptions are not modeled.');
-  if (!score.eligibleCodons) score.reasons.push('No resolved synonymous-choice codons (Met, Trp and stops are excluded).');
+  if (!score.eligibleCodons) score.reasons.push(standardMeanings(code)
+    ? 'No resolved synonymous-choice codons (Met, Trp and stops are excluded).'
+    : 'No resolved synonymous-choice codons (single-codon amino acids and stops under the declared genetic code are excluded).');
   if (score.scoredCodons < score.eligibleCodons) score.reasons.push('The reference does not cover every consumed synonymous family.');
   if (!score.reasons.length) score.cai = score.zeroWeightCodons ? 0 : Math.exp(logSum / score.scoredCodons);
   return score;
 }
 export function scoreCodonReferenceSequence(sequence: string, reference: CodonReference, zeroCountReplacement: ZeroCountReplacement = 0.5): ReferenceCodonScore {
   if (typeof sequence !== 'string' || sequence.length > CODON_REFERENCE_LIMITS.bases) throw new Error('Coding sequence exceeds the 5,000,000-base limit.');
-  return scoreSequence(sequence, buildCodonReferenceWeights(reference, zeroCountReplacement));
+  const checked = copyReference(reference);
+  return scoreSequence(sequence, buildCodonReferenceWeights(checked, zeroCountReplacement), checked.geneticCode);
 }
 export function referenceGenomeFromPhage(phage: PhageFull): ReferenceCodonGenome {
   return { id: phage.id, name: phage.name, accession: phage.accession, source: phage.localGenome ? 'local' : 'catalog', genes: phage.genes };
@@ -194,13 +203,19 @@ function analyze(genome: ReferenceCodonGenome, sequence: string, reference: Codo
   const selected = options.geneIds === null ? candidates : candidates.filter(gene => options.geneIds!.includes(gene.id));
   if (!selected.length) throw new Error('No coding annotations are available; FASTA alone does not establish CDS coordinates.');
   const referenceCoverage = buildCodonReferenceWeights(reference, options.zeroCountReplacement);
+  const supportedCodes: readonly GeneticCode[] = standardMeanings(reference.geneticCode) ? [1, 11] : [reference.geneticCode];
   let extracted = 0;
   const genes = selected.map((gene): ReferenceCodonGene => {
     let reason: string | null = null;
     const qualifiers = gene.qualifiers ?? {};
     if (Object.hasOwn(qualifiers, 'pseudo') || Object.hasOwn(qualifiers, 'pseudogene')) reason = 'Pseudogene annotations are not scored.';
     if (qualifiers.transl_except || qualifiers.exception) reason = 'Translation exceptions require a supported recoding model.';
-    if (qualifiers.transl_table && !['1', '11'].includes(String(qualifiers.transl_table))) reason = 'Unsupported CDS genetic code.';
+    if (!standardMeanings(reference.geneticCode) && ['transl_except', 'exception', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']
+      .some(key => Object.hasOwn(qualifiers, key))) reason = 'Translation exceptions require a supported recoding model.';
+    if (!supportedCodes.some(code => String(code) === String(qualifiers.transl_table ?? 1))) {
+      reason = standardMeanings(reference.geneticCode) ? 'Unsupported CDS genetic code.'
+        : 'CDS genetic code differs from the reference genetic code. An absent annotation defaults to table 1; recoding is not inferred.';
+    }
     // Check duplicated/joined annotation expansion BEFORE allocating the transcript.
     if (!reason) {
       const raw = qualifiers._segments;
@@ -209,11 +224,11 @@ function analyze(genome: ReferenceCodonGenome, sequence: string, reference: Codo
       const length = segments.reduce((sum, segment) => sum + Math.max(0, segment.end - segment.start), 0);
       if (!Number.isSafeInteger(length) || extracted + length > CODON_REFERENCE_LIMITS.extractedBases) throw new Error('Combined annotated CDS exceeds the 25,000,000-base analysis limit.');
     }
-    const coding = reason ? '' : extractGeneSequence(gene, sequence);
+    const coding = reason ? '' : extractGeneSequence(gene, sequence, supportedCodes);
     if (!reason && !coding) reason = 'Missing or unsupported CDS coordinates, strand, join or codon_start.';
     extracted += coding.length;
     if (extracted > CODON_REFERENCE_LIMITS.extractedBases) throw new Error('Combined annotated CDS exceeds the 25,000,000-base analysis limit.');
-    const scored = scoreSequence(coding, referenceCoverage);
+    const scored = scoreSequence(coding, referenceCoverage, reference.geneticCode);
     if (reason) scored.reasons = [reason];
     return { ...scored, geneId: gene.id, label: gene.locusTag ?? gene.name ?? `CDS ${gene.id}`, startPos: gene.startPos, endPos: gene.endPos, strand: gene.strand ?? '+' };
   });
@@ -235,10 +250,31 @@ const limitations = [
  * replayed before its counts can enter a score; its original source travels with
  * the query experiment, not a path that could change on another machine.
  */
-export async function resolveCodonReferenceInput(content: string): Promise<{ reference: CodonReference; corpus?: CodonReferenceCorpus }> {
+/** Synchronous envelope inspection for command validation. This does NOT verify
+ * source counts: only resolveCodonReferenceInput's fresh replay can accept them.
+ */
+export function inspectCodonReferenceInput(content: string): { geneticCode: GeneticCode; sourceBacked: boolean } {
   if (typeof content !== 'string' || content.length > 10 * 1024 * 1024 || new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error('Reference input exceeds 10 MiB.');
   const value: unknown = JSON.parse(content);
   if (object(value) && value.format === 'phage-explorer-analysis') {
+    if (!object(value.method) || !object(value.parameters) || !isSupportedGeneticCode(value.parameters.geneticCode as number)) {
+      throw new Error('A source reference must be a supported GenBank codon corpus experiment.');
+    }
+    // Derive the expected method from original input parameters, never saved
+    // output fields. The numerical worker independently reparses and recounts.
+    const geneticCode = value.parameters.geneticCode as GeneticCode;
+    const expected = codonCorpusMethod(geneticCode);
+    if (value.method.id !== expected.id || value.method.version !== expected.version
+      || value.method.implementation !== expected.implementation) {
+      throw new Error('A source reference must match its declared genetic code and supported GenBank codon corpus method.');
+    }
+    return { geneticCode, sourceBacked: true };
+  }
+  return { geneticCode: parseCodonReference(content).geneticCode, sourceBacked: false };
+}
+export async function resolveCodonReferenceInput(content: string): Promise<{ reference: CodonReference; corpus?: CodonReferenceCorpus }> {
+  const inspected = inspectCodonReferenceInput(content);
+  if (inspected.sourceBacked) {
     const corpus = await replayCodonReferenceCorpus(content);
     return { reference: corpus.reference, corpus };
   }
@@ -246,6 +282,15 @@ export async function resolveCodonReferenceInput(content: string): Promise<{ ref
 }
 export const CODON_REFERENCE_SOURCE_METHOD = { ...CODON_REFERENCE_METHOD, version: '2',
   implementation: 'reference-count CAI after fresh original-GenBank corpus replay' };
+/** Shared by producers and workflow consumers; no caller guesses a version. */
+export function referenceCodonMethod(code: GeneticCode, sourceBacked: boolean): AnalysisRecord['method'] {
+  getGeneticCode(code);
+  const baseMethod = sourceBacked ? CODON_REFERENCE_SOURCE_METHOD : CODON_REFERENCE_METHOD;
+  return standardMeanings(code) ? baseMethod : { ...baseMethod,
+    version: sourceBacked ? '4' : '3', implementation: sourceBacked
+      ? 'code-aware reference-count CAI after fresh original-GenBank corpus replay'
+      : 'JavaScript code-aware reference-count CAI over annotated CDS' };
+}
 export async function createReferenceCodonExperiment(genome: ReferenceCodonGenome, sequence: string, referenceText: string,
   options: ReferenceCodonOptions = {}): Promise<ReferenceCodonExperiment> {
   // Snapshot before any hashing awaits; a changed reference/selection cannot relabel results.
@@ -253,13 +298,20 @@ export async function createReferenceCodonExperiment(genome: ReferenceCodonGenom
     genome: ReferenceCodonGenome; sequence: string; referenceText: string; options: ReturnType<typeof normalizeOptions>;
   };
   const { reference, corpus } = await resolveCodonReferenceInput(captured.referenceText);
+  const codeLimitations = standardMeanings(reference.geneticCode) ? limitations : limitations.map((limit, index) => index === 3
+    ? 'Only singleton amino-acid families and terminal stops under the explicitly declared NCBI genetic code are excluded. Ambiguity, partial codons, internal stops, incompatible annotation codes and unsupported CDS prevent a full gene score. This is a code-aware extension of reference-relative CAI, not a calibrated expression model.'
+    : limit);
   const evidenceLimits = corpus ? [
     'Reference counts are recomputed from the embedded original GenBank corpus. Attribution and selection suitability remain author assertions.',
-    ...limitations.slice(1), 'Corpus exclusions and overlapping-CDS policies remain those in the embedded source experiment.',
-  ] : limitations;
+    ...codeLimitations.slice(1), 'Corpus exclusions and overlapping-CDS policies remain those in the embedded source experiment.',
+  ] : codeLimitations;
+  // Existing standard-code records retain their method and evidence identity.
+  // Expanded synonymous families have distinct versions, so earlier software
+  // cannot accept a recoded score as a standard-code computation.
+  const method = referenceCodonMethod(reference.geneticCode, !!corpus);
   const analysis = analyze(captured.genome, captured.sequence, reference, captured.options);
   const coverage = { available: analysis.summary.scoredGenes, total: analysis.summary.totalGenes, unit: 'genes' as const };
-  const record = await createAnalysisRecord({ method: corpus ? CODON_REFERENCE_SOURCE_METHOD : CODON_REFERENCE_METHOD, seed: null,
+  const record = await createAnalysisRecord({ method, seed: null,
     inputs: [
       { id: 'genome', accession: captured.genome.accession, source: captured.genome.source, description: 'Exact genome used for annotated CDS extraction.', data: captured.sequence },
       { id: 'annotations', accession: captured.genome.accession, source: captured.genome.source, description: 'Genome identity and original CDS annotations, including joined segments and translation qualifiers.', data: analysisJson(captured.genome) },
@@ -267,11 +319,13 @@ export async function createReferenceCodonExperiment(genome: ReferenceCodonGenom
     ], parameters: captured.options,
     references: [{ id: '10.1093/nar/15.3.1281', version: '1987', description: 'Sharp and Li: synonymous-family relative adaptiveness and geometric-mean CAI.' },
       { id: reference.name, version: reference.source.version, description: reference.source.citation },
-      ...(corpus ? [{ id: corpus.record.method.id, version: corpus.record.resultId, description: 'Exact freshly recomputed source-corpus result identity.' }] : [])],
+      ...(corpus ? [{ id: corpus.record.method.id, version: corpus.record.resultId, description: 'Exact freshly recomputed source-corpus result identity.' }] : []),
+      ...(!standardMeanings(reference.geneticCode) ? [{ id: 'NCBI-translation-tables', version: '2024-09-23',
+        description: `Explicit table ${reference.geneticCode}; synonymous-family definitions from https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi` }] : [])],
     fields: {
       geneScores: { label: 'Reference-relative CAI and per-CDS coverage', kind: 'sequence-score', units: 'records', coverage, limitations: evidenceLimits, value: analysisJson(analysis.genes) },
       referenceWeights: { label: 'Weights derived from reported counts', kind: 'sequence-score', units: 'records',
-        coverage: { available: analysis.referenceCoverage.coveredFamilies.length, total: families.size, unit: 'records' }, limitations: evidenceLimits, value: analysisJson(analysis.referenceCoverage) },
+        coverage: { available: analysis.referenceCoverage.coveredFamilies.length, total: synonymousFamilies(reference.geneticCode).size, unit: 'records' }, limitations: evidenceLimits, value: analysisJson(analysis.referenceCoverage) },
       pooledCai: analysis.summary.cai === null
         ? { label: 'Pooled CAI', kind: 'unavailable', units: null, coverage, limitations: evidenceLimits, value: null, missingInputs: ['At least one fully resolved supported CDS and complete nonempty reference families for all of its eligible codons.'] }
         : { label: 'Pooled CAI over fully scorable CDS', kind: 'sequence-score', units: 'fraction', coverage, limitations: evidenceLimits, value: analysis.summary.cai },
@@ -282,7 +336,7 @@ export async function createReferenceCodonExperiment(genome: ReferenceCodonGenom
 /** Re-run extraction and scoring from original inputs; never trust imported displayed scores. */
 export async function replayReferenceCodonExperiment(content: string): Promise<ReferenceCodonExperiment> {
   const record = await parseAnalysisRecord(content, { methodId: CODON_REFERENCE_METHOD.id });
-  if (![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version].includes(record.method.version)) throw new Error('Unsupported reference-analysis method version.');
+  if (![CODON_REFERENCE_METHOD.version, CODON_REFERENCE_SOURCE_METHOD.version, '3', '4'].includes(record.method.version)) throw new Error('Unsupported reference-analysis method version.');
   if (record.inputs.length !== 3) throw new Error('Unexpected reference-analysis inputs.');
   const sequence = record.inputs.find(input => input.id === 'genome')?.data;
   const genome = record.inputs.find(input => input.id === 'annotations')?.data;

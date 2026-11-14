@@ -136,10 +136,16 @@ Each accepted transcript contributes every complete DNA triplet in transcript or
 including its initiation triplet and any terminal stop. No pseudocount is added by
 the builder. Joined segments, reverse complements, circular-origin joins and
 `codon_start` are interpreted by the existing supported-CDS extractor. A GTG
-initiation triplet contributes GTG, not a rewritten ATG. Downstream CAI retains its
-existing codon-family exclusions and selected reported-zero policy.
+initiation triplet contributes GTG, not a rewritten ATG. Downstream CAI uses the
+reference's declared synonymous families and selected reported-zero policy;
+singleton amino-acid families and stops are excluded. In table 4, Trp has two
+codons and contributes to CAI.
 
-Only genetic codes 1 and 11 are supported. Under the feature-table convention,
+NCBI genetic codes 1, 4, 11, 15 and 25 are supported. Table 4 assigns TGA to Trp,
+table 15 assigns TAG to Gln, and table 25 assigns TGA to Gly; these are sense
+codons when counting and validating CDS under the corresponding table.
+Choose the explicit table in the browser or with `--genetic-code`.
+Under the feature-table convention,
 absent `transl_table` means 1; the builder does not silently override that annotation
 with the user-entered code. A conflicting table, unresolved coding base, internal
 stop, incomplete codon, unsupported recoding/pseudogene qualifier, or inconsistent
@@ -165,13 +171,15 @@ analysis export is also limited to 10 MiB. Combining a large corpus and query ca
 exceed that limit even when each source separately fits; no embedded source or audit
 is dropped to force an export to succeed.
 
-Source corpora use method `genbank-codon-reference`, version 1. Source-backed CAI
-uses `reference-codon-adaptation`, version 2. Count-only CAI retains its existing
-version-1 identities. Replayed records are freshly reconstructed and compared,
+Standard-code corpora retain method `genbank-codon-reference`, version 1;
+reassigned-code corpora use version 2. Standard-code source-backed CAI retains
+`reference-codon-adaptation`, version 2, and count-only CAI retains version 1.
+The corresponding reassigned-code CAI records use versions 4 and 3 respectively.
+Replayed records are freshly reconstructed and compared,
 including exclusions and counts; recalculating hashes over fabricated counts is
 not sufficient. Checksums verify content consistency, not scientific suitability.
 
 Primary interpretation references: INSDC Feature Table definitions for CDS locations,
 `codon_start` and `transl_table` (https://www.insdc.org/submitting-standards/feature-table/),
-NCBI genetic codes 1 and 11 (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi),
+NCBI genetic codes 1, 4, 11, 15 and 25 (https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi),
 and Sharp & Li's CAI definition (DOI `10.1093/nar/15.3.1281`).

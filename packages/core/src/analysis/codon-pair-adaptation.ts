@@ -8,7 +8,7 @@
  * and host-switching footprints.
  */
 
-import { countCodonUsage, CODON_TABLE, reverseComplement } from '../codons';
+import { countCodonUsage, CODON_TABLE, reverseComplement, type GeneticCode } from '../codons';
 import type { GeneInfo, PhageFull } from '../types';
 import { getGeneMapSegments } from '../genome-import';
 import { analysisJson, createAnalysisRecord, type AnalysisRecord } from '../analysis-result';
@@ -512,16 +512,20 @@ export function matchHostProfile(hostName?: string | null): HostProfile {
 }
 
 /**
- * Extract spliced in-frame coding sequence for a gene
+ * Extract spliced in-frame coding sequence for a gene.
+ * Consumers declare supported translation tables; illustrative host profiles keep
+ * their standard-code scope unless a code-aware method explicitly opts in.
  */
 export function extractGeneSequence(
   gene: GeneInfo,
-  genomeSequence?: string | null
+  genomeSequence?: string | null,
+  supportedCodes: readonly GeneticCode[] = [1, 11]
 ): string {
   if (!genomeSequence || genomeSequence.length === 0) {
     return '';
   }
-  if (gene.qualifiers?.transl_table && !['1', '11'].includes(String(gene.qualifiers.transl_table))) return '';
+  const geneticCode = String(gene.qualifiers?.transl_table ?? 1);
+  if (!supportedCodes.some(code => String(code) === geneticCode)) return '';
 
   const segments = getGeneMapSegments(gene);
   const rawSegments = gene.qualifiers?._segments;

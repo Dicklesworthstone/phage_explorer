@@ -71,7 +71,8 @@ describe('source-derived codon reference corpus', () => {
     const standard = gb('ATGAAATAA').replace('                     /transl_table=11\n', '');
     await assert.rejects(createCodonReferenceCorpus(input(standard), metadata), /genetic code differs/);
     assert.equal((await createCodonReferenceCorpus(input(standard), { ...metadata, geneticCode: 1 })).summary.codons, 3);
-    await assert.rejects(createCodonReferenceCorpus(input(standard), { ...metadata, geneticCode: 4 as 11 }), /code 1 or 11/);
+    await assert.rejects(createCodonReferenceCorpus(input(standard), { ...metadata, geneticCode: 4 }), /genetic code differs/);
+    await assert.rejects(createCodonReferenceCorpus(input(standard), { ...metadata, geneticCode: 2 as 11 }), /genetic code/);
   });
   it('requires unique record selectors and scopes numeric CDS IDs to one exact record', async () => {
     const source = input(gb('ATGAAATAA', undefined, [], 'DUP') + gb('ATGAAGTAA', undefined, [], 'DUP'));
@@ -141,5 +142,37 @@ describe('source-derived codon reference corpus', () => {
       { geneIds: [1, 1] }, { geneIds: [NaN] }, { geneIds: [-1] }, { unavailable: 'guess' }, { ignored: true }]) {
       assert.throws(() => resolveCodonCorpusOptions({ ...metadata, ...changes } as CodonCorpusOptions));
     }
+  });
+});
+
+
+describe('source corpus with explicit NCBI reassigned codes', () => {
+  it('counts sense reassignments, verifies deposited translation and replays original source', async () => {
+    for (const [code, codon, aminoAcid] of [[4, 'TGA', 'W'], [15, 'TAG', 'Q'], [25, 'TGA', 'G']] as const) {
+      const text = gb('ATG' + codon + 'TAA', undefined, ['                     /translation="M' + aminoAcid + '"\n'])
+        .replace('/transl_table=11', '/transl_table=' + code);
+      const result = await createCodonReferenceCorpus(input(text), { ...metadata, geneticCode: code });
+      assert.deepEqual(nonzero(result.reference.counts), Object.fromEntries(Object.entries({ ATG: 1, [codon]: 1, TAA: 1 }).sort()));
+      assert.equal(result.summary.terminalStops, 1); assert.equal(result.summary.countedCds, 1);
+      assert.equal(result.reference.geneticCode, code); assert.equal(result.record.method.version, '2');
+      assert.deepEqual(await replayCodonReferenceCorpus(serializeAnalysisRecord(result.record)), result);
+      const mismatched = text.replace('/translation="M' + aminoAcid + '"', '/translation="MK"');
+      await assert.rejects(createCodonReferenceCorpus(input(mismatched), { ...metadata, geneticCode: code }), /translation differs/);
+    }
+  });
+  it('never classifies a reassigned terminal sense codon as a stop', async () => {
+    const result = await createCodonReferenceCorpus(input(gb('ATGTGA').replace('/transl_table=11', '/transl_table=4')),
+      { ...metadata, geneticCode: 4 });
+    assert.equal(result.summary.terminalStops, 0);
+    assert.deepEqual(nonzero(result.reference.counts), { ATG: 1, TGA: 1 });
+  });
+  it('excludes a conflicting code only when requested, without mixing family counts', async () => {
+    const source = input(gb('ATGTGATAA', undefined, [], 'RECODED').replace('/transl_table=11', '/transl_table=4') +
+      gb('ATGAAATAA', undefined, [], 'STANDARD'));
+    await assert.rejects(createCodonReferenceCorpus(source, { ...metadata, geneticCode: 4 }), /genetic code differs/);
+    const result = await createCodonReferenceCorpus(source, { ...metadata, geneticCode: 4, unavailable: 'exclude' });
+    assert.deepEqual(nonzero(result.reference.counts), { ATG: 1, TAA: 1, TGA: 1 });
+    assert.equal(result.summary.countedCds, 1); assert.equal(result.summary.excludedMappedCds, 1);
+    assert.equal(result.genes.find(gene => gene.geneticCode === 11)?.codons, 0);
   });
 });

@@ -47,7 +47,7 @@ describe('codon corpus CLI producer and verified interchange', () => {
   });
   it('requires explicit metadata and precise CDS selection without ignoring incompatible options', async () => {
     const f = await setup();
-    for (const change of [['--genetic-code', '4'], ['--unavailable', 'skip'], ['--zero-count', '0.5'], ['--gene-ids', '1']]) {
+    for (const change of [['--genetic-code', '2'], ['--unavailable', 'skip'], ['--zero-count', '0.5'], ['--gene-ids', '1']]) {
       const base = change[0] === '--genetic-code' ? f.args.slice(0, -2) : f.args;
       assert.throws(() => parseCodonReferenceCommand([...base, ...change]));
     }
@@ -82,5 +82,30 @@ describe('codon corpus CLI producer and verified interchange', () => {
     assert.equal(code, 1); assert.equal(stdout, ''); assert.match(stderr, /required/);
     await codonReferenceMain(['--help'], s => { stdout += s; }, () => {}, 'phage-explorer codon-reference');
     assert.match(stdout, /phage-explorer codon-reference build-reference/);
+  });
+});
+
+
+describe('recoded reference CLI workflow', () => {
+  it('builds, scores and verifies a table-4 source-backed reference without a database', async () => {
+    const f = await setup();
+    const recoded = (sequence: string) => gb(sequence).replace('ORIGIN\n', '                     /transl_table=4\nORIGIN\n');
+    await writeFile(f.genome, recoded('ATGTGATGATGATGATGGTAA'));
+    const built = await execute([...f.args.slice(0, -1), '4']);
+    assert.equal(built.countedCds, 1); assert.equal(built.codons, 7);
+    const query = join(f.dir, 'query4.gb'), output = join(f.dir, 'query4.json');
+    await writeFile(query, recoded('ATGTGATGGTAA'));
+    const result = await execute(['analyze', '--genome', query, '--reference', f.corpus, '--output', output]);
+    assert(Math.abs(Number(result.cai) - 0.5) < 1e-12);
+    const replay = await execute(['verify', '--experiment', output]);
+    assert.equal(replay.resultId, result.resultId);
+    assert.equal((await parseAnalysisRecord(await readFile(output, 'utf8'))).method.version, '4');
+    for (const code of ['1', '4', '11', '15', '25']) {
+      const parsed = parseCodonReferenceCommand([...f.args.slice(0, -1), code]);
+      assert.equal(parsed.type, 'build-reference');
+    }
+    for (const code of ['2', '04', '4.0', '0x4', 'NaN']) {
+      assert.throws(() => parseCodonReferenceCommand([...f.args.slice(0, -1), code]), /genetic-code/);
+    }
   });
 });

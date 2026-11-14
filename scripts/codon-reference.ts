@@ -5,6 +5,7 @@ import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { GENOME_IMPORT_LIMITS, importLocalGenomes } from '../packages/core/src/genome-import';
 import { serializeAnalysisRecord } from '../packages/core/src/analysis-result';
+import { isSupportedGeneticCode } from '../packages/core/src/codons';
 import { CODON_REFERENCE_LIMITS, createReferenceCodonExperiment, referenceGenomeFromPhage,
   replayReferenceCodonExperiment, type ReferenceCodonExperiment, type ZeroCountReplacement } from '../packages/core/src/analysis/codon-reference';
 import { createCodonReferenceCorpus, replayCodonReferenceCorpus, exportCodonCorpusReference, resolveCodonCorpusOptions,
@@ -17,7 +18,7 @@ bun scripts/codon-reference.ts analyze --genome query.gb --reference counts.json
 bun scripts/codon-reference.ts verify --experiment experiment.json [--output verified-copy.json]
 bun scripts/codon-reference.ts inspect --genome query.gb
 bun scripts/codon-reference.ts build-reference --genome reference.gb --output corpus.json
-  --name NAME --organism ORGANISM --citation CITATION --reference-version VERSION --genetic-code 1|11
+  --name NAME --organism ORGANISM --citation CITATION --reference-version VERSION --genetic-code 1|4|11|15|25
   [--record ACCESSION_OR_CONTENT_ID] [--gene-ids 1,2] [--unavailable reject|exclude]
 bun scripts/codon-reference.ts verify-reference --experiment corpus.json [--output verified-corpus.json]
 bun scripts/codon-reference.ts export-reference --experiment corpus.json --output counts.json
@@ -80,9 +81,9 @@ export function parseCodonReferenceCommand(args: readonly string[]): CodonRefere
   }
   if (type === 'build-reference') {
     if (geneIds !== null && !options.has('--record')) throw new Error('--gene-ids requires --record when building a reference.');
-    const code = required('--genetic-code');
-    if (code !== '1' && code !== '11') throw new Error('--genetic-code must be 1 or 11.');
-    const corpus = resolveCodonCorpusOptions({ name: required('--name'), organism: required('--organism'), geneticCode: Number(code) as 1 | 11,
+    const codeText = required('--genetic-code'), code = Number(codeText);
+    if (String(code) !== codeText || !isSupportedGeneticCode(code)) throw new Error('--genetic-code must be 1, 4, 11, 15 or 25.');
+    const corpus = resolveCodonCorpusOptions({ name: required('--name'), organism: required('--organism'), geneticCode: code,
       citation: required('--citation'), version: required('--reference-version'),
       record: options.get('--record') ?? null, geneIds,
       unavailable: (options.get('--unavailable') ?? 'reject') as 'reject' | 'exclude' });

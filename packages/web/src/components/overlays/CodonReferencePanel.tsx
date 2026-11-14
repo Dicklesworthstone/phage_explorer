@@ -31,7 +31,7 @@ export function CodonReferencePanel(): React.ReactElement {
     try {
       const text = sourceGenes.trim();
       if (text && !/^[1-9]\d*(,[1-9]\d*)*$/.test(text)) throw new Error('Reference CDS IDs must be comma-separated positive integers.');
-      const options = resolveCodonCorpusOptions({ name: corpusName, organism, geneticCode: Number(sourceCode) as 1 | 11,
+      const options = resolveCodonCorpusOptions({ name: corpusName, organism, geneticCode: Number(sourceCode) as CodonCorpusOptions['geneticCode'],
         citation, version: sourceVersion, unavailable,
         record: sourceId, geneIds: text ? text.split(',').map(Number) : null });
       return { options, error: null };
@@ -207,13 +207,13 @@ export function CodonReferencePanel(): React.ReactElement {
  "name":"Your reference set","organism":"Your organism","geneticCode":11,
  "source":{"citation":"Describe or cite the count corpus","version":"Your release"},
  "counts":{"AAA":8,"AAG":2}}`}</pre>
-        <p>Supported genetic codes: 1 and 11. Joined/reverse-strand CDS and codon_start come from the annotations. Met, Trp and terminal stops are excluded. Unknown triplets, internal stops, unsupported recoding or partial codons leave the full gene score unavailable.</p>
+        <p>Supported NCBI genetic codes: 1, 4, 11, 15 and 25. Joined/reverse-strand CDS and codon_start come from the annotations. Singleton amino-acid families and terminal stops under the declared code are excluded; Trp is scored in table 4. Query annotations must use compatible codon meanings. Unknown triplets, internal stops, unsupported recoding or partial codons leave the full gene score unavailable.</p>
       </details>
       <label>Reported zero counts <select value={zeroPolicy} onChange={event => setZeroPolicy(Number(event.target.value) as ZeroCountReplacement)}>
         <option value={0.5}>Replace reported zeros with 0.5 before normalization</option><option value={0}>Keep true zero weights (CAI may be zero)</option>
       </select></label>
       {reference?.error && <p role="alert">{reference.error}</p>}
-      {reference?.value && <p>{reference.value.name} · {reference.value.organism} · {reference.value.source.version}. Covered synonymous families: {reference.coverage!.coveredFamilies.length}/18. Attribution: {reference.value.source.citation}</p>}
+      {reference?.value && <p>{reference.value.name} · {reference.value.organism} · {reference.value.source.version} · NCBI table {reference.value.geneticCode}. Covered synonymous families: {reference.coverage!.coveredFamilies.length}/{reference.coverage!.coveredFamilies.length + reference.coverage!.missingFamilies.length}. Attribution: {reference.value.source.citation}</p>}
       <button type="button" className="btn btn-primary" disabled={!genome || !reference?.value} onClick={() => void run()}>Analyze against reference</button>
     </fieldset>
     <details><summary>Build reference counts from imported GenBank</summary>
@@ -228,7 +228,9 @@ export function CodonReferencePanel(): React.ReactElement {
         <label>Corpus citation and selection rationale <textarea rows={2} value={citation} onChange={event => setCitation(event.target.value)} maxLength={2000} /></label>
         <label>Corpus source version <input value={sourceVersion} onChange={event => setSourceVersion(event.target.value)} maxLength={200} /></label>
         <label>Corpus genetic code <select value={sourceCode} onChange={event => setSourceCode(event.target.value)}>
-          <option value="">Choose the declared reference code</option><option value="1">1 — Standard</option><option value="11">11 — Bacterial, archaeal and plastid</option>
+          <option value="">Choose the declared reference code</option><option value="1">1 — Standard</option>
+          <option value="4">4 — TGA encodes tryptophan</option><option value="11">11 — Bacterial, archaeal and plastid</option>
+          <option value="15">15 — TAG encodes glutamine</option><option value="25">25 — TGA encodes glycine</option>
         </select></label>
         <label>Corpus CDS IDs (blank selects all mapped CDS) <input value={sourceGenes} onChange={event => setSourceGenes(event.target.value)} placeholder="1,2,7" maxLength={120000} /></label>
         {sourceGenome && <details><summary>Mapped reference CDS identifiers</summary><p>{sourceGenome.phage.genes.filter(g => g.type === 'CDS').map(g => `${g.id}: ${g.locusTag ?? g.name ?? 'CDS'}`).join('; ') || 'No mapped CDS'}</p></details>}
@@ -259,7 +261,7 @@ export function CodonReferencePanel(): React.ReactElement {
       <h4>{result.verified ? 'Verified saved experiment' : 'Reference analysis'}: {resultGenome?.name} · {resultGenome?.accession}</h4>
       <p>Reference: {analysis.reference.name} · {analysis.reference.organism} · {analysis.reference.source.version}. {analysis.reference.source.citation}</p>
       <p>Pooled CAI: <strong>{analysis.summary.cai === null ? 'Unavailable' : analysis.summary.cai.toFixed(6)}</strong>. Fully scored CDS: {analysis.summary.scoredGenes}/{analysis.summary.totalGenes}; eligible codons in those CDS: {analysis.summary.scoredCodons.toLocaleString()}. The pooled value is a codon-weighted geometric mean over fully scorable CDS only.</p>
-      <p>Reported-zero replacement: {analysis.zeroCountReplacement}; reference family coverage: {analysis.referenceCoverage.coveredFamilies.length}/18. Missing families: {analysis.referenceCoverage.missingFamilies.join(', ') || 'none'}.</p>
+      <p>NCBI table {analysis.reference.geneticCode}; reported-zero replacement: {analysis.zeroCountReplacement}; reference family coverage: {analysis.referenceCoverage.coveredFamilies.length}/{analysis.referenceCoverage.coveredFamilies.length + analysis.referenceCoverage.missingFamilies.length}. Missing families: {analysis.referenceCoverage.missingFamilies.join(', ') || 'none'}.</p>
       <div style={{ overflowX: 'auto', maxHeight: '24rem' }}><table style={{ width: '100%', textAlign: 'left', fontSize: '.8rem' }}>
         <caption>Reference-relative scores and reasons for unavailable CDS (100 rows per page)</caption>
         <thead><tr><th scope="col">CDS</th><th scope="col">CAI</th><th scope="col">Covered / eligible codons</th><th scope="col">Status</th></tr></thead>

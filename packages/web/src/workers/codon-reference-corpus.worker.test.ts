@@ -58,3 +58,25 @@ describe('reference corpus worker integration', () => {
     decoding.worker.onmessageerror?.({} as MessageEvent); await assert.rejects(task, /decoded/); assert.equal(decoding.stopped(), 1);
   });
 });
+
+
+describe('reassigned-code corpus and scoring worker requests', () => {
+  it('runs the complete table-4 source-to-score-to-replay path', async () => {
+    const recoded = { ...source, text: source.text.replace('ORIGIN\n', '                     /transl_table=4\nORIGIN\n')
+      .replace('atgaaaaagtaa', 'atgtgatggtaa') };
+    const corpus = await executeCodonReferenceRequest({ type: 'build-reference', input: recoded,
+      options: { ...options, geneticCode: 4 } });
+    assert.equal(corpus.record.method.version, '2');
+    assert.equal(corpus.reference.counts.TGA, 1); assert.equal(corpus.reference.counts.TGG, 1);
+    const genome = (await importLocalGenomes(recoded)).genomes[0];
+    const score = await executeCodonReferenceRequest({ type: 'analyze', genome: referenceGenomeFromPhage(genome.phage),
+      sequence: genome.sequence, referenceText: serializeAnalysisRecord(corpus.record), options: {} });
+    assert.equal(score.analysis.summary.cai, 1); assert.equal(score.analysis.summary.scoredCodons, 2);
+    assert.equal(score.record.method.version, '4');
+    assert.deepEqual(await executeCodonReferenceRequest({ type: 'verify', content: serializeAnalysisRecord(score.record) }), score);
+    const p = port(), pending = runCodonReferenceTask(() => p.worker,
+      { type: 'verify', content: serializeAnalysisRecord(score.record) }, new AbortController().signal);
+    p.send({ type: 'result', experiment: score }); assert.deepEqual(await pending, score);
+    assert.equal(p.stopped(), 1);
+  });
+});

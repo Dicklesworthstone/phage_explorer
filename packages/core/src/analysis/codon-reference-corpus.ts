@@ -2,7 +2,7 @@
  * Reuses the GenBank parser and the CDS consequence engine's transcript rules.
  * INSDC CDS/codon_start: https://www.insdc.org/submitting-standards/feature-table/
  */
-import { CODON_TABLE } from '../codons';
+import { getGeneticCode, isSupportedGeneticCode, type GeneticCode } from '../codons';
 import { GENOME_IMPORT_LIMITS, getGeneMapSegments, importLocalGenomes, type GenomeInput } from '../genome-import';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { reconstructCdsReference, type CdsReference } from './cds-consequences';
@@ -11,8 +11,14 @@ import type { CodonReference } from './codon-reference';
 export const CODON_CORPUS_LIMITS = { genes: 20000, extractedBases: 25000000 } as const;
 export const CODON_CORPUS_METHOD = { id: 'genbank-codon-reference', version: '1',
   implementation: 'source-reparsed mapped CDS census; shared transcript validation; exact integer codon counts' } as const;
+/** Method identity follows the explicit source table, never a displayed result. */
+export function codonCorpusMethod(code: GeneticCode): AnalysisRecord['method'] {
+  getGeneticCode(code);
+  return code === 1 || code === 11 ? CODON_CORPUS_METHOD : { ...CODON_CORPUS_METHOD, version: '2',
+    implementation: 'source-reparsed mapped CDS census with explicit NCBI code; shared transcript validation; exact integer codon counts' };
+}
 export interface CodonCorpusOptions {
-  name: string; organism: string; citation: string; version: string; geneticCode: 1 | 11;
+  name: string; organism: string; citation: string; version: string; geneticCode: GeneticCode;
   /** Omission selects all GenBank records. An accession must resolve uniquely. */
   record?: string | null;
   /** Numeric IDs are scoped to one selected record; null selects all mapped CDS. */
@@ -42,7 +48,7 @@ export function resolveCodonCorpusOptions(value: CodonCorpusOptions): Required<C
   if (!object(value) || Object.keys(value).some(key => !['name', 'organism', 'citation', 'version', 'geneticCode', 'record', 'geneIds', 'unavailable'].includes(key))) {
     throw new Error('Unsupported codon corpus options.');
   }
-  if (value.geneticCode !== 1 && value.geneticCode !== 11) throw new Error('Choose genetic code 1 or 11 explicitly.');
+  if (!isSupportedGeneticCode(value.geneticCode)) throw new Error('Choose genetic code 1, 4, 11, 15 or 25 explicitly.');
   const unavailable = value.unavailable ?? 'reject';
   if (unavailable !== 'reject' && unavailable !== 'exclude') throw new Error('Unavailable CDS policy must be reject or exclude.');
   const geneIds = value.geneIds ?? null;
@@ -70,6 +76,8 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
       || input.text.length > GENOME_IMPORT_LIMITS.bytes) throw new Error('Supply a bounded original GenBank or local-bundle input.');
   const source = { name: printable(input.name, 2000, 'Input name'), text: input.text };
   const options = resolveCodonCorpusOptions(settings);
+  const extendedCode = options.geneticCode !== 1 && options.geneticCode !== 11;
+  const table = getGeneticCode(options.geneticCode).codons;
   const parsed = await importLocalGenomes(source);
   const selected = parsed.genomes.filter(g => options.record === null || g.phage.accession === options.record || g.phage.localGenome?.contentId === options.record)
     .sort((a, b) => a.phage.localGenome!.contentId < b.phage.localGenome!.contentId ? -1 : 1);
@@ -78,7 +86,7 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
   if (options.geneIds !== null && selected.length !== 1) throw new Error('Mapped CDS IDs require a single selected record.');
   const identities = selected.map(g => g.phage.localGenome!.contentId);
   if (new Set(identities).size !== identities.length) throw new Error('Duplicate content-identified records would double-count the corpus.');
-  const counts = Object.fromEntries(Object.keys(CODON_TABLE).sort().map(codon => [codon, 0]));
+  const counts = Object.fromEntries(Object.keys(table).sort().map(codon => [codon, 0]));
   const genes: CodonCorpusGene[] = [], sources: CodonReferenceCorpus['sources'] = [];
   let extractedBases = 0, terminalStops = 0;
   for (const genome of selected) {
@@ -103,9 +111,9 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
       if (!Number.isSafeInteger(extractedBases) || extractedBases > CODON_CORPUS_LIMITS.extractedBases) {
         throw new Error('Corpus exceeds the 25,000,000 extracted-base budget. Select fewer CDS.');
       }
-      // This corpus/CAI method remains restricted to standard internal meanings.
-      // A broader CDS consequence table must not change its exclusions or replay.
-      const transcript = reconstructCdsReference(gene, genome.sequence, [1, 11]);
+      // Never assign the selected code to an unannotated or incompatible CDS.
+      // Standard-code records preserve their existing exclusions and replay.
+      const transcript = reconstructCdsReference(gene, genome.sequence, extendedCode ? [options.geneticCode] : [1, 11]);
       const reasons = [...transcript.reasons];
       if (transcript.geneticCode !== options.geneticCode) reasons.push('Annotation genetic code differs from the declared corpus code.');
       const key = JSON.stringify([raw, transcript.codonStart]);
@@ -123,7 +131,7 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
       }
       const cds = transcript.cds!;
       for (let offset = 0; offset < cds.length; offset += 3) counts[cds.slice(offset, offset + 3)]++;
-      if (CODON_TABLE[cds.slice(-3)] === '*') terminalStops++;
+      if (table[cds.slice(-3)] === '*') terminalStops++;
     }
   }
   const codons = Object.values(counts).reduce((sum, n) => sum + n, 0);
@@ -135,19 +143,27 @@ export async function createCodonReferenceCorpus(input: GenomeInput, settings: C
   const summary = { records: sources.length, selectedMappedCds: genes.length, countedCds,
     excludedMappedCds: genes.length - countedCds, unmappedCds: sources.reduce((n, s) => n + s.unmappedCds, 0), codons, terminalStops };
   const coverage = { available: countedCds, total: genes.length, unit: 'genes' as const };
+  const limitations = extendedCode ? LIMITATIONS.map((limit, index) => index === 1
+    ? 'Each accepted annotation contributes its original in-frame DNA triplets, including initiators and terminal stop codons. Downstream code-aware CAI excludes only singleton amino-acid families and stops under the declared code. Overlapping distinct CDS are counted separately; duplicate transcript coordinates/frame in one record are excluded or rejected.'
+    : index === 3
+      ? 'Explicit NCBI genetic codes 1, 4, 11, 15 and 25 are supported; the annotation table (default 1) must equal the declared corpus table. Unsupported recoding, ambiguity, incomplete codons, internal stops and inconsistent deposited translations are rejected or explicitly excluded.'
+      : limit) : LIMITATIONS;
   const field = (label: string, value: unknown) => ({ label, value: analysisJson(value), kind: 'sequence-score' as const,
-    units: 'records' as const, coverage, limitations: LIMITATIONS });
-  const record = await createAnalysisRecord({ method: CODON_CORPUS_METHOD, seed: null,
+    units: 'records' as const, coverage, limitations });
+  const record = await createAnalysisRecord({ method: codonCorpusMethod(options.geneticCode), seed: null,
     inputs: [{ id: 'source', accession: null, source: 'local', description: 'Exact original GenBank or source bundle, freshly reparsed during replay.', data: analysisJson(source) }],
     parameters: analysisJson(options) as AnalysisRecord['parameters'],
-    references: [{ id: 'insdc-feature-table', version: 'CDS-codon-start-1-2-3', description: 'Deposited CDS segments, genetic code and codon_start; no gene prediction.' }],
+    references: [{ id: 'insdc-feature-table', version: 'CDS-codon-start-1-2-3', description: 'Deposited CDS segments, genetic code and codon_start; no gene prediction.' },
+      ...(extendedCode ? [{ id: 'NCBI-translation-tables', version: '2024-09-23',
+        description: `Explicit table ${options.geneticCode}; https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi` }] : [])],
     fields: { reference: field('Raw integer counts and asserted reference metadata', reference),
       genes: field('Selected mapped CDS and explicit exclusions', genes), sources: field('Record identities and parser coverage warnings', sources),
       summary: field('Counted, excluded and unmapped CDS coverage', summary) } });
   return { reference, genes, sources, summary, record };
 }
 export async function replayCodonReferenceCorpus(content: string): Promise<CodonReferenceCorpus> {
-  const saved = await parseAnalysisRecord(content, { methodId: CODON_CORPUS_METHOD.id, methodVersion: CODON_CORPUS_METHOD.version });
+  const saved = await parseAnalysisRecord(content, { methodId: CODON_CORPUS_METHOD.id });
+  if (![CODON_CORPUS_METHOD.version, '2'].includes(saved.method.version)) throw new Error('Unsupported codon corpus method version.');
   if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'source') throw new Error('Corpus replay needs the exact original source.');
   const fresh = await createCodonReferenceCorpus(saved.inputs[0].data as unknown as GenomeInput, saved.parameters as unknown as CodonCorpusOptions);
   if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Recomputed corpus inputs, selection, counts or coverage differ from the saved result.');

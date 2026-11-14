@@ -68,3 +68,28 @@ describe('source-recomputed reference CAI', () => {
     assert.deepEqual(scored.record.parameters.geneIds, [1]);
   });
 });
+
+
+describe('source-recomputed CAI with reassigned codons', () => {
+  it('carries table-4 Trp counts through corpus replay, query scoring and fresh record replay', async () => {
+    const recoded = (id: string, sequence: string) => {
+      const source = gb(id, sequence);
+      return { ...source, text: source.text.replace('ORIGIN\n', '                     /transl_table=4\nORIGIN\n') };
+    };
+    // Four TGA and one TGG give weights 1 and 1/4 for the two Trp codons.
+    const source = await createCodonReferenceCorpus(recoded('SOURCE4', 'ATGTGATGATGATGATGGTAA'), { ...metadata, geneticCode: 4 });
+    assert.equal(source.reference.counts.TGA, 4); assert.equal(source.reference.counts.TGG, 1);
+    const query = (await importLocalGenomes(recoded('QUERY4', 'ATGTGATGGTAA'))).genomes[0];
+    const scored = await createReferenceCodonExperiment(referenceGenomeFromPhage(query.phage), query.sequence, serializeAnalysisRecord(source.record));
+    assert.equal(scored.record.method.version, '4');
+    assert.equal(scored.analysis.summary.scoredCodons, 2);
+    assert(Math.abs(scored.analysis.summary.cai! - 0.5) < 1e-12);
+    assert.deepEqual(await replayReferenceCodonExperiment(serializeAnalysisRecord(scored.record)), scored);
+    assert.equal((await resolveCodonReferenceInput(serializeAnalysisRecord(source.record))).reference.geneticCode, 4);
+    // A rehashed reference-table edit must not reinterpret original source or pass replay.
+    const { format: _f, version: _v, resultId: _r, cacheKey: _k, ...values } = structuredClone(source.record);
+    (values.fields.reference.value as { geneticCode: number }).geneticCode = 11;
+    const forged = serializeAnalysisRecord(await createAnalysisRecord(values));
+    await assert.rejects(createReferenceCodonExperiment(referenceGenomeFromPhage(query.phage), query.sequence, forged), /Recomputed corpus/);
+  });
+});

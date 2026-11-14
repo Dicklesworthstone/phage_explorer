@@ -36,7 +36,7 @@ describe('reported codon-count references', () => {
     assert.deepEqual(parseCodonReference(json()), reference());
   });
   it('rejects unsupported schemas, codes, missing attribution and hidden fields', () => {
-    for (const change of [{ version: 2 }, { format: 'weights' }, { geneticCode: 4 }, { organism: '' }, { name: '\u001b[2J' },
+    for (const change of [{ version: 2 }, { format: 'weights' }, { geneticCode: 2 }, { organism: '' }, { name: '\u001b[2J' },
       { source: { citation: '', version: '1' } }, { source: { citation: 'test', version: '' } }, { extra: 'unexpected' }]) {
       assert.throws(() => parseCodonReference(JSON.stringify({ ...reference(), ...change })));
     }
@@ -215,5 +215,76 @@ ORIGIN
     const expanded = { ...genome, genes: [{ ...genome.genes[0], qualifiers: { _segments:
       Array.from({ length: 9 }, () => ({ start: 0, end: sequence.length, strand: '+' })) } }] };
     await assert.rejects(createReferenceCodonExperiment(expanded, sequence, json()), /25,000,000/);
+  });
+});
+
+
+describe('reference analysis with explicitly reassigned genetic codes', () => {
+  it('uses independent count ratios within the declared synonymous families', () => {
+    const fixtures: Array<{ code: 4 | 15 | 25; counts: Record<string, number>; sequence: string; aminoAcid: string; rare: string }> = [
+      { code: 4 as const, counts: { TGA: 8, TGG: 2 }, sequence: 'ATGTGATGGTAA', aminoAcid: 'W', rare: 'TGG' },
+      { code: 15 as const, counts: { TAG: 8, CAA: 2, CAG: 4 }, sequence: 'ATGTAGCAATAA', aminoAcid: 'Q', rare: 'CAA' },
+      { code: 25 as const, counts: { TGA: 8, GGT: 2, GGC: 4, GGA: 4, GGG: 4 }, sequence: 'ATGTGAGGTTAA', aminoAcid: 'G', rare: 'GGT' },
+    ];
+    for (const f of fixtures) {
+      const recoded = { ...reference(f.counts), geneticCode: f.code };
+      assert.equal(parseCodonReference(JSON.stringify(recoded)).geneticCode, f.code);
+      const weights = buildCodonReferenceWeights(recoded);
+      assert.deepEqual(weights.coveredFamilies, [f.aminoAcid]);
+      close(weights.weights[f.rare], 0.25);
+      const score = scoreCodonReferenceSequence(f.sequence, recoded);
+      // One codon at weight 1 and one at 1/4 => sqrt(1/4), on every table.
+      close(score.cai, 0.5);
+      assert.equal(score.eligibleCodons, 2); assert.equal(score.singleCodonAminoAcids, 1);
+      assert.equal(score.stopCodons, 1); assert.equal(score.internalStops, 0);
+      assert.equal(scoreCodonReferenceSequence(f.sequence, reference(f.counts)).cai, null);
+    }
+  });
+  it('requires the expanded family and distinguishes missing counts from reported zeros', () => {
+    const recoded = { ...reference({ CAA: 8, CAG: 2 }), geneticCode: 15 as const };
+    const missing = scoreCodonReferenceSequence('CAACAGTAG', recoded);
+    assert.equal(missing.cai, null); assert.equal(missing.scoredCodons, 0);
+    assert.deepEqual(missing.missingReferenceCodons, { CAA: 1, CAG: 1, TAG: 1 });
+    const reportedZero = { ...recoded, counts: { ...recoded.counts, TAG: 0 } };
+    close(scoreCodonReferenceSequence('CAATAG', reportedZero).cai, 0.25);
+    assert.equal(scoreCodonReferenceSequence('CAATAG', reportedZero, 0).cai, 0);
+    const all = { ...reference(Object.fromEntries(Object.keys(CODON_TABLE).map(codon => [codon, 1]))), geneticCode: 4 as const };
+    assert.equal(buildCodonReferenceWeights(all).coveredFamilies.length, 19);
+  });
+  it('extracts joined reverse CDS and retains the code through verified replay', async () => {
+    // RC(TTTAG) + RC(CTA) = CTAAA + TAG; codon_start=3 -> AAA TAG.
+    const text = [
+      'LOCUS       RECODED 12 bp DNA circular', 'ACCESSION   RECODED',
+      'FEATURES             Location/Qualifiers',
+      '     CDS             complement(join(1..3,8..12))',
+      '                     /codon_start=3', '                     /transl_table=15',
+      'ORIGIN', '        1 ctacccctttag', '//', '',
+    ].join('\n');
+    const imported = (await importLocalGenomes({ name: 'recoded.gb', text })).genomes[0];
+    const genome = referenceGenomeFromPhage(imported.phage);
+    const recoded = { ...reference({ AAA: 4, AAG: 2, CAA: 8, CAG: 2, TAG: 2 }), geneticCode: 15 as const };
+    const result = await createReferenceCodonExperiment(genome, imported.sequence, JSON.stringify(recoded));
+    close(result.analysis.summary.cai, 0.5); assert.equal(result.record.method.version, '3');
+    assert.equal(result.analysis.genes[0].internalStops, 0);
+    assert.deepEqual(await replayReferenceCodonExperiment(serializeAnalysisRecord(result.record)), result);
+    const { transl_table: _table, ...qualifiers } = genome.genes[0].qualifiers!;
+    for (const code of [undefined, '1', '4', '11', '25', 'bad']) {
+      const changed = { ...genome, genes: [{ ...genome.genes[0], qualifiers: {
+        ...qualifiers, ...(code === undefined ? {} : { transl_table: code }),
+      } }] };
+      const incompatible = await createReferenceCodonExperiment(changed, imported.sequence, JSON.stringify(recoded));
+      assert.equal(incompatible.analysis.summary.cai, null);
+      assert.match(incompatible.analysis.genes[0].reasons.join(' '), /genetic code/i);
+    }
+    for (const qualifier of ['transl_except', 'exception', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']) {
+      const unsupported = { ...genome, genes: [{ ...genome.genes[0], qualifiers: { ...genome.genes[0].qualifiers, [qualifier]: '' } }] };
+      const unavailable = await createReferenceCodonExperiment(unsupported, imported.sequence, JSON.stringify(recoded));
+      assert.equal(unavailable.analysis.summary.cai, null);
+      assert.match(unavailable.analysis.genes[0].reasons.join(' '), /Translation exceptions/);
+    }
+    const forged = await createAnalysisRecord({ ...result.record, inputs: result.record.inputs, fields: {
+      ...result.record.fields, pooledCai: { ...result.record.fields.pooledCai, value: 0.9 },
+    } });
+    await assert.rejects(replayReferenceCodonExperiment(serializeAnalysisRecord(forged)), /Recomputed/);
   });
 });
