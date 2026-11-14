@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { researchStorage, requestResearchPersistence, type ResearchSnapshotInfo, type ResearchSnapshotKind } from '../../db/research-storage';
+import { researchStorage, requestResearchPersistence, RESEARCH_SNAPSHOT_TYPES, type ResearchSnapshotInfo, type ResearchSnapshotKind } from '../../db/research-storage';
 import { downloadString } from '../../utils/export';
 
 interface SavedResearchPanelProps {
@@ -10,10 +10,6 @@ interface SavedResearchPanelProps {
   disabled?: boolean;
   onActivityChange?: (active: boolean) => void;
 }
-const titles: Record<ResearchSnapshotKind, string> = {
-  genomes: 'local genome workspaces', workflow: 'command workflows',
-  'codon-reference': 'reference experiments', pangenome: 'pangenome experiments',
-};
 /** Saving is explicit and append-only. Reopening delegates to the existing parser/replay boundary. */
 export function SavedResearchPanel({ kind, suggestedName, capture, restore, disabled = false, onActivityChange }: SavedResearchPanelProps): React.ReactElement {
   const [entries, setEntries] = useState<ResearchSnapshotInfo[]>([]);
@@ -61,8 +57,9 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
     });
   };
   const locked = disabled || busy;
-  return <details aria-label={`Saved ${titles[kind]}`} style={{ border: '1px solid var(--color-border)', padding: '.75rem', minWidth: 0 }}>
-    <summary>Saved {titles[kind]} on this device</summary>
+  const title = RESEARCH_SNAPSHOT_TYPES[kind].title;
+  return <details aria-label={`Saved ${title}`} style={{ border: '1px solid var(--color-border)', padding: '.75rem', minWidth: 0 }}>
+    <summary>Saved {title} on this device</summary>
     <p>Only Save writes private inputs to this browser profile. Snapshots survive reloads but are not encrypted or synced.
       Closing a panel does not save it. Browser data clearing or eviction can remove them; export JSON for a separate backup.</p>
     <label>Snapshot name <input value={name} placeholder={suggestedName.slice(0, 120)} maxLength={120} disabled={locked}

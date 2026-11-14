@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Durable measured-data experiments
+
+- **Save and reopen six more experiment families** — raw plaque-count growth,
+  corrected PFU/mL growth, measured virion inactivation, measured mutant assays,
+  abundance networks and environmental sample evidence now use the existing
+  local research library. Explicit saves retain the complete accepted experiment
+  as an immutable snapshot; unapplied draft edits are excluded.
+- **Fresh verification on reopen** — each panel routes saved JSON through its
+  existing computation and replay checks. A cancelled or failed worker cannot
+  produce a success message, and competing draft controls are locked during
+  restoration. Original source labels, including synthetic examples, survive
+  saving and replay. See the [local research library guide](docs/LOCAL_RESEARCH_LIBRARY.md).
+
 ### Measured virion inactivation
 
 - **Exposure-aware infectious-loss estimates** — fit exact integer plaque counts

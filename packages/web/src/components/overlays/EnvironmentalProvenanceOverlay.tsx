@@ -21,6 +21,8 @@ import { downloadString } from '../../utils/export';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 type ViewMode = 'overview' | 'biomes' | 'geography' | 'observations';
 const VIEW_NAMES: Record<ViewMode, string> = { overview: 'Overview', biomes: 'Biomes', geography: 'Geography', observations: 'All observations' };
@@ -257,6 +259,7 @@ export function EnvironmentalProvenanceOverlay({ repository, currentPhage }: {
   const [view, setView] = useState<ViewMode>('overview');
   const [page, setPage] = useState(0);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   useHotkey(ActionIds.OverlayEnvironmentalProvenance, () => toggle('environmentalProvenance'), { modes: ['NORMAL'] });
   useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open, session]);
   useEffect(() => { setPage(0); setView('overview'); setExportError(null); }, [accepted]);
@@ -278,6 +281,12 @@ export function EnvironmentalProvenanceOverlay({ repository, currentPhage }: {
   return <Overlay id="environmentalProvenance" title="ENVIRONMENTAL SAMPLE EVIDENCE" size="xl"
     provenanceBadge={<span data-testid="environmental-header-source" style={{ fontSize: '.75rem', color: colors.textDim }}>{dataset ? environmentalSourceLabel(dataset) : 'No environmental input loaded'}</span>}>
     <section aria-label="Environmental evidence workspace" style={{ display: 'grid', gap: '1rem', color: colors.text, minWidth: 0, overflowWrap: 'anywhere' }}>
+      <SavedResearchPanel kind="environmental" suggestedName={dataset?.name ?? 'Environmental experiment'}
+        disabled={loading} onActivityChange={setLibraryBusy}
+        capture={accepted?.record ? () => serializeAnalysisRecord(accepted.record!) : null}
+        restore={(content, signal) => replaySavedResearch(signal, { run: () => session.run({ kind: 'import', content }),
+          cancel: session.cancel, error: () => session.getSnapshot().error })} />
+      <fieldset disabled={libraryBusy} style={{ display: 'contents' }} aria-label="Environmental experiment controls">
       <div style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
         <strong data-testid="environmental-source">{dataset ? environmentalSourceLabel(dataset) : 'NO ENVIRONMENTAL DATA LOADED'}</strong>
         <p>Import sample observations for an explicit query or taxon. Local files are processed in a worker and are not uploaded.
@@ -357,6 +366,7 @@ export function EnvironmentalProvenanceOverlay({ repository, currentPhage }: {
         </div>}
       </>}
       <CatalogueDistinctiveness repository={repository} currentPhage={currentPhage} open={open} />
+      </fieldset>
     </section>
   </Overlay>;
 }

@@ -6,6 +6,8 @@ import { GrowthExperimentSession, VIRION_INACTIVATION_MODEL, inactivationDraftCo
   readPlaqueGrowthFile, type InactivationDraft, type AcceptedGrowth } from '../../workers/PlaqueGrowthSession';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const EMPTY: InactivationDraft = {
   title: '', source: '', reference: '', license: '', kind: 'user-supplied',
@@ -61,6 +63,7 @@ export function VirionInactivationPanel(): React.ReactElement {
   const { busy, phase, error, accepted } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [draft, setDraft] = useState<InactivationDraft>({ ...EMPTY });
   const [dirty, setDirty] = useState(false), [reading, setReading] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null), [page, setPage] = useState(0);
   const reader = useRef<AbortController | null>(null), revision = useRef(0), exactInput = useRef<string | null>(null);
   useEffect(() => {
@@ -76,7 +79,9 @@ export function VirionInactivationPanel(): React.ReactElement {
     if (await session.run(type, source) && revision.current === generation) {
       const result = session.getSnapshot().accepted!;
       setDraft(draftFor(result.input)); exactInput.current = result.inputText; setDirty(false); setPage(0);
+      return true;
     }
+    return false;
   };
   const loadCsv = async (file: File) => {
     cancel(); const owner = new AbortController(); reader.current = owner; setReading(true); setLocalError(null);
@@ -96,7 +101,7 @@ export function VirionInactivationPanel(): React.ReactElement {
     cancel(); exactInput.current = null; setLocalError(null); setDirty(true);
     setDraft(draftFor(createInactivationTemplate()));
   };
-  const locked = busy || reading;
+  const locked = busy || reading || libraryBusy;
   const control: React.CSSProperties = { width: '100%', minHeight: 44, boxSizing: 'border-box', padding: '.5rem',
     background: 'var(--color-background)', color: 'inherit', border: '1px solid var(--color-border)', borderRadius: 4 };
   const grid: React.CSSProperties = { display: 'grid', gap: '.5rem' };
@@ -105,8 +110,13 @@ export function VirionInactivationPanel(): React.ReactElement {
     <p>Fit loss of infectious concentration over time from exact plaque counts, dilution fractions and plated volumes.
       Each experiment describes one phage preparation at one fixed temperature and buffer condition.
       The fitted nonnegative decay rate is conditional on an exponential Poisson count model.</p>
-    <p>Import CSV to review its metadata, or fit a complete input JSON. Inputs stay in session memory; export before closing.
+    <p>Import CSV to review its metadata, or fit a complete input JSON. Inputs stay in session memory unless you explicitly save a completed experiment below.
       Input, evidence and TSV downloads retain private measurements and experimental context.</p>
+    <SavedResearchPanel kind="inactivation" suggestedName={accepted?.input.title ?? 'Measured inactivation experiment'}
+      disabled={busy || reading} onActivityChange={setLibraryBusy}
+      capture={accepted ? () => accepted.json : null}
+      restore={(content, signal) => replaySavedResearch(signal, { run: () => run('replay', content), cancel,
+        error: () => session.getSnapshot().error })} />
     <div style={grid}>
       <label>Load inactivation plate CSV/TSV for review (up to 1 MB)<input type="file" style={control}
         accept=".csv,.tsv,text/csv,text/tab-separated-values" disabled={locked} onChange={e => {

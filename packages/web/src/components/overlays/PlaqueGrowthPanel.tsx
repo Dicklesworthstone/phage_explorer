@@ -4,6 +4,8 @@ import { parsePlaqueGrowthCSV, PLAQUE_GROWTH_LIMITS, type PlaqueGrowthResult, ty
 import { GrowthExperimentSession, PLAQUE_GROWTH_MODEL, plaqueGrowthDraftContent, readPlaqueGrowthFile, type PlaqueGrowthDraft } from '../../workers/PlaqueGrowthSession';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const EMPTY: PlaqueGrowthDraft = { version: 1, title: '', source: '', kind: 'user-supplied',
   csv: 'time_min,plaque_count,dilution_fraction,volume_ml\n', centers: '', support: '3.84', extracellular: false };
@@ -57,6 +59,7 @@ export function PlaqueGrowthPanel(): React.ReactElement {
   const { busy, phase, error, accepted } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [draft, setDraft] = useState<PlaqueGrowthDraft>({ ...EMPTY });
   const [dirty, setDirty] = useState(false), [reading, setReading] = useState(false), [localError, setLocalError] = useState<string | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const reader = useRef<AbortController | null>(null), revision = useRef(0), exactInput = useRef<string | null>(null);
   useEffect(() => {
     session.activate();
@@ -71,7 +74,9 @@ export function PlaqueGrowthPanel(): React.ReactElement {
     if (await session.run(type, source) && revision.current === generation) {
       const result = session.getSnapshot().accepted!;
       setDraft(draftFor(result.input)); exactInput.current = result.inputText; setDirty(false);
+      return true;
     }
+    return false;
   };
   const loadCsv = async (file: File) => {
     const version = draft.version; // Bind the selected schema before an asynchronous read.
@@ -100,14 +105,19 @@ export function PlaqueGrowthPanel(): React.ReactElement {
           + (version === 2 ? `,${time === 2 ? 'at-most' : time === 5 ? 'at-least' : 'exact'}` : '')).join('\n') + '\n' });
   };
   const fit = accepted?.record.fields.fit.value as unknown as PlaqueGrowthResult | undefined;
-  const locked = busy || reading;
+  const locked = busy || reading || libraryBusy;
   const control: React.CSSProperties = { width: '100%', minHeight: 44, boxSizing: 'border-box', padding: '.5rem', background: 'var(--color-background)', color: 'inherit', border: '1px solid var(--color-border)', borderRadius: 4 };
   const rowStyle: React.CSSProperties = { display: 'grid', gap: '.4rem' };
   return <section aria-labelledby={`${id}-title`} style={{ display: 'grid', gap: '.75rem', marginBottom: '2rem', overflowWrap: 'anywhere' }}>
     <h3 id={`${id}-title`}>Raw plaque-count growth experiments</h3>
     <p>Fit integer extracellular plaque counts or explicit inclusive count bounds with their dilution fractions and plated volumes. This uses the same versioned Poisson exposure models as the terminal,
       not the equal-weight corrected-PFU fit below. It is descriptive, not a mechanistic estimate of adsorption or individual-cell latency.</p>
-    <p>Raw inputs stay in session memory and are not automatically saved. Export before closing. JSON and TSV both contain private measurements; neither anonymizes them.</p>
+    <p>Raw inputs stay in session memory unless you explicitly save a completed experiment below. JSON and TSV both contain private measurements; neither anonymizes them.</p>
+    <SavedResearchPanel kind="plaque-growth" suggestedName={accepted?.input.title ?? 'Plaque-count growth experiment'}
+      disabled={busy || reading} onActivityChange={setLibraryBusy}
+      capture={accepted ? () => accepted.json : null}
+      restore={(content, signal) => replaySavedResearch(signal, { run: () => run('replay', content), cancel,
+        error: () => session.getSnapshot().error })} />
     <div style={rowStyle}>
       <label>Plate CSV format<select style={control} value={draft.version} disabled={locked} onChange={e => edit('version', e.target.value === '2' ? 2 : 1)}>
         <option value={1}>Version 1 — exact counts (four columns)</option><option value={2}>Version 2 — exact counts and inclusive bounds (five columns)</option>

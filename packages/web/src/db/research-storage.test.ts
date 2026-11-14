@@ -1,6 +1,9 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { ResearchStorage, RESEARCH_STORAGE_LIMITS, researchSnapshotName, validateResearchSnapshotContent } from './research-storage';
+import { ResearchStorage, RESEARCH_STORAGE_LIMITS, researchSnapshotName, validateResearchSnapshotContent, replaySavedResearch } from './research-storage';
+import { createDemoEnvironmentalDataset, analyzeEnvironmentalDataset, createEnvironmentalAnalysisRecord,
+  replayEnvironmentalAnalysisRecord } from '../../../core/src/analysis/environmental-evidence';
+import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -105,9 +108,68 @@ describe('saved research format routing', () => {
     assert(multibyte.length < RESEARCH_STORAGE_LIMITS.snapshotBytes);
     assert.throws(() => validateResearchSnapshotContent('genomes', multibyte), /10 MiB/);
   });
+  it('routes measured and supplied-data methods separately, without treating a checksum as scientific verification', () => {
+    const methods = [
+      ['abundance', 'abundance-clr-nmf'], ['environmental', 'local-environmental-evidence'],
+      ['epistasis', 'measured-epistasis-assay'], ['plaque-growth', 'plaque-count-growth'],
+      ['pfu-growth', 'extracellular-pfu-growth'], ['inactivation', 'plaque-count-inactivation'],
+    ] as const;
+    for (const [kind, method] of methods) {
+      const saved = JSON.stringify({ format: 'phage-explorer-analysis', version: 1, method: { id: method, version: '2' } });
+      assert(validateResearchSnapshotContent(kind, saved) > 0);
+      for (const [other] of methods) if (other !== kind) assert.throws(() => validateResearchSnapshotContent(other, saved), /match/);
+    }
+  });
+});
+
+describe('saved experiment replay ownership', () => {
+  it('does not mistake a caught analysis failure for verified restoration', async () => {
+    await assert.rejects(replaySavedResearch(new AbortController().signal, {
+      run: async () => false, cancel: () => {}, error: () => 'Numerical results differ from the saved experiment.',
+    }), /Numerical results differ/);
+    await assert.rejects(replaySavedResearch(new AbortController().signal, {
+      run: async () => { throw new Error('Worker unavailable'); }, cancel: () => {}, error: () => null,
+    }), /Worker unavailable/);
+  });
+  it('does not start an aborted open and promptly cancels an uncooperative pending provider', async () => {
+    const prior = new AbortController(); prior.abort(); let starts = 0, cancellations = 0;
+    assert.throws(() => replaySavedResearch(prior.signal, {
+      run: async () => { starts++; return true; }, cancel: () => { cancellations++; }, error: () => null,
+    }), { name: 'AbortError' });
+    assert.equal(starts, 0); assert.equal(cancellations, 0);
+    const controller = new AbortController(); let complete!: (ok: boolean) => void;
+    const pending = replaySavedResearch(controller.signal, {
+      run: () => { starts++; return new Promise(resolve => { complete = resolve; }); },
+      cancel: () => { cancellations++; }, error: () => null,
+    });
+    await Promise.resolve(); controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' });
+    complete(true); await Promise.resolve();
+    assert.equal(starts, 1); assert.equal(cancellations, 1);
+  });
+  it('removes completed replay listeners before later unrelated session work', async () => {
+    const controller = new AbortController(); let cancellations = 0;
+    await replaySavedResearch(controller.signal, { run: async () => true, cancel: () => { cancellations++; }, error: () => null });
+    controller.abort(); assert.equal(cancellations, 0);
+  });
 });
 
 describe('saved research client transaction ownership (event fixture)', () => {
+  it('retains a complete environmental experiment for independent fresh replay after reopening storage', () => fixture(async ({ store }) => {
+    const dataset = createDemoEnvironmentalDataset();
+    const record = await createEnvironmentalAnalysisRecord(dataset, analyzeEnvironmentalDataset(dataset));
+    const json = serializeAnalysisRecord(record);
+    const saved = await store.save('environmental', 'Supplied sample experiment', json);
+    const reopened = await new ResearchStorage('isolated-test').read(saved.id, 'environmental');
+    assert.equal(reopened.content, json);
+    const replay = await replayEnvironmentalAnalysisRecord(reopened.content);
+    assert.equal(replay.record.resultId, record.resultId);
+    assert.deepEqual(replay.dataset, dataset);
+    assert.equal(replay.dataset.samples[2].occurrence, 'not-assayed');
+    assert.equal(replay.dataset.samples[2].abundance, null);
+    assert.equal(replay.dataset.samples[1].abundance, 0);
+    await assert.rejects(store.read(saved.id, 'abundance'), /another panel/);
+  }));
   it('preserves exact export bytes and lists metadata without private payloads', () => fixture(async ({ store, counts }) => {
     const text = `  ${content}\n`;
     const entry = await store.save('genomes', 'Test', text);

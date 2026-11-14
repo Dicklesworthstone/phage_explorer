@@ -8,6 +8,8 @@ import { useTheme } from '../../hooks/useTheme';
 import { GrowthExperimentSession, CORRECTED_PFU_GROWTH_MODEL, correctedPfuGrowthDraftContent,
   readPlaqueGrowthFile } from '../../workers/PlaqueGrowthSession';
 import { PlaqueGrowthPanel } from './PlaqueGrowthPanel';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 interface Draft {
   title: string;
@@ -113,6 +115,7 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [storageError, setStorageError] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const revision = useRef(0);
   const reading = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -199,7 +202,17 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
         Fitting and bootstrapping run in a cancellable worker. Saved numerical results are checked against fresh computation on import.</p>
       <p>Raw plaque counts above and corrected PFU/mL below use different observation models; neither is silently converted into the other.
         Editing drafts or a failed import leaves the last accepted result and its exports unchanged. Exports contain private measurements.</p>
+      <SavedResearchPanel kind="pfu-growth" suggestedName={execution.accepted?.input.title ?? 'Corrected PFU growth experiment'}
+        disabled={busy} onActivityChange={setLibraryBusy}
+        capture={execution.accepted ? () => execution.accepted!.json : null}
+        restore={async (content, signal) => {
+          invalidate();
+          await replaySavedResearch(signal, { run: () => session.run('replay', content), cancel: invalidate,
+            error: () => session.getSnapshot().error });
+          setDraft(draftFor(session.getSnapshot().accepted!.input));
+        }} />
       {storageError && <p role="status">Browser draft storage is unavailable. Export before leaving to avoid losing your inputs.</p>}
+      <fieldset disabled={libraryBusy} style={{ display: 'contents' }} aria-label="Corrected PFU experiment controls">
       <form onSubmit={fitDraft}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center' }}>
           <label style={label}>Import CSV, TSV, or experiment JSON (input up to 1 MB; evidence up to 10 MiB)
@@ -235,6 +248,7 @@ export function GrowthCurveExperimentPanel(): React.ReactElement {
         </div>
       </form>
       {reference && <p role="status">Comparison pinned: {reference.experiment.title} ({reference.experiment.provenance.kind}). Edit inputs or import another experiment, then fit to compare. Deltas are descriptive, not significance tests; export each experiment to retain both.</p>}
+      </fieldset>
       <p role="status" data-testid="corrected-pfu-status">{loading && !execution.busy ? 'Reading experiment file…' : execution.phase}</p>
       {(error || execution.error) && <p role="alert" style={{ color: colors.error }}>{error ?? execution.error}</p>}
       {completed && <section aria-label="Growth-curve fit results" data-result-id={execution.accepted!.record.resultId}>

@@ -2,7 +2,22 @@
  * Metadata and original export text commit together. Consumers still parse/recompute on open.
  * Transaction completion, not request success, is the durability boundary (IndexedDB 3.0).
  */
-export type ResearchSnapshotKind = 'genomes' | 'workflow' | 'codon-reference' | 'pangenome';
+/** Routing and display names share one registry. A method match only chooses a
+ * panel; its existing replay producer must still recompute and verify on open.
+ */
+export const RESEARCH_SNAPSHOT_TYPES = {
+  genomes: { title: 'local genome workspaces', format: 'phage-explorer-local-genomes', methods: [] },
+  workflow: { title: 'command workflows', format: 'phage-explorer-commands', methods: [] },
+  'codon-reference': { title: 'reference experiments', format: 'phage-explorer-analysis', methods: ['reference-codon-adaptation'] },
+  pangenome: { title: 'pangenome experiments', format: 'phage-explorer-analysis', methods: ['alignment-pangenome'] },
+  abundance: { title: 'abundance experiments', format: 'phage-explorer-analysis', methods: ['abundance-clr-nmf'] },
+  environmental: { title: 'environmental experiments', format: 'phage-explorer-analysis', methods: ['local-environmental-evidence'] },
+  epistasis: { title: 'measured epistasis experiments', format: 'phage-explorer-analysis', methods: ['measured-epistasis-assay'] },
+  'plaque-growth': { title: 'plaque-count growth experiments', format: 'phage-explorer-analysis', methods: ['plaque-count-growth'] },
+  'pfu-growth': { title: 'corrected PFU growth experiments', format: 'phage-explorer-analysis', methods: ['extracellular-pfu-growth'] },
+  inactivation: { title: 'measured inactivation experiments', format: 'phage-explorer-analysis', methods: ['plaque-count-inactivation'] },
+} as const;
+export type ResearchSnapshotKind = keyof typeof RESEARCH_SNAPSHOT_TYPES;
 export interface ResearchSnapshotInfo {
   id: string;
   version: 1;
@@ -15,7 +30,7 @@ export interface ResearchSnapshotInfo {
 export interface ResearchSnapshot extends ResearchSnapshotInfo { content: string }
 export const RESEARCH_STORAGE_LIMITS = { snapshotBytes: 10 * 1024 * 1024, totalBytes: 64 * 1024 * 1024, snapshots: 64 } as const;
 export const RESEARCH_STORAGE_NAME = 'phage-explorer-private-research';
-const kinds: readonly ResearchSnapshotKind[] = ['genomes', 'workflow', 'codon-reference', 'pangenome'];
+const kinds = Object.keys(RESEARCH_SNAPSHOT_TYPES) as ResearchSnapshotKind[];
 const stores = ['metadata', 'contents'];
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 function cancelled(): DOMException { return new DOMException('Local research operation cancelled.', 'AbortError'); }
@@ -38,12 +53,44 @@ export function validateResearchSnapshotContent(kind: ResearchSnapshotKind, cont
   if (bytes > RESEARCH_STORAGE_LIMITS.snapshotBytes) throw new Error('Snapshot exceeds 10 MiB. Export a smaller experiment.');
   const value: unknown = JSON.parse(content);
   if (!object(value) || value.version !== 1) throw new Error('Unsupported saved research format/version.');
-  const matches = kind === 'genomes' ? value.format === 'phage-explorer-local-genomes'
-    : kind === 'workflow' ? value.format === 'phage-explorer-commands'
-    : value.format === 'phage-explorer-analysis' && object(value.method)
-      && value.method.id === (kind === 'pangenome' ? 'alignment-pangenome' : 'reference-codon-adaptation');
+  const definition = RESEARCH_SNAPSHOT_TYPES[kind];
+  const methods: readonly string[] = definition.methods;
+  const matches = value.format === definition.format && (!methods.length
+    || object(value.method) && typeof value.method.id === 'string' && methods.includes(value.method.id));
   if (!matches) throw new Error('Snapshot content does not match this research panel.');
   return bytes;
+}
+
+/** Connect the library's lifetime to an existing owned analysis session. Those
+ * sessions report failures as false, so awaiting run alone cannot certify replay.
+ * Abort also settles if a provider ignores cancellation; late replies cannot
+ * publish a library success or retain a listener that cancels a later operation.
+ */
+export function replaySavedResearch(signal: AbortSignal, operation: {
+  run: () => Promise<boolean>; cancel: () => void; error: () => string | null;
+}): Promise<void> {
+  check(signal);
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (cause?: unknown, failed = false) => {
+      if (settled) return;
+      settled = true; signal.removeEventListener('abort', stop);
+      if (failed) reject(cause); else resolve();
+    };
+    const stop = () => {
+      if (settled) return;
+      try { operation.cancel(); } catch { /* Cancellation still settles the library operation. */ }
+      finish(cancelled(), true);
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    void Promise.resolve().then(() => { check(signal); return operation.run(); }).then(ok => {
+      if (settled) return;
+      if (signal.aborted) stop();
+      else if (!ok) finish(new Error(operation.error() ?? 'Saved experiment could not be recomputed. The previous result is unchanged.'), true);
+      else finish();
+    }).catch(cause => finish(cause, true));
+    if (signal.aborted) stop();
+  });
 }
 function metadata(value: unknown): ResearchSnapshotInfo {
   if (!object(value)) throw new Error('Saved research metadata is damaged. Export your other snapshots before clearing browser data.');

@@ -14,6 +14,18 @@ room. Unsaved changes are not included in an earlier snapshot.
 | Saved research workflows | The stopped command tape, its embedded genome bundle, expected outputs and parameters | Load and validate for review. Add bundled genomes and choose Replay separately; opening never executes commands. |
 | Reference-backed codon adaptation | Complete reference experiment with original sequence, annotations, reference counts and parameters | Rerun the existing reference-experiment verification before displaying scores. |
 | Sequence Pangenome & Variants | Complete accepted graph experiment, including input sequences and normalization parameters | Rebuild through the existing pangenome replay worker and compare the result identity. Draft control edits are not part of an accepted result. |
+| Raw plaque-count growth | Complete accepted plate-count experiment, including dilution/exposure data, censoring bounds when supplied, fit settings and result identity | Replay with the original count model and compare the recomputed experiment. |
+| Corrected PFU/mL growth | Complete accepted corrected-concentration experiment and fitted result | Replay the corrected-PFU model before restoring its input draft and displaying the accepted result. This is separate from the raw-count model. |
+| Measured virion inactivation | Complete accepted preparation, conditions, plate counts, dilution/exposure data and fit settings | Refit and verify the original versioned experiment before restoring it. |
+| Measured mutant assays | Complete accepted assay dataset, protein background, observations, contrast settings and numerical evidence | Recompute the measured contrasts and verify the saved record before restoring the draft. |
+| Abundance network | Complete accepted local abundance dataset, missingness, analysis parameters and numerical evidence | Import through the abundance worker and freshly verify the result and identity. |
+| Environmental sample evidence | Complete accepted observations, source metadata, missingness and numerical evidence | Import through the environmental worker and independently recompute the result. |
+
+For these experiment panels, **Save** captures the last accepted result, not
+unapplied draft edits. An import failure, numerical mismatch or cancellation
+cannot turn into a successful reopen. Competing input controls are disabled while
+a saved experiment is opening. Synthetic examples retain their synthetic source
+labels when saved and reopened; saving does not turn them into observed data.
 
 Open the corresponding panel after a reload, expand **Saved … on this device**,
 select the snapshot and choose **Open saved snapshot**. The catalog and unrelated

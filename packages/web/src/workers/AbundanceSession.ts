@@ -39,17 +39,18 @@ export class AbundanceSession {
     this.stop();
     this.publish({ loading: false, phase: null, ...(pending ? { notice: 'Cancelled. The last accepted dataset and result are unchanged.' } : {}) });
   };
-  run = async (request: AbundanceRequest | Promise<AbundanceRequest>): Promise<void> => {
+  run = async (request: AbundanceRequest | Promise<AbundanceRequest>): Promise<boolean> => {
     // Observe rejected file reads even if an old/unmounted UI invokes this method.
-    if (!this.active) { await Promise.resolve(request).catch(() => {}); return; }
+    if (!this.active) { await Promise.resolve(request).catch(() => {}); return false; }
     this.stop();
     const op: Operation = { worker: null, finish: null };
     this.operation = op;
     const current = () => this.active && this.operation === op;
     this.publish({ loading: true, phase: 'Reading local input', error: null, notice: null });
+    let accepted = false;
     try {
       const submitted = request instanceof Promise ? await request : structuredClone(request);
-      if (!current()) return;
+      if (!current()) return false;
       const worker = this.createWorker(); op.worker = worker;
       await new Promise<void>((resolve, reject) => {
         op.finish = resolve;
@@ -63,6 +64,7 @@ export class AbundanceSession {
               ? 'Verified replay: recomputed values and complete analysis identity match.'
               : message.result.analysis ? 'Analysis complete. Display and exports use these submitted parameters.'
               : 'Dataset loaded. Review the parameters, then run the analysis.' });
+            accepted = true;
             resolve();
           } else reject(new Error('Unsupported abundance worker response.'));
         };
@@ -70,8 +72,10 @@ export class AbundanceSession {
         worker.onmessageerror = () => reject(new Error('Could not deserialize the abundance worker response.'));
         worker.postMessage(structuredClone(submitted));
       });
+      return current() && accepted;
     } catch (cause) {
       if (current()) this.publish({ error: cause instanceof Error ? cause.message : 'Abundance operation failed.' });
+      return false;
     } finally {
       if (current()) { this.stop(); this.publish({ loading: false, phase: null }); }
     }

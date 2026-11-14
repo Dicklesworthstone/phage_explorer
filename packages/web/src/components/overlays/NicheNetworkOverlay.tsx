@@ -11,6 +11,8 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
 import { AbundanceSession } from '../../workers/AbundanceSession';
 import type { AbundanceRequest } from '../../workers/abundance-runtime';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 type NumericOption = Exclude<keyof AbundanceOptions, 'includeNegative'>;
 type Draft = Record<NumericOption, string> & { includeNegative: boolean };
@@ -80,6 +82,7 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
   const [taxon, setTaxon] = useState('');
   const [page, setPage] = useState(0);
   const [showAllPairs, setShowAllPairs] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   useHotkey(ActionIds.OverlayNicheNetwork, () => toggle('nicheNetwork'), { modes: ['NORMAL'] });
   useEffect(() => { if (open) session.activate(); else session.deactivate(); return session.deactivate; }, [open, session]);
   useEffect(() => {
@@ -133,6 +136,13 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
       {!accepted ? 'No input data' : accepted.dataset.source.kind === 'demo' ? 'Synthetic example' : 'User-supplied local data'}
     </span>}>
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', color: colors.text, overflowWrap: 'anywhere' }}>
+      <SavedResearchPanel kind="abundance" suggestedName={accepted?.dataset.name ?? 'Abundance experiment'}
+        disabled={loading} onActivityChange={setLibraryBusy}
+        capture={record ? () => serializeAnalysisRecord(record) : null}
+        restore={(content, signal) => replaySavedResearch(signal, {
+          run: () => session.run({ kind: 'import', content, filename: 'Saved abundance experiment' }),
+          cancel: session.cancel, error: () => session.getSnapshot().error })} />
+      <fieldset disabled={libraryBusy} style={{ display: 'contents' }} aria-label="Abundance experiment controls">
       <section aria-label="Abundance data source" style={{ padding: '.75rem', border: `1px solid ${colors.borderLight}` }}>
         <strong data-testid="abundance-source">{accepted ? accepted.dataset.source.kind === 'demo'
           ? 'SYNTHETIC EXAMPLE — not observed community data' : 'LOCAL DATA — user-supplied, not independently verified' : 'NO DATA LOADED'}</strong>
@@ -280,6 +290,7 @@ export function NicheNetworkOverlay(): React.ReactElement | null {
         {analysis.diagnostics.warnings.map(warning => <p key={warning}>{warning}</p>)}
         <AnalysisRecordDetails record={record} />
       </section>}
+      </fieldset>
     </div>
   </Overlay>;
 }

@@ -9,6 +9,8 @@ import { EpistasisEvidenceSession, EPISTASIS_FILE_LIMIT } from '../../workers/Ep
 import { useTheme } from '../../hooks/useTheme';
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const PAGE_SIZE = 50;
 type ResultView = 'pairs' | 'observations';
@@ -105,6 +107,7 @@ export function EpistasisEvidencePanel(): React.ReactElement {
   const [samples, setSamples] = useState('1000'), [seed, setSeed] = useState('1');
   const [view, setView] = useState<ResultView>('pairs'), [page, setPage] = useState(0), [selected, setSelected] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   useEffect(() => {
     mounted.current = true; session.activate();
     return () => { mounted.current = false; session.deactivate(); };
@@ -143,6 +146,19 @@ export function EpistasisEvidencePanel(): React.ReactElement {
     <h3 style={{ marginBottom: 0 }}>Measured mutant assays</h3>
     <p>Import replicate measurements for an explicit protein background, assay and conditions.
       A contrast requires WT, both single mutants and the double mutant. Everything is processed locally.</p>
+    <SavedResearchPanel kind="epistasis" suggestedName={dataset?.name ?? 'Measured epistasis experiment'}
+      disabled={state.busy} onActivityChange={setLibraryBusy}
+      capture={record ? () => serializeAnalysisRecord(record) : null}
+      restore={async (content, signal) => {
+        setFormError(null);
+        await replaySavedResearch(signal, { run: () => session.run({ kind: 'replay', content }),
+          cancel: session.cancel, error: () => session.getSnapshot().error });
+        const next = session.getSnapshot().accepted!;
+        setDraft(JSON.stringify(next.dataset, null, 2));
+        setSamples(String(next.options.bootstrapSamples)); setSeed(String(next.options.seed));
+        setPage(0); setSelected(null);
+      }} />
+    <fieldset disabled={libraryBusy} style={{ display: 'contents' }} aria-label="Measured epistasis experiment controls">
     <SourceLabel dataset={dataset} />
     <label htmlFor={id + '-file'}>Import epistasis assay or saved evidence JSON</label>
     <input id={id + '-file'} type="file" accept=".json,application/json" disabled={state.busy} onChange={event => {
@@ -225,5 +241,6 @@ export function EpistasisEvidencePanel(): React.ReactElement {
       Missing values, missing genotypes and unsupported substitutions are never filled with predictions.
       Assay files and exports contain the supplied protein and measurements.
     </p>
+    </fieldset>
   </section>;
 }
