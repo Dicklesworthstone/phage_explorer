@@ -1,11 +1,11 @@
 /**
  * RNAStructureOverlay - RNA Structure & Packaging Signal Explorer
  *
- * Visualizes how synonymous changes affect mRNA folding/ΔG along coding regions.
- * Identifies structure-constrained segments and potential regulatory elements.
+ * Displays bounded maximum-pairing structures and descriptive motif observations.
+ * Coding intervals can additionally compare synonymous pairing scores.
  */
 
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -18,31 +18,35 @@ import type { ThemePalette } from '../../theme/types';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
+  OverlayErrorState,
 } from './primitives';
 import {
-  analyzeRNAStructure,
+  serializeAnalysisRecord,
+  RNA_STRUCTURE_LIMITS,
   extractGeneSequence,
   type RNAStructureAnalysis,
   type CodonStress,
   type RegulatoryHypothesis,
 } from '@phage-explorer/core';
+import { RNAStructureSession, parseRNAInterval, type RNAStructureRequest } from '../../workers/RNAStructureSession';
+import { downloadString } from '../../utils/export';
 
 // ============================================================================
 // Styling Helpers
 // ============================================================================
 
 function stressColor(stress: number): string {
-  // Red = high stress (structure-constrained), Blue = low stress (freely variable)
+  // Relative synonymous pairing-score variability, not fitness or stability.
   if (stress >= 0.8) return '#ef4444'; // Constrained
   if (stress >= 0.6) return '#f97316';
   if (stress >= 0.4) return '#eab308';
   if (stress >= 0.2) return '#22c55e';
-  return '#3b82f6'; // Freely variable
+  return '#3b82f6'; // Lower variability
 }
 
 function mfeColor(mfe: number): string {
-  // More negative = more stable structure
-  if (mfe < -10) return '#7c3aed'; // Very stable
+  // More negative means more pairs in the stated maximum-pairing objective.
+  if (mfe < -10) return '#7c3aed';
   if (mfe < -5) return '#a855f7';
   if (mfe < -2) return '#c084fc';
   return '#e9d5ff'; // Less stable
@@ -55,6 +59,8 @@ function regulatoryTypeIcon(type: RegulatoryHypothesis['type']): string {
     case 'attenuator': return '🛑';
     case 'packaging-signal': return '📦';
     case 'slippery-site': return '🔀';
+    case 'rbs': return '🧬';
+    case 'terminator': return '🛑';
     default: return '❓';
   }
 }
@@ -65,7 +71,9 @@ function regulatoryTypeLabel(type: RegulatoryHypothesis['type']): string {
     case 'riboswitch': return 'Riboswitch';
     case 'attenuator': return 'Attenuator';
     case 'packaging-signal': return 'Packaging Signal';
-    case 'slippery-site': return 'Slippery Site (Frameshift)';
+    case 'slippery-site': return 'Slippery Site Candidate';
+    case 'rbs': return 'Ribosome Binding Site Candidate';
+    case 'terminator': return 'Terminator Candidate';
     default: return 'Unknown';
   }
 }
@@ -119,7 +127,7 @@ function StressHeatStrip({
           color: colors.textMuted,
         }}
       >
-        0
+        {(stressData[0]?.position ?? 0) + 1}
       </div>
       <div
         style={{
@@ -130,7 +138,7 @@ function StressHeatStrip({
           color: colors.textMuted,
         }}
       >
-        {stressData.length} codons
+        {(stressData[stressData.length - 1]?.position ?? 0) + 1} (transcript codon)
       </div>
     </div>
   );
@@ -148,12 +156,10 @@ function MFEPlot({ windows, width, height, colors }: MFEPlotProps): React.ReactE
     return <div style={{ color: colors.textMuted }}>No windows</div>;
   }
 
-  // Windows with no stem carry null and are excluded from the scale rather
-  // than plotted at zero, which would put "nothing found" in the middle of the
-  // axis alongside genuinely unstructured-but-scored windows.
-  const scored = windows.map(w => w.pairingScore).filter((v): v is number => v !== null);
-  const minMFE = scored.length > 0 ? Math.min(...scored) : 0;
-  const maxMFE = scored.length > 0 ? Math.max(...scored) : 0;
+  // The exact pair count is zero when no permitted base pair exists.
+  const scores = windows.map(w => -w.pairCount);
+  const minMFE = Math.min(0, ...scores);
+  const maxMFE = 0;
   const range = maxMFE - minMFE || 1;
 
   const cellWidth = width / windows.length;
@@ -161,7 +167,7 @@ function MFEPlot({ windows, width, height, colors }: MFEPlotProps): React.ReactE
   // Create path for MFE line
   const points = windows.map((w, i) => {
     const x = i * cellWidth + cellWidth / 2;
-    const y = height - (((w.pairingScore ?? minMFE) - minMFE) / range) * height;
+    const y = height - ((-w.pairCount - minMFE) / range) * height;
     return `${x},${y}`;
   });
 
@@ -278,7 +284,7 @@ function RegulatoryCard({ hypothesis, colors }: RegulatoryCardProps): React.Reac
         {hypothesis.description}
       </div>
       <div style={{ display: 'flex', gap: '1rem', fontSize: '0.7rem', color: colors.textMuted }}>
-        <span>Position: {hypothesis.start.toLocaleString()}-{hypothesis.end.toLocaleString()}</span>
+        <span>Position: {(hypothesis.start + 1).toLocaleString()}–{hypothesis.end.toLocaleString()} (inclusive)</span>
       </div>
       <div
         style={{
@@ -328,7 +334,7 @@ function CodonDetail({ codon, colors }: CodonDetailProps): React.ReactElement {
               fontSize: '0.8rem',
             }}
           >
-            Stress: {(codon.stress * 100).toFixed(0)}%
+            Relative variability: {(codon.stress * 100).toFixed(0)}%
           </div>
           {codon.isConstrained && (
             <span
@@ -341,16 +347,17 @@ function CodonDetail({ codon, colors }: CodonDetailProps): React.ReactElement {
                 fontWeight: 'bold',
               }}
             >
-              CONSTRAINED
+              HIGH SCORE VARIABILITY
             </span>
           )}
         </div>
       </div>
 
       <div style={{ fontSize: '0.8rem', color: colors.textDim, marginBottom: '0.5rem' }}>
-        {/* No kcal/mol: this is the same greedy pairing score as everywhere
-            else in this overlay, not a free energy. */}
-        Position: codon {codon.position} | wild-type pairing score:{' '}
+        {/* Unitless maximum-pairing score, not a free energy. */}
+        Transcript codon {codon.position + 1}
+        {codon.nucleotideStart !== undefined && codon.nucleotideEnd !== undefined && <> (bases {codon.nucleotideStart + 1}–{codon.nucleotideEnd})</>}
+        {' '}| wild-type pairing score:{' '}
         {codon.wildTypeDeltaG.toFixed(2)}
       </div>
 
@@ -396,356 +403,226 @@ interface RNAStructureOverlayProps {
 
 interface RNAInput {
   repository: PhageRepository;
-  phageId: number;
+  phage: PhageFull;
 }
-
-interface RNAData {
-  sequence: string;
-  genes: GeneInfo[];
-}
+interface RNAData { sequence: string; genes: GeneInfo[] }
 
 export function RNAStructureOverlay({
-  repository,
-  currentPhage,
+  repository, currentPhage,
 }: RNAStructureOverlayProps): React.ReactElement | null {
-  const { theme } = useTheme();
-  const colors = theme.colors;
+  const { theme } = useTheme(), colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
-
-  const sequenceCache = useMemo(() => new Map<number, RNAData>(), [repository]);
-  const phageId = currentPhage?.id;
-  const input = useMemo<RNAInput | null>(
-    () => repository && phageId !== undefined ? { repository, phageId } : null,
-    [repository, phageId]
-  );
-  const [loaded, setLoaded] = useState<{ input: RNAInput; data: RNAData } | null>(null);
-  const data = loaded?.input === input ? loaded.data : null;
-  const sequence = data?.sequence ?? '';
-  const genes = data?.genes ?? [];
   const isActive = isOpen('rnaStructure');
-  const loading = isActive && input !== null && data === null;
-
+  const input = useMemo<RNAInput | null>(() => repository && currentPhage ? { repository, phage: currentPhage } : null,
+    [repository, currentPhage]);
+  const [loaded, setLoaded] = useState<{ input: RNAInput; data: RNAData | null; error: string | null } | null>(null);
+  const data = loaded?.input === input ? loaded.data : null;
+  const readJob = useRef<{ cancelled: boolean } | null>(null);
+  const reading = isActive && input !== null && loaded?.input !== input;
+  const loadError = loaded?.input === input ? loaded.error : null;
   const [geneSelection, setGeneSelection] = useState<{ input: RNAInput; key: string } | null>(null);
-  const selectedGene = useMemo(() => {
-    if (!data || geneSelection?.input !== input) return null;
-    return data.genes.find(gene => (gene.locusTag ?? String(gene.id)) === geneSelection.key) ?? null;
-  }, [data, input, geneSelection]);
-  const [hover, setHover] = useState<{ analysis: RNAStructureAnalysis; codon: CodonStress } | null>(null);
   const [viewMode, setViewMode] = useState<'genome' | 'gene'>('genome');
+  const codingGenes = useMemo(() => data?.genes.filter(gene => gene.type === 'CDS') ?? [], [data]);
+  const selectedGene = useMemo(() => geneSelection?.input === input
+    ? codingGenes.find(gene => String(gene.id) === geneSelection.key) ?? null : null,
+  [codingGenes, geneSelection, input]);
+  const extracted = useMemo(() => {
+    if (!selectedGene || !data) return { sequence: '', error: null };
+    try {
+      // Extraction preserves transcript order; alternative codes are allowed for pairing only.
+      const sequence = extractGeneSequence(selectedGene, data.sequence, [1, 4, 11, 15, 25]);
+      return { sequence, error: sequence ? null : 'This CDS has unsupported coordinates, codon_start or genetic code. Select another CDS or a genomic interval.' };
+    } catch (cause) {
+      return { sequence: '', error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  }, [selectedGene, data]);
+  const [hover, setHover] = useState<{ analysis: RNAStructureAnalysis; codon: CodonStress } | null>(null);
 
-  // Hotkey to toggle overlay (Alt+R for RNA)
-  useHotkey(
-    ActionIds.OverlayRNAStructure,
-    () => toggle('rnaStructure'),
-    { modes: ['NORMAL'] }
-  );
-
-  // Fetch sequence and genes when overlay opens
+  useHotkey(ActionIds.OverlayRNAStructure, () => toggle('rnaStructure'), { modes: ['NORMAL'] });
   useEffect(() => {
     if (!isActive || !input) return;
-    const cached = sequenceCache.get(input.phageId);
-    if (cached) {
-      setLoaded({ input, data: cached });
-      return;
-    }
-
-    let cancelled = false;
+    const owner = { cancelled: false }; readJob.current = owner;
+    setLoaded(null);
     void (async () => {
       try {
-        const length = await input.repository.getFullGenomeLength(input.phageId);
-        if (cancelled) return;
+        const length = await input.repository.getFullGenomeLength(input.phage.id);
+        if (owner.cancelled) return;
         const [sequence, genes] = await Promise.all([
-          input.repository.getSequenceWindow(input.phageId, 0, length),
-          input.repository.getGenes(input.phageId),
+          input.repository.getSequenceWindow(input.phage.id, 0, length),
+          input.repository.getGenes(input.phage.id),
         ]);
-        if (cancelled) return;
-        const next = { sequence, genes };
-        sequenceCache.set(input.phageId, next);
-        setLoaded({ input, data: next });
-      } catch {
-        if (!cancelled) setLoaded({ input, data: { sequence: '', genes: [] } });
-      }
+        if (!owner.cancelled) setLoaded({ input, data: { sequence, genes }, error: null });
+      } catch (cause) {
+        if (!owner.cancelled) setLoaded({ input, data: null, error: cause instanceof Error ? cause.message : String(cause) });
+      } finally { if (readJob.current === owner) readJob.current = null; }
     })();
+    return () => { owner.cancelled = true; if (readJob.current === owner) readJob.current = null; };
+  }, [isActive, input]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [isActive, input, sequenceCache]);
-
-  // Compute RNA structure analysis
-  const analysis = useMemo((): RNAStructureAnalysis | null => {
-    if (!isActive || !data?.sequence) return null;
-
-    if (viewMode === 'gene') {
-      if (!selectedGene) return null;
-      const geneSeq = extractGeneSequence(selectedGene, data.sequence);
-      if (geneSeq.length < 60) return null;
-      return analyzeRNAStructure(geneSeq, { windowSize: 60, stepSize: 15 });
-    }
-
-    // Genome-wide analysis with larger windows
-    if (data.sequence.length < 300) return null;
-    return analyzeRNAStructure(data.sequence, { windowSize: 200, stepSize: 50 });
-  }, [isActive, data, viewMode, selectedGene]);
+  const target = useMemo(() => {
+    if (!data?.sequence || !input || viewMode === 'gene' && !selectedGene) return null;
+    const sequence = viewMode === 'gene' ? extracted.sequence : data.sequence;
+    if (!sequence) return null;
+    const rawTable = selectedGene?.qualifiers?.transl_table;
+    const table = String(Array.isArray(rawTable) ? rawTable[0] : rawTable ?? '1');
+    const hasException = ['transl_except', 'pseudo', 'pseudogene', 'exception', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']
+      .some(key => selectedGene?.qualifiers?.[key] !== undefined);
+    const coding = viewMode === 'gene';
+    return { input, sequence, coding, gene: coding ? String(selectedGene!.id) + ':' + (selectedGene!.locusTag ?? selectedGene!.name ?? 'CDS') : null,
+      stressSupported: coding && ['1', '11'].includes(table) && !hasException };
+  }, [data, input, viewMode, selectedGene, extracted]);
+  const [draft, setDraft] = useState<{ target: object; start: string; end: string } | null>(null);
+  const [submitted, setSubmitted] = useState<{ target: object; start: number; end: number } | null>(null);
+  const [formError, setFormError] = useState<{ target: object; message: string } | null>(null);
+  const startText = draft?.target === target ? draft.start : '1';
+  const endText = draft?.target === target ? draft.end : String(Math.min(target?.sequence.length ?? 0, 600));
+  const request = useMemo<RNAStructureRequest | null>(() => {
+    if (!isActive || !target) return null;
+    const interval = submitted?.target === target ? submitted : { start: 0, end: Math.min(target.sequence.length, 600) };
+    return { sequence: target.sequence.slice(interval.start, interval.end),
+      source: { name: target.input.phage.name, accession: target.input.phage.accession || null,
+        source: target.input.phage.localGenome ? 'local' : 'catalog',
+        coordinateSystem: target.coding ? 'cds-transcript' : 'genome-forward',
+        sourceLength: target.sequence.length, start: interval.start, end: interval.end, strand: '+', gene: target.gene },
+      options: { windowSize: Math.min(target.coding ? 60 : 120, interval.end - interval.start),
+        stepSize: Math.min(target.coding ? 15 : 30, interval.end - interval.start),
+        frame: 0, includeSynonymousStress: target.stressSupported, minLoopSize: 3, allowWobble: true } };
+  }, [isActive, target, submitted]);
+  const session = useMemo(() => new RNAStructureSession(() =>
+    new Worker(new URL('../../workers/rna-structure.worker.ts', import.meta.url), { type: 'module' })), []);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  useEffect(() => { if (isActive) session.activate(); else session.deactivate(); return session.deactivate; }, [isActive, session]);
+  useEffect(() => { if (request) void session.run(request); else session.cancel(); return session.cancel; }, [request, session]);
+  const state = snapshot.input === request ? snapshot : null;
+  const accepted = state?.accepted ?? null;
+  const ownedRequest = state?.request ?? null;
+  const analysis = accepted?.analysis ?? null;
+  const busy = reading || !!state?.busy || !!request && snapshot.input !== request;
   const hoveredCodon = hover?.analysis === analysis ? hover.codon : null;
-
-  // Compute summary stats
-  const summary = useMemo(() => {
-    if (!analysis) return null;
-
-    const constrainedCount = analysis.codonStress.filter(c => c.isConstrained).length;
-    const constrainedPercent = (constrainedCount / Math.max(analysis.codonStress.length, 1)) * 100;
-
-    return {
-      totalCodons: analysis.codonStress.length,
-      constrainedCount,
-      constrainedPercent,
-      highStressRegions: analysis.highStressRegions.length,
-      regulatoryHypotheses: analysis.regulatoryHypotheses.length,
-      globalPairingScore: analysis.globalPairingScore,
-      avgStress: analysis.avgSynonymousStress * 100,
-    };
-  }, [analysis]);
-
+  const codons = useMemo(() => analysis && ownedRequest ? analysis.codonStress.map(codon => ({
+    ...codon, position: codon.position + Math.floor(ownedRequest.source.start / 3),
+    nucleotideStart: codon.nucleotideStart === undefined ? undefined : codon.nucleotideStart + ownedRequest.source.start,
+    nucleotideEnd: codon.nucleotideEnd === undefined ? undefined : codon.nucleotideEnd + ownedRequest.source.start,
+  })) : [], [analysis, ownedRequest]);
+  const source = ownedRequest?.source;
+  const error = loadError ?? (viewMode === 'gene' ? extracted.error : null)
+    ?? (formError?.target === target ? formError.message : null) ?? state?.error;
+  const cancel = () => {
+    if (readJob.current) {
+      readJob.current.cancelled = true;
+      if (input) setLoaded({ input, data: null, error: 'Sequence loading cancelled. Close and reopen this panel to load again.' });
+    }
+    session.cancel();
+  };
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault(); if (!target) return;
+    try {
+      const interval = parseRNAInterval(startText, endText, target.sequence.length, target.coding);
+      setFormError(null); setSubmitted({ target, ...interval });
+    } catch (cause) { setFormError({ target, message: cause instanceof Error ? cause.message : String(cause) }); }
+  };
+  const exportResult = () => {
+    if (!accepted || !request) return;
+    try { downloadString(serializeAnalysisRecord(accepted.record), 'rna-pairing-analysis.json', 'application/json'); }
+    catch (cause) { if (target) setFormError({ target, message: cause instanceof Error ? cause.message : String(cause) }); }
+  };
+  const fieldStyle: React.CSSProperties = { background: colors.backgroundAlt, color: colors.text,
+    border: '1px solid ' + colors.borderLight, borderRadius: 3, padding: '.25rem' };
   if (!isActive) return null;
 
-  return (
-    <Overlay
-      id="rnaStructure"
-      title="RNA STRUCTURE & PACKAGING SIGNAL EXPLORER"
-      hotkey="Alt+R"
-      size="lg"
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        {/* Description */}
-        <div
-          style={{
-            padding: '0.75rem',
-            backgroundColor: colors.backgroundAlt,
-            borderRadius: '4px',
-            color: colors.textDim,
-            fontSize: '0.85rem',
-          }}
-        >
-          <strong style={{ color: colors.accent }}>Synonymous Stress Analysis</strong>:
-          Maps how synonymous (silent) mutations would alter mRNA folding stability (ΔG).
-          <strong style={{ color: '#ef4444' }}> High stress</strong> = structure-constrained (mutations destabilize structure).
-          <strong style={{ color: '#3b82f6' }}> Low stress</strong> = freely variable.
-          Identifies riboswitches, attenuators, and packaging signals.
-        </div>
-
-        {/* View mode and gene selection */}
-        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
-          <label style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
-            View:
-            <select
-              value={viewMode}
-              onChange={e => setViewMode(e.target.value as typeof viewMode)}
-              style={{
-                marginLeft: '0.5rem',
-                padding: '0.25rem',
-                backgroundColor: colors.backgroundAlt,
-                color: colors.text,
-                border: `1px solid ${colors.borderLight}`,
-                borderRadius: '3px',
-              }}
-            >
-              <option value="genome">Whole Genome</option>
-              <option value="gene">Single Gene</option>
-            </select>
-          </label>
-
-          {viewMode === 'gene' && (
-            <label style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
-              Gene:
-              <select
-                value={selectedGene ? (selectedGene.locusTag ?? String(selectedGene.id)) : ''}
-                onChange={(e) => {
-                  const key = e.target.value;
-                  setGeneSelection(input && key ? { input, key } : null);
-                }}
-                style={{
-                  marginLeft: '0.5rem',
-                  padding: '0.25rem',
-                  backgroundColor: colors.backgroundAlt,
-                  color: colors.text,
-                  border: `1px solid ${colors.borderLight}`,
-                  borderRadius: '3px',
-                  maxWidth: '200px',
-                }}
-              >
-                <option value="">Select a gene...</option>
-                {genes.map((g) => (
-                  <option key={g.id} value={g.locusTag ?? String(g.id)}>
-                    {g.name || g.locusTag} ({g.startPos.toLocaleString()}-{g.endPos.toLocaleString()})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-        </div>
-
-        {loading ? (
-          <OverlayLoadingState message="Analyzing RNA structure...">
-            <AnalysisPanelSkeleton />
-          </OverlayLoadingState>
-        ) : !analysis || !summary ? (
-          <OverlayEmptyState
-            message={
-              !sequence
-                ? 'No sequence loaded'
-                : viewMode === 'gene' && !selectedGene
-                  ? 'Select a gene to analyze'
-                  : viewMode === 'gene'
-                    ? 'Gene sequence unavailable or too short'
-                    : 'Sequence too short for analysis'
-            }
-            hint={
-              !sequence
-                ? 'Select a phage to analyze.'
-                : viewMode === 'gene' && !selectedGene
-                  ? 'Choose a gene from the dropdown above.'
-                  : viewMode === 'gene'
-                    ? 'Gene analysis requires at least 60 coding bases and supported CDS coordinates, strand, and codon_start.'
-                    : 'RNA structure analysis requires at least 300 bp.'
-            }
-          />
-        ) : (
-          <>
-            {/* Summary metrics */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))',
-                gap: '0.5rem',
-                fontSize: '0.8rem',
-              }}
-            >
-              {[
-                { label: 'Total Codons', value: summary.totalCodons.toLocaleString() },
-                { label: 'Constrained', value: `${summary.constrainedCount} (${summary.constrainedPercent.toFixed(1)}%)`, highlight: summary.constrainedPercent > 20 },
-                { label: 'Avg Stress', value: `${summary.avgStress.toFixed(1)}%` },
-                {
-                  // Was "Global MFE ... kcal/mol". The underlying value is a
-                  // greedy stem-pairing score with toy constants, not a free
-                  // energy: it could be positive, which is impossible for an
-                  // MFE, and it was 0 when nothing was found. No unit, and an
-                  // em dash where no stem formed.
-                  label: 'Pairing score',
-                  value:
-                    summary.globalPairingScore === null
-                      ? '\u2014 no stems found'
-                      : summary.globalPairingScore.toFixed(1),
-                },
-                { label: 'High-Stress Regions', value: summary.highStressRegions.toString() },
-                { label: 'Regulatory Hits', value: summary.regulatoryHypotheses.toString() },
-              ].map(({ label, value, highlight }) => (
-                <div
-                  key={label}
-                  style={{
-                    padding: '0.5rem',
-                    backgroundColor: colors.backgroundAlt,
-                    borderRadius: '4px',
-                    textAlign: 'center',
-                  }}
-                >
-                  <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>{label}</div>
-                  <div
-                    style={{
-                      fontSize: '1rem',
-                      fontWeight: 'bold',
-                      color: highlight ? '#ef4444' : colors.text,
-                    }}
-                  >
-                    {value}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Stress heat strip */}
-            <div>
-              <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
-                Synonymous Stress Along Sequence
-              </div>
-              <div style={{ backgroundColor: colors.backgroundAlt, padding: '0.5rem', borderRadius: '4px' }}>
-                <StressHeatStrip
-                  stressData={analysis.codonStress}
-                  width={560}
-                  height={24}
-                  onHover={codon => setHover(codon ? { analysis, codon } : null)}
-                  colors={colors}
-                />
-              </div>
-              {/* Legend */}
-              <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', fontSize: '0.7rem', color: colors.textMuted }}>
-                <span><span style={{ display: 'inline-block', width: 12, height: 12, backgroundColor: '#ef4444', borderRadius: 2, marginRight: 4 }} />Constrained (high stress)</span>
-                <span><span style={{ display: 'inline-block', width: 12, height: 12, backgroundColor: '#3b82f6', borderRadius: 2, marginRight: 4 }} />Variable (low stress)</span>
-              </div>
-            </div>
-
-            {/* Hovered codon detail */}
-            {hoveredCodon && <CodonDetail codon={hoveredCodon} colors={colors} />}
-
-            {/* MFE plot */}
-            <div>
-              <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.25rem' }}>
-                Sliding window pairing score (unitless) &mdash; lower = more base pairing
-              </div>
-              <div
-                style={{
-                  backgroundColor: colors.backgroundAlt,
-                  padding: '0.5rem 0.5rem 0.5rem 2.5rem',
-                  borderRadius: '4px',
-                }}
-              >
-                <MFEPlot windows={analysis.windows} width={540} height={60} colors={colors} />
-              </div>
-            </div>
-
-            {/* Regulatory hypotheses */}
-            {analysis.regulatoryHypotheses.length > 0 && (
-              <div>
-                <div style={{ fontSize: '0.8rem', color: colors.textMuted, marginBottom: '0.5rem' }}>
-                  Regulatory Element Hypotheses ({analysis.regulatoryHypotheses.length})
-                </div>
-                <div
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.5rem',
-                    maxHeight: '200px',
-                    overflowY: 'auto',
-                  }}
-                >
-                  {analysis.regulatoryHypotheses.slice(0, 10).map((h, i) => (
-                    <RegulatoryCard key={i} hypothesis={h} colors={colors} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Interpretation */}
-            <div
-              style={{
-                padding: '0.5rem',
-                backgroundColor: colors.backgroundAlt,
-                borderRadius: '4px',
-                fontSize: '0.75rem',
-                color: colors.textDim,
-              }}
-            >
-              <strong>Interpretation:</strong> High-stress codons indicate positions where synonymous
-              mutations would destabilize local RNA structure. These are often under selection to
-              maintain secondary structures important for translation regulation, ribosome pausing,
-              or packaging. Slippery sites can cause programmed frameshifts. Packaging signals
-              near termini help virion assembly.
-            </div>
-          </>
-        )}
+  return <Overlay id="rnaStructure" title="RNA PAIRING & MOTIF EXPLORER" hotkey="Alt+R" size="lg">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <p style={{ color: colors.textDim }}>
+        Exact maximum-pairing dynamic programming within each bounded window: A–U/C–G and optional G–U pairs,
+        noncrossing, one partner per base, with at least three intervening bases between paired positions.
+        Each window is folded independently; their structures need not combine into one whole-transcript fold.
+        Scores count pairs; they are not free energies or calibrated functional predictions.
+      </p>
+      <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <label>View: <select value={viewMode} onChange={event => setViewMode(event.target.value as 'genome' | 'gene')} style={fieldStyle}>
+          <option value="genome">Genome interval</option><option value="gene">Single Gene</option>
+        </select></label>
+        {viewMode === 'gene' && <label>Gene: <select
+          value={selectedGene ? String(selectedGene.id) : ''}
+          onChange={event => setGeneSelection(input && event.target.value ? { input, key: event.target.value } : null)}
+          style={{ ...fieldStyle, maxWidth: 250 }}>
+          <option value="">Select an annotated CDS...</option>
+          {codingGenes.map(gene => <option key={gene.id} value={String(gene.id)}>
+            {gene.name || gene.locusTag} ({gene.startPos.toLocaleString()}-{gene.endPos.toLocaleString()})
+          </option>)}
+        </select></label>}
       </div>
-    </Overlay>
-  );
+      {target && <form onSubmit={submit} aria-label="RNA interval controls">
+        <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+          <label>Start (1-based) <input aria-label="RNA interval start" inputMode="numeric" value={startText}
+            onChange={event => setDraft({ target, start: event.target.value, end: endText })} style={{ ...fieldStyle, width: 100 }} /></label>
+          <label>End (inclusive) <input aria-label="RNA interval end" inputMode="numeric" value={endText}
+            onChange={event => setDraft({ target, start: startText, end: event.target.value })} style={{ ...fieldStyle, width: 100 }} /></label>
+          <button type="submit">Analyze interval</button>
+          <button type="button" disabled={!busy} onClick={cancel}>Cancel RNA analysis</button>
+          <button type="button" disabled={!accepted || busy} onClick={exportResult}>Export RNA analysis</button>
+        </div>
+        <p style={{ color: colors.textMuted, fontSize: '.8rem' }}>
+          Positions refer to {target.coding ? 'the extracted coding transcript, after codon_start; joined and reverse-strand CDS segments stay in transcript order' : 'the forward genomic sequence'}.
+          The initial interval is the first {Math.min(target.sequence.length, 600)} of {target.sequence.length.toLocaleString()} bases;
+          choose any interval up to {RNA_STRUCTURE_LIMITS.sequenceBases.toLocaleString()} bases.
+          The exact work budget can require a smaller coding interval. Draft edits do not change accepted results.
+        </p>
+      </form>}
+      {error && <OverlayErrorState message="RNA analysis unavailable" details={error} />}
+      {busy ? <OverlayLoadingState message="Analyzing RNA structure..."><AnalysisPanelSkeleton /></OverlayLoadingState>
+        : !analysis || !source ? <OverlayEmptyState message={state?.cancelled ? 'RNA analysis cancelled'
+          : viewMode === 'gene' && !selectedGene ? 'Select a gene to analyze' : 'No sequence loaded'}
+          hint={state?.cancelled ? 'Choose Analyze interval to start a new computation.'
+            : viewMode === 'gene' ? 'Choose a gene with supported CDS coordinates, strand and codon_start.' : 'Select a phage to analyze.'} />
+        : <>
+          <p data-testid="rna-accepted-interval" style={{ color: colors.textDim }}>
+            Analyzed {source.start + 1}–{source.end} of {source.sourceLength.toLocaleString()} {source.coordinateSystem === 'cds-transcript' ? 'coding-transcript' : 'genomic'} bases.
+            {' '}{analysis.windows.length} windows; {analysis.coverage.ambiguousBases} ambiguous bases.
+            {' '}Method {analysis.method.id} v{analysis.method.version}; window {analysis.parameters.windowSize}, step {analysis.parameters.stepSize}.
+          </p>
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+            <div><span>Total Codons</span><strong>{analysis.parameters.includeSynonymousStress ? codons.length : 'Not computed'}</strong></div>
+            <div>Mean paired-window score: {analysis.globalPairingScore === null ? 'no pairs' : analysis.globalPairingScore.toFixed(2)}</div>
+            <div>Motif candidates: {analysis.regulatoryHypotheses.length}</div>
+          </div>
+          {!analysis.parameters.includeSynonymousStress && <p style={{ color: colors.textMuted }}>
+            {target?.coding ? 'Synonymous scores are unavailable for this CDS genetic code or exceptional/pseudogene annotation.'
+              : 'Genomic coordinates do not establish a reading frame. Select a coding gene for synonymous scores.'}
+          </p>}
+          {codons.length > 0 && <div>
+            <p>Relative synonymous pairing-score variability (unitless; not selection or fitness)</p>
+            <StressHeatStrip stressData={codons} width={560} height={24} colors={colors}
+              onHover={codon => setHover(codon ? { analysis, codon } : null)} />
+          </div>}
+          {hoveredCodon && <CodonDetail codon={hoveredCodon} colors={colors} />}
+          <div style={{ padding: '.5rem .5rem .5rem 2.5rem', background: colors.backgroundAlt }}>
+            <p>Maximum-pairing landscape: score = minus pair count</p>
+            <MFEPlot windows={analysis.windows} width={540} height={80} colors={colors} />
+          </div>
+          <details>
+            <summary>Inspect all {analysis.windows.length} window structures</summary>
+            <div style={{ maxHeight: 300, overflow: 'auto' }}><table aria-label="RNA window structures">
+              <thead><tr><th>Interval (inclusive)</th><th>Pairs</th><th>Paired fraction</th><th>Sequence and dot-bracket structure</th></tr></thead>
+              <tbody>{analysis.windows.map(window => <tr key={window.start}>
+                <td>{source.start + window.start + 1}–{source.start + window.end}</td>
+                <td>{window.pairCount}</td><td>{window.pairingDensity.toFixed(3)}</td>
+                <td><pre style={{ margin: 0 }}>{window.sequence + '\n' + window.structure}</pre></td>
+              </tr>)}</tbody>
+            </table></div>
+          </details>
+          {analysis.regulatoryHypotheses.length > 0 && <details>
+            <summary>Inspect all {analysis.regulatoryHypotheses.length} motif candidates</summary>
+            <p>Sequence-pattern observations are not calibrated probabilities or verified regulatory elements.</p>
+            <div style={{ maxHeight: 300, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: '.5rem' }}>
+              {analysis.regulatoryHypotheses.map((hypothesis, index) => <RegulatoryCard key={index} colors={colors}
+                hypothesis={{ ...hypothesis, start: source.start + hypothesis.start, end: source.start + hypothesis.end }} />)}
+            </div>
+          </details>
+          <p style={{ color: colors.textMuted }}>{analysis.method.limitations}</p>
+        </>}
+    </div>
+  </Overlay>;
 }
 
 export default RNAStructureOverlay;

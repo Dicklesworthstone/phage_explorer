@@ -1,5 +1,6 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
 
 declare global {
@@ -106,6 +107,14 @@ async function openFixture(page: Page, info: TestInfo, overlayId: 'modules' | 'r
             delayedLength: await makeRepository('delayedLength', 'AC'.repeat(450), cds('121..420', 'Delayed capsid', 'shared-1', 'major capsid protein')),
             delayedGenes: await makeRepository('delayedGenes', 'ATG'.repeat(300), cds('91..330', 'Late capsid', 'shared-1', 'major capsid protein')),
             empty: await makeRepository('empty', bSequence, ''),
+            mixed: await makeRepository('mixed', 'T'.repeat(90) + 'G'.repeat(120) + 'A'.repeat(90),
+              cds('1..300', 'Noncoding gene annotation', 'shared-1', 'gene').replace('     CDS             ', '     gene            ') +
+              cds('211..240', 'Transfer RNA annotation', 'shared-1', 'tRNA').replace('     CDS             ', '     tRNA            ') +
+              cds('1..90', 'Twin first CDS', 'shared-1', 'hypothetical protein') +
+              cds('91..210', 'Twin second CDS', 'shared-1', 'hypothetical protein') +
+              cds('211..300', 'Pseudo CDS', 'pseudo', 'hypothetical protein', '                     /pseudo\\n')),
+            code4: await makeRepository('code4', 'TGA'.repeat(90),
+              cds('1..270', 'Alternative code CDS', 'shared-1', 'hypothetical protein', '                     /transl_table=4\\n')),
             joined: await makeRepository('joined', 'G'.repeat(31) + 'A'.repeat(89) + 'G'.repeat(32) + 'T'.repeat(148),
               cds('complement(join(1..31,121..153))', 'Joined reverse', 'shared-1', 'major capsid protein', '                     /codon_start=2\\n')),
           };
@@ -210,9 +219,31 @@ test('RNA analysis scopes selected genes and codon details to repository and CDS
     const gene = overlay.getByRole('combobox', { name: 'Gene:', exact: true });
     const codonCount = overlay.getByText('Total Codons', { exact: true }).locator('..');
     const firstCodon = overlay.locator('svg[width="560"] rect').first();
-    await expect(codonCount).toHaveText('Total Codons300');
+    await expect(codonCount).toHaveText('Total CodonsNot computed');
+    const acceptedInterval = overlay.getByTestId('rna-accepted-interval');
+    const start = overlay.getByRole('textbox', { name: 'RNA interval start', exact: true });
+    const end = overlay.getByRole('textbox', { name: 'RNA interval end', exact: true });
+    await expect(acceptedInterval).toContainText('Analyzed 1–600 of 900 genomic bases.');
+    await start.fill('101'); await end.fill('220');
+    // Draft coordinates cannot relabel the result or exported exact input.
+    await expect(acceptedInterval).toContainText('Analyzed 1–600 of 900 genomic bases.');
+    await overlay.getByRole('button', { name: 'Analyze interval', exact: true }).click();
+    await expect(acceptedInterval).toContainText('Analyzed 101–220 of 900 genomic bases.');
+    await start.fill('201'); await end.fill('320');
+    const downloading = page.waitForEvent('download');
+    await overlay.getByRole('button', { name: 'Export RNA analysis', exact: true }).click();
+    const download = await downloading, downloadPath = await download.path();
+    expect(downloadPath).not.toBeNull();
+    const exported = JSON.parse(await readFile(downloadPath!, 'utf8'));
+    expect(exported.method.id).toBe('rna-maximum-pairing');
+    expect(exported.inputs[0].data.sequence).toBe('T'.repeat(120));
+    expect(exported.inputs[0].data.source).toMatchObject({ start: 100, end: 220, sourceLength: 900, coordinateSystem: 'genome-forward' });
+    expect(exported.parameters.includeSynonymousStress).toBe(false);
+    expect(exported.fields.analysis.coverage).toEqual({ available: 120, total: 900, unit: 'bases' });
+    expect(exported.fields.analysis.value.windows[0].structure).toBe('.'.repeat(120));
+    expect(exported.resultId).toMatch(/^[a-f0-9]{64}$/);
     await view.selectOption('gene');
-    await gene.selectOption('shared-1');
+    await gene.selectOption({ label: 'A capsid (120-420)' });
     await expect(codonCount).toHaveText('Total Codons100');
     await view.hover();
     await firstCodon.hover();
@@ -224,12 +255,12 @@ test('RNA analysis scopes selected genes and codon details to repository and CDS
     await expect(gene).toHaveValue('');
     await expect(overlay).toContainText('Select a gene to analyze');
     await expect(overlay.getByText('TTT', { exact: true })).not.toBeVisible();
-    await gene.selectOption('shared-1');
+    await gene.selectOption({ label: 'B capsid (180-540)' });
     await expect(codonCount).toHaveText('Total Codons120');
     await view.hover();
     await firstCodon.hover();
     await expect(overlay.getByText('GGG', { exact: true })).toBeVisible();
-    await gene.selectOption('shared-2');
+    await gene.selectOption({ label: 'B portal (600-780)' });
     await expect(codonCount).toHaveText('Total Codons60');
     await expect(overlay.getByText('GGG', { exact: true })).not.toBeVisible();
     await view.hover();
@@ -258,12 +289,12 @@ test('RNA analysis scopes selected genes and codon details to repository and CDS
 
     await page.evaluate(() => window.geneAnalysisIdentityFixture.select('c'));
     await expect(gene).toContainText('C capsid (30-150)');
-    await gene.selectOption('shared-1');
+    await gene.selectOption({ label: 'C capsid (30-150)' });
     await expect(codonCount).toHaveText('Total Codons40');
     await page.evaluate(() => window.geneAnalysisIdentityFixture.select('joined'));
     await expect(gene).toContainText('Joined reverse');
     await expect(gene).toHaveValue('');
-    await gene.selectOption('shared-1');
+    await gene.selectOption({ label: 'Joined reverse (0-153)' });
     // complement(join(...)) produces A + 63 Cs; codon_start=2 removes
     // the initial A. Neither the 89-base gap nor that offset is a codon.
     await expect(codonCount).toHaveText('Total Codons21');
@@ -271,6 +302,28 @@ test('RNA analysis scopes selected genes and codon details to repository and CDS
     await firstCodon.hover();
     await expect(overlay.getByText('CCC', { exact: true })).toBeVisible();
     await expect(overlay.getByText('ACC', { exact: true })).not.toBeVisible();
+    await page.evaluate(() => window.geneAnalysisIdentityFixture.select('code4'));
+    await expect(gene).toContainText('Alternative code CDS');
+    await gene.selectOption({ label: 'Alternative code CDS (0-270)' });
+    await expect(codonCount).toHaveText('Total CodonsNot computed');
+    await expect(overlay).toContainText('Synonymous scores are unavailable for this CDS genetic code or exceptional/pseudogene annotation.');
+    await expect(overlay.getByTestId('rna-accepted-interval')).toContainText('Analyzed 1–270 of 270 coding-transcript bases.');
+    await page.evaluate(() => window.geneAnalysisIdentityFixture.select('mixed'));
+    await expect(gene).toContainText('Twin first CDS');
+    await expect(gene).not.toContainText('Noncoding gene annotation');
+    await expect(gene).not.toContainText('Transfer RNA annotation');
+    // Both CDS annotations deliberately reuse the same locus tag; unique IDs must keep selection distinct.
+    await gene.selectOption({ label: 'Twin first CDS (0-90)' });
+    await expect(codonCount).toHaveText('Total Codons30');
+    await view.hover(); await firstCodon.hover();
+    await expect(overlay.getByText('TTT', { exact: true })).toBeVisible();
+    await gene.selectOption({ label: 'Twin second CDS (90-210)' });
+    await expect(codonCount).toHaveText('Total Codons40');
+    await view.hover(); await firstCodon.hover();
+    await expect(overlay.getByText('GGG', { exact: true })).toBeVisible();
+    await gene.selectOption({ label: 'Pseudo CDS (210-300)' });
+    await expect(codonCount).toHaveText('Total CodonsNot computed');
+    await expect(overlay).toContainText('Synonymous scores are unavailable for this CDS genetic code or exceptional/pseudogene annotation.');
     expect(errors).toEqual([]);
   } finally {
     await server.close();

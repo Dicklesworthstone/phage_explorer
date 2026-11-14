@@ -3,17 +3,17 @@
  *
  * Two views:
  * - RNA signals: detects ribosome binding sites (RBS), transcription terminators,
- *   and a lightweight folding-energy proxy along the genome.
+ *   and bounded maximum-pairing windows in an explicitly selected interval.
  * - Protein constraints: heuristic fragility scan for capsid/tail proteins
  *   (fast, no-dependency; not a substitute for real structural models).
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useSyncExternalStore } from 'react';
 import {
   analyzeStructuralConstraints,
-  analyzeRNAStructure,
+  serializeAnalysisRecord,
+  RNA_STRUCTURE_LIMITS,
   predictMutationEffect,
-  reverseComplement,
   type AminoAcid,
   type PhageFull,
   type RegulatoryHypothesis,
@@ -32,19 +32,22 @@ import {
 } from './primitives';
 import { GenomeTrack } from './primitives/GenomeTrack';
 import type { GenomeTrackSegment, GenomeTrackInteraction } from './primitives/types';
+import { RNAStructureSession, parseRNAInterval, mapRNAInterval, type RNAStructureRequest } from '../../workers/RNAStructureSession';
+import { downloadString } from '../../utils/export';
 
 type ViewMode = 'rna' | 'protein';
 
 // RNA element types
-type ElementType = 'rbs' | 'terminator' | 'stemloop';
+type ElementType = 'rbs' | 'terminator' | 'paired-window';
 
 interface RNAElement {
   type: ElementType;
   start: number;
   end: number;
-  score: number;
+  score: number | null;
   sequence: string;
   details: string;
+  structure?: string;
 }
 
 const FRAGILITY_BLOCKS = ['░', '▒', '▓', '█'] as const;
@@ -67,15 +70,16 @@ const AMINO_ACIDS: ReadonlyArray<AminoAcid> = [
 function elementsToSegments(
   elements: RNAElement[],
   type: ElementType,
-  color: string
+  color: string,
+  offset: number
 ): GenomeTrackSegment[] {
   return elements
     .filter(e => e.type === type)
     .map(e => ({
-      start: e.start,
-      end: e.end,
+      start: e.start - offset,
+      end: e.end - offset,
       color,
-      height: Math.max(6, e.score / 6),
+      height: 10,
       label: e.details,
       data: e,
     }));
@@ -97,7 +101,7 @@ function ElementTooltip({
   const typeLabels: Record<ElementType, string> = {
     rbs: 'Ribosome Binding Site',
     terminator: 'Transcription Terminator',
-    stemloop: 'Stem-Loop Structure',
+    'paired-window': 'Independently Folded Window',
   };
 
   return (
@@ -106,10 +110,10 @@ function ElementTooltip({
         {typeLabels[element.type]}
       </div>
       <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
-        {element.start.toLocaleString()} - {element.end.toLocaleString()} bp
+        {(element.start + 1).toLocaleString()}–{element.end.toLocaleString()} bp (inclusive)
       </div>
       <div style={{ color: colors.textMuted, fontSize: '0.7rem' }}>
-        Score: {element.score.toFixed(0)}
+        {element.type === 'paired-window' ? 'One exact maximum-pairing solution; no thermodynamic interpretation.' : 'Sequence-pattern candidate; confidence is not calibrated.'}
       </div>
       <div style={{ marginTop: '0.25rem', color: colors.textDim, fontSize: '0.65rem' }}>
         {element.details}
@@ -117,6 +121,9 @@ function ElementTooltip({
       <div style={{ marginTop: '0.25rem', fontFamily: 'monospace', fontSize: '0.55rem', color: colors.text, wordBreak: 'break-all' }}>
         {element.sequence.slice(0, 35)}{element.sequence.length > 35 ? '...' : ''}
       </div>
+      {element.structure && <pre style={{ marginTop: '.25rem', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: '.6rem' }}>
+        {element.structure}
+      </pre>}
     </>
   );
 }
@@ -128,6 +135,7 @@ export function StructureConstraintOverlay({
   const { theme } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle } = useOverlay();
+  const isActive = isOpen('structureConstraint');
   const [loaded, setLoaded] = useState<{ repository: PhageRepository; phage: PhageFull; sequence: string } | null>(null);
   const sequence = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded.sequence : '';
   const [error, setError] = useState<string | null>(null);
@@ -142,7 +150,7 @@ export function StructureConstraintOverlay({
   const [showEnergy, setShowEnergy] = useState(true);
 
   // Hover state
-  const [hoverInfo, setHoverInfo] = useState<GenomeTrackInteraction | null>(null);
+  const [hoverState, setHoverState] = useState<{ request: RNAStructureRequest; info: GenomeTrackInteraction } | null>(null);
 
   // Hotkey to toggle overlay (Alt+Shift+R)
   useHotkey(
@@ -153,10 +161,10 @@ export function StructureConstraintOverlay({
 
   // Fetch full genome when overlay opens or phage changes
   useEffect(() => {
-    if (!isOpen('structureConstraint')) return;
+    if (!isActive) return;
     setLoaded(null);
     setError(null);
-    setHoverInfo(null);
+    setHoverState(null);
     if (!repository || !currentPhage) {
       setLoading(false);
       return;
@@ -184,80 +192,68 @@ export function StructureConstraintOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isActive, repository, currentPhage]);
 
-  // Detect RNA structural elements using shared core logic
+  const [rangeDraft, setRangeDraft] = useState<{ input: object; start: string; end: string } | null>(null);
+  const [rangeSelection, setRangeSelection] = useState<{ input: object; start: number; end: number } | null>(null);
+  const [rangeError, setRangeError] = useState<{ input: object; message: string } | null>(null);
+  const rangeStart = rangeDraft?.input === loaded ? rangeDraft.start : '1';
+  const rangeEnd = rangeDraft?.input === loaded ? rangeDraft.end : String(Math.min(sequence.length, 600));
+  const rnaRequest = useMemo<RNAStructureRequest | null>(() => {
+    if (!isActive || viewMode !== 'rna' || !sequence || !loaded || !currentPhage) return null;
+    const interval = rangeSelection?.input === loaded ? rangeSelection : { start: 0, end: Math.min(sequence.length, 600) };
+    return { sequence: sequence.slice(interval.start, interval.end),
+      source: { name: currentPhage.name, accession: currentPhage.accession || null,
+        source: currentPhage.localGenome ? 'local' : 'catalog', coordinateSystem: 'genome-forward',
+        sourceLength: sequence.length, start: interval.start, end: interval.end, strand, gene: null },
+      options: { windowSize: Math.min(120, interval.end - interval.start), stepSize: Math.min(30, interval.end - interval.start),
+        frame: 0, includeSynonymousStress: false, minLoopSize: 3, allowWobble: true } };
+  }, [isActive, viewMode, sequence, loaded, currentPhage, rangeSelection, strand]);
+  const rnaSession = useMemo(() => new RNAStructureSession(() =>
+    new Worker(new URL('../../workers/rna-structure.worker.ts', import.meta.url), { type: 'module' })), []);
+  const rnaSnapshot = useSyncExternalStore(rnaSession.subscribe, rnaSession.getSnapshot, rnaSession.getSnapshot);
+  useEffect(() => { if (isActive) rnaSession.activate(); else rnaSession.deactivate(); return rnaSession.deactivate; }, [isActive, rnaSession]);
+  useEffect(() => { if (rnaRequest) void rnaSession.run(rnaRequest); else rnaSession.cancel(); return rnaSession.cancel; }, [rnaRequest, rnaSession]);
+  const rnaState = rnaSnapshot.input === rnaRequest ? rnaSnapshot : null;
+  const acceptedRNA = rnaState?.accepted ?? null;
+  const rnaBusy = !!rnaState?.busy || !!rnaRequest && rnaSnapshot.input !== rnaRequest;
+  const hoverInfo = hoverState?.request === rnaRequest ? hoverState.info : null;
+  const submitInterval = (event: React.FormEvent) => {
+    event.preventDefault(); if (!loaded || !sequence) return;
+    try {
+      const interval = parseRNAInterval(rangeStart, rangeEnd, sequence.length);
+      setRangeError(null); setRangeSelection({ input: loaded, ...interval });
+    } catch (cause) { setRangeError({ input: loaded, message: cause instanceof Error ? cause.message : String(cause) }); }
+  };
+  const exportRNA = () => {
+    if (!acceptedRNA || !loaded) return;
+    try { downloadString(serializeAnalysisRecord(acceptedRNA.record), 'rna-signals-analysis.json', 'application/json'); }
+    catch (cause) { setRangeError({ input: loaded, message: cause instanceof Error ? cause.message : String(cause) }); }
+  };
+
+  // Only coordinate projection occurs during rendering; the owned worker computes all RNA results.
   const analysis = useMemo(() => {
-    if (viewMode !== 'rna') return null;
-    if (!sequence || sequence.length < 100) return null;
-
-    const len = sequence.length;
-    // Map strand coordinates for analysis if needed (core handles analysis on provided string)
-    // If strand is '-', we pass RC sequence to core.
-    const targetSeq = strand === '+' ? sequence : reverseComplement(sequence);
-
-    // Use core analysis which includes RBS, Terminators, and Stem-loops
-    const result = analyzeRNAStructure(targetSeq);
-
-    const mapHypothesis = (h: RegulatoryHypothesis): RNAElement => {
-      // Map core types to UI types
-      let type: ElementType = 'stemloop';
-      if (h.type === 'rbs') type = 'rbs';
-      if (h.type === 'terminator') type = 'terminator';
-      
-      // Map coordinates back to forward strand if needed
-      let start = h.start;
-      let end = h.end;
-      
-      if (strand === '-') {
-        // [s, e) in RC -> [len - e, len - s) in FWD
-        const origStart = start;
-        start = len - end;
-        end = len - origStart;
-      }
-
-      return {
-        type,
-        start,
-        end,
-        // Motif matches carry no confidence; they are scored 0 here only
-        // because this view's score is a display weight, and the hypothesis
-        // types it selects (rbs, terminator, stem-loop) are all computed ones
-        // that do carry a confidence.
-        score: (h.confidence ?? 0) * 100,
-        sequence: h.sequence,
-        details: h.description,
-      };
-    };
-
-    const rbs = result.regulatoryHypotheses
-      .filter(h => h.type === 'rbs')
-      .map(mapHypothesis);
-
-    const terminators = result.regulatoryHypotheses
-      .filter(h => h.type === 'terminator')
-      .map(mapHypothesis);
-
-    const stemloops = result.regulatoryHypotheses
-      .filter(h => h.type === 'stem-loop')
-      .map(mapHypothesis);
-
-    const energyLandscape = result.windows.map(w => ({
-      position: strand === '+' ? (w.start + w.end) / 2 : len - (w.start + w.end) / 2,
-      // Windows with no stem contribute 0 to the landscape, which is the right
-      // display choice here: the axis is "how much pairing", and none is zero.
-      // It is NOT presented as an energy any more; see rna-structure.ts.
-      energy: w.pairingScore ?? 0,
+    if (!acceptedRNA || !rnaRequest) return null;
+    const result = acceptedRNA.analysis, source = rnaState!.request!.source;
+    const mapHypothesis = (hypothesis: RegulatoryHypothesis): RNAElement => ({
+      type: hypothesis.type === 'rbs' ? 'rbs' : 'terminator',
+      ...mapRNAInterval(source, hypothesis.start, hypothesis.end), score: null,
+      sequence: hypothesis.sequence, details: hypothesis.description,
+    });
+    const rbs = result.regulatoryHypotheses.filter(item => item.type === 'rbs').map(mapHypothesis);
+    const terminators = result.regulatoryHypotheses.filter(item => item.type === 'terminator').map(mapHypothesis);
+    const pairedWindows: RNAElement[] = result.windows.filter(window => window.pairCount > 0).map(window => ({
+      type: 'paired-window', ...mapRNAInterval(source, window.start, window.end), score: null,
+      sequence: window.sequence, structure: window.structure,
+      details: window.pairCount + ' noncrossing pairs in this independent window; dot-bracket is in the selected strand direction.',
     }));
-
-    return {
-      rbs,
-      terminators,
-      stemloops,
-      energyLandscape,
-      total: rbs.length + terminators.length + stemloops.length,
-    };
-  }, [sequence, viewMode, strand]);
+    const energyLandscape = result.windows.map(window => {
+      const interval = mapRNAInterval(source, window.start, window.end);
+      return { ...interval, position: (interval.start + interval.end) / 2, energy: -window.pairCount };
+    });
+    return { rbs, terminators, pairedWindows, energyLandscape, offset: source.start, length: source.end - source.start,
+      total: rbs.length + terminators.length + pairedWindows.length };
+  }, [acceptedRNA, rnaRequest, rnaState]);
 
   const proteinReport = useMemo(() => {
     if (viewMode !== 'protein') return null;
@@ -310,17 +306,17 @@ export function StructureConstraintOverlay({
   // Build track segments
   const rbsSegments = useMemo(() => {
     if (!analysis || !showRBS) return [];
-    return elementsToSegments(analysis.rbs, 'rbs', '#22c55e'); // Green
+    return elementsToSegments(analysis.rbs, 'rbs', '#22c55e', analysis.offset); // Green
   }, [analysis, showRBS]);
 
   const terminatorSegments = useMemo(() => {
     if (!analysis || !showTerminators) return [];
-    return elementsToSegments(analysis.terminators, 'terminator', '#ef4444'); // Red
+    return elementsToSegments(analysis.terminators, 'terminator', '#ef4444', analysis.offset); // Red
   }, [analysis, showTerminators]);
 
   const stemLoopSegments = useMemo(() => {
     if (!analysis || !showStemLoops) return [];
-    return elementsToSegments(analysis.stemloops, 'stemloop', '#8b5cf6'); // Purple
+    return elementsToSegments(analysis.pairedWindows, 'paired-window', '#8b5cf6', analysis.offset); // Purple
   }, [analysis, showStemLoops]);
 
   // Energy landscape as segments (for mini visualization)
@@ -333,11 +329,11 @@ export function StructureConstraintOverlay({
 
     return analysis.energyLandscape.map((point) => {
       const normalized = (point.energy - minEnergy) / range;
-      // More negative (stable) = darker blue
+      // More pairs in this window = darker blue.
       const intensity = 1 - normalized;
       return {
-        start: point.position - 25,
-        end: point.position + 25,
+        start: point.start - analysis.offset,
+        end: point.end - analysis.offset,
         color: `rgba(59, 130, 246, ${0.2 + intensity * 0.8})`,
         height: 8 + intensity * 8,
         data: { energy: point.energy, position: point.position },
@@ -347,10 +343,10 @@ export function StructureConstraintOverlay({
 
   // Handle hover
   const handleHover = useCallback((info: GenomeTrackInteraction | null) => {
-    setHoverInfo(info);
-  }, []);
+    setHoverState(info && rnaRequest ? { request: rnaRequest, info } : null);
+  }, [rnaRequest]);
 
-  if (!isOpen('structureConstraint')) return null;
+  if (!isActive) return null;
 
   return (
     <Overlay id="structureConstraint" title="STRUCTURE CONSTRAINTS" hotkey="Alt+Shift+R" size="lg">
@@ -448,19 +444,47 @@ export function StructureConstraintOverlay({
             </>
           ) : (
             <>
-              <strong style={{ color: colors.accent }}>RNA signals</strong>: Detects ribosome
-              binding sites (Shine-Dalgarno), transcription terminators (stem-loop + U-tract),
-              and potential secondary structures affecting gene expression.
+              <strong style={{ color: colors.accent }}>RNA signals</strong>: Inspect sequence-pattern
+              candidates and exact noncrossing maximum-pairing windows in the selected interval.
+              Windows are folded independently, not as one consistent whole-genome structure.
+              Pair counts and motif observations do not establish free energy or regulatory function.
             </>
           )}
         </div>
 
-        {loading ? (
+        {viewMode === 'rna' && !!sequence && loaded && <form onSubmit={submitInterval} aria-label="RNA signals interval controls">
+          <div style={{ display: 'flex', gap: '.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <label>Start (1-based) <input aria-label="RNA signals interval start" inputMode="numeric" value={rangeStart}
+              onChange={event => setRangeDraft({ input: loaded, start: event.target.value, end: rangeEnd })} style={{ width: 100 }} /></label>
+            <label>End (inclusive) <input aria-label="RNA signals interval end" inputMode="numeric" value={rangeEnd}
+              onChange={event => setRangeDraft({ input: loaded, start: rangeStart, end: event.target.value })} style={{ width: 100 }} /></label>
+            <button type="submit">Analyze RNA interval</button>
+            <button type="button" disabled={!rnaBusy} onClick={rnaSession.cancel}>Cancel RNA analysis</button>
+            <button type="button" disabled={!acceptedRNA || rnaBusy} onClick={exportRNA}>Export RNA analysis</button>
+          </div>
+          <p style={{ color: colors.textMuted, fontSize: '.8rem' }}>
+            Both endpoints are included and refer to forward genomic coordinates on either strand.
+            Initially analyze the first {Math.min(sequence.length, 600)} of {sequence.length.toLocaleString()} bases;
+            select up to {RNA_STRUCTURE_LIMITS.sequenceBases.toLocaleString()} bases.
+            Draft edits do not relabel accepted results.
+          </p>
+          {rangeError?.input === loaded && <OverlayErrorState message="Invalid RNA interval" details={rangeError.message} />}
+        </form>}
+        {viewMode === 'rna' && acceptedRNA && rnaRequest && <p data-testid="rna-signals-accepted-interval" style={{ color: colors.textDim }}>
+          Analyzed {rnaState!.request!.source.start + 1}–{rnaState!.request!.source.end} on the {rnaState!.request!.source.strand} strand.
+          Tracks show offsets within this interval; tooltips show original genomic coordinates.
+          Window {acceptedRNA.analysis.parameters.windowSize}, step {acceptedRNA.analysis.parameters.stepSize}; score = minus pair count.
+          Synonymous scores require a coding gene and are not inferred from a genomic frame.
+        </p>}
+
+        {loading || rnaBusy ? (
           <OverlayLoadingState message="Loading sequence for structure analysis...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
         ) : error ? (
           <OverlayErrorState message="Could not load sequence" details={error} />
+        ) : viewMode === 'rna' && rnaState?.error ? (
+          <OverlayErrorState message="RNA analysis unavailable" details={rnaState.error} />
         ) : !sequence ? (
           <OverlayEmptyState
             message="No sequence loaded"
@@ -468,8 +492,8 @@ export function StructureConstraintOverlay({
           />
         ) : viewMode === 'rna' && !analysis ? (
           <OverlayEmptyState
-            message="Sequence too short for analysis"
-            hint="RNA structure analysis requires sufficient sequence length."
+            message={rnaState?.cancelled ? "RNA analysis cancelled" : "No RNA interval result"}
+            hint="Choose Analyze RNA interval to compute a bounded result."
           />
         ) : (
           <>
@@ -686,8 +710,8 @@ export function StructureConstraintOverlay({
                       checked={showStemLoops}
                       onChange={(e) => setShowStemLoops(e.target.checked)}
                     />
-                    <span style={{ color: '#8b5cf6' }}>Stem-Loops</span>
-                    <span style={{ color: colors.textMuted }}>({analysis ? analysis.stemloops.length : 0})</span>
+                    <span style={{ color: '#8b5cf6' }}>Paired Windows</span>
+                    <span style={{ color: colors.textMuted }}>({analysis ? analysis.pairedWindows.length : 0})</span>
                   </label>
 
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem' }}>
@@ -696,9 +720,7 @@ export function StructureConstraintOverlay({
                       checked={showEnergy}
                       onChange={(e) => setShowEnergy(e.target.checked)}
                     />
-                    {/* Not "Energy": the underlying value is a greedy
-                        stem-pairing score with toy constants, not a free
-                        energy. See rna-structure.ts. */}
+                    {/* Unitless maximum-pairing objective, not a thermodynamic energy. */}
                     <span style={{ color: '#3b82f6' }}>Pairing Landscape</span>
                   </label>
                 </div>
@@ -719,7 +741,7 @@ export function StructureConstraintOverlay({
                         Ribosome Binding Sites (Shine-Dalgarno)
                       </div>
                       <GenomeTrack
-                        genomeLength={sequence.length}
+                        genomeLength={analysis?.length ?? 1}
                         segments={rbsSegments}
                         width={520}
                         height={35}
@@ -736,7 +758,7 @@ export function StructureConstraintOverlay({
                         Transcription Terminators
                       </div>
                       <GenomeTrack
-                        genomeLength={sequence.length}
+                        genomeLength={analysis?.length ?? 1}
                         segments={terminatorSegments}
                         width={520}
                         height={35}
@@ -746,19 +768,19 @@ export function StructureConstraintOverlay({
                     </div>
                   )}
 
-                  {/* Stem-loop track */}
+                  {/* Independently folded windows */}
                   {showStemLoops && (
                     <div>
                       <div style={{ fontSize: '0.7rem', color: '#8b5cf6', marginBottom: '0.25rem' }}>
-                        Potential Stem-Loop Structures
+                        Windows with Noncrossing Base Pairs
                       </div>
                       <GenomeTrack
-                        genomeLength={sequence.length}
+                        genomeLength={analysis?.length ?? 1}
                         segments={stemLoopSegments}
                         width={520}
                         height={35}
                         onHover={handleHover}
-                        ariaLabel="Stem-loop predictions track"
+                        ariaLabel="Independent RNA pairing windows"
                       />
                     </div>
                   )}
@@ -767,10 +789,10 @@ export function StructureConstraintOverlay({
                   {showEnergy && (
                     <div>
                       <div style={{ fontSize: '0.7rem', color: '#3b82f6', marginBottom: '0.25rem' }}>
-                        Folding Energy Landscape (darker = more stable)
+                        Maximum-pairing Landscape (darker = more pairs)
                       </div>
                       <GenomeTrack
-                        genomeLength={sequence.length}
+                        genomeLength={analysis?.length ?? 1}
                         segments={energySegments}
                         width={520}
                         height={35}
@@ -823,12 +845,12 @@ export function StructureConstraintOverlay({
                             zIndex: 10,
                           }}
                         >
-                          <div style={{ fontWeight: 'bold' }}>Folding Energy</div>
+                          <div style={{ fontWeight: 'bold' }}>Maximum-pairing score</div>
                           <div style={{ color: colors.textMuted }}>
-                            Position: {energyData.position.toLocaleString()} bp
+                            Window center: {(energyData.position + 0.5).toLocaleString()} bp
                           </div>
                           <div style={{ color: colors.textMuted }}>
-                            Relative ΔG: {energyData.energy.toFixed(1)} (arbitrary units)
+                            Score: {energyData.energy.toFixed(0)} (minus pair count)
                           </div>
                         </div>
                       );
@@ -857,9 +879,7 @@ export function StructureConstraintOverlay({
                     <div style={{ color: '#22c55e', fontWeight: 'bold' }}>RBS Sites</div>
                     <div style={{ color: colors.textMuted }}>
                       {analysis ? analysis.rbs.length : 0} found
-                      {analysis && analysis.rbs.length > 0 && (
-                        <span> (avg score: {(analysis.rbs.reduce((a, b) => a + b.score, 0) / analysis.rbs.length).toFixed(0)})</span>
-                      )}
+
                     </div>
                   </div>
 
@@ -885,9 +905,9 @@ export function StructureConstraintOverlay({
                       borderLeft: '3px solid #8b5cf6',
                     }}
                   >
-                    <div style={{ color: '#8b5cf6', fontWeight: 'bold' }}>Stem-Loops</div>
+                    <div style={{ color: '#8b5cf6', fontWeight: 'bold' }}>Paired Windows</div>
                     <div style={{ color: colors.textMuted }}>
-                      {analysis ? analysis.stemloops.length : 0} found
+                      {analysis ? analysis.pairedWindows.length : 0} found
                     </div>
                   </div>
                 </div>
@@ -903,10 +923,9 @@ export function StructureConstraintOverlay({
                   }}
                 >
                   <strong>Interpretation:</strong>{' '}
-                  <span style={{ color: '#22c55e' }}>RBS</span> sites mark translation initiation.{' '}
-                  <span style={{ color: '#ef4444' }}>Terminators</span> end transcription.{' '}
-                  <span style={{ color: '#8b5cf6' }}>Stem-loops</span> may be regulatory elements.{' '}
-                  <span style={{ color: '#3b82f6' }}>Darker regions</span> indicate more stable RNA structures.
+                  Motif labels describe sequence-pattern candidates, not verified regulatory functions.{' '}
+                  <span style={{ color: '#3b82f6' }}>Darker regions</span> have more pairs under the stated noncrossing objective.{' '}
+                  {acceptedRNA?.analysis.method.limitations}
                 </div>
               </>
             )}

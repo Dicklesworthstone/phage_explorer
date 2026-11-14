@@ -6,6 +6,24 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Exact bounded RNA pairing and usable interval analysis
+
+- **Actual compatible structures** — RNA windows now use an exact noncrossing
+  maximum-pairing dynamic program with deterministic traceback, one partner per
+  nucleotide, pair lists and dot-bracket output. Scores count pairs without
+  thermodynamic units; motif candidates retain evidence without invented
+  confidence values.
+- **Correct coding sensitivity** — substitutions honor reading-frame offsets,
+  equal sensitivities receive tied ranks, and zero evidence cannot manufacture
+  constrained codons. Explicit bounds and a shared computation budget prevent
+  unbounded work; short genes no longer risk a zero-step scan.
+- **Responsive browser workflows** — both RNA views analyze explicit bounded
+  intervals in cancellable owned workers. The explorer supports extracted CDS
+  coordinates, refuses unsupported synonymous interpretations, displays every
+  window structure and exports the complete accepted AnalysisRecord. Reverse
+  genomic intervals retain forward-coordinate projection. See the
+  [RNA workflow guide](docs/RNA_STRUCTURE_WORKFLOW.md).
+
 ### Durable measured-data experiments
 
 - **Save and reopen six more experiment families** — raw plaque-count growth,
