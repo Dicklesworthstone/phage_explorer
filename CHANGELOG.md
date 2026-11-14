@@ -6,6 +6,22 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Measured mutant assay contrasts
+
+- **Explicit WT/single/double observations** — import a local assay with its
+  exact reference protein, source, conditions and units. Estimate contrasts
+  on a declared identity or natural-log scale, using independent replicates
+  or complete paired blocks. Missing controls remain unavailable, excluded
+  blocks stay inspectable, and insufficient replication does not manufacture
+  an uncertainty interval.
+- **Usable browser evidence workflow** — the Epistasis explorer now opens a
+  measured-assay workspace with cancellable computation, complete observation
+  and contrast tables, JSON/TSV exports and fresh replay from the exact source.
+  Draft edits and catalog navigation cannot relabel accepted results.
+  The previous BLOSUM62 illustration requires an explicit choice.
+  [Shared analysis core](https://github.com/Dicklesworthstone/phage_explorer/commit/0ca50707e929156fdbc23a8b9e816c19f28aae40).
+  See the [measured assay workflow](docs/EPISTASIS_ASSAY_WORKFLOW.md).
+
 ### Reference codon analysis across explicit genetic codes
 
 - **Reassigned codons in sourced analyses** — reference-count construction and

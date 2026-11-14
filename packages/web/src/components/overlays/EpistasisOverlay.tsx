@@ -1,13 +1,4 @@
-/**
- * EpistasisOverlay - Fitness Landscape & Epistasis Explorer
- *
- * Visualizes pairwise epistasis for phage proteins using BLOSUM62-based
- * pseudo-likelihood scoring. Shows:
- * - Epistasis heatmap (position × position)
- * - Single mutant fitness distribution
- * - Robust vs fragile regions
- * - Potential escape routes (compensatory mutations)
- */
+/** Measured mutational assays, plus an explicitly requested sequence illustration. */
 
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
@@ -18,6 +9,8 @@ import { ActionIds } from '../../keyboard';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
+import { EpistasisEvidencePanel } from './EpistasisEvidencePanel';
+import { OverlayProvenance } from './primitives/OverlayProvenance';
 import {
   OverlayLoadingState,
   OverlayEmptyState,
@@ -575,10 +568,11 @@ export function EpistasisOverlay({
   const { isOpen, toggle } = useOverlay();
 
   const overlayOpen = isOpen('epistasis');
+  const [showIllustration, setShowIllustration] = useState(false);
   const [snapshot, setSnapshot] = useState<EpistasisInputSnapshot | null>(null);
   // Repository identity matters: imported genomes can reuse numeric catalog IDs.
-  const accepted = overlayOpen && snapshot?.repository === repository && snapshot.phage === currentPhage ? snapshot : null;
-  const loading = overlayOpen && !!repository && !!currentPhage && !accepted;
+  const accepted = overlayOpen && showIllustration && snapshot?.repository === repository && snapshot.phage === currentPhage ? snapshot : null;
+  const loading = overlayOpen && showIllustration && !!repository && !!currentPhage && !accepted;
   const [viewMode, setViewMode] = useState<ViewMode>('heatmap');
   const [selectedProtein, setSelectedProtein] = useState(0);
 
@@ -589,11 +583,14 @@ export function EpistasisOverlay({
     { modes: ['NORMAL'] }
   );
 
+  useEffect(() => { if (!overlayOpen) setShowIllustration(false); }, [overlayOpen]);
+
+  // The optional sequence illustration loads only after an explicit request.
   // Capture annotations and bases from one repository; discard superseded loads.
   useEffect(() => {
     setSnapshot(null);
     setSelectedProtein(0);
-    if (!overlayOpen || !repository || !currentPhage) return;
+    if (!overlayOpen || !showIllustration || !repository || !currentPhage) return;
     const source = repository, phage = currentPhage;
     let cancelled = false;
     void (async () => {
@@ -611,7 +608,7 @@ export function EpistasisOverlay({
       }
     })();
     return () => { cancelled = true; };
-  }, [overlayOpen, repository, currentPhage]);
+  }, [overlayOpen, showIllustration, repository, currentPhage]);
 
   const prepared = useMemo(() => accepted && !accepted.error
     ? prepareEpistasisProteins(accepted.genes, accepted.sequence)
@@ -621,7 +618,7 @@ export function EpistasisOverlay({
 
   // Compute fitness landscape for selected protein
   const landscape = useMemo((): FitnessLandscape | null => {
-    if (proteinCandidates.length === 0 || selectedProtein >= proteinCandidates.length) {
+    if (!showIllustration || proteinCandidates.length === 0 || selectedProtein >= proteinCandidates.length) {
       return null;
     }
 
@@ -630,56 +627,27 @@ export function EpistasisOverlay({
       maxPositions: 150, // Limit for performance
       topEpistasisPairs: 100,
     });
-  }, [proteinCandidates, selectedProtein]);
+  }, [proteinCandidates, selectedProtein, showIllustration]);
 
   if (!overlayOpen) return null;
 
   const panelStyle: React.CSSProperties = {
-    position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%, -50%)',
-    width: '680px',
-    maxWidth: '95vw',
-    maxHeight: '85vh',
-    background: colors.background,
-    border: `1px solid ${colors.border}`,
-    borderRadius: '8px',
-    padding: '20px',
     color: colors.text,
-    fontFamily: 'system-ui, sans-serif',
-    overflowY: 'auto',
-    zIndex: 9999,
+    minWidth: 0,
   };
 
   return (
-    <Overlay id="epistasis" title="Epistasis & Fitness Landscape" hotkey="Alt+Shift+E">
+    <Overlay id="epistasis" title="Epistasis: assays and sequence illustrations" hotkey="Alt+Shift+E" size="xl"
+      provenanceBadge={<OverlayProvenance level="input" source="Explicit assay or optional sequence illustration" />}>
       <div style={panelStyle}>
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: '16px',
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: '18px' }}>Epistasis Explorer</h2>
-          <button
-            onClick={() => toggle('epistasis')}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: colors.textMuted,
-              cursor: 'pointer',
-              fontSize: '18px',
-            }}
-          >
-            ×
-          </button>
-        </div>
+        <EpistasisEvidencePanel />
 
+        <details open={showIllustration} onToggle={event => setShowIllustration(event.currentTarget.open)}>
+          <summary>Optional BLOSUM62 sequence illustration</summary>
+          <p>These scores use a substitution matrix and invented coupling rules. They are independent of the measured assay above and do not estimate biological epistasis.</p>
+          {showIllustration && <>
         {loading && (
-          <OverlayLoadingState message="Loading sequence for epistasis analysis...">
+          <OverlayLoadingState message="Loading sequence for the BLOSUM62 illustration...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
         )}
@@ -687,7 +655,7 @@ export function EpistasisOverlay({
         {!loading && !currentPhage && (
           <OverlayEmptyState
             message="No phage selected"
-            hint="Select a phage to analyze fitness landscapes and epistasis."
+            hint="Select a phage to inspect its optional sequence-scoring illustration."
           />
         )}
 
@@ -794,8 +762,11 @@ export function EpistasisOverlay({
           </>
         )}
 
+          </>}
+        </details>
+
         <div style={{ marginTop: '16px', fontSize: '11px', color: colors.textMuted }}>
-          Press <kbd style={{ padding: '2px 4px', background: colors.border, borderRadius: '3px' }}>Alt+E</kbd> to toggle
+          Press <kbd style={{ padding: '2px 4px', background: colors.border, borderRadius: '3px' }}>Alt+Shift+E</kbd> to toggle
         </div>
       </div>
     </Overlay>
