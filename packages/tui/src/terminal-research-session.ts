@@ -2,19 +2,24 @@
  * Opening a document only inspects it. Numerical verification is explicit, and
  * neither operation changes the explorer's accepted genomes or selected view.
  */
-import { parseCommandTape, COMMAND_LIMITS } from '../../core/src/command-session';
-import { serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
+import { parseCommandTape, serializeCommandPlan, commandValuesEqual, COMMAND_LIMITS,
+  type CommandPlan, type RecordedCommand } from '../../core/src/command-session';
+import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
+import type { GeneInfo } from '../../core/src/types';
+import { ActionIds } from '../../web/src/keyboard/actionRegistry';
+import { validateResearchView, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { parseWorkflowResults, workflowResultIndex, workflowAnalysisAt, WORKFLOW_RESULTS_LIMITS,
   type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { readInput, writeNewOutput, runTerminalResearchWorker } from '../../../scripts/research-workflow';
-import type { ResearchReplayResult, ResearchTapeInspection, ReplayProgress } from './research-replay';
-import { terminalGenomeLabel, type TerminalGenomeSession } from './local-genome-session';
+import { validateResearchPlan, type ResearchReplayResult, type ResearchTapeInspection, type ReplayProgress } from './research-replay';
+import { loadTerminalGenomeBundle, terminalGenomeLabel, type TerminalGenomeSession } from './local-genome-session';
 
 export interface TerminalResearchDocument {
   name: string;
   tapeJson: string;
   inspection: ResearchTapeInspection;
-  /** A supplied archive has integrity checks, never implied fresh computation. */
+  origin: 'file' | 'recording';
+  /** Imported or newly recorded results remain distinct from verified replay. */
   savedResults: { archive: WorkflowResults; json: string } | null;
 }
 export interface TerminalResearchRun {
@@ -22,10 +27,22 @@ export interface TerminalResearchRun {
   json: string;
   report: ResearchReplayResult['report'];
 }
+export type TerminalResearchStep = Pick<RecordedCommand, 'actionId' | 'parameters'>;
+export interface TerminalResearchDraftSource {
+  contentId: string; name: string; accession: string; bases: number;
+  topology: 'linear' | 'circular' | 'unknown';
+  genes: Array<Pick<GeneInfo, 'id' | 'name' | 'locusTag' | 'type' | 'startPos' | 'endPos'>>;
+}
+export interface TerminalResearchDraft {
+  plan: CommandPlan;
+  sources: TerminalResearchDraftSource[];
+  initialView: ResearchView | null;
+}
 export interface TerminalResearchSnapshot {
+  draft: TerminalResearchDraft | null;
   document: TerminalResearchDocument | null;
   completedRun: TerminalResearchRun | null;
-  busy: 'reading' | 'replaying' | 'saving' | 'restoring' | null;
+  busy: 'reading' | 'drafting' | 'recording' | 'replaying' | 'saving' | 'restoring' | null;
   progress: ReplayProgress | null;
   error: string | null;
   notice: string | null;
@@ -33,6 +50,7 @@ export interface TerminalResearchSnapshot {
 interface Operation { controller: AbortController; timer: ReturnType<typeof setTimeout> }
 export interface TerminalResearchRuntime {
   run?: typeof runTerminalResearchWorker;
+  parseBundle?: typeof loadTerminalGenomeBundle;
   /** A finite deadline also covers an unresponsive isolated worker. */
   timeoutMs?: number;
 }
@@ -56,12 +74,14 @@ function cancellable<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
 export class TerminalResearchSession {
   private operation: Operation | null = null;
   private readonly run: typeof runTerminalResearchWorker;
+  private readonly parseBundle: typeof loadTerminalGenomeBundle;
   private readonly timeoutMs: number;
   private listeners = new Set<() => void>();
-  private state: TerminalResearchSnapshot = { document: null, completedRun: null,
+  private state: TerminalResearchSnapshot = { draft: null, document: null, completedRun: null,
     busy: null, progress: null, error: null, notice: null };
   constructor(runtime: TerminalResearchRuntime = {}) {
     this.run = runtime.run ?? runTerminalResearchWorker;
+    this.parseBundle = runtime.parseBundle ?? loadTerminalGenomeBundle;
     this.timeoutMs = runtime.timeoutMs ?? 300000;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 300000) {
       throw new Error('Research deadline must be an integer from 1 to 300000 ms.');
@@ -105,6 +125,124 @@ export class TerminalResearchSession {
         : 'Cancelled. Previously accepted workflow results and explorer selection are unchanged.' });
     }
   };
+  /** Capture originals and view once. Later explorer navigation/imports cannot
+   * relabel this draft; existing accepted results survive a failed new draft.
+   */
+  createDraft = async (name: string, bundle: string, view: ResearchView | null = null): Promise<boolean> => {
+    const operation = this.begin('drafting'), signal = operation.controller.signal;
+    try {
+      const initialView = view ? structuredClone(view) : null;
+      const plan = validateResearchPlan(serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1,
+        name, context: { bundle }, commands: initialView ? [{ actionId: ActionIds.NavGoto, parameters: analysisJson(initialView) }] : [] }));
+      const parsed = await cancellable(this.parseBundle(bundle, signal), signal);
+      check(signal);
+      const sources = parsed.genomes.map(genome => ({ contentId: genome.phage.localGenome!.contentId,
+        name: genome.phage.name, accession: genome.phage.accession, bases: genome.sequence.length,
+        topology: genome.phage.localGenome!.topology,
+        genes: genome.phage.genes.map(({ id, name, locusTag, type, startPos, endPos }) => ({ id, name, locusTag, type, startPos, endPos })) }));
+      const draft = { plan, sources, initialView };
+      if (initialView) this.validateStep(draft, plan.commands[0]);
+      if (!this.current(operation)) return false;
+      this.publish({ draft, notice: 'Draft captured the accepted private inputs' + (initialView ? ' and selected view' : '')
+        + '. No analyses have run; previous accepted results are unchanged.' });
+      return true;
+    } catch (cause) { this.failed(operation, cause); return false; }
+    finally { this.finish(operation); }
+  };
+  private editableDraft(): TerminalResearchDraft {
+    if (this.operation) throw new Error('Finish or cancel active work before editing the draft.');
+    if (!this.state.draft) throw new Error('Create a named draft from accepted private genomes first.');
+    return this.state.draft;
+  }
+  private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep): void {
+    const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
+      ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest and dot-plot commands.');
+    validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
+    const parameters = step.parameters as Record<string, unknown>;
+    const source = draft.sources.find(item => item.contentId === parameters.contentId);
+    if (!source) throw new Error('Select a genome from this draft\'s captured input bundle.');
+    if (step.actionId === ActionIds.NavGoto) {
+      validateResearchView(step.parameters);
+      const view = step.parameters as unknown as ResearchView;
+      const length = view.viewMode === 'aa' ? Math.ceil(source.bases / 3) : source.bases;
+      if (view.scrollPosition >= length || view.geneId !== null && !source.genes.some(gene => gene.id === view.geneId)) {
+        throw new Error('The saved position or feature is outside this exact captured genome.');
+      }
+    }
+    if (step.actionId === ActionIds.OverlayCodonAdaptation) {
+      const selected = parameters.method === 'reference-cai' ? parameters.geneIds : parameters.geneId === null ? null : [parameters.geneId];
+      if (Array.isArray(selected) && selected.some(id => !source.genes.some(gene => gene.id === id && gene.type === 'CDS'))) {
+        throw new Error('Select CDS features from this exact captured annotation.');
+      }
+    }
+    if (step.actionId === ActionIds.OverlayDotPlot) {
+      const comparison = parameters.comparisonContentId === null ? source
+        : draft.sources.find(item => item.contentId === parameters.comparisonContentId);
+      if (!comparison) throw new Error('Select the comparison genome from the captured input bundle.');
+      if (Number(parameters.window) > Math.min(source.bases, comparison.bases)) throw new Error('The dot-plot window must fit both captured sequences.');
+    }
+    if (step.actionId === ActionIds.OverlayGel && source.topology !== 'unknown' && source.topology !== parameters.topology) {
+      throw new Error('Digest topology conflicts with the captured source annotation.');
+    }
+  }
+  private updateDraft(draft: TerminalResearchDraft, steps: TerminalResearchStep[]): void {
+    const plan = validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: steps }));
+    this.publish({ draft: { ...draft, plan }, error: null,
+      notice: 'Draft updated. Compute and record explicitly to create a new baseline; accepted results are unchanged.' });
+  }
+  setStep = (step: TerminalResearchStep, index: number | null = null): void => {
+    const draft = this.editableDraft(), captured = structuredClone(step);
+    this.validateStep(draft, captured);
+    const commands = [...draft.plan.commands];
+    if (index === null) commands.push(captured);
+    else {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= commands.length) throw new Error('Select an existing draft step to edit.');
+      commands[index] = captured;
+    }
+    this.updateDraft(draft, commands);
+  };
+  moveStep = (index: number, direction: -1 | 1): void => {
+    const draft = this.editableDraft(), commands = [...draft.plan.commands];
+    if (!Number.isSafeInteger(index) || index < 0 || index >= commands.length || direction !== -1 && direction !== 1) throw new Error('Select a draft step and an adjacent position.');
+    const target = index + direction;
+    if (target < 0 || target >= commands.length) return;
+    [commands[index], commands[target]] = [commands[target], commands[index]];
+    this.updateDraft(draft, commands);
+  };
+  removeStep = (index: number): void => {
+    const draft = this.editableDraft();
+    if (!Number.isSafeInteger(index) || index < 0 || index >= draft.plan.commands.length) throw new Error('Select an existing draft step.');
+    this.updateDraft(draft, draft.plan.commands.filter((_, position) => position !== index));
+  };
+  recordDraft = async (): Promise<boolean> => {
+    const operation = this.begin('recording'), signal = operation.controller.signal;
+    try {
+      const draft = this.state.draft;
+      if (!draft || !draft.plan.commands.length) throw new Error('Add at least one command to a named draft before recording.');
+      const content = serializeCommandPlan(draft.plan), plan = validateResearchPlan(content);
+      const progress = (value: ReplayProgress) => { if (this.current(operation) && !signal.aborted) this.publish({ progress: value }); };
+      const response = await cancellable(this.run({ type: 'record', content, captureResults: true }, signal, progress), signal);
+      check(signal);
+      if (response.type !== 'recorded' || typeof response.allResultsJson !== 'string') throw new Error('Recording did not return a complete new baseline.');
+      const tape = parseCommandTape(response.tapeJson);
+      if (tape.name !== plan.name || !commandValuesEqual(tape.context, plan.context)
+        || !commandValuesEqual(tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })), plan.commands)) {
+        throw new Error('Recorded commands or source inputs differ from the submitted draft.');
+      }
+      const archive = await parseWorkflowResults(response.allResultsJson, signal);
+      if (archive.tapeJson !== response.tapeJson || archive.repetitions !== 1) throw new Error('Recorded results belong to a different command baseline.');
+      const inspected = await cancellable(this.run({ type: 'inspect', content: response.tapeJson }, signal), signal);
+      check(signal);
+      if (inspected.type !== 'inspection' || !inspected.inspection.canReplay) throw new Error('The new recording could not be inspected for replay.');
+      if (!this.current(operation)) return false;
+      this.publish({ document: { name: tape.name, tapeJson: response.tapeJson, inspection: inspected.inspection,
+        origin: 'recording', savedResults: { archive, json: response.allResultsJson } }, completedRun: null,
+        notice: 'Computed and recorded ' + tape.commands.length + ' steps with complete results. This is a new baseline; replay it separately to verify the recorded outputs. Explorer selection is unchanged.' });
+      return true;
+    } catch (cause) { this.failed(operation, cause); return false; }
+    finally { this.finish(operation); }
+  };
   load = async (filePath: string): Promise<boolean> => {
     const operation = this.begin('reading'), signal = operation.controller.signal;
     try {
@@ -122,6 +260,7 @@ export class TerminalResearchSession {
       if (response.type !== 'inspection') throw new Error('Expected a workflow inspection.');
       if (!this.current(operation)) return false;
       this.publish({ document: { name: tape.name, tapeJson, inspection: response.inspection,
+        origin: 'file',
         savedResults: archive ? { archive, json: content } : null }, completedRun: null,
         notice: archive ? 'Opened archive: record integrity checked. No numerical methods have run and no genomes were installed.'
           : 'Opened workflow for inspection only. No commands ran and no genomes were installed.' });
@@ -160,10 +299,10 @@ export class TerminalResearchSession {
     finally { this.finish(operation); }
   };
   /** An imported archive remains explicitly integrity-only until replay succeeds. */
-  availableResults = (): { archive: WorkflowResults; json: string; replayed: boolean } | null => {
-    if (this.state.completedRun) return { ...this.state.completedRun, replayed: true };
+  availableResults = (): { archive: WorkflowResults; json: string; replayed: boolean; provenance: 'verified' | 'recorded' | 'loaded' } | null => {
+    if (this.state.completedRun) return { ...this.state.completedRun, replayed: true, provenance: 'verified' };
     const saved = this.state.document?.savedResults;
-    return saved ? { ...saved, replayed: false } : null;
+    return saved ? { ...saved, replayed: false, provenance: this.state.document?.origin === 'recording' ? 'recorded' : 'loaded' } : null;
   };
   entries = (): WorkflowResultEntry[] => {
     const result = this.availableResults();
@@ -174,18 +313,28 @@ export class TerminalResearchSession {
     if (!result) throw new Error('No complete workflow results are available.');
     return workflowAnalysisAt(result.archive, execution);
   };
-  save = async (filePath: string, execution: number | null = null): Promise<boolean> => {
+  save = async (filePath: string, execution: number | 'plan' | 'tape' | null = null): Promise<boolean> => {
     const operation = this.begin('saving'), signal = operation.controller.signal;
     try {
       path(filePath);
-      const result = this.availableResults();
-      if (!result) throw new Error('Load a complete archive or finish replay before exporting results.');
       // Resolve and validate the exact execution before any filesystem mutation.
-      const content = execution === null ? result.json : serializeAnalysisRecord(workflowAnalysisAt(result.archive, execution));
+      let content: string;
+      if (execution === 'plan') {
+        if (!this.state.draft) throw new Error('Create a draft before exporting its plan.');
+        content = serializeCommandPlan(this.state.draft.plan);
+      } else if (execution === 'tape') {
+        if (!this.state.document) throw new Error('Load or compute a recording before exporting its tape.');
+        content = this.state.document.tapeJson;
+      } else {
+        const result = this.availableResults();
+        if (!result) throw new Error('Load a complete archive or finish recording/replay before exporting results.');
+        content = execution === null ? result.json : serializeAnalysisRecord(workflowAnalysisAt(result.archive, execution));
+      }
       await writeNewOutput(filePath, content, signal);
       check(signal);
       if (!this.current(operation)) return false;
-      this.publish({ notice: execution === null
+      this.publish({ notice: execution === 'plan' ? 'Saved the declarative draft plan to a new file; no recorded output is implied.'
+        : execution === 'tape' ? 'Saved the accepted command recording to a new file.' : execution === null
         ? 'Saved the complete private workflow archive to a new file.'
         : 'Saved the analysis from execution ' + execution + ' to a new file. Source genomes and references remain embedded.' });
       return true;

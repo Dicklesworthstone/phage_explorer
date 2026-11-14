@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
-import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
-import { createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
+import { parseCommandTape, parseCommandPlan, serializeCommandPlan, serializeCommandTape } from '../../core/src/command-session';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, serializeWorkflowResults } from '../../core/src/workflow-results';
 import type { GCSkewWindow } from '../../core/src/analysis/gc-skew';
 import type { PhageRepository } from '../../db-runtime/src/types';
@@ -47,6 +47,110 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
+  it('authors all six supported step types from captured inputs and exports a new baseline before separately verifying it', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    assert(await session.load(f.file)); assert(await session.replay());
+    const previous = session.getSnapshot().completedRun, selected = structuredClone(f.view);
+    const creating = session.createDraft('Authored private workflow', exportLocalGenomeBundle(f.imported.genomes), selected);
+    selected.scrollPosition = 0;
+    assert(await creating, session.getSnapshot().error ?? '');
+    assert.strictEqual(session.getSnapshot().completedRun, previous);
+    assert.deepEqual(session.getSnapshot().draft!.initialView, f.view);
+    const contentId = f.view.contentId;
+    session.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId, windowSize: 4, stepSize: 4 } });
+    session.setStep({ actionId: ActionIds.OverlayRepeats, parameters: { contentId, method: 'exact-pairs', armLength: 4, maxGap: 12, maxPairs: 100 } });
+    session.setStep({ actionId: ActionIds.OverlayCodonAdaptation, parameters: { contentId, geneId: f.view.geneId } });
+    session.setStep({ actionId: ActionIds.OverlayGel, parameters: { contentId, enzymes: ['EcoRI'], topology: 'linear' } });
+    session.setStep({ actionId: ActionIds.OverlayDotPlot, parameters: { contentId, comparisonContentId: null, bins: 4, window: 4 } });
+    session.moveStep(1, -1);
+    assert.equal(session.getSnapshot().draft!.plan.commands[0].actionId, ActionIds.OverlayGCSkew);
+    const planPath = join(f.directory, 'authored-plan.json'), tapePath = join(f.directory, 'authored-tape.json'), archivePath = join(f.directory, 'authored-results.json');
+    assert(await session.save(planPath, 'plan'));
+    const plan = parseCommandPlan(await readFile(planPath, 'utf8'));
+    assert.equal(plan.commands.length, 6);
+    assert(plan.commands.every(step => !Object.hasOwn(step, 'expected')));
+    assert.equal(await session.recordDraft(), true, session.getSnapshot().error ?? '');
+    assert.equal(session.getSnapshot().completedRun, null, 'new computation is not replay verification');
+    assert.equal(session.availableResults()?.provenance, 'recorded');
+    assert.equal(session.availableResults()?.replayed, false);
+    assert.equal(session.entries().length, 6); assert.equal(session.availableResults()!.archive.records.length, 5);
+    const windows = session.analysis(1).fields.windows.value as unknown as GCSkewWindow[];
+    assert.deepEqual(windows.map(row => [row.g, row.c, row.skew]), [[1, 0, 1], [0, 2, -1], [3, 1, .5], [0, 1, -1]]);
+    assert.equal(session.analysis(3).method.id, 'exact-repeat-pairs');
+    assert.deepEqual(session.analysis(4).fields.codingSequences.value,
+      [{ geneId: f.view.geneId, codonCount: 4, sequence: 'ATGAAATTTCAT' }]);
+    assert.deepEqual(session.analysis(5).parameters, { enzymes: ['EcoRI'], topology: 'linear' });
+    assert.equal(session.analysis(6).inputs[0].data, f.genome.sequence);
+    assert(await session.save(tapePath, 'tape')); assert(await session.save(archivePath));
+    const tape = parseCommandTape(await readFile(tapePath, 'utf8'));
+    assert.deepEqual(tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })), plan.commands);
+    assert.deepEqual(tape.context, plan.context);
+    assert.equal((await parseWorkflowResults(await readFile(archivePath, 'utf8'))).records.length, 5);
+    assert.equal(await session.save(planPath, 'plan'), false);
+    const baseline = session.availableResults()!.json;
+    assert.equal(await session.replay(), true, session.getSnapshot().error ?? '');
+    assert.equal(session.availableResults()?.provenance, 'verified');
+    assert.equal(session.availableResults()!.json, baseline);
+    session.cancel();
+  });
+
+  it('edits, reorders and removes draft steps without changing accepted records or admitting foreign source parameters', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    assert(await session.load(f.file)); assert(await session.replay());
+    const accepted = session.getSnapshot().document, completed = session.getSnapshot().completedRun;
+    assert(await session.createDraft('Editable steps', exportLocalGenomeBundle(f.imported.genomes)));
+    const contentId = f.view.contentId;
+    const step = { actionId: ActionIds.OverlayGCSkew, parameters: { contentId, windowSize: 4, stepSize: 4 } };
+    session.setStep(step); step.parameters.windowSize = 5;
+    assert.equal((session.getSnapshot().draft!.plan.commands[0].parameters as { windowSize: number }).windowSize, 4);
+    session.setStep({ actionId: ActionIds.NavGoto, parameters: { ...f.view } });
+    session.moveStep(1, -1); assert.equal(session.getSnapshot().draft!.plan.commands[0].actionId, ActionIds.NavGoto);
+    session.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId, windowSize: 6, stepSize: 3 } }, 1);
+    session.removeStep(0); assert.equal(session.getSnapshot().draft!.plan.commands.length, 1);
+    const before = serializeCommandPlan(session.getSnapshot().draft!.plan);
+    for (const invalid of [
+      { actionId: ActionIds.OverlayGCSkew, parameters: { contentId: 'f'.repeat(64), windowSize: 4, stepSize: 4 } },
+      { actionId: ActionIds.NavGoto, parameters: { ...f.view, scrollPosition: 99 } },
+      { actionId: ActionIds.OverlayCodonAdaptation, parameters: { contentId, geneId: 999 } },
+      { actionId: ActionIds.OverlayDotPlot, parameters: { contentId, comparisonContentId: 'f'.repeat(64), bins: 4, window: 4 } },
+      { actionId: ActionIds.OverlayDotPlot, parameters: { contentId, comparisonContentId: null, bins: 4, window: 100 } },
+      { actionId: ActionIds.OverlayGel, parameters: { contentId, enzymes: ['EcoRI'], topology: 'circular' } },
+      { actionId: 'unknown.analysis', parameters: { contentId } },
+    ]) assert.throws(() => session.setStep({ actionId: invalid.actionId, parameters: analysisJson(invalid.parameters) }));
+    assert.equal(serializeCommandPlan(session.getSnapshot().draft!.plan), before);
+    assert.strictEqual(session.getSnapshot().document, accepted); assert.strictEqual(session.getSnapshot().completedRun, completed);
+    assert.equal(await session.createDraft('Invalid view', exportLocalGenomeBundle(f.imported.genomes), { ...f.view, geneId: 999 }), false);
+    assert.equal(serializeCommandPlan(session.getSnapshot().draft!.plan), before);
+    session.cancel();
+  });
+
+  it('preserves both the draft and previous verified work after cancelled or foreign recording replies', async () => {
+    const f = await fixture(); let block = false;
+    let deliver!: (value: Awaited<ReturnType<typeof runTerminalResearchWorker>>) => void;
+    let started = false;
+    const session = new TerminalResearchSession({ run: (...args) => {
+      if (block && args[0].type === 'record') { started = true; return new Promise(resolve => { deliver = resolve; }); }
+      return runTerminalResearchWorker(...args);
+    } });
+    assert(await session.load(f.file)); assert(await session.replay());
+    assert(await session.createDraft('New draft', exportLocalGenomeBundle(f.imported.genomes), f.view));
+    const document = session.getSnapshot().document, completed = session.getSnapshot().completedRun, draft = session.getSnapshot().draft;
+    block = true;
+    const pending = session.recordDraft(); await waitFor(() => started);
+    assert.throws(() => session.removeStep(0), /active work/);
+    session.cancel(); assert.equal(await pending, false);
+    const late = await recordResearchPlan(serializeCommandPlan(draft!.plan), { captureResults: true });
+    deliver({ type: 'recorded', ...late }); await new Promise(resolve => setTimeout(resolve, 20));
+    assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, completed);
+    assert.strictEqual(session.getSnapshot().draft, draft);
+    started = false;
+    const foreign = session.recordDraft(); await waitFor(() => started);
+    deliver({ type: 'recorded', ...await recordResearchPlan(serializeCommandPlan({ ...draft!.plan, name: 'Different source owner' }), { captureResults: true }) });
+    assert.equal(await foreign, false); assert.match(session.getSnapshot().error!, /differ/);
+    assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, completed);
+    assert.strictEqual(session.getSnapshot().draft, draft); session.cancel();
+  });
+
   it('inspects without running, then verifies repeated analyses and keeps navigation separate', async () => {
     const f = await fixture(), session = new TerminalResearchSession();
     assert.equal(await session.load(f.file), true, session.getSnapshot().error ?? '');

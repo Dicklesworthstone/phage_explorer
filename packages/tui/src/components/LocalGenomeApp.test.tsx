@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
 import { importLocalGenomes, exportLocalGenomeBundle, type GenomeImportResult } from '../../../core/src/genome-import';
 import { TerminalGenomeSession } from '../local-genome-session';
-import { TerminalGenomeView } from './LocalGenomeApp';
+import { currentTerminalResearchView, TerminalGenomeView } from './LocalGenomeApp';
 
 const waitFor = async (predicate: () => boolean) => {
   const end = Date.now() + 5000;
@@ -30,6 +30,22 @@ function terminal(session: TerminalGenomeSession, onReturn: () => void) {
   return { ui, input: (value: string) => stdin.write(value), output: () => output, ready: () => inputReady };
 }
 describe('native Ink private-genome input and review', () => {
+  it('captures the accepted feature view and rejects a stale record during asynchronous navigation', async () => {
+    const previous = usePhageStore.getState();
+    const imported = await importLocalGenomes({ name: 'paired.fa', text: '>first\nACGTACGTACGT\n>second\nTTTTCCCCAAAA' });
+    try {
+      usePhageStore.setState({ phages: imported.genomes.map(genome => genome.phage), currentPhage: imported.genomes[0].phage,
+        currentPhageIndex: 0, selectedGeneId: null, viewMode: 'aa', readingFrame: -2, scrollPosition: 2 });
+      const captured = currentTerminalResearchView();
+      assert.deepEqual(captured, { contentId: imported.genomes[0].phage.localGenome!.contentId,
+        geneId: null, viewMode: 'aa', readingFrame: -2, scrollPosition: 2 });
+      usePhageStore.setState({ currentPhageIndex: 1, scrollPosition: 0 });
+      assert.throws(currentTerminalResearchView, /still loading/);
+      assert.equal(captured?.scrollPosition, 2);
+      usePhageStore.setState({ phages: [], currentPhage: null, currentPhageIndex: 0 });
+      assert.equal(currentTerminalResearchView(), null);
+    } finally { usePhageStore.setState(previous); }
+  });
   it('imports without filename shortcuts, restores the exact view, and exports all accepted originals', async () => {
     const prior = usePhageStore.getState();
     const directory = await mkdtemp(join(tmpdir(), 'phage-ink-import-'));

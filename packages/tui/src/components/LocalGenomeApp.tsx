@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import { usePhageStore } from '@phage-explorer/state';
 import type { LocalGenomeView } from '../../../core/src/genome-import';
+import type { ResearchView } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession, type TerminalGenomeAccepted } from '../local-genome-session';
 import { TerminalResearchSession } from '../terminal-research-session';
 import { registerCommand, unregisterCommand } from '../commands/registry';
@@ -21,6 +22,13 @@ export function currentTerminalGenomeView(): LocalGenomeView | undefined {
   }
   const contentId = state.currentPhage?.localGenome?.contentId;
   return contentId ? { contentId, viewMode: state.viewMode, readingFrame: state.readingFrame, scrollPosition: state.scrollPosition } : undefined;
+}
+/** Capture only a fully accepted private selection; preserve the feature ID
+ * separately from the portable genome bundle's sequence-view fields.
+ */
+export function currentTerminalResearchView(): ResearchView | null {
+  const view = currentTerminalGenomeView();
+  return view ? { ...view, geneId: usePhageStore.getState().selectedGeneId } : null;
 }
 /** One store write: setters that individually reset scroll must not reorder the restored view. */
 export function installTerminalGenomes(accepted: TerminalGenomeAccepted): void {
@@ -51,15 +59,15 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
       description: 'Review private FASTA/GenBank or save the current local inputs and view without restarting.',
       keywords: ['file', 'fasta', 'genbank', 'bundle', 'private', 'import', 'export'], category: 'Research',
       action: () => { session.discardReview(); setResearchOpen(false); setOpen(true); } });
-    registerCommand({ id: WORKFLOW_COMMAND, label: 'Research workflows: replay and inspect results',
-      description: 'Open a private browser workflow, verify its analyses and review its final genome view.',
-      keywords: ['workflow', 'replay', 'results', 'archive', 'research'], category: 'Research',
+    registerCommand({ id: WORKFLOW_COMMAND, label: 'Research workflows: create, record and replay',
+      description: 'Build a private analysis workflow, record complete results, or verify a saved recording.',
+      keywords: ['workflow', 'record', 'draft', 'replay', 'results', 'archive', 'research'], category: 'Research',
       action: () => { session.discardReview(); setResearchOpen(true); setOpen(true); } });
     return () => { unregisterCommand(IMPORT_COMMAND); unregisterCommand(WORKFLOW_COMMAND); session.cancel(); research.cancel(); };
   }, [session, research]);
   return open
     ? researchOpen
-      ? <ResearchWorkflowView session={research} genomes={session} onReturn={() => setResearchOpen(false)} onReviewGenomes={() => setResearchOpen(false)} />
+      ? <ResearchWorkflowView session={research} genomes={session} onReturn={() => setResearchOpen(false)} onReviewGenomes={() => setResearchOpen(false)} captureView={currentTerminalResearchView} />
       : <TerminalGenomeView session={session} onReturn={() => setOpen(false)} onWorkflow={() => { session.discardReview(); setResearchOpen(true); }} />
     : <App repository={state.repository} />;
 }
@@ -157,7 +165,7 @@ export function TerminalGenomeView({ session, onReturn, onWorkflow }: {
     </> : <>
       <Text>[I] Import or restore a local file</Text>
       <Text dimColor={!state.localCount}>[E] Export ALL accepted original inputs and the current local view</Text>
-      {onWorkflow && <Text>[W] Open research workflows, verify and browse their results</Text>}
+      {onWorkflow && <Text>[W] Create or open research workflows and browse their results</Text>}
       <Text>[Esc] {canReturn ? 'Return to the current explorer session' : 'Quit (or import a file to begin)'}</Text>
       <Text color={colors.textDim}>Local records stay in memory. Export before quitting to retain them.</Text>
     </>}

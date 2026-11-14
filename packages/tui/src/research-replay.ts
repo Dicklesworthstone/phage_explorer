@@ -5,7 +5,7 @@
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { ResearchWorkflow, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { executePangenomeRequest } from '../../web/src/workers/PangenomeSession';
-import { COMMAND_LIMITS, parseCommandTape, parseCommandPlan, serializeCommandTape, type CommandTape } from '../../core/src/command-session';
+import { COMMAND_LIMITS, parseCommandTape, parseCommandPlan, serializeCommandTape, type CommandTape, type CommandPlan } from '../../core/src/command-session';
 import { importLocalGenomes, type LocalGenome, type GenomeImportResult } from '../../core/src/genome-import';
 import { createExactRepeatRecord } from '../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord } from '../../core/src/analysis/gc-skew';
@@ -186,6 +186,20 @@ export async function inspectResearchTape(content: string, signal = new AbortCon
       accession: genome.phage.accession, bases: genome.sequence.length, mappedFeatures: genome.phage.genes.length })) };
 }
 
+/** Validate a proposed plan through the same canonical adapters before any
+ * computation. Empty plans are valid drafts, never executable recordings.
+ */
+export function validateResearchPlan(content: string): CommandPlan {
+  const plan = parseCommandPlan(content);
+  const tape: CommandTape = { ...plan, format: 'phage-explorer-commands',
+    commands: plan.commands.map(command => ({ ...command, expected: null })) };
+  const bundle = bundleOf(tape);
+  const unsupported = stepsOf(tape).find(step => !step.supported);
+  if (unsupported) throw new Error(`Step ${unsupported.step} (${unsupported.actionId}): ${unsupported.reason}`);
+  host(bundle).workflow.load(serializeCommandTape(tape));
+  return plan;
+}
+
 /** Author an ordinary portable tape through the SAME adapters used by replay.
  * The isolated host never publishes a partial tape on error or cancellation.
  * This records fresh results; it does not claim independent replay verification.
@@ -194,16 +208,12 @@ export async function recordResearchPlan(content: string,
   options: Omit<ResearchReplayOptions, 'repetitions'> = {}): Promise<ResearchRecordingResult> {
   const signal = options.signal ?? new AbortController().signal;
   abort(signal);
-  const plan = parseCommandPlan(content);
+  const plan = validateResearchPlan(content);
   const validationTape: CommandTape = { ...plan, format: 'phage-explorer-commands',
     commands: plan.commands.map(command => ({ ...command, expected: null })) };
   const bundle = bundleOf(validationTape);
-  const unsupported = stepsOf(validationTape).find(step => !step.supported);
-  if (unsupported) throw new Error(`Step ${unsupported.step} (${unsupported.actionId}): ${unsupported.reason}`);
   if (!plan.commands.length) throw new Error('There are no planned commands to record.');
   const environment = host(bundle), workflow = environment.workflow;
-  // Validate every action's full parameters BEFORE input parsing or computation.
-  workflow.load(serializeCommandTape(validationTape));
   const total = plan.commands.length, steps: ReplayStep[] = [];
   const collector = options.captureResults ? new WorkflowResultCollector() : null;
   let lastAnalysisExecution: number | null = null;
