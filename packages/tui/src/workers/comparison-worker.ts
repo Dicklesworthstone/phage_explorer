@@ -2,7 +2,7 @@ import { parentPort } from 'node:worker_threads';
 import { compareGenomes } from '@phage-explorer/comparison';
 import type { GeneInfo, CodonUsageData } from '@phage-explorer/core';
 
-interface CompareJob {
+export interface CompareJob {
   phageA: { id: number; name: string; accession: string };
   phageB: { id: number; name: string; accession: string };
   sequenceA: string;
