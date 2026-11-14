@@ -134,4 +134,42 @@ describe('donor inference agrees across the WASM and JS paths', () => {
     expect(top.taxon).toContain('Donor phage');
     expect(top.taxon).not.toContain('Unrelated');
   });
+
+  it('binds reference signatures to changed bases rather than a reused label', async () => {
+    await initMinHashWasm();
+    expect(isMinHashWasmAvailable()).toBe(true);
+
+    // The three 80-base windows have GC fractions 0, 1, 0. Their
+    // population z-scores are -1/sqrt(2), sqrt(2), -1/sqrt(2), so only
+    // [80, 160) exceeds the threshold of 1. Its one canonical 16-mer is
+    // C^16 (from G^16), disjoint from the replacement reference's A^16.
+    const query = 'A'.repeat(80) + 'G'.repeat(80) + 'A'.repeat(80);
+    const options = { window: 80, step: 80, zThreshold: 1 };
+    const label = 'Stable reference label';
+    const matching = analyzeHGTProvenance(query, [], { [label]: 'G'.repeat(80) }, options);
+    expect(matching.stamps.map(stamp => [stamp.island.start, stamp.island.end])).toEqual([[80, 160]]);
+    expect(matching.stamps[0].donorDistribution).toEqual([
+      { taxon: label, similarity: 1, confidence: 'high', evidence: 'minhash' },
+    ]);
+
+    // Same label and same length, but no shared canonical k-mers.
+    const replaced = analyzeHGTProvenance(query, [], { [label]: 'A'.repeat(80) }, options);
+    expect(replaced.stamps.map(stamp => [stamp.island.start, stamp.island.end])).toEqual([[80, 160]]);
+    expect(replaced.stamps[0].donorDistribution).toEqual([
+      { taxon: label, similarity: 0, confidence: 'low', evidence: 'minhash' },
+    ]);
+    const renamed = analyzeHGTProvenance(query, [], { 'Renamed reference': 'A'.repeat(80) }, options);
+    expect(renamed.stamps[0].donor?.similarity).toBe(0);
+
+    // Normalized case and a later restoration may reuse the right content.
+    const restored = analyzeHGTProvenance(query, [], { [label]: 'g'.repeat(80) }, options);
+    expect(restored.stamps[0].donor?.similarity).toBe(1);
+    expect(restored.stamps[0].donor?.evidence).toBe('minhash');
+
+    // An ineligible replacement must not inherit the earlier long signature.
+    const tooShort = analyzeHGTProvenance(query, [], { [label]: 'G' }, options);
+    expect(tooShort.stamps.map(stamp => [stamp.island.start, stamp.island.end])).toEqual([[80, 160]]);
+    expect(tooShort.stamps[0].donorDistribution).toEqual([]);
+    expect(tooShort.stamps[0].donor).toBeNull();
+  });
 });

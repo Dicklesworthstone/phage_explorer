@@ -1,7 +1,7 @@
 import { jaccardIndex, extractKmerSet } from './kmer-analysis';
 import type { GeneInfo } from '@phage-explorer/core';
 import type { HGTAnalysis, GenomicIsland, DonorCandidate, PassportStamp } from './types';
-import { getMinHashCache, makeCacheKeyFromId } from './minhash-cache';
+import { getMinHashCache } from './minhash-cache';
 
 const isDev = typeof import.meta !== 'undefined' && import.meta.env?.DEV;
 
@@ -424,7 +424,8 @@ function inferDonorsMinHash(
 
 /**
  * Precompute MinHash signatures for reference sequences.
- * Uses ID-based caching for efficient reuse across repeated calls.
+ * Reference labels identify display rows, not sequence content. Reuse the
+ * sequence-owned cache so replaced inputs cannot inherit an earlier signature.
  * Returns null if WASM MinHash is unavailable.
  */
 function precomputeReferenceSignatures(
@@ -433,25 +434,10 @@ function precomputeReferenceSignatures(
 ): Record<string, Uint32Array> | null {
   if (!wasmMinHashAvailable) return null;
 
-  const cache = getMinHashCache();
   const signatures: Record<string, Uint32Array> = {};
 
   for (const [taxon, seq] of Object.entries(referenceSketches)) {
-    // Use taxon ID for stable cache key (avoids rehashing entire reference)
-    const cacheKey = makeCacheKeyFromId(taxon, k, MINHASH_NUM_HASHES, true);
-    let sig = cache.get(cacheKey);
-
-    if (!sig) {
-      // Normalize here once
-      const normalizedSeq = seq.toUpperCase();
-      // Compute WITHOUT using the sequence-based cache lookup, to avoid double-caching
-      sig = computeSignatureInternal(normalizedSeq, k, MINHASH_NUM_HASHES, true);
-      
-      if (sig) {
-        cache.set(cacheKey, sig);
-      }
-    }
-
+    const sig = computeSignature(seq, k, MINHASH_NUM_HASHES, true);
     if (sig) {
       signatures[taxon] = sig;
     }
