@@ -21,6 +21,12 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   The previous BLOSUM62 illustration requires an explicit choice.
   [Shared analysis core](https://github.com/Dicklesworthstone/phage_explorer/commit/0ca50707e929156fdbc23a8b9e816c19f28aae40).
   See the [measured assay workflow](docs/EPISTASIS_ASSAY_WORKFLOW.md).
+- **Native analysis and table import** — `phage-explorer epistasis` provides
+  inspect, analyze and replay commands before catalog/UI initialization.
+  CSV/TSV observations require explicit protein and assay metadata; commands
+  use the same owned computation and accepted-result validation as the browser.
+  Both complete TSV tables are available, output files are created exclusively,
+  and the worker is included in the standalone executable build manifest.
 
 ### Reference codon analysis across explicit genetic codes
 

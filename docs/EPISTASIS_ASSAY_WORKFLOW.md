@@ -162,8 +162,9 @@ it is preserved even when bootstrap is disabled.
   evidence or interpretation fails replay and leaves the accepted result
   unchanged.
 
-All computation runs locally without an assay-upload API. Exported JSON and TSV
-contain the supplied identifiers, sequence, measurements and attribution.
+All computation runs locally without an assay-upload API. JSON contains the
+exact protein sequence and measurements; TSV contains the supplied identifiers,
+attribution and exported measurement or contrast rows.
 
 ## Explicit bounds
 
@@ -178,3 +179,57 @@ The core module also exposes a strict three-column CSV/TSV observation parser
 with header **variant,replicate_id,value**. Callers must supply explicit protein,
 source and assay metadata separately. The browser accepts the complete JSON
 dataset so those definitions cannot be silently guessed.
+
+## Native command and table input
+
+The same method and fresh replay are available before catalog or terminal UI
+initialization, including in a compiled executable:
+
+```sh
+phage-explorer epistasis inspect assay.json --output canonical-assay.json
+phage-explorer epistasis analyze assay.json --bootstrap-samples 1000 --seed 1 --output assay-evidence.json
+phage-explorer epistasis replay assay-evidence.json --output verified-evidence.json
+phage-explorer epistasis replay assay-evidence.json --format tsv --section pairs --output contrasts.tsv
+phage-explorer epistasis replay assay-evidence.json --format tsv --section observations --output observations.tsv
+```
+
+For a plain CSV or TSV, put all dataset fields except observations in a metadata
+JSON file. The command never derives assay scale, pairing or protein identity
+from a filename or column values:
+
+```sh
+phage-explorer epistasis inspect measurements.tsv --metadata assay-metadata.json --output assay.json
+phage-explorer epistasis analyze measurements.tsv --metadata assay-metadata.json --bootstrap-samples 0 --output evidence.json
+```
+
+The table header is **variant,replicate_id,value**, with commas or tabs as the
+separator. Use one row for each independent unit and variant. Quoted table
+cells are not supported by this strict interchange format; use the complete
+JSON dataset when labels require quoting. Metadata containing an observations
+field is rejected, so no measurements are silently replaced.
+
+Use **-** for the main input to read stdin, or omit the output argument to emit
+JSON/TSV on stdout. Metadata must be a regular file. Diagnostics and progress
+use stderr; existing output paths are never overwritten. Newly created output
+files use owner-only permissions. The default timeout is five minutes and can
+be set with **--timeout-ms**. Ctrl-C terminates the owned worker and cancels
+before publication; an accepted write already in progress is completed.
+
+Only **analyze** accepts bootstrap and seed overrides. **replay** always restores
+the original observations, metadata, settings and method identity. The native
+and browser paths share the same worker operation and accepted-result
+validation. Inputs and analysis records use the same portable format.
+
+### Numerical replay across runtimes
+
+Verification requires the newly computed record to match every saved output.
+JavaScript engines or versions may differ in the final bits of functions such
+as [Math.log](https://tc39.es/ecma262/2026/multipage/numbers-and-dates.html#sec-math.log),
+whose approximation is implementation-dependent. A legitimate natural-log
+record can therefore be rejected when replayed in a different runtime; sharing
+the format and algorithm does not guarantee identical floating-point outputs.
+
+Keep the strict verification result. If the original runtime is unavailable,
+copy the exact dataset from the saved record's **inputs[0].data**, review it,
+and analyze it as a new dataset. The new record preserves those observations
+but must not be described as a verified reproduction of the rejected record.

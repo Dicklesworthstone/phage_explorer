@@ -117,6 +117,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     return;
   }
   // Headless scientific workflows must not require a catalog or initialize Ink.
+  if (args[0] === 'epistasis') {
+    const { runEpistasisProcess } = await import('./commands/epistasis');
+    await runEpistasisProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'environment') {
     const { runEnvironmentalProcess } = await import('./commands/environmental');
     await runEnvironmentalProcess(args.slice(1));
@@ -251,6 +256,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '  phage-explorer protein-alignment inspect|analyze|replay ...\n' +
       '  phage-explorer protein-structure inspect|analyze|replay ...\n' +      '  phage-explorer protein-interaction inspect|analyze|replay ...\n' +      '  phage-explorer ancestral prepare|inspect|analyze|replay ...\n' +      '  phage-explorer mosaic prepare|inspect|analyze|replay ...\n' +      '  phage-explorer codon-selection prepare|inspect|analyze|replay ...\n' +      '  phage-explorer cds-consequences prepare|inspect|analyze|replay ...\n' +
       '  phage-explorer growth inspect|fit|profile|replay ...\n' +      '  phage-explorer pfu-growth inspect|fit|replay ...\n' +      '  phage-explorer plaque-growth inspect|fit|replay ...\n' +      '  phage-explorer resistance-sim run|replay ...\n' +      '  phage-explorer spacer inspect|analyze|replay ...\n' +
+      '  phage-explorer epistasis inspect|analyze|replay ...\n' +
       '  phage-explorer environment inspect|analyze|replay|from-abundance ...\n' +
       '  phage-explorer phylogeny inspect|infer|replay|export ...\n' +
       '  phage-explorer workflow inspect|replay ...\n' +
