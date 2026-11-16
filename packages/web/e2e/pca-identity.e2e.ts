@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
+import type { AnalysisRecord, SignatureNeighbor } from '@phage-explorer/core';
 
 declare global {
   interface Window {
@@ -102,6 +105,7 @@ for (const backend of ['wasm', 'javascript'] as const) test(`PCA binds vectors, 
             b: await makeRepository('b', ['G'.repeat(160), 'T'.repeat(160), 'ACGG'.repeat(40)]),
             c: await makeRepository('c', ['ATGC'.repeat(40), 'AC'.repeat(80), 'ACTG'.repeat(40)]),
             delayed: await makeRepository('delayed', ['AT'.repeat(80), 'CG'.repeat(80), 'ATCG'.repeat(40)]),
+            missing: await makeRepository('missing', ['N'.repeat(160), 'A'.repeat(160), 'C'.repeat(160)]),
           };
           const orchestrator = getOrchestrator({ maxWorkers: 1 });
           window.pcaIdentityFixture.gcFractions = async sequences => {
@@ -166,6 +170,36 @@ for (const backend of ['wasm', 'javascript'] as const) test(`PCA binds vectors, 
     await expect(overlay).toContainText('GC: 0.0%');
     await expect(overlay).toContainText('Accession: a-1');
     expect(await page.evaluate(() => window.pcaIdentityFixture.sequenceReads.a)).toBe(3);
+    const exportNeighbors = async (filename: string): Promise<AnalysisRecord> => {
+      const nextDownload = page.waitForEvent('download');
+      await overlay.getByRole('button', { name: 'Export signature neighbors JSON' }).click();
+      const download = await nextDownload;
+      expect(download.suggestedFilename()).toBe('genomic-signature-neighbors.json');
+      const output = info.outputPath(filename);
+      await download.saveAs(output);
+      return JSON.parse(await readFile(output, 'utf8')) as AnalysisRecord;
+    };
+    const originalNeighbors = await exportNeighbors('neighbors-a.json');
+    expect(originalNeighbors.parameters).toMatchObject({ k: 4, normalize: true, includeReverseComplement: true,
+      selectedPhageId: -101, rankingSpace: 'full-kmer-frequencies', metric: 'euclidean' });
+    const originalInput = originalNeighbors.inputs.find(input => input.id === '-101')!;
+    expect(originalInput.accession).toBe('a-1');
+    expect(originalInput.source).toBe('local');
+    expect(originalInput.data).toMatchObject({ sequenceSha256: createHash('sha256').update('A'.repeat(160)).digest('hex') });
+    const rows = originalNeighbors.inputs.map(input => input.data as { phageId: number; name: string; frequencies: number[] });
+    const selected = rows.find(row => row.phageId === -101)!;
+    // Independent direct arithmetic over the actual worker-produced full matrix.
+    const expected = rows.filter(row => row.phageId !== -101).map(row => ({ phageId: row.phageId, name: row.name,
+      distance: Math.sqrt(row.frequencies.reduce((sum, value, d) => sum + (value - selected.frequencies[d]) ** 2, 0)) }))
+      .sort((a, b) => a.distance - b.distance || a.phageId - b.phageId);
+    const neighbors = originalNeighbors.fields.neighbors.value as unknown as SignatureNeighbor[];
+    expect(neighbors.map(n => n.phageId)).toEqual(expected.map(n => n.phageId));
+    for (let i = 0; i < expected.length; i++) {
+      expect(neighbors[i].featureDistance).toBeCloseTo(expected[i].distance, 12);
+      await expect(overlay.getByRole('button', { name: /^Select neighbor / }).nth(i)).toHaveAttribute('aria-label', `Select neighbor ${expected[i].name}`);
+      await expect(overlay.getByRole('button', { name: /^Select neighbor / }).nth(i)).toContainText(`full=${expected[i].distance.toFixed(4)}`);
+    }
+    await expect(overlay).toContainText('Nearest signatures (full 256 dimensions)');
     // Independently counted fractions, not comparison against another adapter.
     // DNA signatures exclude U and ambiguous characters from the denominator.
     expect(await page.evaluate(() => window.pcaIdentityFixture.gcFractions([
@@ -180,6 +214,13 @@ for (const backend of ['wasm', 'javascript'] as const) test(`PCA binds vectors, 
     await overlay.getByRole('combobox', { name: 'k:', exact: true }).selectOption('3');
     await expect(overlay).toContainText('PC1 Top Loadings');
     await expect(overlay.getByRole('combobox', { name: 'k:', exact: true })).toHaveValue('3');
+    const replacementNeighbors = await exportNeighbors('neighbors-b.json');
+    expect(replacementNeighbors.parameters.k).toBe(3);
+    const replacementInput = replacementNeighbors.inputs.find(input => input.id === '-101')!;
+    expect(replacementInput.accession).toBe('b-1');
+    expect(replacementInput.data).toMatchObject({ sequenceSha256: createHash('sha256').update('G'.repeat(160)).digest('hex') });
+    expect(replacementInput.sha256).not.toBe(originalInput.sha256);
+    expect(replacementNeighbors.resultId).not.toBe(originalNeighbors.resultId);
 
     const beforeAbandonedRead = await page.evaluate(() => window.pcaIdentityFixture.submittedVectors);
     await page.evaluate(() => {
@@ -216,6 +257,14 @@ for (const backend of ['wasm', 'javascript'] as const) test(`PCA binds vectors, 
     await page.evaluate(() => window.pcaIdentityFixture.releaseLength());
     await expect(overlay).toContainText('GC: 100.0%');
     await expect(overlay).toContainText('Accession: b-1');
+    await page.evaluate(() => window.pcaIdentityFixture.select('missing'));
+    await expect(overlay).toContainText('Accession: missing-1');
+    await expect(overlay).toContainText('The selected genome has no counted k-mers for these settings.');
+    await expect(overlay.getByRole('button', { name: /^Select neighbor / })).toHaveCount(0);
+    const missingNeighbors = await exportNeighbors('neighbors-missing.json');
+    expect(missingNeighbors.fields.neighbors.kind).toBe('unavailable');
+    expect(missingNeighbors.fields.neighbors.value).toBeNull();
+    expect(missingNeighbors.fields.exclusions.value).toEqual([-101]);
     expect(errors).toEqual([]);
   } finally {
     await server.close();

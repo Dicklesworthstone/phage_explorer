@@ -8,7 +8,8 @@
  */
 
 import type { KmerVector } from './kmer-frequencies';
-import { indexToKmer } from './kmer-frequencies';
+import { euclideanDistance, indexToKmer } from './kmer-frequencies';
+import { analysisJson, createAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 // ============================================================================
 // WASM PCA Loader (best-effort, sync callers)
@@ -98,6 +99,147 @@ export interface PCAOptions {
   numComponents?: number; // Default: 3
   maxIterations?: number; // For power iteration, default: 100
   tolerance?: number; // Convergence tolerance, default: 1e-8
+}
+
+export interface SignatureNeighbor {
+  phageId: number;
+  name: string;
+  /** Euclidean distance across every normalized k-mer frequency. Used for ranking. */
+  featureDistance: number;
+  /** Descriptive distance in the PC1/PC2 plot; never used for ranking. */
+  projectedDistance: number | null;
+}
+
+export interface SignatureNeighborhood {
+  selectedPhageId: number;
+  dimensions: number;
+  neighbors: SignatureNeighbor[];
+  /** Zero vectors have no counted k-mers and cannot support a neighbor claim. */
+  excludedPhageIds: number[];
+  unavailableReason: string | null;
+}
+
+export interface SignatureSource {
+  phageId: number;
+  accession: string | null;
+  source: 'catalog' | 'local';
+  /** SHA-256 of the exact UTF-8 sequence supplied to the vector computation. */
+  sequenceSha256: string;
+}
+
+/** Compare original signatures rather than a lossy display projection. Centering
+ * does not change Euclidean distances, but dropping principal components does.
+ * Distances describe sequence composition, not function, ancestry or likelihood.
+ * Input order and display names do not affect ranking; ID breaks exact ties.
+ */
+export function computeSignatureNeighborhood(
+  vectors: readonly KmerVector[],
+  selectedPhageId: number,
+  projections: readonly PCAProjection[] = [],
+): SignatureNeighborhood {
+  const dimensions = vectors[0]?.frequencies.length ?? 0;
+  const byId = new Map<number, KmerVector>();
+  const excluded = new Set<number>();
+  for (const vector of vectors) {
+    if (!Number.isSafeInteger(vector.phageId) || byId.has(vector.phageId)) {
+      throw new Error('Signature neighbors require unique integer genome IDs.');
+    }
+    if (!dimensions || vector.frequencies.length !== dimensions) {
+      throw new Error('Signature neighbors require equal, nonempty frequency dimensions.');
+    }
+    let total = 0;
+    for (const value of vector.frequencies) {
+      if (!Number.isFinite(value) || value < 0) throw new Error('Signature frequencies must be finite and nonnegative.');
+      total += value;
+    }
+    if (total === 0) excluded.add(vector.phageId);
+    // Float32 normalization can accumulate rounding error across many features.
+    else if (Math.abs(total - 1) > 1e-5) throw new Error('Signature neighbors require normalized frequency vectors.');
+    byId.set(vector.phageId, vector);
+  }
+  const selected = byId.get(selectedPhageId);
+  if (!selected) throw new Error('The selected genome is absent from the signature matrix.');
+  const projected = new Map<number, PCAProjection>();
+  for (const point of projections) {
+    if (!byId.has(point.phageId) || projected.has(point.phageId) || !Number.isFinite(point.pc1) || !Number.isFinite(point.pc2)) {
+      throw new Error('Signature projections must be finite and belong to unique matrix rows.');
+    }
+    projected.set(point.phageId, point);
+  }
+  const result: SignatureNeighborhood = { selectedPhageId, dimensions, neighbors: [],
+    excludedPhageIds: [...excluded].sort((a, b) => a - b), unavailableReason: null };
+  if (excluded.has(selectedPhageId)) {
+    result.unavailableReason = 'The selected genome has no counted k-mers for these settings.';
+    return result;
+  }
+  const selectedPoint = projected.get(selectedPhageId);
+  result.neighbors = vectors.filter(vector => vector.phageId !== selectedPhageId && !excluded.has(vector.phageId))
+    .map(vector => {
+      const point = projected.get(vector.phageId);
+      return { phageId: vector.phageId, name: vector.name,
+        featureDistance: euclideanDistance(selected.frequencies, vector.frequencies),
+        projectedDistance: selectedPoint && point ? Math.hypot(point.pc1 - selectedPoint.pc1, point.pc2 - selectedPoint.pc2) : null };
+    }).sort((a, b) => a.featureDistance - b.featureDistance || a.phageId - b.phageId);
+  if (result.neighbors.length === 0) result.unavailableReason = 'No other genome has counted k-mers for these settings.';
+  return result;
+}
+
+/** Export the exact vectors and display coordinates accepted by the caller.
+ * The source-sequence digest identifies provenance; raw sequences are not bundled.
+ * This record reproduces neighbor distances, not vector extraction or PCA fitting.
+ */
+export async function createSignatureNeighborhoodRecord(
+  vectors: readonly KmerVector[],
+  selectedPhageId: number,
+  projections: readonly PCAProjection[],
+  options: { k: number; includeReverseComplement: boolean },
+  sources: readonly SignatureSource[],
+): Promise<AnalysisRecord> {
+  const neighborhood = computeSignatureNeighborhood(vectors, selectedPhageId, projections);
+  if (!Number.isSafeInteger(options.k) || options.k < 1 || options.k > 12 || 4 ** options.k !== neighborhood.dimensions ||
+      typeof options.includeReverseComplement !== 'boolean') throw new Error('Signature settings do not match the frequency dimensions.');
+  const vectorIds = new Set(vectors.map(vector => vector.phageId));
+  const sourceById = new Map<number, SignatureSource>();
+  for (const source of sources) {
+    if (sourceById.has(source.phageId) || !vectorIds.has(source.phageId) ||
+        !['catalog', 'local'].includes(source.source) || !/^[a-f0-9]{64}$/.test(source.sequenceSha256)) {
+      throw new Error('Signature export requires one source-sequence identity per matrix row.');
+    }
+    sourceById.set(source.phageId, source);
+  }
+  if (sourceById.size !== vectors.length) throw new Error('Signature source identities are incomplete.');
+  const projected = new Map(projections.map(point => [point.phageId, point]));
+  const coverage = { available: neighborhood.neighbors.length, total: Math.max(0, vectors.length - 1), unit: 'records' as const };
+  const limitations = [
+    'Ranking uses Euclidean distance across all normalized k-mer frequencies; PC1/PC2 distance is descriptive only.',
+    'Sequence composition and projected proximity do not establish function, ancestry or evolutionary distance.',
+    'Exact vectors and display coordinates are bundled for distance recomputation; source-sequence digests do not independently validate vector extraction or PCA fitting.',
+    'Genomes without counted k-mers are excluded; absence of a neighbor does not imply biological dissimilarity.',
+  ];
+  return createAnalysisRecord({
+    method: { id: 'genomic-signature-neighborhood', version: '1', implementation: 'Euclidean distance on accepted normalized frequency vectors' },
+    inputs: [...vectors].sort((a, b) => a.phageId - b.phageId).map(vector => {
+      const source = sourceById.get(vector.phageId)!;
+      const point = projected.get(vector.phageId);
+      return { id: String(vector.phageId), accession: source.accession, source: source.source,
+        description: 'Accepted normalized frequencies and optional PC1/PC2 coordinates; sequenceSha256 hashes the exact source UTF-8 bytes, which are not bundled.',
+        data: analysisJson({ phageId: vector.phageId, name: vector.name, frequencies: Array.from(vector.frequencies),
+          genomeLength: vector.genomeLength, gcContent: vector.gcContent, sequenceSha256: source.sequenceSha256,
+          projection: point ? { pc1: point.pc1, pc2: point.pc2 } : null }) };
+    }),
+    parameters: { selectedPhageId, k: options.k, includeReverseComplement: options.includeReverseComplement,
+      normalize: true, rankingSpace: 'full-kmer-frequencies', metric: 'euclidean' },
+    seed: null, references: [],
+    fields: {
+      neighbors: neighborhood.unavailableReason ? { kind: 'unavailable', label: 'Full-signature nearest neighbors',
+        value: null, units: null, coverage, limitations, missingInputs: [neighborhood.unavailableReason] }
+        : { kind: 'sequence-score', label: 'Full-signature nearest neighbors', value: analysisJson(neighborhood.neighbors),
+          units: 'records', coverage, limitations },
+      exclusions: { kind: 'sequence-score', label: 'Genomes without counted k-mers',
+        value: analysisJson(neighborhood.excludedPhageIds), units: 'records',
+        coverage: { available: vectors.length - neighborhood.excludedPhageIds.length, total: vectors.length, unit: 'records' }, limitations },
+    },
+  });
 }
 
 /**

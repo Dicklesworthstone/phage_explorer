@@ -3,11 +3,11 @@
  *
  * Visualizes genomic signatures using PCA of k-mer frequencies (optionally
  * including reverse complements).
- * Projects all phages in the database into 2D space for alignment-free
- * phylogenetic comparison.
+ * Projects phages into 2D for visualization, while ranking neighbors in the
+ * complete normalized frequency space.
  */
 
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import type { PhageFull, PhageSummary } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -23,11 +23,16 @@ import {
   OverlayErrorState,
 } from './primitives';
 import {
+  computeSignatureNeighborhood,
+  createSignatureNeighborhoodRecord,
   getTopLoadings,
+  serializeAnalysisRecord,
 } from '@phage-explorer/core';
-import type { PCAResult, KmerVector, PCAProjection } from '@phage-explorer/core';
+import type { PCAResult, KmerVector, PCAProjection, SignatureSource } from '@phage-explorer/core';
 import type { ScatterPoint, ScatterHover } from './primitives/types';
 import { ComputeOrchestrator } from '../../workers/ComputeOrchestrator';
+import { sha256Bytes } from '../../db/progressive-manifest';
+import { downloadString } from '../../utils/export';
 
 // Color scale for GC content (blue=low, red=high)
 function gcColor(gcContent: number): string {
@@ -68,6 +73,8 @@ interface SignatureRun {
   stage: 'frequencies' | 'pca' | 'ready' | 'error';
   progress: number;
   phages: PhageSummary[];
+  vectors: KmerVector[];
+  sources: SignatureSource[];
   result: PCAResult | null;
   error: string | null;
 }
@@ -120,8 +127,11 @@ export function GenomicSignaturePCAOverlay({
 
   // A numeric id belongs to its repository. Replacing the dataset must never
   // pair cached frequencies from its predecessor with new names or annotations.
-  const vectorCache = useMemo(() => new Map<string, KmerVector>(), [repository]);
+  const vectorCache = useMemo(() => new Map<string, { vector: KmerVector; source: SignatureSource }>(), [repository]);
   const [run, setRun] = useState<SignatureRun | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const exportGeneration = useRef(0);
 
   // Hover state for tooltip
   const [hoveredPoint, setHoveredPoint] = useState<ScatterHover | null>(null);
@@ -146,6 +156,12 @@ export function GenomicSignaturePCAOverlay({
   const pcaLoading = currentRun?.stage === 'pca';
   const isTopmost = useIsTopOverlay('genomicSignaturePCA');
   const kmerDims = 4 ** kmerSize;
+
+  useEffect(() => {
+    setExportError(null);
+    setExporting(false);
+    return () => { exportGeneration.current++; };
+  }, [input, selectedPhageId, overlayOpen]);
 
   // Hotkey to toggle overlay (Alt+P for PCA)
   useHotkey(
@@ -174,7 +190,7 @@ export function GenomicSignaturePCAOverlay({
 
     const controller = new AbortController();
     const { repository, kmerSize, includeReverseComplement } = input;
-    const initial: SignatureRun = { input, stage: 'frequencies', progress: 0, phages: [], result: null, error: null };
+    const initial: SignatureRun = { input, stage: 'frequencies', progress: 0, phages: [], vectors: [], sources: [], result: null, error: null };
     setRun(initial);
     setHoveredPoint(null);
 
@@ -186,6 +202,7 @@ export function GenomicSignaturePCAOverlay({
         setRun(snapshot);
 
         const vectors: KmerVector[] = [];
+        const sources: SignatureSource[] = [];
         const total = allPhages.length;
 
         for (let i = 0; i < allPhages.length; i++) {
@@ -195,7 +212,8 @@ export function GenomicSignaturePCAOverlay({
           const cacheKey = `${phage.id}:${kmerSize}:${includeReverseComplement ? 1 : 0}`;
           const cached = vectorCache.get(cacheKey);
           if (cached) {
-            vectors.push(cached);
+            vectors.push(cached.vector);
+            sources.push(cached.source);
           } else {
             const length = await repository.getFullGenomeLength(phage.id);
             if (controller.signal.aborted) return;
@@ -220,8 +238,13 @@ export function GenomicSignaturePCAOverlay({
               genomeLength: length,
             };
 
-            vectorCache.set(cacheKey, vector);
+            const sequenceSha256 = await sha256Bytes(new TextEncoder().encode(sequence));
+            if (controller.signal.aborted) return;
+            const source: SignatureSource = { phageId: phage.id, accession: phage.accession,
+              source: phage.localGenome ? 'local' : 'catalog', sequenceSha256 };
+            vectorCache.set(cacheKey, { vector, source });
             vectors.push(vector);
+            sources.push(source);
           }
 
           setRun({ ...snapshot, progress: Math.round(((i + 1) / total) * 100) });
@@ -234,7 +257,7 @@ export function GenomicSignaturePCAOverlay({
         if (controller.signal.aborted) return;
         // The metadata and projection are published together under the exact
         // same repository and parameters that produced the frequency matrix.
-        setRun({ ...snapshot, stage: 'ready', progress: 100, result });
+        setRun({ ...snapshot, stage: 'ready', progress: 100, result, vectors, sources });
       } catch (err) {
         if (controller.signal.aborted) return;
         setRun({ ...initial, stage: 'error', error: err instanceof Error ? err.message : 'Failed to compute signatures' });
@@ -348,22 +371,30 @@ export function GenomicSignaturePCAOverlay({
     return pcaResult.projections.find(p => p.phageId === selectedPhageId) ?? null;
   }, [pcaResult, selectedPhageId]);
 
-  const nearestNeighbors = useMemo(() => {
-    if (!pcaResult || !selectedProjection) return [];
+  const neighborhood = useMemo(() => {
+    if (!pcaResult || !selectedProjection || !currentRun) return null;
+    return computeSignatureNeighborhood(currentRun.vectors, selectedProjection.phageId, pcaResult.projections);
+  }, [currentRun, pcaResult, selectedProjection]);
+  const nearestNeighbors = neighborhood?.neighbors.slice(0, 8) ?? [];
 
-    const scored = pcaResult.projections
-      .filter(p => p.phageId !== selectedProjection.phageId)
-      .map(p => {
-        const dx = p.pc1 - selectedProjection.pc1;
-        const dy = p.pc2 - selectedProjection.pc2;
-        const distance = Math.sqrt(dx * dx + dy * dy);
-        return { projection: p, distance };
-      })
-      .sort((a, b) => a.distance - b.distance)
-      .slice(0, 8);
-
-    return scored;
-  }, [pcaResult, selectedProjection]);
+  const exportNeighbors = useCallback(async () => {
+    if (!currentRun?.result || currentRun.stage !== 'ready' || selectedPhageId === null) return;
+    const generation = ++exportGeneration.current;
+    setExportError(null);
+    setExporting(true);
+    try {
+      // Capture vectors, source digests and settings from the accepted run;
+      // neither draft controls nor a new repository may relabel this export.
+      const record = await createSignatureNeighborhoodRecord(currentRun.vectors, selectedPhageId, currentRun.result.projections,
+        { k: currentRun.input.kmerSize, includeReverseComplement: currentRun.input.includeReverseComplement }, currentRun.sources);
+      if (generation !== exportGeneration.current) return;
+      downloadString(serializeAnalysisRecord(record), 'genomic-signature-neighbors.json', 'application/json');
+    } catch (err) {
+      if (generation === exportGeneration.current) setExportError(err instanceof Error ? err.message : 'Could not export signature neighbors.');
+    } finally {
+      if (generation === exportGeneration.current) setExporting(false);
+    }
+  }, [currentRun, selectedPhageId]);
 
   const projectionsByName = useMemo(() => {
     if (!pcaResult) return [];
@@ -403,9 +434,10 @@ export function GenomicSignaturePCAOverlay({
           }}
         >
           <strong style={{ color: colors.accent }}>Genomic Signature PCA</strong>:
-          Alignment-free phylogenetic comparison using {kmerSize}-mer frequencies.
+          Compare sequence composition using normalized {kmerSize}-mer frequencies.
           Each phage is represented by {kmerDims.toLocaleString()} frequency values, reduced to 2D via PCA.
-          Similar signatures suggest related evolutionary history or similar host environments.
+          Neighbors are ranked using all frequency values; the plot can hide differences in discarded dimensions.
+          Similar composition alone does not establish function, ancestry or evolutionary distance.
         </div>
 
         {loading || pcaLoading ? (
@@ -643,17 +675,17 @@ export function GenomicSignaturePCAOverlay({
 
                   <div>
                     <div style={{ fontWeight: 'bold', color: colors.text, marginBottom: '0.25rem' }}>
-                      Nearest neighbors (PCA)
+                      Nearest signatures (full {neighborhood?.dimensions.toLocaleString()} dimensions)
                     </div>
                     {nearestNeighbors.length === 0 ? (
-                      <div style={{ color: colors.textMuted }}>No neighbors available.</div>
+                      <div style={{ color: colors.textMuted }}>{neighborhood?.unavailableReason ?? 'No neighbors available.'}</div>
                     ) : (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
                         {nearestNeighbors.map(n => (
                           <button
-                            key={n.projection.phageId}
+                            key={n.phageId}
                             type="button"
-                            onClick={() => setSelectedPhageId(n.projection.phageId)}
+                            onClick={() => setSelectedPhageId(n.phageId)}
                             style={{
                               display: 'flex',
                               justifyContent: 'space-between',
@@ -667,21 +699,34 @@ export function GenomicSignaturePCAOverlay({
 	                              cursor: 'pointer',
 	                              textAlign: 'left',
 	                            }}
-	                            aria-label={`Select neighbor ${n.projection.name}`}
+	                            aria-label={`Select neighbor ${n.name}`}
 	                          >
 	                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
 	                              {(() => {
-	                                const meta = phageMetaById.get(n.projection.phageId);
-	                                return meta?.host ? `${n.projection.name} — ${meta.host}` : n.projection.name;
+	                                const meta = phageMetaById.get(n.phageId);
+	                                return meta?.host ? `${n.name} — ${meta.host}` : n.name;
 	                              })()}
 	                            </span>
 	                            <span style={{ color: colors.textMuted, fontFamily: 'monospace' }}>
-	                              d={n.distance.toFixed(3)}
+	                              full={n.featureDistance.toFixed(4)} · plot={n.projectedDistance?.toFixed(4) ?? 'unavailable'}
 	                            </span>
 	                          </button>
 	                        ))}
 	                      </div>
 	                    )}
+	                    <div style={{ color: colors.textDim, marginTop: '0.5rem' }}>
+                      Full distance: Euclidean distance across all normalized frequencies. Plot distance: PC1/PC2 only.
+                      {neighborhood && neighborhood.excludedPhageIds.length > 0 && (
+                        <> Excluded {neighborhood.excludedPhageIds.length} genome(s) with no counted k-mers.</>
+                      )}
+                    </div>
+                    <button type="button" className="btn" disabled={exporting} onClick={() => void exportNeighbors()} style={{ marginTop: '0.5rem' }}>
+                      {exporting ? 'Preparing export…' : 'Export signature neighbors JSON'}
+                    </button>
+                    <div style={{ color: colors.textDim, marginTop: '0.25rem' }}>
+                      Exports all eligible neighbors, accepted frequency vectors, source digests and settings.
+                    </div>
+                    {exportError && <div role="alert" style={{ color: colors.error }}>{exportError}</div>}
 	                  </div>
                 </div>
               ) : (
