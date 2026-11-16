@@ -2,7 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { computeDatabaseContentDigest, createDatabaseManifest } from '../../../../scripts/build-web-db';
-import { isDatabaseManifest, verifyDatabaseBytes } from './DatabaseLoader';
+import { databaseDownloadUrls, verifyDatabaseBytes } from './DatabaseLoader';
+import { isDatabaseManifest } from './types';
 
 describe('database producer-to-consumer identity', () => {
   it('rejects stale gzip after an atlas-only change even when raw sizes match', async () => {
@@ -63,5 +64,48 @@ describe('database producer-to-consumer identity', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('pins immutable URLs to the manifest directory while preserving portable URLs', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE sample (id INTEGER)');
+      const manifest = createDatabaseManifest(computeDatabaseContentDigest(db), db.serialize());
+      const config = { databaseUrl: 'https://example.test/data/phage.db?tenant=public', manifestUrl: 'https://example.test/release/phage.db.manifest.json' };
+      const portable = databaseDownloadUrls(config, manifest);
+      expect(portable.sqlite).toBe(`https://example.test/data/phage.db?tenant=public&v=${manifest.contentVersion}`);
+      expect(portable.gzip).toBe(`https://example.test/data/phage.db.gz?tenant=public&v=${manifest.contentVersion}`);
+      manifest.artifacts = {
+        sqlite: { path: `phage-data/${manifest.sha256}.db`, sha256: manifest.sha256, size: manifest.size },
+        gzip: { path: `phage-data/${'a'.repeat(64)}.db.gz`, sha256: 'a'.repeat(64), size: 100 },
+      };
+      expect(isDatabaseManifest(manifest)).toBe(true);
+      expect(databaseDownloadUrls(config, manifest)).toEqual({
+        sqlite: `https://example.test/release/${manifest.artifacts.sqlite.path}`,
+        gzip: `https://example.test/release/${manifest.artifacts.gzip.path}`,
+      });
+      expect(() => databaseDownloadUrls({ ...config, manifestUrl: 'https://user:password@example.test/phage.db.manifest.json' }, manifest)).toThrow('credential-free');
+    } finally { db.close(); }
+  });
+
+  it('rejects escaped, conflicting or incomplete artifact descriptors before any download', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE sample (id INTEGER)');
+      const manifest = createDatabaseManifest(computeDatabaseContentDigest(db), db.serialize());
+      const sqlite = { path: `phage-data/${manifest.sha256}.db`, sha256: manifest.sha256, size: manifest.size };
+      const gzip = { path: `phage-data/${'a'.repeat(64)}.db.gz`, sha256: 'a'.repeat(64), size: 100 };
+      for (const artifacts of [
+        null, {}, { sqlite }, { gzip },
+        { sqlite: { ...sqlite, path: '../phage.db' }, gzip },
+        { sqlite: { ...sqlite, path: 'https://elsewhere.test/phage.db' }, gzip },
+        { sqlite: { ...sqlite, path: `${sqlite.path}?unchecked=1` }, gzip },
+        { sqlite: { ...sqlite, size: sqlite.size + 1 }, gzip },
+        { sqlite: { ...sqlite, sha256: 'b'.repeat(64), path: `phage-data/${'b'.repeat(64)}.db` }, gzip },
+        { sqlite, gzip: { ...gzip, path: 'phage-data/%2e%2e/phage.db.gz' } },
+        { sqlite, gzip: { ...gzip, size: -1 } },
+        { sqlite, gzip: { ...gzip, size: Infinity } },
+      ]) expect(isDatabaseManifest({ ...manifest, artifacts })).toBe(false);
+    } finally { db.close(); }
   });
 });

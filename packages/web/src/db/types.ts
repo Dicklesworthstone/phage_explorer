@@ -178,6 +178,38 @@ export interface DatabaseManifest {
   size: number;
   sizeFormatted?: string;
   generatedAt: string;
+  /** Immutable publication paths, relative to the manifest. Omitted by portable releases. */
+  artifacts?: {
+    sqlite: DatabaseArtifact;
+    gzip: DatabaseArtifact;
+  };
+}
+
+export interface DatabaseArtifact {
+  path: string;
+  sha256: string;
+  size: number;
+}
+
+/** One contract for the publisher, verifier and browser; paths cannot escape the dataset. */
+export function isDatabaseManifest(value: unknown): value is DatabaseManifest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const manifest = value as Partial<DatabaseManifest>;
+  const digest = /^[a-f0-9]{64}$/;
+  if (manifest.version !== 2 ||
+      typeof manifest.contentVersion !== 'string' || !digest.test(manifest.contentVersion) ||
+      typeof manifest.sha256 !== 'string' || !digest.test(manifest.sha256) ||
+      typeof manifest.size !== 'number' || !Number.isSafeInteger(manifest.size) || manifest.size < 16 ||
+      typeof manifest.generatedAt !== 'string') return false;
+  if (manifest.artifacts === undefined) return true;
+  if (!manifest.artifacts || typeof manifest.artifacts !== 'object' || Array.isArray(manifest.artifacts)) return false;
+  const validArtifact = (artifact: DatabaseArtifact | undefined, extension: string) =>
+    !!artifact && typeof artifact === 'object' && !Array.isArray(artifact) &&
+    typeof artifact.sha256 === 'string' && digest.test(artifact.sha256) &&
+    Number.isSafeInteger(artifact.size) && artifact.size >= 16 &&
+    artifact.path === `phage-data/${artifact.sha256}.${extension}`;
+  return validArtifact(manifest.artifacts.sqlite, 'db') && validArtifact(manifest.artifacts.gzip, 'db.gz') &&
+    manifest.artifacts.sqlite.sha256 === manifest.sha256 && manifest.artifacts.sqlite.size === manifest.size;
 }
 
 /**

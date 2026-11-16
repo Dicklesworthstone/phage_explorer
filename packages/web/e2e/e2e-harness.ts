@@ -99,6 +99,7 @@ const CAPTURE_NETWORK_PATTERNS = [
   /\.js$/, // Dynamic chunks
   /\.wasm$/, // WASM modules
   /phage\.db/, // SQLite database
+  /\/phage-data\//, // Immutable SQLite generations and progressive artifacts
   /\/entrez\/eutils\//, // Real scientific inputs and explicit network-failure controls
   /worker/, // Web workers
   /chunk/, // Code-split chunks

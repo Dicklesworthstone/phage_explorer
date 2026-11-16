@@ -54,6 +54,7 @@ import type {
   DatabaseLoadProgress,
   DatabaseManifest,
 } from './types';
+import { isDatabaseManifest } from './types';
 
 const INDEXEDDB_NAME = 'phage-explorer-db';
 const INDEXEDDB_STORE = 'database';
@@ -66,16 +67,50 @@ interface CachedDatabase {
   sha256: string;
 }
 
-/** Reject the old ambiguous hash contract rather than blessing unchecked bytes. */
-export function isDatabaseManifest(value: unknown): value is DatabaseManifest {
-  if (!value || typeof value !== 'object') return false;
-  const manifest = value as Partial<DatabaseManifest>;
-  const digest = /^[a-f0-9]{64}$/;
-  return manifest.version === 2 &&
-    typeof manifest.contentVersion === 'string' && digest.test(manifest.contentVersion) && // ubs:ignore — public cache version, not a secret comparison.
-    typeof manifest.sha256 === 'string' && digest.test(manifest.sha256) && // ubs:ignore — public artifact checksum, not authentication.
-    typeof manifest.size === 'number' && Number.isSafeInteger(manifest.size) && manifest.size >= 16 &&
-    typeof manifest.generatedAt === 'string'; // ubs:ignore — validates a public timestamp's type.
+class DatabaseIntegrityError extends Error {
+  constructor() {
+    super('Database integrity check failed. The download does not match its manifest; the previous cache has been preserved.');
+    this.name = 'DatabaseIntegrityError';
+  }
+}
+
+/** Decoder code can be unavailable even when the compressed artifact is valid. */
+class GzipDecoderUnavailableError extends Error {
+  constructor() {
+    super('Gzip decoder is unavailable; use the verified raw database transport.');
+    this.name = 'GzipDecoderUnavailableError';
+  }
+}
+
+/** Immutable descriptors stay bound to one publication even if the aliases change mid-download. */
+export function databaseDownloadUrls(config: DatabaseLoaderConfig, manifest: DatabaseManifest): { sqlite: string; gzip: string } {
+  if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
+  const base = typeof window === 'undefined' ? undefined : window.location.href;
+  if (manifest.artifacts) {
+    const manifestUrl = new URL(config.manifestUrl ?? `${config.databaseUrl}.manifest.json`, base);
+    if (!['http:', 'https:'].includes(manifestUrl.protocol) || manifestUrl.username || manifestUrl.password) {
+      throw new Error('Dataset manifest must use credential-free HTTP(S).');
+    }
+    return {
+      sqlite: new URL(manifest.artifacts.sqlite.path, manifestUrl).href,
+      gzip: new URL(manifest.artifacts.gzip.path, manifestUrl).href,
+    };
+  }
+  // Portable releases and already installed version-2 datasets use the original
+  // filenames and version query. They retain the same checksum requirements.
+  let sqlite: string;
+  try {
+    const url = new URL(config.databaseUrl, base);
+    url.searchParams.set('v', manifest.contentVersion);
+    sqlite = url.href;
+  } catch {
+    const separator = config.databaseUrl.includes('?') ? '&' : '?';
+    sqlite = `${config.databaseUrl}${separator}v=${encodeURIComponent(manifest.contentVersion)}`;
+  }
+  const queryIndex = sqlite.indexOf('?');
+  const path = queryIndex === -1 ? sqlite : sqlite.slice(0, queryIndex);
+  const query = queryIndex === -1 ? '' : sqlite.slice(queryIndex);
+  return { sqlite, gzip: path.endsWith('.gz') ? sqlite : `${path}.gz${query}` };
 }
 
 async function sha256(data: Uint8Array): Promise<string> {
@@ -86,7 +121,7 @@ async function sha256(data: Uint8Array): Promise<string> {
 export async function verifyDatabaseBytes(data: Uint8Array, manifest: DatabaseManifest): Promise<void> {
   if (!isDatabaseManifest(manifest)) throw new Error('Unsupported database manifest. Refresh the application.');
   if (data.byteLength !== manifest.size || await sha256(data) !== manifest.sha256) { // ubs:ignore — these public integrity hashes contain no secret.
-    throw new Error('Database integrity check failed. The download does not match its manifest; the previous cache has been preserved.');
+    throw new DatabaseIntegrityError();
   }
 }
 
@@ -460,14 +495,6 @@ export class DatabaseLoader {
     }
   }
 
-  private withGzipSuffix(url: string): string {
-    const qIndex = url.indexOf('?');
-    const base = qIndex >= 0 ? url.slice(0, qIndex) : url;
-    const query = qIndex >= 0 ? url.slice(qIndex) : '';
-    if (base.endsWith('.gz')) return url;
-    return `${base}.gz${query}`;
-  }
-
   private async getGzipDecompressor(): Promise<
     | { label: string; decompress: (data: Uint8Array) => Promise<Uint8Array> }
     | null
@@ -484,9 +511,11 @@ export class DatabaseLoader {
   private async decompressGzip(data: Uint8Array): Promise<Uint8Array> {
     const ctor = (globalThis as any).DecompressionStream as undefined | (new (format: string) => TransformStream);
     if (!ctor) {
-      throw new Error('DecompressionStream not available');
+      throw new GzipDecoderUnavailableError();
     }
-    const ds = new ctor('gzip');
+    let ds: TransformStream;
+    try { ds = new ctor('gzip'); }
+    catch { throw new GzipDecoderUnavailableError(); }
     const decompressedStream = new Blob([toArrayBuffer(data)]).stream().pipeThrough(ds);
     const buffer = await new Response(decompressedStream).arrayBuffer();
     return new Uint8Array(buffer);
@@ -566,10 +595,12 @@ export class DatabaseLoader {
   }
 
   private async decompressGzipWithPakoMainThread(data: Uint8Array): Promise<Uint8Array> {
-    const mod: any = await import('pako');
+    let mod: any;
+    try { mod = await import('pako'); }
+    catch { throw new GzipDecoderUnavailableError(); }
     const ungzip: unknown = mod?.ungzip ?? mod?.default?.ungzip;
     if (typeof ungzip !== 'function') {
-      throw new Error('pako.ungzip not available');
+      throw new GzipDecoderUnavailableError();
     }
     const result = ungzip(data);
     return result instanceof Uint8Array ? result : new Uint8Array(result);
@@ -588,7 +619,7 @@ export class DatabaseLoader {
     return this.decompressGzipWithPakoMainThread(data);
   }
 
-  private async fetchBytes(url: string, label: string): Promise<Uint8Array> {
+  private async fetchBytes(url: string, label: string, maximumBytes?: number): Promise<Uint8Array> {
     let response: Response;
     try {
       response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(60_000) });
@@ -612,12 +643,17 @@ export class DatabaseLoader {
     const canTrustContentLength = !contentEncoding || contentEncoding === 'identity';
     const contentLength = canTrustContentLength ? response.headers.get('content-length') : null;
     const total = contentLength ? parseInt(contentLength, 10) : 0;
+    if (maximumBytes !== undefined && total > maximumBytes) {
+      await response.body?.cancel().catch(() => {});
+      throw new DatabaseIntegrityError();
+    }
     let loaded = 0;
     let lastReportedLoaded = 0;
 
     const reader = response.body?.getReader();
     if (!reader) {
       const buffer = await response.arrayBuffer();
+      if (maximumBytes !== undefined && buffer.byteLength > maximumBytes) throw new DatabaseIntegrityError();
       this.progress('downloading', 50, `${label}: ${Math.round(buffer.byteLength / 1024)}KB`);
       return new Uint8Array(buffer);
     }
@@ -628,6 +664,10 @@ export class DatabaseLoader {
       if (done) break;
       chunks.push(value);
       loaded += value.length;
+      if (maximumBytes !== undefined && loaded > maximumBytes) {
+        await reader.cancel().catch(() => {});
+        throw new DatabaseIntegrityError();
+      }
 
       if (total > 0) {
         const percent = Math.min(50, Math.round((loaded / total) * 40) + 10);
@@ -739,6 +779,7 @@ export class DatabaseLoader {
    */
   async downloadDatabase(manifest: DatabaseManifest): Promise<{ db: Database; data: Uint8Array }> {
     if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
+    const urls = databaseDownloadUrls(this.config, manifest);
     // Neither downloading nor verifying the SQLite bytes needs the SQL engine.
     // Start its independent asset fetch now rather than after the full download.
     const timing = this.timing;
@@ -749,39 +790,30 @@ export class DatabaseLoader {
     void sqlReady.catch(() => {});
     this.progress('downloading', 10, 'Downloading database...');
 
-    const downloadUrl = (() => {
-      try {
-        const url = new URL(this.config.databaseUrl, typeof window === 'undefined' ? undefined : window.location.href);
-        // Cache-bust any service-worker CacheFirst/SWR behavior by making the request URL unique per version.
-        url.searchParams.set('v', manifest.contentVersion);
-        return url.toString();
-      } catch {
-        const separator = this.config.databaseUrl.includes('?') ? '&' : '?';
-        return `${this.config.databaseUrl}${separator}v=${encodeURIComponent(manifest.contentVersion)}`;
-      }
-    })();
-
     let combined: Uint8Array | null = null;
 
     // Prefer a pre-compressed asset (`.db.gz`) when supported to cut first-load latency.
     // Fallback to the raw `.db` if decompression isn't available or the `.gz` is missing.
     const gz = await this.getGzipDecompressor();
     if (gz) {
-      const gzUrl = this.withGzipSuffix(downloadUrl);
       try {
         this.progress('downloading', 10, 'Downloading database (compressed)...');
 
         this.timing?.startStage('fetch');
-        const compressed = await this.fetchBytes(gzUrl, 'Downloading (gzip)');
+        const compressed = await this.fetchBytes(urls.gzip, 'Downloading (gzip)',
+          manifest.artifacts ? Math.max(manifest.size, manifest.artifacts.gzip.size) : undefined);
         this.timing?.endStage('fetch');
         this.timing?.setBytesTransferred(compressed.length);
 
         // In some deployments the server may auto-decompress; if so, accept the bytes as-is.
         if (this.isValidSqliteData(compressed)) {
+          await verifyDatabaseBytes(compressed, manifest);
           combined = compressed;
           this.timing?.setSource('db');
           this.timing?.setDecompressionMethod('none');
         } else {
+          if (manifest.artifacts && (compressed.length !== manifest.artifacts.gzip.size ||
+              await sha256(compressed) !== manifest.artifacts.gzip.sha256)) throw new DatabaseIntegrityError();
           this.progress(
             'decompressing',
             55,
@@ -789,13 +821,20 @@ export class DatabaseLoader {
           );
 
           this.timing?.startStage('decompress');
-          combined = await gz.decompress(compressed);
+          try { combined = await gz.decompress(compressed); }
+          catch (error) {
+            if (manifest.artifacts && !(error instanceof GzipDecoderUnavailableError)) throw new DatabaseIntegrityError();
+            throw error;
+          }
           this.timing?.endStage('decompress');
 
           this.timing?.setSource('db.gz');
           this.timing?.setDecompressionMethod(gz.label === 'native' ? 'native' : 'pako');
         }
-      } catch {
+      } catch (error) {
+        // A missing compressed transport may use raw bytes from the SAME
+        // generation. An integrity failure must never try a mutable alias.
+        if (error instanceof DatabaseIntegrityError) throw error;
         combined = null;
       }
     }
@@ -804,7 +843,7 @@ export class DatabaseLoader {
       this.progress('downloading', 10, 'Downloading database...');
 
       this.timing?.startStage('fetch');
-      combined = await this.fetchBytes(downloadUrl, 'Downloading');
+      combined = await this.fetchBytes(urls.sqlite, 'Downloading', manifest.size);
       this.timing?.endStage('fetch');
 
       this.timing?.setBytesTransferred(combined.length);

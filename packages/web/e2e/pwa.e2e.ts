@@ -5,6 +5,7 @@ import { extname, resolve, sep } from 'node:path';
 import { setupTestHarness } from './e2e-harness';
 
 const USER_AGENT = 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)';
+const DATABASE_ASSET = /\/(?:phage\.db|phage-data\/[a-f0-9]{64}\.db)(?:\.gz)?(?:\?|$)/;
 const buildDirectory = resolve(process.env.PLAYWRIGHT_BUILD_DIR ?? 'dist');
 interface AssetServer {
   origin: string;
@@ -136,13 +137,14 @@ test('installable manifest, real worker control and offline catalog with uncache
     await cdp.detach();
     const before = await identity(page);
     expect(before?.valid).toBe(true);
-    const transfers = assets.requests.filter(r => /\/phage\.db(?:\.gz)?\?/.test(r.path)).length;
+    const transfers = assets.requests.filter(r => DATABASE_ASSET.test(r.path)).length;
+    expect(transfers).toBeGreaterThan(0);
     await context.setOffline(true);
     await page.reload();
     await catalog(page);
     await controlled(page);
     expect(await identity(page)).toEqual(before);
-    expect(assets.requests.filter(r => /\/phage\.db(?:\.gz)?\?/.test(r.path))).toHaveLength(transfers);
+    expect(assets.requests.filter(r => DATABASE_ASSET.test(r.path))).toHaveLength(transfers);
     await page.keyboard.press('m');
     await expect(page.getByRole('heading', { name: 'Unable to Load Structure' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeVisible();
@@ -216,7 +218,8 @@ test('actual stale service-worker response cannot replace the known-good databas
     // Plant old valid gzip bytes under a new content URL in actual CacheStorage.
     // The descriptor deliberately disagrees, modelling an interrupted rollout.
     const staleVersion = 'a'.repeat(64);
-    assets.manifestOverride = { ...manifest, contentVersion: staleVersion, sha256: 'b'.repeat(64) };
+    // Exercise the portable v2 protocol as well as the immutable initial load.
+    assets.manifestOverride = { ...manifest, artifacts: undefined, contentVersion: staleVersion, sha256: 'b'.repeat(64) };
     await page.evaluate(async (version) => {
       const bytes = await fetch('/phage.db.gz');
       const cache = await caches.open('phage-database-v2');

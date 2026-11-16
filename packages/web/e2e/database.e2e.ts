@@ -7,6 +7,11 @@ import { createServer } from 'node:http';
 
 test.use({ userAgent: 'dicklesworthstone-release-wave/1.0 (+https://github.com/Dicklesworthstone)' });
 
+// Both supported version-2 transports must obey the same integrity/cache gates.
+const DATABASE_ASSET = /\/(?:phage\.db|phage-data\/[a-f0-9]{64}\.db)(?:\.gz)?(?:\?|$)/;
+const GZIP_ASSET = /\/(?:phage\.db|phage-data\/[a-f0-9]{64}\.db)\.gz(?:\?|$)/;
+const RAW_ASSET = /\/(?:phage\.db|phage-data\/[a-f0-9]{64}\.db)(?:\?|$)/;
+
 async function cachedIdentity(page: Page) {
   return page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -82,7 +87,7 @@ test('SQLite initializes during the real database download and optional search w
   let downloading = false;
   let sqlReady = false;
   let searchRequests = 0;
-  await page.route('**/phage.db.gz?*', async route => {
+  await page.route(GZIP_ASSET, async route => {
     downloading = true;
     await downloadGate;
     await route.continue(); // Delay the actual asset; never substitute database bytes.
@@ -137,7 +142,7 @@ test('an early SQLite download failure is observed and Retry recovers without a 
   const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve; });
   let failedWasm = false;
   let rejectWasm = true;
-  await page.route('**/phage.db.gz?*', async route => {
+  await page.route(GZIP_ASSET, async route => {
     await downloadGate;
     await route.continue();
   });
@@ -179,7 +184,7 @@ test('database loads real catalog data and reuses verified cache without another
   const { consoleErrors, pageErrors, finalize } = setupTestHarness(page, testInfo);
   const downloads: string[] = [];
   page.on('request', request => {
-    if (/\/phage\.db(?:\.gz)?(?:\?|$)/.test(request.url())) downloads.push(request.url());
+    if (DATABASE_ASSET.test(request.url())) downloads.push(request.url());
   });
   try {
     const response = await page.request.get('/phage.db.manifest.json');
@@ -207,6 +212,93 @@ test('database loads real catalog data and reuses verified cache without another
   }
 });
 
+test('immutable publication loads the declared generation even when portable aliases are unavailable', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  const downloads: string[] = [];
+  let aliases = 0;
+  try {
+    const response = await page.request.get('/phage.db.manifest.json');
+    const manifest = await response.json();
+    expect(manifest.artifacts?.gzip.path).toMatch(/^phage-data\/[a-f0-9]{64}\.db\.gz$/);
+    const expectedUrl = new URL(manifest.artifacts.gzip.path, response.url()).href;
+    // The actual built immutable files remain untouched. Only conventional
+    // aliases are made unavailable, as during an interrupted/rolling publish.
+    await page.route(/\/phage\.db(?:\.gz)?(?:\?|$)/, route => {
+      aliases++;
+      return route.fulfill({ status: 503, body: 'Alias publication in progress' });
+    });
+    page.on('request', request => { if (DATABASE_ASSET.test(request.url())) downloads.push(request.url()); });
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    expect(await cachedIdentity(page)).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
+    expect(downloads).toEqual([expectedUrl]);
+    expect(aliases).toBe(0);
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
+test('an unavailable optional gzip decoder falls back only to the declared raw generation', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  const downloads: string[] = [];
+  let decoderRequests = 0;
+  try {
+    const response = await page.request.get('/phage.db.manifest.json');
+    const manifest = await response.json();
+    expect(manifest.artifacts?.sqlite.path).toMatch(/^phage-data\/[a-f0-9]{64}\.db$/);
+    await page.addInitScript(() => {
+      Object.defineProperty(globalThis, 'DecompressionStream', { value: undefined, configurable: true });
+      const NativeWorker = globalThis.Worker;
+      globalThis.Worker = class extends NativeWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          if (String(url).includes('gzip-decompress')) throw new Error('Controlled optional decoder worker outage');
+          super(url, options);
+        }
+      };
+    });
+    await page.route(url => /\/pako[^/]*\.(?:js|ts)(?:\?|$)/.test(url.href), route => {
+      decoderRequests++;
+      return route.abort('failed');
+    });
+    page.on('request', request => { if (DATABASE_ASSET.test(request.url())) downloads.push(request.url()); });
+    await page.goto('/?phage=lambda&model=0');
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    expect(decoderRequests).toBeGreaterThan(0);
+    expect(downloads).toEqual([
+      new URL(manifest.artifacts.gzip.path, response.url()).href,
+      new URL(manifest.artifacts.sqlite.path, response.url()).href,
+    ]);
+    expect(await cachedIdentity(page)).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
+test('corrupt immutable gzip fails closed without fetching a raw or portable fallback', async ({ page }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let rawDownloads = 0;
+  let corruptDownloads = 0;
+  try {
+    const response = await page.request.get('/phage.db.manifest.json');
+    const manifest = await response.json();
+    expect(manifest.artifacts?.gzip.path).toMatch(/^phage-data\/[a-f0-9]{64}\.db\.gz$/);
+    const gzipUrl = new URL(manifest.artifacts.gzip.path, response.url()).href;
+    await page.route(url => url.href === gzipUrl, route => {
+      corruptDownloads++;
+      return route.fulfill({ body: Buffer.from('truncated immutable gzip'), contentType: 'application/gzip' });
+    });
+    page.on('request', request => { if (RAW_ASSET.test(request.url())) rawDownloads++; });
+    await page.goto('/?model=0');
+    await expect(page.getByRole('heading', { name: 'Database load failed' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Repository status' })).toContainText('Database integrity check failed');
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+    expect(corruptDownloads).toBeGreaterThan(0);
+    expect(rawDownloads).toBe(0);
+    expect(await cachedIdentity(page)).toBeNull();
+    expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
 test('corrupt update cannot replace a verified cached catalog, including after a 304 manifest', async ({ page }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   let manifestServer: Awaited<ReturnType<typeof serveConditionalManifest>> | undefined;
@@ -220,7 +312,7 @@ test('corrupt update cannot replace a verified cached catalog, including after a
     const manifest = await response.json();
     // Controlled update fault: a new manifest arrives but the server still
     // serves the old DB bytes. This is protocol fault injection, not live data.
-    const update = { ...manifest, contentVersion: 'a'.repeat(64), sha256: 'b'.repeat(64) };
+    const update = { ...manifest, artifacts: undefined, contentVersion: 'a'.repeat(64), sha256: 'b'.repeat(64) };
     let manifestRequests = 0;
     let notModified = 0;
     let updateDownloads = 0;
@@ -231,7 +323,7 @@ test('corrupt update cannot replace a verified cached catalog, including after a
     const manifestUrl = manifestServer.url;
     await page.route('**/phage.db.manifest.json', route => route.continue({ url: manifestUrl }));
     page.on('request', request => {
-      if (/\/phage\.db(?:\.gz)?\?/.test(request.url())) updateDownloads++;
+      if (DATABASE_ASSET.test(request.url())) updateDownloads++;
     });
     await page.reload();
     await expectCatalog(page);
@@ -251,7 +343,7 @@ test('cold load rejects a mismatched descriptor instead of displaying unverified
   try {
     const response = await page.request.get('/phage.db.manifest.json');
     const manifest = await response.json();
-    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...manifest, sha256: '0'.repeat(64) } }));
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...manifest, artifacts: undefined, sha256: '0'.repeat(64) } }));
     await page.goto('/?model=0');
     await expect(page.getByRole('heading', { name: 'Database load failed' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Repository status' })).toContainText('Database integrity check failed');
@@ -284,7 +376,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
       try { db.run("UPDATE phages SET gc_content=50 WHERE slug='lambda'"); db.run('PRAGMA user_version=1'); await Bun.write(path, db.serialize()); }
       finally { db.close(); }`, source], { stdio: ['ignore', 'pipe', 'inherit'] });
     const sourceBytes = await readFile(source);
-    const buildLog = execFileSync('bun', [resolve(process.cwd(), '../../scripts/build-web-db.ts'), '--source', source, '--output', artifacts], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const buildLog = execFileSync('bun', [resolve(process.cwd(), '../../scripts/build-web-db.ts'), '--source', source, '--output', artifacts, '--immutable'], { stdio: ['ignore', 'pipe', 'inherit'] });
     expect((await readFile(source)).equals(sourceBytes)).toBe(true);
     await testInfo.attach('update-builder', { body: buildLog, contentType: 'text/plain' });
     const manifest = JSON.parse(await readFile(resolve(artifacts, 'phage.db.manifest.json'), 'utf8'));
@@ -299,7 +391,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
     await context.route('**/phage.db.manifest.json', route => route.continue({ url: manifestUrl }));
     let releaseConcurrentDownloads: (() => void) | undefined;
     const bothDownloading = new Promise<void>(resolve => { releaseConcurrentDownloads = resolve; });
-    await context.route('**/phage.db.gz?*', async route => {
+    await context.route(GZIP_ASSET, async route => {
       downloads++;
       if (mode === 'two tabs') {
         if (downloads === 2) releaseConcurrentDownloads?.();
@@ -369,7 +461,7 @@ test('equivalent builder layouts keep the already verified cache without another
     expect(manifest.sha256).not.toBe(original!.sha256);
     await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: manifest }));
     let downloads = 0;
-    page.on('request', request => { if (/\/phage\.db(?:\.gz)?\?/.test(request.url())) downloads++; });
+    page.on('request', request => { if (DATABASE_ASSET.test(request.url())) downloads++; });
     await page.reload();
     await expectCatalog(page);
     expect(downloads).toBe(0);
@@ -388,8 +480,8 @@ test('verified cached catalog remains usable when the database origin is unavail
     await expectOfflineCache(page);
     const original = await cachedIdentity(page);
     let transfers = 0;
-    await page.route('**/phage.db*', route => {
-      if (/\/phage\.db(?:\.gz)?(?:\?|$)/.test(route.request().url())) transfers++;
+    await page.route(url => DATABASE_ASSET.test(url.href) || url.pathname.endsWith('/phage.db.manifest.json'), route => {
+      if (DATABASE_ASSET.test(route.request().url())) transfers++;
       return route.abort('internetdisconnected');
     });
     await page.reload();
@@ -412,7 +504,7 @@ test('Settings refresh reports corruption and preserves the verified cache for r
     const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
     if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
     const descriptor = await (await page.request.get('/phage.db.manifest.json')).json();
-    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...descriptor, sha256: '0'.repeat(64) } }));
+    await page.route('**/phage.db.manifest.json', route => route.fulfill({ json: { ...descriptor, artifacts: undefined, sha256: '0'.repeat(64) } }));
     await page.getByTestId('header-settings-btn').click();
     const settings = page.getByRole('dialog', { name: 'Settings', exact: true });
     await settings.getByRole('button', { name: 'Reload database from server', exact: true }).click();
@@ -434,11 +526,11 @@ test('missing gzip falls back to matching raw SQLite and exposes the shipped atl
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   let rawDownloads = 0;
   page.on('request', request => {
-    if (/\/phage\.db\?/.test(request.url())) rawDownloads++;
+    if (RAW_ASSET.test(request.url())) rawDownloads++;
   });
   try {
     await page.addInitScript(() => localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' })));
-    await page.route('**/phage.db.gz?*', route => route.fulfill({ status: 404 }));
+    await page.route(GZIP_ASSET, route => route.fulfill({ status: 404 }));
     await page.goto('/?phage=lambda&model=0');
     await expectCatalog(page);
     expect(rawDownloads).toBe(1);

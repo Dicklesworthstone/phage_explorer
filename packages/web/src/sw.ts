@@ -83,16 +83,19 @@ const isDbAssetRequest = (url: URL, request: Request): boolean => {
   // Keep DB caching tightly scoped to our own static asset(s) to avoid cache pollution.
   if (request.method !== 'GET') return false;
   if (url.origin !== self.location.origin) return false;
-  return url.pathname.endsWith('/phage.db') || url.pathname.endsWith('/phage.db.gz');
+  return url.pathname.endsWith('/phage.db') || url.pathname.endsWith('/phage.db.gz') || isImmutableDbAsset(url);
 };
+
+const isImmutableDbAsset = (url: URL): boolean => /\/phage-data\/[a-f0-9]{64}\.db(?:\.gz)?$/.test(url.pathname);
 
 // Cache DB assets with a version-aware strategy.
 //
-// The app fetches a manifest hash and then requests `phage.db(.gz)?v=<hash>`:
-// - For versioned URLs, CacheFirst avoids re-downloading on every cold start.
+// The app fetches a manifest, then requests its immutable path or portable
+// `phage.db(.gz)?v=<hash>` alias:
+// - Immutable and versioned URLs use CacheFirst to avoid redundant downloads.
 // - For unversioned URLs (manifest unavailable), SWR provides a best-effort offline fallback.
 registerRoute(
-  ({ url, request }) => isDbAssetRequest(url, request) && url.searchParams.has('v'),
+  ({ url, request }) => isDbAssetRequest(url, request) && (url.searchParams.has('v') || isImmutableDbAsset(url)),
   new CacheFirst({
     cacheName: CACHE_NAMES.database,
     matchOptions: { ignoreSearch: false },
@@ -107,7 +110,7 @@ registerRoute(
 );
 
 registerRoute(
-  ({ url, request }) => isDbAssetRequest(url, request) && !url.searchParams.has('v'),
+  ({ url, request }) => isDbAssetRequest(url, request) && !url.searchParams.has('v') && !isImmutableDbAsset(url),
   new StaleWhileRevalidate({
     cacheName: CACHE_NAMES.database,
     matchOptions: { ignoreSearch: false },

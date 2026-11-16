@@ -6,6 +6,47 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Genomic neighbors in complete signature space
+
+- **Distances retain every k-mer feature** — genomic-signature neighbors now
+  use Euclidean distance across the complete normalized frequency vectors.
+  PC1/PC2 remains a display projection with its own reported distance; genomes
+  with no usable k-mer counts cannot become artificial nearest neighbors.
+- **Inspectable neighborhood evidence** — export the accepted vectors,
+  sequence digests, settings, display coordinates and all eligible neighbors as
+  an AnalysisRecord. The record reproduces the distance arithmetic; it does not
+  claim to reconstruct sequence extraction or PCA fitting.
+  [Commit 1295521](https://github.com/Dicklesworthstone/phage_explorer/commit/12955219b7b418c754acc3710096c034b4da2970).
+
+### Recorded RNA interval workflows
+
+- **Browser recording and terminal replay** — canonical research commands can
+  now bind RNA analyses to an exact imported genome or extracted CDS, bounded
+  interval, strand and resolved settings. Browser-owned workers and native
+  replay use the existing shared pairing producer and reject changed source or
+  result evidence before accepting a record.
+- **Complete retained results** — archives keep the accepted RNA experiments,
+  source/window previews and complete window TSV exports. Joined and reverse
+  CDS extraction preserves annotation frame semantics; unsupported synonymous
+  interpretations fail explicitly. See the [RNA workflow guide](docs/RNA_STRUCTURE_WORKFLOW.md).
+  [Commit fddacc3](https://github.com/Dicklesworthstone/phage_explorer/commit/fddacc388c4ac3d5c0e28e37f299ac54437f25ed).
+
+### Immutable verified web database generations
+
+- **Publish one verified generation** — web builds prepare and validate SQLite,
+  gzip and metadata from one read snapshot, retain content-addressed artifacts,
+  and replace the manifest only after those artifacts are ready. Previous
+  manifests remain usable, and the source database is not rewritten.
+- **Verify the declared downloads** — browser loading checks compressed and
+  SQLite bytes, follows immutable paths, and falls back from missing gzip or an
+  unavailable decoder only to the declared raw generation. Corrupt bytes are
+  rejected. The service worker recognizes the immutable assets.
+- **Preserve portable releases** — standalone output retains its three-file
+  contract, with each filename replaced atomically; only immutable manifest
+  readers receive generation-consistent publication. The builder's `--check`
+  command verifies either publication mode. See the
+  [database loading guide](docs/PROGRESSIVE_DATA_LOADING.md).
+
 ### Exact gene-start motifs and honest comparison evidence
 
 - **Inspectable annotated initiation windows** — gene-start logos retain

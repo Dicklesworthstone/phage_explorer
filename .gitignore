@@ -38,6 +38,9 @@ a.out
 !packages/web/public/phage.db
 # NEVER commit .db.gz - build process modifies DB, causing hash mismatches
 packages/web/public/phage.db.gz
+# Immutable web datasets and retained publisher staging are generated from the source DB.
+packages/web/public/phage-data/
+**/.phage-db-stage-*/
 
 # Logs and coverage
 npm-debug.log*

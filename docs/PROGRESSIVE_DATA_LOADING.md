@@ -28,10 +28,11 @@ the repository-root intermediate. Temporary staging is retained in the system
 temporary directory, including after failure; no cleanup of source files occurs.
 
 `bun run build:web` and development `prepare:db` retain the version-2 layout for
-legacy-reader and existing snapshot/update tests. Use the explicit progressive
-command for the Vercel layout. Both use the same application and layout-aware
-loader, not separate browser implementations. No dependency or lockfile changes
-are needed for publication.
+legacy-reader and existing snapshot/update tests, now with immutable artifact
+paths as described below. Use the explicit progressive command for the Vercel
+layout. Both use the same application and layout-aware loader, not separate
+browser implementations. No dependency or lockfile changes are needed for
+publication.
 
 Use the existing publisher with an explicit source database:
 
@@ -50,6 +51,55 @@ headers, but this does not create a cross-deployment artifact archive.
 The publisher writes the manifest only after the artifact and row-conservation
 checks succeed. No source database is modified. Invoking the progressive build
 creates a staged dataset; it does not change release binaries or publish a site.
+
+### Version-2 publication and portable releases
+
+The version-2 web `prepare:db` command passes `--immutable` to
+`scripts/build-web-db.ts`. The publisher prepares raw SQLite, gzip, and metadata
+from one SQLite read snapshot, verifies their bytes and database integrity in a
+sibling staging directory, and publishes content-addressed files under
+`phage-data/`. Only after those files are complete does it atomically replace
+`phage.db.manifest.json`. A reader that already has the previous manifest can
+still retrieve the previous generation. Existing immutable files are verified
+and reused; a corrupt existing file causes the build to fail rather than being
+overwritten. Staging directories are retained outside the public asset tree for
+diagnostics. The input database is never rewritten.
+
+The browser uses the manifest's `artifacts.sqlite` and `artifacts.gzip` paths,
+verifies the compressed checksum when gzip is served, and verifies decompressed
+SQLite bytes in all cases. If the gzip transport or an optional gzip decoder is
+unavailable, raw fallback uses the same immutable generation. An integrity
+failure, including invalid compressed bytes, does not try another file.
+The service worker recognizes these content-addressed version-2 assets; normal
+offline reopening still uses the verified IndexedDB snapshot.
+
+For standalone binary releases, the builder's default remains portable: it
+emits `phage.db`, `phage.db.gz`, and a descriptor without artifact paths. No
+additional files need to be uploaded or installed. Both publication modes
+prepare and verify the complete dataset before changing published files, and
+replace each conventional filename atomically. The portable three-file set
+cannot switch atomically as a whole; publish it only after the build succeeds.
+Immutable web mode also keeps these conventional aliases for existing readers,
+but only readers following the immutable descriptor get a consistent generation
+across a concurrent or interrupted alias update.
+
+Check an already generated version-2 dataset without writing it:
+
+```sh
+bun scripts/build-web-db.ts --check --output /path/to/published-dataset
+```
+
+The check follows the manifest's declared publication mode and validates raw and
+gzip equality, checksums, SQLite integrity, foreign keys, and logical content
+identity. Retain older immutable artifacts at the serving origin for as long as
+older clients may request them; content-addressed filenames do not provide
+cross-deployment retention automatically.
+
+The corresponding publisher/descriptor regressions are in
+`packages/data-pipeline/src/db-digest.test.ts` and
+`packages/web/src/db/DatabaseLoader.test.ts`. The version-2 production browser
+cases remain in `e2e/database.e2e.ts` and `e2e/pwa.e2e.ts`, covering immutable
+downloads and updates alongside portable-descriptor fault controls.
 
 `useDatabaseQuery` creates the layout-aware loader. The resulting repository has
 the existing `PhageRepository` interface, so shared-link ordering, local-genome

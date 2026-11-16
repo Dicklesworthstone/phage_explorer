@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun run prepare:db && bunx vite dev",
-    "prepare:db": "bun run ../../scripts/build-web-db.ts --source public/phage.db --output public",
+    "prepare:db": "bun run ../../scripts/build-web-db.ts --source public/phage.db --output public --immutable",
     "build": "bun run prepare:db && bunx vite build",
     "build:progressive": "bun run build.ts",
     "preview": "bunx vite preview",
