@@ -1,10 +1,13 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
 import { resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { createAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
+import { executeRNAStructureRequest } from '../../core/src/analysis/rna-structure-experiment';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
 
 declare global {
   interface Window {
+    rnaReplayFileGate?: { pending: boolean; release: () => void };
     geneAnalysisIdentityFixture: {
       select: (name: string) => void;
       hold: (name: string, stage: 'length' | 'genes') => void;
@@ -328,4 +331,75 @@ test('RNA analysis scopes selected genes and codon details to repository and CDS
   } finally {
     await server.close();
   }
+});
+
+
+test('saved RNA experiments reopen with their own source and reject forged or cancelled imports', async ({ page }, info) => {
+  const { server, errors, overlay } = await openFixture(page, info, 'rnaStructure');
+  const requests: string[] = [];
+  page.on('request', request => { const body = request.postData(); if (body) requests.push(body); });
+  try {
+    await expect(overlay.getByTestId('rna-accepted-interval')).toContainText('Analyzed 1–600 of 900 genomic bases.');
+    await overlay.getByText('Reopen an exported RNA experiment', { exact: true }).click();
+    const replay = overlay.getByRole('region', { name: 'RNA experiment replay', exact: true });
+    const file = replay.getByLabel('RNA analysis JSON (up to 10 MiB)', { exact: true });
+    const request = { sequence: 'GGGTTTCCC',
+      source: { name: 'Saved local stem α', accession: 'RNA_PRIVATE', source: 'local' as const, coordinateSystem: 'genome-forward' as const,
+        sourceLength: 500, start: 40, end: 49, strand: '-' as const, gene: null },
+      options: { windowSize: 9, stepSize: 9, includeSynonymousStress: false } };
+    const record = (await executeRNAStructureRequest(request)).record, text = serializeAnalysisRecord(record);
+    await file.setInputFiles({ name: 'saved-rna.json', mimeType: 'application/json', buffer: Buffer.from(text) });
+    const saved = replay.getByRole('region', { name: 'Verified saved RNA result', exact: true });
+    await expect(saved).toHaveAttribute('data-result-id', record.resultId);
+    await expect(saved).toContainText('Saved local stem α');
+    await expect(saved).toContainText('41–49 of 500 bases, strand -');
+    const rows = saved.getByRole('table', { name: 'Verified saved RNA windows' }).locator('tbody tr');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText('(((...)))');
+    await expect(rows.first().getByRole('cell').nth(1)).toHaveText('3');
+
+    await page.evaluate(() => window.geneAnalysisIdentityFixture.select('b'));
+    await expect(saved).toHaveAttribute('data-result-id', record.resultId);
+    await expect(saved).toContainText('Saved local stem α');
+    const downloading = page.waitForEvent('download');
+    await saved.getByRole('button', { name: 'Export verified RNA JSON', exact: true }).click();
+    const downloaded = await downloading, downloadedPath = await downloaded.path();
+    expect(downloadedPath).not.toBeNull();
+    expect(await readFile(downloadedPath!, 'utf8')).toBe(text);
+
+    const fields = structuredClone(record.fields);
+    (fields.analysis.value as { windows: Array<{ structure: string }> }).windows[0].structure = '.........';
+    const forged = await createAnalysisRecord({ method: record.method, inputs: record.inputs, parameters: record.parameters,
+      seed: record.seed, references: record.references, fields });
+    await file.setInputFiles({ name: 'forged-rna.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(forged)) });
+    await expect(replay.getByRole('alert')).toContainText('differ from the saved');
+    await expect(saved).toHaveCount(0);
+
+    // Delay only file delivery. The importer and numerical worker remain real.
+    await page.evaluate(() => {
+      const original = File.prototype.arrayBuffer;
+      File.prototype.arrayBuffer = function () {
+        if (this.name !== 'delayed-rna.json') return original.call(this);
+        File.prototype.arrayBuffer = original;
+        const source = original.call(this);
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          window.rnaReplayFileGate = { pending: true, release: () => { void source.then(resolve, reject); } };
+        });
+      };
+    });
+    await file.setInputFiles({ name: 'delayed-rna.json', mimeType: 'application/json', buffer: Buffer.from(text) });
+    await expect.poll(() => page.evaluate(() => window.rnaReplayFileGate?.pending)).toBe(true);
+    await replay.getByRole('button', { name: 'Cancel RNA replay', exact: true }).click();
+    await expect(file).toBeEnabled();
+    await expect(saved).toHaveCount(0);
+    const replacement = (await executeRNAStructureRequest({ ...request, sequence: 'AAAAAAAAA',
+      source: { ...request.source, name: 'Replacement saved interval' } })).record;
+    await file.setInputFiles({ name: 'replacement-rna.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(replacement)) });
+    await expect(saved).toHaveAttribute('data-result-id', replacement.resultId);
+    await page.evaluate(() => window.rnaReplayFileGate?.release());
+    await expect(saved).toHaveAttribute('data-result-id', replacement.resultId);
+    await expect(saved).toContainText('Replacement saved interval');
+    expect(requests.some(body => body.includes('GGGTTTCCC') || body.includes('RNA_PRIVATE'))).toBe(false);
+    expect(errors).toEqual([]);
+  } finally { await server.close(); }
 });

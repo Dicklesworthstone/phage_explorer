@@ -144,8 +144,31 @@ export async function replayRNAStructureRecord(content: string, signal?: AbortSi
   const saved = await parseRNAStructureRecord(content, signal);
   const fresh = await executeRNAStructureRequest(saved.request, signal);
   abort(signal);
-  if (fresh.record.cacheKey !== saved.record.cacheKey || fresh.record.resultId !== saved.record.resultId) {
+  if (!same(fresh.record, saved.record)) {
     throw new Error('Recomputed RNA structures, scores, coverage or evidence differ from the saved result.');
   }
   return fresh;
 }
+
+/** Complete window table in both result-relative and original source coordinates.
+ * TSV is for inspection; AnalysisRecord JSON preserves the replayable experiment.
+ */
+export function exportRNAStructureTsv(record: AnalysisRecord): string {
+  if (record.method.id !== RNA_PAIRING_METHOD.id || record.method.version !== RNA_PAIRING_METHOD.version
+    || record.inputs.length !== 1 || record.inputs[0].id !== 'rnaInterval' || !object(record.inputs[0].data)) {
+    throw new Error('Expected an accepted RNA interval experiment.');
+  }
+  const input = record.inputs[0].data;
+  const request = validateRNAStructureRequest({ sequence: input.sequence, source: input.source, options: record.parameters } as RNAStructureRequest);
+  const analysis = record.fields.analysis.value as unknown as RNAStructureAnalysis;
+  const rows = [['result_id', 'coordinate_system', 'strand', 'interval_start', 'interval_end', 'source_start', 'source_end',
+    'pair_count', 'pairing_score', 'structure', 'sequence', 'pairs_interval_0_based']];
+  for (const window of analysis.windows) {
+    const mapped = mapRNAInterval(request.source, window.start, window.end);
+    rows.push([record.resultId, request.source.coordinateSystem, request.source.strand, String(window.start), String(window.end),
+      String(mapped.start), String(mapped.end), String(window.pairCount), window.pairingScore === null ? '' : String(window.pairingScore),
+      window.structure, window.sequence, JSON.stringify(window.pairs.map(([left, right]) => [left + window.start, right + window.start]))]);
+  }
+  return rows.map(row => row.join('\t')).join('\n') + '\n';
+}
+

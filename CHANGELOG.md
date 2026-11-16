@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Comparison results follow the selected data
+
+- **Bound results to their sources** — browser comparisons now keep metrics,
+  exact diffs and displayed bases attached to the repository and selected genome
+  pair that produced them. Changing repositories, replacing same-ID records,
+  clearing selections, retrying or closing revokes obsolete work. Incomplete
+  sequence reads and mismatched worker responses fail explicitly.
+- **Release abandoned workers** — comparisons terminate on cancellation,
+  transport failure or timeout. Empty selectors remain empty, and Close ends
+  both the browser overlay and shared comparison state.
+  [Commit cd750b5](https://github.com/Dicklesworthstone/phage_explorer/commit/cd750b5e2069d6a027c5a083b5b4b965620b5944).
+
 ### Exact bounded RNA pairing and usable interval analysis
 
 - **Actual compatible structures** — RNA windows now use an exact noncrossing
@@ -23,6 +35,15 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   window structure and exports the complete accepted AnalysisRecord. Reverse
   genomic intervals retain forward-coordinate projection. See the
   [RNA workflow guide](docs/RNA_STRUCTURE_WORKFLOW.md).
+
+- **Reopen and recompute RNA experiments** — exported RNA JSON can be reopened
+  in the pairing explorer or verified with the existing terminal
+  `workflow replay-experiment` command. Both paths use the shared core producer,
+  retain the saved source, interval, strand and effective settings, and reject
+  changed numerical results or evidence instead of replacing the saved answers.
+  JSON preserves the complete accepted experiment; window TSV retains every
+  result window and its coordinate mapping. The shared core contract was introduced in
+  [a79cea1](https://github.com/Dicklesworthstone/phage_explorer/commit/a79cea17452fa59b1c0f09b2d7d0c7a7de4c05d3).
 
 ### Durable measured-data experiments
 

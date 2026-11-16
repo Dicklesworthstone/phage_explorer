@@ -51,7 +51,51 @@ Computation runs in an owned browser worker. Cancel, close, a source change, or 
 
 Input and exported result coordinates are zero-based and half-open; the browser presents one-based inclusive coordinates. For reverse-strand genomic analysis, the original forward interval is preserved and the worker analyzes its reverse complement. For a selected gene, the saved interval is already in transcript order.
 
-The RNA panels provide export. They do not currently provide a saved-library reopen or a JSON import/replay control. Keep the exported JSON when you need the exact result and input outside the current panel.
+## Reopen and verify saved experiments
+
+Expand **Reopen an exported RNA experiment** in the RNA Pairing & Motif Explorer
+and select the saved AnalysisRecord JSON (up to 10 MiB). The importer checks the
+file's integrity, method, coordinate source and complete settings, then runs the
+original interval through an owned worker. Every recomputed field must match the
+saved evidence before a result is shown as verified. A valid checksum with
+fabricated structures, changed scores or different evidence descriptions is
+rejected.
+
+The reopened result is labeled with its **saved source**, coordinate system,
+interval and strand. It does not adopt the current explorer genome's name or
+change that genome's selection. Closing the RNA overlay or choosing **Cancel RNA replay**
+interrupts both file reading and computation; a cancelled file or late worker
+reply cannot install a new result. This path also accepts exports from the RNA
+Signals view, including reverse-strand genomic intervals. Unsupported method
+versions are refused rather than recalculated using new defaults.
+
+**Export verified RNA JSON** retains the full replayable experiment.
+**Export verified RNA windows TSV** contains every folded window, with zero-based,
+half-open bounds both relative to the analyzed interval and in its declared
+source coordinate system. Pair positions are zero-based within the analyzed
+interval; reverse-strand source ranges are mapped back onto the original forward
+genome. A no-pair window has a blank score cell and an explicit zero pair count.
+The on-screen preview shows at most 50 windows, while both exports retain all of
+them. TSV is an inspection table, not a substitute for the JSON replay inputs.
+
+The same saved export can be verified without a browser or catalog:
+
+```bash
+bun run workflow replay-experiment --input rna-pairing-analysis.json
+bun run workflow replay-experiment --input rna-pairing-analysis.json --output verified-rna.json
+bun run workflow replay-experiment --input rna-pairing-analysis.json --output rna-windows.tsv --format tsv
+```
+
+A newly built executable accepts the same arguments after `phage-explorer workflow`.
+The existing command's exclusive-create output, timeout and cancellation rules
+apply. These commands do not update an installed older binary. Original numerical
+work limits remain in force, and missing source data are never fetched.
+
+Replay verifies numerical reproducibility against the supplied source and
+assumptions. It does not authenticate the source annotation or establish biological
+validity. Exported JSON and TSV contain sequence data. RNA imports are session-only;
+automatic persistence, saved-library reopening and RNA macro recording remain
+outside this interface.
 
 ## Core API and bounds
 

@@ -268,8 +268,9 @@ Use replay-experiment to recompute a saved protein-structure experiment; its TSV
 export is the residue table. All analysis settings are resolved before dispatch.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
-GC-skew v2, linear/circular exact-repeat-pairs, mosaic reference-similarity,
-sourced spacer-comparison, reference protein-structure, plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
+GC-skew v2, linear/circular exact-repeat-pairs, RNA maximum-pairing intervals,
+mosaic reference-similarity, sourced spacer-comparison, reference protein-structure,
+plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
@@ -282,6 +283,13 @@ json (default) retains full source sequences. TSV retains the method's complete
 evidence table; spacer hits include protospacer/PAM bases, original attribution,
 guide-oriented mismatches and wrapped coordinate segments. Neither format
 anonymizes the evidence. The stdout report never includes raw sequences.
+
+RNA replay preserves the saved forward-genome or CDS-transcript coordinate system,
+interval, strand, complete model settings, structures and source coverage. JSON
+retains the complete experiment; TSV exports every window, its source coordinates,
+pair count, dimensionless pairing score, dot-bracket structure and pair positions.
+Pairing scores are not thermodynamic energies or experimentally validated effects.
+The original 6000-base interval and 100,000,000-candidate work limits still apply.
 
 The JSON report goes to stdout only on success. --output exclusively creates the
 command tape for record, or the freshly computed/successfully replayed analysis

@@ -506,6 +506,10 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { sequence: row.data, accession: row.accession, source: row.source },
         { sequence: column.data, accession: column.accession, source: column.source })).record;
       table = exportPairwiseDotPlotExperimentTsv;
+    } else if (saved.method.id === 'rna-maximum-pairing') {
+      const { replayRNAStructureRecord, exportRNAStructureTsv } = await import('../../core/src/analysis/rna-structure-experiment');
+      fresh = (await replayRNAStructureRecord(request.content)).record;
+      table = exportRNAStructureTsv;
     } else if (saved.method.id === 'extracellular-pfu-growth') {
       const { replayGrowthCurveRecord, exportGrowthCurveTsv } = await import('../../core/src/analysis/one-step-growth');
       fresh = await replayGrowthCurveRecord(request.content); table = exportGrowthCurveTsv;
@@ -544,7 +548,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = experiment.record;
       table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, mosaic reference similarity, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, mosaic reference similarity, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

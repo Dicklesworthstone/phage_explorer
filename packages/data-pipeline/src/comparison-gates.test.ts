@@ -139,12 +139,42 @@ describe('Comparison Gate 3: Annotation Coverage Gate (T5)', () => {
     expect(seqPhages).toBe(24);
   });
 
-  it('rule-based and heuristic overlays do not claim "measured" provenance', () => {
-    const heuristicIds = ['defenseArmsRace', 'amgPathway', 'tropism', 'stability', 'pressure'];
-    for (const id of heuristicIds) {
-      const action = ActionRegistryList.find(a => a.overlayId === id);
-      expect(action?.provenance).not.toBe('measured');
-      expect(action?.provenance).toBe('heuristic');
+  const expectedEvidence = {
+    defenseArmsRace: 'heuristic',
+    amgPathway: 'heuristic',
+    tropism: 'heuristic',
+    // The default panel fits imported plaque counts. Legacy scores require explicit opt-in.
+    stability: 'input',
+    pressure: 'heuristic',
+  } as const;
+
+  const assertEvidenceKinds = (actions: readonly { overlayId?: string; provenance?: string }[]) => {
+    for (const [id, provenance] of Object.entries(expectedEvidence)) {
+      const matches = actions.filter(action => action.overlayId === id);
+      expect(matches).toHaveLength(1);
+      expect(matches[0]?.provenance).toBe(provenance);
+    }
+  };
+
+  it('heuristic and user-input analyses declare their exact supported evidence kinds', () => {
+    assertEvidenceKinds(ActionRegistryList);
+  });
+
+  it('planted negative: rejects relabeling heuristics or user-input fits as another evidence kind', () => {
+    for (const [id, expected] of Object.entries(expectedEvidence)) {
+      for (const provenance of ['heuristic', 'input', 'measured']) {
+        if (provenance === expected) continue;
+        const corrupted = ActionRegistryList.map(action => action.overlayId === id ? { ...action, provenance } : action);
+        expect(() => assertEvidenceKinds(corrupted)).toThrow();
+      }
+    }
+  });
+
+  it('planted negative: rejects missing or duplicate required evidence declarations', () => {
+    for (const id of Object.keys(expectedEvidence)) {
+      expect(() => assertEvidenceKinds(ActionRegistryList.filter(action => action.overlayId !== id))).toThrow();
+      const action = ActionRegistryList.find(candidate => candidate.overlayId === id)!;
+      expect(() => assertEvidenceKinds([...ActionRegistryList, action])).toThrow();
     }
   });
 

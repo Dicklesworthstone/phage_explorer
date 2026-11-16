@@ -28,7 +28,8 @@ import {
   type CodonStress,
   type RegulatoryHypothesis,
 } from '@phage-explorer/core';
-import { RNAStructureSession, parseRNAInterval, type RNAStructureRequest } from '../../workers/RNAStructureSession';
+import { RNAStructureSession, parseRNAInterval, mapRNAInterval, parseRNAStructureRecord, readRNAExperimentFile,
+  exportRNAStructureTsv, type RNAStructureRequest } from '../../workers/RNAStructureSession';
 import { downloadString } from '../../utils/export';
 
 // ============================================================================
@@ -396,6 +397,94 @@ function CodonDetail({ codon, colors }: CodonDetailProps): React.ReactElement {
 // Main Component
 // ============================================================================
 
+
+/** Saved experiments own a separate source and worker. Reopening never attaches
+ * imported results to the current catalogue selection or modifies that genome.
+ */
+function RNAReplayPanel(): React.ReactElement {
+  const session = useMemo(() => new RNAStructureSession(() =>
+    new Worker(new URL('../../workers/rna-structure.worker.ts', import.meta.url), { type: 'module' })), []);
+  const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const operation = useRef<AbortController | null>(null);
+  const [pending, setPending] = useState(false), [error, setError] = useState<string | null>(null);
+  const [verifiedId, setVerifiedId] = useState<string | null>(null);
+  useEffect(() => {
+    session.activate();
+    return () => {
+      const owner = operation.current; operation.current = null; owner?.abort(); session.deactivate();
+    };
+  }, [session]);
+  const cancel = () => {
+    const owner = operation.current; operation.current = null; owner?.abort(); session.cancel();
+    setPending(false); setVerifiedId(null); setError('RNA replay cancelled. No new experiment was accepted.');
+  };
+  const restore = async (file: File) => {
+    operation.current?.abort(); session.cancel();
+    const owner = new AbortController(); operation.current = owner;
+    const current = () => operation.current === owner && !owner.signal.aborted;
+    setPending(true); setVerifiedId(null); setError(null);
+    try {
+      const content = await readRNAExperimentFile(file, owner.signal);
+      if (!current()) return;
+      const parsed = await parseRNAStructureRecord(content);
+      if (!current()) return;
+      const accepted = await session.run(parsed.request, parsed.record);
+      if (!current()) return;
+      if (!accepted) throw new Error(session.getSnapshot().error ?? 'RNA replay did not complete.');
+      setVerifiedId(parsed.record.resultId);
+    } catch (cause) {
+      if (current()) setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      if (current()) { operation.current = null; setPending(false); }
+    }
+  };
+  const busy = pending || snapshot.busy;
+  const accepted = !busy && snapshot.accepted?.record.resultId === verifiedId ? snapshot.accepted : null;
+  const source = accepted ? snapshot.request?.source : null;
+  const exportResult = (format: 'json' | 'tsv') => {
+    if (!accepted || busy) return;
+    try {
+      downloadString(format === 'json' ? serializeAnalysisRecord(accepted.record) : exportRNAStructureTsv(accepted.record),
+        'verified-rna-analysis.' + format, format === 'json' ? 'application/json' : 'text/tab-separated-values');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+  };
+  return <details>
+    <summary>Reopen an exported RNA experiment</summary>
+    <section aria-label="RNA experiment replay" style={{ display: 'grid', gap: '.5rem', paddingTop: '.75rem' }}>
+      <p>Recompute the saved interval with its original strand and every model setting, then compare all structures and evidence.
+        The saved source is shown separately below; reopening does not change the explorer's selected genome.
+        Files stay on this device. Verification establishes reproducibility, not source authenticity or biological validity.</p>
+      <label>RNA analysis JSON (up to 10 MiB) <input type="file" accept=".json,application/json" disabled={busy}
+        onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void restore(file); }} /></label>
+      <button type="button" disabled={!busy} onClick={cancel}>Cancel RNA replay</button>
+      <div role="status">{busy ? 'Reading and recomputing the saved RNA experiment…'
+        : accepted ? 'Verified saved RNA experiment: every field matches fresh computation.' : 'Choose an exported RNA analysis to verify.'}</div>
+      {error && <div role="alert">{error}</div>}
+      {accepted && source && <section aria-label="Verified saved RNA result" data-result-id={accepted.record.resultId}>
+        <h3>Verified saved RNA interval</h3>
+        <p>Saved source: {source.name} · {source.accession ?? 'no accession'} · {source.source}.
+          {' '}Coordinates: {source.coordinateSystem}, {source.start + 1}–{source.end} of {source.sourceLength} bases, strand {source.strand}.
+          {source.gene && <> CDS: {source.gene}.</>}</p>
+        <p>{accepted.analysis.windows.length} independent windows; window {accepted.analysis.parameters.windowSize} bases,
+          step {accepted.analysis.parameters.stepSize} bases, minimum loop {accepted.analysis.parameters.minLoopSize} bases,
+          GU wobble {accepted.analysis.parameters.allowWobble ? 'enabled' : 'disabled'}.
+          Pairing scores count pairs and have no thermodynamic energy unit.</p>
+        <button type="button" onClick={() => exportResult('json')}>Export verified RNA JSON</button>
+        <button type="button" onClick={() => exportResult('tsv')}>Export verified RNA windows TSV</button>
+        <div style={{ overflowX: 'auto', maxHeight: 300 }}><table aria-label="Verified saved RNA windows">
+          <thead><tr><th>Source interval (1-based)</th><th>Pairs</th><th>Pairing score</th><th>Structure</th></tr></thead>
+          <tbody>{accepted.analysis.windows.slice(0, 50).map(window => {
+            const mapped = mapRNAInterval(source, window.start, window.end);
+            return <tr key={window.start}><td>{mapped.start + 1}–{mapped.end}</td><td>{window.pairCount}</td>
+              <td>{window.pairingScore ?? 'unavailable (no pairs)'}</td><td><code>{window.structure}</code></td></tr>;
+          })}</tbody>
+        </table></div>
+        {accepted.analysis.windows.length > 50 && <p>First 50 windows shown; both exports retain every window.</p>}
+      </section>}
+    </section>
+  </details>;
+}
+
 interface RNAStructureOverlayProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
@@ -534,10 +623,11 @@ export function RNAStructureOverlay({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
       <p style={{ color: colors.textDim }}>
         Exact maximum-pairing dynamic programming within each bounded window: A–U/C–G and optional G–U pairs,
-        noncrossing, one partner per base, with at least three intervening bases between paired positions.
+        noncrossing, one partner per base, with the declared minimum loop length (three intervening bases for new interval analyses).
         Each window is folded independently; their structures need not combine into one whole-transcript fold.
         Scores count pairs; they are not free energies or calibrated functional predictions.
       </p>
+      <RNAReplayPanel />
       <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
         <label>View: <select value={viewMode} onChange={event => setViewMode(event.target.value as 'genome' | 'gene')} style={fieldStyle}>
           <option value="genome">Genome interval</option><option value="gene">Single Gene</option>

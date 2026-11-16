@@ -431,3 +431,53 @@ describe('research workflow CLI and isolated computation', () => {
       () => new Worker("require('node:worker_threads').parentPort.on('message',()=>require('node:worker_threads').parentPort.postMessage({type:'replayed',report:{verified:true,completed:0,steps:[]},analysisJson:null}))", { eval: true })), /Unexpected/);
   });
 });
+
+
+describe('terminal replay of saved RNA interval experiments', () => {
+  it('recomputes browser exports in the owned native worker and writes complete JSON and coordinate TSV', async () => {
+    const { executeRNAStructureRequest } = await import('../../core/src/analysis/rna-structure-experiment');
+    const record = (await executeRNAStructureRequest({ sequence: 'GGGTTTCCC',
+      source: { name: 'Private saved RNA', accession: 'RNA_SAVED', source: 'local', coordinateSystem: 'genome-forward',
+        sourceLength: 300, start: 100, end: 109, strand: '-', gene: null },
+      options: { windowSize: 9, stepSize: 9, includeSynonymousStress: false } })).record;
+    const directory = await mkdtemp(join(tmpdir(), 'phage-rna-replay-'));
+    const input = join(directory, 'saved.json'), output = join(directory, 'verified.json'), table = join(directory, 'windows.tsv');
+    const saved = serializeAnalysisRecord(record); await writeFile(input, saved);
+    const cli = async (args: string[]) => {
+      let stdout = '', stderr = '';
+      const code = await researchWorkflowMain(args, text => { stdout += text; }, text => { stderr += text; });
+      assert.equal(code, 0, stderr); assert(!stdout.includes('GGGTTTCCC')); assert(!stdout.includes('GGGAAACCC'));
+      return JSON.parse(stdout);
+    };
+    const report = await cli(['replay-experiment', '--input', input, '--output', output]);
+    assert.equal(report.verified, true); assert.equal(report.resultId, record.resultId);
+    assert.equal(await readFile(output, 'utf8'), saved);
+    await cli(['replay-experiment', '--input', input, '--output', table, '--format', 'tsv']);
+    const rows = (await readFile(table, 'utf8')).trimEnd().split('\n').map(row => row.split('\t'));
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows[1].slice(1), ['genome-forward', '-', '0', '9', '100', '109',
+      '3', '-3', '(((...)))', 'GGGAAACCC', '[[0,8],[1,7],[2,6]]']);
+    if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600);
+  });
+
+  it('refuses checksum-valid fabricated RNA structures before creating an output file', async () => {
+    const { executeRNAStructureRequest } = await import('../../core/src/analysis/rna-structure-experiment');
+    const { createAnalysisRecord } = await import('../../core/src/analysis-result');
+    const original = (await executeRNAStructureRequest({ sequence: 'GGGAAACCC',
+      source: { name: 'Saved stem', accession: null, source: 'local', coordinateSystem: 'genome-forward',
+        sourceLength: 9, start: 0, end: 9, strand: '+', gene: null },
+      options: { windowSize: 9, stepSize: 9, includeSynonymousStress: false } })).record;
+    const fields = structuredClone(original.fields);
+    (fields.analysis.value as { windows: Array<{ structure: string }> }).windows[0].structure = '.........';
+    const forged = await createAnalysisRecord({ method: original.method, inputs: original.inputs,
+      parameters: original.parameters, seed: original.seed, references: original.references, fields });
+    const directory = await mkdtemp(join(tmpdir(), 'phage-rna-rejected-'));
+    const input = join(directory, 'forged.json'), output = join(directory, 'must-not-exist.json');
+    await writeFile(input, serializeAnalysisRecord(forged));
+    let stdout = '', stderr = '';
+    const code = await researchWorkflowMain(['replay-experiment', '--input', input, '--output', output],
+      text => { stdout += text; }, text => { stderr += text; });
+    assert.equal(code, 1); assert.equal(stdout, ''); assert.match(stderr, /differ from the saved/);
+    await assert.rejects(stat(output), { code: 'ENOENT' });
+  });
+});
