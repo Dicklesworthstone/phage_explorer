@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, measureElement, type DOMElement } from 'ink';
 import { usePhageStore, type ComparisonTab } from '@phage-explorer/state';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
 import type { HudTheme, PhageSummary } from '@phage-explorer/core';
@@ -65,7 +65,7 @@ export function runComparisonInWorker(
       }
       finish(undefined, result);
     });
-    worker.once('error', error => finish(error));
+    worker.once('error', error => finish(error instanceof Error ? error : new Error(String(error))));
     worker.once('exit', code => finish(new Error('Comparison worker exited without a result (code ' + code + ').')));
     try { if (signal?.aborted) onAbort(); else worker.postMessage(job); }
     catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
@@ -98,6 +98,9 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
   const [revision, setRevision] = useState(0);
   const operation = useRef<AbortController | null>(null);
   const [selectionPage, setSelectionPage] = useState(0);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const viewportRef = useRef<DOMElement>(null);
+  const contentRef = useRef<DOMElement>(null);
 
   const closeComparison = usePhageStore(s => s.closeComparison);
   const setComparisonResult = usePhageStore(s => s.setComparisonResult);
@@ -117,6 +120,10 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
   const result = owned?.result ?? null;
   const compareError = owned?.error ?? null;
   const loading = Boolean(phageA && phageB && phageA.id !== phageB.id && (!owned || owned.loading));
+
+  useEffect(() => {
+    setScrollOffset(0);
+  }, [tab, result, terminalCols, terminalRows, selectingPhage]);
 
   // Selection/repository changes and explicit retries are the only triggers.
   // Loading/error/result changes must not create an automatic retry loop.
@@ -228,6 +235,13 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       setComparisonTab(COMPARISON_TABS[(COMPARISON_TABS.indexOf(tab) + COMPARISON_TABS.length - 1) % COMPARISON_TABS.length]);
     } else if (key.rightArrow || input === 'l' || input === 'L' || key.tab) {
       setComparisonTab(COMPARISON_TABS[(COMPARISON_TABS.indexOf(tab) + 1) % COMPARISON_TABS.length]);
+    } else if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) {
+      if (!viewportRef.current || !contentRef.current) return;
+      const viewportHeight = measureElement(viewportRef.current).clientHeight;
+      const maximum = Math.max(0, measureElement(contentRef.current).height - viewportHeight);
+      const amount = key.pageUp || key.pageDown ? Math.max(1, viewportHeight - 1) : 1;
+      const delta = key.upArrow || key.pageUp ? -amount : amount;
+      setScrollOffset(previous => Math.max(0, Math.min(maximum, previous + delta)));
     } else if (input === 'a' || input === 'A') {
       startSelectingPhage('A');
     } else if (input === 'b' || input === 'B') {
@@ -253,7 +267,7 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       paddingX={1}
     >
       {/* Header */}
-      <Box justifyContent="space-between" marginBottom={1}>
+      <Box justifyContent="space-between" marginBottom={1} flexShrink={0}>
         <Text color={colors.accent} bold>
           GENOME COMPARISON
         </Text>
@@ -263,7 +277,7 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       </Box>
 
       {/* Phage Selection */}
-      <Box marginBottom={1}>
+      <Box marginBottom={1} flexShrink={0}>
         <Box marginRight={2}>
           <Text color={selectingPhage === 'A' ? colors.accent : colors.primary}>
             [A] {phageA?.name ?? 'Select...'} ({phageA?.genomeLength?.toLocaleString() ?? '?'} bp)
@@ -278,7 +292,7 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       </Box>
 
       {/* Tab Bar */}
-      <Box marginBottom={1} gap={1}>
+      <Box marginBottom={1} gap={1} flexShrink={0}>
         {COMPARISON_TABS.map((t) => (
           <Text
             key={t}
@@ -327,14 +341,17 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       )}
       {/* Results Content */}
       {!loading && !selectingPhage && result && (
-        <Box flexDirection="column" flexGrow={1} overflowY="hidden">
-          {tab === 'summary' && <SummaryTab result={result} colors={colors} />}
-          {tab === 'kmer' && <KmerTab result={result} colors={colors} />}
-          {tab === 'information' && <InformationTab result={result} colors={colors} />}
-          {tab === 'correlation' && <CorrelationTab result={result} colors={colors} />}
-          {tab === 'biological' && <BiologicalTab result={result} colors={colors} />}
-          {tab === 'genes' && <GenesTab result={result} colors={colors} />}
-          {tab === 'structural' && <StructuralTab result={result} colors={colors} />}
+        <Box ref={viewportRef} flexDirection="column" flexGrow={1} flexBasis={0}
+          minHeight={0} overflowY="hidden" contentOffsetY={scrollOffset}>
+          <Box ref={contentRef} flexDirection="column" flexShrink={0}>
+            {tab === 'summary' && <SummaryTab result={result} colors={colors} />}
+            {tab === 'kmer' && <KmerTab result={result} colors={colors} />}
+            {tab === 'information' && <InformationTab result={result} colors={colors} />}
+            {tab === 'correlation' && <CorrelationTab result={result} colors={colors} />}
+            {tab === 'biological' && <BiologicalTab result={result} colors={colors} />}
+            {tab === 'genes' && <GenesTab result={result} colors={colors} />}
+            {tab === 'structural' && <StructuralTab result={result} colors={colors} />}
+          </Box>
         </Box>
       )}
 
@@ -353,9 +370,9 @@ export function ComparisonOverlay({ repository, runWorker = runComparisonInWorke
       )}
 
       {/* Footer */}
-      <Box marginTop={1} justifyContent="center">
+      <Box marginTop={1} justifyContent="center" flexShrink={0}>
         <Text color={colors.textDim}>
-          [A/B] Select phages  [X] Swap  [R] Rerun  [←→] Tab  [Esc] Close
+          [A/B] Select  [X] Swap  [R] Rerun  [←→] Tab  [↑↓/PgUp/PgDn] Scroll  [Esc] Close
         </Text>
       </Box>
     </Box>
@@ -370,28 +387,34 @@ interface TabProps {
 
 function SummaryTab({ result, colors }: TabProps): React.ReactElement {
   const { summary } = result;
+  const score = summary.overallSimilarity;
+  const hasSequenceEvidence = score !== null && summary.similarityCategory !== 'insufficient_data';
 
   return (
     <Box flexDirection="column">
       {/* Overall Score */}
       <Box marginBottom={1}>
         <Text color={colors.primary} bold>Overall Similarity: </Text>
-        <Text color={getSimilarityColor(summary.overallSimilarity)}>
-          {summary.overallSimilarity.toFixed(1)}% - {formatSimilarity(summary.overallSimilarity)}
+        <Text color={hasSequenceEvidence ? getSimilarityColor(score) : colors.warning}>
+          {hasSequenceEvidence ? `${score.toFixed(1)}% - ${formatSimilarity(score)}`
+            : 'Insufficient resolved sequence'}
         </Text>
       </Box>
 
-      <Box marginBottom={1}>
+      {hasSequenceEvidence && <Box marginBottom={1}>
         <Text color={colors.text}>
-          {createSimilarityBar(summary.overallSimilarity, 30)}
+          {createSimilarityBar(score, 30)}
         </Text>
-      </Box>
+      </Box>}
+      <Text color={colors.textDim}>Descriptive scores; no aligned identity or species inference.</Text>
 
       {/* Component Scores */}
       <Box flexDirection="column" marginBottom={1}>
         <Text color={colors.textDim}>Component Scores:</Text>
-        <MetricRow label="Sequence" value={summary.sequenceSimilarity} colors={colors} />
-        <MetricRow label="Composition" value={summary.compositionSimilarity} colors={colors} />
+        {hasSequenceEvidence ? <>
+          <MetricRow label="Sequence" value={summary.sequenceSimilarity} colors={colors} />
+          <MetricRow label="Composition" value={summary.compositionSimilarity} colors={colors} />
+        </> : <Text color={colors.warning}>Sequence / composition: unavailable</Text>}
         <MetricRow label="Codon Usage" value={summary.codonUsageSimilarity} colors={colors} />
         <MetricRow label="Gene Content" value={summary.geneContentSimilarity} colors={colors} />
       </Box>
@@ -509,6 +532,7 @@ function CorrelationTab({ result, colors }: TabProps): React.ReactElement {
 
 function BiologicalTab({ result, colors }: TabProps): React.ReactElement {
   const { biological, codonUsage, aminoAcidUsage } = result;
+  const identity = biological.kmerIdentity;
 
   return (
     <Box flexDirection="column">
@@ -517,13 +541,25 @@ function BiologicalTab({ result, colors }: TabProps): React.ReactElement {
       </Box>
 
       <Box flexDirection="column">
-        <Text color={colors.accent}>Average Nucleotide Identity (ANI):</Text>
-        <MetricRow label="ANI Score" value={biological.aniScore} colors={colors} />
+        <Text color={colors.accent}>Mash-style k-mer identity estimate:</Text>
+        {identity.percent === null ? <Text color={colors.warning}>Unavailable: {identity.unavailableReason}</Text>
+          : <MetricRow label="Estimate" value={identity.percent} colors={colors} />}
+        <Text color={colors.textDim}>Exact canonical {identity.k}-mers; strand independent.</Text>
+        <Text color={colors.textDim}>Distinct A/B: {identity.coverageA.distinctKmers} / {identity.coverageB.distinctKmers}; shared {identity.sharedKmers}.</Text>
+        <Text color={colors.textDim}>Resolved windows A/B: {identity.coverageA.validWindows}/{identity.coverageA.totalWindows}
+          {' '}({(identity.coverageA.validWindowFraction * 100).toFixed(1)}%) / {identity.coverageB.validWindows}/{identity.coverageB.totalWindows}
+          {' '}({(identity.coverageB.validWindowFraction * 100).toFixed(1)}%).</Text>
+        {identity.warnings.map(warning => <Text key={warning} color={colors.textDim}>{warning}</Text>)}
 
         <Box marginTop={1}><Text color={colors.accent}>GC Content:</Text></Box>
-        <Text color={colors.text}>  Phage A: {biological.gcContentA.toFixed(1)}%</Text>
-        <Text color={colors.text}>  Phage B: {biological.gcContentB.toFixed(1)}%</Text>
-        <Text color={colors.text}>  Difference: {biological.gcDifference.toFixed(1)}%</Text>
+        <Text color={colors.text}>  Phage A: {biological.gcResolvedBasesA > 0 ? `${biological.gcContentA.toFixed(1)}%` : 'Unavailable'}</Text>
+        <Text color={colors.text}>  Phage B: {biological.gcResolvedBasesB > 0 ? `${biological.gcContentB.toFixed(1)}%` : 'Unavailable'}</Text>
+        <Text color={colors.text}>  Difference: {biological.gcResolvedBasesA > 0 && biological.gcResolvedBasesB > 0
+          ? `${biological.gcDifference.toFixed(1)}%` : 'Unavailable'}</Text>
+        <Text color={colors.textDim}>
+          Resolved A/C/G/T bases: A {biological.gcResolvedBasesA}/{biological.lengthA}; B {biological.gcResolvedBasesB}/{biological.lengthB}.
+          Ambiguous bases are excluded from GC%.
+        </Text>
 
         <Box marginTop={1}><Text color={colors.accent}>Genome Size:</Text></Box>
         <Text color={colors.text}>  Ratio: {(biological.lengthRatio * 100).toFixed(1)}%</Text>

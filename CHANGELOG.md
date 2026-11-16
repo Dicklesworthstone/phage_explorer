@@ -6,6 +6,36 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased — source changes on main
 
+### Exact gene-start motifs and honest comparison evidence
+
+- **Inspectable annotated initiation windows** — gene-start logos retain
+  transcript order, strand, supported genetic code and explicit circular
+  topology. Exact source windows and exclusions are visible; partial or
+  unsupported starts do not become initiation motifs. Repository-owned reads
+  cannot display obsolete genomes, and custom alignment input is bounded.
+  [Commit 936ccb5](https://github.com/Dicklesworthstone/phage_explorer/commit/936ccb53d56b3eeb59222f79952962966a69640a).
+- **Evidence-bearing sequence comparison** — replace the former ANI/species
+  claims with a strand-invariant canonical k-mer model estimate, exact word
+  counts and resolved-window support. No words or no overlap leave the identity
+  unavailable; absent comparison evidence cannot create an aggregate score.
+  GC comparisons disclose resolved-base counts and withhold unsupported matches.
+  Both browser and terminal expose these states. Long terminal reports scroll
+  within a bounded viewport without collapsing headings or overlapping rows.
+
+### Ribosome traffic on the actual selected coding sequence
+
+- **Source-grounded tracks** — browser and terminal selection reconstructs
+  complete CDS tracks from the actual genome, strand, ordered segments, reading
+  frame and genetic code. Missing or unsupported source input fails visibly.
+  Codon-frequency movement probabilities are explicitly an uncalibrated
+  selected-CDS teaching model, and output counts completed tracks.
+- **Correct particle dynamics and replay** — proposed positions respect the
+  footprint, zero probabilities remain zero, and fractional playback accumulates
+  discrete updates. Terminal parameter edits restart empty occupancy safely.
+  Browser version-2 experiments retain exact inputs and reject source changes
+  during replay; cancelled source loads cannot replace an accepted run.
+  [Commit fc57b3a](https://github.com/Dicklesworthstone/phage_explorer/commit/fc57b3a845094cb8dfc99c9dafbbdc2050d27dd0).
+
 ### Comparison results follow the selected data
 
 - **Bound results to their sources** — browser comparisons now keep metrics,

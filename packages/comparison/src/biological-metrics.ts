@@ -2,20 +2,22 @@
  * Biological Metrics Module
  *
  * Implements biologically meaningful comparison metrics:
- * - Average Nucleotide Identity (ANI)
+ * - Strand-independent k-mer identity estimates (not aligned ANI)
  * - GC content comparison
  * - Codon usage analysis (RSCU, CAI)
  * - Amino acid composition comparison
  * - Gene content comparison
  *
  * References:
- * - Konstantinidis & Tiedje (2005) "ANI: a new tool for species demarcation"
+ * - Ondov et al. (2016), Mash, https://doi.org/10.1186/s13059-016-0997-x
  * - Sharp & Li (1987) "The codon adaptation index"
  * - Carbone et al. (2003) "Codon usage bias"
  */
 
 import type {
   BiologicalMetrics,
+  KmerIdentityCoverage,
+  KmerIdentityEstimate,
   CodonUsageComparison,
   CodonDifference,
   AminoAcidComparison,
@@ -24,12 +26,12 @@ import type {
 } from './types';
 import type { GeneInfo } from '@phage-explorer/core';
 import { CODON_TABLE, AMINO_ACIDS, countAminoAcidUsage, translateSequence } from '@phage-explorer/core';
-import { jaccardIndex, extractKmerSet } from './kmer-analysis';
+import { extractCanonicalKmerFrequencies } from './kmer-analysis';
 
 /**
  * Calculate GC content of a sequence.
  */
-export function calculateGCContent(sequence: string): number {
+function calculateGCStatistics(sequence: string): { percent: number; resolvedBases: number } {
   let gc = 0;
   let total = 0;
   const len = sequence.length;
@@ -49,41 +51,69 @@ export function calculateGCContent(sequence: string): number {
     }
   }
 
-  return total > 0 ? (gc / total) * 100 : 0;
+  return { percent: total > 0 ? (gc / total) * 100 : 0, resolvedBases: total };
+}
+
+/** Numeric convenience API; zero without resolved bases is not evidence of 0% GC. */
+export function calculateGCContent(sequence: string): number {
+  return calculateGCStatistics(sequence).percent;
 }
 
 /**
- * Estimate Average Nucleotide Identity (ANI) using k-mer approach.
+ * Transform exact canonical k-mer resemblance using the Mash mutation model:
+ * D = -ln(2J / (1 + J)) / k; identity approximation = 100(1 - D).
+ * See Ondov et al. (2016), equation 4, doi:10.1186/s13059-016-0997-x.
  *
- * ANI is typically calculated using BLAST or MUMmer, but we can
- * approximate it using k-mer similarity for speed.
- *
- * Traditional ANI uses:
- * - Fragment sequences into ~1kb chunks
- * - BLAST each chunk against target genome
- * - Average identity of hits above threshold
- *
- * Our k-mer approximation correlates well with BLAST-based ANI.
+ * Canonical words make the calculation independent of submitted DNA strand.
+ * This uses full sets, not a MinHash sketch, so there is no sketch sampling error
+ * estimate. The model still assumes unique words and independent mutations;
+ * repeats, ambiguous bases and different genome content can violate it. This
+ * does not align homologous fragments, measure aligned ANI or assign species.
  */
-export function estimateANI(
+export function estimateKmerIdentity(
   sequenceA: string,
   sequenceB: string,
   k: number = 21
-): number {
-  // Use Jaccard similarity of k-mers as basis
-  const setA = extractKmerSet(sequenceA, k);
-  const setB = extractKmerSet(sequenceB, k);
-  const jaccard = jaccardIndex(setA, setB);
-
-  // Convert Jaccard to ANI estimate using Mash formula
-  // ANI ≈ 1 + (1/k) * ln(2*J / (1+J))
-  // This is derived from the probabilistic relationship between
-  // k-mer Jaccard and sequence identity.
-  if (jaccard <= 0) return 0;
-  if (jaccard >= 1) return 100;
-
-  const estimate = 1 + (1 / k) * Math.log((2 * jaccard) / (1 + jaccard));
-  return Math.max(0, Math.min(100, estimate * 100));
+): KmerIdentityEstimate {
+  if (!Number.isSafeInteger(k) || k < 1) throw new RangeError('K-mer size must be a positive integer.');
+  const wordsA = extractCanonicalKmerFrequencies(sequenceA, k);
+  const wordsB = extractCanonicalKmerFrequencies(sequenceB, k);
+  const coverage = (words: Map<string, number>, length: number): KmerIdentityCoverage => {
+    const totalWindows = Math.max(0, length - k + 1);
+    let validWindows = 0;
+    for (const count of words.values()) validWindows += count;
+    return { totalWindows, validWindows, distinctKmers: words.size,
+      validWindowFraction: totalWindows > 0 ? validWindows / totalWindows : 0 };
+  };
+  const coverageA = coverage(wordsA, sequenceA.length), coverageB = coverage(wordsB, sequenceB.length);
+  let sharedKmers = 0;
+  const [smaller, larger] = wordsA.size <= wordsB.size ? [wordsA, wordsB] : [wordsB, wordsA];
+  for (const word of smaller.keys()) if (larger.has(word)) sharedKmers++;
+  // Empty sets are absence of evidence, not identical genomes. Zero overlap
+  // cannot give a finite logarithmic distance and must not become 0% identity.
+  const jaccard = wordsA.size > 0 && wordsB.size > 0
+    ? sharedKmers / (wordsA.size + wordsB.size - sharedKmers) : null;
+  const distance = sharedKmers > 0 && jaccard !== null
+    ? jaccard === 1 ? 0 : -Math.log(2 * jaccard / (1 + jaccard)) / k : null;
+  const unavailableReason = jaccard === null
+    ? `Both sequences need at least one resolved ${k}-base window; short or ambiguous inputs have insufficient k-mer evidence.`
+    : distance === null ? `No shared canonical ${k}-mers; identity cannot be estimated at this resolution.`
+    : distance > 1 ? 'The Mash-style distance exceeds the identity approximation range.' : null;
+  const warnings: string[] = [
+    'Mash-style approximation from k-mer resemblance, not aligned nucleotide identity or a species assignment.',
+  ];
+  if (coverageA.validWindows < coverageA.totalWindows || coverageB.validWindows < coverageB.totalWindows) {
+    warnings.push('Ambiguous symbols break k-mers; excluded windows may bias the estimate.');
+  }
+  if (wordsA.size < coverageA.validWindows || wordsB.size < coverageB.validWindows) {
+    warnings.push('Repeated k-mers lose multiplicity; equal k-mer sets do not prove equal sequences.');
+  }
+  if (sequenceA.length !== sequenceB.length) {
+    warnings.push('Different input lengths affect resemblance; this estimate does not measure identity only over aligned regions.');
+  }
+  return { method: 'canonical-kmer-mash', k, status: unavailableReason ? 'unavailable' : 'estimated',
+    percent: unavailableReason === null && distance !== null ? 100 * (1 - distance) : null,
+    distance, jaccard, sharedKmers, coverageA, coverageB, unavailableReason, warnings };
 }
 
 /**
@@ -93,9 +123,9 @@ export function analyzeBiologicalMetrics(
   sequenceA: string,
   sequenceB: string
 ): BiologicalMetrics {
-  const gcA = calculateGCContent(sequenceA);
-  const gcB = calculateGCContent(sequenceB);
-  const ani = estimateANI(sequenceA, sequenceB);
+  const { percent: gcA, resolvedBases: gcResolvedBasesA } = calculateGCStatistics(sequenceA);
+  const { percent: gcB, resolvedBases: gcResolvedBasesB } = calculateGCStatistics(sequenceB);
+  const kmerIdentity = estimateKmerIdentity(sequenceA, sequenceB);
 
   const lengthA = sequenceA.length;
   const lengthB = sequenceB.length;
@@ -104,10 +134,11 @@ export function analyzeBiologicalMetrics(
   const maxGc = Math.max(gcA, gcB);
 
   return {
-    aniScore: ani,
-    aniMethod: 'kmer',
+    kmerIdentity,
     gcContentA: gcA,
     gcContentB: gcB,
+    gcResolvedBasesA,
+    gcResolvedBasesB,
     gcDifference: Math.abs(gcA - gcB),
     gcRatio: maxGc > 0 ? Math.min(gcA, gcB) / maxGc : 1,
     lengthA,

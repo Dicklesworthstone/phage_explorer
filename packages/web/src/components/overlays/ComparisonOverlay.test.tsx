@@ -1,9 +1,33 @@
 import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { compareGenomes, computeSequenceDiff } from '@phage-explorer/comparison';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
-import { ComparisonDiffView, runWebComparison } from './ComparisonOverlay';
+import { compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
+import { ComparisonDiffView, ComparisonKmerIdentity, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
+
+describe('comparison identity evidence rendering', () => {
+  it('renders absent resolved evidence as unavailable in both identity and summary', async () => {
+    const result = await compareGenomes({ id: 1, name: 'A', accession: 'A' },
+      { id: 2, name: 'B', accession: 'B' }, 'N'.repeat(30), 'N'.repeat(30));
+    const html = renderToStaticMarkup(<><ComparisonKmerIdentity estimate={result.biological.kmerIdentity} />
+      <ComparisonSummaryStatus summary={result.summary} /></>);
+    expect(html).toContain('Unavailable');
+    expect(html).toContain('Insufficient resolved sequence');
+    expect(html).toContain('insufficient k-mer evidence');
+    expect(html).toContain('Resolved windows A: 0/10 (0.0%)');
+    expect(html).not.toContain('100.00%');
+    expect(html).not.toContain('Distantly Related');
+  });
+
+  it('shows actual numerical estimates alongside support and model limits', () => {
+    const html = renderToStaticMarkup(<ComparisonKmerIdentity estimate={estimateKmerIdentity('AAACCC', 'AAAGGG', 3)} />);
+    expect(html).toContain('76.90%');
+    expect(html).toContain('Exact canonical 3-mers');
+    expect(html).toContain('shared 2');
+    expect(html).toContain('not aligned nucleotide identity or a species assignment');
+    expect(html).not.toContain('ANI Score');
+  });
+});
 
 describe('comparison diff result rendering', () => {
   it('renders real budget exhaustion as unavailable, never identical', () => {

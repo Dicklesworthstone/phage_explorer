@@ -5,7 +5,7 @@ import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
 import type { PhageSummary } from '@phage-explorer/core';
-import type { GenomeComparisonResult, SequenceDiffResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
+import type { ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
 import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import DiffHighlighter from '../DiffHighlighter';
@@ -127,6 +127,46 @@ interface OwnedComparison {
   sequenceB: string;
   error: string | null;
   loading: boolean;
+}
+
+export function ComparisonSummaryStatus({ summary }: { summary: ComparisonSummary }): React.ReactElement {
+  return <Badge>{summary.overallSimilarity === null || summary.similarityCategory === 'insufficient_data'
+    ? 'Insufficient resolved sequence' : formatSimilarity(summary.overallSimilarity)}</Badge>;
+}
+
+/** The actual biological-tab card, also exercised with computed evidence. */
+export function ComparisonKmerIdentity({ estimate }: { estimate: KmerIdentityEstimate }): React.ReactElement {
+  const coverage = (input: KmerIdentityEstimate['coverageA']) =>
+    `${input.validWindows.toLocaleString()}/${input.totalWindows.toLocaleString()} (${(input.validWindowFraction * 100).toFixed(1)}%)`;
+  return <div className="metric-card">
+    <div className="metric-label">Mash-style k-mer identity estimate</div>
+    <div className="metric-value">{estimate.percent === null ? 'Unavailable' : `${estimate.percent.toFixed(2)}%`}</div>
+    <div className="text-dim">Exact canonical {estimate.k}-mers · strand independent</div>
+    <div className="text-dim">Distinct A/B: {estimate.coverageA.distinctKmers.toLocaleString()} / {estimate.coverageB.distinctKmers.toLocaleString()}
+      {' '}· shared {estimate.sharedKmers.toLocaleString()}</div>
+    <div className="text-dim">Resolved windows A: {coverage(estimate.coverageA)}; B: {coverage(estimate.coverageB)}</div>
+    {estimate.unavailableReason && <p role="status">{estimate.unavailableReason}</p>}
+    {estimate.warnings.map(warning => <p className="text-dim" key={warning}>{warning}</p>)}
+  </div>;
+}
+
+export function ComparisonGcContent({ biological }: {
+  biological: GenomeComparisonResult['biological'];
+}): React.ReactElement {
+  const hasA = biological.gcResolvedBasesA > 0;
+  const hasB = biological.gcResolvedBasesB > 0;
+  return <div className="metric-card">
+    <div className="metric-label">GC content</div>
+    <div className="metric-value">
+      {hasA ? `${biological.gcContentA.toFixed(2)}%` : 'Unavailable'} /{' '}
+      {hasB ? `${biological.gcContentB.toFixed(2)}%` : 'Unavailable'}
+    </div>
+    <div className="text-dim">Δ {hasA && hasB ? `${biological.gcDifference.toFixed(2)}%` : 'Unavailable'}</div>
+    <div className="text-dim">
+      Resolved A/C/G/T bases: A {biological.gcResolvedBasesA}/{biological.lengthA}; B{' '}
+      {biological.gcResolvedBasesB}/{biological.lengthB}. Ambiguous bases are excluded from GC%.
+    </div>
+  </div>;
 }
 
 export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
@@ -411,23 +451,26 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     }
     const formatPct = (value: number, digits = 2) => `${value.toFixed(digits)}%`;
     const summary = comparisonResult.summary;
+    const hasSequenceEvidence = summary.overallSimilarity !== null && summary.similarityCategory !== 'insufficient_data';
     const computedAt = new Date(comparisonResult.computedAt);
     if (comparisonTab === 'summary') {
       return (
         <div className="panel">
           <div className="panel-header">
             <h3>Overall Similarity</h3>
-            <Badge>{formatSimilarity(summary.overallSimilarity)}</Badge>
+            <ComparisonSummaryStatus summary={summary} />
           </div>
-          <p className="text-dim">{summary.similarityCategory}</p>
+          <p className="text-dim">{hasSequenceEvidence
+            ? 'Descriptive aggregate of composition and annotation scores; no aligned identity or species inference.'
+            : 'No overall similarity score is available without resolved k-mer evidence.'}</p>
           <div className="metrics-grid">
             <div className="metric-card">
               <div className="metric-label">Sequence</div>
-              <div className="metric-value">{formatSimilarity(summary.sequenceSimilarity)}</div>
+              <div className="metric-value">{hasSequenceEvidence ? formatSimilarity(summary.sequenceSimilarity) : 'Unavailable'}</div>
             </div>
             <div className="metric-card">
               <div className="metric-label">Composition</div>
-              <div className="metric-value">{formatSimilarity(summary.compositionSimilarity)}</div>
+              <div className="metric-value">{hasSequenceEvidence ? formatSimilarity(summary.compositionSimilarity) : 'Unavailable'}</div>
             </div>
             <div className="metric-card">
               <div className="metric-label">Codon usage</div>
@@ -558,21 +601,11 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         <div className="panel">
           <div className="panel-header">
             <h3>Biological metrics</h3>
-            <span className="text-dim">ANI, GC, lengths, codon & amino acid usage</span>
+            <span className="text-dim">K-mer identity estimate, GC, lengths, codon & amino acid usage</span>
           </div>
           <div className="metrics-grid">
-            <div className="metric-card">
-              <div className="metric-label">ANI</div>
-              <div className="metric-value">{formatPct(bio.aniScore)}</div>
-              <div className="text-dim">Method: {bio.aniMethod}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">GC content</div>
-              <div className="metric-value">
-                {bio.gcContentA.toFixed(2)}% / {bio.gcContentB.toFixed(2)}%
-              </div>
-              <div className="text-dim">Δ {bio.gcDifference.toFixed(2)}%</div>
-            </div>
+            <ComparisonKmerIdentity estimate={bio.kmerIdentity} />
+            <ComparisonGcContent biological={bio} />
             <div className="metric-card">
               <div className="metric-label">Genome length</div>
               <div className="metric-value">

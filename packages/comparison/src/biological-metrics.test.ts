@@ -1,14 +1,14 @@
 /**
  * Tests for Biological Metrics Module
  *
- * Tests GC content, ANI estimation, codon usage, amino acid composition,
+ * Tests GC content, k-mer identity estimation, codon usage, amino acid composition,
  * gene content comparison, and dinucleotide bias analysis.
  */
 
 import { describe, test, expect } from 'bun:test';
 import {
   calculateGCContent,
-  estimateANI,
+  estimateKmerIdentity,
   analyzeBiologicalMetrics,
   calculateRSCU,
   compareCodonUsage,
@@ -52,32 +52,91 @@ describe('calculateGCContent', () => {
   });
 });
 
-describe('estimateANI', () => {
-  test('returns 100 for identical sequences', () => {
+describe('estimateKmerIdentity', () => {
+  test('reports equal canonical sets and repeat limitations for identical sequences', () => {
     const seq = 'ATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGC';
-    expect(estimateANI(seq, seq)).toBeCloseTo(100, 0);
+    const result = estimateKmerIdentity(seq, seq);
+    expect(result.status).toBe('estimated');
+    expect(result.percent).toBe(100);
+    expect(result.jaccard).toBe(1);
+    expect(result.coverageA.validWindows).toBe(seq.length - 20);
+    expect(result.warnings.some(warning => warning.includes('Repeated k-mers'))).toBe(true);
   });
 
-  test('returns lower value for different sequences', () => {
-    const seqA = 'ATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGCATGC';
-    const seqB = 'CGTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCTAGCT';
-    const ani = estimateANI(seqA, seqB);
-    expect(ani).toBeLessThan(100);
-    expect(ani).toBeGreaterThanOrEqual(0);
+  test('matches an independently enumerated canonical-set and Mash-formula oracle', () => {
+    // A: AAA,AAC,ACC,CCC. B: AAA,AAG,AGG,CCC (GGG canonicalizes to CCC).
+    // Two shared out of six union words gives J=1/3 and D=ln(2)/3.
+    const result = estimateKmerIdentity('AAACCC', 'AAAGGG', 3);
+    expect(result.coverageA).toEqual({ totalWindows: 4, validWindows: 4, distinctKmers: 4, validWindowFraction: 1 });
+    expect(result.coverageB).toEqual(result.coverageA);
+    expect(result.sharedKmers).toBe(2);
+    expect(result.jaccard).toBeCloseTo(1 / 3, 14);
+    expect(result.distance).toBeCloseTo(0.23104906018664842, 14);
+    expect(result.percent).toBeCloseTo(76.89509398133516, 12);
   });
 
-  test('returns 0 for completely different sequences', () => {
-    const seqA = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-    const seqB = 'TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT';
-    const ani = estimateANI(seqA, seqB);
-    // Very low ANI expected
-    expect(ani).toBeLessThan(50);
+  test('is strand invariant, case insensitive and symmetric for high-complexity DNA', () => {
+    const sequence = 'AACCTGATGCTAGTCAGGATCGTACCTGAGTACCGATTCAGGCTATCGACGTTAGCTGGATCAGTAC';
+    const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+    const reverse = [...sequence].reverse().map(base => complement[base]).join('').toLowerCase();
+    const result = estimateKmerIdentity(sequence, reverse);
+    expect(result.percent).toBe(100);
+    expect(result.jaccard).toBe(1);
+    expect(result.coverageA.validWindowFraction).toBe(1);
+    expect(estimateKmerIdentity(reverse, sequence)).toEqual(result);
+    // Homopolymers A and T are also reverse complements, not unrelated words.
+    expect(estimateKmerIdentity('A'.repeat(49), 'T'.repeat(49)).percent).toBe(100);
   });
 
-  test('is symmetric', () => {
-    const seqA = 'ATGCATGCATGCATGCATGCATGCATGCATGC';
-    const seqB = 'ATGCATGCATGCATGCTTTTTTTTTTTTTTTT';
-    expect(estimateANI(seqA, seqB)).toBeCloseTo(estimateANI(seqB, seqA), 5);
+  test('never infers identity from missing, short or entirely ambiguous evidence', () => {
+    for (const [left, right] of [
+      ['', ''], ['ACGT', 'TGCA'], ['N'.repeat(100), 'N'.repeat(100)],
+      ['RYSWKMBDHV'.repeat(10), 'ACGT'.repeat(40)],
+      ['A'.repeat(20) + 'N' + 'A'.repeat(20), 'A'.repeat(41)],
+    ]) {
+      const result = estimateKmerIdentity(left, right);
+      expect(result.status).toBe('unavailable');
+      expect(result.percent).toBeNull();
+      expect(result.distance).toBeNull();
+      expect(result.jaccard).toBeNull();
+      expect(result.sharedKmers).toBe(0);
+      expect(result.unavailableReason).toContain('insufficient k-mer evidence');
+      for (const coverage of [result.coverageA, result.coverageB]) {
+        expect(Number.isFinite(coverage.validWindowFraction)).toBe(true);
+        expect(coverage.validWindowFraction).toBeGreaterThanOrEqual(0);
+        expect(coverage.validWindowFraction).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test('keeps zero overlap distinct from a measured zero-percent identity', () => {
+    const result = estimateKmerIdentity('A'.repeat(100), 'C'.repeat(100));
+    expect(result.status).toBe('unavailable');
+    expect(result.jaccard).toBe(0);
+    expect(result.percent).toBeNull();
+    expect(result.distance).toBeNull();
+    expect(result.coverageA.validWindowFraction).toBe(1);
+    expect(result.unavailableReason).toContain('No shared canonical 21-mers');
+  });
+
+  test('reports exactly which windows contributed without bridging ambiguous bases', () => {
+    // AAA and CCC contribute; AAN, ANN, NNN, NNC and NCC do not.
+    const result = estimateKmerIdentity('AAANNNCCC', 'AAACCC', 3);
+    expect(result.coverageA).toEqual({ totalWindows: 7, validWindows: 2, distinctKmers: 2, validWindowFraction: 2 / 7 });
+    expect(result.coverageB.validWindows).toBe(4);
+    expect(result.sharedKmers).toBe(2);
+    expect(result.jaccard).toBe(0.5);
+    expect(result.warnings.some(warning => warning.includes('Ambiguous symbols'))).toBe(true);
+    expect(result.warnings.some(warning => warning.includes('Different input lengths'))).toBe(true);
+    const swapped = estimateKmerIdentity('AAACCC', 'AAANNNCCC', 3);
+    expect(swapped.percent).toBe(result.percent);
+    expect(swapped.coverageB).toEqual(result.coverageA);
+  });
+
+  test('rejects invalid k instead of manufacturing a score', () => {
+    for (const k of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => estimateKmerIdentity('ACGT', 'ACGT', k)).toThrow('positive integer');
+    }
   });
 });
 
@@ -87,8 +146,8 @@ describe('analyzeBiologicalMetrics', () => {
     const seqB = 'GCTAGCTAGCTAGCTA';
     const result = analyzeBiologicalMetrics(seqA, seqB);
 
-    expect(result).toHaveProperty('aniScore');
-    expect(result).toHaveProperty('aniMethod');
+    expect(result.kmerIdentity.status).toBe('unavailable');
+    expect(result.kmerIdentity.percent).toBeNull();
     expect(result).toHaveProperty('gcContentA');
     expect(result).toHaveProperty('gcContentB');
     expect(result).toHaveProperty('gcDifference');
@@ -110,9 +169,9 @@ describe('analyzeBiologicalMetrics', () => {
     expect(result.lengthRatio).toBeCloseTo(8 / 12, 5);
   });
 
-  test('returns method as kmer', () => {
+  test('identifies the actual canonical-set approximation method', () => {
     const result = analyzeBiologicalMetrics('ATGC', 'GCTA');
-    expect(result.aniMethod).toBe('kmer');
+    expect(result.kmerIdentity.method).toBe('canonical-kmer-mash');
   });
 });
 

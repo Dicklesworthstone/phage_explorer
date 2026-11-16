@@ -154,6 +154,43 @@ describe('compareGenomes', () => {
   });
 
   describe('summary computation', () => {
+    test('never assigns relatedness from empty resolved k-mer sets', async () => {
+      const phageA = { id: 1, name: 'Unknown A', accession: 'UNKNOWN_A' };
+      const phageB = { id: 2, name: 'Unknown B', accession: 'UNKNOWN_B' };
+      const result = await compareGenomes(phageA, phageB, 'N'.repeat(64), 'N'.repeat(64));
+      expect(result.biological.kmerIdentity.percent).toBeNull();
+      expect(result.summary.similarityCategory).toBe('insufficient_data');
+      expect(result.summary.overallSimilarity).toBeNull();
+      expect(result.summary.confidenceLevel).toBe('low');
+      expect(result.summary.sequenceSimilarity).toBe(0);
+      expect(result.summary.compositionSimilarity).toBe(0);
+      expect(result.summary.insights.some(insight => insight.category === 'Sequence evidence')).toBe(true);
+      expect(result.summary.insights.some(insight => /likely same species|distantly related/i.test(insight.message))).toBe(false);
+    });
+
+    test('keeps short resolved comparisons descriptive when k=21 identity is unavailable', async () => {
+      const phageA = { id: 1, name: 'Short A', accession: 'SHORT_A' };
+      const phageB = { id: 2, name: 'Short B', accession: 'SHORT_B' };
+      const result = await compareGenomes(phageA, phageB, 'AACCTGATGCTA', 'AACCTGATGCTA');
+      expect(result.biological.kmerIdentity.percent).toBeNull();
+      expect(result.summary.similarityCategory).not.toBe('insufficient_data');
+      expect(result.summary.sequenceSimilarity).toBe(100);
+      expect(result.summary.insights.some(insight => /same species/i.test(insight.message))).toBe(false);
+    });
+
+    test('does not apply a species cutoff to equal canonical genome content', async () => {
+      const phageA = { id: 1, name: 'Forward', accession: 'FORWARD' };
+      const phageB = { id: 2, name: 'Reverse', accession: 'REVERSE' };
+      const sequence = 'AACCTGATGCTAGTCAGGATCGTACCTGAGTACCGATTCAGGCTATCGACGTTAGCTGGATCAGTAC';
+      const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+      const reverse = [...sequence].reverse().map(base => complement[base]).join('');
+      const result = await compareGenomes(phageA, phageB, sequence, reverse);
+      expect(result.biological.kmerIdentity.percent).toBe(100);
+      const insight = result.summary.insights.find(item => item.category === 'K-mer identity estimate');
+      expect(insight?.message).toContain('no alignment or species inference');
+      expect(result.summary.insights.some(item => /likely same species|high ANI/i.test(item.message))).toBe(false);
+    });
+
     test('categorizes similarity correctly', async () => {
       const phageA = { id: 1, name: 'Phage A', accession: 'NC_001' };
       const phageB = { id: 2, name: 'Phage B', accession: 'NC_002' };

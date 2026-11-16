@@ -144,11 +144,12 @@ function computeSummary(
 
   // Sequence similarity (based on k-mer Jaccard, k=7)
   const kmer7 = kmerAnalysis.find(k => k.k === 7) ?? kmerAnalysis[0];
-  // Guard against empty kmerAnalysis array
-  const sequenceSimilarity = kmer7 ? kmer7.jaccardIndex * 100 : 0;
+  // An empty-set Jaccard convention is not evidence of sequence similarity.
+  const hasSequenceEvidence = !!kmer7 && kmer7.uniqueKmersA > 0 && kmer7.uniqueKmersB > 0;
+  const sequenceSimilarity = hasSequenceEvidence ? kmer7.jaccardIndex * 100 : 0;
 
   // Composition similarity (based on cosine of k-mer frequencies)
-  const compositionSimilarity = kmer7 ? kmer7.cosineSimilarity * 100 : 0;
+  const compositionSimilarity = hasSequenceEvidence ? kmer7.cosineSimilarity * 100 : 0;
 
   // Codon usage similarity
   const codonUsageSimilarity = codonUsage.rscuCosineSimilarity * 100;
@@ -158,46 +159,53 @@ function computeSummary(
 
   // Weighted overall score
   // Weights: sequence 40%, composition 25%, codon 20%, gene 15%
-  const overallSimilarity =
+  const overallSimilarity = hasSequenceEvidence ?
     sequenceSimilarity * 0.40 +
     compositionSimilarity * 0.25 +
     codonUsageSimilarity * 0.20 +
-    geneContentSimilarity * 0.15;
+    geneContentSimilarity * 0.15 : null;
 
   // Categorize similarity
-  const similarityCategory = categorizeSimilarity(overallSimilarity);
+  const similarityCategory = overallSimilarity === null ? 'insufficient_data' : categorizeSimilarity(overallSimilarity);
 
   // Determine confidence level based on data availability
   const hasGenes = geneContent.genesA > 0 && geneContent.genesB > 0;
   const hasLongSequences = biological.lengthA > 1000 && biological.lengthB > 1000;
-  const confidenceLevel = hasGenes && hasLongSequences
+  const confidenceLevel = !hasSequenceEvidence ? 'low' : hasGenes && hasLongSequences
     ? 'high'
     : hasLongSequences
     ? 'medium'
     : 'low';
 
   // Generate insights
-  // ANI insight
-  if (biological.aniScore >= 95) {
+  // K-mer resemblance is a descriptive approximation, not alignment-derived
+  // ANI. In particular, a bacterial ANI cutoff cannot classify phage species.
+  const identity = biological.kmerIdentity;
+  if (identity.percent !== null) {
     insights.push({
-      type: 'similarity',
-      category: 'ANI',
-      message: `Very high ANI (${biological.aniScore.toFixed(1)}%) - likely same species`,
-      value: biological.aniScore,
-      significance: 'high',
+      type: 'notable',
+      category: 'K-mer identity estimate',
+      message: `Mash-style estimate ${identity.percent.toFixed(1)}% from ${identity.sharedKmers.toLocaleString()} shared canonical ${identity.k}-mers; no alignment or species inference.`,
+      value: identity.percent,
+      significance: 'low',
     });
-  } else if (biological.aniScore < 70) {
+  } else {
     insights.push({
-      type: 'difference',
-      category: 'ANI',
-      message: `Low ANI (${biological.aniScore.toFixed(1)}%) - distantly related`,
-      value: biological.aniScore,
+      type: 'warning',
+      category: 'K-mer identity estimate',
+      message: identity.unavailableReason!,
       significance: 'high',
     });
   }
+  if (!hasSequenceEvidence) {
+    insights.push({ type: 'warning', category: 'Sequence evidence',
+      message: 'Insufficient resolved k-mers for an overall sequence comparison. No relatedness category is assigned.',
+      significance: 'high' });
+  }
 
   // GC content insight
-  if (biological.gcDifference < 2) {
+  const hasGcEvidence = biological.gcResolvedBasesA > 0 && biological.gcResolvedBasesB > 0;
+  if (hasGcEvidence && biological.gcDifference < 2) {
     insights.push({
       type: 'similarity',
       category: 'GC Content',
@@ -205,7 +213,7 @@ function computeSummary(
       value: biological.gcDifference,
       significance: 'medium',
     });
-  } else if (biological.gcDifference > 10) {
+  } else if (hasGcEvidence && biological.gcDifference > 10) {
     insights.push({
       type: 'difference',
       category: 'GC Content',
@@ -280,7 +288,7 @@ function computeSummary(
     insights.push({
       type: 'similarity',
       category: 'Edit Distance',
-      message: 'Very low edit distance - highly similar sequences',
+      message: 'Low submitted-strand edit distance between literal sequence symbols',
       value: editDistance.levenshteinSimilarity,
       significance: 'high',
     });

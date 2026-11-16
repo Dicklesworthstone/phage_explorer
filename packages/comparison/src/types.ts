@@ -67,17 +67,43 @@ export interface EditDistanceMetrics {
   windowCount?: number;               // Number of windows sampled
 }
 
+/** Exact, strand-independent k-mer resemblance transformed by the Mash model.
+ * This does not align genomes or establish taxonomic relatedness.
+ */
+export interface KmerIdentityEstimate {
+  method: 'canonical-kmer-mash';
+  k: number;
+  status: 'estimated' | 'unavailable';
+  percent: number | null;
+  distance: number | null;
+  jaccard: number | null;
+  sharedKmers: number;
+  coverageA: KmerIdentityCoverage;
+  coverageB: KmerIdentityCoverage;
+  unavailableReason: string | null;
+  warnings: string[];
+}
+
+export interface KmerIdentityCoverage {
+  totalWindows: number;
+  validWindows: number;
+  distinctKmers: number;
+  /** Fraction of length-k windows containing only resolved A/C/G/T bases. */
+  validWindowFraction: number;
+}
+
 // Biological sequence metrics
 export interface BiologicalMetrics {
-  // Average Nucleotide Identity (ANI)
-  aniScore: number;                   // ANI percentage (0-100)
-  aniMethod: 'kmer' | 'blast' | 'mummer';
+  kmerIdentity: KmerIdentityEstimate;
 
   // GC content comparison
-  gcContentA: number;                 // GC% of sequence A
-  gcContentB: number;                 // GC% of sequence B
-  gcDifference: number;               // Absolute difference
-  gcRatio: number;                    // Ratio (smaller/larger)
+  gcContentA: number;                 // GC% over resolved bases; requires gcResolvedBasesA > 0
+  gcContentB: number;                 // GC% over resolved bases; requires gcResolvedBasesB > 0
+  /** Number of A/C/G/T bases supporting each GC percentage; zero means unavailable. */
+  gcResolvedBasesA: number;
+  gcResolvedBasesB: number;
+  gcDifference: number;               // Absolute difference; requires resolved bases in both inputs
+  gcRatio: number;                    // Ratio (smaller/larger); requires resolved bases in both inputs
 
   // Genome size comparison
   lengthA: number;
@@ -166,7 +192,7 @@ export interface GeneContentComparison {
 
 // Overall comparison summary
 export interface ComparisonSummary {
-  overallSimilarity: number;          // Weighted aggregate score (0-100)
+  overallSimilarity: number | null;   // Descriptive weighted score; null without resolved sequence evidence
   similarityCategory: SimilarityCategory;
   confidenceLevel: ConfidenceLevel;
 
@@ -181,6 +207,7 @@ export interface ComparisonSummary {
 }
 
 export type SimilarityCategory =
+  | 'insufficient_data'   // No resolved k-mer evidence at the summary resolution
   | 'identical'           // >99%
   | 'highly_similar'      // 90-99%
   | 'similar'             // 70-90%

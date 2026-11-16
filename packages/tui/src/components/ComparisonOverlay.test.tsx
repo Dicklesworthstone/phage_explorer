@@ -59,6 +59,19 @@ describe('owned terminal comparison worker', () => {
     expect(result.biological.lengthB).toBe(128);
     expect(result.biological.gcContentA).toBe(50);
     expect(result.kmerAnalysis.every(row => row.jaccardIndex === 1)).toBe(true);
+    expect(result.biological.kmerIdentity.percent).toBe(100);
+    expect(result.biological.kmerIdentity.coverageA.validWindows).toBe(108);
+  });
+
+  it('preserves strand-independent identity and unavailability through the native worker', async () => {
+    const sequenceA = 'AACCTGATGCTAGTCAGGATCGTACCTGAGTACCGATTCAGGCTATCGACGTTAGCTGGATCAGTAC';
+    const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+    const sequenceB = [...sequenceA].reverse().map(base => complement[base]).join('');
+    const reverse = await runComparisonInWorker({ ...job, sequenceA, sequenceB });
+    expect(reverse.biological.kmerIdentity.percent).toBe(100);
+    const unknown = await runComparisonInWorker({ ...job, sequenceA: 'N'.repeat(32), sequenceB: 'N'.repeat(32) });
+    expect(unknown.biological.kmerIdentity.percent).toBeNull();
+    expect(unknown.summary.similarityCategory).toBe('insufficient_data');
   });
 
   it('does not create work for an already-cancelled request and terminates active cancellation once', async () => {
@@ -106,10 +119,10 @@ describe('owned terminal comparison worker', () => {
   });
 });
 
-async function fixture() {
+async function fixture(text = '>FIRST\n' + 'ACGT'.repeat(32) + '\n>SECOND\n' + 'ATGG'.repeat(32)
+  + '\n>THIRD\n' + 'TTCC'.repeat(32) + '\n') {
   const { genomes } = await importLocalGenomes({ name: 'comparison.fa',
-    text: '>FIRST\n' + 'ACGT'.repeat(32) + '\n>SECOND\n' + 'ATGG'.repeat(32)
-      + '\n>THIRD\n' + 'TTCC'.repeat(32) + '\n' });
+    text });
   const repository = createLocalGenomeRepository<PhageRepository>(null, genomes);
   const phages = await repository.listPhages();
   usePhageStore.setState({ phages, comparisonPhageAIndex: 0, comparisonPhageBIndex: 1,
@@ -141,6 +154,35 @@ function terminal(repository: PhageRepository, runWorker?: typeof runComparisonI
 }
 
 describe('terminal comparison source ownership and recovery', () => {
+  it('shows unavailable identity and no relatedness category for actual ambiguous local inputs', async () => {
+    const previous = usePhageStore.getState();
+    const { repository } = await fixture('>UNKNOWN_A\n' + 'N'.repeat(32) + '\n>UNKNOWN_B\n' + 'N'.repeat(32) + '\n');
+    const test = terminal(repository);
+    try {
+      await waitFor(() => test.output().includes('Insufficient resolved sequence'));
+      expect(usePhageStore.getState().comparisonResult?.biological.kmerIdentity.percent).toBeNull();
+      await waitFor(test.ready);
+      for (const expected of ['kmer', 'information', 'correlation', 'biological']) {
+        test.press('\t');
+        await waitFor(() => usePhageStore.getState().comparisonTab === expected);
+      }
+      await waitFor(() => test.output().includes('Mash-style k-mer identity estimate')).catch(cause => {
+        throw new Error(`${String(cause)}\nLast terminal output:\n${test.output().slice(-12000)}`);
+      });
+      expect(test.output()).toContain('Unavailable: Both sequences need');
+      expect(test.output()).toContain('Resolved windows A/B: 0/12');
+      expect(test.output()).not.toContain('likely same species');
+      expect(test.output()).not.toContain('ANI Score');
+      expect(test.output()).toContain('Resolved A/C/G/T bases: A 0/32; B 0/32');
+      const beforeDown = test.output().length;
+      test.press('\u001b[6~');
+      await waitFor(() => test.output().slice(beforeDown).includes('Amino Acid Usage:'));
+      const beforeUp = test.output().length;
+      test.press('\u001b[5~');
+      await waitFor(() => test.output().slice(beforeUp).includes('Mash-style k-mer identity estimate'));
+    } finally { test.ui.unmount(); await flush(); usePhageStore.setState(previous); }
+  });
+
   it('shows missing-source errors once and only retries after the R key', async () => {
     const previous = usePhageStore.getState();
     const { repository } = await fixture();

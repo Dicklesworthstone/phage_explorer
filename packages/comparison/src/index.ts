@@ -8,7 +8,7 @@
  * - Information Theory: Entropy, mutual information, KL/JS divergence
  * - Rank Correlation: Spearman's rho, Kendall's tau, Hoeffding's D
  * - Edit Distance: Levenshtein with windowed approximation for long sequences
- * - Biological Metrics: ANI, GC content, codon usage (RSCU), amino acid composition
+ * - Biological Metrics: K-mer identity estimates, GC content, codon usage (RSCU), amino acid composition
  * - Gene Content: Shared/unique genes, gene density comparison
  */
 

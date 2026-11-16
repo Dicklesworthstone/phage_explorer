@@ -515,12 +515,31 @@ Phage Explorer implements a comprehensive suite of genomic analysis algorithms, 
 | **Mosaic / Reference Similarity** | Canonical k-mer Jaccard against an explicit reference panel, with ties, coverage and sampled switch intervals | Bounded windows × references |
 | **Hilbert Curve Atlas** | Maps 1D sequence to 2D via space-filling curve; preserves locality for visual pattern recognition | O(N) |
 
+Genome comparisons report an exact canonical k-mer overlap and a Mash-style
+identity estimate, with distinct/shared word counts and resolved-window coverage.
+Canonical words make the result invariant to reverse complementation. The
+estimate is a substitution-model approximation, not alignment-based ANI or a
+species assignment; repeats, unequal lengths and ambiguous bases limit its
+interpretation. Missing words or zero shared words leave identity unavailable.
+No usable words at the selected comparison resolution also leave the aggregate
+similarity unavailable. GC percentages use resolved A/C/G/T bases and disclose
+their denominators; unknown-only inputs cannot imply a GC match.
+In the terminal, ↑/↓ or Page Up/Down scroll long reports while ←/→ switches tabs.
+
+Gene-start logos use complete, exact annotated initiation sites with supported
+genetic codes. They display each -20 to +9 genomic window in coding orientation,
+its source gene and every exclusion reason. Joined and reverse-strand starts
+retain annotation order; edge windows wrap only for explicitly circular records.
+Partial starts, unsupported initiators and split noncontiguous initiation codons
+are excluded. Custom alignments accept IUPAC DNA and are bounded to 2 MiB,
+1,000 sequences and 1,000 columns.
+
 ### Codon & Translation Analysis
 
 | Algorithm | Description |
 |-----------|-------------|
 | **Codon Bias (RSCU)** | Relative Synonymous Codon Usage; identifies preferred/rare codons per amino acid family |
-| **Ribosome Traffic** | Particle-based translation simulation with collision detection; bottleneck identification based on codon rarity |
+| **Ribosome Traffic** | Exclusion-process teaching model on an exact annotated CDS; inspectable selected-CDS codon-frequency probabilities |
 | **Periodicity Analysis** | Spectral analysis of GC% and purine runs; identifies repeating motifs (tandem repeats, period-3 codon patterns) |
 | **K-mer Frequency** | 256-element tetranucleotide vectors for phylogenetic profiling; base-4 encoding for O(1) lookup |
 
@@ -597,13 +616,35 @@ The Simulation Hub (`Shift+S`) provides interactive models of phage biology with
 **Output:** Phase classification (lysogenic/lytic/undecided) with time-series history
 
 ### 2. Ribosome Traffic Simulator
-**Model:** Particle-based translation with stochastic elongation
-**Mechanics:**
-- 9-codon ribosome footprint
-- Elongation rates derived from phage codon usage bias
-- Rare codons create traffic jams → bottlenecks
 
-**Output:** Protein production rate, stall events, density heatmap
+Select a CDS in the browser or terminal Simulation Hub. The default is the
+longest annotated CDS; an invalid selection reports its problem rather than
+silently substituting another gene. The track uses the complete repository
+sequence and transcript-ordered annotation, including reverse strands, joined
+segments, `codon_start` and the declared genetic code. Its length is the actual
+CDS length, without padding or truncation. Source metadata and model assumptions
+remain visible beside the track.
+
+**Model:** A discrete exclusion process with a configurable ribosome footprint
+(default nine codons), stochastic initiation/elongation/exit, and disjoint
+particle occupancy. Per-codon movement probabilities range from 0.1 to 1 using
+the codon's frequency relative to the most common synonymous codon in this
+selected CDS. These are uncalibrated teaching probabilities, not measured host
+tRNA supply, elongation times or protein yield. The explicit no-genome
+demonstration uses a synthetic uniform track; missing data for a selected genome
+does not fall back to that demonstration.
+
+**Output:** Completed tracks, blocked moves and codon-position occupancy.
+Fractional playback accumulates discrete steps without resampling extra events.
+Browser experiment exports retain the exact genome, annotation and selected CDS
+with the seed and accepted run history. Their version-2 replay rejects changed
+source bases or gene selection and refuses legacy ribosome records lacking this
+source contract.
+
+In the terminal, ←/→ changes speed, `[`/`]` selects a parameter, and `+`/`-`
+changes it. Ribosome parameter edits restart the exact selected track with empty
+occupancy; `.` steps and `R` resets it. Bounds are 5 million genome bases,
+50,000 annotations and 20,000 CDS codons.
 
 ### 3. Plaque Growth Automata
 **Model:** Cellular automaton with reaction-diffusion dynamics
