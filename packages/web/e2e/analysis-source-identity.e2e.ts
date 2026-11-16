@@ -4,6 +4,15 @@ import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type 
 
 declare global {
   interface Window {
+    logoIdentityFixture: {
+      select: (name: string) => void;
+      holdRead: (name: string) => void;
+      releaseRead: () => void;
+      readPending: boolean;
+      readReleased: boolean;
+      close: () => void;
+      reopen: () => void;
+    };
     analysisIdentityFixture: {
       select: (name: string) => void;
       reads: Record<string, number>;
@@ -264,6 +273,159 @@ for (const id of overlays) test(`${id} owns its repository, pending reads and re
       await overlay.getByRole('combobox', { name: 'Window:', exact: true }).selectOption('50');
       await expectReady(overlay, id, 'b');
     }
+    expect(errors).toEqual([]);
+  } finally {
+    await page.close();
+    await server.close();
+  }
+});
+
+test('gene-start logo preserves exact annotated motifs and rejects obsolete source reads', async ({ page }, info) => {
+  const root = process.cwd(), fixtureId = resolve(root, 'src/logo-identity-fixture.tsx');
+  if (!fixtureConfig) {
+    const loaded = await loadConfigFromFile({ command: 'serve', mode: 'development' }, resolve(root, 'vite.config.ts'));
+    if (!loaded) throw new Error('Could not load logo fixture configuration');
+    fixtureConfig = loaded.config;
+  }
+  const server = await createServer(mergeConfig(fixtureConfig, {
+    root, configFile: false, cacheDir: info.outputPath('vite-cache'),
+    server: { host: '127.0.0.1', port: 0, open: false },
+    plugins: [{
+      name: 'logo-identity-fixture',
+      resolveId(source) { if (source === '/src/logo-identity-fixture.tsx' || source === fixtureId) return fixtureId; },
+      load(source) {
+        if (source !== fixtureId) return;
+        return `
+          import React, { useEffect, useState } from 'react';
+          import { createRoot } from 'react-dom/client';
+          import { flushSync } from 'react-dom';
+          import { importLocalGenomes } from '@phage-explorer/core';
+          import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
+          import { LogoOverlay } from './components/overlays/LogoOverlay';
+          import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
+          import { ToastProvider } from './components/ui/Toast';
+          import { ScrollProvider } from './providers';
+          import './styles/index.css';
+          let select = () => {}, heldName = null, gate = null, release = () => {};
+          const fixture = window.logoIdentityFixture = {
+            select: name => select(name), readPending: false, readReleased: false,
+            close: () => {}, reopen: () => {},
+            holdRead(name) {
+              heldName = name; this.readPending = false; this.readReleased = false;
+              gate = new Promise(resolve => { release = resolve; });
+            },
+            releaseRead() { heldName = null; release(); },
+          };
+          async function entry(name, sequence, location = '21..50', topology = 'linear', qualifiers = '') {
+            const imported = await importLocalGenomes({ name: name + '.gb', text:
+              'LOCUS       input ' + sequence.length + ' bp DNA ' + topology + '\\nFEATURES             Location/Qualifiers\\n' +
+              '     CDS             ' + location + '\\n' + qualifiers +
+              'ORIGIN\\n        1 ' + sequence.toLowerCase() + '\\n//\\n' });
+            const genome = imported.genomes[0];
+            genome.phage = { ...genome.phage, id: -1 };
+            const repository = createLocalGenomeRepository(null, [genome]);
+            const read = repository.getSequenceWindow.bind(repository);
+            repository.getSequenceWindow = async (...args) => {
+              if (heldName === name) { const pending = gate; fixture.readPending = true; await pending; fixture.readReleased = true; }
+              if (name === 'error') throw new Error('fixture: sequence unavailable');
+              return read(...args);
+            };
+            return { repository, phage: genome.phage };
+          }
+          const a = 'A'.repeat(20) + 'ATG' + 'C'.repeat(37);
+          const circular = 'GGGTT' + 'C'.repeat(30) + 'A'.repeat(20) + 'ATGCC';
+          const entries = {
+            a: await entry('a', a),
+            b: await entry('b', 'C'.repeat(20) + 'ATG' + 'A'.repeat(37)),
+            delayed: await entry('delayed', 'G'.repeat(20) + 'ATG' + 'T'.repeat(37)),
+            circular: await entry('circular', circular, 'join(56..60,1..16)', 'circular'),
+            unknown: await entry('unknown', circular, 'join(56..60,1..16)', ''),
+            partial: await entry('partial', a, '21..50', 'linear', '                     /codon_start=2\\n'),
+            error: await entry('error', a),
+            missing: { repository: null, phage: null },
+          };
+          function Fixture() {
+            const [name, setName] = useState('a');
+            const { open, close } = useOverlay();
+            useEffect(() => {
+              select = next => flushSync(() => setName(next));
+              fixture.close = () => close('logo'); fixture.reopen = () => open('logo'); open('logo');
+            }, []);
+            return <LogoOverlay repository={entries[name].repository} currentPhage={entries[name].phage} />;
+          }
+          createRoot(document.getElementById('root')).render(
+            <ScrollProvider><ToastProvider><OverlayProvider><Fixture /></OverlayProvider></ToastProvider></ScrollProvider>
+          );
+        `;
+      },
+      configureServer(vite) {
+        vite.middlewares.use('/logo-identity-fixture', (_request, response, next) => {
+          void vite.transformIndexHtml('/logo-identity-fixture', '<div id="root"></div><script type="module" src="/src/logo-identity-fixture.tsx"></script>')
+            .then(html => { response.setHeader('Content-Type', 'text/html'); response.end(html); }).catch(next);
+        });
+      },
+    }],
+  } satisfies InlineConfig));
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await server.listen();
+    await page.goto(`${server.resolvedUrls!.local[0]}logo-identity-fixture`);
+    const overlay = page.getByTestId('overlay-logo'), coverage = overlay.getByTestId('gene-start-logo-coverage');
+    const expectWindow = async (sequence: string, anchor: number) => {
+      await expect(coverage).toContainText('1 distinct oriented starts from 1 mapped CDS features.');
+      const details = coverage.locator('details');
+      if (await details.getAttribute('open') === null) await details.locator('summary').click();
+      await expect(details.locator('tbody tr td').nth(1)).toHaveText(String(anchor));
+      await expect(details.locator('code')).toHaveText(sequence);
+    };
+    const original = 'A'.repeat(20) + 'ATG' + 'C'.repeat(7);
+    await expectWindow(original, 21);
+    await page.evaluate(() => { window.logoIdentityFixture.holdRead('delayed'); window.logoIdentityFixture.select('delayed'); });
+    await expect.poll(() => page.evaluate(() => window.logoIdentityFixture.readPending)).toBe(true);
+    await expect(coverage).toHaveCount(0);
+    await expect(overlay.getByLabel('Position 0', { exact: true })).toHaveCount(0);
+    await page.evaluate(() => window.logoIdentityFixture.select('missing'));
+    await page.evaluate(() => window.logoIdentityFixture.releaseRead());
+    await expect.poll(() => page.evaluate(() => window.logoIdentityFixture.readReleased)).toBe(true);
+    await expect(coverage).toHaveCount(0);
+    await expect(overlay).toContainText('Database not loaded yet.');
+
+    await page.evaluate(() => window.logoIdentityFixture.select('b'));
+    await expectWindow('C'.repeat(20) + 'ATG' + 'A'.repeat(7), 21);
+    await page.evaluate(() => window.logoIdentityFixture.select('circular'));
+    await expectWindow('A'.repeat(20) + 'ATGCCGGGTT', 56);
+    await expect(coverage).toContainText('Topology: circular; 1 windows cross the origin.');
+    await page.evaluate(() => window.logoIdentityFixture.select('unknown'));
+    await expect(coverage).toContainText('0 distinct oriented starts from 1 mapped CDS features.');
+    await expect(coverage).toContainText('without assuming circular topology');
+    await page.evaluate(() => window.logoIdentityFixture.select('partial'));
+    await expect(coverage).toContainText('0 distinct oriented starts from 1 mapped CDS features.');
+    await expect(coverage).toContainText('Partial or unsupported codon_start');
+    await page.evaluate(() => window.logoIdentityFixture.select('error'));
+    await expect(overlay).toContainText('fixture: sequence unavailable');
+    await expect(coverage).toHaveCount(0);
+    await page.evaluate(() => { window.logoIdentityFixture.select('a'); window.logoIdentityFixture.close(); });
+    await expect(overlay).toBeHidden();
+    await page.evaluate(() => window.logoIdentityFixture.reopen());
+    await expectWindow(original, 21);
+
+    await overlay.getByRole('button', { name: 'Custom MSA', exact: true }).click();
+    const alignment = overlay.getByLabel('Alignment', { exact: true });
+    const parse = overlay.getByRole('button', { name: 'Parse & Use Alignment', exact: true });
+    await alignment.fill('>a\nACRN\n>b\nACRN'); await parse.click();
+    await expect(overlay).toContainText('Alphabet: DNA');
+    await expect(overlay).toContainText('these IUPAC DNA symbols can also occur in proteins');
+    await expect(overlay.getByLabel('Position 3', { exact: true })).toHaveText('');
+    await alignment.fill('>a\n' + 'A'.repeat(1001)); await parse.click();
+    await expect(overlay).toContainText('limited to 1,000 sequences and 1,000 columns');
+    await expect(overlay.getByLabel('Position 1', { exact: true })).toHaveCount(0);
+    await overlay.getByLabel('Upload', { exact: true }).setInputFiles({
+      name: 'oversized.fa', mimeType: 'text/plain', buffer: Buffer.alloc(2 * 1024 * 1024 + 1, 'A'),
+    });
+    await expect(overlay).toContainText('limited to 2 MiB');
+    await alignment.fill('>a\nACGT\n>b\nACGT'); await parse.click();
+    await expect(overlay.getByLabel('Position 1', { exact: true })).toHaveText('A');
     expect(errors).toEqual([]);
   } finally {
     await page.close();

@@ -8,9 +8,9 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { AlphabetType, GeneInfo, PhageFull } from '@phage-explorer/core';
-import { computeSequenceLogo, reverseComplement } from '@phage-explorer/core';
-import type { LogoColumn } from '@phage-explorer/core';
+import type { AlphabetType, PhageFull } from '@phage-explorer/core';
+import { buildGeneStartAlignment, computeSequenceLogo, GENE_START_LOGO_WINDOW, GENE_START_LOGO_EXCLUSION_LABELS } from '@phage-explorer/core';
+import type { GeneStartLogoAlignment, LogoColumn } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
 import { Overlay } from './Overlay';
@@ -21,10 +21,13 @@ interface LogoOverlayProps {
   currentPhage: PhageFull | null;
 }
 
-const UPSTREAM_BP = 20;
-const DOWNSTREAM_BP = 10;
+const UPSTREAM_BP = GENE_START_LOGO_WINDOW.upstream;
+const DOWNSTREAM_BP = GENE_START_LOGO_WINDOW.downstream;
 const WINDOW_BP = UPSTREAM_BP + DOWNSTREAM_BP;
 const STACK_HEIGHT_PX = 120;
+const MAX_ALIGNMENT_BYTES = 2 * 1024 * 1024;
+const MAX_ALIGNMENT_SEQUENCES = 1000;
+const MAX_ALIGNMENT_COLUMNS = 1000;
 
 type LogoSourceMode = 'gene-start' | 'custom';
 type AlphabetMode = 'auto' | AlphabetType;
@@ -35,69 +38,9 @@ const MAX_BITS_BY_ALPHABET: Record<AlphabetType, number> = {
   protein: Math.log2(20),
 };
 
-function isReverseStrand(strand: string | null): boolean {
-  return (strand ?? '').trim() === '-';
-}
-
 function formatRelativePosition(pos: number): string {
   if (pos > 0) return `+${pos}`;
   return `${pos}`;
-}
-
-function buildGeneStartAlignment(genome: string, genes: GeneInfo[]): { alignment: string[]; totalCds: number } {
-  const upperGenome = genome.toUpperCase();
-  const genomeLength = upperGenome.length;
-
-  const cdsGenes = genes.filter((g) => (g.type ?? '').toUpperCase() === 'CDS');
-
-  // Collapse multi-segment CDS rows (e.g. join / wrap-around) into a single
-  // anchor point so we don't over-count the same gene multiple times.
-  type CdsAnchor = { strand: string | null; minStartPos: number; maxEndPos: number };
-  const anchorsByKey = new Map<string, CdsAnchor>();
-
-  for (const gene of cdsGenes) {
-    const locusTag = (gene.locusTag ?? '').trim();
-    const key = locusTag ? `locus:${locusTag}` : `id:${gene.id}`;
-    const existing = anchorsByKey.get(key);
-    if (!existing) {
-      anchorsByKey.set(key, { strand: gene.strand, minStartPos: gene.startPos, maxEndPos: gene.endPos });
-      continue;
-    }
-    existing.minStartPos = Math.min(existing.minStartPos, gene.startPos);
-    existing.maxEndPos = Math.max(existing.maxEndPos, gene.endPos);
-    // Preserve the first non-null strand we see (they should be consistent).
-    if (!existing.strand && gene.strand) {
-      existing.strand = gene.strand;
-    }
-  }
-
-  const alignment: string[] = [];
-
-  const orderedAnchors = [...anchorsByKey.values()].sort((a, b) => {
-    const anchorA = isReverseStrand(a.strand) ? a.maxEndPos : a.minStartPos;
-    const anchorB = isReverseStrand(b.strand) ? b.maxEndPos : b.minStartPos;
-    return anchorA - anchorB;
-  });
-
-  for (const gene of orderedAnchors) {
-    const startPos = gene.minStartPos;
-    const endPos = gene.maxEndPos;
-    if (!Number.isFinite(startPos) || !Number.isFinite(endPos)) continue;
-
-    if (isReverseStrand(gene.strand)) {
-      const start = endPos - DOWNSTREAM_BP;
-      const end = endPos + UPSTREAM_BP;
-      if (start < 0 || end > genomeLength) continue;
-      alignment.push(reverseComplement(upperGenome.slice(start, end)));
-    } else {
-      const start = startPos - UPSTREAM_BP;
-      const end = startPos + DOWNSTREAM_BP;
-      if (start < 0 || end > genomeLength) continue;
-      alignment.push(upperGenome.slice(start, end));
-    }
-  }
-
-  return { alignment, totalCds: anchorsByKey.size };
 }
 
 function normalizeAlignmentText(raw: string): string {
@@ -200,17 +143,20 @@ function parseClustalAlignment(rawText: string): string[] {
 }
 
 function parseAlignment(rawText: string): { alignment: string[]; format: AlignmentFormat } {
+  if (rawText.length > MAX_ALIGNMENT_BYTES || new TextEncoder().encode(rawText).length > MAX_ALIGNMENT_BYTES) {
+    throw new Error('Logo alignments are limited to 2 MiB. Select a smaller aligned region.');
+  }
   const trimmed = normalizeAlignmentText(rawText).trim();
   if (!trimmed) {
     throw new Error('Paste/upload an aligned FASTA (or CLUSTAL) first.');
   }
-  if (trimmed.startsWith('>')) {
-    return { alignment: parseFastaAlignment(trimmed), format: 'fasta' };
+  const format = trimmed.startsWith('>') ? 'fasta' : /^(CLUSTAL|MUSCLE)/i.test(trimmed) ? 'clustal' : null;
+  if (!format) throw new Error('Unrecognized format. Paste/upload an aligned FASTA (">" headers) or CLUSTAL alignment.');
+  const alignment = format === 'fasta' ? parseFastaAlignment(trimmed) : parseClustalAlignment(trimmed);
+  if (alignment.length > MAX_ALIGNMENT_SEQUENCES || alignment[0].length > MAX_ALIGNMENT_COLUMNS) {
+    throw new Error('Logo alignments are limited to 1,000 sequences and 1,000 columns. Select a smaller aligned region.');
   }
-  if (/^(CLUSTAL|MUSCLE)/i.test(trimmed)) {
-    return { alignment: parseClustalAlignment(trimmed), format: 'clustal' };
-  }
-  throw new Error('Unrecognized format. Paste/upload an aligned FASTA (">" headers) or CLUSTAL alignment.');
+  return { alignment, format };
 }
 
 function isProbablyDna(alignment: string[]): boolean {
@@ -218,7 +164,7 @@ function isProbablyDna(alignment: string[]): boolean {
     for (const c of seq) {
       const ch = c.toUpperCase();
       if (ch === '-' || ch === '.') continue;
-      if (ch === 'A' || ch === 'C' || ch === 'G' || ch === 'T' || ch === 'U' || ch === 'N') continue;
+      if ('ACGTURYSWKMBDHVN'.includes(ch)) continue;
       return false;
     }
   }
@@ -230,7 +176,7 @@ function isAlphabetAmbiguous(alignment: string[]): boolean {
     for (const c of seq) {
       const ch = c.toUpperCase();
       if (ch === '-' || ch === '.') continue;
-      if (ch === 'A' || ch === 'C' || ch === 'G' || ch === 'T' || ch === 'N') continue;
+      if ('ACGTRYSWKMBDHVN'.includes(ch)) continue;
       return false;
     }
   }
@@ -245,6 +191,32 @@ function normalizeAlignmentForAlphabet(alignment: string[], alphabet: AlphabetTy
   return alignment.map((seq) => seq.toUpperCase().replace(/\./g, '-'));
 }
 
+export function GeneStartLogoCoverage({ result }: { result: GeneStartLogoAlignment }): React.ReactElement {
+  const reasons = new Map<string, number>();
+  for (const item of result.excluded) reasons.set(item.reason, (reasons.get(item.reason) ?? 0) + 1);
+  const wrapped = result.windows.filter(window => window.wrapped).length;
+  return <section aria-label="Gene-start logo coverage" data-testid="gene-start-logo-coverage">
+    <p>{result.windows.length} distinct oriented starts from {result.totalCds} mapped CDS features.
+      {' '}{result.excluded.length} excluded. Topology: {result.topology}; {wrapped} windows cross the origin.</p>
+    <p>Windows follow the annotated transcript's first segment and preserve genomic flanks in coding orientation.
+      Only exact starts with codon_start=1 and an initiator in the annotated NCBI code are included; a missing code uses table 1.
+      Circular wrapping requires explicitly known circular topology. These are annotation-based motifs, not measured initiation or transcription.</p>
+    {reasons.size > 0 && <ul>{[...reasons].map(([reason, count]) =>
+      <li key={reason}>{count}: {GENE_START_LOGO_EXCLUSION_LABELS[reason as keyof typeof GENE_START_LOGO_EXCLUSION_LABELS]}</li>)}</ul>}
+    {result.windows.length > 0 && <details>
+      <summary>Inspect exact motif windows ({Math.min(50, result.windows.length)} shown)</summary>
+      <p>Anchor is the 1-based genomic position of the first initiation-codon base. Context is −20 through +9 in coding orientation.</p>
+      <div style={{ overflowX: 'auto' }}><table>
+        <thead><tr><th>CDS</th><th>Anchor</th><th>Strand</th><th>Code</th><th>Genomic context</th></tr></thead>
+        <tbody>{result.windows.slice(0, 50).map(window => <tr key={`${window.strand}:${window.anchor}`}>
+          <td>{window.name}</td><td>{window.anchor + 1}</td><td>{window.strand}</td><td>{window.geneticCode}</td>
+          <td><code>{window.sequence}</code>{window.wrapped ? ' (origin crossing)' : ''}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </details>}
+  </section>;
+}
+
 export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): React.ReactElement | null {
   const { theme } = useTheme();
   const colors = theme.colors;
@@ -252,10 +224,15 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
 
   const [mode, setMode] = useState<LogoSourceMode>('gene-start');
 
-  const [alignment, setAlignment] = useState<string[]>([]);
-  const [totalCds, setTotalCds] = useState<number | null>(null);
-  const [status, setStatus] = useState<'idle' | 'loading'>('idle');
-  const [error, setError] = useState<string | null>(null);
+  const [snapshot, setSnapshot] = useState<{
+    repository: PhageRepository; phage: PhageFull; result: GeneStartLogoAlignment | null; loading: boolean; error: string | null;
+  } | null>(null);
+  const current = snapshot?.repository === repository && snapshot?.phage === currentPhage ? snapshot : null;
+  const geneStarts = current?.result ?? null;
+  const alignment = useMemo(() => geneStarts?.windows.map(window => window.sequence) ?? [], [geneStarts]);
+  const totalCds = geneStarts?.totalCds ?? null;
+  const status = repository && currentPhage && (!current || current.loading) ? 'loading' : 'idle';
+  const error = !repository ? 'Database not loaded yet.' : !currentPhage ? 'No phage loaded yet.' : current?.error ?? null;
 
   const [customDraft, setCustomDraft] = useState<string>('');
   const [customSourceLabel, setCustomSourceLabel] = useState<string | null>(null);
@@ -264,68 +241,38 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
   const [customAlignment, setCustomAlignment] = useState<string[]>([]);
   const [customFormat, setCustomFormat] = useState<AlignmentFormat | null>(null);
   const [alphabetMode, setAlphabetMode] = useState<AlphabetMode>('auto');
-
-  const requestIdRef = useRef(0);
+  const customReader = useRef<FileReader | null>(null);
+  const customGeneration = useRef(0);
+  useEffect(() => () => { customGeneration.current++; customReader.current?.abort(); }, []);
 
   const overlayOpen = isOpen('logo');
 
   useEffect(() => {
     if (!overlayOpen || mode !== 'gene-start') return;
 
-    if (!repository) {
-      setError('Database not loaded yet.');
-      setAlignment([]);
-      setTotalCds(null);
-      setStatus('idle');
-      return;
-    }
-
-    if (!currentPhage) {
-      setError('No phage loaded yet.');
-      setAlignment([]);
-      setTotalCds(null);
-      setStatus('idle');
-      return;
-    }
-
-    const requestId = ++requestIdRef.current;
-    setStatus('loading');
-    setError(null);
-
-    const getGenomeLength = async (): Promise<number> => {
-      if (typeof currentPhage.genomeLength === 'number') return currentPhage.genomeLength;
-      return repository.getFullGenomeLength(currentPhage.id);
-    };
-
-    const getGenes = async (): Promise<GeneInfo[]> => {
-      if (Array.isArray(currentPhage.genes) && currentPhage.genes.length > 0) {
-        return currentPhage.genes;
-      }
-      return repository.getGenes(currentPhage.id);
-    };
+    if (!repository || !currentPhage) { setSnapshot(null); return; }
+    let cancelled = false;
+    const input = { repository, phage: currentPhage };
+    setSnapshot({ ...input, result: null, loading: true, error: null });
 
     void (async () => {
       try {
-        const [len, genes] = await Promise.all([getGenomeLength(), getGenes()]);
-        if (requestIdRef.current !== requestId) return;
+        const [len, genes] = await Promise.all([repository.getFullGenomeLength(currentPhage.id), repository.getGenes(currentPhage.id)]);
+        if (cancelled) return;
 
         const genome = await repository.getSequenceWindow(currentPhage.id, 0, len);
-        if (requestIdRef.current !== requestId) return;
+        if (cancelled) return;
+        if (genome.length !== len) throw new Error('The complete genome could not be read. Retry after the sequence has loaded.');
 
-        const { alignment: nextAlignment, totalCds: nextTotalCds } = buildGeneStartAlignment(genome, genes);
-        setAlignment(nextAlignment);
-        setTotalCds(nextTotalCds);
+        const result = buildGeneStartAlignment(genome, genes, currentPhage.localGenome?.topology ?? 'unknown');
+        setSnapshot({ ...input, result, loading: false, error: null });
       } catch (e) {
-        if (requestIdRef.current !== requestId) return;
+        if (cancelled) return;
         const msg = e instanceof Error ? e.message : 'Failed to load genome sequence';
-        setError(msg);
-        setAlignment([]);
-        setTotalCds(null);
-      } finally {
-        if (requestIdRef.current !== requestId) return;
-        setStatus('idle');
+        setSnapshot({ ...input, result: null, loading: false, error: msg });
       }
     })();
+    return () => { cancelled = true; };
   }, [currentPhage, mode, overlayOpen, repository]);
 
   const applyCustom = useCallback((nextText: string, sourceLabel: string | null): void => {
@@ -350,13 +297,27 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
   const onUploadFile = useCallback(
     (file: File | null) => {
       if (!file) return;
+      const generation = ++customGeneration.current;
+      customReader.current?.abort();
+      setCustomAlignment([]); setCustomFormat(null); setCustomError(null); setCustomSourceLabel(null); setCustomDraft('');
+      if (file.size > MAX_ALIGNMENT_BYTES) {
+        setCustomStatus('idle');
+        setCustomError('Logo alignments are limited to 2 MiB. Select a smaller aligned region.');
+        return;
+      }
       const reader = new FileReader();
+      customReader.current = reader;
+      setCustomStatus('parsing');
       reader.onload = () => {
+        if (generation !== customGeneration.current) return;
+        customReader.current = null;
         const text = typeof reader.result === 'string' ? reader.result : '';
         setCustomDraft(text);
         applyCustom(text, file.name);
       };
       reader.onerror = () => {
+        if (generation !== customGeneration.current) return;
+        customReader.current = null; setCustomStatus('idle');
         setCustomError('Failed to read file.');
       };
       reader.readAsText(file);
@@ -371,7 +332,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
   }, [alphabetMode, customAlignment, mode]);
 
   const alphabetAmbiguous = useMemo(() => {
-    return mode === 'custom' && alphabetMode === 'auto' && isAlphabetAmbiguous(customAlignment);
+    return mode === 'custom' && customAlignment.length > 0 && alphabetMode === 'auto' && isAlphabetAmbiguous(customAlignment);
   }, [alphabetMode, customAlignment, mode]);
 
   const activeAlignment = useMemo(() => {
@@ -461,11 +422,11 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
 
           {mode === 'gene-start' ? (
             <span style={{ color: colors.textMuted, fontSize: '0.95rem' }}>
-              Real alignment of fixed windows around CDS translation start sites (0 = start codon).
+              Fixed genomic windows around supported annotated CDS starts (0 = first initiation-codon base).
             </span>
           ) : (
             <span style={{ color: colors.textMuted, fontSize: '0.95rem' }}>
-              Paste or upload an aligned FASTA (or CLUSTAL) to visualize true conservation across sequences.
+              Paste or upload an aligned FASTA (or CLUSTAL) to inspect symbol frequencies and information content.
             </span>
           )}
         </div>
@@ -511,7 +472,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
 
         {mode === 'gene-start' && !error && status !== 'loading' && alignment.length === 0 && (
           <div style={{ color: colors.textMuted, fontSize: '0.95rem' }}>
-            No CDS start windows available for this phage (or windows run off genome edges).
+            No supported complete CDS start windows are available for this phage. Inspect the coverage and exclusions below.
           </div>
         )}
 
@@ -555,6 +516,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
               <button
                 type="button"
                 onClick={() => {
+                  customGeneration.current++; customReader.current?.abort(); setCustomStatus('idle');
                   setCustomDraft('');
                   setCustomSourceLabel(null);
                   setCustomError(null);
@@ -584,7 +546,11 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
             <textarea
               id="logo-custom-alignment"
               value={customDraft}
-              onChange={(e) => setCustomDraft(e.target.value)}
+              maxLength={MAX_ALIGNMENT_BYTES}
+              onChange={(e) => {
+                customGeneration.current++; customReader.current?.abort(); setCustomStatus('idle');
+                setCustomDraft(e.target.value); setCustomSourceLabel(null); setCustomAlignment([]); setCustomFormat(null); setCustomError(null);
+              }}
               placeholder={'>seq1\nACGT...\n>seq2\nACGT...\n\n(or CLUSTAL format)'}
               aria-describedby={!customError && customAlignment.length === 0 ? 'logo-custom-alignment-hint' : undefined}
               rows={6}
@@ -603,7 +569,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
 
             {alphabetAmbiguous && (
               <div style={{ color: colors.warning, fontSize: '0.9rem' }}>
-                Alphabet is ambiguous (alignment contains only A/C/G/T/N). Choose DNA or Protein if Auto is incorrect.
+                Alphabet is ambiguous: these IUPAC DNA symbols can also occur in proteins. Choose DNA or Protein explicitly if Auto is incorrect.
               </div>
             )}
 
@@ -616,6 +582,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
             {!customError && customAlignment.length === 0 && (
               <div id="logo-custom-alignment-hint" style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
                 Paste/upload an aligned FASTA (or CLUSTAL). All sequences must be the same length; gaps (e.g. '-' or '.') are OK.
+                {' '}Limits: 2 MiB, 1,000 sequences and 1,000 columns.
               </div>
             )}
           </div>
@@ -633,11 +600,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
           </div>
         )}
 
-        {mode === 'gene-start' && !error && alignment.length > 0 && (
-          <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
-            Note: Window selection is filtered to avoid edges; some CDS may be excluded if the window runs off the genome.
-          </div>
-        )}
+        {mode === 'gene-start' && geneStarts && <GeneStartLogoCoverage result={geneStarts} />}
 
         {(mode === 'gene-start' ? !error : !customError) && activeAlignment.length > 0 && (
           <div
@@ -729,7 +692,7 @@ export function LogoOverlay({ repository, currentPhage }: LogoOverlayProps): Rea
 
         <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
           Tip: Sequence logos visualize information content (bits) per position across aligned sequences.
-          {mode === 'custom' ? ' Unknown characters and gaps are ignored when computing frequencies.' : ''}
+          {' '}Unresolved symbols and gaps are excluded per column; the small-sample correction can give zero-height stacks when observations are few.
         </div>
       </div>
     </Overlay>
