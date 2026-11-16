@@ -1,8 +1,9 @@
 import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { computeSequenceDiff } from '@phage-explorer/comparison';
-import { ComparisonDiffView } from './ComparisonOverlay';
+import { compareGenomes, computeSequenceDiff } from '@phage-explorer/comparison';
+import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
+import { ComparisonDiffView, runWebComparison } from './ComparisonOverlay';
 
 describe('comparison diff result rendering', () => {
   it('renders real budget exhaustion as unavailable, never identical', () => {
@@ -26,5 +27,123 @@ describe('comparison diff result rendering', () => {
     expect(html).not.toContain('comparison-identical'); expect(html).toContain('Aligned sequence edit coordinates');
     expect(html).toContain('deletion'); expect(html).toContain('insertion'); expect(html).toContain('60.00');
     expect(html).toContain('between bases 4 and 5');
+  });
+});
+
+const comparisonJob = {
+  jobId: 'owned-comparison',
+  phageA: { id: -1, name: 'Reference', accession: 'local-reference' },
+  phageB: { id: -2, name: 'Query', accession: 'local-query' },
+  sequenceA: 'AAACCCGGGTTT',
+  sequenceB: 'AAACCCGAGTTT',
+  genesA: [], genesB: [],
+} satisfies ComparisonJob & { jobId: string };
+
+class ControlledComparisonWorker {
+  onmessage: ((event: MessageEvent<ComparisonWorkerMessage>) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onmessageerror: (() => void) | null = null;
+  posted: ComparisonJob | null = null;
+  transfers: Transferable[] = [];
+  terminated = 0;
+  failPost = false;
+  postMessage(job: ComparisonJob, transfer: Transferable[]) {
+    if (this.failPost) throw new Error('transfer failed');
+    this.posted = job; this.transfers = transfer;
+  }
+  terminate() { this.terminated++; }
+  reply(message: ComparisonWorkerMessage) { this.onmessage?.({ data: message } as MessageEvent<ComparisonWorkerMessage>); }
+}
+const factory = (worker: ControlledComparisonWorker): (() => Worker) => () => worker as unknown as Worker;
+async function actualComparisonReply(): Promise<ComparisonWorkerMessage> {
+  const job = comparisonJob;
+  return { jobId: job.jobId, ok: true,
+    result: await compareGenomes(job.phageA, job.phageB, job.sequenceA, job.sequenceB),
+    diff: computeSequenceDiff(job.sequenceA, job.sequenceB) };
+}
+
+describe('owned browser comparison worker', () => {
+  it('transports an actual computed result and the exact diff together, then frees its worker', async () => {
+    const worker = new ControlledComparisonWorker();
+    const transfer = [new ArrayBuffer(4)];
+    const pending = runWebComparison(comparisonJob, transfer, undefined, 1000, factory(worker));
+    expect(worker.posted).toBe(comparisonJob); expect(worker.transfers).toBe(transfer);
+    worker.reply(await actualComparisonReply());
+    const payload = await pending;
+    expect(payload.result.biological.lengthA).toBe(12);
+    expect(payload.diff.status).toBe('complete');
+    if (payload.diff.status === 'complete') expect(payload.diff.stats).toMatchObject({ distance: 1, substitutions: 1, matches: 11 });
+    expect(worker.terminated).toBe(1); expect(worker.onmessage).toBeNull();
+  });
+
+  it('does not construct a cancelled worker and aborts an already posted job', async () => {
+    const controller = new AbortController(); controller.abort();
+    const worker = new ControlledComparisonWorker();
+    let created = 0;
+    await expect(runWebComparison(comparisonJob, [], controller.signal, 1000, () => {
+      created++; return factory(worker)();
+    })).rejects.toHaveProperty('name', 'AbortError');
+    expect(created).toBe(0);
+
+    const active = new AbortController();
+    const pending = runWebComparison(comparisonJob, [], active.signal, 1000, factory(worker));
+    const queuedReply = worker.onmessage!;
+    active.abort();
+    await expect(pending).rejects.toHaveProperty('name', 'AbortError');
+    // A queued message handler cannot turn a settled cancellation into success.
+    queuedReply({ data: await actualComparisonReply() } as MessageEvent<ComparisonWorkerMessage>);
+    expect(worker.terminated).toBe(1); expect(worker.onmessage).toBeNull();
+  });
+
+  it('keeps other metrics when the exact diff explicitly reports unavailable', async () => {
+    const worker = new ControlledComparisonWorker();
+    const pending = runWebComparison(comparisonJob, [], undefined, 1000, factory(worker));
+    const message = await actualComparisonReply();
+    message.diff = computeSequenceDiff(comparisonJob.sequenceA, comparisonJob.sequenceB, { maxStates: 0 });
+    worker.reply(message);
+    const result = await pending;
+    expect(result.diff.status).toBe('unavailable');
+    expect(result.result.phageA.accession).toBe('local-reference');
+  });
+
+  it('rejects replies for the wrong request, genome or sequence instead of accepting their numbers', async () => {
+    for (const change of [
+      (message: ComparisonWorkerMessage) => { message.jobId = 'obsolete'; },
+      (message: ComparisonWorkerMessage) => { message.result!.phageA.accession = 'different-source'; },
+      (message: ComparisonWorkerMessage) => { message.result!.biological.lengthB = 11; },
+      (message: ComparisonWorkerMessage) => { if (message.diff?.status === 'complete') message.diff.stats.lengthA = 11; },
+      (message: ComparisonWorkerMessage) => { if (message.diff?.status === 'complete') message.diff.mask = new Uint8Array(1); },
+    ]) {
+      const worker = new ControlledComparisonWorker();
+      const pending = runWebComparison(comparisonJob, [], undefined, 1000, factory(worker));
+      const message = structuredClone(await actualComparisonReply());
+      change(message); worker.reply(message);
+      await expect(pending).rejects.toThrow('different');
+      expect(worker.terminated).toBe(1);
+    }
+  });
+
+  it('settles missing results, worker failures, unreadable messages and failed transfers', async () => {
+    for (const failure of ['missing', 'error', 'messageerror', 'post'] as const) {
+      const worker = new ControlledComparisonWorker();
+      worker.failPost = failure === 'post';
+      const pending = runWebComparison(comparisonJob, [], undefined, 1000, factory(worker));
+      if (failure === 'missing') worker.reply({ ok: true, jobId: comparisonJob.jobId });
+      else if (failure === 'error') worker.onerror!();
+      else if (failure === 'messageerror') worker.onmessageerror!();
+      await expect(pending).rejects.toThrow();
+      expect(worker.terminated).toBe(1); expect(worker.onmessage).toBeNull();
+    }
+    const unavailable = new Error('worker construction failed');
+    await expect(runWebComparison(comparisonJob, [], undefined, 1000, () => { throw unavailable; })).rejects.toBe(unavailable);
+  });
+
+  it('expires a silent worker and rejects invalid deadlines before starting work', async () => {
+    const worker = new ControlledComparisonWorker();
+    await expect(runWebComparison(comparisonJob, [], undefined, 1, factory(worker))).rejects.toThrow('timed out');
+    expect(worker.terminated).toBe(1);
+    const unused = new ControlledComparisonWorker();
+    await expect(runWebComparison(comparisonJob, [], undefined, 0, factory(unused))).rejects.toThrow('positive integer');
+    expect(unused.posted).toBeNull(); expect(unused.terminated).toBe(0);
   });
 });

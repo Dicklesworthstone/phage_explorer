@@ -4,13 +4,14 @@ import { Overlay } from './Overlay';
 import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
+import type { PhageSummary } from '@phage-explorer/core';
 import type { GenomeComparisonResult, SequenceDiffResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
 import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import DiffHighlighter from '../DiffHighlighter';
 import { OverlayEmptyState, OverlayErrorState, OverlayLoadingState, OverlayStack } from './primitives';
 import { SharedSequencePool } from '../../workers/SharedSequencePool';
-import type { ComparisonWorkerMessage } from '../../workers/types';
+import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
 
 function formatBpRange(start: number, end: number): string {
   const lo = Math.min(start, end);
@@ -55,6 +56,79 @@ type ComparisonWorkerPayload = {
   diff: SequenceDiffResult;
 };
 
+/** One request owns one worker, including its deadline and cancellation. */
+export function runWebComparison(
+  job: ComparisonJob & { jobId: string },
+  transfer: Transferable[] = [],
+  signal?: AbortSignal,
+  timeoutMs = 300000,
+  createWorker: () => Worker = () => new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url), { type: 'module' }),
+): Promise<ComparisonWorkerPayload> {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => new DOMException('Comparison cancelled.', 'AbortError');
+    if (signal?.aborted) { reject(cancelled()); return; }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      reject(new Error('Comparison timeout must be a positive integer.')); return;
+    }
+    let worker: Worker;
+    try { worker = createWorker(); } catch (error) { reject(error); return; }
+    let settled = false;
+    const finish = (error?: Error, payload?: ComparisonWorkerPayload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
+      worker.terminate();
+      if (error) reject(error); else resolve(payload!);
+    };
+    const onAbort = () => finish(cancelled());
+    const timer = setTimeout(() => finish(new Error('Comparison worker timed out. Select Run to retry.')), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    worker.onmessage = (event: MessageEvent<ComparisonWorkerMessage>) => {
+      if (settled) return;
+      const message = event.data;
+      if (!message || message.jobId !== job.jobId) {
+        finish(new Error('Comparison worker returned a result for a different request.')); return;
+      }
+      if (message.ok !== true || !message.result || !message.diff) {
+        finish(new Error(message.error ?? 'Comparison worker returned no complete response.')); return;
+      }
+      const { result, diff } = message;
+      const samePhage = (actual: GenomeComparisonResult['phageA'] | undefined, expected: ComparisonJob['phageA']) =>
+        actual?.id === expected.id && actual.name === expected.name && actual.accession === expected.accession;
+      const lengthA = 'sequenceA' in job ? job.sequenceA.length : job.sequenceARef.length;
+      const lengthB = 'sequenceB' in job ? job.sequenceB.length : job.sequenceBRef.length;
+      if (!samePhage(result.phageA, job.phageA) || !samePhage(result.phageB, job.phageB)
+        || result.biological?.lengthA !== lengthA || result.biological?.lengthB !== lengthB
+        || (diff.status !== 'complete' && diff.status !== 'unavailable')
+        || diff.status === 'complete' && (diff.stats?.lengthA !== lengthA || diff.stats?.lengthB !== lengthB
+          || !(diff.mask instanceof Uint8Array) || diff.mask.length !== lengthA
+          || !Array.isArray(diff.positions) || !Array.isArray(diff.runs))
+        || diff.status === 'unavailable' && (typeof diff.reason !== 'string' || !diff.reason)) {
+        finish(new Error('Comparison worker returned a result for different inputs.')); return;
+      }
+      finish(undefined, { result, diff });
+    };
+    worker.onerror = () => finish(new Error('The comparison worker failed. Select Run to retry.'));
+    worker.onmessageerror = () => finish(new Error('The comparison worker returned unreadable data. Select Run to retry.'));
+    try { if (signal?.aborted) onAbort(); else worker.postMessage(job, transfer); }
+    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+  });
+}
+
+interface OwnedComparison {
+  repository: PhageRepository;
+  phageA: PhageSummary;
+  phageB: PhageSummary;
+  revision: number;
+  payload: ComparisonWorkerPayload | null;
+  sequenceA: string;
+  sequenceB: string;
+  error: string | null;
+  loading: boolean;
+}
+
 export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
   diff: SequenceDiffResult | null; sequenceA: string; sequenceB: string;
 }): React.ReactElement {
@@ -92,14 +166,12 @@ export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
 }
 
 export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository }) => {
-  const { isOpen } = useOverlay();
+  const { isOpen, close } = useOverlay();
 
   const phages = usePhageStore((s) => s.phages);
   const phageAIndex = usePhageStore((s) => s.comparisonPhageAIndex);
   const phageBIndex = usePhageStore((s) => s.comparisonPhageBIndex);
   const comparisonTab = usePhageStore((s) => s.comparisonTab);
-  const comparisonResult = usePhageStore((s) => s.comparisonResult);
-  const comparisonLoading = usePhageStore((s) => s.comparisonLoading);
   const setComparisonPhageA = usePhageStore((s) => s.setComparisonPhageA);
   const setComparisonPhageB = usePhageStore((s) => s.setComparisonPhageB);
   const setComparisonResult = usePhageStore((s) => s.setComparisonResult);
@@ -107,136 +179,137 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
   const setComparisonTab = usePhageStore((s) => s.setComparisonTab);
   const closeComparison = usePhageStore((s) => s.closeComparison);
 
-  const [error, setError] = useState<string | null>(null);
-  const workerRef = useRef<Worker | null>(null);
-  const cancelWorkerRef = useRef<(() => void) | null>(null);
-  const [sequenceA, setSequenceA] = useState<string>('');
-  const [sequenceB, setSequenceB] = useState<string>('');
-  const [diff, setDiff] = useState<SequenceDiffResult | null>(null);
-  const activeJobIdRef = useRef<string | null>(null);
-
+  const [comparison, setComparison] = useState<OwnedComparison | null>(null);
+  const [revision, setRevision] = useState(0);
+  const operation = useRef<AbortController | null>(null);
+  const defaulted = useRef(false);
+  const overlayOpen = isOpen('comparison');
   const phageA = phageAIndex !== null ? phages[phageAIndex] : null;
   const phageB = phageBIndex !== null ? phages[phageBIndex] : null;
   const canCompare = Boolean(repository && phageA && phageB && phageA.id !== phageB.id);
+  const source = useRef({ repository, phageA, phageB, revision, overlayOpen });
+  source.current = { repository, phageA, phageB, revision, overlayOpen };
+  // The store's result is also consumed outside this panel. Rendering additionally
+  // requires the exact repository/pair that produced both metrics and diff bases.
+  const owned = overlayOpen && comparison?.repository === repository && comparison.phageA === phageA
+    && comparison.phageB === phageB && comparison.revision === revision ? comparison : null;
+  const comparisonResult = owned?.payload?.result ?? null;
+  const comparisonLoading = overlayOpen && canCompare && (!owned || owned.loading);
+  const error = owned?.error ?? null;
+  const diff = owned?.payload?.diff ?? null;
+  const sequenceA = owned?.sequenceA ?? '';
+  const sequenceB = owned?.sequenceB ?? '';
 
-  // Cancel computation as well as publication when the overlay closes.
+  // Choose defaults once per opening; an explicit empty selection stays empty.
   useEffect(() => {
-    return () => {
-      activeJobIdRef.current = null;
-      cancelWorkerRef.current?.();
+    if (!overlayOpen) { defaulted.current = false; return; }
+    if (defaulted.current || phages.length < 2) return;
+    defaulted.current = true;
+    if (phageAIndex === null) setComparisonPhageA(phageBIndex === 0 ? 1 : 0);
+    if (phageBIndex === null) setComparisonPhageB(phageAIndex === 1 ? 0 : 1);
+  }, [overlayOpen, phageAIndex, phageBIndex, phages.length, setComparisonPhageA, setComparisonPhageB]);
+
+  const runComparison = useCallback(() => {
+    operation.current?.abort();
+    setRevision(value => value + 1);
+  }, []);
+
+  const handleClose = useCallback(() => {
+    operation.current?.abort();
+    setComparisonLoading(false);
+    closeComparison();
+    close('comparison');
+  }, [close, closeComparison, setComparisonLoading]);
+
+  // Reads, computation and publication share one owner. Invalid selections,
+  // repository replacement, closure and retries all revoke the previous owner.
+  useEffect(() => {
+    setComparisonResult(null);
+    if (!overlayOpen || !repository || !phageA || !phageB || phageA.id === phageB.id) {
+      setComparison(null);
       setComparisonLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    operation.current = controller;
+    const owner = { repository, phageA, phageB, revision };
+    const current = () => {
+      const state = usePhageStore.getState();
+      return operation.current === controller && !controller.signal.aborted
+        && source.current.overlayOpen && source.current.repository === repository
+        && source.current.phageA === phageA && source.current.phageB === phageB
+        && source.current.revision === revision
+        && state.phages[state.comparisonPhageAIndex ?? -1] === phageA
+        && state.phages[state.comparisonPhageBIndex ?? -1] === phageB;
     };
-  }, [setComparisonLoading]);
-
-  // Default selection when opened
-  useEffect(() => {
-    if (!isOpen('comparison')) return;
-    if (phages.length >= 2) {
-      if (phageAIndex === null) setComparisonPhageA(0);
-      if (phageBIndex === null) setComparisonPhageB(1);
-    }
-  }, [isOpen, phageAIndex, phageBIndex, phages.length, setComparisonPhageA, setComparisonPhageB]);
-
-  const runComparison = useCallback(async () => {
-    if (!repository || !phageA || !phageB || phageA.id === phageB.id) return;
-    const jobId = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    activeJobIdRef.current = jobId;
-    cancelWorkerRef.current?.();
+    setComparison({ ...owner, payload: null, sequenceA: '', sequenceB: '', error: null, loading: true });
     setComparisonLoading(true);
-    setError(null);
-    setDiff(null);
-    try {
-      const [fullA, fullB] = await Promise.all([
-        repository.getPhageById(phageA.id),
-        repository.getPhageById(phageB.id),
-      ]);
-      if (!fullA || !fullB) {
-        throw new Error('Failed to load phage data');
+    void (async () => {
+      try {
+        const [fullA, fullB] = await Promise.all([
+          repository.getPhageById(phageA.id),
+          repository.getPhageById(phageB.id),
+        ]);
+        // An abandoned metadata read must not start another whole-genome read.
+        if (!current()) return;
+        if (!fullA || !fullB) {
+          throw new Error('A selected genome is no longer available. Select the genomes again.');
+        }
+        if (fullA.id !== phageA.id || fullB.id !== phageB.id
+          || fullA.accession !== phageA.accession || fullB.accession !== phageB.accession) {
+          throw new Error('The loaded genomes do not match the selected sources.');
+        }
+        const lengthA = fullA.genomeLength ?? 0, lengthB = fullB.genomeLength ?? 0;
+        if (!Number.isSafeInteger(lengthA) || !Number.isSafeInteger(lengthB) || lengthA <= 0 || lengthB <= 0) {
+          throw new Error('Both genomes need a known, nonzero sequence length.');
+        }
+        const [seqA, seqB] = await Promise.all([
+          repository.getSequenceWindow(phageA.id, 0, lengthA),
+          repository.getSequenceWindow(phageB.id, 0, lengthB),
+        ]);
+        if (!current()) return;
+        if (seqA.length !== lengthA || seqB.length !== lengthB) {
+          throw new Error('A complete sequence could not be loaded for both genomes.');
+        }
+        const pool = SharedSequencePool.getInstance();
+        const { ref: sequenceARef, transfer: transferA } = pool.getOrCreateRef(phageA.id, seqA);
+        const { ref: sequenceBRef, transfer: transferB } = pool.getOrCreateRef(phageB.id, seqB);
+        const job = {
+          jobId: crypto.randomUUID(),
+          phageA: { id: phageA.id, name: phageA.name, accession: phageA.accession },
+          phageB: { id: phageB.id, name: phageB.name, accession: phageB.accession },
+          sequenceARef, sequenceBRef,
+          genesA: fullA.genes ?? [], genesB: fullB.genes ?? [],
+          codonUsageA: fullA.codonUsage ?? null, codonUsageB: fullB.codonUsage ?? null,
+        };
+        const payload = await runWebComparison(job, [...transferA, ...transferB], controller.signal);
+        if (!current()) return;
+        setComparison({ ...owner, payload, sequenceA: seqA, sequenceB: seqB, error: null, loading: false });
+        setComparisonResult(payload.result);
+      } catch (cause) {
+        if (current()) setComparison({ ...owner, payload: null, sequenceA: '', sequenceB: '', loading: false,
+          error: cause instanceof Error ? cause.message : 'Comparison failed' });
+      } finally {
+        if (current()) setComparisonLoading(false);
       }
-      const lengthA = fullA.genomeLength ?? 0;
-      const lengthB = fullB.genomeLength ?? 0;
-      const [seqA, seqB] = await Promise.all([
-        repository.getSequenceWindow(phageA.id, 0, lengthA),
-        repository.getSequenceWindow(phageB.id, 0, lengthB),
-      ]);
-
-      if (activeJobIdRef.current !== jobId) return;
-
-      setSequenceA(seqA);
-      setSequenceB(seqB);
-
-      const pool = SharedSequencePool.getInstance();
-      const { ref: sequenceARef, transfer: transferA } = pool.getOrCreateRef(phageA.id, seqA);
-      const { ref: sequenceBRef, transfer: transferB } = pool.getOrCreateRef(phageB.id, seqB);
-
-      const job = {
-        jobId,
-        phageA: { id: phageA.id, name: phageA.name, accession: phageA.accession },
-        phageB: { id: phageB.id, name: phageB.name, accession: phageB.accession },
-        sequenceARef,
-        sequenceBRef,
-        genesA: fullA.genes ?? [],
-        genesB: fullB.genes ?? [],
-        codonUsageA: fullA.codonUsage ?? null,
-        codonUsageB: fullB.codonUsage ?? null,
-      };
-
-      const payload = await new Promise<ComparisonWorkerPayload>((resolve, reject) => {
-          const worker = new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url), { type: 'module' });
-          workerRef.current = worker;
-          const dispose = () => {
-            worker.terminate();
-            if (workerRef.current === worker) {
-              workerRef.current = null;
-              cancelWorkerRef.current = null;
-            }
-          };
-          cancelWorkerRef.current = () => { dispose(); reject(new Error('Comparison cancelled')); };
-          const handleMessage = (event: MessageEvent<ComparisonWorkerMessage>) => {
-            if (event.data.jobId && event.data.jobId !== jobId) return;
-            dispose();
-            if (event.data.ok && event.data.result && event.data.diff) {
-              resolve({
-                result: event.data.result,
-                diff: event.data.diff,
-              });
-            } else {
-              reject(new Error(event.data.error ?? 'Worker comparison failed'));
-            }
-          };
-          worker.onmessage = handleMessage;
-          worker.onerror = () => { dispose(); reject(new Error('The comparison worker failed. Select Run to retry.')); };
-          worker.onmessageerror = () => { dispose(); reject(new Error('The comparison worker returned unreadable data. Select Run to retry.')); };
-          try { worker.postMessage(job, [...transferA, ...transferB]); }
-          catch (err) { dispose(); reject(err); }
-        });
-      if (activeJobIdRef.current !== jobId) return;
-      setDiff(payload.diff);
-      setComparisonResult(payload.result);
-    } catch (err) {
-      if (activeJobIdRef.current !== jobId) return;
-      const msg = err instanceof Error ? err.message : 'Comparison failed';
-      setError(msg);
-    } finally {
-      if (activeJobIdRef.current === jobId) {
+    })();
+    return () => {
+      controller.abort();
+      if (operation.current === controller) {
+        operation.current = null;
         setComparisonLoading(false);
+        setComparisonResult(null);
       }
-    }
-  }, [phageA, phageB, repository, setComparisonLoading, setComparisonResult]);
-
-  // Auto-run when both phages selected and overlay open
-  useEffect(() => {
-    if (isOpen('comparison') && phageA && phageB && phageA.id !== phageB.id) {
-      void runComparison();
-    }
-  }, [isOpen, phageA, phageB, runComparison]);
+    };
+  }, [overlayOpen, phageA, phageB, repository, revision, setComparisonLoading, setComparisonResult]);
 
   const header = useMemo(() => {
     return (
       <div className="comparison-header" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
         <select
           value={phageAIndex ?? ''}
-          onChange={(e) => setComparisonPhageA(Number(e.target.value))}
+          aria-label="Phage A"
+          onChange={(e) => setComparisonPhageA(e.target.value === '' ? null : Number(e.target.value))}
           style={{ flex: 1, padding: '0.4rem' }}
         >
           <option value="">Select Phage A</option>
@@ -248,7 +321,8 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         </select>
         <select
           value={phageBIndex ?? ''}
-          onChange={(e) => setComparisonPhageB(Number(e.target.value))}
+          aria-label="Phage B"
+          onChange={(e) => setComparisonPhageB(e.target.value === '' ? null : Number(e.target.value))}
           style={{ flex: 1, padding: '0.4rem' }}
         >
           <option value="">Select Phage B</option>
@@ -681,7 +755,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       id="comparison"
       title="Comparison"
       size="xl"
-      onClose={() => closeComparison()}
+      onClose={handleClose}
       showBackdrop
     >
       <OverlayStack gap="sm">
@@ -710,7 +784,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
           >
             {comparisonLoading ? 'Running…' : 'Re-run'}
           </button>
-          <button className="btn-secondary" type="button" onClick={() => closeComparison()}>
+          <button className="btn-secondary" type="button" onClick={handleClose}>
             Close
           </button>
         </div>
