@@ -8,10 +8,12 @@ import { createGCSkewRecord, replayGCSkewRecord, type ResolvedGCSkewOptions } fr
 import { createRestrictionDigestRecord, replayRestrictionDigestRecord, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
 import type { MosaicDataset, MosaicRadarConfig } from '../../../core/src/analysis/recombination-radar';
+import type { RNAStructureRequest } from '../../../core/src/analysis/rna-structure-experiment';
 import { searchSpacerReferences, createSpacerRecord, type SpacerGenome, type SpacerLibrary,
   type SpacerSearchOptions } from '../../../core/src/analysis/spacer-reference';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
+  { type: 'rna'; request: RNAStructureRequest } |
   { type: 'spacers'; genome: SpacerGenome; library: SpacerLibrary; options: SpacerSearchOptions } |
   { type: 'mosaic'; dataset: MosaicDataset; options: Required<MosaicRadarConfig> } |
   { type: 'dot-plot'; genome: LocalGenome; comparison: LocalGenome | null; options: { bins: number; window: number } } |
@@ -26,6 +28,10 @@ export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult 
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'rna') {
+    const { executeRNAStructureRequest } = await import('../../../core/src/analysis/rna-structure-experiment');
+    return { type: 'analysis', record: (await executeRNAStructureRequest(request.request)).record };
+  }
   if (request.type === 'spacers') {
     const result = searchSpacerReferences(request.genome, request.library, request.options);
     return { type: 'analysis', record: await createSpacerRecord(request.genome, request.library, result) };

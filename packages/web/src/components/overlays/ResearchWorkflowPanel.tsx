@@ -5,6 +5,7 @@ import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
   researchMosaicParameters, researchMosaicDataset, researchSpacerParameters, researchSpacerGenome,
+  researchRNAParameters, researchRNARequest, researchRNASource,
   readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
@@ -12,6 +13,8 @@ import { CODON_REFERENCE_METHOD, inspectCodonReferenceInput, referenceCodonMetho
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
+import { RNA_PAIRING_METHOD, type RNAStructureAnalysis } from '../../../../core/src/analysis/rna-structure';
+import { parseRNAInterval, mapRNAInterval, exportRNAStructureTsv, type RNAIntervalSource } from '../../../../core/src/analysis/rna-structure-experiment';
 import { exportDotPlotExperimentTsv, exportPairwiseDotPlotExperimentTsv } from '../../../../core/src/analysis/dot-plot';
 import { resolveRestrictionDigestOptions, exportRestrictionDigestTsv, type RestrictionDigestFragment } from '../../../../core/src/analysis/restriction-digest';
 import { MOSAIC_METHOD, mosaicResultFromRecord, validateMosaicDataset, exportMosaicTsv } from '../../../../core/src/analysis/recombination-radar';
@@ -71,7 +74,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
     pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
     dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
-    spacers: ActionIds.OverlayCRISPR }, {
+    spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -150,6 +153,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       if (response.type !== 'analysis') throw new Error('Expected sourced spacer evidence.');
       return response.record;
     },
+    rna: async (request, signal) => {
+      const response = await runResearchWorker({ type: 'rna', request }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected portable RNA pairing evidence.');
+      return response.record;
+    },
     codons: async (genome, geneId, signal) => {
       const response = await runResearchWorker({ type: 'codons', genome, geneId }, signal);
       if (response.type !== 'analysis') throw new Error('Expected CDS analysis evidence.');
@@ -211,6 +219,11 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [frame, setFrame] = useState<ResearchView['readingFrame']>(0);
   const [minimum, setMinimum] = useState('8'), [gap, setGap] = useState('5000');
   const [gcWindow, setGcWindow] = useState('500'), [gcStep, setGcStep] = useState('125');
+  const [rnaGene, setRnaGene] = useState('genome');
+  const [rnaSettings, setRnaSettings] = useState<{
+    sourceKey: string; start: string; end: string; strand: '+' | '-';
+    windowSize: string; stepSize: string; minLoopSize: string; allowWobble: boolean; includeSynonymousStress: boolean;
+  } | null>(null);
   const [dotComparison, setDotComparison] = useState('');
   const [dotBins, setDotBins] = useState('80'), [dotWindow, setDotWindow] = useState('20');
   const [digestNames, setDigestNames] = useState('EcoRI');
@@ -223,6 +236,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [spacerHost, setSpacerHost] = useState(''), [spacerMismatches, setSpacerMismatches] = useState('0');
   const [spacerTopology, setSpacerTopology] = useState<SpacerGenome['topology']>('unknown');
   useEffect(() => { setDigestTopology(''); }, [selected]);
+  useEffect(() => { setRnaGene('genome'); }, [selected]);
   useEffect(() => {
     setSpacerTopology(genomes.find(g => g.phage.localGenome?.contentId === selected)?.phage.localGenome?.topology ?? 'unknown');
   }, [selected, genomes]);
@@ -327,6 +341,33 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [graphIds, graphReference, graphAlignment, graphTerminals, graphNormalization, graphMismatch, graphOpening, graphExtension, graphAnnotate, graphGeneIds, annotationGenome]);
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
+  const rnaSource = useMemo(() => {
+    try {
+      if (!genome) throw new Error('Select an available workflow genome.');
+      return { target: researchRNASource(genome, rnaGene === 'genome' ? null : Number(rnaGene)), error: null };
+    } catch (cause) { return { target: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, rnaGene]);
+  const rnaSourceKey = `${selected}:${rnaGene}`;
+  const rnaControls = useMemo(() => {
+    if (rnaSettings?.sourceKey === rnaSourceKey) return rnaSettings;
+    const length = Math.min(rnaSource.target?.sequence.length ?? 1, 600), coding = rnaGene !== 'genome';
+    return { sourceKey: rnaSourceKey, start: '1', end: String(length), strand: '+' as const,
+      windowSize: String(Math.min(coding ? 60 : 120, length)), stepSize: String(Math.min(coding ? 15 : 30, length)),
+      minLoopSize: '3', allowWobble: true, includeSynonymousStress: false };
+  }, [rnaSettings, rnaSourceKey, rnaSource, rnaGene]);
+  const rnaDraft = useMemo(() => {
+    try {
+      if (!genome || !rnaSource.target) throw new Error(rnaSource.error ?? 'Select an RNA source.');
+      const interval = parseRNAInterval(rnaControls.start, rnaControls.end, rnaSource.target.sequence.length, rnaGene !== 'genome');
+      const number = (value: string) => value.trim() ? Number(value) : NaN;
+      const parameters = researchRNAParameters(selected, { geneId: rnaGene === 'genome' ? null : Number(rnaGene),
+        ...interval, strand: rnaControls.strand }, { windowSize: number(rnaControls.windowSize), stepSize: number(rnaControls.stepSize),
+        minLoopSize: number(rnaControls.minLoopSize), allowWobble: rnaControls.allowWobble, frame: 0,
+        includeSynonymousStress: rnaControls.includeSynonymousStress });
+      researchRNARequest(genome, parameters);
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, selected, rnaSource, rnaGene, rnaControls]);
   const spacerDraft = useMemo(() => {
     try {
       if (!spacerLibrary) throw new Error('Import a sourced spacer library to record this comparison.');
@@ -383,6 +424,12 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         status: SpacerSearchResult['status']; hosts: SpacerSearchResult['hosts']; windows: SpacerSearchResult['coverage'];
         excluded: SpacerSearchResult['excluded']; distinctSequences: number; complete: true;
       } };
+  }, [acceptedAnalysis]);
+  const rnaResult = useMemo(() => {
+    const record = acceptedAnalysis;
+    if (!record || record.method.id !== RNA_PAIRING_METHOD.id || record.method.version !== RNA_PAIRING_METHOD.version) return null;
+    return { record, source: (record.inputs[0].data as unknown as { source: RNAIntervalSource }).source,
+      analysis: record.fields.analysis.value as unknown as RNAStructureAnalysis };
   }, [acceptedAnalysis]);
   const commandBusy = inputBusy || !['idle', 'recording'].includes(state.mode);
   const busy = commandBusy || libraryBusy;
@@ -494,7 +541,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -631,6 +678,44 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <p>Libraries are limited to 2 MiB. All recorded commands and embedded inputs together must fit the 10 MiB workflow limit.
         Search budgets fail explicitly without accepting a partial result.</p>
     </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record RNA pairing intervals</legend>
+      <p>Input: {genome?.phage.name ?? 'select a workflow genome above'}. Choose a genomic interval or one annotated CDS.
+        Joined and reverse-strand CDS use their extracted transcript coordinates after codon_start.</p>
+      <label>Workflow RNA source <select value={rnaGene} onChange={event => setRnaGene(event.target.value)}>
+        <option value="genome">Genomic coordinates</option>
+        {genome?.phage.genes.filter(item => item.type === 'CDS').map(item => <option key={item.id} value={item.id}>
+          CDS {item.id}: {item.locusTag ?? item.name ?? 'unnamed'}
+        </option>)}
+      </select></label>
+      <p>{rnaSource.target ? `${rnaSource.target.sequence.length.toLocaleString()} source bases; ${rnaGene === 'genome' ? 'forward genome' : 'CDS transcript'} coordinates.` : rnaSource.error}
+        {' '}Select at most 6,000 bases. Shorter intervals may be required by the shared computation budget.</p>
+      <label>Workflow RNA start (1-based) <input type="number" min={1} value={rnaControls.start}
+        onChange={event => setRnaSettings({ ...rnaControls, start: event.target.value })} /></label>
+      <label>Workflow RNA end (inclusive) <input type="number" min={1} value={rnaControls.end}
+        onChange={event => setRnaSettings({ ...rnaControls, end: event.target.value })} /></label>
+      <label>Workflow RNA strand <select value={rnaControls.strand} disabled={rnaGene !== 'genome'}
+        onChange={event => setRnaSettings({ ...rnaControls, strand: event.target.value as '+' | '-' })}>
+        <option value="+">Forward / transcript order</option><option value="-">Reverse complement of genomic interval</option>
+      </select></label>
+      <label>Workflow RNA window (bases) <input type="number" min={1} max={240} value={rnaControls.windowSize}
+        onChange={event => setRnaSettings({ ...rnaControls, windowSize: event.target.value })} /></label>
+      <label>Workflow RNA step (bases) <input type="number" min={1} max={6000} value={rnaControls.stepSize}
+        onChange={event => setRnaSettings({ ...rnaControls, stepSize: event.target.value })} /></label>
+      <label>Workflow RNA minimum loop (bases) <input type="number" min={0} max={30} value={rnaControls.minLoopSize}
+        onChange={event => setRnaSettings({ ...rnaControls, minLoopSize: event.target.value })} /></label>
+      <label><input type="checkbox" checked={rnaControls.allowWobble}
+        onChange={event => setRnaSettings({ ...rnaControls, allowWobble: event.target.checked })} /> Allow GU wobble in workflow RNA folds</label>
+      <label><input type="checkbox" checked={rnaControls.includeSynonymousStress} disabled={!rnaSource.target?.synonymousSupported}
+        onChange={event => setRnaSettings({ ...rnaControls, includeSynonymousStress: event.target.checked })} /> Include workflow RNA synonymous sensitivity</label>
+      <p>Synonymous sensitivity requires a supported table 1 or 11 CDS, an annotation-defined codon boundary, and no exceptional or pseudogene annotations.
+        Unit-weight maximum pairing is a sequence score; it does not estimate energy, stability or biological function.</p>
+      {rnaDraft.error && <p>{rnaDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !rnaDraft.parameters} onClick={() => {
+        if (busy || !active || !rnaDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayRNAStructure, analysisJson(rnaDraft.parameters));
+        invoke(() => task);
+      }}>Run and record RNA pairing</button>
+    </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record portable GC skew</legend>
       <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Complete linear windows only; topology is not inferred from a circular annotation.</p>
       <label>Workflow GC-skew window (bp) <input type="number" min={1} max={1000000} value={gcWindow} onChange={event => setGcWindow(event.target.value)} /></label>
@@ -765,7 +850,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       {selectedExecution && <p role="status">Inspecting accepted archive execution {selectedExecution.execution}, repetition {selectedExecution.iteration}, step {selectedExecution.step}. Current drafts do not change this evidence.</p>}
       {!selectedExecution && !research.result && <p role="status">The latest command changed the view. The last accepted analysis remains available with its original inputs and parameters.</p>}
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
-      <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. Coordinate TSV exports omit the source-sequence fields.</p>
+      <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. RNA window TSV also contains the analyzed window sequences.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
       {spacerResult && <section aria-label="Recorded spacer results">
         <h4>{spacerResult.genome.name}: accepted sourced spacer comparison</h4>
@@ -860,6 +945,24 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
           <thead><tr><th>Query interval</th><th>Status</th><th>Closest reference</th><th>Jaccard</th></tr></thead>
           <tbody>{mosaicResult.result.windows.slice(0, 50).map(row => <tr key={row.start}><td>[{row.start}, {row.end})</td>
             <td>{row.status}</td><td>{row.donor ?? (row.tiedReferences.length ? row.tiedReferences.join(', ') : 'Unresolved')}</td><td>{row.score.toFixed(6)}</td></tr>)}</tbody>
+        </table></div>
+      </section>}
+      {rnaResult && <section aria-label="Recorded RNA pairing results">
+        <h4>Accepted RNA interval structures</h4>
+        <p>{rnaResult.source.name} · {rnaResult.source.coordinateSystem} · [{rnaResult.source.start}, {rnaResult.source.end}) · strand {rnaResult.source.strand}
+          {rnaResult.source.gene ? ` · CDS ${rnaResult.source.gene}` : ''}.</p>
+        <p>{rnaResult.analysis.windows.length} complete windows. Scores are minus pair counts, with no energy unit.
+          An unpaired window has a zero pair count and an unavailable score. Independent window structures need not form one compatible transcript structure.</p>
+        <p>Window/source coordinates are zero-based and half-open. Only the first 50 windows are shown; exports retain every window.
+          Draft edits do not change this accepted source or analysis.</p>
+        <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(exportRNAStructureTsv(rnaResult.record), 'workflow-rna-windows.tsv', 'text/tab-separated-values'))}>Export workflow RNA windows TSV</button>
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded RNA window structures">
+          <thead><tr><th>Source interval</th><th>Pair count</th><th>Pairing score</th><th>Structure</th></tr></thead>
+          <tbody>{rnaResult.analysis.windows.slice(0, 50).map(row => {
+            const source = mapRNAInterval(rnaResult.source, row.start, row.end);
+            return <tr key={row.start}><td>[{source.start}, {source.end})</td><td>{row.pairCount}</td>
+              <td>{row.pairingScore ?? 'Unavailable'}</td><td><code>{row.structure}</code></td></tr>;
+          })}</tbody>
         </table></div>
       </section>}
       {gcResult && <section aria-label="Recorded GC-skew results">

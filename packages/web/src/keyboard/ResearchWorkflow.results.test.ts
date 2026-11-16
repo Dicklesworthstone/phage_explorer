@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { ResearchWorkflow, researchDigestParameters, researchSpacerParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
+import { ResearchWorkflow, researchDigestParameters, researchSpacerParameters, researchRNAParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
@@ -10,10 +10,53 @@ import { createRestrictionDigestRecord } from '../../../core/src/analysis/restri
 import type { ReferenceSpacerHit, SpacerLibrary } from '../../../core/src/analysis/spacer-reference';
 import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import { fileURLToPath } from 'node:url';
+import type { RNAStructureAnalysis } from '../../../core/src/analysis/rna-structure';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation', dotPlot: 'overlay.dotPlot', digest: 'overlay.gel' };
 function latch() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+
+describe('production browser RNA workflow adapter', () => {
+  it('runs the real worker and replays the same complete RNA evidence in browser and native hosts', async () => {
+    const { createBrowserResearchWorkflow } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { useLocalGenomes } = await import('../db/local-genomes');
+    const { ActionIds } = await import('./actionRegistry');
+    const { replayResearchTape } = await import('../../../tui/src/research-replay');
+    const before = useLocalGenomes.getState();
+    const parsed = await importLocalGenomes({ name: 'private-rna.fa', text: '>RNA control\nTTGGGAAACCCAA\n' });
+    useLocalGenomes.setState({ genomes: parsed.genomes, requestedId: null });
+    const binding = createBrowserResearchWorkflow(async () => { throw new Error('This analysis must not navigate'); });
+    try {
+      const workflow = binding.workflow;
+      const parameters = researchRNAParameters(parsed.genomes[0].phage.localGenome!.contentId,
+        { geneId: null, start: 2, end: 11, strand: '+' },
+        { windowSize: 9, stepSize: 9, minLoopSize: 3, allowWobble: false, includeSynonymousStress: false, frame: 0 });
+      workflow.start('Bounded private RNA fold');
+      await workflow.commands.dispatch(ActionIds.OverlayRNAStructure, analysisJson(parameters));
+      const record = workflow.getSnapshot().lastAnalysis!;
+      const fold = (record.fields.analysis.value as unknown as RNAStructureAnalysis).windows[0];
+      assert.equal(fold.pairCount, 3); assert.equal(fold.structure, '(((...)))');
+      assert.deepEqual(fold.pairs, [[0, 8], [1, 7], [2, 6]]);
+      workflow.commands.stop();
+      const tape = workflow.commands.export(), archive = await workflow.replayWithResults(2);
+      const native = await replayResearchTape(tape, { repetitions: 2, captureResults: true });
+      assert.equal(native.report.completed, 2); assert.equal(native.allResultsJson, archive);
+      assert.deepEqual(native.lastAnalysis, record);
+
+      // A forged value with freshly recomputed checksums remains false evidence.
+      const saved = await parseWorkflowResults(archive), forged = structuredClone(saved.records[0]);
+      (forged.fields.analysis.value as unknown as RNAStructureAnalysis).windows[0].pairCount = 0;
+      saved.records[0] = await createAnalysisRecord(forged);
+      const changed = parseCommandTape(saved.tapeJson), replacement = saved.records[0];
+      changed.commands[0].expected = analysisJson({ method: replacement.method, cacheKey: replacement.cacheKey, resultId: replacement.resultId });
+      saved.tapeJson = serializeCommandTape(changed);
+      const altered = serializeWorkflowResults(saved);
+      await workflow.loadResultsAndReview(altered, new AbortController().signal);
+      await assert.rejects(workflow.verifyCompleteResults(altered), /differs/);
+      assert.equal(workflow.exportCompleteResults(), archive);
+    } finally { binding.dispose(); useLocalGenomes.setState(before); }
+  });
+});
 
 describe('captured catalog research workflows', () => {
   it('replays captured catalog sequence and CDS analysis in real browser workers and native hosts after the catalog closes', async () => {

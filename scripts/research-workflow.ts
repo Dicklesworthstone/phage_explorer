@@ -211,9 +211,23 @@ Plans and the completed tape must each fit 10 MiB; allow room for recorded outpu
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
 pangenome/CDS experiments, portable GC-skew counts, exact-pairs repeats, self/pairwise
-dot plots, restriction digests, Mosaic reference panels and sourced spacer comparisons. Source-corpus references are freshly
+dot plots, restriction digests, RNA pairing intervals, Mosaic reference panels and sourced spacer comparisons. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
+
+Recorded RNA pairing uses actionId overlay.rnaStructure and parameters
+{contentId, geneId, start, end, strand, options}. A null geneId selects forward
+genome coordinates; a CDS ID selects its extracted, annotation-defined transcript.
+start/end are zero-based, half-open and bound a nonempty interval of at most 6000
+bases. strand is + or - for genomic input, and + for an already oriented CDS;
+CDS starts must be codon boundaries. options explicitly contains windowSize,
+stepSize, minLoopSize, allowWobble, frame: 0 and includeSynonymousStress.
+Synonymous sensitivity additionally requires a table 1 or 11 CDS without
+exceptional/pseudogene annotations. Complete original genomes and annotations
+come from context.bundle; source labels and interval bases are derived again on
+every execution. The bounded maximum-pairing producer is shared with the RNA
+explorer, not a thermodynamic model. These steps work with record, replay and
+complete-results archives; extracted records support replay-experiment and TSV.
 
 Recorded spacer comparisons use actionId overlay.crispr and parameters
 {contentId, libraryText, topology, hostId, maxMismatches}. libraryText embeds the

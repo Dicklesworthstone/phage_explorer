@@ -85,6 +85,7 @@ and the existing numerical producers. It does not maintain a second command engi
 | `overlay.pangenomeGraph` | Recompute the sequence graph with supplied/global/unit-wavefront/affine settings, optional strand/circular normalization, and optional GenBank CDS consequences. |
 | `overlay.codonAdaptation` | Commands with `method: "reference-cai"` recompute reference-backed CAI from embedded count JSON or a freshly recounted source-corpus experiment. Legacy commands without the discriminator retain their illustrative host model; no command is silently migrated. |
 | `overlay.repeats` with `method: "exact-pairs"` | Recompute unsampled fixed-length direct/inverted pairs with the portable method, including its explicit completeness and output limit. |
+| `overlay.rnaStructure` | Re-extract an explicit genome or CDS interval from the embedded source, then recompute maximum-pairing windows, optional synonymous sensitivity and motif observations with every recorded setting. |
 | Legacy `overlay.repeats` without that method | Browser-only transport/backend identity; the terminal does not relabel another engine or ignore an identity mismatch. |
 
 Unknown actions and legacy repeat commands reject the **whole replay before its first
@@ -92,6 +93,10 @@ command**. Known command parameters are also validated before computation. `insp
 reports unsupported steps; `canReplay` indicates supported actions and accepted
 input/parameter shape, not that numerical verification has already succeeded.
 New exact-pair recordings are described in `EXACT_REPEAT_WORKFLOWS.md`.
+RNA recordings and their coordinate/annotation requirements are described in
+`RNA_STRUCTURE_WORKFLOW.md`. They use the existing RNA method and are accepted by
+the declarative terminal `record` command as well as `replay`; the interactive
+terminal draft editor does not yet offer an RNA form.
 No commands are skipped, no shell fragments are executed, and no remote references
 are fetched. A tape containing unsupported actions should be replayed in the browser.
 

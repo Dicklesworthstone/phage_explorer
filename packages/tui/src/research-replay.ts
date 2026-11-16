@@ -15,8 +15,8 @@ import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/wo
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
   codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
   dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
-  spacers: ActionIds.OverlayCRISPR };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers];
+  spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure };
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -92,6 +92,12 @@ function host(bundle: string) {
     genomes: () => genomes, bundle: () => bundle, parseBundle: parse, currentView: () => view,
     applyView: async (next, signal) => { abort(signal); view = structuredClone(next); },
     repeats: async () => { throw new Error(REPEAT_LIMIT); },
+    rna: async (request, signal) => {
+      abort(signal);
+      const { executeRNAStructureRequest } = await import('../../core/src/analysis/rna-structure-experiment');
+      abort(signal);
+      return (await executeRNAStructureRequest(request, signal)).record;
+    },
     dotPlot: async (genome, comparison, options, signal) => {
       abort(signal);
       // Share the numerical producer, not a browser worker's global message handler.

@@ -93,9 +93,72 @@ work limits remain in force, and missing source data are never fetched.
 
 Replay verifies numerical reproducibility against the supplied source and
 assumptions. It does not authenticate the source annotation or establish biological
-validity. Exported JSON and TSV contain sequence data. RNA imports are session-only;
-automatic persistence, saved-library reopening and RNA macro recording remain
+validity. Exported JSON and TSV contain sequence data. Standalone RNA imports are
+session-only; automatic persistence and standalone saved-library reopening remain
 outside this interface.
+
+## Record RNA as part of a research workflow
+
+In **Local genomes → Saved research workflows**, start an explicit recording and
+expand **Record RNA pairing intervals**. Select a workflow genome, then choose
+genomic coordinates or a particular annotated CDS. This form records only its own
+explicit commands; opening or changing the separate RNA explorer is not recorded.
+
+Both interval endpoints are presented as one-based inclusive positions. Genomic
+intervals can use either strand. A selected CDS is already in transcript order,
+including joined/complemented segments and `codon_start`, so its strand is fixed to
+forward transcript order and its start must be a codon boundary. All pairing
+settings are explicit. Synonymous sensitivity is off by default and can be enabled
+only for supported table 1 or 11 CDS without exceptional or pseudogene annotation.
+Pairing-only analysis remains available when extraction is supported.
+
+**Run and record RNA pairing** derives the source name, accession, coordinate
+system and interval bases from the exact genome snapshot in the recording. The
+worker uses the same bounded RNA producer as the standalone explorer. Accepted
+results show source coordinates and dot-bracket windows; changing the draft or
+cancelling a later request cannot relabel an earlier accepted result.
+**Export workflow analysis** writes the ordinary replayable RNA AnalysisRecord;
+**Export workflow RNA windows TSV** includes all folded windows and their
+sequences. The RNA explorer and `workflow replay-experiment` can reopen the JSON.
+
+Stop recording to export or save the command tape. **Replay and retain all results**
+includes RNA outputs in the complete workflow archive, with each repetition's
+execution index. Reopening an archive first reviews its sources; explicit replay
+must verify every command before the archive is accepted. A modified sequence,
+annotation, interval, option or recorded numerical result stops verification.
+
+The canonical action is `overlay.rnaStructure`. Its parameters are:
+
+```json
+{
+  "contentId": "<the imported genome's complete 64-character content ID>",
+  "geneId": null,
+  "start": 0,
+  "end": 600,
+  "strand": "+",
+  "options": {
+    "windowSize": 120,
+    "stepSize": 30,
+    "minLoopSize": 3,
+    "allowWobble": true,
+    "frame": 0,
+    "includeSynonymousStress": false
+  }
+}
+```
+
+These stored coordinates are zero-based and half-open. `geneId: null` selects the
+genome; a positive CDS ID selects its annotation-defined transcript. The complete
+original source remains in `context.bundle`, not in a path or URL. The exact
+method parameters, inputs and result identity are verified on every replay.
+
+These commands also work in declarative terminal plans passed to `workflow record`,
+then `workflow replay`, `replay-results` and `extract-result`. No catalog or source
+network request is needed. The interactive terminal draft editor retains its
+existing analysis choices; RNA commands can be authored through the browser form
+or a validated declarative plan. Existing tape, analysis, execution-count and
+computation limits apply. No new RNA model or biological validation is implied by
+recording the existing method.
 
 ## Core API and bounds
 

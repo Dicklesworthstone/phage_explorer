@@ -6,6 +6,7 @@ import { parseCommandTape, serializeCommandTape } from '../../core/src/command-s
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
 import type { SpacerLibrary, ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
+import type { RNAStructureAnalysis } from '../../core/src/analysis/rna-structure';
 
 // Independent coordinate oracle: [4,24) forward then AGG; [34,54)
 // reverse-complement target preceded by CCT, which is guide-oriented AGG.
@@ -162,6 +163,53 @@ async function configureSpacers(page: Page) {
   await page.getByLabel('Workflow spacer host scope', { exact: true }).selectOption('one');
   return { id, text };
 }
+
+test('records RNA interval structures, preserves accepted source on cancellation and verifies the archive after reload', async ({ page }) => {
+  await start(page);
+  await page.getByLabel('Workflow RNA end (inclusive)', { exact: true }).fill('6');
+  await page.getByLabel('Workflow RNA window (bases)', { exact: true }).fill('6');
+  await page.getByLabel('Workflow RNA step (bases)', { exact: true }).fill('6');
+  await page.getByLabel('Workflow RNA minimum loop (bases)', { exact: true }).fill('0');
+  await page.getByRole('checkbox', { name: 'Allow GU wobble in workflow RNA folds', exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Run and record RNA pairing', exact: true }).click();
+  await recorded(page, 1);
+  const region = page.getByRole('region', { name: 'Recorded RNA pairing results', exact: true });
+  const row = page.getByRole('table', { name: 'Recorded RNA window structures', exact: true }).locator('tbody tr').first();
+  // GAATTC: with zero intervening-loop length, the three canonical nested
+  // pairs cover all six bases. No solution can contain a fourth pair.
+  await expect(row.locator('td')).toHaveText(['[0, 6)', '3', '-3', '((()))']);
+  const record = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  const analysis = record.fields.analysis.value as unknown as RNAStructureAnalysis;
+  expect(analysis.windows[0].pairs).toEqual([[0, 5], [1, 4], [2, 3]]);
+  expect(analysis.windows[0].sequence).toBe('GAAUUC');
+  const table = await download(page, 'Export workflow RNA windows TSV');
+  expect(table).toContain('\tgenome-forward\t+\t0\t6\t0\t6\t3\t-3\t((()))\tGAAUUC\t');
+  await page.getByLabel('Workflow RNA strand', { exact: true }).selectOption('-');
+  await expect(region).toContainText('strand +');
+  await page.evaluate(() => { (window as WorkflowFixture).holdWorkflowReply = true; });
+  await page.getByRole('button', { name: 'Run and record RNA pairing', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel workflow', exact: true }).click();
+  await page.evaluate(() => (window as WorkflowFixture).releaseWorkflowReply());
+  await recorded(page, 1);
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', record.resultId);
+  await page.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
+  await page.getByLabel('Workflow replay repetitions', { exact: true }).fill('2');
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  const archive = await download(page, 'Export complete workflow results JSON');
+  expect((await parseWorkflowResults(archive)).records).toEqual([record]);
+  await page.reload();
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({
+    name: 'rna-results.json', mimeType: 'application/json', buffer: Buffer.from(archive),
+  });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('1 distinct analyses and 2 repetitions');
+  await expect(page.getByTestId('workflow-result')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archive);
+  await expect(row.locator('td')).toHaveText(['[0, 6)', '3', '-3', '((()))']);
+});
 
 test('records sourced spacer evidence and missing host coverage, then verifies the complete archive after reload', async ({ page }) => {
   const requests: string[] = [];

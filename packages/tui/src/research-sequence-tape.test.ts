@@ -11,6 +11,7 @@ import { parseCommandTape, serializeCommandTape, parseCommandPlan, validateComma
   COMMAND_LIMITS, type CommandPlan } from '../../core/src/command-session';
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../core/src/analysis/dot-plot';
 import { ResearchWorkflow, validateResearchDotPlot, validateResearchDigest, researchDigestParameters,
+  validateResearchRNA, researchRNAParameters, researchRNARequest,
   type ResearchEnvironment, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { executeResearchRequest, type ResearchWorkerRequest } from '../../web/src/workers/research-workflow.worker';
@@ -18,6 +19,9 @@ import { inspectResearchTape, replayResearchTape, recordResearchPlan } from './r
 import { executeTerminalResearchRequest, validateTerminalResearchRequest, type TerminalResearchResult } from './research-replay.worker';
 import { researchWorkflowMain, parseWorkflowCommand, runTerminalResearchWorker, type TerminalWorker } from '../../../scripts/research-workflow';
 import { createHash } from 'node:crypto';
+import { executeRNAStructureRequest, exportRNAStructureTsv, replayRNAStructureRecord } from '../../core/src/analysis/rna-structure-experiment';
+import type { RNAStructureAnalysis } from '../../core/src/analysis/rna-structure';
+import { parseWorkflowResults } from '../../core/src/workflow-results';
 
 const ids = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
   dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, gcSkew: ActionIds.OverlayGCSkew };
@@ -578,5 +582,169 @@ describe('headless planned research recording', () => {
     assert.equal(code, 124); assert(exited); await exited;
     await assert.rejects(stat(output), { code: 'ENOENT' });
     assert.equal(await readFile(input, 'utf8'), f.content);
+  });
+});
+
+// RC(TCCCA) + RC(GGGTT) = TGGGAAACCC; codon_start=2 leaves
+// GGGAAACCC. A three-base loop admits exactly the three nested GC pairs.
+const RNA_GENBANK = `LOCUS       RNA_JOIN                  14 bp    DNA     linear
+ACCESSION   RNA_JOIN
+FEATURES             Location/Qualifiers
+     CDS             complement(join(1..5,10..14))
+                     /locus_tag="joined-rna"
+                     /codon_start=2
+                     /transl_table=11
+ORIGIN
+        1 gggttnnnntccca
+//
+`;
+const rnaIds = { view: ids.view, repeats: ids.repeats, codons: ids.codons, rna: ActionIds.OverlayRNAStructure };
+async function rnaFixture(overrides: Partial<ResearchEnvironment> = {}) {
+  const fasta = await importLocalGenomes({ name: 'pairing.fa', text: '>forward\nTTGGGAAACCCAA\n>reverse\nGGGTTTCCCAAAA\n>no-pairs\nNNNNNNNNN\n' });
+  const joined = await importLocalGenomes({ name: 'joined.gb', text: RNA_GENBANK });
+  const genomes = [...fasta.genomes, ...joined.genomes];
+  let loaded = structuredClone(genomes);
+  const options = { windowSize: 9, stepSize: 9, minLoopSize: 3, allowWobble: false, frame: 0, includeSynonymousStress: false };
+  const commands = genomes.map((genome, i) => researchRNAParameters(genome.phage.localGenome!.contentId,
+    { geneId: i === 3 ? 1 : null, start: i === 0 ? 2 : 0, end: i === 0 ? 11 : 9, strand: i === 1 ? '-' : '+' },
+    { ...options, includeSynonymousStress: i === 3 }));
+  const environment: ResearchEnvironment = {
+    genomes: () => loaded, bundle: () => exportLocalGenomeBundle(loaded),
+    parseBundle: text => importLocalGenomes({ name: 'bundle.json', text }), currentView: () => null,
+    applyView: async () => { throw new Error('No navigation in this fixture'); },
+    repeats: async () => { throw new Error('No repeats in this fixture'); },
+    codons: async () => { throw new Error('No codons in this fixture'); },
+    rna: (request) => analysis({ type: 'rna', request }), ...overrides,
+  };
+  return { genomes, commands, environment, workflow: new ResearchWorkflow(rnaIds, environment),
+    replace: (next: LocalGenome[]) => { loaded = next; } };
+}
+
+describe('content-bound RNA research commands', () => {
+  it('records actual interval structures, reverse coordinates, no-pair evidence and a joined/complement CDS', async () => {
+    const f = await rnaFixture(); f.workflow.start('Private RNA intervals');
+    const records: AnalysisRecord[] = [];
+    for (const command of f.commands) {
+      await f.workflow.commands.dispatch(rnaIds.rna, analysisJson(command));
+      records.push(f.workflow.getSnapshot().lastAnalysis!);
+    }
+    f.workflow.commands.stop();
+    for (const index of [0, 1, 3]) {
+      const result = records[index].fields.analysis.value as unknown as RNAStructureAnalysis;
+      assert.equal(result.windows[0].sequence, 'GGGAAACCC');
+      assert.deepEqual(result.windows[0].pairs, [[0, 8], [1, 7], [2, 6]]);
+      assert.equal(result.windows[0].structure, '(((...)))'); assert.equal(result.windows[0].pairCount, 3);
+      assert.equal(result.windows[0].pairingScore, -3);
+    }
+    const unpaired = records[2].fields.analysis.value as unknown as RNAStructureAnalysis;
+    assert.equal(unpaired.windows[0].pairCount, 0); assert.equal(unpaired.windows[0].pairingScore, null);
+    assert.equal(unpaired.coverage.ambiguousBases, 9);
+    const coding = records[3].inputs[0].data as { sequence: string; source: { gene: string; coordinateSystem: string; sourceLength: number } };
+    assert.equal(coding.sequence, 'GGGAAACCC'); assert.equal(coding.source.gene, '1:joined-rna');
+    assert.equal(coding.source.coordinateSystem, 'cds-transcript'); assert.equal(coding.source.sourceLength, 9);
+    assert.equal((records[3].fields.analysis.value as unknown as RNAStructureAnalysis).codonStress.length, 3);
+    assert.equal((await replayRNAStructureRecord(serializeAnalysisRecord(records[3]))).record.resultId, records[3].resultId);
+    const reverseRow = exportRNAStructureTsv(records[1]).trim().split('\n')[1].split('\t');
+    assert.deepEqual(reverseRow.slice(1, 9), ['genome-forward', '-', '0', '9', '0', '9', '3', '-3']);
+    assert.equal(reverseRow[10], 'GGGAAACCC');
+    const tape = f.workflow.commands.export(), inspection = await inspectResearchTape(tape);
+    assert.equal(inspection.canReplay, true);
+    const archive = await f.workflow.replayWithResults(2);
+    const native = await replayResearchTape(tape, { repetitions: 2, captureResults: true });
+    assert.equal(native.report.completed, 8); assert.equal(native.report.lastAnalysisExecution, 8);
+    assert.deepEqual(native.lastAnalysis, records[3]); assert.equal(native.allResultsJson, archive);
+    assert.equal((await parseWorkflowResults(archive)).records.length, 4);
+    const plan = serializeCommandPlan({ ...parseCommandTape(tape), format: 'phage-explorer-command-plan',
+      commands: f.commands.map(parameters => ({ actionId: rnaIds.rna, parameters: analysisJson(parameters) })) });
+    const authored = await recordResearchPlan(plan, { captureResults: true });
+    assert.equal(authored.tapeJson, tape);
+    assert.equal(authored.report.completed, 4);
+  });
+
+  it('rejects incomplete settings and invalid coordinate semantics before parsing or computation', async () => {
+    const f = await rnaFixture(), valid = f.commands[0];
+    const invalid = [
+      { ...valid, start: -1 }, { ...valid, end: valid.start }, { ...valid, start: 0, end: 6001 },
+      { ...valid, options: { windowSize: 9 } }, { ...valid, options: { ...valid.options, frame: 1 } },
+      { ...valid, options: { ...valid.options, includeSynonymousStress: true } }, { ...valid, options: { ...valid.options, approximation: true } },
+      { ...valid, strand: 'unknown' }, { ...valid, source: 'catalog' }, { ...f.commands[3], start: 1 }, { ...f.commands[3], strand: '-' },
+    ];
+    for (const parameters of invalid) assert.throws(() => validateResearchRNA(analysisJson(parameters)));
+    let calls = 0;
+    const next = await rnaFixture({ parseBundle: async () => { calls++; throw new Error('Must not parse'); },
+      rna: async () => { calls++; throw new Error('Must not fold'); } });
+    next.workflow.start('Whole tape validation');
+    const tape = { ...parseCommandTape(next.workflow.commands.export()), commands: [
+      { actionId: rnaIds.rna, parameters: analysisJson(valid), expected: null },
+      { actionId: rnaIds.rna, parameters: analysisJson(invalid[0]), expected: null },
+    ] };
+    next.workflow.commands.stop();
+    assert.throws(() => next.workflow.load(serializeCommandTape(tape)), /Step 2/);
+    assert.equal(calls, 0);
+    assert.throws(() => new ResearchWorkflow({ ...rnaIds, rna: undefined }, f.environment), /supplied together/);
+    assert.throws(() => new ResearchWorkflow({ ...rnaIds, rna: rnaIds.repeats }, f.environment), /distinct canonical/);
+  });
+
+  it('requires actual interval bounds and CDS annotations, and never silently substitutes a synonymous model', async () => {
+    const f = await rnaFixture(), genome = f.genomes[3], coding = f.commands[3];
+    assert.throws(() => researchRNARequest(f.genomes[0], { ...f.commands[0], end: 14 }), /within the loaded sequence/);
+    assert.throws(() => researchRNARequest(genome, { ...coding, geneId: 99 }), /unavailable/);
+    assert.throws(() => researchRNARequest(genome, f.commands[0]), /identity/);
+    for (const qualifiers of [{ transl_table: '4' }, { pseudo: '' }, { transl_except: '(pos:1..3,aa:Sec)' }, { ribosomal_slippage: '' }]) {
+      const changed = structuredClone(genome); Object.assign(changed.phage.genes[0].qualifiers!, qualifiers);
+      assert.throws(() => researchRNARequest(changed, coding), /Synonymous RNA scores/);
+      const pairing = researchRNARequest(changed, { ...coding, options: { ...coding.options, includeSynonymousStress: false } });
+      assert.equal(pairing.sequence, 'GGGAAACCC');
+      assert.equal((await executeRNAStructureRequest(pairing)).analysis.windows[0].pairCount, 3);
+    }
+  });
+
+  it('refuses changed provider source, settings, method, references and checksum before accepting or recording', async () => {
+    for (const mode of ['sequence', 'coordinates', 'strand', 'name', 'settings', 'reference', 'method', 'checksum']) {
+      const f = await rnaFixture({ rna: async (request) => {
+        // The provider owns a copy; mutation must not alter the adapter guard.
+        if (mode === 'sequence') request.sequence = 'AAAAAAAAA';
+        if (mode === 'coordinates') { request.source.start--; request.source.end--; }
+        if (mode === 'strand') request.source.strand = '-';
+        if (mode === 'name') request.source.name = 'Different source';
+        if (mode === 'settings') request.options.allowWobble = true;
+        const record = (await executeRNAStructureRequest(request)).record;
+        if (mode === 'checksum') { record.resultId = '0'.repeat(64); return record; }
+        if (mode === 'reference') return resign(record, value => { value.references[0].version = 'changed'; });
+        if (mode === 'method') return resign(record, value => { value.method.version = 'future'; });
+        return record;
+      } });
+      f.workflow.start('RNA provider integrity');
+      await assert.rejects(f.workflow.commands.dispatch(rnaIds.rna, analysisJson(f.commands[0])));
+      assert.equal(f.workflow.getSnapshot().lastAnalysis, null);
+      assert.equal(f.workflow.commands.getSnapshot().tape.commands.length, 0);
+    }
+  });
+
+  it('reports altered inputs or outputs at their exact replay step and keeps cancelled late results unpublished', async () => {
+    const f = await rnaFixture(); f.workflow.start('RNA tamper controls');
+    for (const command of f.commands.slice(0, 2)) await f.workflow.commands.dispatch(rnaIds.rna, analysisJson(command));
+    f.workflow.commands.stop();
+    const tape = parseCommandTape(f.workflow.commands.export());
+    (tape.commands[1].expected as { resultId: string }).resultId = '0'.repeat(64);
+    await assert.rejects(replayResearchTape(serializeCommandTape(tape)), /Step 2.*differs/);
+    const altered = structuredClone(f.genomes); altered[0].sequence = 'AAAAAAAAAAAAA'; f.replace(altered);
+    await assert.rejects(f.workflow.commands.replay(), /changed sequence or annotations/);
+    assert.match(f.workflow.commands.getSnapshot().error!, /Step 1/);
+    const held = latch(), started = latch(), finished = latch(); let providerSignal: AbortSignal | null = null;
+    const cancel = await rnaFixture({ rna: async (request, signal) => {
+      providerSignal = signal; started.release(); await held.promise;
+      const record = (await executeRNAStructureRequest(request)).record;
+      finished.release(); return record;
+    } });
+    cancel.workflow.start('RNA cancellation');
+    const pending = cancel.workflow.commands.dispatch(rnaIds.rna, analysisJson(cancel.commands[0]));
+    const rejected = assert.rejects(pending, { name: 'AbortError' });
+    await started.promise; cancel.workflow.commands.cancel(); await rejected;
+    assert.equal((providerSignal as unknown as AbortSignal).aborted, true);
+    held.release(); await finished.promise;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    assert.equal(cancel.workflow.getSnapshot().lastAnalysis, null);
+    assert.equal(cancel.workflow.commands.getSnapshot().tape.commands.length, 0);
   });
 });

@@ -7,6 +7,9 @@ import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOp
 import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
 import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
+import { extractGeneSequence } from '../../../core/src/analysis/codon-pair-adaptation';
+import { resolveRNAStructureOptions, RNA_STRUCTURE_LIMITS, type RNAStructureOptions } from '../../../core/src/analysis/rna-structure';
+import { parseRNAStructureRecord, validateRNAStructureRequest, type RNAStructureRequest } from '../../../core/src/analysis/rna-structure-experiment';
 import { MOSAIC_METHOD, MOSAIC_LIMITS, resolveMosaicRadarConfig, validateMosaicDataset,
   type MosaicDataset, type MosaicRadarConfig, type MosaicSequenceInput } from '../../../core/src/analysis/recombination-radar';
 import { SPACER_METHOD, parseSpacerLibrary, validateSpacerGenome, resolveSpacerOptions, spacerRecordReferences,
@@ -18,7 +21,7 @@ import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGra
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -42,6 +45,70 @@ export interface ResearchEnvironment {
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   mosaic?: (dataset: MosaicDataset, options: Required<MosaicRadarConfig>, signal: AbortSignal) => Promise<AnalysisRecord>;
   spacers?: (genome: SpacerGenome, library: SpacerLibrary, options: SpacerSearchOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+  rna?: (request: RNAStructureRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
+}
+/** Bind an interval to the exact bundled genome and annotation. Coordinates are
+ * zero-based, half-open in the genome or the extracted CDS transcript. The
+ * source label and interval sequence are derived, never supplied by a tape.
+ */
+export interface ResearchRNAParameters {
+  contentId: string;
+  geneId: number | null;
+  start: number;
+  end: number;
+  strand: '+' | '-';
+  options: Required<RNAStructureOptions>;
+}
+export function validateResearchRNA(value: CommandValue): void {
+  fields(value, ['contentId', 'geneId', 'start', 'end', 'strand', 'options']);
+  contentId(value.contentId); geneId(value.geneId);
+  integer(value.start, 0, 4999999); integer(value.end, 1, 5000000);
+  if (Number(value.end) <= Number(value.start) || Number(value.end) - Number(value.start) > RNA_STRUCTURE_LIMITS.sequenceBases) {
+    throw new Error('Record a nonempty RNA interval of at most 6,000 bases.');
+  }
+  if (value.strand !== '+' && value.strand !== '-') throw new Error('Record an explicit RNA interval strand.');
+  if (value.geneId !== null && (value.strand !== '+' || Number(value.start) % 3 !== 0)) {
+    throw new Error('CDS RNA intervals use transcript order and begin at a codon boundary.');
+  }
+  const options = resolveRNAStructureOptions(value.options as unknown as RNAStructureOptions);
+  if (!commandValuesEqual(value.options, options)) throw new Error('Record every effective RNA pairing setting explicitly.');
+  if (options.frame !== 0 || options.includeSynonymousStress && value.geneId === null) {
+    throw new Error('Synonymous RNA scores require a selected CDS in its annotation-defined frame.');
+  }
+}
+export function researchRNAParameters(id: string, selection: Omit<ResearchRNAParameters, 'contentId' | 'options'>,
+  options: RNAStructureOptions): ResearchRNAParameters {
+  const value = { contentId: id, ...selection, options: resolveRNAStructureOptions(options) };
+  validateResearchRNA(analysisJson(value));
+  return value;
+}
+export function researchRNASource(genome: LocalGenome, selected: number | null): {
+  sequence: string; gene: string | null; synonymousSupported: boolean;
+} {
+  geneId(selected);
+  const gene = selected === null ? null : genome.phage.genes.find(item => item.id === selected && item.type === 'CDS');
+  if (selected !== null && !gene) throw new Error('The selected RNA CDS is unavailable in this exact annotation snapshot.');
+  const sequence = gene ? extractGeneSequence(gene, genome.sequence, [1, 4, 11, 15, 25]) : genome.sequence;
+  if (!sequence) throw new Error('The selected RNA CDS has unsupported coordinates, codon_start or genetic code.');
+  const table = String(gene?.qualifiers?.transl_table ?? 1);
+  const exceptional = ['transl_except', 'pseudo', 'pseudogene', 'exception', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']
+    .some(key => gene?.qualifiers?.[key] !== undefined);
+  return { sequence, gene: gene ? `${gene.id}:${gene.locusTag ?? gene.name ?? 'CDS'}` : null,
+    synonymousSupported: gene !== null && gene !== undefined && ['1', '11'].includes(table) && !exceptional };
+}
+export function researchRNARequest(genome: LocalGenome, parameters: ResearchRNAParameters): RNAStructureRequest {
+  validateResearchRNA(analysisJson(parameters));
+  if (genome.phage.localGenome?.contentId !== parameters.contentId) throw new Error('RNA source differs from the recorded genome identity.');
+  const source = researchRNASource(genome, parameters.geneId);
+  if (parameters.options.includeSynonymousStress && !source.synonymousSupported) {
+    throw new Error('Synonymous RNA scores require table 1 or 11 CDS without exceptional or pseudogene annotations. Disable synonymous analysis to inspect pairing only.');
+  }
+  return validateRNAStructureRequest({ sequence: source.sequence.slice(parameters.start, parameters.end),
+    source: { name: genome.phage.name, accession: genome.phage.accession, source: 'local',
+      coordinateSystem: source.gene ? 'cds-transcript' : 'genome-forward', sourceLength: source.sequence.length,
+      start: parameters.start, end: parameters.end, strand: parameters.strand,
+      gene: source.gene },
+    options: parameters.options });
 }
 /** Embed the exact reference library and every effective search setting. Host
  * labels, filenames and future defaults cannot stand in for recorded evidence.
@@ -532,9 +599,29 @@ export class ResearchWorkflow {
         return this.result(record, [genome], signal);
       },
     });
+    if ((ids.rna === undefined) !== (environment.rna === undefined)) throw new Error('RNA action and executor must be supplied together.');
+    if (ids.rna !== undefined) adapters.set(ids.rna, {
+      validate: validateResearchRNA,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchRNAParameters;
+        const genome = await this.genome(values.contentId, signal);
+        const request = researchRNARequest(genome, values);
+        const result = await environment.rna!(structuredClone(request), signal);
+        abort(signal);
+        // The producer runs off-thread. Verify its exact source, effective
+        // settings and method without folding again on the UI thread.
+        const saved = await parseRNAStructureRecord(serializeAnalysisRecord(result), signal);
+        abort(signal);
+        if (!commandValuesEqual(saved.request, request) || saved.record.fields.analysis.kind !== 'sequence-score'
+          || saved.record.fields.analysis.units !== 'records') {
+          throw new Error('RNA evidence does not match the submitted genome, CDS, interval or pairing settings.');
+        }
+        return this.result(saved.record, [genome], signal);
+      },
+    });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
       + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
-      + Number(ids.spacers !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+      + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {
       this.commandRevision++;
