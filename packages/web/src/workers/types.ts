@@ -7,6 +7,7 @@ import type {
   SimState,
   SimParameter,
   Simulation,
+  SimulationContext,
   LysogenyCircuitState,
   RibosomeTrafficState,
   PlaqueAutomataState,
@@ -343,6 +344,8 @@ export interface SimInitParams {
    * back to generic synthetic defaults.
    */
   phage?: PhageFull | null;
+  /** Exact sequence and selected CDS for sequence-grounded models. */
+  context?: SimulationContext;
 }
 
 /**

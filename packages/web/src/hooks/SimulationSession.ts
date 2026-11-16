@@ -1,5 +1,6 @@
 /** One selected simulation's lifecycle, independent of React render timing. */
-import { serializeAnalysisRecord, type PhageFull } from '@phage-explorer/core';
+import { serializeAnalysisRecord, RIBOSOME_TRAFFIC_LIMITS, type PhageFull, type SimulationContext } from '@phage-explorer/core';
+import type { PhageRepository } from '../db';
 import type { ComputeOrchestrator } from '../workers/ComputeOrchestrator';
 import type { SimParameter, SimState, SimulationId } from '../workers/types';
 import { getSimulationRandomState, createSimulationExperimentRecord, parseSimulationExperiment,
@@ -8,6 +9,32 @@ import { getSimulationRandomState, createSimulationExperimentRecord, parseSimula
 type Parameters = Record<string, number | boolean | string>;
 type Backend = Pick<ComputeOrchestrator, 'initSimulation' | 'stepSimulation' | 'getSimulationMetadata'>;
 type Operation = { controller: AbortController; kind: 'init' | 'step' | 'replay' };
+
+export interface SimulationInput {
+  phage: PhageFull | null;
+  context?: SimulationContext;
+}
+
+/** Load bases and canonical annotations from one repository, never an ID-only cache. */
+export async function loadRibosomeSimulationInput(
+  repository: Pick<PhageRepository, 'getFullGenomeLength' | 'getSequenceWindow' | 'getGenes'>,
+  phage: PhageFull,
+  geneId: number | undefined,
+  signal: AbortSignal,
+): Promise<SimulationInput> {
+  signal.throwIfAborted();
+  const length = await repository.getFullGenomeLength(phage.id);
+  signal.throwIfAborted();
+  if (!Number.isSafeInteger(length) || length < 1 || length > RIBOSOME_TRAFFIC_LIMITS.genomeBases) {
+    throw new Error(`Ribosome traffic requires a genome of 1–${RIBOSOME_TRAFFIC_LIMITS.genomeBases.toLocaleString()} bases.`);
+  }
+  const [genomeSequence, genes] = await Promise.all([
+    repository.getSequenceWindow(phage.id, 0, length), repository.getGenes(phage.id),
+  ]);
+  signal.throwIfAborted();
+  if (genomeSequence.length !== length) throw new Error('The selected genome sequence is incomplete. Reload it before simulating.');
+  return { phage: { ...phage, genes }, context: { genomeSequence, ...(geneId === undefined ? {} : { geneId }) } };
+}
 
 export interface SimulationSnapshot {
   state: SimState | null;
@@ -46,7 +73,8 @@ export class SimulationSession {
   private operation: Operation | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly listeners = new Set<() => void>();
-  private readonly phage: PhageFull | null;
+  private input: SimulationInput;
+  private inputReady: boolean;
   private overrides: Parameters = {};
   private initialState: SimState | null = null;
   private initialParameters: Parameters = {};
@@ -59,8 +87,10 @@ export class SimulationSession {
     private readonly backend: () => Backend,
     private readonly derivedDefaults: Parameters = {},
     seed = Date.now() >>> 0,
+    private readonly loadInput?: (signal: AbortSignal) => Promise<SimulationInput>,
   ) {
-    this.phage = structuredClone(phage);
+    this.input = { phage: structuredClone(phage) };
+    this.inputReady = !loadInput;
     this.snapshot = {
       state: null, isRunning: false, speed: 1, avgStepMs: 0, parameters: [], parameterValues: {},
       metadata: null, isLoading: false, isStepping: false, error: null, seed, completedSteps: 0,
@@ -88,6 +118,15 @@ export class SimulationSession {
   }
   private current(operation: Operation): boolean {
     return this.active && this.operation === operation && !operation.controller.signal.aborted;
+  }
+  private async ensureInput(operation: Operation): Promise<SimulationInput | null> {
+    if (!this.inputReady && this.loadInput) {
+      const input = await this.loadInput(operation.controller.signal);
+      if (!this.current(operation)) return null;
+      this.input = structuredClone(input);
+      this.inputReady = true;
+    }
+    return this.current(operation) ? this.input : null;
   }
 
   /** Re-activatable for React StrictMode's setup/cleanup/setup cycle. */
@@ -138,7 +177,9 @@ export class SimulationSession {
       const values = { ...defaults, ...this.derivedDefaults, ...this.overrides };
       this.publish({ parameterValues: values });
       if (!this.current(operation)) return;
-      const next = await backend.initSimulation({ simId: this.simId, params: values, seed, phage: this.phage }, operation.controller.signal);
+      const input = await this.ensureInput(operation);
+      if (!input) return;
+      const next = await backend.initSimulation({ simId: this.simId, params: values, seed, ...input }, operation.controller.signal);
       if (!this.current(operation)) return;
       if (next.type !== this.simId) throw new Error('Simulation returned a different state type.');
       const random = getSimulationRandomState(next);
@@ -235,7 +276,7 @@ export class SimulationSession {
     if (!this.active || !this.snapshot.state || !this.initialState || this.operation || this.snapshot.isRunning) {
       throw new Error('Pause an initialized simulation before exporting its experiment.');
     }
-    const record = await createSimulationExperimentRecord({ simId: this.simId, phage: this.phage,
+    const record = await createSimulationExperimentRecord({ simId: this.simId, ...this.input,
       seed: this.snapshot.seed, parameters: this.initialParameters, stepDeltas: this.acceptedDeltas,
       initialState: this.initialState, finalState: this.snapshot.state });
     return serializeAnalysisRecord(record);
@@ -252,8 +293,11 @@ export class SimulationSession {
     try {
       const text = await content;
       if (!this.current(operation)) return;
+      phase = 'load selected simulation input';
+      const input = await this.ensureInput(operation);
+      if (!input) return;
       phase = 'validate saved experiment';
-      const saved = await parseSimulationExperiment(text, this.simId, this.phage);
+      const saved = await parseSimulationExperiment(text, this.simId, input.phage, input.context);
       if (!this.current(operation)) return;
       const backend = this.backend();
       const metadata = await backend.getSimulationMetadata(this.simId, operation.controller.signal);
@@ -270,7 +314,7 @@ export class SimulationSession {
       if (!this.current(operation)) return;
       phase = 'initialize replay';
       const initial = await backend.initSimulation({ simId: this.simId, params: saved.parameters,
-        seed: saved.seed, phage: this.phage }, operation.controller.signal);
+        seed: saved.seed, ...input }, operation.controller.signal);
       if (!this.current(operation)) return;
       if (JSON.stringify(simulationStateJson(initial)) !== JSON.stringify(simulationStateJson(saved.record.fields.initialState.value))) {
         throw new Error('Fresh initial simulation state differs from the saved experiment.');
@@ -288,7 +332,7 @@ export class SimulationSession {
         this.publish({ replayProgress: { current: i + 1, total: saved.stepDeltas.length } });
       }
       phase = 'verify replayed result';
-      const fresh = await createSimulationExperimentRecord({ simId: this.simId, phage: this.phage, seed: saved.seed,
+      const fresh = await createSimulationExperimentRecord({ simId: this.simId, ...input, seed: saved.seed,
         parameters: saved.parameters, stepDeltas: saved.stepDeltas, initialState: initial, finalState: state });
       if (!this.current(operation)) return;
       if (fresh.resultId !== saved.record.resultId) throw new Error('Fresh simulation result or evidence differs from the saved experiment.');

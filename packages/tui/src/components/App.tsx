@@ -1251,7 +1251,11 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           marginLeft={Math.max(0, Math.floor((terminalCols - 80) / 2))}
           marginTop={Math.max(0, Math.floor((terminalRows - 24) / 2))}
         >
-          <SimulationHubOverlay onClose={() => closeOverlay(SIMULATION_MENU_ID)} />
+          <SimulationHubOverlay
+            onClose={() => closeOverlay(SIMULATION_MENU_ID)}
+            genomeSequence={mosaicQuery?.repository === repository && mosaicQuery.phage === currentPhage
+              && phages[currentPhageIndex]?.id === currentPhage?.id ? mosaicQuery.input.sequence : null}
+          />
         </Box>
       )}
 

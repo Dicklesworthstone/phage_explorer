@@ -2,6 +2,7 @@
 // Common infrastructure for interactive simulations in Phage Explorer
 
 import type { PhageFull } from './types';
+import type { CdsReference } from './analysis/cds-consequences';
 import type {
   LysogenyCircuitReconstruction,
   OperatorOccupancy,
@@ -110,9 +111,16 @@ export interface RibosomeTrafficState extends SimStateBase {
   type: 'ribosome-traffic';
   /** mRNA sequence (or gene ID) */
   mRnaId: string;
+  /** Exact annotated transcript, or null for an explicitly generic demonstration. */
+  transcript: CdsReference | null;
+  source: 'annotated-cds' | 'synthetic';
+  /** Dimensionless teaching probabilities; neither model measures tRNA abundance. */
+  rateModel: 'selected-cds-synonymous-frequency-v1' | 'synthetic-uniform-v1';
+  /** Fractional discrete steps accumulated without drawing extra random events. */
+  pendingSteps: number;
   /** Ribosome positions on mRNA (codon index) */
   ribosomes: number[];
-  /** Translation rates per codon (based on tRNA abundance) */
+  /** Per-codon departure probabilities under the declared heuristic model. */
   codonRates: number[];
   /** Proteins produced count */
   proteinsProduced: number;
@@ -248,6 +256,13 @@ export type SimState =
  * Simulation definition interface
  * All simulations must implement this interface
  */
+export interface SimulationContext {
+  /** Complete source genome, kept in its original coordinate system. */
+  genomeSequence: string;
+  /** Explicit annotated CDS selection; omission uses the model's deterministic default. */
+  geneId?: number;
+}
+
 export interface Simulation<S extends SimState = SimState> {
   /** Unique identifier */
   id: SimulationId;
@@ -269,8 +284,9 @@ export interface Simulation<S extends SimState = SimState> {
    * @param phage Current phage data (optional, some sims are generic)
    * @param params Initial parameter overrides
    * @param rng Random number generator (returns 0-1)
+   * @param context Exact sequence input for models that need annotated bases
    */
-  init: (phage?: PhageFull | null, params?: Partial<S['params']>, rng?: () => number) => S;
+  init: (phage?: PhageFull | null, params?: Partial<S['params']>, rng?: () => number, context?: SimulationContext) => S;
 
   /**
    * Advance simulation by one time step

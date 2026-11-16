@@ -193,8 +193,10 @@ describe('evolution-replay uses the selected phage', () => {
 });
 
 describe('ribosome-traffic uses the selected phage', () => {
-  it('names the mRNA after a real gene and sizes it from that gene', () => {
+  it('names and sizes the mRNA from the exact annotated coding sequence', () => {
+    const genomeSequence = 'N'.repeat(100) + 'ATG'.repeat(299) + 'TAA';
     const phage = makePhage({
+      genomeLength: genomeSequence.length,
       genes: [
         {
           id: 1,
@@ -213,10 +215,11 @@ describe('ribosome-traffic uses the selected phage', () => {
       },
     });
 
-    const state = ribosomeTrafficSimulation.init(phage, {}, () => 0.5);
+    const state = ribosomeTrafficSimulation.init(phage, {}, () => 0.5, { genomeSequence });
     expect(state.mRnaId).toBe('repressor protein cI');
-    expect(state.codonRates.length).toBeGreaterThan(0);
-    expect(state.codonRates.length).not.toBe(200);
+    expect(state.transcript?.cds).toBe(genomeSequence.slice(100));
+    expect(state.source).toBe('annotated-cds');
+    expect(state.codonRates).toHaveLength(300);
   });
 
   it('still builds a synthetic mRNA when no phage is supplied', () => {

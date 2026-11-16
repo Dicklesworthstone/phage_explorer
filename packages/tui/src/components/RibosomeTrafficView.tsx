@@ -111,8 +111,9 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
 
     for (const pos of state.ribosomes) {
       const i = Math.floor((pos / length) * window);
-      for (let j = 0; j < footprint && i + j < window; j++) {
-        cells[i + j] = j === 0 ? '▶' : '█';
+      const end = Math.min(window, Math.max(i + 1, Math.ceil(Math.min(length, pos + footprint) / length * window)));
+      for (let cell = i; cell < end; cell++) {
+        cells[cell] = cell === i ? '▶' : '█';
       }
     }
 
@@ -128,8 +129,15 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
 
   return (
     <Box flexDirection="column" gap={0}>
+      <Text color={colors.accent}>
+        {state.transcript ? `CDS ${state.transcript.geneId} · ${state.mRnaId} · NCBI table ${state.transcript.geneticCode} · codon_start ${state.transcript.codonStart}`
+          : 'Synthetic demonstration track'}
+      </Text>
       <Text color={colors.text}>
-        Track (length {length} codons) — ribosomes: {state.ribosomes.length} · proteins: {state.proteinsProduced} · stalls: {state.stallEvents}
+        Track: {length} codons · ribosomes: {state.ribosomes.length} · completed tracks: {state.proteinsProduced} · blocked: {state.stallEvents}
+      </Text>
+      <Text color={colors.textDim} dimColor>
+        {state.source === 'annotated-cds' ? 'Selected-CDS codon-frequency heuristic' : 'Synthetic probability landscape'} · time in model steps; uncalibrated, not measured tRNA or protein production.
       </Text>
       <Text color={colors.textDim} dimColor>
         Ribosomes show footprint (▶ head); background bar indicates slow codons (darker = slower)
@@ -156,7 +164,7 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
       </Box>
 
       <Box flexDirection="column" marginTop={1}>
-        <Text color={colors.accent} bold>Codon rate sparkline</Text>
+        <Text color={colors.accent} bold>Codon departure probabilities</Text>
         <Text color={colors.text}>{toSpark(state.codonRates, 60)}</Text>
         <Text color={colors.textDim} dimColor>▁ slow — █ fast</Text>
       </Box>
@@ -164,7 +172,7 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
       <Box marginTop={1} flexDirection="column" gap={0}>
         <Text color={colors.accent} bold>Queues & throughput</Text>
         <Text color={colors.text}>
-          Longest queue: {queueStats.longestQueue} ribosomes · Proteins/step spark: {productionSpark || 'n/a'} · Active ribosomes spark: {densitySpark || 'n/a'}
+          Longest queue: {queueStats.longestQueue} · Completions/step: {productionSpark || 'n/a'} · Active: {densitySpark || 'n/a'}
         </Text>
         {stallSpark && (
           <Text color={colors.textDim} dimColor>Stall trend: {stallSpark}</Text>
@@ -175,10 +183,10 @@ export function RibosomeTrafficView({ state }: RibosomeTrafficViewProps): React.
         <Text color={colors.accent} bold>Slow sites (top 3)</Text>
         {slowSites.map(s => (
           <Text key={s.idx} color={colors.text}>
-            Codon {s.idx + 1}: rate {s.rate} ({s.slowdown > 0 ? `${(s.slowdown * 100).toFixed(0)}% slower vs median` : 'at/near median'})
+            Codon {s.idx + 1}{state.transcript?.cds ? ` (${state.transcript.cds.slice(s.idx * 3, s.idx * 3 + 3)})` : ''}: probability {s.rate} ({s.slowdown > 0 ? `${(s.slowdown * 100).toFixed(0)}% below median` : 'at/near median'})
           </Text>
         ))}
-        <Text color={colors.textDim} dimColor>▏ marks slow windows on track; background darker = slower codons</Text>
+        <Text color={colors.textDim} dimColor>Entry/exit are assumed at CDS boundaries{state.transcript && !state.transcript.protein?.endsWith('*') ? '; this annotated transcript has no terminal stop' : ''}. ▏ marks slower sites.</Text>
       </Box>
     </Box>
   );

@@ -1,4 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { usePhageStore } from '@phage-explorer/state';
+import type { PhageFull } from '@phage-explorer/core';
+import type { PhageRepository } from '../db';
 import { Overlay } from './overlays/Overlay';
 import { Badge, ErrorBadge, SuccessBadge } from './ui/Badge';
 import { useOverlay } from './overlays/OverlayProvider';
@@ -81,7 +84,7 @@ function VisualizerRouter({
   }
 }
 
-export default function SimulationView(): React.ReactElement | null {
+export default function SimulationView({ repository = null }: { repository?: PhageRepository | null }): React.ReactElement | null {
   const { isOpen, close, overlayData } = useOverlay();
   const { theme } = useTheme();
   const colors = theme.colors;
@@ -92,6 +95,10 @@ export default function SimulationView(): React.ReactElement | null {
   const [fitRequested, setFitRequested] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
   const fileActionRef = useRef(0);
+  const currentPhage = usePhageStore(state => state.currentPhage);
+  const [geneSelection, setGeneSelection] = useState<{ phage: PhageFull; repository: PhageRepository | null; id: number } | null>(null);
+  const selectedGeneId = geneSelection?.phage === currentPhage && geneSelection?.repository === repository ? geneSelection.id : undefined;
+  const codingGenes = useMemo(() => (currentPhage?.genes ?? []).filter(gene => gene.type === 'CDS'), [currentPhage]);
 
   // ALL hooks must be called unconditionally before any early return.
   const simId = useMemo(() => {
@@ -104,7 +111,7 @@ export default function SimulationView(): React.ReactElement | null {
   const {
     state, isRunning, speed, avgStepMs, parameters, parameterValues,
     metadata, controls, isLoading, isStepping, error, seed, completedSteps, replayProgress, replayMessage,
-  } = useSimulation(simId, isOpenSimView && !showFit);
+  } = useSimulation(simId, isOpenSimView && !showFit, repository, selectedGeneId);
   const controlsRef = useRef(controls);
   const openRef = useRef(isOpenSimView);
   controlsRef.current = controls;
@@ -156,6 +163,24 @@ export default function SimulationView(): React.ReactElement | null {
         <button type="button" aria-pressed={!showFit} onClick={() => setFitRequested(false)}>Forward simulation</button>
         <button type="button" aria-pressed={showFit} onClick={() => setFitRequested(true)}>Experimental growth fit</button>
       </div>}
+      {simId === 'ribosome-traffic' && <fieldset style={{ marginBottom: '1rem', border: `1px solid ${colors.borderLight}` }}>
+        <legend>Translation input</legend>
+        {currentPhage ? <>
+          <label htmlFor="ribosome-cds">Annotated CDS from {currentPhage.name}</label>{' '}
+          <select id="ribosome-cds" value={selectedGeneId ?? ''} onChange={event => {
+            setGeneSelection(event.target.value === '' ? null : { phage: currentPhage, repository, id: Number(event.target.value) });
+          }}>
+            <option value="">Longest annotated CDS (automatic)</option>
+            {codingGenes.map(gene => <option key={gene.id} value={gene.id}>
+              {gene.locusTag ?? gene.name ?? `CDS ${gene.id}`}{gene.product ? ` — ${gene.product}` : ''} ({gene.strand})
+            </option>)}
+          </select>
+          <p style={{ color: colors.textMuted }}>
+            The track uses the selected genome's exact coding sequence, transcript order and genetic code.
+            Unsupported or missing CDS inputs show an error. Choosing a CDS starts a new run.
+          </p>
+        </> : <p>No genome selected: explicit synthetic mRNA demonstration.</p>}
+      </fieldset>}
       {showFit ? <GrowthInferencePanel /> : <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
         <div
           style={{

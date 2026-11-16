@@ -1,9 +1,10 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type PhageFull, type AnalysisRecord } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation,
+  type PhageFull, type AnalysisRecord, type RibosomeTrafficState } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
-import { SimulationSession } from './SimulationSession';
+import { SimulationSession, loadRibosomeSimulationInput, type SimulationInput } from './SimulationSession';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -12,6 +13,133 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 async function flush() { for (let i = 0; i < 12; i++) await Promise.resolve(); }
+
+const codingSequence = 'ATGCTACTGCTGCTGTAA';
+const codingPhage: PhageFull = {
+  id: 31, accession: 'LOCAL_CDS', slug: 'local-cds', name: 'Local coding genome', family: null, host: null,
+  genomeLength: codingSequence.length, gcContent: null, morphology: null, lifecycle: null, description: null,
+  baltimoreGroup: null, genomeType: null, pdbIds: [], hasModel: false, codonUsage: null,
+  genes: [{ id: 7, name: 'short', locusTag: 'exact_7', product: 'exact short CDS', type: 'CDS',
+    startPos: 0, endPos: codingSequence.length, strand: '+' }],
+};
+const ribosomeBackend = () => {
+  const api = createSimulationAPI([ribosomeTrafficSimulation]);
+  return {
+    getSimulationMetadata: (id: Simulation['id'], _signal?: AbortSignal) => api.getMetadata(id),
+    initSimulation: (params: SimInitParams, _signal?: AbortSignal) => api.init(params),
+    stepSimulation: (state: SimState, dt: number, _signal?: AbortSignal) => api.step({ state, dt }),
+  };
+};
+const codingInput = (genomeSequence = codingSequence): SimulationInput => ({ phage: structuredClone(codingPhage),
+  context: { genomeSequence, geneId: 7 } });
+
+describe('sequence-grounded simulation input and replay', () => {
+  it('loads exact bases and canonical genes together instead of stale summary annotations', async () => {
+    const calls: unknown[] = [];
+    const input = await loadRibosomeSimulationInput({
+      getFullGenomeLength: async id => { calls.push(['length', id]); return codingSequence.length; },
+      getSequenceWindow: async (...args) => { calls.push(['sequence', ...args]); return codingSequence; },
+      getGenes: async id => { calls.push(['genes', id]); return codingPhage.genes; },
+    }, { ...codingPhage, genes: [] }, 7, new AbortController().signal);
+    assert.deepEqual(calls, [['length', 31], ['sequence', 31, 0, 18], ['genes', 31]]);
+    assert.deepEqual(input.context, { genomeSequence: codingSequence, geneId: 7 });
+    assert.deepEqual(input.phage?.genes, codingPhage.genes);
+    const state = await ribosomeBackend().initSimulation({ simId: 'ribosome-traffic', seed: 0, ...input }) as RibosomeTrafficState;
+    assert.equal(state.transcript?.cds, codingSequence);
+    assert.equal(state.transcript?.protein, 'MLLLL*');
+    assert.deepEqual(state.codonRates, [1, 0.4, 1, 1, 1, 1]);
+  });
+
+  it('refuses incomplete reads and cancels before downstream repository calls', async () => {
+    let downstream = 0;
+    const pending = deferred<number>(), controller = new AbortController();
+    const repository = {
+      getFullGenomeLength: () => pending.promise,
+      getSequenceWindow: async () => { downstream++; return codingSequence.slice(1); },
+      getGenes: async () => { downstream++; return codingPhage.genes; },
+    };
+    const reading = loadRibosomeSimulationInput(repository, codingPhage, 7, controller.signal);
+    controller.abort(); pending.resolve(18);
+    await assert.rejects(reading, /abort/i);
+    assert.equal(downstream, 0);
+    await assert.rejects(loadRibosomeSimulationInput(repository, codingPhage, 7, new AbortController().signal), /incomplete/);
+    for (const length of [0, NaN, 1.5, 5000001]) {
+      await assert.rejects(loadRibosomeSimulationInput({ ...repository, getFullGenomeLength: async () => length },
+        codingPhage, 7, new AbortController().signal), /genome of/);
+    }
+    assert.equal(downstream, 2);
+  });
+
+  it('discards cancelled sources and retains an immutable accepted sequence for resets', async () => {
+    const old = deferred<SimulationInput>(), fresh = codingInput('ATGCTGCTGCTGCTGTAA');
+    const signals: AbortSignal[] = [];
+    const session = new SimulationSession('ribosome-traffic', codingPhage, ribosomeBackend, {}, 0, signal => {
+      signals.push(signal); return signals.length === 1 ? old.promise : Promise.resolve(fresh);
+    });
+    const first = session.activate(); await flush();
+    session.cancel();
+    assert.equal(signals[0].aborted, true);
+    await session.init();
+    const accepted = session.getSnapshot().state as RibosomeTrafficState;
+    assert.equal(accepted.transcript?.cds, 'ATGCTGCTGCTGCTGTAA');
+    fresh.context!.genomeSequence = codingSequence;
+    old.resolve(codingInput()); await first;
+    assert.strictEqual(session.getSnapshot().state, accepted);
+    await session.reset();
+    assert.equal((session.getSnapshot().state as RibosomeTrafficState).transcript?.cds, 'ATGCTGCTGCTGCTGTAA');
+    assert.equal(signals.length, 2);
+    session.deactivate();
+  });
+
+  it('reports source failures and retries without inventing a synthetic track', async () => {
+    let attempts = 0;
+    const session = new SimulationSession('ribosome-traffic', codingPhage, ribosomeBackend, {}, 0, async () => {
+      if (++attempts === 1) throw new Error('Repository read failed');
+      return codingInput();
+    });
+    await session.activate();
+    assert.equal(session.getSnapshot().state, null);
+    assert.equal(session.getSnapshot().isLoading, false);
+    assert.match(session.getSnapshot().error!, /Repository read failed/);
+    await session.init();
+    assert.equal(session.getSnapshot().error, null);
+    assert.equal((session.getSnapshot().state as RibosomeTrafficState).source, 'annotated-cds');
+    session.deactivate();
+  });
+
+  it('replays exact transcripts and rejects same-ID changed bases or CDS selection before compute', async () => {
+    const source = new SimulationSession('ribosome-traffic', codingPhage, ribosomeBackend, {}, 0, async () => codingInput());
+    await source.activate();
+    await source.setParam('footprint', 1);
+    for (const delta of [0.25, 0.25, 0.5, 1, 2]) { source.setSpeed(delta); await source.step(); }
+    const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
+    assert.equal(record.method.version, '2');
+    assert.deepEqual(record.inputs[0].data, analysisJson({ phage: codingPhage,
+      context: { genomeSequence: codingSequence, geneId: 7 } }));
+    const target = new SimulationSession('ribosome-traffic', codingPhage, ribosomeBackend, {}, 42, async () => codingInput());
+    await target.activate(); await target.replayExperiment(content);
+    assert.equal(target.getSnapshot().error, null);
+    assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+    assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId, record.resultId);
+    for (const input of [codingInput('ATGCTGCTGCTGCTGTAA'), { ...codingInput(), context: { genomeSequence: codingSequence } }]) {
+      const service = ribosomeBackend();
+      const changed = new SimulationSession('ribosome-traffic', codingPhage, () => service, {}, 0, async () => input);
+      await changed.activate();
+      const before = changed.getSnapshot().state;
+      let calls = 0;
+      service.initSimulation = async () => { calls++; throw new Error('Unexpected model work'); };
+      await changed.replayExperiment(content);
+      assert.equal(calls, 0);
+      assert.match(changed.getSnapshot().error!, /input differs/);
+      assert.strictEqual(changed.getSnapshot().state, before);
+      changed.deactivate();
+    }
+    await target.replayExperiment(await rewriteRecord(content, changed => { changed.method.version = '1'; }));
+    assert.match(target.getSnapshot().error!, /incompatible/);
+    assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+    source.deactivate(); target.deactivate();
+  });
+});
 const probe: Simulation = {
   id: 'plaque-automata', name: 'Test model', description: 'A stateful model used to verify controls', controls: [],
   parameters: [

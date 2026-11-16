@@ -3,7 +3,7 @@
  * state, never with the worker that happens to execute the next step.
  */
 import type { Simulation, SimState, SimulationId, SimulationWorkerAPI } from './types';
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisJson, type AnalysisRecord, type PhageFull } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisJson, type AnalysisRecord, type PhageFull, type SimulationContext } from '@phage-explorer/core';
 
 export interface SimulationRandomState {
   algorithm: 'lcg32-v1';
@@ -20,6 +20,15 @@ const EXPERIMENT_VERSION = '1';
 const EXPERIMENT_IMPLEMENTATION = 'bundled core models; lcg32-v1; typed-array snapshots-v1';
 const EXPERIMENT_REFERENCES = [{ id: 'core-simulation-models', version: '2026-09-26',
   description: 'Bundled computational models and defaults; no new empirical calibration is supplied by replay.' }];
+const RIBOSOME_EXPERIMENT = {
+  version: '2',
+  implementation: 'exact annotated CDS; synonymous-frequency heuristic-v1; exclusion-preserving ordered TASEP; accumulated discrete steps; lcg32-v1',
+  references: [{ id: 'core-ribosome-traffic', version: '2',
+    description: 'Exact transcript reconstruction and an uncalibrated codon-frequency rate model; finite-track completions are not measured protein yields.' }],
+};
+const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT : {
+  version: EXPERIMENT_VERSION, implementation: EXPERIMENT_IMPLEMENTATION, references: EXPERIMENT_REFERENCES,
+};
 
 const uint32 = (value: unknown): value is number =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
@@ -69,14 +78,14 @@ export function createSimulationAPI(simulations: Simulation[]): SimulationWorker
   };
 
   return {
-    async init({ simId, params, seed = Date.now(), phage }): Promise<SeededSimState> {
+    async init({ simId, params, seed = Date.now(), phage, context }): Promise<SeededSimState> {
       const simulation = lookup(simId);
       if (!Number.isSafeInteger(seed) || seed < 0) throw new Error('Simulation seed must be a non-negative safe integer.');
       // Preserve the existing numeric-seed API, including Date.now(), while
       // recording the effective 32-bit seed unambiguously in the checkpoint.
       const effectiveSeed = seed >>> 0;
       const random = createRandom({ algorithm: 'lcg32-v1', seed: effectiveSeed, cursor: effectiveSeed });
-      const state = simulation.init(structuredClone(phage), structuredClone(params), random.next);
+      const state = simulation.init(structuredClone(phage), structuredClone(params), random.next, structuredClone(context));
       if (state.type !== simId) throw new Error('Simulation returned a different state type.');
       return { ...state, randomState: random.snapshot() };
     },
@@ -129,9 +138,20 @@ function simulationInput(phage: PhageFull | null) {
     data: analysisJson(phage) };
 }
 
+function simulationInputs(simId: SimulationId, phage: PhageFull | null, context?: SimulationContext) {
+  if (simId !== 'ribosome-traffic') return [simulationInput(phage)];
+  if (phage && !context) throw new Error('Ribosome experiments require the exact genome sequence and CDS selection.');
+  if (!phage && context) throw new Error('A synthetic ribosome demonstration cannot carry a genome input.');
+  return [{ ...simulationInput(phage),
+    description: 'Exact phage metadata, canonical annotations, genome bases and requested CDS selection supplied to the model; null selects the explicit synthetic demonstration.',
+    data: analysisJson({ phage, context: context ?? null }),
+  }];
+}
+
 export interface SimulationExperimentInput {
   simId: SimulationId;
   phage: PhageFull | null;
+  context?: SimulationContext;
   seed: number;
   parameters: Record<string, number | boolean | string>;
   stepDeltas: number[];
@@ -159,27 +179,29 @@ export function createSimulationExperimentRecord(input: SimulationExperimentInpu
     assumptions: ['Bundled model equations and defaults, the supplied initialization data, recorded seed and exact accepted step deltas.'],
     limitations: ['Numerical reproducibility is not biological validation. State variables retain model-specific units and assumptions.'],
   });
+  const method = experimentMethod(input.simId);
   return createAnalysisRecord({
-    method: { id: `simulation-${input.simId}`, version: EXPERIMENT_VERSION, implementation: EXPERIMENT_IMPLEMENTATION },
-    inputs: [simulationInput(input.phage)],
+    method: { id: `simulation-${input.simId}`, version: method.version, implementation: method.implementation },
+    inputs: simulationInputs(input.simId, input.phage, input.context),
     parameters: { initialParameters: analysisJson(input.parameters), stepDeltas: [...input.stepDeltas], randomAlgorithm: 'lcg32-v1' },
-    seed: input.seed, references: EXPERIMENT_REFERENCES,
+    seed: input.seed, references: method.references,
     fields: { initialState: field('Initial numerical state', input.initialState), finalState: field('Final numerical state', input.finalState) },
   });
 }
 
 /** Validate before scheduling any model work. Saved output is never deserialized into live state. */
-export async function parseSimulationExperiment(content: string, simId: SimulationId, phage: PhageFull | null): Promise<{
+export async function parseSimulationExperiment(content: string, simId: SimulationId, phage: PhageFull | null, context?: SimulationContext): Promise<{
   record: AnalysisRecord; seed: number; parameters: Record<string, number | boolean | string>; stepDeltas: number[];
 }> {
-  const expectedInput = simulationInput(phage);
-  const record = await parseAnalysisRecord(content, { methodId: `simulation-${simId}`, methodVersion: EXPERIMENT_VERSION });
+  const expectedInputs = simulationInputs(simId, phage, context);
+  const method = experimentMethod(simId);
+  const record = await parseAnalysisRecord(content, { methodId: `simulation-${simId}`, methodVersion: method.version });
   const equal = (a: unknown, b: unknown) => JSON.stringify(analysisJson(a)) === JSON.stringify(analysisJson(b));
-  if (record.method.implementation !== EXPERIMENT_IMPLEMENTATION || !equal(record.references, EXPERIMENT_REFERENCES)) {
+  if (record.method.implementation !== method.implementation || !equal(record.references, method.references)) {
     throw new Error('Simulation implementation/reference version is incompatible.');
   }
-  if (record.inputs.length !== 1 || !equal({ ...record.inputs[0], sha256: undefined }, expectedInput)) {
-    throw new Error('Selected simulation input differs from the saved experiment. Select the same phage metadata and annotations.');
+  if (record.inputs.length !== expectedInputs.length || !equal(record.inputs.map(input => ({ ...input, sha256: undefined })), expectedInputs)) {
+    throw new Error('Selected simulation input differs from the saved experiment. Select the same phage, annotations, genome sequence and CDS.');
   }
   if (!uint32(record.seed) || !equal(Object.keys(record.parameters).sort(), ['initialParameters', 'randomAlgorithm', 'stepDeltas']) ||
     record.parameters.randomAlgorithm !== 'lcg32-v1') throw new Error('Simulation experiment has unsupported parameters or seed.');

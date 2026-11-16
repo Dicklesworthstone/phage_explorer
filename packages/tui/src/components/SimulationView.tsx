@@ -94,11 +94,14 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
   const speedDown = usePhageStore(s => s.simulationSpeedDown);
   const resetSimulation = usePhageStore(s => s.resetSimulation);
   const closeSimulation = usePhageStore(s => s.closeSimulation);
+  const setPaused = usePhageStore(s => s.setSimulationPaused);
+  const overlayWidth = useOverlayWidth(90);
 
   const registry = useMemo(() => getSimulationRegistry(), []);
   const simulation = simId ? registry.get(simId as SimulationId) : null;
   const paramDefs = simulation?.parameters ?? [];
   const [selectedParam, setSelectedParam] = useState(0);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
   const initialRef = useRef<SimState | null>(simState);
   const latestStateRef = useRef<SimState | null>(simState);
@@ -108,6 +111,8 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
     if (simState) {
       initialRef.current = simState;
     }
+    setSelectedParam(0);
+    setRuntimeError(null);
   }, [simId]);
 
   // Keep latest state ref in sync for the runner loop
@@ -125,12 +130,17 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
     const interval = setInterval(() => {
       const current = latestStateRef.current;
       if (!current) return;
-      const next = simulation.step(current, speed);
-      latestStateRef.current = next;
-      updateState(next);
+      try {
+        const next = simulation.step(current, speed);
+        latestStateRef.current = next;
+        updateState(next);
+      } catch (cause) {
+        setPaused(true);
+        setRuntimeError(cause instanceof Error ? cause.message : String(cause));
+      }
     }, 120);
     return () => clearInterval(interval);
-  }, [simulation, paused, speed, updateState]);
+  }, [simulation, paused, speed, updateState, setPaused]);
 
   useInput((input, key) => {
     if (key.escape) {
@@ -138,7 +148,8 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       onClose();
       return;
     }
-    if (input === ' ' || input === ' ') {
+    if (input === ' ') {
+      if (runtimeError) return;
       togglePause();
       return;
     }
@@ -150,24 +161,32 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
           ...initialRef.current,
           params: currentParams,
         };
+        latestStateRef.current = resetState;
         resetSimulation(resetState);
-        // Also update initialRef so subsequent resets keep these params? 
-        // No, initialRef should ideally represent the "clean" state structure.
-        // But for params, we want them sticky.
       } else if (initialRef.current) {
+        latestStateRef.current = initialRef.current;
         resetSimulation(initialRef.current);
+      }
+      setRuntimeError(null);
+      return;
+    }
+    if (input === '.' && latestStateRef.current && simulation) {
+      try {
+        const next = simulation.step(latestStateRef.current, speed);
+        latestStateRef.current = next;
+        updateState(next);
+        setRuntimeError(null);
+      } catch (cause) {
+        setPaused(true);
+        setRuntimeError(cause instanceof Error ? cause.message : String(cause));
       }
       return;
     }
-    if (input === '.' && simState && simulation) {
-      updateState(simulation.step(simState, speed));
-      return;
-    }
-    if (key.leftArrow || input === '-') {
+    if (key.leftArrow) {
       speedDown();
       return;
     }
-    if (key.rightArrow || input === '+') {
+    if (key.rightArrow) {
       speedUp();
       return;
     }
@@ -179,39 +198,26 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       setSelectedParam(i => Math.min(Math.max(0, paramDefs.length - 1), i + 1));
       return;
     }
-    if ((input === '=' || input === '+') && paramDefs[selectedParam]?.type === 'number') {
+    if ((input === '=' || input === '+' || input === '-') && paramDefs[selectedParam]?.type === 'number') {
       const meta = paramDefs[selectedParam];
       if (!meta) return;
       const step = meta.step ?? 0.05;
       const min = meta.min ?? -Infinity;
       const max = meta.max ?? Infinity;
       const currentVal = Number(latestStateRef.current?.params[meta.id] ?? meta.defaultValue ?? 0);
-      const nextVal = Math.min(max, Math.max(min, currentVal + step));
+      const nextVal = Math.min(max, Math.max(min, currentVal + (input === '-' ? -step : step)));
       if (latestStateRef.current) {
+        // A changed footprint must never be stamped on an already occupied
+        // track. Rebuild the empty run while keeping its exact input snapshot.
+        const restart = latestStateRef.current.type === 'ribosome-traffic' && initialRef.current?.type === 'ribosome-traffic';
         const nextState = {
-          ...latestStateRef.current,
+          ...(restart ? initialRef.current! : latestStateRef.current),
           params: { ...latestStateRef.current.params, [meta.id]: nextVal },
         };
         latestStateRef.current = nextState;
-        updateState(nextState);
-      }
-      return;
-    }
-    if (input === '-' && paramDefs[selectedParam]?.type === 'number') {
-      const meta = paramDefs[selectedParam];
-      if (!meta) return;
-      const step = meta.step ?? 0.05;
-      const min = meta.min ?? -Infinity;
-      const max = meta.max ?? Infinity;
-      const currentVal = Number(latestStateRef.current?.params[meta.id] ?? meta.defaultValue ?? 0);
-      const nextVal = Math.min(max, Math.max(min, currentVal - step));
-      if (latestStateRef.current) {
-        const nextState = {
-          ...latestStateRef.current,
-          params: { ...latestStateRef.current.params, [meta.id]: nextVal },
-        };
-        latestStateRef.current = nextState;
-        updateState(nextState);
+        if (restart) resetSimulation(nextState);
+        else updateState(nextState);
+        setRuntimeError(null);
       }
       return;
     }
@@ -239,8 +245,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       borderColor="#22c55e"
       paddingX={2}
       paddingY={1}
-      width={useOverlayWidth(90)}
-      height={22}
+      width={overlayWidth}
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color="#22c55e" bold>{simulation.name}</Text>
@@ -248,6 +253,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       </Box>
 
       <Text color="#9ca3af" dimColor>{simulation.description}</Text>
+      {runtimeError && <Text color="#f87171">Simulation paused: {runtimeError} · R to reset</Text>}
       <Box marginY={1}>
         <Text color="#e5e7eb">
           {simulation.getSummary(simState)}
@@ -288,7 +294,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       {/* Controls */}
       <Box flexDirection="column" marginBottom={1}>
         <Text color="#9ca3af" dimColor>Controls</Text>
-        <Text color="#9ca3af" dimColor>Space: Pause/Resume · R: Reset · .: Step · ←/→ or -/+: Speed · [/] param select · +/- param tweak</Text>
+        <Text color="#9ca3af" dimColor>Space: Pause/Resume · R: Reset · .: Step · ←/→: Speed · [/] param select · +/- param tweak</Text>
       </Box>
 
       <Box flexDirection="column" marginTop={1}>

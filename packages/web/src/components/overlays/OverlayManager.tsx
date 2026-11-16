@@ -365,7 +365,7 @@ function renderLazyOverlay(
     case 'simulationHub':
       return <SimulationHub />;
     case 'simulationView':
-      return <SimulationView />;
+      return <SimulationView repository={repository} />;
     case 'comparison':
       return <ComparisonOverlay repository={repository} />;
     case 'collaboration':

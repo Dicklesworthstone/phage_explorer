@@ -210,6 +210,20 @@ export function RibosomeVisualizer({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      <div style={{ color: colors.text }}>
+        <strong>{state.mRnaId}</strong> · {length.toLocaleString()} codons · {state.source === 'annotated-cds' ? 'Exact annotated CDS' : 'Synthetic demonstration'}
+      </div>
+      {state.transcript && <div style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
+        CDS {state.transcript.geneId} · NCBI code {state.transcript.geneticCode} · codon_start {state.transcript.codonStart}
+        <br />Genome coordinates (1-based): {state.transcript.segments.map(segment =>
+          `${segment.start + 1}–${segment.end} (${segment.strand})`).join(', ')}
+      </div>}
+      <p style={{ color: colors.textMuted, fontSize: '0.8rem', margin: 0 }}>
+        {state.source === 'annotated-cds'
+          ? 'Elongation probabilities use an uncalibrated synonymous-codon frequency heuristic from this CDS, not measured host tRNA abundance.'
+          : 'Elongation probabilities are generated for this synthetic demonstration.'}
+        {' '}Time is in model steps. Release at the end counts a completed track; this model does not predict measured translation speed or protein yield.
+      </p>
       {/* Stats */}
       <div
         style={{
@@ -228,7 +242,7 @@ export function RibosomeVisualizer({
           Ribosomes: {state.ribosomes.length}
         </span>
         <span style={{ color: colors.success }}>
-          Proteins: {state.proteinsProduced}
+          Completed tracks: {state.proteinsProduced}
         </span>
         <span style={{ color: colors.warning }}>
           Stalls: {state.stallEvents}
@@ -268,12 +282,12 @@ export function RibosomeVisualizer({
       >
         {spark.codon && (
           <div>
-            Codon rates: <span style={{ color: colors.accent }}>{spark.codon}</span>
+            Model codon probabilities: <span style={{ color: colors.accent }}>{spark.codon}</span>
           </div>
         )}
         {spark.production && (
           <div>
-            Proteins/step: <span style={{ color: colors.success }}>{spark.production}</span>
+            Completed tracks/step: <span style={{ color: colors.success }}>{spark.production}</span>
           </div>
         )}
         {spark.stalls && (
@@ -301,10 +315,10 @@ export function RibosomeVisualizer({
             padding: '0 0.25rem',
           }}
         >
-          <div style={{ color: colors.accent }}>Slow sites (top 3)</div>
+          <div style={{ color: colors.accent }}>Lowest model elongation probabilities (top 3)</div>
           {slowSites.map(site => (
             <div key={site.idx} style={{ color: colors.textMuted }}>
-              Codon {site.idx + 1}: rate {site.rate}{' '}
+              Codon {site.idx + 1}{state.transcript?.cds ? ` (${state.transcript.cds.slice(site.idx * 3, site.idx * 3 + 3)})` : ''}: probability {site.rate}{' '}
               {site.slowdown > 0 ? `(${Math.round(site.slowdown * 100)}% slower vs median)` : '(~median)'}
             </div>
           ))}
