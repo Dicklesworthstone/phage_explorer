@@ -26,7 +26,22 @@ describe('comparison worker exact diff transport', () => {
     expect(output.ok).toBe(true);
     expect(output.result?.biological).toMatchObject({ lengthA: 3000, lengthB: 3001, gcContentA: 0, gcContentB: 100 });
     expect(output.diff?.status).toBe('unavailable');
+    expect(output.result?.structuralVariants).toMatchObject({ status: 'unavailable', counts: null, calls: [] });
+    expect(output.result?.structuralVariants?.reason).toContain('budget');
+    expect(output.result?.sequenceDiff).toBe(output.diff);
     expect(output.diff).not.toHaveProperty('stats'); expect(output.diff).not.toHaveProperty('positions');
+  });
+
+  it('shares one exact alignment between highlights and actual indels even without annotations', async () => {
+    const sequenceA = 'CCGG', sequenceB = 'CC' + 'A'.repeat(60) + 'GG';
+    const output = await executeComparisonJob({ ...metadata,
+      sequenceARef: bytes(sequenceA, true), sequenceBRef: bytes(sequenceB) });
+    expect(output.ok).toBe(true);
+    expect(output.result?.structuralVariants?.status).toBe('complete');
+    expect(output.result?.structuralVariants?.calls).toHaveLength(1);
+    expect(output.result?.structuralVariants?.calls[0]).toMatchObject({ type: 'insertion', startA: 2, endA: 2,
+      startB: 2, endB: 62, alternateAllele: 'A'.repeat(60) });
+    expect(output.result?.sequenceDiff).toBe(output.diff);
   });
 
   it('returns an error for malformed byte transport rather than padding missing bases', async () => {
@@ -48,6 +63,7 @@ describe('comparison worker exact diff transport', () => {
       });
       expect(output.ok).toBe(true); expect(output.jobId).toBe(metadata.jobId);
       expect(output.diff?.status).toBe('complete');
+      expect(output.result?.sequenceDiff).toBe(output.diff);
       if (output.diff?.status === 'complete') {
         expect(output.diff.mask).toBeInstanceOf(Uint8Array);
         expect(output.diff.stats).toMatchObject({ distance: 1, insertions: 1, deletions: 0, substitutions: 0, matches: 4 });

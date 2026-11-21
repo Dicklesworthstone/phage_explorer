@@ -140,7 +140,27 @@ describe('compareGenomes', () => {
     );
 
     expect(resultWith.structuralVariants).not.toBeNull();
+    expect(resultWith.sequenceDiff?.status).toBe('complete');
     expect(resultWithout.structuralVariants).toBeNull();
+    expect(resultWithout.sequenceDiff).toBeNull();
+  });
+
+  test('connects exact indel evidence to the same complete alignment used for the sequence diff', async () => {
+    const reference = 'CCGG', inserted = 'A'.repeat(60), query = 'CC' + inserted + 'GG';
+    const result = await compareGenomes({ id: 1, name: 'Reference', accession: 'A' },
+      { id: 2, name: 'Query', accession: 'B' }, reference, query);
+    expect(result.geneContent.genesA).toBe(0);
+    expect(result.structuralVariants?.status).toBe('complete');
+    expect(result.sequenceDiff?.status).toBe('complete');
+    if (result.sequenceDiff?.status !== 'complete' || result.structuralVariants?.status !== 'complete') {
+      throw new Error('Expected complete exact alignment and indel evidence.');
+    }
+    expect(result.structuralVariants.alignment).toEqual(result.sequenceDiff.stats);
+    expect(result.structuralVariants.calls).toHaveLength(1);
+    expect(result.structuralVariants.calls[0]).toMatchObject({ type: 'insertion', startA: 2, endA: 2,
+      startB: 2, endB: 62, referenceAllele: '', alternateAllele: inserted });
+    expect(result.sequenceDiff.runs.find(run => run.operation === 'insertion'))
+      .toEqual({ operation: 'insertion', startA: 2, endA: 2, startB: 2, endB: 62 });
   });
 
   test('records compute time', async () => {

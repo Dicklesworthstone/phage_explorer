@@ -1,4 +1,4 @@
-import { compareGenomes, computeSequenceDiff } from '@phage-explorer/comparison';
+import { compareGenomes } from '@phage-explorer/comparison';
 import type { ComparisonJob, ComparisonWorkerMessage, SequenceBytesRef } from './types';
 
 const textDecoder = new TextDecoder();
@@ -37,7 +37,7 @@ export async function executeComparisonJob(job: ComparisonJob): Promise<Comparis
       job.genesA ?? [], job.genesB ?? [], job.codonUsageA ?? null, job.codonUsageB ?? null);
     // Numerical comparisons remain useful when an exact base-by-base alignment
     // exceeds its budget. Diff availability is separate, never partial success.
-    return { ok: true, jobId: job.jobId, result, diff: computeSequenceDiff(sequenceA, sequenceB) };
+    return { ok: true, jobId: job.jobId, result, diff: result.sequenceDiff ?? undefined };
   } catch (cause) {
     message.error = cause instanceof Error ? cause.message : 'Comparison failed';
     return message;

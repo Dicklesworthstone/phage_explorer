@@ -614,33 +614,34 @@ function GenesTab({ result, colors }: TabProps): React.ReactElement {
   );
 }
 
-function StructuralTab({ result, colors }: TabProps): React.ReactElement {
+export function StructuralTab({ result, colors }: TabProps): React.ReactElement {
   const report = result.structuralVariants;
 
   if (!report) {
     return (
       <Box flexDirection="column">
-        <Text color={colors.textDim}>Structural variant analysis not computed.</Text>
+        <Text color={colors.textDim}>Aligned indel analysis not computed.</Text>
       </Box>
     );
   }
 
-  if (report.calls.length === 0) {
+  if (report.status === 'unavailable') {
     return (
       <Box flexDirection="column">
-        <Text color={colors.primary} bold>Structural Variants</Text>
-        <Text color={colors.textDim}>No variants detected between these genomes.</Text>
+        <Text color={colors.primary} bold>Aligned indel evidence unavailable</Text>
+        <Text color={colors.textDim}>{report.reason}</Text>
       </Box>
     );
   }
 
-  const ordered = [...report.calls].sort((a, b) => b.confidence - a.confidence).slice(0, 8);
+  const ordered = [...report.calls].sort((a, b) => Math.max(b.sizeA, b.sizeB) - Math.max(a.sizeA, a.sizeB)
+    || a.startA - b.startA || a.startB - b.startB).slice(0, 8);
+  const range = (start: number, end: number) => start === end
+    ? start === 0 ? 'before base 1' : `after base ${start.toLocaleString()}`
+    : `${(start + 1).toLocaleString()}-${end.toLocaleString()}`;
 
   const typeColor = (type: string) => {
     switch (type) {
-      case 'inversion': return '#a855f7';
-      case 'translocation': return '#f97316';
-      case 'duplication': return '#22c55e';
       case 'deletion': return '#ef4444';
       case 'insertion': return '#3b82f6';
       default: return colors.text;
@@ -650,32 +651,43 @@ function StructuralTab({ result, colors }: TabProps): React.ReactElement {
   return (
     <Box flexDirection="column">
       <Box marginBottom={1}>
-        <Text color={colors.primary} bold>Structural Variants</Text>
+        <Text color={colors.primary} bold>Aligned insertions and deletions</Text>
       </Box>
 
       <Box marginBottom={1}>
         <Text color={colors.textDim}>
-          Anchors: {report.anchorsUsed} | Counts — Del: {report.counts.deletion}  Ins: {report.counts.insertion}  Inv: {report.counts.inversion}  Dup: {report.counts.duplication}  Trans: {report.counts.translocation}
+          Minimum: {report.minGapBp} bp | Deletion runs: {report.counts.deletion} | Insertion runs: {report.counts.insertion}
         </Text>
       </Box>
+      <Text color={colors.textDim}>{report.method}. Relative to A; one-based inclusive ranges, with interbase insertion sites.</Text>
+      {report.calls.length === 0 && <Text color={colors.textDim}>
+        No resolved insertion or deletion runs meet this threshold in the selected alignment.
+      </Text>}
 
       {ordered.map((sv, idx) => (
         <Box key={sv.id} flexDirection="column" marginBottom={1}>
           <Text>
             <Text color={typeColor(sv.type)} bold>[{idx + 1}] {sv.type.toUpperCase()}</Text>{' '}
-            <Text color={colors.text}>A:{sv.startA.toLocaleString()}-{sv.endA.toLocaleString()} ({sv.sizeA.toLocaleString()} bp) | B:{sv.startB.toLocaleString()}-{sv.endB.toLocaleString()} ({sv.sizeB.toLocaleString()} bp)</Text>{' '}
-            <Text color={colors.textDim}>conf {(sv.confidence * 100).toFixed(0)}%</Text>
+            <Text color={colors.text}>A:{range(sv.startA, sv.endA)} ({sv.sizeA.toLocaleString()} bp) | B:{range(sv.startB, sv.endB)} ({sv.sizeB.toLocaleString()} bp)</Text>
           </Text>
           {sv.evidence.length > 0 && (
             <Text color={colors.textDim}>Evidence: {sv.evidence.slice(0, 3).join('; ')}</Text>
           )}
           {(sv.affectedGenesA.length > 0 || sv.affectedGenesB.length > 0) && (
             <Text color={colors.textDim}>
-              Genes A: {sv.affectedGenesA.join(', ') || '—'} | Genes B: {sv.affectedGenesB.join(', ') || '—'}
+              Overlapping annotations (up to 8) A: {sv.affectedGenesA.join(', ') || '—'} | B: {sv.affectedGenesB.join(', ') || '—'}
             </Text>
           )}
         </Box>
       ))}
+      {report.calls.length > 8 && <Text color={colors.textDim}>Showing the largest 8 of {report.calls.length} reported indels.</Text>}
+      {(report.belowThreshold > 0 || report.unresolved > 0) && <Text color={colors.textDim}>
+        Unreported runs: {report.belowThreshold} below threshold; {report.unresolved} with unresolved alleles.
+      </Text>}
+      {report.alignment.ambiguousColumns > 0 && <Text color={colors.textDim}>
+        Ambiguous alignment columns: {report.alignment.ambiguousColumns}; these can affect alignment placement.
+      </Text>}
+      {report.limitations.map(limit => <Text color={colors.textDim} key={limit}>{limit}</Text>)}
     </Box>
   );
 }

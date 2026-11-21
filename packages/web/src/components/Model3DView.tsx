@@ -86,6 +86,8 @@ export function navigateToStructureResidue(mapping: StructureGenomeResidue | und
   return true;
 }
 
+const FUNCTIONAL_GROUP_STYLE: FunctionalGroupStyle = 'halo';
+
 function isCoarsePointerDevice(): boolean {
   if (typeof window === 'undefined') return false;
   return window.matchMedia?.('(pointer: coarse)')?.matches ?? false;
@@ -464,7 +466,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     lastSample: performance.now(),
   });
   const [showFunctionalGroups, setShowFunctionalGroups] = useState(false);
-  const functionalGroupStyle: FunctionalGroupStyle = 'halo';
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
   const qualityPreset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
@@ -675,7 +676,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
 
       if (showFunctionalGroups && data.functionalGroups?.length) {
         const fg = buildFunctionalGroupHighlights(data.atoms, data.functionalGroups, {
-          style: functionalGroupStyle,
+          style: FUNCTIONAL_GROUP_STYLE,
         });
         fg.position.set(-cx, -cy, -cz);
         highlightRef.current = fg;
@@ -1131,7 +1132,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     if (loadState === 'ready') {
       rebuildStructure(renderMode);
     }
-  }, [renderMode, loadState, quality, showFunctionalGroups, functionalGroupStyle]);
+  }, [renderMode, loadState, quality, showFunctionalGroups]);
 
   // iOS CSS fullscreen fallback: disable shell transforms that can interfere with `position: fixed`.
   useEffect(() => {

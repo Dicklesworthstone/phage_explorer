@@ -6,6 +6,7 @@
  */
 
 import type { GeneInfo } from '@phage-explorer/core';
+import type { SequenceDiffResult, SequenceDiffStats } from './sequence-diff';
 
 // K-mer analysis results
 export interface KmerAnalysis {
@@ -251,6 +252,8 @@ export interface GenomeComparisonResult {
   codonUsage: CodonUsageComparison;
   aminoAcidUsage: AminoAcidComparison;
   geneContent: GeneContentComparison;
+  /** The bounded exact alignment shared by diff highlights and indel evidence. */
+  sequenceDiff: SequenceDiffResult | null;
   structuralVariants?: StructuralVariantReport | null;
 }
 
@@ -290,36 +293,49 @@ export interface HGTAnalysis {
   stamps: PassportStamp[];
 }
 
-// Structural variant detection
-export type StructuralVariantType =
-  | 'deletion'
-  | 'insertion'
-  | 'inversion'
-  | 'duplication'
-  | 'translocation';
+// Resolved insertion/deletion runs in the selected exact global alignment.
+// Annotation order alone cannot establish inversions, duplications or translocations.
+export type StructuralVariantType = 'deletion' | 'insertion';
 
 export interface StructuralVariantCall {
   id: string;
   type: StructuralVariantType;
+  /** Zero-based half-open intervals; equal endpoints identify an interbase site. */
   startA: number;
   endA: number;
   startB: number;
   endB: number;
   sizeA: number;
   sizeB: number;
-  confidence: number; // 0..1
-  anchorA: { startIdx: number; endIdx: number };
-  anchorB: { startIdx: number; endIdx: number };
+  referenceAllele: string;
+  alternateAllele: string;
   evidence: string[];
+  /** Up to eight overlapping annotation labels, not predicted functional consequences. */
   affectedGenesA: string[];
   affectedGenesB: string[];
 }
 
-export interface StructuralVariantReport {
+export type StructuralVariantReport = {
+  method: 'Exact global unit-edit alignment';
+  minGapBp: number;
+  limitations: string[];
+} & ({
+  status: 'complete';
+  reason: null;
   calls: StructuralVariantCall[];
   counts: Record<StructuralVariantType, number>;
-  anchorsUsed: number;
-}
+  alignment: SequenceDiffStats;
+  belowThreshold: number;
+  unresolved: number;
+} | {
+  status: 'unavailable';
+  reason: string;
+  calls: [];
+  counts: null;
+  alignment: null;
+  belowThreshold: null;
+  unresolved: null;
+});
 
 // Configuration for comparison
 export interface ComparisonConfig {
@@ -329,7 +345,7 @@ export interface ComparisonConfig {
   editDistanceWindowCount: number;    // Number of windows (default: 20)
   includeGeneComparison: boolean;     // Include gene-level comparison
   includeCodonUsage: boolean;         // Include codon usage analysis
-  includeStructuralVariants?: boolean; // Include structural variant calls (default: true)
+  includeStructuralVariants?: boolean; // Include exact alignment and resolved indel evidence (default: true)
 }
 
 export const DEFAULT_COMPARISON_CONFIG: ComparisonConfig = {

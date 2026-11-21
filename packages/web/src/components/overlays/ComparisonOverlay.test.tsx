@@ -2,8 +2,8 @@ import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
-import { compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
-import { ComparisonDiffView, ComparisonKmerIdentity, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
+import { analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
+import { ComparisonDiffView, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
 
 describe('comparison identity evidence rendering', () => {
   it('renders absent resolved evidence as unavailable in both identity and summary', async () => {
@@ -51,6 +51,41 @@ describe('comparison diff result rendering', () => {
     expect(html).not.toContain('comparison-identical'); expect(html).toContain('Aligned sequence edit coordinates');
     expect(html).toContain('deletion'); expect(html).toContain('insertion'); expect(html).toContain('60.00');
     expect(html).toContain('between bases 4 and 5');
+  });
+});
+
+describe('comparison aligned indel rendering', () => {
+  it('shows actual sequence-only indels, correctly converted coordinates and no invented confidence', async () => {
+    const result = await compareGenomes({ id: 1, name: 'Reference', accession: 'A' },
+      { id: 2, name: 'Query', accession: 'B' }, 'CCGG', 'CC' + 'A'.repeat(60) + 'GG');
+    const html = renderToStaticMarkup(<ComparisonStructuralVariants report={result.structuralVariants!} />);
+    expect(html).toContain('Aligned insertions and deletions');
+    expect(html).toContain('insertion runs');
+    expect(html).toContain('A after base 2');
+    expect(html).toContain('B 3–62');
+    expect(html).toContain('60 resolved bases in one insertion run');
+    expect(html).toContain('Overlapping annotations');
+    expect(html).not.toContain('conf ');
+    expect(html).not.toContain('100%');
+    expect(html).not.toContain('Anchors used');
+  });
+
+  it('never renders a failed alignment as a zero-variant result', () => {
+    const report = analyzeStructuralVariants('ACGT', 'TGCA', [], [], { maxStates: 0 });
+    const html = renderToStaticMarkup(<ComparisonStructuralVariants report={report} />);
+    expect(html).toContain('Aligned indel evidence unavailable');
+    expect(html).toContain('budget');
+    expect(html).not.toContain('insertion runs');
+    expect(html).not.toContain('No resolved insertion');
+    expect(html).not.toContain('No structural variant');
+  });
+
+  it('discloses unresolved alleles and distinguishes the size threshold from absence of all variation', () => {
+    const ambiguous = analyzeStructuralVariants('CCGG', 'CC' + 'N'.repeat(60) + 'GG');
+    const html = renderToStaticMarkup(<ComparisonStructuralVariants report={ambiguous} />);
+    expect(html).toContain('1 with unresolved alleles');
+    expect(html).toContain('60 alignment columns contain ambiguous bases');
+    expect(html).toContain('50 bp threshold in this alignment');
   });
 });
 

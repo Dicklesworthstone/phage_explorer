@@ -216,7 +216,10 @@ describe('structure download format and cache identity', () => {
     const cachedPdb = { pdbId: '8XCJ', data: pdbBytes, format: 'pdb' as const, fetchedAt: 0, accessedAt: 0, sizeBytes: pdbBytes.byteLength };
     const readCache = spyOn(structureCache, 'getCachedStructure').mockResolvedValue(cachedPdb);
     const writeCache = spyOn(structureCache, 'cacheStructure').mockResolvedValue(undefined);
-    const fetchAsset = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(cifFixture()));
+    const fetchAsset = spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unexpected structure download'))
+      .mockResolvedValueOnce(new Response(cifFixture()))
+      .mockResolvedValueOnce(new Response(cifFixture()));
     const options = { includeBonds: false, includeFunctionalGroups: false };
     try {
       const indexed = await loadStructure('8XCJ', undefined, undefined, options);

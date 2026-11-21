@@ -5,7 +5,7 @@ import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
 import type { PhageSummary } from '@phage-explorer/core';
-import type { ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantType } from '@phage-explorer/comparison';
+import type { ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantReport } from '@phage-explorer/comparison';
 import { formatSimilarity } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import DiffHighlighter from '../DiffHighlighter';
@@ -14,37 +14,48 @@ import { SharedSequencePool } from '../../workers/SharedSequencePool';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
 
 function formatBpRange(start: number, end: number): string {
-  const lo = Math.min(start, end);
-  const hi = Math.max(start, end);
-  return `${lo.toLocaleString()}–${hi.toLocaleString()}`;
-}
-
-function formatConfidence(confidence: number): string {
-  if (!Number.isFinite(confidence)) return '—';
-  return `${Math.round(confidence * 100)}%`;
-}
-
-function svBadgeVariant(type: StructuralVariantType): 'info' | 'warning' | 'error' | 'success' {
-  switch (type) {
-    case 'deletion':
-      return 'error';
-    case 'insertion':
-      return 'info';
-    case 'inversion':
-      return 'warning';
-    case 'duplication':
-      return 'warning';
-    case 'translocation':
-      return 'warning';
-  }
+  if (start === end) return start === 0 ? 'before base 1' : `after base ${start.toLocaleString()}`;
+  return `${(start + 1).toLocaleString()}–${end.toLocaleString()}`;
 }
 
 function sortSvCalls(a: StructuralVariantCall, b: StructuralVariantCall): number {
-  const conf = (b.confidence ?? 0) - (a.confidence ?? 0);
-  if (conf !== 0) return conf;
-  const sizeA = Math.max(a.sizeA ?? 0, a.sizeB ?? 0);
-  const sizeB = Math.max(b.sizeA ?? 0, b.sizeB ?? 0);
-  return sizeB - sizeA;
+  return Math.max(b.sizeA, b.sizeB) - Math.max(a.sizeA, a.sizeB) || a.startA - b.startA || a.startB - b.startB;
+}
+
+/** The actual Genes-tab indel view, also exercised with sequence-derived reports. */
+export function ComparisonStructuralVariants({ report }: { report: StructuralVariantReport }): React.ReactElement {
+  return <section className="panel" aria-label="Aligned insertions and deletions" style={{ marginTop: '0.75rem' }}>
+    <div className="panel-header"><h4>Aligned insertions and deletions</h4></div>
+    <p className="text-dim">{report.method}. Minimum reported indel: {report.minGapBp.toLocaleString()} bp.</p>
+    {report.status === 'unavailable' ? <p role="status">Aligned indel evidence unavailable: {report.reason}</p> : <>
+      <div className="metrics-grid">
+        {Object.entries(report.counts).map(([type, count]) => <div key={type} className="metric-card">
+          <div className="metric-label">{type} runs</div><div className="metric-value">{count}</div>
+        </div>)}
+      </div>
+      <p className="text-dim">Relative to genome A. Displayed base ranges are one-based and inclusive; insertion sites are between bases.</p>
+      {report.calls.length ? <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+        {[...report.calls].sort(sortSvCalls).slice(0, 100).map(call => <details key={call.id} className="panel panel-compact">
+          <summary style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', cursor: 'pointer' }}>
+            <Badge variant={call.type === 'deletion' ? 'error' : 'info'}>{call.type}</Badge>
+            <span>A {formatBpRange(call.startA, call.endA)}</span><span>B {formatBpRange(call.startB, call.endB)}</span>
+            <span>{call.sizeA.toLocaleString()} / {call.sizeB.toLocaleString()} bp</span>
+          </summary>
+          <p className="text-dim"><strong>Evidence:</strong> {call.evidence.join(' · ')}</p>
+          <p className="text-dim"><strong>Overlapping annotations (A, up to 8):</strong> {call.affectedGenesA.join(', ') || '—'}</p>
+          <p className="text-dim"><strong>Overlapping annotations (B, up to 8):</strong> {call.affectedGenesB.join(', ') || '—'}</p>
+        </details>)}
+        {report.calls.length > 100 && <p>Showing the largest 100 of {report.calls.length.toLocaleString()} reported indels.</p>}
+      </div> : <p>No resolved insertion or deletion runs meet the {report.minGapBp.toLocaleString()} bp threshold in this alignment.</p>}
+      {(report.belowThreshold > 0 || report.unresolved > 0) && <p className="text-dim">
+        Unreported indel runs: {report.belowThreshold.toLocaleString()} below threshold; {report.unresolved.toLocaleString()} with unresolved alleles.
+      </p>}
+      {report.alignment.ambiguousColumns > 0 && <p className="text-dim">
+        {report.alignment.ambiguousColumns.toLocaleString()} alignment columns contain ambiguous bases; their positions can affect the chosen alignment.
+      </p>}
+    </>}
+    {report.limitations.map(limit => <p className="text-dim" key={limit}>{limit}</p>)}
+  </section>;
 }
 
 interface ComparisonOverlayProps {
@@ -698,78 +709,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               <div>{genes.uniqueBGenes.slice(0, 6).join(', ') || '—'}</div>
             </div>
           </div>
-          {structural && (
-            <div className="panel" style={{ marginTop: '0.75rem' }}>
-              <div className="panel-header">
-                <h4>Structural variants</h4>
-                <span className="text-dim">{structural.calls.length} calls</span>
-              </div>
-              <div className="metrics-grid">
-                {Object.entries(structural.counts).map(([type, count]) => (
-                  <div key={type} className="metric-card">
-                    <div className="metric-label">{type}</div>
-                    <div className="metric-value">{count}</div>
-                  </div>
-                ))}
-                <div className="metric-card">
-                  <div className="metric-label">Anchors used</div>
-                  <div className="metric-value">{structural.anchorsUsed}</div>
-                </div>
-              </div>
-              {structural.calls.length > 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem' }}>
-                  {[...structural.calls].sort(sortSvCalls).map((call) => (
-                    <details key={call.id} className="panel panel-compact">
-                      <summary
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'space-between',
-                          gap: '0.75rem',
-                          cursor: 'pointer',
-                          listStyle: 'none',
-                        }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-                          <Badge variant={svBadgeVariant(call.type)}>{call.type}</Badge>
-                          <span className="text-dim" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            conf {formatConfidence(call.confidence)}
-                          </span>
-                          <span className="text-dim" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            A {formatBpRange(call.startA, call.endA)}
-                          </span>
-                          <span className="text-dim" style={{ fontVariantNumeric: 'tabular-nums' }}>
-                            B {formatBpRange(call.startB, call.endB)}
-                          </span>
-                        </div>
-                        <span className="text-dim" style={{ fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
-                          {call.sizeA.toLocaleString()} / {call.sizeB.toLocaleString()} bp
-                        </span>
-                      </summary>
-
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.5rem' }}>
-                        <div className="text-dim">
-                          <strong>Evidence:</strong> {call.evidence?.length ? call.evidence.join(' · ') : '—'}
-                        </div>
-                        <div className="text-dim">
-                          <strong>Affected genes (A):</strong>{' '}
-                          {call.affectedGenesA?.length ? call.affectedGenesA.join(', ') : '—'}
-                        </div>
-                        <div className="text-dim">
-                          <strong>Affected genes (B):</strong>{' '}
-                          {call.affectedGenesB?.length ? call.affectedGenesB.join(', ') : '—'}
-                        </div>
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-dim" style={{ marginTop: '0.75rem' }}>
-                  No structural variant calls detected with the current thresholds.
-                </div>
-              )}
-            </div>
-          )}
+          {structural && <ComparisonStructuralVariants report={structural} />}
         </div>
       );
     }

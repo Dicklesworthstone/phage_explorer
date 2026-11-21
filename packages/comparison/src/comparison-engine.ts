@@ -25,7 +25,8 @@ import {
   compareGeneContent,
 } from './biological-metrics';
 import { countCodonUsage } from '@phage-explorer/core';
-import { analyzeStructuralVariants } from './structural-variants';
+import { structuralVariantsFromDiff } from './structural-variants';
+import { computeSequenceDiff } from './sequence-diff';
 
 /**
  * Perform comprehensive genome comparison.
@@ -92,10 +93,12 @@ export async function compareGenomes(
     sequenceB.length
   );
 
-  const structuralVariants =
-    config.includeStructuralVariants !== false
-      ? analyzeStructuralVariants(sequenceA, sequenceB, genesA, genesB)
-      : null;
+  // One bounded alignment owns both exact diff highlights and indel evidence.
+  // Budget exhaustion leaves other metrics usable and indels explicitly unavailable.
+  const sequenceDiff = config.includeStructuralVariants !== false
+    ? computeSequenceDiff(sequenceA, sequenceB) : null;
+  const structuralVariants = sequenceDiff
+    ? structuralVariantsFromDiff(sequenceA, sequenceB, sequenceDiff, genesA, genesB) : null;
 
   // Compute summary
   const summary = computeSummary(
@@ -124,6 +127,7 @@ export async function compareGenomes(
     codonUsage,
     aminoAcidUsage,
     geneContent,
+    sequenceDiff,
     structuralVariants,
   };
 }

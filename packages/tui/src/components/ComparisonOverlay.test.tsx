@@ -154,6 +154,38 @@ function terminal(repository: PhageRepository, runWorker?: typeof runComparisonI
 }
 
 describe('terminal comparison source ownership and recovery', () => {
+  it('shows an exact sequence-only insertion in the actual structural tab with correct coordinates', async () => {
+    const previous = usePhageStore.getState();
+    const { repository } = await fixture('>REFERENCE\nCCGG\n>QUERY\nCC' + 'A'.repeat(60) + 'GG\n');
+    usePhageStore.setState({ comparisonTab: 'structural' });
+    const test = terminal(repository);
+    try {
+      await waitFor(() => test.output().includes('Aligned insertions and deletions'));
+      const report = usePhageStore.getState().comparisonResult?.structuralVariants;
+      expect(report?.status).toBe('complete');
+      expect(report?.calls).toHaveLength(1);
+      expect(test.output()).toContain('Insertion runs: 1');
+      expect(test.output()).toContain('A:after base 2 (0 bp)');
+      expect(test.output()).toContain('B:3-62 (60 bp)');
+      expect(test.output()).not.toContain('conf 100%');
+      expect(test.output()).not.toContain('No variants detected');
+    } finally { test.ui.unmount(); await flush(); usePhageStore.setState(previous); }
+  });
+
+  it('shows unavailable evidence when the actual alignment exceeds its budget', async () => {
+    const previous = usePhageStore.getState();
+    const { repository } = await fixture('>REFERENCE\n' + 'A'.repeat(3000) + '\n>QUERY\n' + 'C'.repeat(3001) + '\n');
+    usePhageStore.setState({ comparisonTab: 'structural' });
+    const test = terminal(repository);
+    try {
+      await waitFor(() => test.output().includes('Aligned indel evidence unavailable'));
+      expect(test.output()).toContain('budget');
+      expect(test.output()).not.toContain('No variants detected');
+      expect(test.output()).not.toContain('Insertion runs: 0');
+      expect(usePhageStore.getState().comparisonResult?.structuralVariants?.counts).toBeNull();
+    } finally { test.ui.unmount(); await flush(); usePhageStore.setState(previous); }
+  });
+
   it('shows unavailable identity and no relatedness category for actual ambiguous local inputs', async () => {
     const previous = usePhageStore.getState();
     const { repository } = await fixture('>UNKNOWN_A\n' + 'N'.repeat(32) + '\n>UNKNOWN_B\n' + 'N'.repeat(32) + '\n');

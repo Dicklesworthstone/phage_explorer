@@ -1,449 +1,129 @@
+/**
+ * Exact aligned indels, relative to input A. Gene annotations supply context
+ * only: neither names, missing annotations nor gene order establish a variant.
+ * A single global unit-edit alignment cannot infer rearrangement mechanisms.
+ */
 import type { GeneInfo } from '@phage-explorer/core';
-import type {
-  StructuralVariantCall,
-  StructuralVariantReport,
-  StructuralVariantType,
-} from './types';
+import { WAVEFRONT_LIMITS, type WavefrontOptions } from '../../core/src/analysis/wavefront-alignment';
+import { computeSequenceDiff, SEQUENCE_DIFF_METHOD, type SequenceDiffResult } from './sequence-diff';
+import type { StructuralVariantCall, StructuralVariantReport } from './types';
 
-interface StructuralVariantOptions {
+export interface StructuralVariantOptions extends WavefrontOptions {
+  /** Explicit reporting threshold, not a confidence or biological classification. */
   minGapBp?: number;
-  minConfidence?: number;
-  translocationDistance?: number;
-  inversionMinFlip?: number;
 }
+const DEFAULT_MIN_GAP_BP = 50;
+const MAX_REPORTED_INDELS = 10000;
+const LIMITATIONS = [
+  'Insertions and deletions describe runs in one exact global unit-edit alignment, relative to genome A; they are not validated biological structural variants.',
+  'The submitted strand and origin are retained. Alternative optimal alignments can place edits differently in repeats.',
+  'Inversions, duplications and translocations are not inferred. Gene annotations provide overlap context only, not functional consequences.',
+  'Ambiguous IUPAC symbols match literally during alignment. Indel alleles containing unresolved bases are not reported.',
+];
 
-const DEFAULT_OPTIONS: Required<StructuralVariantOptions> = {
-  minGapBp: 500, // ignore tiny gaps likely to be annotation jitter
-  minConfidence: 0.15,
-  translocationDistance: 2000,
-  inversionMinFlip: 3, // minimum gene index delta to flag inversion
-};
-
-type BlockOrientation = 'forward' | 'reverse';
-type SyntenyBlock = {
-  startIdxA: number;
-  endIdxA: number;
-  startIdxB: number;
-  endIdxB: number;
-  score: number; // 0..1 similarity
-  orientation: BlockOrientation;
-};
-
-type Anchor = {
-  startIdxA: number;
-  endIdxA: number;
-  startIdxB: number;
-  endIdxB: number;
-};
-
-function clamp01(value: number): number {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
-}
-
-function geneRange(genes: GeneInfo[], startIdx: number, endIdx: number): [number, number] {
-  const loIdx = Math.min(startIdx, endIdx);
-  const hiIdx = Math.max(startIdx, endIdx);
-  const start = genes[loIdx]?.startPos ?? 0;
-  const end = genes[hiIdx]?.endPos ?? start;
-  return [Math.min(start, end), Math.max(start, end)];
-}
-
-function collectGenes(
-  genes: GeneInfo[],
-  start: number,
-  end: number
-): string[] {
-  const lo = Math.min(start, end);
-  const hi = Math.max(start, end);
-  return genes
-    .filter((g) => g.startPos <= hi && g.endPos >= lo)
-    .map(g => g.name || g.product || g.locusTag || `gene-${g.id ?? 'unknown'}`)
-    .slice(0, 8);
-}
-
-function makeCall(
-  type: StructuralVariantType,
-  anchor: Anchor,
-  genesA: GeneInfo[],
-  genesB: GeneInfo[],
-  spans: { startA: number; endA: number; startB: number; endB: number },
-  sizeA: number,
-  sizeB: number,
-  confidence: number,
-  evidence: string[]
-): StructuralVariantCall {
-  return {
-    id: `${type}-${spans.startA}-${spans.startB}-${Math.abs(sizeA - sizeB)}`,
-    type,
-    startA: spans.startA,
-    endA: spans.endA,
-    startB: spans.startB,
-    endB: spans.endB,
-    sizeA,
-    sizeB,
-    confidence: clamp01(confidence),
-    anchorA: { startIdx: anchor.startIdxA, endIdx: anchor.endIdxA },
-    anchorB: { startIdx: anchor.startIdxB, endIdx: anchor.endIdxB },
-    evidence,
-    affectedGenesA: collectGenes(genesA, spans.startA, spans.endA),
-    affectedGenesB: collectGenes(genesB, spans.startB, spans.endB),
-  };
-}
-
-interface GeneTokens {
-  name: string;
-  terms: string[];
-}
-
-function preprocessGene(g: GeneInfo): GeneTokens {
-  const n = (g.product || g.name || '').toLowerCase();
-  // Split on whitespace, commas, semicolons, dots, hyphens
-  // Keep all terms (length >= 1) to support single-letter genes like Lambda A, B, C
-  const terms = n.split(/[\s,;.-]+/).filter(t => t.length > 0);
-  return { name: n, terms };
-}
-
-function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
-  if (!t1.name || !t2.name) return 1.0;
-
-  const STOPWORDS = new Set([
-    'protein', 'putative', 'hypothetical', 'phage', 'viral', 
-    'probable', 'predicted', 'conserved', 'domain', 'family', 
-    'uncharacterized', 'gp', 'orf'
-  ]);
-
-  const set1 = new Set(t1.terms.filter(t => !STOPWORDS.has(t)));
-  const terms2 = t2.terms.filter(t => !STOPWORDS.has(t));
-
-  // If filtering removed all terms (e.g. "hypothetical protein"), no match
-  if (set1.size === 0 || terms2.length === 0) return 1.0;
-
-  if (t1.name === t2.name) return 0.0;
-  
-  // Removed dangerous .includes() shortcut which matches "protein A" to "protein B" via "protein"
-
-  for (const term of terms2) {
-    if (set1.has(term)) return 0.5;
+function minimumGap(value: number | undefined): number {
+  const result = value ?? DEFAULT_MIN_GAP_BP;
+  if (!Number.isSafeInteger(result) || result < 1 || result > WAVEFRONT_LIMITS.length) {
+    throw new Error(`Minimum indel size must be an integer from 1 to ${WAVEFRONT_LIMITS.length}.`);
   }
-  return 1.0;
+  return result;
 }
 
-type Match = { idxA: number; idxB: number; score: number };
-
-function buildSyntenyBlocks(
-  genesA: GeneInfo[],
-  genesB: GeneInfo[],
-  opts: { minScore: number; maxStepA: number; maxStepB: number; minBlockMatches: number }
-): SyntenyBlock[] {
-  const tokensA = genesA.map(preprocessGene);
-  const tokensB = genesB.map(preprocessGene);
-
-  const candidates: Match[] = [];
-  for (let idxA = 0; idxA < tokensA.length; idxA++) {
-    const tA = tokensA[idxA];
-    if (!tA.name) continue;
-    for (let idxB = 0; idxB < tokensB.length; idxB++) {
-      const dist = geneDistanceOptimized(tA, tokensB[idxB]);
-      const score = 1 - dist;
-      if (score >= opts.minScore) {
-        candidates.push({ idxA, idxB, score });
-      }
-    }
+/** Invalid/out-of-genome annotation intervals cannot contribute gene context. */
+function annotationIndex(genes: GeneInfo[], genomeLength: number) {
+  const sorted = genes.filter(gene => Number.isSafeInteger(gene.startPos) && Number.isSafeInteger(gene.endPos)
+    && gene.startPos >= 0 && gene.endPos > gene.startPos && gene.endPos <= genomeLength)
+    .slice().sort((a, b) => a.startPos - b.startPos || a.endPos - b.endPos || a.id - b.id);
+  const maximumEnd: number[] = [];
+  for (let i = 0; i < sorted.length; i++) maximumEnd.push(Math.max(maximumEnd[i - 1] ?? 0, sorted[i].endPos));
+  return { sorted, maximumEnd };
+}
+function collectGenes(index: ReturnType<typeof annotationIndex>, start: number, end: number): string[] {
+  // Only interior interbase sites overlap an annotation. A boundary adjacent to
+  // a feature does not establish that the feature itself is affected.
+  let lo = 0, hi = index.sorted.length;
+  const upper = start === end ? start : end;
+  while (lo < hi) {
+    const middle = Math.floor((lo + hi) / 2);
+    if (index.sorted[middle].startPos < upper) lo = middle + 1; else hi = middle;
   }
-
-  candidates.sort((a, b) => b.score - a.score);
-  const usedA = new Set<number>();
-  const usedB = new Set<number>();
-  const matches: Match[] = [];
-
-  for (const candidate of candidates) {
-    if (usedA.has(candidate.idxA) || usedB.has(candidate.idxB)) continue;
-    usedA.add(candidate.idxA);
-    usedB.add(candidate.idxB);
-    matches.push(candidate);
+  const labels = new Set<string>();
+  for (let i = lo - 1; i >= 0 && index.maximumEnd[i] > start; i--) {
+    const gene = index.sorted[i];
+    if (gene.endPos <= start) continue;
+    labels.add(gene.name || gene.product || gene.locusTag || `gene-${gene.id}`);
+    if (labels.size === 8) break;
   }
-
-  matches.sort((a, b) => a.idxA - b.idxA);
-
-  const blocks: SyntenyBlock[] = [];
-  let current: {
-    startIdxA: number;
-    endIdxA: number;
-    startIdxB: number;
-    endIdxB: number;
-    scoreSum: number;
-    count: number;
-    orientation: BlockOrientation | null;
-  } | null = null;
-
-  const flush = () => {
-    if (!current) return;
-    if (current.count >= opts.minBlockMatches && current.orientation) {
-      blocks.push({
-        startIdxA: current.startIdxA,
-        endIdxA: current.endIdxA,
-        startIdxB: current.startIdxB,
-        endIdxB: current.endIdxB,
-        score: clamp01(current.scoreSum / current.count),
-        orientation: current.orientation,
-      });
-    }
-    current = null;
-  };
-
-  for (const match of matches) {
-    if (!current) {
-      current = {
-        startIdxA: match.idxA,
-        endIdxA: match.idxA,
-        startIdxB: match.idxB,
-        endIdxB: match.idxB,
-        scoreSum: match.score,
-        count: 1,
-        orientation: null,
-      };
-      continue;
-    }
-
-    const deltaA = match.idxA - current.endIdxA;
-    const deltaB = match.idxB - current.endIdxB;
-    if (deltaA <= 0) continue;
-
-    const stepAOk = deltaA <= opts.maxStepA;
-    const stepBOk = Math.abs(deltaB) <= opts.maxStepB && deltaB !== 0;
-    const dir: BlockOrientation = deltaB > 0 ? 'forward' : 'reverse';
-    const expected = current.orientation ?? dir;
-
-    if (stepAOk && stepBOk && expected === dir) {
-      current.endIdxA = match.idxA;
-      current.endIdxB = match.idxB;
-      current.scoreSum += match.score;
-      current.count += 1;
-      current.orientation = expected;
-      continue;
-    }
-
-    flush();
-    current = {
-      startIdxA: match.idxA,
-      endIdxA: match.idxA,
-      startIdxB: match.idxB,
-      endIdxB: match.idxB,
-      scoreSum: match.score,
-      count: 1,
-      orientation: null,
-    };
-  }
-
-  flush();
-
-  return blocks.sort((a, b) => a.startIdxA - b.startIdxA);
+  return [...labels].sort();
 }
 
+/**
+ * Internal producer seam: consume the exact diff just computed for these bases
+ * so browser highlights and indels share one alignment and one work budget.
+ * Public callers needing an independent analysis use analyzeStructuralVariants.
+ */
+export function structuralVariantsFromDiff(
+  sequenceA: string,
+  sequenceB: string,
+  diff: SequenceDiffResult,
+  genesA: GeneInfo[] = [],
+  genesB: GeneInfo[] = [],
+  minGapBp = DEFAULT_MIN_GAP_BP,
+): StructuralVariantReport {
+  const base = { method: SEQUENCE_DIFF_METHOD, minGapBp: minimumGap(minGapBp), limitations: [...LIMITATIONS] };
+  const unavailable = (reason: string): StructuralVariantReport => ({ ...base, status: 'unavailable', reason,
+    calls: [], counts: null, alignment: null, belowThreshold: null, unresolved: null });
+  if (typeof sequenceA !== 'string' || typeof sequenceB !== 'string' || !sequenceA.length || !sequenceB.length) {
+    return unavailable('Both genomes require sequence input before aligned indels can be assessed.');
+  }
+  if (diff.status === 'unavailable') return unavailable(diff.reason);
+  if (diff.stats.lengthA !== sequenceA.length || diff.stats.lengthB !== sequenceB.length) {
+    throw new Error('Aligned indel evidence does not match the input sequence lengths.');
+  }
+  const a = sequenceA.toUpperCase(), b = sequenceB.toUpperCase();
+  if (!/[ACGT]/.test(a) || !/[ACGT]/.test(b)) {
+    return unavailable('Both genomes require resolved A/C/G/T bases; an all-ambiguous alignment cannot establish indel evidence.');
+  }
+  const indexA = annotationIndex(genesA, a.length), indexB = annotationIndex(genesB, b.length);
+  const calls: StructuralVariantCall[] = [];
+  const counts = { deletion: 0, insertion: 0 };
+  let belowThreshold = 0, unresolved = 0;
+  for (const run of diff.runs) {
+    if (run.operation !== 'insertion' && run.operation !== 'deletion') continue;
+    const sizeA = run.endA - run.startA, sizeB = run.endB - run.startB;
+    if (Math.max(sizeA, sizeB) < base.minGapBp) { belowThreshold++; continue; }
+    const referenceAllele = a.slice(run.startA, run.endA), alternateAllele = b.slice(run.startB, run.endB);
+    if (/[^ACGT]/.test(referenceAllele + alternateAllele)) { unresolved++; continue; }
+    if (calls.length === MAX_REPORTED_INDELS) {
+      return unavailable(`Aligned indel reporting exceeded ${MAX_REPORTED_INDELS.toLocaleString()} events. Increase the size threshold or compare a smaller region; no partial report was produced.`);
+    }
+    counts[run.operation]++;
+    calls.push({ id: `${run.operation}-${run.startA}-${run.endA}-${run.startB}-${run.endB}`,
+      type: run.operation, startA: run.startA, endA: run.endA, startB: run.startB, endB: run.endB,
+      sizeA, sizeB, referenceAllele, alternateAllele,
+      evidence: [SEQUENCE_DIFF_METHOD, `${Math.max(sizeA, sizeB)} resolved bases in one ${run.operation} run relative to genome A`,
+        'Zero-based half-open coordinates; equal endpoints are interbase sites'],
+      affectedGenesA: collectGenes(indexA, run.startA, run.endA),
+      affectedGenesB: collectGenes(indexB, run.startB, run.endB) });
+  }
+  return { ...base, status: 'complete', reason: null, calls, counts,
+    alignment: { ...diff.stats }, belowThreshold, unresolved };
+}
+
+/** Exact sequence-derived indels, or an explicit unavailable result. No annotation fallback. */
 export function analyzeStructuralVariants(
   sequenceA: string,
   sequenceB: string,
   genesA: GeneInfo[] = [],
   genesB: GeneInfo[] = [],
-  options: StructuralVariantOptions = {}
+  options: StructuralVariantOptions = {},
 ): StructuralVariantReport {
-  void sequenceA;
-  void sequenceB;
-
-  const cfg = { ...DEFAULT_OPTIONS, ...options };
-
-  if (genesA.length < 2 || genesB.length < 2) {
-    return {
-      calls: [],
-      counts: { deletion: 0, insertion: 0, inversion: 0, duplication: 0, translocation: 0 },
-      anchorsUsed: 0,
-    };
+  if (!options || typeof options !== 'object' || Array.isArray(options)
+    || Object.keys(options).some(key => !['minGapBp', 'maxStates', 'maxComparisons'].includes(key))) {
+    throw new Error('Unsupported aligned indel options.');
   }
-
-  const blocks = buildSyntenyBlocks(genesA, genesB, {
-    minScore: 0.2, // dist < 0.8 in legacy synteny
-    maxStepA: 2,
-    maxStepB: 3,
-    minBlockMatches: 2,
-  });
-
-  if (blocks.length === 0) {
-    return {
-      calls: [],
-      counts: { deletion: 0, insertion: 0, inversion: 0, duplication: 0, translocation: 0 },
-      anchorsUsed: blocks.length,
-    };
-  }
-
-  const calls: StructuralVariantCall[] = [];
-
-  // Inversions: detect reverse-oriented synteny blocks
-  for (const block of blocks) {
-    if (block.orientation !== 'reverse') continue;
-    const flipA = Math.abs(block.endIdxA - block.startIdxA);
-    const flipB = Math.abs(block.endIdxB - block.startIdxB);
-    if (Math.min(flipA, flipB) < cfg.inversionMinFlip) continue;
-    const [startA, endA] = geneRange(genesA, block.startIdxA, block.endIdxA);
-    const [startB, endB] = geneRange(genesB, block.startIdxB, block.endIdxB);
-    const sizeA = Math.max(0, endA - startA);
-    const sizeB = Math.max(0, endB - startB);
-    const sizeSimilarity = 1 - Math.abs(sizeA - sizeB) / Math.max(sizeA, sizeB, 1);
-    const confidence = clamp01(0.3 + 0.35 * block.score + 0.35 * sizeSimilarity);
-    calls.push(
-      makeCall(
-        'inversion',
-        {
-          startIdxA: block.startIdxA,
-          endIdxA: block.endIdxA,
-          startIdxB: block.startIdxB,
-          endIdxB: block.endIdxB,
-        },
-        genesA,
-        genesB,
-        { startA, endA, startB, endB },
-        sizeA,
-        sizeB,
-        confidence,
-        ['reverse-oriented gene block', `score=${block.score.toFixed(2)}`]
-      )
-    );
-  }
-
-  for (let i = 0; i < blocks.length - 1; i++) {
-    const current = blocks[i];
-    const next = blocks[i + 1];
-
-    // Gap-based calls assume monotonic mapping; skip reverse blocks for now.
-    if (current.orientation !== 'forward' || next.orientation !== 'forward') continue;
-
-    const [currStartA, currEndA] = geneRange(genesA, current.startIdxA, current.endIdxA);
-    const [currStartB, currEndB] = geneRange(genesB, current.startIdxB, current.endIdxB);
-    const [nextStartA] = geneRange(genesA, next.startIdxA, next.endIdxA);
-    const [nextStartB] = geneRange(genesB, next.startIdxB, next.endIdxB);
-
-    const gapA = Math.max(0, nextStartA - currEndA);
-    const gapB = Math.max(0, nextStartB - currEndB);
-    const avgGap = (gapA + gapB) / 2;
-
-    const anchor: Anchor = {
-      startIdxA: current.endIdxA,
-      endIdxA: next.startIdxA,
-      startIdxB: current.endIdxB,
-      endIdxB: next.startIdxB,
-    };
-
-    // Large asymmetric gaps => insertion/deletion
-    if (gapA > cfg.minGapBp || gapB > cfg.minGapBp) {
-      const sizeDiff = Math.abs(gapA - gapB);
-      const larger = Math.max(gapA, gapB);
-      const rel = larger === 0 ? 0 : sizeDiff / larger;
-      if (rel > 0.3) {
-        const isDeletionInB = gapA > gapB;
-        const type: StructuralVariantType = isDeletionInB ? 'deletion' : 'insertion';
-        const spanA = [currEndA, nextStartA];
-        const spanB = [currEndB, nextStartB];
-        const sizeA = gapA;
-        const sizeB = gapB;
-        const confidence = clamp01(0.5 + rel * 0.5);
-        calls.push(
-          makeCall(
-            type,
-            anchor,
-            genesA,
-            genesB,
-            {
-              startA: Math.min(...spanA),
-              endA: Math.max(...spanA),
-              startB: Math.min(...spanB),
-              endB: Math.max(...spanB),
-            },
-            sizeA,
-            sizeB,
-            confidence,
-            [
-              `gapA=${gapA}`,
-              `gapB=${gapB}`,
-              isDeletionInB ? 'missing sequence in genome B' : 'extra sequence in genome B',
-            ]
-          )
-        );
-        continue;
-      }
-    }
-
-    // Re-ordered distant anchors => translocation
-    const deltaA = nextStartA - currStartA;
-    const deltaB = nextStartB - currStartB;
-    const distanceDiff = Math.abs(Math.abs(deltaA) - Math.abs(deltaB));
-    if (distanceDiff > cfg.translocationDistance && avgGap > cfg.minGapBp) {
-      const spanA = [currEndA, nextStartA];
-      const spanB = [currEndB, nextStartB];
-      const sizeA = Math.abs(spanA[1] - spanA[0]);
-      const sizeB = Math.abs(spanB[1] - spanB[0]);
-      const confidence = clamp01(0.4 + Math.min(distanceDiff / 10000, 0.6));
-      calls.push(
-        makeCall(
-          'translocation',
-          anchor,
-          genesA,
-          genesB,
-          {
-            startA: Math.min(...spanA),
-            endA: Math.max(...spanA),
-            startB: Math.min(...spanB),
-            endB: Math.max(...spanB),
-          },
-          sizeA,
-          sizeB,
-          confidence,
-          ['anchor spacing mismatch', `|Δ|=${distanceDiff}`]
-        )
-      );
-      continue;
-    }
-
-    // Small asymmetric gain suggest duplication
-    if (avgGap > 0 && Math.abs(gapA - gapB) / Math.max(avgGap, 1) < 0.25 && avgGap > cfg.minGapBp / 2) {
-      const spanA = [currEndA, nextStartA];
-      const spanB = [currEndB, nextStartB];
-      const sizeA = gapA;
-      const sizeB = gapB;
-      const confidence = clamp01(0.3 + (avgGap / (cfg.minGapBp * 2)));
-      calls.push(
-        makeCall(
-          'duplication',
-          anchor,
-          genesA,
-          genesB,
-          {
-            startA: Math.min(...spanA),
-            endA: Math.max(...spanA),
-            startB: Math.min(...spanB),
-            endB: Math.max(...spanB),
-          },
-          sizeA,
-          sizeB,
-          confidence,
-          ['similar gap sizes, possible tandem duplication']
-        )
-      );
-    }
-  }
-
-  // Filter low-confidence calls
-  const filtered = calls.filter(c => c.confidence >= cfg.minConfidence);
-  const counts = filtered.reduce<Record<StructuralVariantType, number>>(
-    (acc, c) => {
-      acc[c.type] += 1;
-      return acc;
-    },
-    { deletion: 0, insertion: 0, inversion: 0, duplication: 0, translocation: 0 }
-  );
-
-  return {
-    calls: filtered,
-    counts,
-    anchorsUsed: blocks.length,
-  };
+  const { minGapBp, ...budgets } = options;
+  const minimum = minimumGap(minGapBp);
+  const diff = computeSequenceDiff(sequenceA, sequenceB, budgets);
+  return structuralVariantsFromDiff(sequenceA, sequenceB, diff, genesA, genesB, minimum);
 }
