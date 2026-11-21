@@ -101,7 +101,17 @@ export async function buildWebDatabase(options: WebDatabaseBuildOptions): Promis
         throw new Error('Source changed, is invalid, or has uncheckpointed WAL data. Build to a separate output directory to publish a coherent snapshot.', { cause: error });
       }
     } else {
-      const snapshot = Database.deserialize(source.serialize());
+      const snapshotBytes = source.serialize();
+      // serialize() includes the committed WAL pages in this read snapshot,
+      // but retains the WAL-mode header. An in-memory deserialized database
+      // cannot open a WAL; normalize only this owned snapshot, never the source
+      // file (whose committed pages may still live in its separate WAL).
+      // https://sqlite.org/c3ref/deserialize.html
+      if (snapshotBytes[18] === 2 && snapshotBytes[19] === 2) {
+        snapshotBytes[18] = 1;
+        snapshotBytes[19] = 1;
+      }
+      const snapshot = Database.deserialize(snapshotBytes);
       try {
         snapshot.exec('VACUUM');
         snapshot.exec('REINDEX');

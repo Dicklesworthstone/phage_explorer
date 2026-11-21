@@ -201,12 +201,24 @@ describe('verified database publication', () => {
     try {
       writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; UPDATE fold_embedding_coords SET x=6.5 WHERE gene_id=1');
       const bytes = await readFile(fixture.source);
+      const walBytes = await readFile(`${fixture.source}-wal`);
+      expect(bytes[18]).toBe(2);
+      expect(bytes[19]).toBe(2);
       await expect(buildWebDatabase({ source: fixture.source, outputDirectory: fixture.directory, immutable: true })).rejects.toThrow('uncheckpointed WAL');
       expect(await checkWebDatabase(fixture.directory)).toEqual(baseline);
-      const snapshot = await buildWebDatabase({ ...fixture, immutable: true });
-      expect(await readFile(fixture.source)).toEqual(bytes);
-      expect(atlasCoordinate(await readFile(join(fixture.outputDirectory, snapshot.artifacts!.sqlite.path)))).toBe(6.5);
-      expect(snapshot.contentVersion).not.toBe(baseline.contentVersion);
+      for (const immutable of [false, true]) {
+        const snapshot = await buildWebDatabase({ ...fixture, immutable });
+        const raw = await readFile(join(fixture.outputDirectory, snapshot.artifacts?.sqlite.path ?? 'phage.db'));
+        expect(await readFile(fixture.source)).toEqual(bytes);
+        expect(await readFile(`${fixture.source}-wal`)).toEqual(walBytes);
+        expect(writer.query('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
+        expect(raw[18]).toBe(1);
+        expect(raw[19]).toBe(1);
+        expect(atlasCoordinate(raw)).toBe(6.5);
+        expect(snapshot.contentVersion).not.toBe(baseline.contentVersion);
+        expect(snapshot.contentVersion).toBe(computeDatabaseContentDigest(writer));
+        expect(await checkWebDatabase(fixture.outputDirectory)).toEqual(snapshot);
+      }
     } finally { writer.close(); }
   });
 
