@@ -6,10 +6,12 @@ import { analysisJson } from '../../../core/src/analysis-result';
 import { resolveExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { resolveRestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { DEFAULT_AFFINE_PENALTIES, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
+import { parseRNAInterval } from '../../../core/src/analysis/rna-structure-experiment';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters, type ResearchView, type ResearchPangenomeParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters,
+  type ResearchView, type ResearchPangenomeParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
-import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep } from '../terminal-research-session';
+import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep, TerminalResearchRNASource } from '../terminal-research-session';
 import { readTerminalSize } from './terminal-size';
 
 const editorActions = [
@@ -20,10 +22,13 @@ const editorActions = [
   { kind: 'digest', id: ActionIds.OverlayGel, label: 'Restriction digest' },
   { kind: 'dot-plot', id: ActionIds.OverlayDotPlot, label: 'Self or ordered pairwise dot plot' },
   { kind: 'pangenome', id: ActionIds.OverlayPangenomeGraph, label: 'Multi-genome pangenome + reference CDS consequences' },
+  { kind: 'rna', id: ActionIds.OverlayRNAStructure, label: 'RNA pairing in an exact genome or CDS interval' },
+  { kind: 'mosaic', id: ActionIds.OverlayMosaicRadar, label: 'Mosaic reference similarity across captured genomes' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
-function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, initial: Record<string, unknown>, view: ResearchView | null): Setting[] {
+function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, initial: Record<string, unknown>, view: ResearchView | null,
+  rna?: TerminalResearchRNASource & { coding: boolean }): Setting[] {
   const field = (key: string, label: string, fallback: string | number): Setting => ({ key, label, initial: String(initial[key] ?? fallback) });
   switch (kind) {
     case 'view': return [field('viewMode', 'Sequence mode (dna, aa, dual)', view?.viewMode ?? 'dna'),
@@ -40,7 +45,21 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
     case 'dot-plot': return [field('bins', 'Display bins (1–256)', 64), field('window', 'Comparison window (bases; must fit both inputs)', Math.min(20, source.bases))];
-    case 'pangenome': return []; // The multi-source editor owns these settings.
+    case 'pangenome': case 'mosaic': return []; // The multi-source editors own these settings.
+    case 'rna': {
+      if (!rna) throw new Error('Choose a supported RNA source first.');
+      const options = initial.options as Record<string, unknown> | undefined;
+      const length = Math.min(rna.bases, 600);
+      return [{ key: 'start', label: 'RNA start (1-based, inclusive)', initial: String(Number(initial.start ?? 0) + 1) },
+        field('end', 'RNA end (inclusive; at most 6000 selected bases)', length),
+        ...(rna.coding ? [] : [field('strand', 'RNA strand (+ or - within the forward-genome interval)', '+')]),
+        { key: 'windowSize', label: 'RNA window (1–240 bases)', initial: String(options?.windowSize ?? Math.min(rna.coding ? 60 : 120, length)) },
+        { key: 'stepSize', label: 'RNA step (1–6000 bases)', initial: String(options?.stepSize ?? Math.min(rna.coding ? 15 : 30, length)) },
+        { key: 'minLoopSize', label: 'Minimum intervening loop (0–30 bases)', initial: String(options?.minLoopSize ?? 3) },
+        { key: 'allowWobble', label: 'Allow GU wobble pairs (yes or no)', initial: options?.allowWobble === false ? 'no' : 'yes' },
+        ...(rna.synonymousSupported ? [{ key: 'includeSynonymousStress', label: 'Include descriptive synonymous pairing-score differences (yes or no)',
+          initial: options?.includeSynonymousStress === true ? 'yes' : 'no' }] : [])];
+    }
   }
 }
 function integer(value: string, label: string, signed = false): number {
@@ -48,6 +67,10 @@ function integer(value: string, label: string, signed = false): number {
     throw new Error(label + ' must be an explicit whole number.');
   }
   return Number(value);
+}
+function yesNo(value: string, label: string): boolean {
+  if (value !== 'yes' && value !== 'no') throw new Error(label + ' must be yes or no.');
+  return value === 'yes';
 }
 
 const graphAlignments = [
@@ -211,11 +234,106 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
     <Text color={colors.textDim}>Drafting runs no analyses. Genomes and original annotations remain in the private input bundle.</Text>
   </Box>;
 }
+/** A mosaic query owns an explicit reference panel. Empty panels are useful
+ * no-reference controls, and a selected query can never be its own reference.
+ */
+function MosaicStepEditor({ draft, initial, rows, onSave, onCancel }: {
+  draft: TerminalResearchDraft; initial: TerminalResearchStep | null; rows: number;
+  onSave: (step: TerminalResearchStep) => void; onCancel: () => void;
+}): React.ReactElement {
+  const { colors } = usePhageStore(state => state.currentTheme);
+  const prior = initial?.actionId === ActionIds.OverlayMosaicRadar ? initial.parameters as unknown as ResearchMosaicParameters : null;
+  const [stage, setStage] = useState<'query' | 'references' | 'settings'>('query');
+  const [queryIndex, setQueryIndex] = useState(Math.max(0, draft.sources.findIndex(source => source.contentId === prior?.queryContentId)));
+  const [references, setReferences] = useState<string[]>(prior ? [...prior.referenceContentIds] : []);
+  const [referenceIndex, setReferenceIndex] = useState(0);
+  const [settingIndex, setSettingIndex] = useState(0), [error, setError] = useState<string | null>(null);
+  const query = draft.sources[queryIndex], candidates = draft.sources.filter(source => source.contentId !== query.contentId);
+  const settings: Setting[] = [
+    { key: 'k', label: 'Canonical k-mer length (1–16)', initial: String(prior?.options.k ?? 5) },
+    { key: 'window', label: 'Mosaic window (200–5000000 bases)', initial: String(prior?.options.window ?? 2000) },
+    { key: 'step', label: 'Mosaic step (100 bases through window size)', initial: String(prior?.options.step ?? 1000) },
+    { key: 'minSimilarity', label: 'Minimum Jaccard similarity (0–1)', initial: String(prior?.options.minSimilarity ?? 0.05) },
+    { key: 'maxReferences', label: 'Maximum references to compare (1–30)', initial: String(prior?.options.maxReferences ?? 30) },
+    { key: 'topN', label: 'Retained candidates per window (1–30)', initial: String(prior?.options.topN ?? 3) },
+  ];
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(settings.map(field => [field.key, field.initial])));
+  const label = (source: TerminalResearchDraftSource) => terminalGenomeLabel(`${source.name} · ${source.accession}`)
+    + ` · ${source.bases} bp · ${source.contentId.slice(0, 12)}`;
+  const choices = stage === 'query' ? draft.sources.map(label)
+    : candidates.map(source => `${references.includes(source.contentId) ? '[x]' : '[ ]'} ${label(source)}`);
+  const cursor = stage === 'query' ? queryIndex : referenceIndex;
+  const pageSize = Math.max(1, Math.min(8, rows - 17)), start = Math.floor(cursor / pageSize) * pageSize;
+  const selectedBases = query.bases + candidates.filter(source => references.includes(source.contentId)).reduce((sum, source) => sum + source.bases, 0);
+  const save = (entered: Record<string, string>) => {
+    if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(entered.minSimilarity)) throw new Error('Minimum similarity must be an explicit decimal from 0 to 1.');
+    const options = { k: integer(entered.k, 'K-mer length'), window: integer(entered.window, 'Mosaic window'),
+      step: integer(entered.step, 'Mosaic step'), minSimilarity: Number(entered.minSimilarity),
+      maxReferences: integer(entered.maxReferences, 'Maximum references'), topN: integer(entered.topN, 'Retained candidates') };
+    if (options.window < 200 || options.step < 100) throw new Error('Enter a window of at least 200 bases and step of at least 100; values are not silently enlarged.');
+    onSave({ actionId: ActionIds.OverlayMosaicRadar, parameters: analysisJson(researchMosaicParameters(query.contentId, references, options)) });
+  };
+  useInput((input, key) => {
+    if (key.escape) { onCancel(); return; }
+    if (stage === 'settings') {
+      if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
+      return;
+    }
+    if (input === ' ' && stage === 'references') {
+      const source = candidates[referenceIndex];
+      if (!source) return;
+      if (!references.includes(source.contentId) && references.length >= 30) { setError('Select at most 30 captured references.'); return; }
+      setError(null);
+      setReferences(before => before.includes(source.contentId) ? before.filter(id => id !== source.contentId) : [...before, source.contentId]);
+      return;
+    }
+    if (key.return) {
+      setError(null);
+      if (stage === 'query') {
+        setReferences(before => before.filter(id => id !== query.contentId)); setReferenceIndex(0); setStage('references');
+      } else setStage('settings');
+      return;
+    }
+    const delta = key.downArrow ? 1 : key.upArrow ? -1 : key.rightArrow ? pageSize : key.leftArrow ? -pageSize : 0;
+    if (!delta) return;
+    const next = Math.max(0, Math.min(cursor + delta, choices.length - 1));
+    if (stage === 'query') setQueryIndex(next); else setReferenceIndex(next);
+  });
+  const field = settings[settingIndex];
+  const submitSetting = (value: string) => {
+    try {
+      setError(null); const next = { ...values, [field.key]: value }; setValues(next);
+      if (settingIndex + 1 < settings.length) setSettingIndex(settingIndex + 1); else save(next);
+    } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
+  };
+  return <Box flexDirection="column">
+    <Text bold>Mosaic reference similarity</Text>
+    <Text wrap="truncate-end">Query: {terminalGenomeLabel(query.name)} · {references.length} references · {selectedBases} supplied bases</Text>
+    {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
+    {stage === 'settings' ? <>
+      <Text bold>Settings — {settingIndex + 1}/{settings.length}</Text>
+      <Text>{field.label}</Text>
+      <TextInput key={field.key} value={values[field.key]} onChange={value => { if (value.length <= 256) setValues(before => ({ ...before, [field.key]: value })); }} onSubmit={submitSetting} />
+      {field.key === 'maxReferences' && <Text color={colors.textDim}>A smaller cap explicitly omits selected references after stable label ordering.</Text>}
+      <Text color={colors.textDim}>Enter accepts · Shift+Tab edits the previous value · Esc discards</Text>
+    </> : <>
+      <Text bold>{stage === 'query' ? 'Choose the captured mosaic query' : 'Choose captured references (Space toggles; Enter accepts the panel)'}</Text>
+      {choices.slice(start, start + pageSize).map((text, offset) => <Text key={start + offset} wrap="truncate-end" color={start + offset === cursor ? colors.accent : colors.text}>
+        {start + offset === cursor ? '›' : ' '} {start + offset + 1}. {text}
+      </Text>)}
+      {stage === 'references' && references.length === 0 && <Text color={colors.textDim}>No references selected: Enter records an explicit no-reference control.</Text>}
+      <Text color={colors.textDim}>Up/Down select · Left/Right page · Enter continues · Esc discards</Text>
+    </>}
+    <Text color={colors.textDim}>Exact supplied reference similarity; no donor, transfer direction or recombination-event inference.</Text>
+    <Text color={colors.textDim}>Drafting runs no analyses. No sequences are uploaded or printed.</Text>
+  </Box>;
+}
 /** A form over canonical action IDs. It never creates a second executor or runs
  * an analysis while the user selects sources and reviews effective settings.
  */
-function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
+function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCancel }: {
   draft: TerminalResearchDraft; initial: TerminalResearchStep | null; rows: number;
+  describeRNA: TerminalResearchSession['describeRNA'];
   onSave: (step: TerminalResearchStep) => void; onCancel: () => void;
 }): React.ReactElement {
   const { colors } = usePhageStore(state => state.currentTheme);
@@ -228,9 +346,10 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
     ? draft.sources.findIndex(item => item.contentId === parameters.comparisonContentId) + 1 : 0);
   const [geneIndex, setGeneIndex] = useState(0);
   const [settings, setSettings] = useState<Setting[]>([]), [values, setValues] = useState<Record<string, string>>({});
+  const [rnaSource, setRnaSource] = useState<TerminalResearchRNASource | null>(null);
   const [settingIndex, setSettingIndex] = useState(0), [error, setError] = useState<string | null>(null);
   const action = editorActions[methodIndex], source = draft.sources[sourceIndex];
-  const genes = source.genes.filter(gene => action.kind !== 'codons' || gene.type === 'CDS');
+  const genes = source.genes.filter(gene => action.kind !== 'codons' && action.kind !== 'rna' || gene.type === 'CDS');
   const geneId = geneIndex ? genes[geneIndex - 1]?.id ?? null : null;
   const save = (entered: Record<string, string>, selectedGene = geneId) => {
     const contentId = source.contentId;
@@ -243,6 +362,17 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
       value = { contentId, method: 'exact-pairs', ...resolveExactRepeatOptions({ armLength: integer(entered.armLength, 'Arm length'),
         maxGap: integer(entered.maxGap, 'Maximum gap'), maxPairs: integer(entered.maxPairs, 'Maximum pairs'), topology: entered.topology }) };
     } else if (action.kind === 'codons') value = { contentId, geneId: selectedGene };
+    else if (action.kind === 'rna') {
+      const sourceRNA = describeRNA(contentId, selectedGene);
+      const interval = parseRNAInterval(entered.start, entered.end, sourceRNA.bases, selectedGene !== null);
+      const strand = selectedGene === null ? entered.strand : '+';
+      if (strand !== '+' && strand !== '-') throw new Error('RNA strand must be + or -.');
+      value = researchRNAParameters(contentId, { geneId: selectedGene, ...interval, strand }, {
+        windowSize: integer(entered.windowSize, 'RNA window'), stepSize: integer(entered.stepSize, 'RNA step'),
+        minLoopSize: integer(entered.minLoopSize, 'Minimum loop'), allowWobble: yesNo(entered.allowWobble, 'GU wobble'),
+        frame: 0, includeSynonymousStress: sourceRNA.synonymousSupported ? yesNo(entered.includeSynonymousStress, 'Synonymous scoring') : false,
+      });
+    }
     else if (action.kind === 'digest') value = { contentId, ...resolveRestrictionDigestOptions({ topology: entered.topology,
       enzymes: entered.enzymes === 'none' ? [] : entered.enzymes.split(',').map(name => name.trim()) }) };
     else value = { contentId, comparisonContentId: comparisonIndex ? draft.sources[comparisonIndex - 1].contentId : null,
@@ -251,9 +381,12 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
   };
   const beginSettings = (selectedGene = geneId) => {
     if (action.kind === 'codons') { save({}, selectedGene); return; }
-    const prior = initial?.actionId === action.id && parameters.contentId === source.contentId ? parameters : {};
+    const prior = initial?.actionId === action.id && parameters.contentId === source.contentId
+      && (action.kind !== 'rna' || parameters.geneId === selectedGene) ? parameters : {};
     const remembered = draft.initialView?.contentId === source.contentId ? draft.initialView : null;
-    const next = stepSettings(action.kind, source, prior, remembered);
+    const sourceRNA = action.kind === 'rna' ? describeRNA(source.contentId, selectedGene) : undefined;
+    setRnaSource(sourceRNA ?? null);
+    const next = stepSettings(action.kind, source, prior, remembered, sourceRNA ? { ...sourceRNA, coding: selectedGene !== null } : undefined);
     if (action.kind === 'dot-plot' && comparisonIndex && prior.window === undefined) {
       next.find(field => field.key === 'window')!.initial = String(Math.min(20, source.bases, draft.sources[comparisonIndex - 1].bases));
     }
@@ -262,12 +395,12 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
   const choices = stage === 'method' ? editorActions.map(item => item.label)
     : stage === 'source' ? draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession) + ' · ' + item.bases + ' bp · ' + item.topology)
       : stage === 'comparison' ? ['Self comparison (one input)', ...draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession))]
-        : [action.kind === 'codons' ? 'All captured CDS' : 'No selected feature', ...genes.map(gene =>
+        : [action.kind === 'codons' ? 'All captured CDS' : action.kind === 'rna' ? 'Forward genome coordinates (choose an interval and strand)' : 'No selected feature', ...genes.map(gene =>
           terminalGenomeLabel((gene.name || gene.locusTag || gene.type) + ' · feature ' + gene.id) + ' · ' + (gene.startPos + 1) + '–' + gene.endPos)];
   const cursor = stage === 'method' ? methodIndex : stage === 'source' ? sourceIndex : stage === 'comparison' ? comparisonIndex : geneIndex;
   const pageSize = Math.max(1, Math.min(8, rows - 15)), start = Math.floor(cursor / pageSize) * pageSize;
   useInput((_input, key) => {
-    if (action.kind === 'pangenome' && stage !== 'method') return;
+    if ((action.kind === 'pangenome' || action.kind === 'mosaic') && stage !== 'method') return;
     if (key.escape) { onCancel(); return; }
     if (stage === 'settings') {
       if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
@@ -279,7 +412,7 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
         if (stage === 'method') setStage('source');
         else if (stage === 'source') {
           if (action.kind === 'dot-plot') setStage('comparison');
-          else if (action.kind === 'view' || action.kind === 'codons') {
+          else if (action.kind === 'view' || action.kind === 'codons' || action.kind === 'rna') {
             if (action.kind === 'codons' && !genes.length) throw new Error('This captured genome has no CDS annotations. Choose another source or analysis.');
             const selected = initial?.actionId === action.id && parameters.contentId === source.contentId ? parameters.geneId
               : draft.initialView?.contentId === source.contentId ? draft.initialView.geneId : null;
@@ -308,11 +441,18 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
   };
   if (action.kind === 'pangenome' && stage !== 'method') return <PangenomeStepEditor
     draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
+  if (action.kind === 'mosaic' && stage !== 'method') return <MosaicStepEditor
+    draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
   return <Box flexDirection="column">
     {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
     {stage === 'settings' && field ? <>
       <Text bold>{action.label} settings — {settingIndex + 1}/{settings.length}</Text>
       <Text wrap="truncate-end">Captured source: {terminalGenomeLabel(source.name)} · {source.bases} bp</Text>
+      {action.kind === 'rna' && rnaSource && <>
+        <Text>RNA source: {rnaSource.bases} bases · {geneId === null ? 'forward genome coordinates' : 'extracted CDS transcript coordinates'}</Text>
+        {geneId !== null && <Text color={colors.textDim}>Joined/complement CDS and codon_start are respected. Start at transcript position 1, 4, 7, ...</Text>}
+        {!rnaSource.synonymousSupported && <Text color={colors.textDim}>Pairing only; this source does not support synonymous scoring.</Text>}
+      </>}
       <Text>{field.label}</Text>
       <TextInput key={field.key} value={values[field.key]} onChange={value => { if (value.length <= 256) setValues(before => ({ ...before, [field.key]: value })); }} onSubmit={submitSetting} />
       <Text color={colors.textDim}>Enter accepts · Shift+Tab edits the previous value · Esc discards</Text>
@@ -324,6 +464,7 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
       </Text>)}
       <Text color={colors.textDim}>Up/Down select · Left/Right page · Enter continues · Esc discards</Text>
       {action.kind === 'codons' && <Text color={colors.textDim}>CDS counts use the captured annotation. Host-model scores remain illustrative.</Text>}
+      {action.kind === 'rna' && <Text color={colors.textDim}>Unit-weight pairing scores are descriptive; no folding energy or functional prediction.</Text>}
     </>}
   </Box>;
 }
@@ -462,7 +603,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
       <Text>{state.busy === 'saving' ? 'Saving the new output file. Wait for completion.' : 'Working: ' + state.busy + '. Esc cancels.'}</Text>
       {state.progress && <Text wrap="truncate-end">{state.progress.phase}: {state.progress.completed}/{state.progress.total} · {terminalGenomeLabel(state.progress.actionId ?? 'Validating original inputs')}</Text>}
       {state.busy === 'saving' && <Text color={colors.textDim}>Process interruption can leave a partial new file. Existing files are never overwritten.</Text>}
-    </> : mode === 'step' && draft ? <ResearchStepEditor draft={draft} initial={editing === null ? null : draft.plan.commands[editing]} rows={rows}
+    </> : mode === 'step' && draft ? <ResearchStepEditor draft={draft} initial={editing === null ? null : draft.plan.commands[editing]} rows={rows} describeRNA={session.describeRNA}
       onCancel={() => setMode('browse')} onSave={step => { session.setStep(step, editing); setMode('browse'); setPane('draft');
         setSelection(editing ?? draft.plan.commands.length); setLine(0); }} /> : mode !== 'browse' ? <>
       <Text bold>{mode === 'new' ? 'New workflow draft name:' : mode === 'open' ? 'Workflow or complete archive path:'
@@ -480,10 +621,11 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
           <Text color={colors.textDim}>Lines {detailStart + 1}–{Math.min(detailStart + perPage, detailLines.length)} / {detailLines.length} · Esc returns to draft</Text>
         </> : draft.plan.commands.slice(start, start + perPage).map((step, offset) => {
           const graph = step.actionId === ActionIds.OverlayPangenomeGraph ? step.parameters as unknown as ResearchPangenomeParameters : null;
+          const mosaic = step.actionId === ActionIds.OverlayMosaicRadar ? step.parameters as unknown as ResearchMosaicParameters : null;
           const source = draft.sources.find(item => graph ? `local-${item.contentId}` === graph.options.referenceId
-            : item.contentId === (step.parameters as Record<string, unknown>).contentId);
+            : item.contentId === (mosaic?.queryContentId ?? (step.parameters as Record<string, unknown>).contentId));
           return <Text key={start + offset} wrap="truncate-end" color={start + offset === selected ? colors.accent : colors.text}>
-            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {graph ? `${graph.contentIds.length} genomes; reference ` : ''}{terminalGenomeLabel(source?.name ?? 'missing source')}
+            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {graph ? `${graph.contentIds.length} genomes; reference ` : mosaic ? `${mosaic.referenceContentIds.length} references; query ` : ''}{terminalGenomeLabel(source?.name ?? 'missing source')}
           </Text>;
         })}
         <Text>[I] Add · [E] Edit · [X] Remove step · [ / ] Reorder · Enter reviews parameters</Text>

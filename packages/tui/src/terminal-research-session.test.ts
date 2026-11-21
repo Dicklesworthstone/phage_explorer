@@ -10,9 +10,11 @@ import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisR
 import { parseWorkflowResults, serializeWorkflowResults } from '../../core/src/workflow-results';
 import type { GCSkewWindow } from '../../core/src/analysis/gc-skew';
 import { replayAlignmentPangenome } from '../../core/src/analysis/alignment-pangenome';
+import { replayRNAStructureRecord } from '../../core/src/analysis/rna-structure-experiment';
+import { mosaicResultFromRecord } from '../../core/src/analysis/recombination-radar';
 import type { PhageRepository } from '../../db-runtime/src/types';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters } from '../../web/src/keyboard/ResearchWorkflow';
+import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from './research-replay';
 import { runTerminalResearchWorker } from '../../../scripts/research-workflow';
 import { TerminalGenomeSession, type TerminalGenomeAccepted } from './local-genome-session';
@@ -60,6 +62,89 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
+  it('authors exact joined-CDS RNA and sourced mosaic steps, exports them, and freshly replays every result', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    const mosaic = (await importLocalGenomes({ name: 'mosaic.fa', text: '>query\nAAAC\n>reference\nAAGT\n' })).genomes;
+    const [queryId, referenceId] = mosaic.map(genome => genome.phage.localGenome!.contentId);
+    const bundle = exportLocalGenomeBundle([...f.imported.genomes, ...mosaic]);
+    assert(await session.createDraft('RNA intervals and reference comparisons', bundle));
+    assert.deepEqual(session.describeRNA(f.view.contentId, f.view.geneId), { bases: 12, synonymousSupported: true });
+    const rna = researchRNAParameters(f.view.contentId, { geneId: f.view.geneId, start: 0, end: 12, strand: '+' },
+      { windowSize: 12, stepSize: 12, minLoopSize: 0, allowWobble: false, includeSynonymousStress: false });
+    const comparison = researchMosaicParameters(queryId, [referenceId], { k: 2, window: 200, step: 100, minSimilarity: 0 });
+    session.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson(rna) });
+    session.setStep({ actionId: ActionIds.OverlayMosaicRadar, parameters: analysisJson(comparison) });
+    session.setStep({ actionId: ActionIds.OverlayMosaicRadar, parameters: analysisJson(researchMosaicParameters(queryId, [], comparison.options)) });
+    assert.equal(session.getSnapshot().document, null, 'choosing intervals and references must not run methods');
+    assert(!JSON.stringify(session.getSnapshot().draft!.sources).includes(f.genome.sequence), 'form summaries do not contain genome bases');
+    // The draft owns the parsed source used by its source-aware validator.
+    f.genome.sequence = 'N'.repeat(18); f.genome.phage.genes[0].qualifiers = { transl_table: '999' };
+    assert.deepEqual(session.describeRNA(f.view.contentId, f.view.geneId), { bases: 12, synonymousSupported: true });
+    assert(await session.recordDraft(), session.getSnapshot().error ?? '');
+    const pairing = await replayRNAStructureRecord(JSON.stringify(session.analysis(1)));
+    assert.equal(pairing.request.sequence, 'ATGAAATTTCAT');
+    assert.deepEqual(pairing.request.source, { name: 'joined', accession: 'joined', source: 'local',
+      coordinateSystem: 'cds-transcript', sourceLength: 12, start: 0, end: 12, strand: '+', gene: `${f.view.geneId}:reverse_join` });
+    // Six noncrossing pairs exist: (0,1),(2,9),(3,8),(4,7),(5,6),(10,11).
+    // Twelve bases cannot admit more than six pairs.
+    assert.equal(pairing.analysis.windows[0].pairCount, 6);
+    assert.equal(pairing.analysis.coverage.analyzedCodons, 0);
+    const matches = mosaicResultFromRecord(session.analysis(2));
+    // Canonical sets AAAC -> {AA, AC}; AAGT -> {AA, AG, AC}.
+    assert.equal(matches.windows[0].score, 2 / 3); assert.equal(matches.windows[0].status, 'matched');
+    const empty = mosaicResultFromRecord(session.analysis(3));
+    assert.equal(empty.windows.length, 0); assert.equal(empty.coverage['no-evidence'], 4);
+    assert.equal(session.availableResults()?.provenance, 'recorded');
+    const planPath = join(f.directory, 'rna-mosaic-plan.json'), archivePath = join(f.directory, 'rna-mosaic-archive.json');
+    assert(await session.save(planPath, 'plan')); assert(await session.save(archivePath));
+    const plan = parseCommandPlan(await readFile(planPath, 'utf8'));
+    assert.deepEqual(plan.context, { bundle }); assert.deepEqual(plan.commands[0].parameters, analysisJson(rna));
+    assert.deepEqual(plan.commands[1].parameters, analysisJson(comparison));
+    const baseline = await readFile(archivePath, 'utf8'), reopened = new TerminalResearchSession();
+    assert(await reopened.load(archivePath)); assert.equal(reopened.availableResults()?.replayed, false);
+    assert(await reopened.replay(), reopened.getSnapshot().error ?? '');
+    assert.equal(reopened.availableResults()!.json, baseline); assert.equal(reopened.availableResults()?.provenance, 'verified');
+    assert.equal(reopened.entries().length, 3); assert.deepEqual(reopened.analysis(1), session.analysis(1));
+    session.cancel(); reopened.cancel();
+  });
+
+  it('validates RNA transcript bounds and genetic codes and mosaic source ownership before accepting draft edits', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    const exceptional = (await importLocalGenomes({ name: 'reassigned.gb', text: genbank.replace('/gene="reverse_join"', '/gene="reverse_join"\n                     /transl_table=4\n                     /codon_start=2') })).genomes[0];
+    const alternateId = exceptional.phage.localGenome!.contentId, foreign = 'f'.repeat(64);
+    assert(await session.createDraft('Source validation', exportLocalGenomeBundle([...f.imported.genomes, exceptional])));
+    const rna = researchRNAParameters(f.view.contentId, { geneId: f.view.geneId, start: 0, end: 12, strand: '+' },
+      { windowSize: 12, stepSize: 12, minLoopSize: 0, allowWobble: false, includeSynonymousStress: false });
+    session.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson(rna) });
+    assert.deepEqual(session.describeRNA(alternateId, 1), { bases: 11, synonymousSupported: false });
+    const before = serializeCommandPlan(session.getSnapshot().draft!.plan);
+    for (const parameters of [
+      { ...rna, contentId: foreign }, { ...rna, geneId: 999 }, { ...rna, end: 13 }, { ...rna, start: 1 },
+      { ...rna, strand: '-' }, { ...rna, contentId: alternateId },
+      { ...rna, contentId: alternateId, end: 11, options: { ...rna.options, includeSynonymousStress: true } },
+      { ...rna, geneId: null, options: { ...rna.options, includeSynonymousStress: true } },
+    ]) assert.throws(() => session.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson(parameters) }, 0));
+    const mosaic = researchMosaicParameters(f.view.contentId, [alternateId], { k: 2 });
+    for (const parameters of [
+      { ...mosaic, queryContentId: foreign }, { ...mosaic, referenceContentIds: [foreign] },
+      { ...mosaic, referenceContentIds: [f.view.contentId] }, { ...mosaic, referenceContentIds: [alternateId, alternateId] },
+      { ...mosaic, options: { ...mosaic.options, window: 199 } }, { ...mosaic, options: { ...mosaic.options, minSimilarity: 2 } },
+    ]) assert.throws(() => session.setStep({ actionId: ActionIds.OverlayMosaicRadar, parameters: analysisJson(parameters) }));
+    assert.equal(serializeCommandPlan(session.getSnapshot().draft!.plan), before);
+    assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+    // Reassigned/partial-frame CDS remain usable for pairing without synonymous assumptions.
+    session.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson({ ...rna, contentId: alternateId, end: 11 }) });
+    // Genome intervals may deliberately select the reverse strand.
+    session.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson({ ...rna, geneId: null, start: 1, end: 14, strand: '-' }) });
+    assert(await session.recordDraft(), session.getSnapshot().error ?? '');
+    const reassigned = await replayRNAStructureRecord(JSON.stringify(session.analysis(2)));
+    assert.equal(reassigned.request.sequence, 'TGAAATTTCAT'); assert.equal(reassigned.request.source.sourceLength, 11);
+    const reverse = await replayRNAStructureRecord(JSON.stringify(session.analysis(3)));
+    assert.equal(reverse.request.source.coordinateSystem, 'genome-forward'); assert.equal(reverse.request.source.strand, '-');
+    assert.equal(reverse.request.source.start, 1); assert.equal(reverse.request.source.end, 14);
+    session.cancel();
+  });
+
   it('authors six sequence step types from captured inputs and exports a new baseline before separately verifying it', async () => {
     const f = await fixture(), session = new TerminalResearchSession();
     assert(await session.load(f.file)); assert(await session.replay());

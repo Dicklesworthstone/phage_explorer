@@ -12,8 +12,10 @@ import { parseAnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandPlan, parseCommandTape } from '../../../core/src/command-session';
 import { parseWorkflowResults } from '../../../core/src/workflow-results';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
+import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
+import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import type { ResearchView, ResearchPangenomeParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+import type { ResearchView, ResearchPangenomeParameters, ResearchRNAParameters, ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 import { TerminalGenomeSession } from '../local-genome-session';
@@ -61,6 +63,98 @@ function terminal(session: TerminalResearchSession, genomes: TerminalGenomeSessi
     resize: (rows: number) => { stdout.rows = rows; stdout.emit('resize'); } };
 }
 describe('Ink research workflow workspace', () => {
+  it('authors and edits RNA transcript intervals and mosaic panels through the keyboard, then records and verifies both results', async () => {
+    const f = await fixture();
+    const references = (await importLocalGenomes({ name: 'reference-panel.fa', text: '>query\nAAAC\n>reference\nAAGT\n' })).genomes;
+    const genomes = new TerminalGenomeSession(null, [...f.imported.genomes, ...references]), session = new TerminalResearchSession();
+    assert(await session.createDraft('RNA and reference panel keyboard journey', genomes.exportBundle()));
+    const test = terminal(session, genomes, () => assert.fail('owned editors cannot leave the workspace'), () => assert.fail('drafts do not install inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key);
+      try { await waitFor(() => test.output().slice(start).includes(expected)); }
+      catch (cause) { throw new Error(`Expected terminal stage: ${expected}. Last rendering: ${test.output().slice(-1600)}`, { cause }); }
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    const replace = async (before: string, after: string) => {
+      for (const _character of before) { test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10)); }
+      test.input(after); await new Promise(resolve => setTimeout(resolve, 20));
+    };
+    const method = async (index: number, title: string) => {
+      await press('i', 'Choose a workflow action');
+      for (let position = 0; position < index; position++) await down();
+      await press('\r', title);
+    };
+    try {
+      await waitFor(test.ready);
+      await method(7, 'Choose a captured source genome');
+      await press('\r', 'Choose a captured feature');
+      await down(); await press('\r', 'RNA start (1-based, inclusive)');
+      assert(test.output().includes('RNA source: 12 bases'));
+      assert(test.output().includes('extracted CDS transcript coordinates'));
+      await press('\r', 'RNA end (inclusive'); await press('\r', 'RNA window (1–240 bases)');
+      await press('\r', 'RNA step (1–6000 bases)'); await press('\r', 'Minimum intervening loop');
+      await replace('3', '0'); await press('\r', 'Allow GU wobble pairs');
+      await replace('yes', 'no'); await press('\r', 'Include descriptive synonymous');
+      await press('\r', '[I] Add');
+      assert.equal(session.getSnapshot().draft!.plan.commands.length, 1);
+      const rnaStep = structuredClone(session.getSnapshot().draft!.plan.commands[0]);
+      const rna = rnaStep.parameters as unknown as ResearchRNAParameters;
+      assert.equal(rnaStep.actionId, ActionIds.OverlayRNAStructure);
+      assert.deepEqual(rna, { contentId: f.view.contentId, geneId: f.view.geneId, start: 0, end: 12, strand: '+',
+        options: { windowSize: 12, stepSize: 12, minLoopSize: 0, allowWobble: false, frame: 0, includeSynonymousStress: false } });
+      assert.equal(session.getSnapshot().document, null);
+      // Editing retains the exact selected transcript, coordinates and every setting.
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose a captured feature'); await press('\r', 'RNA start (1-based, inclusive)');
+      await press('\r', 'RNA end (inclusive'); await press('\r', 'RNA window (1–240 bases)');
+      await press('\r', 'RNA step (1–6000 bases)'); await press('\r', 'Minimum intervening loop');
+      await press('\r', 'Allow GU wobble pairs'); await press('\r', 'Include descriptive synonymous'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [rnaStep]);
+
+      await method(8, 'Choose the captured mosaic query');
+      await down(); await press('\r', 'Choose captured references');
+      assert(test.output().includes('explicit no-reference control'));
+      await down(); await press(' ', '1 references');
+      await press('\r', 'Canonical k-mer length'); await replace('5', '2');
+      await press('\r', 'Mosaic window'); await replace('2000', '199');
+      await press('\r', 'Mosaic step'); await replace('1000', '100');
+      await press('\r', 'Minimum Jaccard similarity'); await replace('0.05', '0');
+      await press('\r', 'Maximum references to compare'); await press('\r', 'Retained candidates per window');
+      await press('\r', 'values are not silently enlarged');
+      assert.equal(session.getSnapshot().draft!.plan.commands.length, 1, 'an undersized window cannot be silently normalized into a saved command');
+      for (const title of ['Maximum references to compare', 'Minimum Jaccard similarity', 'Mosaic step', 'Mosaic window']) await press('\u001b[Z', title);
+      await replace('199', '200'); await press('\r', 'Mosaic step'); await press('\r', 'Minimum Jaccard similarity');
+      await press('\r', 'Maximum references to compare'); await press('\r', 'Retained candidates per window'); await press('\r', '[I] Add');
+      assert.equal(session.getSnapshot().draft!.plan.commands.length, 2);
+      const mosaicStep = structuredClone(session.getSnapshot().draft!.plan.commands[1]);
+      const mosaic = mosaicStep.parameters as unknown as ResearchMosaicParameters;
+      assert.equal(mosaicStep.actionId, ActionIds.OverlayMosaicRadar);
+      assert.equal(mosaic.queryContentId, references[0].phage.localGenome!.contentId);
+      assert.deepEqual(mosaic.referenceContentIds, [references[1].phage.localGenome!.contentId]);
+      assert.deepEqual(mosaic.options, { k: 2, window: 200, step: 100, minSimilarity: 0, maxReferences: 30, topN: 3 });
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose the captured mosaic query');
+      await press('\r', 'Choose captured references'); await press('\r', 'Canonical k-mer length');
+      for (const title of ['Mosaic window', 'Mosaic step', 'Minimum Jaccard similarity', 'Maximum references to compare', 'Retained candidates per window', '[I] Add']) await press('\r', title);
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [rnaStep, mosaicStep]);
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      test.input('c');
+      try { await waitFor(() => !!session.getSnapshot().document && !session.getSnapshot().busy); }
+      catch (cause) {
+        const { busy, error, progress } = session.getSnapshot();
+        throw new Error(`Recording did not complete: ${JSON.stringify({ busy, error, progress })}. Last rendering: ${test.output().slice(-1600)}`, { cause });
+      }
+      const rnaResult = await replayRNAStructureRecord(JSON.stringify(session.analysis(1)));
+      assert.equal(rnaResult.request.sequence, 'ATGAAATTTCAT'); assert.equal(rnaResult.analysis.windows[0].pairCount, 6);
+      assert.equal(mosaicResultFromRecord(session.analysis(2)).windows[0].score, 2 / 3);
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      const baseline = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => !!session.getSnapshot().completedRun && !session.getSnapshot().busy);
+      assert.equal(session.availableResults()?.provenance, 'verified'); assert.equal(session.availableResults()!.json, baseline);
+      assert.equal(genomes.getSnapshot().localCount, 3); assert.equal(genomes.getSnapshot().review, null);
+      assert(!test.output().includes(f.imported.genomes[0].sequence), 'forms and completed-run summaries do not print private genomes');
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
   it('authors and edits captured inputs, records a baseline, exports every format, and independently verifies it', async () => {
     const f = await fixture();
     const second = await importLocalGenomes({ name: 'comparison.fa', text: '>comparison\nACGTACGTACGTACGTACGTACGT' });

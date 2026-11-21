@@ -6,9 +6,12 @@ import { parseCommandTape, serializeCommandPlan, commandValuesEqual, COMMAND_LIM
   type CommandPlan, type RecordedCommand } from '../../core/src/command-session';
 import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import type { GeneInfo, PhageFull } from '../../core/src/types';
+import type { LocalGenome } from '../../core/src/genome-import';
 import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
+import { MOSAIC_LIMITS } from '../../core/src/analysis/recombination-radar';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { validateResearchView, type ResearchView, type ResearchPangenomeParameters } from '../../web/src/keyboard/ResearchWorkflow';
+import { validateResearchView, researchRNASource, researchRNARequest,
+  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { parseWorkflowResults, workflowResultIndex, workflowAnalysisAt, WORKFLOW_RESULTS_LIMITS,
   type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { readInput, writeNewOutput, runTerminalResearchWorker } from '../../../scripts/research-workflow';
@@ -40,6 +43,7 @@ export interface TerminalResearchDraft {
   sources: TerminalResearchDraftSource[];
   initialView: ResearchView | null;
 }
+export interface TerminalResearchRNASource { bases: number; synonymousSupported: boolean }
 export interface TerminalResearchSnapshot {
   draft: TerminalResearchDraft | null;
   document: TerminalResearchDocument | null;
@@ -75,6 +79,10 @@ function cancellable<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 export class TerminalResearchSession {
   private operation: Operation | null = null;
+  /** Parsed inputs stay with the session, never in the editor's form state.
+   * Extract a selected transcript on demand instead of copying every CDS.
+   */
+  private draftGenomes: LocalGenome[] = [];
   private readonly run: typeof runTerminalResearchWorker;
   private readonly parseBundle: typeof loadTerminalGenomeBundle;
   private readonly timeoutMs: number;
@@ -146,6 +154,7 @@ export class TerminalResearchSession {
       const draft = { plan, sources, initialView };
       if (initialView) this.validateStep(draft, plan.commands[0]);
       if (!this.current(operation)) return false;
+      this.draftGenomes = structuredClone(parsed.genomes);
       this.publish({ draft, notice: 'Draft captured the accepted private inputs' + (initialView ? ' and selected view' : '')
         + '. No analyses have run; previous accepted results are unchanged.' });
       return true;
@@ -157,11 +166,33 @@ export class TerminalResearchSession {
     if (!this.state.draft) throw new Error('Create a named draft from accepted private genomes first.');
     return this.state.draft;
   }
+  private draftGenome(contentId: string): LocalGenome {
+    const source = this.draftGenomes.find(genome => genome.phage.localGenome?.contentId === contentId);
+    if (!source) throw new Error('Select a genome from this draft\'s captured input bundle.');
+    return source;
+  }
+  describeRNA = (contentId: string, geneId: number | null): TerminalResearchRNASource => {
+    const source = researchRNASource(this.draftGenome(contentId), geneId);
+    return { bases: source.sequence.length, synonymousSupported: source.synonymousSupported };
+  };
   private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
-      ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph];
-    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot and pangenome commands.');
+      ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph,
+      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, RNA and mosaic commands.');
     validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
+    if (step.actionId === ActionIds.OverlayMosaicRadar) {
+      const parameters = step.parameters as unknown as ResearchMosaicParameters;
+      const sources = [parameters.queryContentId, ...parameters.referenceContentIds].map(id => {
+        const source = draft.sources.find(item => item.contentId === id);
+        if (!source) throw new Error('Select every mosaic query and reference from this draft\'s captured input bundle.');
+        return source;
+      });
+      if (sources.reduce((total, source) => total + source.bases, 0) > MOSAIC_LIMITS.bases) {
+        throw new Error('Mosaic query and reference sequences exceed 5,000,000 supplied bases. Select a smaller explicit panel.');
+      }
+      return;
+    }
     if (step.actionId === ActionIds.OverlayPangenomeGraph) {
       const parameters = step.parameters as unknown as ResearchPangenomeParameters;
       const sources = parameters.contentIds.map(id => {
@@ -195,6 +226,11 @@ export class TerminalResearchSession {
     const parameters = step.parameters as Record<string, unknown>;
     const source = draft.sources.find(item => item.contentId === parameters.contentId);
     if (!source) throw new Error('Select a genome from this draft\'s captured input bundle.');
+    if (step.actionId === ActionIds.OverlayRNAStructure) {
+      // The same extraction and interval checks used by browser/native replay
+      // preserve complement/join/codon_start and exceptional-code boundaries.
+      researchRNARequest(this.draftGenome(source.contentId), step.parameters as unknown as ResearchRNAParameters);
+    }
     if (step.actionId === ActionIds.NavGoto) {
       validateResearchView(step.parameters);
       const view = step.parameters as unknown as ResearchView;
