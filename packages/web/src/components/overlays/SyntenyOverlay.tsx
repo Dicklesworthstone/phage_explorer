@@ -26,49 +26,78 @@ import {
 } from './primitives';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import type { GenomeTrackSegment, GenomeTrackInteraction, HeatmapHover, ColorScale } from '../primitives/types';
+import type { SyntenyJob, SyntenyHeatmap, SyntenyBlockBp, SyntenyStats, WorkerResponse } from '../../workers/synteny-worker';
 
-// Worker response types (matching synteny-worker.ts)
-interface SyntenyHeatmap {
-  rows: number;
-  cols: number;
-  values: Float32Array;
-  min: number;
-  max: number;
+interface SyntenyPayload { heatmap: SyntenyHeatmap; blocksBp: SyntenyBlockBp[]; stats: SyntenyStats }
+
+/** An analysis owns its worker, so abandoned computations cannot delay or replace the next pair. */
+export function runWebSynteny(
+  job: SyntenyJob & { jobId: string },
+  signal?: AbortSignal,
+  timeoutMs = 300000,
+  createWorker: () => Worker = () => new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url), { type: 'module' }),
+): Promise<SyntenyPayload> {
+  return new Promise((resolve, reject) => {
+    const cancelled = () => new DOMException('Synteny analysis cancelled.', 'AbortError');
+    if (signal?.aborted) { reject(cancelled()); return; }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+      reject(new Error('Synteny timeout must be a positive integer.')); return;
+    }
+    let worker: Worker;
+    try { worker = createWorker(); } catch (error) { reject(error); return; }
+    let settled = false;
+    const finish = (error?: Error, payload?: SyntenyPayload) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
+      try { worker.terminate(); } catch { /* Preserve the original outcome if cleanup fails. */ }
+      if (error) reject(error); else resolve(payload!);
+    };
+    const onAbort = () => finish(cancelled());
+    const timer = setTimeout(() => finish(new Error('Synteny worker timed out. Retry the analysis.')), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
+      if (settled) return;
+      const response = event.data;
+      if (!response || response.jobId !== job.jobId) {
+        finish(new Error('Synteny worker returned a result for a different request.')); return;
+      }
+      if (response.ok !== true || !response.heatmap || !response.stats || !Array.isArray(response.blocksBp)) {
+        finish(new Error(response.error ?? 'Synteny worker returned no complete response.')); return;
+      }
+      const { heatmap, stats, blocksBp } = response;
+      if (heatmap.rows !== job.genesQuery.length || heatmap.cols !== job.genesReference.length
+        || !(heatmap.values instanceof Float32Array) || heatmap.values.length !== heatmap.rows * heatmap.cols
+        || stats.blockCount !== blocksBp.length) {
+        finish(new Error('Synteny worker returned a result for different gene inputs.')); return;
+      }
+      finish(undefined, { heatmap, stats, blocksBp });
+    };
+    worker.onerror = event => {
+      event.preventDefault();
+      finish(new Error('The synteny worker failed. Retry the analysis.'));
+    };
+    worker.onmessageerror = () => finish(new Error('The synteny worker returned unreadable data. Retry the analysis.'));
+    try { if (signal?.aborted) onAbort(); else worker.postMessage(job); }
+    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+  });
 }
 
-interface SyntenyBlockBp {
-  startIdxQuery: number;
-  endIdxQuery: number;
-  startIdxReference: number;
-  endIdxReference: number;
-  startBpQuery: number;
-  endBpQuery: number;
-  startBpReference: number;
-  endBpReference: number;
-  score: number;
-  orientation: 'forward' | 'reverse';
+interface OwnedSynteny {
+  repository: PhageRepository;
+  selectedQuery: PhageFull;
+  referenceId: number;
+  revision: number;
+  query: PhageFull | null;
+  reference: PhageFull | null;
+  payload: SyntenyPayload | null;
+  loading: boolean;
+  error: string | null;
 }
-
-interface SyntenyStats {
-  blockCount: number;
-  globalScore: number;
-  scsScore?: number;
-  dtwDistance: number;
-  coverageQuery: number;
-  coverageReference: number;
-  inversionCount?: number;
-  translocationCount?: number;
-  indelCount?: number;
-}
-
-interface WorkerResponse {
-  ok: boolean;
-  jobId?: string;
-  blocksBp?: SyntenyBlockBp[];
-  heatmap?: SyntenyHeatmap;
-  stats?: SyntenyStats;
-  error?: string;
-}
+let nextSyntenyJob = 0;
+const NO_BLOCKS: SyntenyBlockBp[] = [];
 
 // Block score color scale
 function blockScoreColor(score: number): string {
@@ -107,25 +136,33 @@ export function SyntenyOverlay({
   const { isEnabled: beginnerModeEnabled, showContextFor } = useBeginnerMode();
   const overlayHelp = getOverlayContext('synteny');
   const referenceSelectId = 'synteny-reference-phage';
-  const workerRef = useRef<Worker | null>(null);
-  const activeJobIdRef = useRef<string | null>(null);
+  const open = isOpen('synteny');
 
-  // State
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [phages, setPhages] = useState<Array<{ id: number; name: string; length?: number | null }>>([]);
+  const [catalog, setCatalog] = useState<{
+    repository: PhageRepository; revision: number; phages: Array<{ id: number; name: string }>; error: string | null;
+  } | null>(null);
   const [referencePhageId, setReferencePhageId] = useState<number | null>(null);
-  const [referencePhage, setReferencePhage] = useState<PhageFull | null>(null);
-
-  // Analysis results
-  const [heatmap, setHeatmap] = useState<SyntenyHeatmap | null>(null);
-  const [blocks, setBlocks] = useState<SyntenyBlockBp[]>([]);
-  const [stats, setStats] = useState<SyntenyStats | null>(null);
+  const [analysis, setAnalysis] = useState<OwnedSynteny | null>(null);
+  const [revision, setRevision] = useState(0);
+  const source = useRef({ repository, currentPhage, referencePhageId, revision, open });
+  source.current = { repository, currentPhage, referencePhageId, revision, open };
+  const owned = open && analysis?.repository === repository && analysis.selectedQuery === currentPhage
+    && analysis.referenceId === referencePhageId && analysis.revision === revision ? analysis : null;
+  const queryPhage = owned?.query ?? null;
+  const referencePhage = owned?.reference ?? null;
+  const heatmap = owned?.payload?.heatmap ?? null;
+  const blocks = owned?.payload?.blocksBp ?? NO_BLOCKS;
+  const stats = owned?.payload?.stats ?? null;
+  const currentCatalog = catalog?.repository === repository && catalog.revision === revision ? catalog : null;
+  const phages = currentCatalog?.phages ?? [];
+  const error = currentCatalog?.error ?? owned?.error ?? null;
+  const loading = Boolean(open && repository && currentPhage && referencePhageId !== null && (!owned || owned.loading));
 
   // Hover states
   const [heatmapHover, setHeatmapHover] = useState<HeatmapHover | null>(null);
   const [trackHover, setTrackHover] = useState<GenomeTrackInteraction | null>(null);
-  const [selectedBlock, setSelectedBlock] = useState<SyntenyBlockBp | null>(null);
+  const [selectedBlockState, setSelectedBlock] = useState<SyntenyBlockBp | null>(null);
+  const selectedBlock = selectedBlockState && blocks.includes(selectedBlockState) ? selectedBlockState : null;
 
   // Hotkey to toggle overlay (Alt+S)
   useHotkey(
@@ -134,144 +171,71 @@ export function SyntenyOverlay({
     { modes: ['NORMAL'] }
   );
 
-  // Initialize worker
+  // A list from a previous repository must not select an unrelated reused ID.
   useEffect(() => {
-    let worker: Worker | null = null;
-    try {
-      worker = new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url), { type: 'module' });
-    } catch {
-      try {
-        worker = new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url));
-      } catch {
-        // Both worker variants failed; leave worker null.
-      }
-    }
-    if (worker) workerRef.current = worker;
-    return () => {
-      worker?.terminate();
-      workerRef.current = null;
-    };
-  }, []);
-
-  // Load phage list when overlay opens
-  useEffect(() => {
-    if (!isOpen('synteny') || !repository) return;
+    setCatalog(null);
+    if (!open || !repository) return;
     let cancelled = false;
     repository.listPhages()
       .then((list) => {
         if (cancelled) return;
-        setPhages(list.map((p) => ({ id: p.id, name: p.name, length: p.genomeLength })));
+        setCatalog({ repository, revision, phages: list.map(p => ({ id: p.id, name: p.name })), error: null });
+        setReferencePhageId(previous => previous !== null && list.some(p => p.id === previous) ? previous : null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to list phages');
+        setCatalog({ repository, revision, phages: [], error: err instanceof Error ? err.message : 'Failed to list phages' });
       });
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository]);
+  }, [open, repository, revision]);
 
-  // Load reference phage when selected
+  // Metadata reads, worker computation and all displayed details share one owner.
+  // In particular, never compute a new query against a reference retained while
+  // its replacement is still loading from a different repository.
   useEffect(() => {
-    if (!referencePhageId || !repository) {
-      setReferencePhage(null);
+    setHeatmapHover(null); setTrackHover(null); setSelectedBlock(null);
+    if (!open || !repository || !currentPhage || referencePhageId === null
+      || catalog?.repository !== repository || catalog.revision !== revision || catalog.error
+      || !catalog.phages.some(phage => phage.id === referencePhageId)) {
+      setAnalysis(null);
       return;
     }
-    let cancelled = false;
-    repository.getPhageById(referencePhageId)
-      .then((phage) => {
-        if (cancelled) return;
-        setReferencePhage(phage ?? null);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setReferencePhage(null);
-        setError(err instanceof Error ? err.message : 'Failed to load reference phage');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [referencePhageId, repository]);
-
-  // Run synteny analysis when both phages are loaded
-  useEffect(() => {
-    if (!isOpen('synteny')) return;
-    if (!currentPhage || !referencePhage) {
-      setHeatmap(null);
-      setBlocks([]);
-      setStats(null);
-      return;
-    }
-
-    const worker = workerRef.current;
-    if (!worker) return;
-
-    // Need genes for synteny analysis
-    const queryGenes = currentPhage.genes ?? [];
-    const referenceGenes = referencePhage.genes ?? [];
-
-    if (queryGenes.length === 0 || referenceGenes.length === 0) {
-      setError('Both phages need gene annotations for synteny analysis');
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    const jobId = `${currentPhage.id}-${referencePhage.id}-${Date.now()}`;
-    activeJobIdRef.current = jobId;
-
-    // Prepare job for worker
-    const job = {
-      jobId,
-      query: {
-        id: currentPhage.id,
-        name: currentPhage.name,
-        length: currentPhage.genomeLength,
-      },
-      reference: {
-        id: referencePhage.id,
-        name: referencePhage.name,
-        length: referencePhage.genomeLength,
-      },
-      genesQuery: queryGenes,
-      genesReference: referenceGenes,
-    };
-
-    const handleMessage = (event: MessageEvent<WorkerResponse>) => {
-      const response = event.data;
-      if (response.jobId && response.jobId !== jobId) return;
-      if (activeJobIdRef.current !== jobId) return;
-      setLoading(false);
-
-      if (!response.ok) {
-        setError(response.error ?? 'Synteny analysis failed');
-        return;
+    const controller = new AbortController();
+    const owner = { repository, selectedQuery: currentPhage, referenceId: referencePhageId, revision };
+    const current = () => !controller.signal.aborted && source.current.open
+      && source.current.repository === repository && source.current.currentPhage === currentPhage
+      && source.current.referencePhageId === referencePhageId && source.current.revision === revision;
+    setAnalysis({ ...owner, query: null, reference: null, payload: null, loading: true, error: null });
+    void (async () => {
+      try {
+        if (referencePhageId === currentPhage.id) throw new Error('Select a reference different from the current query.');
+        const [query, reference] = await Promise.all([
+          repository.getPhageById(currentPhage.id), repository.getPhageById(referencePhageId),
+        ]);
+        if (!current()) return;
+        if (!query || !reference) throw new Error('A selected genome is no longer available. Select the genomes again.');
+        if (query.id !== currentPhage.id || query.accession !== currentPhage.accession || reference.id !== referencePhageId) {
+          throw new Error('The loaded genomes do not match the selected sources.');
+        }
+        if (!query.genes?.length || !reference.genes?.length) {
+          throw new Error('Both phages need gene annotations for synteny analysis');
+        }
+        const payload = await runWebSynteny({
+          jobId: `synteny-${++nextSyntenyJob}`,
+          query: { id: query.id, name: query.name, length: query.genomeLength },
+          reference: { id: reference.id, name: reference.name, length: reference.genomeLength },
+          genesQuery: query.genes, genesReference: reference.genes,
+        }, controller.signal);
+        if (current()) setAnalysis({ ...owner, query, reference, payload, loading: false, error: null });
+      } catch (cause) {
+        if (current()) setAnalysis({ ...owner, query: null, reference: null, payload: null, loading: false,
+          error: cause instanceof Error ? cause.message : 'Synteny analysis failed' });
       }
-
-      if (response.heatmap) {
-        setHeatmap(response.heatmap);
-      }
-      if (response.blocksBp) {
-        setBlocks(response.blocksBp);
-      }
-      if (response.stats) {
-        setStats(response.stats);
-      }
-    };
-
-    worker.onmessage = handleMessage;
-    worker.postMessage(job);
-
-    return () => {
-      if (activeJobIdRef.current === jobId) {
-        activeJobIdRef.current = null;
-      }
-      if (worker.onmessage === handleMessage) {
-        worker.onmessage = null;
-      }
-    };
-  }, [isOpen, currentPhage, referencePhage]);
+    })();
+    return () => { controller.abort(); };
+  }, [open, repository, currentPhage, referencePhageId, revision, catalog]);
 
   // Convert blocks to track segments for query genome
   const queryBlockSegments = useMemo((): GenomeTrackSegment[] => {
@@ -332,9 +296,9 @@ export function SyntenyOverlay({
     []
   );
 
-  if (!isOpen('synteny')) return null;
+  if (!open) return null;
 
-  const queryGenes = currentPhage?.genes ?? [];
+  const queryGenes = (queryPhage ?? currentPhage)?.genes ?? [];
   const referenceGenes = referencePhage?.genes ?? [];
 
   return (
@@ -415,20 +379,22 @@ export function SyntenyOverlay({
 
           {currentPhage && (
             <span style={{ color: colors.textDim }}>
-              Query: {currentPhage.name} ({queryGenes.length} genes)
+              Query: {(queryPhage ?? currentPhage).name} ({queryGenes.length} genes)
             </span>
           )}
         </div>
 
-        {loading ? (
+        {!repository || !currentPhage ? (
+          <p role="status">{!repository ? 'Database is still loading.' : 'Select a query phage to compare.'}</p>
+        ) : error ? (
+          <>
+            <OverlayErrorState message="Analysis failed" details={error} />
+            <button type="button" onClick={() => setRevision(value => value + 1)}>Retry synteny analysis</button>
+          </>
+        ) : loading ? (
           <OverlayLoadingState message="Computing gene similarity matrix...">
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
-        ) : error ? (
-          <OverlayErrorState
-            message="Analysis failed"
-            details={error}
-          />
         ) : !referencePhage ? (
           <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>
             Select a reference phage to compare
@@ -487,7 +453,7 @@ export function SyntenyOverlay({
                 >
                   <div style={{ color: colors.textMuted }}>Query Coverage</div>
                   <div style={{ fontSize: '1.2rem', fontWeight: 'bold', color: colors.text }}>
-                    {((stats.coverageQuery / (currentPhage?.genomeLength ?? 1)) * 100).toFixed(1)}%
+                    {((stats.coverageQuery / (queryPhage?.genomeLength || 1)) * 100).toFixed(1)}%
                   </div>
                 </div>
                 <div
@@ -639,7 +605,7 @@ export function SyntenyOverlay({
             )}
 
             {/* Query genome track */}
-            {currentPhage && (
+            {queryPhage && (
               <div>
                 <div
                   style={{
@@ -648,10 +614,10 @@ export function SyntenyOverlay({
                     marginBottom: '0.25rem',
                   }}
                 >
-                  Query: {currentPhage.name} - Synteny Blocks
+                  Query: {queryPhage.name} - Synteny Blocks
                 </div>
                 <GenomeTrack
-                  genomeLength={currentPhage.genomeLength ?? 1}
+                  genomeLength={queryPhage.genomeLength || 1}
                   segments={queryBlockSegments}
                   width={540}
                   height={50}

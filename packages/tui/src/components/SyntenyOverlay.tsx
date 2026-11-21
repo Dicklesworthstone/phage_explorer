@@ -2,12 +2,24 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
-import type { PhageFull } from '@phage-explorer/core';
+import type { PhageFull, PhageSummary } from '@phage-explorer/core';
 import { alignSynteny } from '@phage-explorer/comparison';
 import type { SyntenyAnalysis, SyntenyBlock } from '@phage-explorer/comparison';
 
 interface SyntenyOverlayProps {
   repository: PhageRepository;
+}
+
+interface OwnedSynteny {
+  repository: PhageRepository;
+  selectedA: PhageSummary;
+  selectedB: PhageSummary;
+  revision: number;
+  phageA: PhageFull | null;
+  phageB: PhageFull | null;
+  analysis: SyntenyAnalysis | null;
+  loading: boolean;
+  error: string | null;
 }
 
 export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.ReactElement {
@@ -22,12 +34,10 @@ export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.React
   const currentPhageIndex = usePhageStore(s => s.currentPhageIndex);
   const comparisonPhageAIndex = usePhageStore(s => s.comparisonPhageAIndex);
   const comparisonPhageBIndex = usePhageStore(s => s.comparisonPhageBIndex);
+  const open = usePhageStore(s => s.overlays.includes('synteny'));
   
-  // State for the two phages being compared
-  const [phageA, setPhageA] = useState<PhageFull | null>(null);
-  const [phageB, setPhageB] = useState<PhageFull | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<OwnedSynteny | null>(null);
+  const [revision, setRevision] = useState(0);
   const [selectedAIndex, setSelectedAIndex] = useState<number>(() => {
     const remembered = (usePhageStore.getState().overlayData as { synteny?: { a: number; b: number } }).synteny;
     if (remembered && typeof remembered.a === 'number') return remembered.a;
@@ -43,63 +53,70 @@ export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.React
     return Math.min(currentPhageIndex + 1, Math.max(0, phages.length - 1));
   });
 
-  const analysisCache = useRef<Map<string, SyntenyAnalysis>>(new Map());
+  const normalizedAIndex = Math.max(0, Math.min(selectedAIndex, phages.length - 1));
+  const clampedBIndex = Math.max(0, Math.min(selectedBIndex, phages.length - 1));
+  const normalizedBIndex = phages.length > 1 && normalizedAIndex === clampedBIndex
+    ? (clampedBIndex + 1) % phages.length : clampedBIndex;
+  const selectedA = phages[normalizedAIndex] ?? null;
+  const selectedB = phages[normalizedBIndex] ?? null;
+  const source = useRef({ repository, selectedA, selectedB, revision, open });
+  source.current = { repository, selectedA, selectedB, revision, open };
+  const operation = useRef<AbortController | null>(null);
+  const owned = open && result?.repository === repository && result.selectedA === selectedA
+    && result.selectedB === selectedB && result.revision === revision ? result : null;
+  const phageA = owned?.phageA ?? null, phageB = owned?.phageB ?? null;
+  const analysis = owned?.analysis ?? null;
+  const error = phages.length < 2 ? 'At least two genomes are needed for synteny analysis.' : owned?.error ?? null;
+  const loading = Boolean(open && selectedA && selectedB && selectedA !== selectedB && (!owned || owned.loading));
 
-  // Load data
   useEffect(() => {
-    const load = async () => {
-      try {
-        setLoading(true);
-        if (phages.length === 0) {
-          setError('No phages loaded');
-          setLoading(false);
-          return;
-        }
+    setSelectedAIndex(normalizedAIndex);
+    setSelectedBIndex(normalizedBIndex);
+  }, [normalizedAIndex, normalizedBIndex]);
 
-        const normalizedA = Math.max(0, Math.min(selectedAIndex, phages.length - 1));
-        let normalizedB = Math.max(0, Math.min(selectedBIndex, phages.length - 1));
-        if (phages.length > 1 && normalizedA === normalizedB) {
-          normalizedB = (normalizedB + 1) % phages.length;
-          setSelectedBIndex(normalizedB);
-        }
-
-        if (phages.length < 2 || normalizedA === normalizedB) {
-          const pA = await repository.getPhageByIndex(normalizedA);
-          setPhageA(pA);
-          setPhageB(pA);
-          setLoading(false);
-          return;
-        }
-
-        const [pA, pB] = await Promise.all([
-          repository.getPhageByIndex(normalizedA),
-          repository.getPhageByIndex(normalizedB)
-        ]);
-
-        setPhageA(pA);
-        setPhageB(pB);
-        setLoading(false);
-      } catch (err) {
-        setError(String(err));
-        setLoading(false);
-      }
+  // Numeric IDs and list indices are repository-local. Keep just the accepted
+  // snapshot and revoke old reads instead of caching across unrelated sources.
+  useEffect(() => {
+    if (!open || !selectedA || !selectedB || selectedA.id === selectedB.id) {
+      setResult(null);
+      return;
+    }
+    const controller = new AbortController();
+    operation.current = controller;
+    const owner = { repository, selectedA, selectedB, revision };
+    const current = () => {
+      const state = usePhageStore.getState();
+      return !controller.signal.aborted && operation.current === controller && source.current.open
+        && source.current.repository === repository && source.current.selectedA === selectedA
+        && source.current.selectedB === selectedB && source.current.revision === revision
+        && state.overlays.includes('synteny') && state.phages[normalizedAIndex] === selectedA
+        && state.phages[normalizedBIndex] === selectedB;
     };
-    void load();
-  }, [phages, repository, selectedAIndex, selectedBIndex]);
-
-  const analysis = useMemo<SyntenyAnalysis | null>(() => {
-    if (!phageA || !phageB) return null;
-    const key = `${phageA.id}-${phageB.id}`;
-    const cached = analysisCache.current.get(key);
-    if (cached) return cached;
-    const result = alignSynteny(phageA.genes, phageB.genes);
-    analysisCache.current.set(key, result);
-    setOverlayData({
-      ...usePhageStore.getState().overlayData,
-      synteny: { a: selectedAIndex, b: selectedBIndex }
-    });
-    return result;
-  }, [phageA, phageB, selectedAIndex, selectedBIndex, setOverlayData]);
+    setResult({ ...owner, phageA: null, phageB: null, analysis: null, loading: true, error: null });
+    void (async () => {
+      try {
+        const [pA, pB] = await Promise.all([
+          repository.getPhageById(selectedA.id),
+          repository.getPhageById(selectedB.id),
+        ]);
+        if (!current()) return;
+        if (!pA || !pB) throw new Error('A selected genome is no longer available. Select the genomes again.');
+        if (pA.id !== selectedA.id || pB.id !== selectedB.id || pA.accession !== selectedA.accession || pB.accession !== selectedB.accession) {
+          throw new Error('The loaded genomes do not match the selected sources.');
+        }
+        if (!pA.genes?.length || !pB.genes?.length) throw new Error('Both genomes need gene annotations for synteny analysis.');
+        const alignment = alignSynteny(pA.genes, pB.genes);
+        if (!current()) return;
+        setResult({ ...owner, phageA: pA, phageB: pB, analysis: alignment, loading: false, error: null });
+        setOverlayData({ ...usePhageStore.getState().overlayData,
+          synteny: { a: normalizedAIndex, b: normalizedBIndex } });
+      } catch (err) {
+        if (current()) setResult({ ...owner, phageA: null, phageB: null, analysis: null, loading: false,
+          error: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+    return () => { controller.abort(); if (operation.current === controller) operation.current = null; };
+  }, [open, repository, selectedA, selectedB, normalizedAIndex, normalizedBIndex, revision, setOverlayData]);
 
   const coverageA = useMemo(() => {
     if (!analysis || !phageA?.genes?.length) return 0;
@@ -134,7 +151,9 @@ export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.React
 
   useInput((input, key) => {
     if (key.escape) {
+      operation.current?.abort();
       closeOverlay('synteny');
+      return;
     }
     if (key.leftArrow) {
       setSelectedBIndex(idx => (idx - 1 + phages.length) % Math.max(phages.length, 1));
@@ -154,10 +173,14 @@ export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.React
       setSelectedAIndex(() => b);
       setSelectedBIndex(() => a);
     }
-  });
+    if (input === 'r' || input === 'R') {
+      operation.current?.abort();
+      setRevision(value => value + 1);
+    }
+  }, { isActive: open });
 
   if (loading) return <Text>Loading synteny data...</Text>;
-  if (error) return <Text color={colors.error}>Error: {error}</Text>;
+  if (error) return <Text color={colors.error}>Error: {error} (R to retry)</Text>;
   if (!phageA || !phageB || !analysis) return <Text>No data available</Text>;
   
   // Render a single gene bar with block coloring
@@ -256,13 +279,13 @@ export function SyntenyOverlay({ repository }: SyntenyOverlayProps): React.React
     >
       <Box justifyContent="space-between" marginBottom={1}>
         <Text color={colors.accent} bold>FUNCTIONAL SYNTENY ALIGNMENT</Text>
-        <Text color={colors.textDim}>Esc to close | ↑/↓ change A | ←/→ change B | s swap</Text>
+        <Text color={colors.textDim}>Esc close | ↑/↓ change A | ←/→ change B | S swap | R retry</Text>
       </Box>
 
       <Box marginBottom={1} flexDirection="column">
         <Text>
-          A: <Text bold color={colors.accent}>{phageA.name}</Text> (#{selectedAIndex + 1})
-          {'  '}B: <Text bold color={colors.accent}>{phageB.name}</Text> (#{selectedBIndex + 1})
+          A: <Text bold color={colors.accent}>{phageA.name}</Text> (#{normalizedAIndex + 1})
+          {'  '}B: <Text bold color={colors.accent}>{phageB.name}</Text> (#{normalizedBIndex + 1})
         </Text>
         <Text>
           Score: <Text bold color={colors.success}>{(analysis.globalScore * 100).toFixed(1)}%</Text>

@@ -7,7 +7,7 @@ interface PhageDescriptor {
   length?: number | null;
 }
 
-interface SyntenyJob {
+export interface SyntenyJob {
   jobId?: string;
   query: PhageDescriptor;
   reference: PhageDescriptor;
@@ -15,7 +15,7 @@ interface SyntenyJob {
   genesReference: GeneInfo[];
 }
 
-interface SyntenyHeatmap {
+export interface SyntenyHeatmap {
   rows: number;
   cols: number;
   values: Float32Array;
@@ -23,7 +23,7 @@ interface SyntenyHeatmap {
   max: number;
 }
 
-interface SyntenyBlockBp {
+export interface SyntenyBlockBp {
   startIdxQuery: number;
   endIdxQuery: number;
   startIdxReference: number;
@@ -36,7 +36,7 @@ interface SyntenyBlockBp {
   orientation: SyntenyBlock['orientation'];
 }
 
-interface SyntenyStats {
+export interface SyntenyStats {
   blockCount: number;
   globalScore: number;
   scsScore: number;
@@ -48,7 +48,7 @@ interface SyntenyStats {
   indelCount: number;
 }
 
-interface WorkerResponse {
+export interface WorkerResponse {
   ok: boolean;
   jobId?: string;
   analysis?: SyntenyAnalysis;
