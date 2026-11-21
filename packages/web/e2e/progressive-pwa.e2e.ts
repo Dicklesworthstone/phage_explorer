@@ -157,6 +157,49 @@ async function cachedFile(page: Page, path: string) {
   }, path);
 }
 
+test('an uncached genome failure preserves the displayed genome and retries online', async ({ page, context, assets }, testInfo) => {
+  const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  try {
+    // Without a shared-link rotation, catalog rows retain the manifest's ID order.
+    await page.goto(`${assets.origin}/?model=0`);
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(assets.manifest.genomes.length);
+    const selected = page.getByTestId('phage-list-item-selected');
+    await expect(selected).toBeVisible();
+    await expect(page.locator('.sequence-view')).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const originalName = (await selected.locator('.list-title').textContent())!.trim();
+    const { settings } = await openOfflineManager(page);
+    const choice = await uncachedChoice(page, assets);
+    await page.keyboard.press('Escape'); await expect(settings).toBeHidden();
+    const targetIndex = assets.manifest.genomes.findIndex(genome => genome.id === choice.id);
+    const target = page.locator('[data-testid^="phage-list-item"]').nth(targetIndex);
+    const targetName = (await target.locator('.list-title').textContent())!.trim();
+    expect(targetName).not.toBe(originalName);
+    expect(await cachedFile(page, choice.artifact.path)).toBeNull();
+
+    await context.setOffline(true);
+    await target.click();
+    const failure = page.getByRole('region', { name: 'Genome loading status', exact: true });
+    await expect(failure).toBeVisible();
+    await expect(failure).toContainText(targetName);
+    await expect(failure).toContainText('previously loaded genome is still displayed');
+    await expect(selected.locator('.list-title')).toHaveText(originalName);
+    await expect(page.locator('.detail-card h3').first()).toHaveText(originalName);
+    // A failed selection previously cleared fullSequence and removed this view.
+    await expect(page.locator('.sequence-view')).toBeVisible();
+    await expect(failure.getByRole('button', { name: 'Retry genome load', exact: true })).toBeEnabled();
+
+    await context.setOffline(false);
+    await failure.getByRole('button', { name: 'Retry genome load', exact: true }).click();
+    await expect(selected.locator('.list-title')).toHaveText(targetName);
+    await expect(page.locator('.detail-card h3').first()).toHaveText(targetName);
+    await expect(page.locator('.sequence-view')).toBeVisible();
+    await expect(failure).toBeHidden();
+    expect(await cachedFile(page, choice.artifact.path)).toEqual({ bytes: choice.artifact.bytes, sha256: choice.artifact.sha256 });
+    expect(pageErrors).toEqual([]);
+  } finally { await context.setOffline(false); await finalize(); }
+});
+
 test('Settings prepares an unvisited genome, restores offline, and releases only its reservation', async ({ page, context, assets }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
   try {

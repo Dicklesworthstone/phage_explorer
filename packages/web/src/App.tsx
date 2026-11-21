@@ -8,6 +8,7 @@ import React, {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import type { GeneInfo } from '@phage-explorer/core';
 import { AppShell } from './components/layout/AppShell';
@@ -20,6 +21,7 @@ import { useLocalGenomes } from './db/local-genomes';
 import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotkey';
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
+import { PhageSelectionSession } from './hooks/PhageSelectionSession';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
 import {
   APP_SHELL_FOOTER_HINTS,
@@ -121,6 +123,22 @@ export default function App(): React.ReactElement {
     load,
     reload,
   } = useDatabase({ autoLoad: true });
+  const [selectionSession] = useState(() => new PhageSelectionSession((next, previous) => {
+    const changed = next.selection !== previous.selection;
+    usePhageStore.setState({
+      currentPhage: next.selection?.phage ?? null,
+      currentPhageIndex: next.selection?.index ?? 0,
+      isLoadingPhage: next.pendingIndex !== null,
+      error: next.error?.message ?? null,
+      ...(changed ? { scrollPosition: 0, selectedGeneId: null } : {}),
+    });
+  }));
+  const selectionSnapshot = useSyncExternalStore(selectionSession.subscribe, selectionSession.getSnapshot, selectionSession.getSnapshot);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogRetry, setCatalogRetry] = useState(0);
+  const preferredSelectionId = useRef<number | undefined>(undefined);
+  const hydratedRepositoryRef = useRef<PhageRepository | null>(null);
+  const hydrationRetryRef = useRef(0);
   const {
     toggle: toggleBeginnerMode,
     isEnabled: beginnerModeEnabled,
@@ -136,8 +154,6 @@ export default function App(): React.ReactElement {
   const lastRepositoryReadyRef = useRef(false);
   const lastLoadingPhageRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
-  // Request token to guard against stale async results when rapidly switching phages
-  const loadRequestIdRef = useRef(0);
   const announceSr = useCallback((kind: 'status' | 'alert', message: string) => {
     if (typeof window === 'undefined') return;
     if (kind === 'alert') {
@@ -168,10 +184,6 @@ export default function App(): React.ReactElement {
   const toggleDiff = usePhageStore((s) => s.toggleDiff);
   const isLoadingPhage = usePhageStore((s) => s.isLoadingPhage);
   const setPhages = usePhageStore((s) => s.setPhages);
-  const setCurrentPhageIndex = usePhageStore((s) => s.setCurrentPhageIndex);
-  const setCurrentPhage = usePhageStore((s) => s.setCurrentPhage);
-  const setLoadingPhage = usePhageStore((s) => s.setLoadingPhage);
-  const setError = usePhageStore((s) => s.setError);
   const storeSetTheme = usePhageStore((s) => s.setTheme);
   const storeCloseOverlay = usePhageStore((s) => s.closeOverlay);
   const show3DModel = usePhageStore((s) => s.show3DModel);
@@ -181,6 +193,18 @@ export default function App(): React.ReactElement {
   const { mode } = useKeyboardMode();
   const pendingSequence = usePendingSequence();
 
+  useLayoutEffect(() => {
+    // Retire pending reads as soon as a new repository commits, before its
+    // catalog request can finish. Never pair old annotations with new bases.
+    preferredSelectionId.current = usePhageStore.getState().currentPhage?.id ?? preferredSelectionId.current;
+    selectionSession.setRepository(repository);
+    hydratedRepositoryRef.current = null;
+    usePhageStore.setState({ phages: [], diffReferenceSequence: null,
+      currentPhage: selectionSession.getSnapshot().selection?.phage ?? null });
+    setCatalogError(null);
+    return () => selectionSession.cancel();
+  }, [repository, selectionSession]);
+
   // Load the diff reference genome whenever diff mode is on. Without this the
   // store's diffReferenceSequence stayed null in the browser forever, which
   // left the selection-pressure dN/dS overlay permanently empty.
@@ -189,7 +213,9 @@ export default function App(): React.ReactElement {
   // Sync experience level to keyboard manager and handle blocked hotkey notifications
   useExperienceLevelSync();
   const { blockedHotkey, dismiss: dismissBlockedHotkey } = useBlockedHotkeyNotification();
-  const [fullSequence, setFullSequence] = useState<string>('');
+  const acceptedSelection = selectionSnapshot.repository === repository ? selectionSnapshot.selection : null;
+  const fullSequence = acceptedSelection?.phage === currentPhage ? acceptedSelection.sequence : '';
+  const selectionError = selectionSnapshot.repository === repository ? selectionSnapshot.error : null;
   const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
@@ -223,7 +249,7 @@ export default function App(): React.ReactElement {
 
   useEffect(() => {
     setSelectedGene(null);
-  }, [currentPhage?.id]);
+  }, [currentPhage]);
   const getLayoutSnapshot = useCallback(() => {
     if (typeof window === 'undefined') {
       return {
@@ -599,55 +625,22 @@ export default function App(): React.ReactElement {
 
   const loadPhage = useCallback(
     async (repo: PhageRepository, index: number) => {
-      // Increment request ID to invalidate any in-flight requests
-      const requestId = ++loadRequestIdRef.current;
-
-      setLoadingPhage(true);
-      setCurrentPhageIndex(index);
-      setFullSequence('');
-
-      try {
-        const phage = await repo.getPhageByIndex(index);
-
-        // Guard: if a newer request started, discard these results
-        if (requestId !== loadRequestIdRef.current) return;
-
-        if (!phage) {
-          // Guard: only clear loading if this is still the current request
-          if (requestId === loadRequestIdRef.current) {
-            setLoadingPhage(false);
-          }
-          return;
+      if (selectionSession.getSnapshot().repository !== repo) return false;
+      const accepted = await selectionSession.select(index, usePhageStore.getState().phages[index]?.id);
+      if (!accepted || selectionSession.getSnapshot().repository !== repo || selectionSession.getSnapshot().selection?.index !== index) return false;
+      const local = useLocalGenomes.getState();
+      if (local.requestedId !== null && usePhageStore.getState().currentPhage?.id === local.requestedId) {
+        if (local.requestedView) {
+          const state = usePhageStore.getState();
+          state.setViewMode(local.requestedView.viewMode);
+          state.setReadingFrame(local.requestedView.readingFrame);
+          state.setScrollPosition(local.requestedView.scrollPosition);
         }
-
-        setCurrentPhage(phage);
-
-        const genomeLength = phage.genomeLength ?? 0;
-        if (genomeLength > 0) {
-          const seq = await repo.getSequenceWindow(phage.id, 0, genomeLength);
-
-          // Guard again after second async operation
-          if (requestId !== loadRequestIdRef.current) return;
-
-          setFullSequence(seq);
-        }
-
-        // Prefetch adjacent phages for instant navigation feel
-        void repo.prefetchAround(index, 2);
-      } catch (err) {
-        // Only set error if this is still the current request
-        if (requestId !== loadRequestIdRef.current) return;
-
-        const message = err instanceof Error ? err.message : 'Failed to load phage';
-        setError(message);
-      } finally {
-        // Only clear loading if this is still the current request
-        if (requestId === loadRequestIdRef.current) {
-          setLoadingPhage(false);
-        }
+        local.acknowledgeSelection(local.requestedId);
       }
+      return true;
     },
-    [setCurrentPhage, setCurrentPhageIndex, setError, setLoadingPhage]
+    [selectionSession]
   );
 
   // Idle during a database download is not the end of startup. Give the
@@ -657,41 +650,34 @@ export default function App(): React.ReactElement {
     void preloadWorkers();
   }, [repository, fullSequence]);
 
-  const hydratedRepositoryRef = useRef<PhageRepository | null>(null);
   useEffect(() => {
-    if (!repository || (hydratedRepositoryRef.current === repository && requestedLocalId === null)) return;
-    const previousId = usePhageStore.getState().currentPhage?.id;
+    if (!repository || (hydratedRepositoryRef.current === repository && requestedLocalId === null && hydrationRetryRef.current === catalogRetry)) return;
+    const previousId = usePhageStore.getState().currentPhage?.id ?? preferredSelectionId.current;
     let cancelled = false;
+    setCatalogError(null);
 
     void (async () => {
       try {
         const list = await repository.listPhages();
-        if (cancelled) return;
+        if (cancelled || selectionSession.getSnapshot().repository !== repository) return;
         setPhages(list);
+        // A successful local selection acknowledges its pending view inside
+        // loadPhage. That update must not start a second catalog hydration.
+        hydratedRepositoryRef.current = repository;
+        hydrationRetryRef.current = catalogRetry;
 
         if (list.length > 0) {
           const selectedIndex = list.findIndex(phage => phage.id === (requestedLocalId ?? previousId));
           await loadPhage(repository, Math.max(0, selectedIndex));
-          if (!cancelled && requestedLocalId !== null) {
-            const local = useLocalGenomes.getState();
-            if (local.requestedId === requestedLocalId && local.requestedView && usePhageStore.getState().currentPhage?.id === requestedLocalId) {
-              const state = usePhageStore.getState();
-              state.setViewMode(local.requestedView.viewMode);
-              state.setReadingFrame(local.requestedView.readingFrame);
-              state.setScrollPosition(local.requestedView.scrollPosition);
-            }
-            local.acknowledgeSelection(requestedLocalId);
-          }
         }
-        if (!cancelled) hydratedRepositoryRef.current = repository;
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || selectionSession.getSnapshot().repository !== repository) return;
         const message = err instanceof Error ? err.message : 'Failed to load phages';
-        setError(message);
+        setCatalogError(message);
       }
     })();
     return () => { cancelled = true; };
-  }, [loadPhage, repository, requestedLocalId, setError, setPhages]);
+  }, [catalogRetry, loadPhage, repository, requestedLocalId, selectionSession, setPhages]);
 
   const handleSelectPhage = useCallback(
     async (index: number) => {
@@ -704,15 +690,15 @@ export default function App(): React.ReactElement {
 
   const handleNextPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
-    const nextIndex = (currentPhageIndex + 1) % phages.length;
+    const nextIndex = (selectionSession.navigationIndex() + 1) % phages.length;
     void loadPhage(repository, nextIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository]);
+  }, [loadPhage, phages.length, repository, selectionSession]);
 
   const handlePrevPhage = useCallback(() => {
     if (!repository || phages.length === 0) return;
-    const prevIndex = (currentPhageIndex - 1 + phages.length) % phages.length;
+    const prevIndex = (selectionSession.navigationIndex() - 1 + phages.length) % phages.length;
     void loadPhage(repository, prevIndex);
-  }, [currentPhageIndex, loadPhage, phages.length, repository]);
+  }, [loadPhage, phages.length, repository, selectionSession]);
 
   // Touch feedback: set ripple origin vars and trigger light haptics when supported.
   useEffect(() => {
@@ -1134,6 +1120,19 @@ export default function App(): React.ReactElement {
             {progress.updateStatus === 'ready' && (
               <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>Reload database</button>
             )}
+          </section>
+        )}
+        {repository && (selectionError || catalogError) && (
+          <section className="panel panel-compact" aria-label="Genome loading status">
+            <p role="alert" className="text-error">
+              {catalogError ?? `Could not load ${phages[selectionError!.index]?.name ?? 'the selected genome'}: ${selectionError!.message}`}
+              {currentPhage && ' The previously loaded genome is still displayed.'}
+            </p>
+            <button type="button" className="btn btn-primary" disabled={isLoadingPhage}
+              onClick={() => {
+                if (catalogError) setCatalogRetry(value => value + 1);
+                else if (selectionError) void loadPhage(repository, selectionError.index);
+              }}>Retry genome load</button>
           </section>
         )}
         {(!repository || error) && (
