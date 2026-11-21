@@ -6,10 +6,10 @@
 // instead of O(N²) JS implementation. Critical for large structures.
 
 import {
-  type AtomRecord,
   type Bond,
   type FunctionalGroupType,
 } from './structure-loader';
+import { parsePDB, parseMMCIF, type AtomRecord } from './structure-sequence';
 
 // --- WASM Module Loading ---
 // Use centralized loader for consistent initialization across workers
@@ -86,82 +86,6 @@ const FUNCTIONAL_GROUP_COLORS_HEX: Record<FunctionalGroupType, string> = {
   disulfide: '#facc15',
   phosphate: '#fb923c',
 };
-
-function parsePDB(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith('ATOM') && !line.startsWith('HETATM')) continue;
-    const atomName = line.slice(12, 16).trim().toUpperCase();
-    const x = parseFloat(line.slice(30, 38));
-    const y = parseFloat(line.slice(38, 46));
-    const z = parseFloat(line.slice(46, 54));
-    const element = (line.slice(76, 78).trim() || line.slice(12, 14).trim()).toUpperCase();
-    const chainId = line.slice(21, 22).trim() || 'A';
-    const resSeq = parseInt(line.slice(22, 26).trim() || '0', 10);
-    const resName = line.slice(17, 20).trim() || 'UNK';
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-  return atoms;
-}
-
-function parseMMCIF(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  const headers: string[] = [];
-  let inAtomLoop = false;
-  let dataStart = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === 'loop_') {
-      inAtomLoop = true;
-      continue;
-    }
-    if (inAtomLoop && line.startsWith('_atom_site.')) {
-      headers.push(line);
-      continue;
-    }
-    if (inAtomLoop && headers.length > 0 && !line.startsWith('_atom_site.')) {
-      dataStart = i;
-      break;
-    }
-  }
-
-  if (headers.length === 0 || dataStart === 0) return atoms;
-
-  const colIndex = (name: string) => headers.findIndex(h => h.includes(name));
-  const xIdx = colIndex('Cartn_x');
-  const yIdx = colIndex('Cartn_y');
-  const zIdx = colIndex('Cartn_z');
-  const elIdx = colIndex('type_symbol');
-  const atomNameIdx = colIndex('label_atom_id');
-  const chainIdx = colIndex('auth_asym_id');
-  const resSeqIdx = colIndex('auth_seq_id');
-  const resNameIdx = colIndex('auth_comp_id');
-
-  for (let i = dataStart; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.startsWith('#') || line.startsWith('loop_') || line === '') break;
-    const parts = line.split(/\s+/);
-    const pick = (idx: number, fallback = '') => (idx >= 0 ? parts[idx] ?? fallback : fallback);
-    const x = parseFloat(pick(xIdx, 'NaN'));
-    const y = parseFloat(pick(yIdx, 'NaN'));
-    const z = parseFloat(pick(zIdx, 'NaN'));
-    const element = pick(elIdx, 'C').toUpperCase();
-    const atomName = pick(atomNameIdx, '').toUpperCase() || element;
-    const chainId = pick(chainIdx, 'A') || 'A';
-    const resSeq = parseInt(pick(resSeqIdx, '0'), 10);
-    const resName = pick(resNameIdx, 'UNK').toUpperCase();
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-
-  return atoms;
-}
 
 // Known single-character elements with specific radii (must match WASM and JS)
 const KNOWN_ELEMENTS = new Set(['H', 'C', 'N', 'O', 'S', 'P']);
@@ -284,16 +208,18 @@ function buildBackboneTraces(atoms: AtomRecord[]): { x: number; y: number; z: nu
   const chainMap = new Map<string, AtomRecord[]>();
   for (const atom of atoms) {
     if (atom.atomName !== 'CA' && atom.atomName !== 'C' && atom.atomName !== 'N') continue;
-    let chainAtoms = chainMap.get(atom.chainId);
+    const chainId = atom.labelChainId ?? atom.chainId;
+    let chainAtoms = chainMap.get(chainId);
     if (!chainAtoms) {
       chainAtoms = [];
-      chainMap.set(atom.chainId, chainAtoms);
+      chainMap.set(chainId, chainAtoms);
     }
     chainAtoms.push(atom);
   }
   const traces: { x: number; y: number; z: number }[][] = [];
   for (const [, chainAtoms] of chainMap) {
-    const sorted = chainAtoms.sort((a, b) => a.resSeq - b.resSeq);
+    const sorted = chainAtoms.sort((a, b) => (a.labelSeqId ?? a.resSeq) - (b.labelSeqId ?? b.resSeq) ||
+      (a.insertionCode ?? '').localeCompare(b.insertionCode ?? ''));
     traces.push(sorted.map(a => ({ x: a.x, y: a.y, z: a.z })));
   }
   return traces;
@@ -590,7 +516,7 @@ self.onmessage = async (e: MessageEvent<WorkerInput>) => {
     const tracesStart = performance.now();
     const backboneTraces = buildBackboneTraces(atoms);
     const tracesMs = performance.now() - tracesStart;
-    const chains = Array.from(new Set(atoms.map(a => a.chainId)));
+    const chains = Array.from(new Set(atoms.map(a => a.labelChainId ?? a.chainId)));
 
     let functionalGroups: SerializedFunctionalGroup[] = [];
     let functionalMs = 0;

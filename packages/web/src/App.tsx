@@ -1348,7 +1348,7 @@ export default function App(): React.ReactElement {
                             <Suspense
                               fallback={<Model3DSkeleton />}
                             >
-                              <LazyModel3DView phage={currentPhage} />
+                              <LazyModel3DView phage={currentPhage} repository={repository} />
                             </Suspense>
                           </FeatureErrorBoundary>
                         ) : (

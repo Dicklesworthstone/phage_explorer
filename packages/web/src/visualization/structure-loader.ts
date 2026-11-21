@@ -16,19 +16,11 @@ import {
   TubeGeometry,
   Vector3,
 } from 'three';
+import type { AtomRecord } from './structure-sequence';
+export type { AtomRecord } from './structure-sequence';
+export { parsePDB, parseMMCIF } from './structure-sequence';
 
 export type StructureFormat = 'pdb' | 'mmcif';
-
-export interface AtomRecord {
-  x: number;
-  y: number;
-  z: number;
-  element: string;
-  atomName: string;
-  chainId: string;
-  resSeq: number;
-  resName: string;
-}
 
 export interface Bond {
   a: number;
@@ -240,82 +232,6 @@ export function getStructureWorkerPool(): StructureWorkerPool {
   return StructureWorkerPool.getInstance();
 }
 
-export function parsePDB(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  for (const line of lines) {
-    if (!line.startsWith('ATOM') && !line.startsWith('HETATM')) continue;
-    const atomName = line.slice(12, 16).trim().toUpperCase();
-    const x = parseFloat(line.slice(30, 38));
-    const y = parseFloat(line.slice(38, 46));
-    const z = parseFloat(line.slice(46, 54));
-    const element = (line.slice(76, 78).trim() || line.slice(12, 14).trim()).toUpperCase();
-    const chainId = line.slice(21, 22).trim() || 'A';
-    const resSeq = parseInt(line.slice(22, 26).trim() || '0', 10);
-    const resName = line.slice(17, 20).trim() || 'UNK';
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-  return atoms;
-}
-
-export function parseMMCIF(text: string): AtomRecord[] {
-  const atoms: AtomRecord[] = [];
-  const lines = text.split(/\r?\n/);
-  const headers: string[] = [];
-  let inAtomLoop = false;
-  let dataStart = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line === 'loop_') {
-      inAtomLoop = true;
-      continue;
-    }
-    if (inAtomLoop && line.startsWith('_atom_site.')) {
-      headers.push(line);
-      continue;
-    }
-    if (inAtomLoop && headers.length > 0 && !line.startsWith('_atom_site.')) {
-      dataStart = i;
-      break;
-    }
-  }
-
-  if (headers.length === 0 || dataStart === 0) return atoms;
-
-  const colIndex = (name: string) => headers.findIndex(h => h.includes(name));
-  const xIdx = colIndex('Cartn_x');
-  const yIdx = colIndex('Cartn_y');
-  const zIdx = colIndex('Cartn_z');
-  const elIdx = colIndex('type_symbol');
-  const atomNameIdx = colIndex('label_atom_id');
-  const chainIdx = colIndex('auth_asym_id');
-  const resSeqIdx = colIndex('auth_seq_id');
-  const resNameIdx = colIndex('auth_comp_id');
-
-  for (let i = dataStart; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.startsWith('#') || line.startsWith('loop_') || line === '') break;
-    const parts = line.split(/\s+/);
-    const pick = (idx: number, fallback = '') => (idx >= 0 ? parts[idx] ?? fallback : fallback);
-    const x = parseFloat(pick(xIdx, 'NaN'));
-    const y = parseFloat(pick(yIdx, 'NaN'));
-    const z = parseFloat(pick(zIdx, 'NaN'));
-    const element = pick(elIdx, 'C').toUpperCase();
-    const atomName = pick(atomNameIdx, '').toUpperCase() || element;
-    const chainId = pick(chainIdx, 'A') || 'A';
-    const resSeq = parseInt(pick(resSeqIdx, '0'), 10);
-    const resName = pick(resNameIdx, 'UNK').toUpperCase();
-    if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
-      atoms.push({ x, y, z, element, atomName, chainId, resSeq, resName });
-    }
-  }
-
-  return atoms;
-}
-
 // CPK-based colors optimized for dark backgrounds - vibrant and distinctive
 const ELEMENT_COLORS: Record<string, Color> = {
   // Common organic elements
@@ -348,13 +264,16 @@ const ELEMENT_COLORS: Record<string, Color> = {
 };
 
 function detectFormat(idOrUrl: string): StructureFormat {
-  const lower = idOrUrl.toLowerCase();
-  return lower.endsWith('.cif') || lower.endsWith('.mmcif') ? 'mmcif' : 'pdb';
+  const path = idOrUrl.split(/[?#]/, 1)[0].toLowerCase();
+  if (path.endsWith('.pdb')) return 'pdb';
+  if (path.endsWith('.cif') || path.endsWith('.mmcif')) return 'mmcif';
+  // Bare accessions use polymer-aware mmCIF. Unknown external URLs retain their existing PDB behavior.
+  return idOrUrl.includes('://') ? 'pdb' : 'mmcif';
 }
 
 function resolveDownloadUrl(idOrUrl: string, format: StructureFormat): string {
   if (idOrUrl.includes('://')) return idOrUrl;
-  const bareId = idOrUrl.replace(/\.cif$/i, '').replace(/\.pdb$/i, '');
+  const bareId = idOrUrl.replace(/\.(?:cif|mmcif|pdb)$/i, '');
   const ext = format === 'mmcif' ? 'cif' : 'pdb';
   return `https://files.rcsb.org/download/${bareId}.${ext}`;
 }
@@ -444,7 +363,7 @@ export async function loadStructure(
   try {
     const cache = await getCache();
     const cached = await cache.getCachedStructure(pdbId);
-    if (cached) {
+    if (cached && cached.format === format) {
       // Decode cached ArrayBuffer to text
       const decoder = new TextDecoder();
       text = decoder.decode(cached.data);

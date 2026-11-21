@@ -1,6 +1,7 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
 import type { PhageFull } from '@phage-explorer/core';
+import type { PhageRepository } from '../db';
 import { Model3DSkeleton } from './ui/Skeleton';
 import { Badge, SubtleBadge } from './ui/Badge';
 import { Tooltip } from './ui/Tooltip';
@@ -31,6 +32,7 @@ import {
   type FunctionalGroupStyle,
   type LoadedStructure,
 } from '../visualization/structure-loader';
+import { buildStructureResidueMappings, structureResidueKey, type StructureGenomeResidue } from '../visualization/structure-sequence';
 import { useStructureQuery, usePrefetchAdjacentStructures } from '../hooks/useStructureQuery';
 import { getKeyboardManager, type HotkeyDefinition } from '../keyboard';
 import { useOverlay } from './overlays/OverlayProvider';
@@ -54,6 +56,7 @@ export function applyThreeFullscreenClass(
 
 interface Model3DViewProps {
   phage: PhageFull | null;
+  repository?: PhageRepository | null;
 }
 
 interface PickedResidueInfo {
@@ -61,8 +64,26 @@ interface PickedResidueInfo {
   resSeq: number;
   resName: string;
   atomName: string;
+  insertionCode: string;
+  labelChainId?: string;
   geneLabel?: string;
   genomePos?: number;
+  proteinPosition?: number;
+  genomeSegments?: StructureGenomeResidue['genomeSegments'];
+}
+
+/** A source change must never turn a previously verified residue into a jump in another genome. */
+export function navigateToStructureResidue(mapping: StructureGenomeResidue | undefined, phage: PhageFull | null): boolean {
+  const state = usePhageStore.getState();
+  if (!mapping || !phage || state.currentPhage !== phage ||
+    !phage.genes.some(gene => gene.id === mapping.geneId && gene.type === 'CDS') ||
+    !Number.isSafeInteger(mapping.genomePos) || mapping.genomePos < 0 || mapping.genomePos >= (phage.genomeLength ?? 0)) return false;
+  // The genome AA grid is a reading-frame view, not the annotated transcript.
+  // DNA coordinates also preserve reverse-strand and exon/origin-spanning codons.
+  state.setSelectedGeneId(mapping.geneId);
+  state.setViewMode('dna');
+  state.setScrollPosition(mapping.genomePos);
+  return true;
 }
 
 function isCoarsePointerDevice(): boolean {
@@ -247,7 +268,7 @@ function getAsymmetricUnitTooltip(atomCount: number): string {
   return `This shows the asymmetric unit from PDB (${atomCount.toLocaleString()} atoms) — the unique protein chains deposited in the structure.\n\nFull icosahedral virion estimates:\n• T=3 capsid (MS2-like): ~${formatAtomEstimate(t3Estimate)} atoms\n• T=7 capsid (T7-like): ~${formatAtomEstimate(t7Estimate)} atoms\n\nActual count depends on capsid symmetry and whether RNA/DNA is included.`;
 }
 
-function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
+function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactElement {
   const coarsePointer = useMemo(() => isCoarsePointerDevice(), []);
   const supportsDvh = useMemo(() => {
     if (typeof CSS === 'undefined') return false;
@@ -284,22 +305,12 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     lastChange: 0,
   });
   const initialModeForPdbRef = useRef<string | null>(null);
-  const chainMappingRef = useRef(
-    new Map<
-      string,
-      {
-        minResSeq: number;
-        geneStart: number;
-        geneEnd: number;
-        geneStrand: string | null;
-        geneAaLen: number;
-        geneLabel: string;
-      }
-    >()
-  );
+  const residueMappingRef = useRef<{ scope: object; residues: Map<string, StructureGenomeResidue> } | null>(null);
+  const currentMappingScopeRef = useRef<{ phage: PhageFull | null; repository: typeof repository; structure: LoadedStructure | undefined } | null>(null);
   const pointerDownRef = useRef<{ x: number; y: number } | null>(null);
   const raycasterRef = useRef(new Raycaster());
-  const [pickedResidue, setPickedResidue] = useState<PickedResidueInfo | null>(null);
+  const [pickedResidueState, setPickedResidue] = useState<(PickedResidueInfo & { scope: object }) | null>(null);
+  const [mappingStatusState, setMappingStatusState] = useState<{ scope: object; message: string } | null>(null);
 
   const show3DModel = usePhageStore(s => s.show3DModel);
   const paused = usePhageStore(s => s.model3DPaused);
@@ -453,7 +464,7 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     lastSample: performance.now(),
   });
   const [showFunctionalGroups, setShowFunctionalGroups] = useState(false);
-  const [functionalGroupStyle] = useState<FunctionalGroupStyle>('halo');
+  const functionalGroupStyle: FunctionalGroupStyle = 'halo';
 
   const pdbId = useMemo(() => phage?.pdbIds?.[0] ?? null, [phage?.pdbIds]);
   const qualityPreset = QUALITY_PRESETS[quality] ?? QUALITY_PRESETS.medium;
@@ -551,64 +562,44 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
     includeFunctionalGroups: showFunctionalGroups,
   });
 
-  // Build a lightweight mapping index from PDB chain residues -> likely gene coordinates (heuristic by length).
+  const mappingScope = useMemo(() => ({ phage, repository, structure: structureData }), [phage, repository, structureData]);
+  currentMappingScopeRef.current = mappingScope;
+  const pickedResidue = pickedResidueState?.scope === mappingScope ? pickedResidueState : null;
+  const mappingStatus = mappingStatusState?.scope === mappingScope
+    ? mappingStatusState.message : 'Verifying structural residues against the current genome…';
+
+  // Validate sequence identity against this exact repository; a shared numeric ID is insufficient.
   useEffect(() => {
-    if (!structureData || !phage?.genes?.length) {
-      chainMappingRef.current = new Map();
-      setPickedResidue(null);
+    residueMappingRef.current = null;
+    setPickedResidue(null);
+    const setMappingStatus = (message: string) => setMappingStatusState({ scope: mappingScope, message });
+    const { phage: currentPhage, repository: currentRepository, structure } = mappingScope;
+    if (!show3DModel || !structure || !currentRepository || !currentPhage?.genes.length) {
+      setMappingStatus('Genome mapping requires the current genome sequence and CDS annotations.');
       return;
     }
-
-    const chainRanges = new Map<string, { minResSeq: number; maxResSeq: number }>();
-    for (const atom of structureData.atoms) {
-      const chainId = atom.chainId || 'A';
-      const resSeq = atom.resSeq;
-      if (!Number.isFinite(resSeq)) continue;
-      const existing = chainRanges.get(chainId);
-      if (existing) {
-        existing.minResSeq = Math.min(existing.minResSeq, resSeq);
-        existing.maxResSeq = Math.max(existing.maxResSeq, resSeq);
-      } else {
-        chainRanges.set(chainId, { minResSeq: resSeq, maxResSeq: resSeq });
+    let cancelled = false;
+    setMappingStatus('Verifying structural residues against the current genome…');
+    void (async () => {
+      const length = currentPhage.genomeLength;
+      if (typeof length !== 'number' || !Number.isSafeInteger(length) || length <= 0 || length > 5_000_000) {
+        throw new Error('A complete bounded genome is required.');
       }
-    }
-
-    const genes = phage.genes.filter((g) => Number.isFinite(g.startPos) && Number.isFinite(g.endPos));
-    const mapping = new Map<
-      string,
-      { minResSeq: number; geneStart: number; geneEnd: number; geneStrand: string | null; geneAaLen: number; geneLabel: string }
-    >();
-
-    for (const [chainId, range] of chainRanges.entries()) {
-      const chainLen = Math.max(1, range.maxResSeq - range.minResSeq + 1);
-      let bestGene = genes[0] ?? null;
-      let bestScore = Number.POSITIVE_INFINITY;
-
-      for (const gene of genes) {
-        const aaLen = Math.max(1, Math.floor((gene.endPos - gene.startPos) / 3));
-        const score = Math.abs(aaLen - chainLen);
-        if (score < bestScore) {
-          bestScore = score;
-          bestGene = gene;
-        }
+      const genome = await currentRepository.getSequenceWindow(currentPhage.id, 0, length);
+      if (cancelled || currentMappingScopeRef.current !== mappingScope) return;
+      if (genome.length !== length) throw new Error('The current genome sequence is incomplete.');
+      const residues = buildStructureResidueMappings(structure.atoms, currentPhage.genes, genome);
+      residueMappingRef.current = { scope: mappingScope, residues };
+      setMappingStatus(residues.size
+        ? `${residues.size.toLocaleString()} observed residues have an exact sequence correspondence to one CDS. Other residues remain unmapped.`
+        : 'No unique observed sequence correspondence. At least eight observed canonical residues, a supported complete CDS and unambiguous positions are required. Coordinate gaps without polymer indices remain unmapped.');
+    })().catch(cause => {
+      if (!cancelled && currentMappingScopeRef.current === mappingScope) {
+        setMappingStatus(`Genome mapping unavailable: ${cause instanceof Error ? cause.message : String(cause)}`);
       }
-
-      if (!bestGene) continue;
-      const label = bestGene.product ?? bestGene.name ?? bestGene.locusTag ?? `Gene ${bestGene.id}`;
-      const geneAaLen = Math.max(1, Math.floor((bestGene.endPos - bestGene.startPos) / 3));
-      mapping.set(chainId, {
-        minResSeq: range.minResSeq,
-        geneStart: bestGene.startPos,
-        geneEnd: bestGene.endPos,
-        geneStrand: bestGene.strand ?? null,
-        geneAaLen,
-        geneLabel: label,
-      });
-    }
-
-    chainMappingRef.current = mapping;
-    setPickedResidue(null);
-  }, [phage?.genes, phage?.id, structureData]);
+    });
+    return () => { cancelled = true; };
+  }, [mappingScope, show3DModel]);
 
   // Handle retry with useCallback to avoid stale closures
   const handleRetry = useCallback(() => {
@@ -829,40 +820,21 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
       const atom = data.atoms[instanceId];
       if (!atom) return;
 
-      const chainId = atom.chainId || 'A';
-      const mapping = chainMappingRef.current.get(chainId);
-      if (!mapping) {
-        setPickedResidue({
-          chainId,
-          resSeq: atom.resSeq,
-          resName: atom.resName,
-          atomName: atom.atomName,
-        });
-        return;
-      }
-
-      const residueIndex = atom.resSeq - mapping.minResSeq;
-      if (!Number.isFinite(residueIndex) || residueIndex < 0) return;
-
-      const strand = mapping.geneStrand;
-      const clampedResidueIndex = Math.min(residueIndex, Math.max(0, mapping.geneAaLen - 1));
-      let basePos = strand === '-' ? mapping.geneEnd - clampedResidueIndex * 3 : mapping.geneStart + clampedResidueIndex * 3;
-
-      const state = usePhageStore.getState();
-      const genomeLen = state.currentPhage?.genomeLength;
-      if (typeof genomeLen === 'number' && Number.isFinite(genomeLen)) {
-        basePos = Math.max(0, Math.min(basePos, Math.max(0, genomeLen - 1)));
-      }
-      const scrollPos = state.viewMode === 'aa' ? Math.floor(basePos / 3) : basePos;
-      state.setScrollPosition(scrollPos);
-
+      const scope = currentMappingScopeRef.current;
+      if (!scope || scope.structure !== data) return;
+      const mapping = residueMappingRef.current?.scope === scope
+        ? residueMappingRef.current.residues.get(structureResidueKey(atom)) : undefined;
+      const navigated = navigateToStructureResidue(mapping, scope.phage);
       setPickedResidue({
-        chainId,
+        scope,
+        chainId: atom.chainId,
+        labelChainId: atom.labelChainId,
         resSeq: atom.resSeq,
         resName: atom.resName,
         atomName: atom.atomName,
-        geneLabel: mapping.geneLabel,
-        genomePos: basePos,
+        insertionCode: atom.insertionCode ?? '',
+        ...(navigated && mapping ? { geneLabel: mapping.geneLabel, genomePos: mapping.genomePos,
+          proteinPosition: mapping.proteinPosition, genomeSegments: mapping.genomeSegments } : {}),
       });
     };
 
@@ -1769,7 +1741,8 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <Badge>Selected</Badge>
                 <span style={{ color: 'var(--color-text)', fontSize: '12px' }}>
-                  {pickedResidue.chainId}:{pickedResidue.resName}{pickedResidue.resSeq}
+                  {pickedResidue.chainId}:{pickedResidue.resName}{pickedResidue.resSeq}{pickedResidue.insertionCode}
+                  {pickedResidue.labelChainId && pickedResidue.labelChainId !== pickedResidue.chainId ? ` (label chain ${pickedResidue.labelChainId})` : ''}
                 </span>
               </div>
               {pickedResidue.geneLabel && (
@@ -1779,14 +1752,19 @@ function Model3DViewBase({ phage }: Model3DViewProps): React.ReactElement {
               )}
               {pickedResidue.geneLabel && (
                 <div className="text-dim" style={{ fontSize: '11px' }}>
-                  Mapping: chain length heuristic
+                  Observed sequence correspondence · protein residue {pickedResidue.proteinPosition}
                 </div>
               )}
               {pickedResidue.genomePos !== undefined && (
                 <div className="text-dim" style={{ fontSize: '11px' }}>
-                  Jumped to {pickedResidue.genomePos.toLocaleString()} bp
+                  Jumped to {(pickedResidue.genomePos + 1).toLocaleString()} bp (1-based)
+                  {pickedResidue.genomeSegments && pickedResidue.genomeSegments.length > 1 &&
+                    ` · split codon: ${pickedResidue.genomeSegments.map(segment => `${segment.start + 1}–${segment.end} (${segment.strand})`).join(', ')}`}
                 </div>
               )}
+              {!pickedResidue.geneLabel && <div className="text-dim" style={{ fontSize: '11px', maxWidth: '20rem' }}>
+                This residue has no verified genome jump. {mappingStatus}
+              </div>}
             </div>
           </div>
         )}
