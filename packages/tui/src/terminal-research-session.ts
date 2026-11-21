@@ -5,9 +5,10 @@
 import { parseCommandTape, serializeCommandPlan, commandValuesEqual, COMMAND_LIMITS,
   type CommandPlan, type RecordedCommand } from '../../core/src/command-session';
 import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
-import type { GeneInfo } from '../../core/src/types';
+import type { GeneInfo, PhageFull } from '../../core/src/types';
+import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { validateResearchView, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
+import { validateResearchView, type ResearchView, type ResearchPangenomeParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { parseWorkflowResults, workflowResultIndex, workflowAnalysisAt, WORKFLOW_RESULTS_LIMITS,
   type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { readInput, writeNewOutput, runTerminalResearchWorker } from '../../../scripts/research-workflow';
@@ -30,6 +31,7 @@ export interface TerminalResearchRun {
 export type TerminalResearchStep = Pick<RecordedCommand, 'actionId' | 'parameters'>;
 export interface TerminalResearchDraftSource {
   contentId: string; name: string; accession: string; bases: number;
+  format: NonNullable<PhageFull['localGenome']>['format']; sequenceSha256: string;
   topology: 'linear' | 'circular' | 'unknown';
   genes: Array<Pick<GeneInfo, 'id' | 'name' | 'locusTag' | 'type' | 'startPos' | 'endPos'>>;
 }
@@ -138,6 +140,7 @@ export class TerminalResearchSession {
       check(signal);
       const sources = parsed.genomes.map(genome => ({ contentId: genome.phage.localGenome!.contentId,
         name: genome.phage.name, accession: genome.phage.accession, bases: genome.sequence.length,
+        format: genome.phage.localGenome!.format, sequenceSha256: genome.phage.localGenome!.sequenceSha256,
         topology: genome.phage.localGenome!.topology,
         genes: genome.phage.genes.map(({ id, name, locusTag, type, startPos, endPos }) => ({ id, name, locusTag, type, startPos, endPos })) }));
       const draft = { plan, sources, initialView };
@@ -156,9 +159,39 @@ export class TerminalResearchSession {
   }
   private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
-      ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot];
-    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest and dot-plot commands.');
+      ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot and pangenome commands.');
     validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
+    if (step.actionId === ActionIds.OverlayPangenomeGraph) {
+      const parameters = step.parameters as unknown as ResearchPangenomeParameters;
+      const sources = parameters.contentIds.map(id => {
+        const source = draft.sources.find(item => item.contentId === id);
+        if (!source) throw new Error('Select every pangenome source from this draft\'s captured input bundle.');
+        return source;
+      });
+      if (sources.some(source => source.bases > ALIGNMENT_GRAPH_LIMITS.columns)
+        || sources.reduce((total, source) => total + source.bases, 0) > ALIGNMENT_GRAPH_LIMITS.cells) {
+        throw new Error('Pangenomes allow at most 250,000 bases per sequence and 4,000,000 total input bases. Choose smaller captured regions.');
+      }
+      const reference = sources.find(source => `local-${source.contentId}` === parameters.options.referenceId)!;
+      if (parameters.options.alignment === 'provided' && sources.some(source => source.bases !== reference.bases)) {
+        throw new Error('Using input columns unchanged requires every captured sequence to have the same length. Choose an alignment method.');
+      }
+      if (parameters.options.normalization === 'circular' && sources.some(source => source.topology === 'linear')) {
+        throw new Error('Complete-circle normalization conflicts with a captured linear sequence. Use strand normalization or preserve the input representation.');
+      }
+      if (parameters.annotation) {
+        const annotation = draft.sources.find(source => source.contentId === parameters.annotation!.contentId);
+        if (!annotation || annotation.format !== 'genbank') throw new Error('Coding consequences require a captured GenBank annotation.');
+        if (annotation.sequenceSha256 !== reference.sequenceSha256 || annotation.bases !== reference.bases) {
+          throw new Error('The GenBank annotation must have exactly the reference bases and origin.');
+        }
+        if (parameters.annotation.geneIds?.some(id => !annotation.genes.some(gene => gene.id === id && gene.type === 'CDS'))) {
+          throw new Error('Choose CDS features from the captured reference annotation.');
+        }
+      }
+      return;
+    }
     const parameters = step.parameters as Record<string, unknown>;
     const source = draft.sources.find(item => item.contentId === parameters.contentId);
     if (!source) throw new Error('Select a genome from this draft\'s captured input bundle.');

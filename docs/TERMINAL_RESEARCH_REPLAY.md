@@ -47,6 +47,32 @@ path, then verifies a recorded circular-repeat analysis. Native Bun and compiled
 checks must actually run before claiming platform packaging validation; an auxiliary
 Node/TypeScript execution is not a replacement for that test.
 
+## Create a multi-genome workflow in the terminal
+
+Accept the private FASTA or GenBank inputs in the terminal's local-genome workspace,
+then press **W**, or choose **Research workflows: create, record and replay** from
+the command palette. Press **N** to capture those inputs in a new draft, then **I**
+and choose **Multi-genome pangenome + reference CDS consequences**.
+
+Choose a reference and use **Space** to select 2–24 captured genomes. The reference
+always stays selected. For coding consequences, select a GenBank record with exactly
+the same bases and origin as the reference, then use all its CDS or select a subset.
+The form offers only matching annotations; matching accessions alone are insufficient.
+
+Choose exact unit-edit wavefront alignment, affine alignment with explicit penalties,
+bounded global alignment, or unchanged input columns. The last option requires equal
+input lengths. Review whether terminal gaps represent missing data or alleles. The
+wavefront and affine methods also offer strand or complete-circle normalization;
+complete-circle normalization rejects inputs explicitly annotated as linear.
+Pangenomes accept at most 250,000 bases per sequence and 4,000,000 input bases in total.
+
+Drafting and editing do not calculate results. Press **C** to compute and record the
+reviewed experiment, **A** to export its complete archive, and **R** to independently
+recompute and verify it. **P** exports the draft plan and **T** exports the accepted
+command tape. Reopening a step preserves its sources, reference, CDS selection and
+alignment settings; **Esc** discards an unfinished edit. Exported archives contain
+the original private inputs and every recorded analysis result.
+
 ## Source checkout examples
 
 ```bash
