@@ -9,6 +9,7 @@ import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../
 import { createRestrictionDigestRecord } from '../../../core/src/analysis/restriction-digest';
 import type { ReferenceSpacerHit, SpacerLibrary } from '../../../core/src/analysis/spacer-reference';
 import { BunSqliteRepository } from '@phage-explorer/db-runtime';
+import { mergeLocalGenomes } from '../../../db-runtime/src/local-genomes';
 import { fileURLToPath } from 'node:url';
 import type { RNAStructureAnalysis } from '../../../core/src/analysis/rna-structure';
 
@@ -217,6 +218,60 @@ async function altered(record: AnalysisRecord) {
 }
 
 describe('complete browser research runs', () => {
+  it('replays transport-equivalent imported genomes without rewriting the captured source or the current session', async () => {
+    const f = await recorded(), original = await f.workflow.replayWithResults(2);
+    const captured = structuredClone(f.genomes[0].original);
+    const alternate = await importLocalGenomes({ name: 'downloaded-copy.fa', text: captured.text.replace(/\n/g, '\r\n') });
+    assert.deepEqual(alternate.genomes.map(genome => genome.phage), f.genomes.map(genome => genome.phage));
+    assert.notDeepEqual(alternate.genomes[0].original, captured);
+
+    // This is the same explicit review/admission path as "Add workflow genomes".
+    // Admission intentionally keeps the previously imported source on an ID hit.
+    const reviewed = await f.workflow.loadResultsAndReview(original, new AbortController().signal);
+    const admitted = mergeLocalGenomes(alternate.genomes, reviewed.inputs, [], false);
+    assert.equal(admitted.length, 3);
+    assert.strictEqual(admitted[0], alternate.genomes[0]);
+    f.genomes.splice(0, f.genomes.length, ...admitted);
+    const sessionSources = f.genomes.map(genome => structuredClone(genome.original));
+    const produce = f.environment.dotPlot!;
+    const parse = f.environment.parseBundle;
+    let sourceParses = 0;
+    f.environment.parseBundle = async (content, signal) => { sourceParses++; return parse(content, signal); };
+    let computations = 0;
+    f.environment.dotPlot = async (row, column, options, signal) => {
+      // Equivalent loaded genomes satisfy presence/identity checks. The exact
+      // source presented to computation still belongs to the captured tape.
+      assert.deepEqual(row.original, captured);
+      if (column) assert.deepEqual(column.original, captured);
+      computations++;
+      return produce(row, column, options, signal);
+    };
+    assert.equal(await f.workflow.verifyCompleteResults(original), original);
+    assert.equal(computations, 6);
+    assert.equal(sourceParses, 2, 'one captured bundle and one alternate multi-record source suffice for all ten executions');
+    assert.deepEqual(f.genomes.map(genome => genome.original), sessionSources);
+    assert.equal(f.workflow.exportCompleteResults(), original);
+    assert.equal(f.workflow.getSnapshot().view?.scrollPosition, 1);
+
+    const { replayResearchResults } = await import('../../../tui/src/research-replay');
+    const native = await replayResearchResults(original);
+    assert.equal(native.archiveJson, original);
+    assert.equal(native.report.completed, 10);
+    assert.equal(native.report.finalView?.scrollPosition, 1);
+
+    // Transport equivalence must not become permission to trust a stale digest.
+    const accepted = f.workflow.getSnapshot().completeResults;
+    f.genomes[0].sequence = 'GGGG';
+    await assert.rejects(f.workflow.verifyCompleteResults(original), /changed sequence or annotations/);
+    assert.equal(computations, 6);
+    assert.strictEqual(f.workflow.getSnapshot().completeResults, accepted);
+    f.genomes[0].sequence = 'AACC';
+    f.genomes[0].phage.genes.push({ id: 1, name: 'changed', locusTag: null, type: 'CDS',
+      startPos: 0, endPos: 3, strand: '+', product: null });
+    await assert.rejects(f.workflow.verifyCompleteResults(original), /changed sequence or annotations/);
+    assert.equal(computations, 6);
+    assert.strictEqual(f.workflow.getSnapshot().completeResults, accepted);
+  });
   it('retains literal numeric results and all execution identities without duplicating repeated evidence', async () => {
     const f = await recorded(), text = await f.workflow.replayWithResults(2), archive = await parseWorkflowResults(text);
     assert.equal(archive.records.length, 3); assert.equal(archive.repetitions, 2);

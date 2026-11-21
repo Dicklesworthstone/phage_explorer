@@ -1,6 +1,7 @@
 /** Content-bound adapters for canonical research actions; not a second keyboard registry. */
-import type { AnalysisRecord, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
+import type { AnalysisRecord, GenomeInput, GenomeImportResult, LocalGenome, LocalGenomeView } from '@phage-explorer/core';
 import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { inspectCodonReferenceInput, referenceCodonMethod, referenceGenomeFromPhage,
   type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
 import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
@@ -343,6 +344,10 @@ export class ResearchWorkflow {
   readonly commands: CommandSession;
   private expectedBundle: string | null = null;
   private expectedGenomes: LocalGenome[] = [];
+  /** Pin loaded sources for one execution; the tape retains its own originals.
+   * Weak ownership releases snapshots after a completed or cancelled operation.
+   */
+  private loadedSources = new WeakMap<AbortSignal, Map<string, GenomeInput>>();
   private history: ResearchView[] = [];
   private historyIndex = -1;
   private historyTarget: number | null = null;
@@ -366,9 +371,11 @@ export class ResearchWorkflow {
         return { output: analysisJson({ view, sequenceSha256: genome.phage.localGenome!.sequenceSha256 }),
           apply: async activeSignal => {
             abort(activeSignal);
+            this.matchLoaded(genome, activeSignal);
             const before = this.environment.currentView();
             await this.environment.applyView(structuredClone(view), activeSignal);
             abort(activeSignal);
+            this.matchLoaded(genome, activeSignal);
             const accepted = this.environment.currentView();
             if (!accepted || !commandValuesEqual(analysisJson(accepted), analysisJson(view))) {
               throw new Error('The explorer did not accept the exact saved view. No navigation command was recorded.');
@@ -642,7 +649,7 @@ export class ResearchWorkflow {
     const owner = this.capture;
     return { output: analysisJson({ method: copy.method, cacheKey: copy.cacheKey, resultId: copy.resultId }),
       apply: (activeSignal: AbortSignal) => {
-        abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome));
+        abort(activeSignal); genomes.forEach(genome => this.matchLoaded(genome, activeSignal));
         // Retention is opt-in. A limit failure stops the run before this result
         // is accepted, rather than evicting an earlier analysis to make room.
         if (owner && this.capture === owner && owner.running) owner.collector.add(copy);
@@ -724,18 +731,57 @@ export class ResearchWorkflow {
       this.expectedGenomes = structuredClone(parsed.genomes);
       this.expectedBundle = context.bundle;
     }
-    for (const expected of this.expectedGenomes) this.matchLoaded(expected);
+    let sources = this.loadedSources.get(signal);
+    if (!sources) { sources = new Map(); this.loadedSources.set(signal, sources); }
+    // Different filenames, line endings, wrapping and canonical JSON layouts
+    // can represent the same imported content ID. Reparse a different source
+    // through the bounded worker importer rather than trusting that ID alone.
+    // Multi-record originals parse once, and verified sources remain pinned
+    // across every command/repetition of this operation.
+    const parsedSources = new Map<string, GenomeImportResult>();
+    for (const expected of this.expectedGenomes) {
+      const id = expected.phage.localGenome!.contentId;
+      if (!sources.has(id)) {
+        const loaded = this.loadedGenome(expected), original = { ...loaded.original };
+        if (original.text !== expected.original.text) {
+          let parsed = parsedSources.get(original.text);
+          if (!parsed) {
+            parsed = await this.environment.parseBundle(exportLocalGenomeBundle([{ ...expected, original }]), signal);
+            abort(signal);
+            parsedSources.set(original.text, parsed);
+          }
+          const matches = parsed.genomes.filter(genome => genome.phage.localGenome?.contentId === id);
+          if (matches.length !== 1 || matches[0].sequence !== expected.sequence
+            || !commandValuesEqual(analysisJson(matches[0].phage), analysisJson(expected.phage))) {
+            throw new Error(`Local genome ${id.slice(0, 12)} has changed original source content.`);
+          }
+        }
+        sources.set(id, original);
+      }
+      this.matchLoaded(expected, signal);
+    }
     abort(signal);
   }
-  private matchLoaded(expected: LocalGenome): LocalGenome {
+  private loadedGenome(expected: LocalGenome): LocalGenome {
     const id = expected.phage.localGenome!.contentId;
     const matches = this.environment.genomes().filter(item => item.phage.localGenome?.contentId === id);
     if (matches.length > 1) throw new Error('Duplicate loaded genome content identity.');
     const loaded = matches[0];
     if (!loaded) throw new Error(`Missing local genome ${id.slice(0, 12)}. Add the workflow's bundled genomes before replay.`);
-    if (loaded.sequence !== expected.sequence || !commandValuesEqual(analysisJson(loaded.phage), analysisJson(expected.phage))
-      || !commandValuesEqual(analysisJson(loaded.original), analysisJson(expected.original))) throw new Error(`Local genome ${id.slice(0, 12)} has changed sequence or annotations.`);
-    return structuredClone(loaded);
+    if (loaded.sequence !== expected.sequence || !commandValuesEqual(analysisJson(loaded.phage), analysisJson(expected.phage))) {
+      throw new Error(`Local genome ${id.slice(0, 12)} has changed sequence or annotations.`);
+    }
+    return loaded;
+  }
+  private matchLoaded(expected: LocalGenome, signal: AbortSignal): void {
+    abort(signal);
+    const loaded = this.loadedGenome(expected), id = expected.phage.localGenome!.contentId;
+    const original = this.loadedSources.get(signal)?.get(id);
+    const captured = this.expectedGenomes.find(genome => genome.phage.localGenome?.contentId === id)?.original;
+    if (!original || !captured || loaded.original.name !== original.name || loaded.original.text !== original.text
+      || expected.original.name !== captured.name || expected.original.text !== captured.text) {
+      throw new Error(`Local genome ${id.slice(0, 12)} has changed original source during execution.`);
+    }
   }
   private async genome(id: string, signal: AbortSignal): Promise<LocalGenome> {
     return (await this.selectedGenomes([id], signal))[0];
@@ -745,7 +791,10 @@ export class ResearchWorkflow {
     return ids.map(id => {
       const expected = this.expectedGenomes.find(item => item.phage.localGenome?.contentId === id);
       if (!expected) throw new Error('The command refers to a genome outside the recorded input bundle.');
-      return this.matchLoaded(expected);
+      this.matchLoaded(expected, signal);
+      // Analyses that consume original GenBank text must receive the recorded
+      // source, even when an equivalent current import uses a different file.
+      return structuredClone(expected);
     });
   }
   start = (name: string): void => {

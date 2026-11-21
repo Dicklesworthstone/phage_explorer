@@ -1,6 +1,7 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
+import { mergeLocalGenomes } from '../../../db-runtime/src/local-genomes';
 import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
@@ -67,6 +68,41 @@ describe('recorded real pangenome and CDS commands', () => {
     assert.deepEqual(f.workflow.getSnapshot().result, result);
     assert.notStrictEqual(f.workflow.getSnapshot().result, result, 'newly computed record replaces neither input nor a replayed stored number');
     assert.equal(f.view()!.scrollPosition, 1);
+  });
+  it('replays transport-equivalent GenBank input using the exact recorded annotation source', async () => {
+    const f = await fixture(); await run(f); f.workflow.commands.stop();
+    const tape = f.workflow.commands.export(), record = f.workflow.getSnapshot().result!;
+    const captured = structuredClone(f.loaded[0].original);
+    const alternate = await importLocalGenomes({ name: 'renamed-annotation.gb', text: captured.text.replace(/\n/g, '\r\n') });
+    assert.deepEqual(alternate.genomes[0].phage, f.loaded[0].phage);
+    const reviewed = await f.workflow.loadAndReview(tape, new AbortController().signal);
+    const admitted = mergeLocalGenomes([alternate.genomes[0], f.loaded[1]], reviewed, [], true);
+    f.loaded.splice(0, f.loaded.length, ...admitted);
+    const sources = f.loaded.map(genome => structuredClone(genome.original));
+    const produce = f.env.pangenome!;
+    f.env.pangenome = async (request, signal) => {
+      assert.equal(request.kind, 'annotate');
+      if (request.kind !== 'annotate') throw new Error('Expected the recorded CDS annotation command');
+      assert.deepEqual(request.annotation, captured);
+      return produce(request, signal);
+    };
+    await f.workflow.commands.replay(2);
+    assert.equal(f.calculations(), 3);
+    assert.equal(serializeAnalysisRecord(f.workflow.getSnapshot().result!), serializeAnalysisRecord(record));
+    assert.equal(f.workflow.commands.export(), tape);
+    assert.deepEqual(f.loaded.map(genome => genome.original), sources);
+    assert.deepEqual((await replayAlignmentPangenome(serializeAnalysisRecord(record))).cds!.consequences[0].effects, ['synonymous']);
+
+    // Cached parsed annotations/content IDs cannot legitimize different source
+    // bytes. Reparse the current original before another operation can use it.
+    f.loaded[0].original.text = f.loaded[0].original.text.replace('/gene="known"', '/gene="changed"');
+    await assert.rejects(f.workflow.commands.replay(), /changed original source/);
+    assert.equal(f.calculations(), 3);
+    assert.equal(serializeAnalysisRecord(f.workflow.getSnapshot().result!), serializeAnalysisRecord(record));
+    f.loaded[0].original = sources[0];
+    await f.workflow.commands.replay();
+    assert.equal(f.calculations(), 4);
+    assert.equal(serializeAnalysisRecord(f.workflow.getSnapshot().result!), serializeAnalysisRecord(record));
   });
   it('replays every unannotated alignment model and exact reverse/circular representations', async () => {
     for (const alignment of ['provided', 'global', 'wavefront', 'affine'] as const) {

@@ -416,6 +416,18 @@ describe('content-bound research command adapters', () => {
     await assert.rejects(task, /changed sequence/);
     assert.equal(f.workflow.getSnapshot().result, null);
   });
+  it('refuses a navigation record when its source changes during asynchronous view application', async () => {
+    const f = fixture(), started = deferred<void>(), release = deferred<void>();
+    const apply = f.env.applyView;
+    f.env.applyView = async (view, signal) => { started.resolve(); await release.promise; await apply(view, signal); };
+    const pending = navigate(f.workflow, 2); await started.promise;
+    f.loaded[0].original = { ...f.loaded[0].original, name: 'replaced-during-navigation.gb' };
+    release.resolve();
+    await assert.rejects(pending, /changed original source during execution/);
+    assert.equal(f.workflow.commands.getSnapshot().tape.commands.length, 0);
+    assert.equal(f.workflow.getSnapshot().view, null);
+    assert.equal(f.workflow.getSnapshot().undoAvailable, false);
+  });
   it('loading a tape and reviewing bundled inputs do not add inputs or navigate', async () => {
     const f = fixture(); await navigate(f.workflow, 2); f.workflow.commands.stop();
     const content = f.workflow.commands.export();
