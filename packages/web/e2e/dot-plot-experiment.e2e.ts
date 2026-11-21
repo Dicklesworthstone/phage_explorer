@@ -208,22 +208,22 @@ test('dot plot experiment downloads, fresh-page replay and rehashed-tamper refus
 test('cancelled and late experiment replies cannot replace accepted settings or another repository', async ({ page }) => {
   const saved = await parseAnalysisRecord(await prepare(page));
   const alternative = serializeAnalysisRecord((await createDotPlotExperiment({ sequence: sequenceA, accession: 'dot-local', source: 'local' }, { bins: 10, window: 7 })).record);
-  await page.evaluate(() => { (window as FixtureWindow).holdDotReply = true; });
+  await page.evaluate(() => { (window as unknown as FixtureWindow).holdDotReply = true; });
   await restore(page, alternative);
-  await expect.poll(() => page.evaluate(() => (window as FixtureWindow).dotReplyHeld)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReplyHeld)).toBe(true);
   await panel(page).getByRole('button', { name: 'Cancel experiment operation' }).click();
-  await page.evaluate(() => (window as FixtureWindow).releaseDotReply());
+  await page.evaluate(() => (window as unknown as FixtureWindow).releaseDotReply());
   await expect(windowControl(panel(page))).toHaveValue('4');
   expect((await parseAnalysisRecord(await download(page, 'JSON'))).resultId).toBe(saved.resultId);
 
-  await page.evaluate(() => { const fixture = window as FixtureWindow; fixture.dotReplyHeld = false; fixture.holdDotReply = true; });
+  await page.evaluate(() => { const fixture = window as unknown as FixtureWindow; fixture.dotReplyHeld = false; fixture.holdDotReply = true; });
   await restore(page, alternative);
-  await expect.poll(() => page.evaluate(() => (window as FixtureWindow).dotReplyHeld)).toBe(true);
-  await page.evaluate(() => (window as FixtureWindow).selectDotInput('b'));
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReplyHeld)).toBe(true);
+  await page.evaluate(() => (window as unknown as FixtureWindow).selectDotInput('b'));
   const replacement = await parseAnalysisRecord(await prepare(page));
   assertIndependentMatrix(replacement, sequenceB);
   expect(replacement.resultId).not.toBe(saved.resultId);
-  await page.evaluate(() => (window as FixtureWindow).releaseDotReply());
+  await page.evaluate(() => (window as unknown as FixtureWindow).releaseDotReply());
   expect((await parseAnalysisRecord(await download(page, 'JSON'))).resultId).toBe(replacement.resultId);
   await expect(windowControl(panel(page))).toHaveValue('4');
   await restore(page, serializeAnalysisRecord(saved));
@@ -233,16 +233,16 @@ test('cancelled and late experiment replies cannot replace accepted settings or 
 
 test('a new window edit cancels a pending file read before it can launch or restore an experiment', async ({ page }) => {
   const json = await prepare(page), saved = await parseAnalysisRecord(json);
-  const jobs = await page.evaluate(() => { (window as FixtureWindow).holdDotRead = true; return (window as FixtureWindow).experimentJobs; });
+  const jobs = await page.evaluate(() => { (window as unknown as FixtureWindow).holdDotRead = true; return (window as unknown as FixtureWindow).experimentJobs; });
   await restore(page, json);
-  await expect.poll(() => page.evaluate(() => (window as FixtureWindow).dotReadPending)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReadPending)).toBe(true);
   await windowControl(panel(page)).fill('7');
   await expect(panel(page)).toContainText('Experiment operation cancelled.');
-  await page.evaluate(() => (window as FixtureWindow).releaseDotRead());
-  await expect.poll(() => page.evaluate(() => (window as FixtureWindow).dotReadReleased)).toBe(true);
+  await page.evaluate(() => (window as unknown as FixtureWindow).releaseDotRead());
+  await expect.poll(() => page.evaluate(() => (window as unknown as FixtureWindow).dotReadReleased)).toBe(true);
   await expect(windowControl(panel(page))).toHaveValue('7');
   expect((await parseAnalysisRecord(await download(page, 'JSON'))).resultId).toBe(saved.resultId);
-  expect(await page.evaluate(() => (window as FixtureWindow).experimentJobs)).toBe(jobs);
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).experimentJobs)).toBe(jobs);
 });
 
 test('compares unequal private genomes and restores both exact axes without relabeling their coordinates', async ({ page }) => {

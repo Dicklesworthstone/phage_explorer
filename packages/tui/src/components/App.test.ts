@@ -346,7 +346,8 @@ describe('the modifier table is consulted before the plain-letter chain', () => 
   it('has no F-key in the escape table without a handler', () => {
     // F12 sat in the table with no handler, so pressing it did nothing while
     // the table implied it was bound.
-    const table = src.slice(src.indexOf('const F_KEYS'), src.indexOf('};', src.indexOf('const F_KEYS')));
+    const fKeySrc = readFileSync(join(import.meta.dir, 'terminal-function-keys.ts'), 'utf8');
+    const table = fKeySrc.slice(fKeySrc.indexOf('const FUNCTION_KEYS'), fKeySrc.indexOf('};', fKeySrc.indexOf('const FUNCTION_KEYS')));
     const declared = [...table.matchAll(/'(F\d+)'/g)].map(m => m[1]);
     expect(declared.length).toBeGreaterThan(0);
     for (const f of new Set(declared)) {

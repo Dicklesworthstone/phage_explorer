@@ -220,11 +220,11 @@ export function parseCdsConsequencesCommand(args: string[]): CdsConsequencesComm
   if (importFlags) throw new Error('inspect/analyze/replay use canonical alignment provenance and cannot relabel it.');
   if (operation === 'inspect') {
     if (analysisFlags || format !== 'json') throw new Error('inspect validates canonical alignment JSON without annotation/settings.');
-    return { operation, input, output: values.output === '-' ? undefined : values.output, demo: false, format: 'json' };
+    return { operation: 'inspect', input, output: values.output === '-' ? undefined : values.output, demo: false, format: 'json' };
   }
   if (operation === 'replay') {
     if (analysisFlags) throw new Error('Replay cannot override saved GenBank annotation or CDS settings.');
-    return { operation, input, output: values.output === '-' ? undefined : values.output, demo: false,
+    return { operation: 'replay', input, output: values.output === '-' ? undefined : values.output, demo: false,
       format: format as CdsConsequencesFormat };
   }
   if (values.genbank === undefined || values.reference === undefined || values['terminal-gaps'] === undefined) {
@@ -234,7 +234,7 @@ export function parseCdsConsequencesCommand(args: string[]): CdsConsequencesComm
     throw new Error('--terminal-gaps must be missing or alleles.');
   }
   if ([input, values.genbank].filter(value => value === '-').length > 1) throw new Error('Only one CDS consequence input may read from stdin (-).');
-  return { operation, input, output: values.output === '-' ? undefined : values.output, demo: false,
+  return { operation: 'analyze', input, output: values.output === '-' ? undefined : values.output, demo: false,
     genbank: values.genbank, referenceId: values.reference, terminalGaps: values['terminal-gaps'],
     annotationRecord: values['annotation-record'], geneIds: values.genes === undefined ? null : parseCdsGeneIds(values.genes),
     format: format as CdsConsequencesFormat };

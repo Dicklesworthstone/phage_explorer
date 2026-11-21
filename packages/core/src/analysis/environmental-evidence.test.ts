@@ -223,7 +223,7 @@ describe('explicit abundance-to-environment integration', () => {
       { latitude: 91, longitude: 1 }, { latitude: 1, longitude: 2, uncertaintyKm: -1 },
       { collectionDate: '2023-02-29' }, { country: 3 }, { habitat: 3 },
     ]) {
-      const input = abundanceFixture(); input.metadata = [{ sampleId: 's1', ...metadata }];
+      const input = abundanceFixture(); input.metadata = [{ sampleId: 's1', ...metadata } as never];
       expect(() => environmentalDatasetFromAbundance(input, 'q')).toThrow();
     }
   });

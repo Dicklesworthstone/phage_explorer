@@ -7,7 +7,7 @@ import type { Readable, Writable } from 'node:stream';
 import {
   ANCESTRAL_LIMITS, validateAncestralDataset, parseAncestralFasta, reconstructAncestors, createAncestralRecord,
   replayAncestralRecord, ancestralFasta, resolveAncestralOptions,
-  type AncestralDataset, type AncestralOptions,
+  type AncestralOptions,
 } from '../../../core/src/analysis/ancestral-reconstruction';
 import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import { readAbundanceFile, readAbundanceStdin } from './abundance';

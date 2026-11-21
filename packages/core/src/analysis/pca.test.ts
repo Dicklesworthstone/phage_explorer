@@ -331,7 +331,7 @@ describe('full-frequency signature neighborhoods', () => {
     expect(saved.parameters).toEqual({ selectedPhageId: 1, k: 1, includeReverseComplement: true,
       normalize: true, rankingSpace: 'full-kmer-frequencies', metric: 'euclidean' });
     expect(saved.fields.neighbors.kind).toBe('sequence-score');
-    expect(saved.fields.neighbors.value).toEqual(computeSignatureNeighborhood(vectors, 1, projections).neighbors);
+    expect(saved.fields.neighbors.value as unknown).toEqual(computeSignatureNeighborhood(vectors, 1, projections).neighbors);
     expect(saved.fields.neighbors.coverage).toEqual({ available: 2, total: 2, unit: 'records' });
     for (const input of saved.inputs) {
       const row = input.data as { phageId: number; frequencies: number[]; sequenceSha256: string };

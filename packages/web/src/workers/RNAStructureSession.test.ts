@@ -204,7 +204,7 @@ describe('owned RNA computation lifecycle', () => {
     const session = new RNAStructureSession(() => new Worker(new URL('./rna-structure.worker.ts', import.meta.url), { type: 'module' }));
     session.activate();
     try {
-      assert.equal(await session.run(fixture()), true, session.getSnapshot().error ?? undefined);
+      assert.equal(await session.run(fixture()), true, session.getSnapshot().error ?? '');
       assert.equal(session.getSnapshot().accepted?.analysis.windows[0].pairCount, 3);
       await parseAnalysisRecord(serializeAnalysisRecord(session.getSnapshot().accepted!.record));
     } finally { session.deactivate(); }

@@ -45,7 +45,9 @@
     "./vite.config.ts",
     "./e2e/**/*.ts",
     "./playwright.config.ts",
-    "./audit-ui.ts"
+    "./audit-ui.ts",
+    "../core/src/analysis/environmental-provenance-honesty.test.ts",
+    "../tui/src/research-mosaic-tape.test.ts"
   ],
   "exclude": ["./node_modules", "./dist"]
 }

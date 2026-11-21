@@ -60,7 +60,7 @@ describe('explicit genetic codes', () => {
       let index = 0;
       for (const first of 'TCAG') for (const second of 'TCAG') for (const third of 'TCAG') {
         const codon = first + second + third;
-        expect(translateCodon(codon, code)).toBe(amino[index]);
+        expect(translateCodon(codon, code) as string).toBe(amino[index]);
         expect(getGeneticCode(code).starts.includes(codon)).toBe(starts[index] === 'M');
         index++;
       }

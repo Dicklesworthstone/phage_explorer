@@ -103,13 +103,22 @@ export function createDotPlotHandler(runtime: DotPlotRuntime) {
         if (jobId !== activeJobId) return;
         // Serialization stays off the UI thread as well. The arrays sent to the
         // viewer and the record both come from this same complete computation.
+        const pairwiseExperiment = 'rowResolvedPerWindow' in experiment
+          && Array.isArray(experiment.rowResolvedPerWindow)
+          && 'columnResolvedPerWindow' in experiment
+          && Array.isArray((experiment as { columnResolvedPerWindow?: unknown }).columnResolvedPerWindow)
+          ? {
+              pairwise: true as const,
+              rowResolvedPerWindow: experiment.rowResolvedPerWindow as number[],
+              columnResolvedPerWindow: (experiment as { columnResolvedPerWindow: number[] }).columnResolvedPerWindow,
+            }
+          : {};
         const response: DotPlotWorkerResponse = {
           requestId: job.requestId, ok: true, bins: experiment.bins, window: experiment.window,
           directValues: experiment.directValues, invertedValues: experiment.invertedValues,
           evidenceRecord: experiment.record, experimentJson: serializeAnalysisRecord(experiment.record),
           experimentTsv: comparison ? exportPairwiseDotPlotExperimentTsv(experiment.record) : exportDotPlotExperimentTsv(experiment.record),
-          ...('rowResolvedPerWindow' in experiment ? { pairwise: true as const,
-            rowResolvedPerWindow: experiment.rowResolvedPerWindow, columnResolvedPerWindow: experiment.columnResolvedPerWindow } : {}),
+          ...pairwiseExperiment,
           ...('exactRecord' in experiment && typeof experiment.exactRecord === 'boolean'
             ? { replayExactRecord: experiment.exactRecord } : {}),
         };

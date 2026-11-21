@@ -23,7 +23,7 @@ const codingPhage: PhageFull = {
     startPos: 0, endPos: codingSequence.length, strand: '+' }],
 };
 const ribosomeBackend = () => {
-  const api = createSimulationAPI([ribosomeTrafficSimulation]);
+  const api = createSimulationAPI([ribosomeTrafficSimulation as unknown as Simulation<SimState>]);
   return {
     getSimulationMetadata: (id: Simulation['id'], _signal?: AbortSignal) => api.getMetadata(id),
     initSimulation: (params: SimInitParams, _signal?: AbortSignal) => api.init(params),

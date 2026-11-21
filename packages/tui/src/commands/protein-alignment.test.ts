@@ -7,7 +7,7 @@ import { Readable, Writable } from 'node:stream';
 import { parseAnalysisRecord } from '../../../core/src/analysis-result';
 import { runProteinAlignmentCommand, parseProteinAlignmentCommand, type ProteinAlignmentCommandIO } from './protein-alignment';
 
-const fasta = '>target primary\nACD-\n>homolog one\nACE-\n>homolog2\nACD-\n';
+const fasta = '>target primary\nACD-\n>homolog one\nACEF\n>homolog2\nACD-\n';
 function capture() {
   let value = '';
   const stream = new Writable({ write(chunk, _encoding, done) { value += chunk.toString(); done(); } });
@@ -65,7 +65,7 @@ describe('protein-alignment command', () => {
     assert.equal(await runProteinAlignmentCommand(['analyze', '-', '--target', 'target'], json), 0);
     const replay = io(json.output());
     assert.equal(await runProteinAlignmentCommand(['replay', '-', '--format', 'tsv'], replay), 0);
-    assert.match(replay.output(), /# method=protein-alignment-diversity/);
+    assert.match(replay.output(), /# method=supplied-protein-alignment-diversity/);
   });
 
   it('canonical JSON cannot be silently relabeled and failed work never overwrites an existing output', async () => {

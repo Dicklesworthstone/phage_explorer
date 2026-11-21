@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads';
 import {
   GROWTH_LIMITS, GROWTH_PARAMETERS, parseGrowthData, validateGrowthDataset, validateGrowthConditions,
   resolveGrowthOptions, fitGrowthDataset, createGrowthRecord, replayGrowthRecord,
-  type GrowthConditions, type GrowthDataset, type GrowthFitOptions, type GrowthFitResult, type GrowthParameter,
+  type GrowthDataset, type GrowthFitOptions, type GrowthFitResult, type GrowthParameter,
 } from '../../../core/src/analysis/growth-inference';
 import { profileGrowthDataset, replayGrowthProfile, type GrowthProfileResult } from '../../../core/src/analysis/growth-profile';
 import { serializeAnalysisRecord } from '../../../core/src/analysis-result';

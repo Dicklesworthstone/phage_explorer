@@ -47,7 +47,7 @@ describe('raw plaque-count growth command',()=>{
   });
 
   it('supports explicit inclusive count bounds only in version 2',async()=>{
-    const bounded='time_min,plaque_count,dilution_fraction,volume_ml,count_status\n0,10,0.001,0.1,exact\n5,11,0.001,0.1,exact\n10,12,0.001,0.1,exact\n15,20,0.001,0.1,exact\n20,70,0.001,0.1,at-least\n25,100,0.001,0.1,at-least\n30,105,0.001,0.1,at-least\n';
+    const bounded='time_min,plaque_count,dilution_fraction,volume_ml,count_status\n0,10,0.001,0.1,exact\n5,11,0.001,0.1,exact\n10,12,0.001,0.1,exact\n15,20,0.001,0.1,at-least\n20,70,0.001,0.1,at-least\n25,100,0.001,0.1,at-least\n30,105,0.001,0.1,exact\n';
     const result=await executePlaqueGrowthJob({operation:'fit',input:{name:'bounds.csv',text:bounded},
       draft:{version:2,title:'Bounded assay',source:'Lab',centers:null,supportDeviance:3.84,synthetic:false,extracellular:true}});
     const record=await parseAnalysisRecord(result.content);

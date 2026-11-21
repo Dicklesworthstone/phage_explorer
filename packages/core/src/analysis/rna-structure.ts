@@ -143,7 +143,7 @@ const START_CODONS = ['AUG', 'GUG', 'UUG']; // RNA versions
 function dnaToRna(seq: string): string {
   return seq.toUpperCase().replace(/T/g, 'U');
 }
-function checkedSequence(sequence: string, maximum = RNA_STRUCTURE_LIMITS.sequenceBases): string {
+function checkedSequence(sequence: string, maximum: number = RNA_STRUCTURE_LIMITS.sequenceBases): string {
   if (typeof sequence !== 'string' || sequence.length > maximum || !/^[ACGTURYSWKMBDHVN]*$/i.test(sequence)) {
     throw new Error('RNA analysis requires at most ' + maximum + ' IUPAC DNA/RNA bases without gaps or whitespace. Select a shorter interval.');
   }

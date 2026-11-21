@@ -36,7 +36,12 @@ export default [
     files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {
       parserOptions: {
-        projectService: true
+        projectService: {
+          allowDefaultProject: [
+            'packages/core/src/analysis/environmental-provenance-honesty.test.ts',
+            'packages/tui/src/research-mosaic-tape.test.ts',
+          ],
+        }
       }
     },
     rules: {

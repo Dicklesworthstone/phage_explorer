@@ -238,9 +238,9 @@ describe('canonical dot-plot and digest command tapes', () => {
       const f = await recording(), changed = structuredClone(f.genomes);
       if (field === 'sequence') changed[1].sequence = 'AAAAAA';
       else if (field === 'annotations') changed[1].phage.genes.push({ id: 1, name: null, locusTag: null, type: 'CDS', startPos: 0, endPos: 3, strand: '+', product: null });
-      else changed[1].original.text += '\n';
+      else changed[1].original.text = changed[1].original.text.replace('CCAATT', 'AAAAAA');
       f.replace(changed);
-      await assert.rejects(f.workflow.commands.replay(), /changed sequence or annotations/);
+      await assert.rejects(f.workflow.commands.replay(), /changed (sequence or annotations|original source content)/);
       assert.equal(f.workflow.getSnapshot().lastAnalysis!.resultId, f.records.digest.resultId);
     }
   });

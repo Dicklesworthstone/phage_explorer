@@ -41,6 +41,8 @@
     "**/dist",
     "packages/web/**/*",
     "packages/web/**/*.ts",
-    "packages/web/**/*.tsx"
+    "packages/web/**/*.tsx",
+    "packages/core/src/analysis/environmental-provenance-honesty.test.ts",
+    "packages/tui/src/research-mosaic-tape.test.ts"
   ]
 }

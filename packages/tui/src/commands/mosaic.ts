@@ -7,7 +7,7 @@ import type { Readable, Writable } from 'node:stream';
 import {
   MOSAIC_LIMITS, validateMosaicDataset, createMosaicExperiment, replayMosaicExperiment,
   exportMosaicTsv, resolveMosaicRadarConfig,
-  type MosaicDataset, type MosaicRadarConfig, type MosaicSequenceInput, type MosaicExcludedReference,
+  type MosaicRadarConfig, type MosaicSequenceInput, type MosaicExcludedReference,
 } from '../../../core/src/analysis/recombination-radar';
 import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import { readAbundanceFile, readAbundanceStdin } from './abundance';
@@ -116,7 +116,7 @@ export function runMosaicJob(job:MosaicJob,signal?:AbortSignal,progress:(message
  if(signal?.aborted)return Promise.reject(new DOMException('Mosaic experiment cancelled.','AbortError'));
  return new Promise((yes,no)=>{
   let done=false;const url=typeof PHAGE_MOSAIC_WORKER==='string'?new URL(PHAGE_MOSAIC_WORKER,import.meta.url):new URL('../workers/mosaic-worker.ts',import.meta.url);const worker=new Worker(url);
-  const finish=(result?:MosaicJobResult,error?:Error)=>{if(done)return;done=true;signal?.removeEventListener('abort',abort);void worker.terminate().catch(()=>{});error?no(error):yes(result!);};
+  const finish=(result?:MosaicJobResult,error?:Error)=>{if(done)return;done=true;signal?.removeEventListener('abort',abort);void worker.terminate().catch(()=>{});if(error)no(error);else yes(result!);};
   const abort=()=>finish(undefined,new DOMException('Mosaic experiment cancelled.','AbortError'));
   worker.on('message',(message:MosaicJobMessage)=>{if(done)return;if(signal?.aborted){abort();return;}
    if(message.kind==='progress'){try{progress(message.message);}catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}}

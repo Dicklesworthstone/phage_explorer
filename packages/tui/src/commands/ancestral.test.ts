@@ -7,7 +7,6 @@ import { ancestralFasta } from '../../../core/src/analysis/ancestral-reconstruct
 const fasta='>A\nAAAA\n>B\nAAGA\n>C\nAGGA\n';const tree='((A:0.01,B:0.01):0.01,C:0.02);';
 function cap(){let v='';const stream=new Writable({write(c,_e,d){v+=c.toString();d();}});return{stream,value:()=>v};}
 function io(input=''){const o=cap(),e=cap();return{stdin:Readable.from([Buffer.from(input)]),stdout:o.stream,stderr:e.stream,output:o.value,errors:e.value};}
-const inline:NonNullable<AncestralIO['execute']>=(job,_signal,progress)=>executeAncestralJob(job,progress);
 const dataset=JSON.stringify({format:'phage-explorer-ancestral',version:1,name:'Synthetic tree',
  source:{kind:'demo',description:'Synthetic fixture',reference:'fixture',license:'CC0'},
  tree:{newick:tree,units:'substitutions/site',method:'synthetic rooted tree',rooting:'synthetic explicit root'},

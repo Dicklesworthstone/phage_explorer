@@ -46,12 +46,12 @@ describe('public metadata remains unassayed sample context', () => {
     }
   });
   it('uses reported lat_lon fields without geocoding sample names or countries', async () => {
-    await withFetch((async () => new Response('Run,BioSample,BioProject,ScientificName,geo_loc_name,lat_lon,collection_date\nSRR1,SAMN1,PRJNA1,metagenome,USA: California,38.5 N 121.5 W,2024-02')) as typeof fetch, async () => {
+    await withFetch((async () => new Response('Run,BioSample,BioProject,ScientificName,geo_loc_name,lat_lon,collection_date\nSRR1,SAMN1,PRJNA1,metagenome,USA: California,38.5 N 121.5 W,2024-02')) as unknown as typeof fetch, async () => {
       const result = await fetchSRARunMetadata('SRR1');
       expect(result.success).toBe(true);
       if (result.success) expect(result.data).toMatchObject({ run_id: 'SRR1', latitude: 38.5, longitude: -121.5, collection_date: '2024-02' });
     });
-    await withFetch((async () => new Response('Run,sample_name,geo_loc_name\nSRR2,Germany: Berlin,USA: California')) as typeof fetch, async () => {
+    await withFetch((async () => new Response('Run,sample_name,geo_loc_name\nSRR2,Germany: Berlin,USA: California')) as unknown as typeof fetch, async () => {
       const result = await fetchSRARunMetadata('SRR2');
       expect(result.success).toBe(true);
       if (result.success) { expect(result.data.latitude).toBeUndefined(); expect(result.data.longitude).toBeUndefined(); }
@@ -59,7 +59,7 @@ describe('public metadata remains unassayed sample context', () => {
   });
   it('public lookup has no genome argument and returns an error rather than a demonstration', async () => {
     const requested: string[] = [];
-    await withFetch((async input => { requested.push(String(input)); throw new Error('offline fixture'); }) as typeof fetch, async () => {
+    await withFetch((async (input: URL | RequestInfo) => { requested.push(String(input)); throw new Error('offline fixture'); }) as unknown as typeof fetch, async () => {
       await expect(fetchPublicEnvironmentalContext(new AbortController().signal)).rejects.toThrow(/failed/);
     });
     expect(requested.length).toBeGreaterThan(0);
@@ -67,7 +67,7 @@ describe('public metadata remains unassayed sample context', () => {
   });
   it('aborts queued metadata work before it can issue another request', async () => {
     let calls = 0;
-    await withFetch((async () => { calls++; return new Response('ok'); }) as typeof fetch, async () => {
+    await withFetch((async () => { calls++; return new Response('ok'); }) as unknown as typeof fetch, async () => {
       await throttledNCBIFetch('https://example.invalid/first');
       const controller = new AbortController();
       const queued = throttledNCBIFetch('https://example.invalid/second', controller.signal);
@@ -99,7 +99,7 @@ describe('public metadata remains unassayed sample context', () => {
       'Run,run,geo_loc_name\nSRR123,SRR123,USA',
       'Run,geo_loc_name\nSRR123,USA,extra',
     ];
-    await withFetch((async () => new Response(responses.shift()!)) as typeof fetch, async () => {
+    await withFetch((async () => new Response(responses.shift()!)) as unknown as typeof fetch, async () => {
       const matched = await fetchSRARunMetadata('SRR123');
       expect(matched.success).toBe(true);
       if (!matched.success) throw new Error('Expected exact run match');

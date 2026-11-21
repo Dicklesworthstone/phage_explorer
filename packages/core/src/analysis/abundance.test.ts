@@ -205,7 +205,7 @@ describe('independently derived CLR and association controls', () => {
   });
   it('is invariant to per-sample depth scaling without a pseudocount', () => {
     const x = exactFixture(); const scaled = structuredClone(x);
-    scaled.table.counts = x.table.counts.map(row => row.map((n, s) => n * [3, 17, .2, 31, 7][s]));
+    scaled.table.counts = x.table.counts.map(row => row.map((n, s) => n! * [3, 17, .2, 31, 7][s]));
     const a = analyzeAbundanceDataset(x, { pseudocount: 0, numNiches: 1 });
     const b = analyzeAbundanceDataset(scaled, { pseudocount: 0, numNiches: 1 });
     for (let t = 0; t < 3; t++) for (let s = 0; s < 5; s++) close(a.clr[t][s], b.clr[t][s]);

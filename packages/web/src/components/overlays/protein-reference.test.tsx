@@ -44,7 +44,9 @@ describe('Actual catalog → repository → source input service → production 
     expect(html).toContain('Experimental receptor: Shigella sonnei 3070');
     expect(html).toContain('EL4, EL6, EL9');
     expect(html).toContain('CC-BY-4.0'); expect(html).toContain('Export reference inputs');
-    expect(html).not.toContain('kcal/mol'); expect(html).not.toContain('Kd');
+    expect(html).not.toContain('kcal/mol');
+    expect(html).toContain('Unavailable from this deposited evidence:</strong> ΔG, Kd');
+    expect(html).not.toMatch(/\bKd\s*[=:~]/i);
   });
 
   test('real browser SQL.js repository consumes the shipped public database without model/network stand-ins', async () => {

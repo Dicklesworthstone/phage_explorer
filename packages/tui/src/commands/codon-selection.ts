@@ -102,7 +102,7 @@ declare const PHAGE_CODON_SELECTION_WORKER:string|undefined;
 export function runCodonSelectionJob(job:CodonSelectionJob,signal?:AbortSignal,progress:(message:string)=>void=()=>{}):Promise<CodonSelectionJobResult>{
  if(signal?.aborted)return Promise.reject(new DOMException('Codon-selection operation cancelled.','AbortError'));
  return new Promise((yes,no)=>{let done=false;const url=typeof PHAGE_CODON_SELECTION_WORKER==='string'?new URL(PHAGE_CODON_SELECTION_WORKER,import.meta.url):new URL('../workers/codon-selection-worker.ts',import.meta.url);const worker=new Worker(url);
-  const finish=(result?:CodonSelectionJobResult,error?:Error)=>{if(done)return;done=true;signal?.removeEventListener('abort',abort);void worker.terminate().catch(()=>{});error?no(error):yes(result!);};
+  const finish=(result?:CodonSelectionJobResult,error?:Error)=>{if(done)return;done=true;signal?.removeEventListener('abort',abort);void worker.terminate().catch(()=>{});if(error)no(error);else yes(result!);};
   const abort=()=>finish(undefined,new DOMException('Codon-selection operation cancelled.','AbortError'));
   worker.on('message',(message:CodonSelectionJobMessage)=>{if(done)return;if(signal?.aborted){abort();return;}if(message.kind==='progress'){try{progress(message.message);}catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}}
    else if(message.kind==='result')finish(message.result);else finish(undefined,new Error(message.kind==='error'?message.message:'Invalid codon-selection worker response.'));});

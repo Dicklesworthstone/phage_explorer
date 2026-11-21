@@ -112,11 +112,12 @@ describe('the overlays the audit found fabricating data are labelled as such', (
     // or independently measured by this application.
     expect(levelOf('phylodynamics')).toBe('external');
     expect(levelOf('environmentalProvenance')).toBe('input');
+    expect(levelOf('stability')).toBe('input');
   });
 
   it('does not let a rule-based estimate pass as a measurement', () => {
     // Real inputs, but keyword and formula estimates rather than measurements.
-    for (const id of ['defenseArmsRace', 'amgPathway', 'tropism', 'stability', 'pressure']) {
+    for (const id of ['defenseArmsRace', 'amgPathway', 'tropism', 'pressure']) {
       expect(levelOf(id)).toBe('heuristic');
     }
   });

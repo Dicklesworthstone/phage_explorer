@@ -31,7 +31,7 @@ describe('portable RNA interval experiments', () => {
     expect(replayed.analysis.windows[0].structure).toBe('(((...)))');
     expect(replayed.analysis.windows[0].pairingScore).toBe(-3);
     expect(replayed.analysis.codonStress).toEqual([]);
-    expect(replayed.record.inputs[0].data).toEqual({ sequence: 'GGGAAACCC', source: fixture().source });
+    expect(replayed.record.inputs[0].data as unknown).toEqual({ sequence: 'GGGAAACCC', source: fixture().source });
     // Existing web producer at 779477d: migrating it into shared core preserves saved v1 identities.
     expect(replayed.record.cacheKey).toBe('10a1b957e993177aeb92fafabbf1da7ab3d86ae8818c1ded02bd520afc4a8fa7');
     expect(replayed.record.resultId).toBe('26b8e685ca684833ec92fe23efeea5eb1ce061d5e4fca76e209c197821a896bc');

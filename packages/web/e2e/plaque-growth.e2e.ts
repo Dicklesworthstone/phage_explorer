@@ -1,7 +1,7 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
+import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type Plugin, type UserConfig } from 'vite';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { replayPlaqueGrowthRecord, type PlaqueGrowthFit } from '../../core/src/analysis/plaque-growth';
 import { replayGrowthCurveRecord, type GrowthCurveFit } from '../../core/src/analysis/one-step-growth';
@@ -25,8 +25,8 @@ const test = base.extend<{ plaqueFixture: void }>({
     const server = await createServer(mergeConfig(config, {
       root, configFile: false, cacheDir: info.outputPath('vite-cache'), server: { host: '127.0.0.1', port: 0, open: false },
       plugins: [{ name: 'plaque-growth-fixture',
-        resolveId(id) { if (id === '/src/plaque-growth-fixture.tsx') return fixtureId; },
-        load(id) {
+        resolveId(id: string) { if (id === '/src/plaque-growth-fixture.tsx') return fixtureId; },
+        load(id: string) {
           if (id !== fixtureId) return;
           return `
             import React from 'react';
@@ -69,7 +69,7 @@ const test = base.extend<{ plaqueFixture: void }>({
               .then(html => { response.setHeader('Content-Type', 'text/html'); response.end(html); }).catch(next);
           });
         },
-      }],
+      } satisfies Plugin],
     }) as InlineConfig);
     const pageErrors: string[] = []; page.on('pageerror', error => pageErrors.push(error.message));
     try {
@@ -140,22 +140,22 @@ test('rehashed false evidence and malformed input cannot replace the accepted br
 
 test('cancelled worker replies and delayed file reads do not overwrite subsequent accepted evidence', async ({ page }) => {
   await page.getByRole('button', { name: 'Load synthetic plate-count example', exact: true }).click();
-  await page.evaluate(() => { (window as PlaqueFixture).holdPlaqueReply = true; });
+  await page.evaluate(() => { (window as unknown as PlaqueFixture).holdPlaqueReply = true; });
   await page.getByRole('button', { name: 'Fit raw plaque counts', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).plaqueReplyHeld)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as PlaqueFixture).plaqueReplyHeld)).toBe(true);
   await page.getByRole('button', { name: 'Cancel plate-count work', exact: true }).click();
   await page.getByLabel('Plate experiment title', { exact: true }).fill('Subsequent fit');
   await page.getByRole('button', { name: 'Fit raw plaque counts', exact: true }).click();
   await expect(page.getByTestId('plaque-growth-status')).toContainText('Fresh fit accepted');
   const id = await page.getByTestId('plaque-growth-result').getAttribute('data-result-id');
-  await page.evaluate(() => (window as PlaqueFixture).releasePlaqueReply());
+  await page.evaluate(() => (window as unknown as PlaqueFixture).releasePlaqueReply());
   await expect(page.getByTestId('plaque-growth-result')).toHaveAttribute('data-result-id', id!);
-  await page.evaluate(() => { (window as PlaqueFixture).holdPlaqueRead = true; });
+  await page.evaluate(() => { (window as unknown as PlaqueFixture).holdPlaqueRead = true; });
   await page.getByLabel('Load plate CSV/TSV for review (up to 1 MB)', { exact: true }).setInputFiles({ name: 'delayed.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) });
-  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).plaqueReadHeld)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as PlaqueFixture).plaqueReadHeld)).toBe(true);
   await page.getByRole('button', { name: 'Cancel plate-count work', exact: true }).click();
   await page.getByLabel('Plate experiment title', { exact: true }).fill('Newer draft');
-  await page.evaluate(() => (window as PlaqueFixture).releasePlaqueRead());
+  await page.evaluate(() => (window as unknown as PlaqueFixture).releasePlaqueRead());
   await expect(page.getByLabel('Plate experiment title', { exact: true })).toHaveValue('Newer draft');
   await expect(page.getByTestId('plaque-growth-result')).toHaveAttribute('data-result-id', id!);
 });
@@ -220,22 +220,22 @@ test('corrected-PFU import refuses false legacy answers and rehashed intervals w
 test('cancelling corrected-PFU worker and file deliveries prevents stale results or draft replacement', async ({ page }) => {
   await fitCorrectedExample(page);
   const evidence = await download(page, 'Export verified PFU evidence JSON');
-  await page.evaluate(() => { (window as PlaqueFixture).holdPfuReply = true; });
+  await page.evaluate(() => { (window as unknown as PlaqueFixture).holdPfuReply = true; });
   await page.getByRole('button', { name: 'Fit observations', exact: true }).click();
-  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).pfuReplyHeld)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as PlaqueFixture).pfuReplyHeld)).toBe(true);
   await page.getByRole('button', { name: 'Cancel corrected-PFU work', exact: true }).click();
   await page.getByLabel('Experiment title', { exact: true }).fill('New corrected-PFU fit');
   await page.getByRole('button', { name: 'Fit observations', exact: true }).click();
   await expect(page.getByTestId('corrected-pfu-status')).toContainText('Fresh fit accepted');
   const newer = await download(page, 'Export verified PFU evidence JSON'); expect(newer).not.toBe(evidence);
-  await page.evaluate(() => (window as PlaqueFixture).releasePfuReply());
+  await page.evaluate(() => (window as unknown as PlaqueFixture).releasePfuReply());
   expect(await download(page, 'Export verified PFU evidence JSON')).toBe(newer);
-  await page.evaluate(() => { (window as PlaqueFixture).holdPlaqueRead = true; });
+  await page.evaluate(() => { (window as unknown as PlaqueFixture).holdPlaqueRead = true; });
   await correctedImport(page).setInputFiles({ name: 'late.json', mimeType: 'application/json', buffer: Buffer.from(evidence) });
-  await expect.poll(() => page.evaluate(() => (window as PlaqueFixture).plaqueReadHeld)).toBe(true);
+  await expect.poll(() => page.evaluate(() => (window as unknown as PlaqueFixture).plaqueReadHeld)).toBe(true);
   await page.getByRole('button', { name: 'Cancel corrected-PFU work', exact: true }).click();
   await page.getByLabel('Experiment title', { exact: true }).fill('Kept draft');
-  await page.evaluate(() => (window as PlaqueFixture).releasePlaqueRead());
+  await page.evaluate(() => (window as unknown as PlaqueFixture).releasePlaqueRead());
   await expect(page.getByLabel('Experiment title', { exact: true })).toHaveValue('Kept draft');
   expect(await download(page, 'Export verified PFU evidence JSON')).toBe(newer);
 });

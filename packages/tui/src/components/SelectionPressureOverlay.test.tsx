@@ -29,7 +29,7 @@ async function selection() {
     currentPhageIndex: 0, diffReferencePhageId: genomes[1].phage.id, terminalCols: 80, terminalRows: 24, overlays: ['selectionPressure'] });
   let reads = 0;
   const unexpectedRead = async () => { reads++; throw new Error('Raw genome repository must not be consulted for aligned CDS evidence.'); };
-  const repository = { getFullGenomeLength: unexpectedRead, getSequenceWindow: unexpectedRead } as PhageRepository;
+  const repository = { getFullGenomeLength: unexpectedRead, getSequenceWindow: unexpectedRead } as unknown as PhageRepository;
   return { genomes, repository, reads: () => reads };
 }
 async function waitFor(predicate: () => boolean, context: () => string = () => ''): Promise<void> {

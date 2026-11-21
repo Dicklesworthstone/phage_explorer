@@ -190,14 +190,20 @@ describe('every caller is covered without having to opt in', () => {
   const webSrc = join(import.meta.dir, '..');
 
   const callSites = [
-    'components/overlays/EnvironmentalProvenanceOverlay.tsx',
     'components/overlays/PhylodynamicsOverlay.tsx',
+  ];
+  const overlaysWithoutCustomCacheVersion = [
+    'components/overlays/EnvironmentalProvenanceOverlay.tsx',
+    ...callSites,
   ];
 
   it('has call sites that pass no version of their own', () => {
     for (const rel of callSites) {
       const src = readFileSync(join(webSrc, rel), 'utf8');
       expect(src).toContain('generateCacheKey(');
+    }
+    for (const rel of overlaysWithoutCustomCacheVersion) {
+      const src = readFileSync(join(webSrc, rel), 'utf8');
       // A caller embedding its own version string is the failure mode this
       // design avoids: it works until someone forgets to bump it.
       expect(src).not.toContain('SCHEMA_VERSION');

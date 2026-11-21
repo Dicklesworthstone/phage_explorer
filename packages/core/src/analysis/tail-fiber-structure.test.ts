@@ -371,7 +371,7 @@ describe('Observed diversity from supplied aligned protein FASTA', () => {
     expect(record.method).toEqual(PROTEIN_ALIGNMENT_METHOD);
     expect(record.inputs[0].source).toBe('local');
     expect(record.inputs[0].accession).toBeNull();
-    expect(record.inputs[0].data).toEqual(input());
+    expect(record.inputs[0].data as unknown).toEqual(input());
     expect(record.fields.geometry.kind).toBe('unavailable');
     expect(record.fields.geometry.value).toBeNull();
     expect('chains' in result || 'contacts' in result || 'hostRange' in result).toBe(false);

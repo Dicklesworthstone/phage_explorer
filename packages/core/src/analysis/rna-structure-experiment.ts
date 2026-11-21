@@ -159,7 +159,7 @@ export function exportRNAStructureTsv(record: AnalysisRecord): string {
     throw new Error('Expected an accepted RNA interval experiment.');
   }
   const input = record.inputs[0].data;
-  const request = validateRNAStructureRequest({ sequence: input.sequence, source: input.source, options: record.parameters } as RNAStructureRequest);
+  const request = validateRNAStructureRequest({ sequence: input.sequence, source: input.source, options: record.parameters } as unknown as RNAStructureRequest);
   const analysis = record.fields.analysis.value as unknown as RNAStructureAnalysis;
   const rows = [['result_id', 'coordinate_system', 'strand', 'interval_start', 'interval_end', 'source_start', 'source_end',
     'pair_count', 'pairing_score', 'structure', 'sequence', 'pairs_interval_0_based']];

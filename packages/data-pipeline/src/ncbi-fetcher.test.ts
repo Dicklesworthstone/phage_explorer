@@ -83,7 +83,7 @@ describe('catalog GenBank parser', () => {
   ]) {
     test('preserves transcript order for ' + row.name, () => {
       const record = parseGenBank(fixture(row.sequence, feature(row.location, ['/translation="MKG"']), 'DNA', 'circular'));
-      expect(record.features[0].segments).toEqual(row.segments);
+      expect(record.features[0].segments as unknown).toEqual(row.segments);
       expect(record.metadata.topology).toBe('circular');
       expect(reference(record)).toMatchObject({ cds: 'ATGAAAGGGTAA', protein: 'MKG*', reasons: [] });
     });

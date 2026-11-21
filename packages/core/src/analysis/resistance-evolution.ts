@@ -3,7 +3,8 @@
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 import { createSeededRng } from './metagenomic-niche';
-import { makeResistanceSimulation, type ResistanceCocktailState } from '../simulation-implementations';
+import { makeResistanceSimulation } from '../simulation-implementations';
+import type { ResistanceCocktailState } from '../simulation';
 
 export const RESISTANCE_EVOLUTION_METHOD = {
   id: 'resistance-cocktail-simulation',

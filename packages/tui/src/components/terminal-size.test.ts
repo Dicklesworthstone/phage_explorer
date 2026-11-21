@@ -91,7 +91,7 @@ describe('the size gate is wired and states the documented floor', () => {
     expect(entry).toMatch(guardedRender);
     expect(entry.replace('React.createElement(TerminalSizeGate,', 'React.createElement(React.Fragment,')).not.toMatch(guardedRender);
     const localApp = readFileSync(join(import.meta.dir, 'LocalGenomeApp.tsx'), 'utf8');
-    expect(localApp).toMatch(/return open\s*\? <TerminalGenomeView[\s\S]*: <App repository=/);
+    expect(localApp).toMatch(/return open\s*\?[\s\S]*<TerminalGenomeView[\s\S]*: <App repository=/);
   });
 
   it('tells the user the actual size and the required size', () => {

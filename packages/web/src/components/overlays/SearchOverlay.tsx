@@ -608,7 +608,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                   onRetry={() => setManualSearchTrigger((t) => t + 1)}
                 />
               ) : status === 'searching' ? (
-                <OverlayLoadingState message="Searching the selected genome…" />
+                <OverlayLoadingState message="Searching the selected genome…">
+                  <SearchResultsSkeleton count={4} />
+                </OverlayLoadingState>
               ) : hits.length === 0 ? (
                 <OverlayEmptyState
                   message={query.trim().length === 0 ? 'Type to search within the genome and annotations.' : 'No matches found.'}

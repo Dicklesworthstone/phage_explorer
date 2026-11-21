@@ -130,7 +130,7 @@ describe('recorded supplied-reference codon experiments', () => {
     await assert.rejects(task, { name: 'AbortError' }); pending.resolve(structuredClone(previous)); await flush();
     assert.strictEqual(f.workflow.getSnapshot().result, previous);
     f.env.referenceCodons = async () => { f.genomes[0].original.text += '\n'; return structuredClone(previous); };
-    await assert.rejects(f.run(), /changed sequence or annotations/);
+    await assert.rejects(f.run(), /changed (sequence or annotations|original source during execution)/);
     assert.strictEqual(f.workflow.getSnapshot().result, previous);
   });
   it('rejects a reference that would make the tape unexportable before changing accepted evidence', async () => {
