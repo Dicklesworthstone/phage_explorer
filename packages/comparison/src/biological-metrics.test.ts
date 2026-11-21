@@ -16,7 +16,7 @@ import {
   compareGeneContent,
   compareDinucleotideBias,
 } from './biological-metrics';
-import type { GeneInfo } from '@phage-explorer/core';
+import { CODON_TABLE, type GeneInfo } from '@phage-explorer/core';
 
 describe('calculateGCContent', () => {
   test('calculates correct GC content for pure G/C sequence', () => {
@@ -208,6 +208,82 @@ describe('calculateRSCU', () => {
 });
 
 describe('compareCodonUsage', () => {
+  test('preserves small upper-tail probabilities for strong count differences', () => {
+    // Independent chi-square survival values (SciPy 1.17.0 chi2.sf).
+    // The two disjoint categories have statistic 2*n and one degree of freedom.
+    for (const [count, expected] of [[2, 0.04550026389635857], [20, 2.5396285894708634e-10],
+      [100, 2.0884875837625688e-45]] as const) {
+      const result = compareCodonUsage({ AAA: count }, { CCC: count });
+      expect(result.chiSquareStatistic).toBe(2 * count);
+      expect(result.degreesOfFreedom).toBe(1);
+      expect(Math.abs(result.chiSquarePValue! / expected - 1)).toBeLessThan(1e-10);
+    }
+    for (const count of [1000, 10000, 1000000]) {
+      // These probabilities are below the representable double range, not 1.
+      expect(compareCodonUsage({ AAA: count }, { CCC: count }).chiSquarePValue).toBe(0);
+    }
+  });
+
+  test('matches the exact two-degree survival function and large category reference values', () => {
+    const twoDegrees = compareCodonUsage({ AAA: 10, CCC: 5 }, { CCC: 5, GGG: 10 });
+    expect(twoDegrees.chiSquareStatistic).toBe(20);
+    expect(twoDegrees.degreesOfFreedom).toBe(2);
+    expect(Math.abs(twoDegrees.chiSquarePValue! / Math.exp(-10) - 1)).toBeLessThan(1e-12);
+    for (const [categories, count, expected] of [[32, 1, 0.41674402994554294],
+      [64, 1, 0.44117997461167985], [64, 2, 2.4924609143901037e-6],
+      [64, 10, 2.0351428718454365e-96]] as const) {
+      const codons = Object.keys(CODON_TABLE).slice(0, categories);
+      const a = Object.fromEntries(codons.slice(0, categories / 2).map(codon => [codon, count]));
+      const b = Object.fromEntries(codons.slice(categories / 2).map(codon => [codon, count]));
+      const result = compareCodonUsage(a, b);
+      expect(result.chiSquareStatistic).toBe(categories * count);
+      expect(result.degreesOfFreedom).toBe(categories - 1);
+      expect(Math.abs(result.chiSquarePValue! / expected - 1)).toBeLessThan(1e-10);
+      expect(compareCodonUsage(b, a).chiSquarePValue).toBe(result.chiSquarePValue);
+    }
+  });
+
+  test('excludes unresolved triplets from both row totals and frequency metrics', () => {
+    const resolved = compareCodonUsage({ AAA: 100, CCC: 20 }, { AAA: 20, CCC: 100 });
+    const ambiguous = compareCodonUsage({ AAA: 100, CCC: 20, NNN: 10000, ARN: 7 }, { AAA: 20, CCC: 100, NNN: 3 });
+    expect(ambiguous.resolvedCodonsA).toBe(120);
+    expect(ambiguous.resolvedCodonsB).toBe(120);
+    expect(ambiguous.excludedCodonsA).toBe(10007);
+    expect(ambiguous.excludedCodonsB).toBe(3);
+    expect(ambiguous.chiSquareStatistic).toBe(resolved.chiSquareStatistic);
+    expect(ambiguous.chiSquarePValue).toBe(resolved.chiSquarePValue);
+    expect(ambiguous.caiA).toBe(resolved.caiA);
+    expect(ambiguous.caiB).toBe(resolved.caiB);
+    expect(ambiguous.topDifferentCodons).toEqual(resolved.topDifferentCodons);
+  });
+
+  test('distinguishes missing or degenerate data from identical supported distributions', () => {
+    const cases: Array<[Record<string, number>, Record<string, number>]> = [
+      [{}, {}], [{ NNN: 100 }, { AAA: 100, CCC: 100 }],
+      [{ AAA: 100, CCC: 100 }, {}], [{ AAA: 100 }, { AAA: 200 }],
+    ];
+    for (const [a, b] of cases) {
+      const result = compareCodonUsage(a, b);
+      expect(result.chiSquarePValue).toBeNull();
+      expect(result.chiSquareUnavailableReason).toBeString();
+      expect(result.degreesOfFreedom).toBe(0);
+    }
+    const identical = compareCodonUsage({ AAA: 100, CCC: 100 }, { AAA: 200, CCC: 200 });
+    expect(identical.chiSquarePValue).toBe(1);
+    expect(identical.chiSquareUnavailableReason).toBeNull();
+    expect(identical.chiSquareExpectedBelowFive).toBe(0);
+    expect(compareCodonUsage({ AAA: 1 }, { CCC: 1 }).chiSquareExpectedBelowFive).toBe(4);
+  });
+
+  test('rejects malformed counts rather than publishing nonfinite significance', () => {
+    for (const count of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => compareCodonUsage({ AAA: count }, { CCC: 10 })).toThrow('safe integers');
+      expect(() => compareCodonUsage({ AAA: 10 }, { NNN: count })).toThrow('safe integers');
+    }
+    expect(() => compareCodonUsage({ AAA: Number.MAX_SAFE_INTEGER, CCC: 1 }, { CCC: 1 })).toThrow('safe integer');
+    expect(() => compareCodonUsage({ AAA: Number.MAX_SAFE_INTEGER }, { CCC: 1 })).toThrow('safe integer');
+  });
+
   test('returns all expected fields', () => {
     const countsA = { ATG: 10, TTT: 5, TTC: 5 };
     const countsB = { ATG: 10, TTT: 5, TTC: 5 };

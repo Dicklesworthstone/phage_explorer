@@ -628,6 +628,17 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
               <div className="metric-label">Codon usage</div>
               <div className="metric-value">{formatPct(codon.rscuCosineSimilarity * 100)}</div>
               <div className="text-dim">CAI A/B: {codon.caiA.toFixed(3)} / {codon.caiB.toFixed(3)}</div>
+              <div className="text-dim">{codon.chiSquarePValue === null
+                ? `Chi-square unavailable: ${codon.chiSquareUnavailableReason}`
+                : `Chi-square ${codon.chiSquareStatistic.toFixed(1)}, df=${codon.degreesOfFreedom}, asymptotic p=${codon.chiSquarePValue.toExponential(2)}`}</div>
+              <div className="text-dim">Resolved codons A/B: {codon.resolvedCodonsA} / {codon.resolvedCodonsB};
+                {' '}excluded triplets: {codon.excludedCodonsA} / {codon.excludedCodonsB}.</div>
+              {codon.chiSquarePValue !== null && <div className="text-dim">
+                Full codon distribution, including amino-acid composition; not synonymous bias alone.
+              </div>}
+              {codon.chiSquarePValue !== null && codon.chiSquareExpectedBelowFive > 0 && <div className="text-dim">
+                {codon.chiSquareExpectedBelowFive} expected cells are below 5; the asymptotic p-value may be unreliable.
+              </div>}
             </div>
             <div className="metric-card">
               <div className="metric-label">Amino Acid similarity</div>

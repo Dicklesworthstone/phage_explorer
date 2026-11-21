@@ -122,8 +122,14 @@ export interface CodonUsageComparison {
 
   // Chi-square test
   chiSquareStatistic: number;         // χ² statistic
-  chiSquarePValue: number;            // P-value
+  chiSquarePValue: number | null;     // Asymptotic upper tail; null without sufficient observations
   degreesOfFreedom: number;
+  chiSquareUnavailableReason: string | null;
+  chiSquareExpectedBelowFive: number; // Sparse expected cells; warns about asymptotic calibration
+  resolvedCodonsA: number;
+  resolvedCodonsB: number;
+  excludedCodonsA: number;            // Ambiguous/noncanonical triplets, excluded from all codon metrics
+  excludedCodonsB: number;
 
   // CAI - Codon Adaptation Index (cross-adaptation)
   caiA: number;                       // CAI of sequence A using B's codon preference weights

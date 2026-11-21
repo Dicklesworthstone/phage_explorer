@@ -568,8 +568,17 @@ function BiologicalTab({ result, colors }: TabProps): React.ReactElement {
         <Box marginTop={1}><Text color={colors.accent}>Codon Usage (RSCU):</Text></Box>
         <MetricRow label="Cosine Similarity" value={codonUsage.rscuCosineSimilarity * 100} colors={colors} />
         <Text color={colors.textDim}>
-          Chi-square: {codonUsage.chiSquareStatistic.toFixed(1)} (p={codonUsage.chiSquarePValue.toExponential(2)})
+          {codonUsage.chiSquarePValue === null ? `Chi-square unavailable: ${codonUsage.chiSquareUnavailableReason}`
+            : `Chi-square: ${codonUsage.chiSquareStatistic.toFixed(1)} (df=${codonUsage.degreesOfFreedom}, asymptotic p=${codonUsage.chiSquarePValue.toExponential(2)})`}
         </Text>
+        <Text color={colors.textDim}>Resolved codons A/B: {codonUsage.resolvedCodonsA} / {codonUsage.resolvedCodonsB};
+          {' '}excluded triplets: {codonUsage.excludedCodonsA} / {codonUsage.excludedCodonsB}.</Text>
+        {codonUsage.chiSquarePValue !== null && <Text color={colors.textDim}>
+          Full codon distribution, including amino-acid composition; not synonymous bias alone.
+        </Text>}
+        {codonUsage.chiSquarePValue !== null && codonUsage.chiSquareExpectedBelowFive > 0 && <Text color={colors.warning}>
+          {codonUsage.chiSquareExpectedBelowFive} expected cells are below 5; the asymptotic p-value may be unreliable.
+        </Text>}
 
         <Box marginTop={1}><Text color={colors.accent}>Amino Acid Usage:</Text></Box>
         <MetricRow label="Cosine Similarity" value={aminoAcidUsage.cosineSimilarity * 100} colors={colors} />

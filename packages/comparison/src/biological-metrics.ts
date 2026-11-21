@@ -237,6 +237,19 @@ function cosineSimilarity(vecA: number[], vecB: number[]): number {
   return denom > 0 ? dot / denom : 0;
 }
 
+/** Ambiguous triplets are not extra cells in a 64-codon contingency table. */
+function resolvedCodonCounts(input: Record<string, number>): { counts: Record<string, number>; total: number; excluded: number } {
+  const counts: Record<string, number> = {};
+  let total = 0, excluded = 0;
+  for (const [codon, count] of Object.entries(input)) {
+    if (!Number.isSafeInteger(count) || count < 0) throw new RangeError('Codon counts must be nonnegative safe integers.');
+    if (Object.hasOwn(CODON_TABLE, codon)) { counts[codon] = count; total += count; }
+    else excluded += count;
+    if (!Number.isSafeInteger(total + excluded)) throw new RangeError('Total codon count exceeds the safe integer range.');
+  }
+  return { counts, total, excluded };
+}
+
 /**
  * Compare codon usage between two sequences.
  */
@@ -244,8 +257,10 @@ export function compareCodonUsage(
   codonCountsA: Record<string, number>,
   codonCountsB: Record<string, number>
 ): CodonUsageComparison {
-  const rscuA = calculateRSCU(codonCountsA);
-  const rscuB = calculateRSCU(codonCountsB);
+  const a = resolvedCodonCounts(codonCountsA), b = resolvedCodonCounts(codonCountsB);
+  const countsA = a.counts, countsB = b.counts;
+  const rscuA = calculateRSCU(countsA);
+  const rscuB = calculateRSCU(countsB);
 
   // Get all codons
   const codons = Object.keys(CODON_TABLE);
@@ -267,39 +282,46 @@ export function compareCodonUsage(
   const cosSim = cosineSimilarity(vecA, vecB);
 
   // Chi-square test
-  const totalA = Object.values(codonCountsA).reduce((a, b) => a + b, 0);
-  const totalB = Object.values(codonCountsB).reduce((a, b) => a + b, 0);
+  const totalA = a.total;
+  const totalB = b.total;
   const totalSum = totalA + totalB;
+  if (!Number.isSafeInteger(totalSum)) throw new RangeError('Combined codon count exceeds the safe integer range.');
 
   let chiSquare = 0;
-  let df = 0;
+  let categories = 0;
+  let chiSquareExpectedBelowFive = 0;
 
   if (totalSum > 0) {
     for (const codon of codons) {
-      const obsA = codonCountsA[codon] ?? 0;
-      const obsB = codonCountsB[codon] ?? 0;
+      const obsA = countsA[codon] ?? 0;
+      const obsB = countsB[codon] ?? 0;
       const total = obsA + obsB;
 
       if (total > 0) {
-        const expA = totalA * total / totalSum;
-        const expB = totalB * total / totalSum;
+        const expA = total * (totalA / totalSum);
+        const expB = total * (totalB / totalSum);
 
         if (expA > 0) chiSquare += Math.pow(obsA - expA, 2) / expA;
         if (expB > 0) chiSquare += Math.pow(obsB - expB, 2) / expB;
-        df++;
+        if (expA < 5) chiSquareExpectedBelowFive++;
+        if (expB < 5) chiSquareExpectedBelowFive++;
+        categories++;
       }
     }
   }
-  df = Math.max(1, df - 1); // Degrees of freedom
+  const df = totalA > 0 && totalB > 0 ? Math.max(0, categories - 1) : 0;
+  const chiSquareUnavailableReason = totalA === 0 || totalB === 0
+    ? 'Both genomes need resolved codon observations.'
+    : df === 0 ? 'At least two observed codon categories are required.' : null;
 
-  // P-value from chi-square (rough approximation)
-  const chiSquarePValue = chiSquareCdf(chiSquare, df);
+  // Asymptotic Pearson test of the full codon distribution, not synonymous bias alone.
+  const chiSquarePValue = chiSquareUnavailableReason === null ? chiSquareSurvival(chiSquare, df) : null;
 
   // CAI (cross-adaptation): evaluate A with B preferences and vice versa
-  const caiA = computeCAIFromCounts(codonCountsA, codonCountsB);
-  const caiB = computeCAIFromCounts(codonCountsB, codonCountsA);
-  const weightA = deriveCodonWeights(codonCountsA);
-  const weightB = deriveCodonWeights(codonCountsB);
+  const caiA = computeCAIFromCounts(countsA, countsB);
+  const caiB = computeCAIFromCounts(countsB, countsA);
+  const weightA = deriveCodonWeights(countsA);
+  const weightB = deriveCodonWeights(countsB);
   const caiCorrelation = cosineSimilarity(
     codons.map(c => weightA[c]),
     codons.map(c => weightB[c])
@@ -310,8 +332,8 @@ export function compareCodonUsage(
   const differences: CodonDifference[] = codons.map(codon => ({
     codon,
     aminoAcid: CODON_TABLE[codon],
-    frequencyA: (codonCountsA[codon] ?? 0) / safeTotal(totalA) * 1000,
-    frequencyB: (codonCountsB[codon] ?? 0) / safeTotal(totalB) * 1000,
+    frequencyA: (countsA[codon] ?? 0) / safeTotal(totalA) * 1000,
+    frequencyB: (countsB[codon] ?? 0) / safeTotal(totalB) * 1000,
     rscuA: rscuA[codon] ?? 0,
     rscuB: rscuB[codon] ?? 0,
     difference: Math.abs((rscuA[codon] ?? 0) - (rscuB[codon] ?? 0)),
@@ -324,6 +346,12 @@ export function compareCodonUsage(
     chiSquareStatistic: chiSquare,
     chiSquarePValue,
     degreesOfFreedom: df,
+    chiSquareUnavailableReason,
+    chiSquareExpectedBelowFive,
+    resolvedCodonsA: totalA,
+    resolvedCodonsB: totalB,
+    excludedCodonsA: a.excluded,
+    excludedCodonsB: b.excluded,
     caiA,
     caiB,
     caiCorrelation,
@@ -332,75 +360,45 @@ export function compareCodonUsage(
 }
 
 /**
- * Chi-square CDF approximation (upper tail).
+ * Chi-square survival Q(df/2, x/2). Use the lower-gamma series only where it
+ * converges rapidly, and compute the upper tail directly elsewhere to avoid
+ * both truncation and cancellation in 1 - CDF. Here df is an integer in 1..63.
+ * NIST DLMF 8.7.1 (series), 8.9.2 (continued fraction): https://dlmf.nist.gov/8.9
  */
-function chiSquareCdf(x: number, df: number): number {
-  // Use incomplete gamma function approximation
+function chiSquareSurvival(x: number, df: number): number {
   if (x <= 0) return 1;
-
   const k = df / 2;
   const t = x / 2;
-
-  // Simple approximation for large df
-  if (df > 100) {
-    const z = Math.pow(x / df, 1 / 3) - (1 - 2 / (9 * df));
-    return 1 - normalCdf(z / Math.sqrt(2 / (9 * df)));
+  // Integer/half-integer gamma normalization via Gamma(a+1) = a Gamma(a).
+  let logGamma = df % 2 === 0 ? 0 : Math.log(Math.PI) / 2;
+  for (let a = df % 2 === 0 ? 1 : 0.5; a < k; a++) logGamma += Math.log(a);
+  const scale = Math.exp(-t + k * Math.log(t) - logGamma);
+  const tolerance = 1e-14;
+  if (t < k + 1) {
+    let term = 1 / k, sum = term;
+    for (let n = 1; n <= 1000; n++) {
+      term *= t / (k + n);
+      sum += term;
+      if (Math.abs(term) <= Math.abs(sum) * tolerance) return Math.max(0, Math.min(1, 1 - scale * sum));
+    }
+  } else {
+    // Modified Lentz evaluation of the contracted upper-gamma fraction.
+    const tiny = 1e-300;
+    let b = t + 1 - k, c = 1 / tiny, d = 1 / b, fraction = d;
+    for (let n = 1; n <= 1000; n++) {
+      const numerator = n * (k - n);
+      b += 2;
+      d = b + numerator * d;
+      c = b + numerator / c;
+      if (Math.abs(d) < tiny) d = d < 0 ? -tiny : tiny;
+      if (Math.abs(c) < tiny) c = c < 0 ? -tiny : tiny;
+      d = 1 / d;
+      const delta = c * d;
+      fraction *= delta;
+      if (Math.abs(delta - 1) <= tolerance) return Math.max(0, Math.min(1, scale * fraction));
+    }
   }
-
-  // Regularized gamma
-  return 1 - gammaCdf(t, k);
-}
-
-function normalCdf(z: number): number {
-  const a1 = 0.254829592;
-  const a2 = -0.284496736;
-  const a3 = 1.421413741;
-  const a4 = -1.453152027;
-  const a5 = 1.061405429;
-  const p = 0.3275911;
-
-  const sign = z < 0 ? -1 : 1;
-  z = Math.abs(z) / Math.SQRT2;
-
-  const t = 1.0 / (1.0 + p * z);
-  const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z);
-
-  return 0.5 * (1 + sign * y);
-}
-
-function gammaCdf(x: number, k: number): number {
-  // Incomplete gamma function approximation
-  if (x <= 0) return 0;
-
-  let sum = 0;
-  let term = 1 / k;
-  sum = term;
-
-  for (let n = 1; n < 100; n++) {
-    term *= x / (k + n);
-    sum += term;
-    if (term < 1e-10) break;
-  }
-
-  return sum * Math.exp(-x + k * Math.log(x) - logGamma(k));
-}
-
-function logGamma(x: number): number {
-  const c = [
-    76.18009172947146, -86.50532032941677, 24.01409824083091,
-    -1.231739572450155, 0.001208650973866179, -0.000005395239384953
-  ];
-
-  let y = x;
-  let tmp = x + 5.5;
-  tmp -= (x + 0.5) * Math.log(tmp);
-
-  let ser = 1.000000000190015;
-  for (let j = 0; j < 6; j++) {
-    ser += c[j] / ++y;
-  }
-
-  return -tmp + Math.log(2.5066282746310005 * ser / x);
+  throw new Error('Codon chi-square probability did not converge.');
 }
 
 /**
