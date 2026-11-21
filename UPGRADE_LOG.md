@@ -108,3 +108,20 @@ serialize-javascript in pre-existing development/build dependency paths.
 [Issue #7](https://github.com/Dicklesworthstone/phage_explorer/issues/7) records
 the exact versions, advisories, reachability review and qualification needed for
 compatible transitive patch updates. This is not a zero-advisory audit.
+
+---
+
+## 2026-11-21 Dependency Refresh (v1.9.0)
+
+Runtime/package manager: Bun 1.4.5 (Linux x64 qualification host). Updated in isolated logical groups, verifying `bun run check` (ESLint, root + web `tsc --noEmit`, keyboard sync, script transpilation, bead closures, comparison gates), affected package test suites, and `NODE_ENV=production bun run build:web` after each group:
+
+- **Vite & React plugin**: `vite` `8.3.2 -> 8.3.8`, `@vitejs/plugin-react` `6.1.1 -> 6.3.0`. Eliminates 6 Vite/`launch-editor` advisories (including 1 high-severity Windows `launch-editor` CVE). Production web + PWA build and Bundle Budget Gate pass.
+- **Lint & type definitions**: `@types/bun` `1.4.2 -> 1.4.5`, `@types/react-dom` `^19.3.0` (added to root devDependencies matching root `react-dom` and web workspace), `eslint` `10.12.0 -> 10.15.0`, `typescript-eslint` `8.71.1 -> 8.73.0`.
+- **Core / DB / State / Runtime**: `pako` `3.0.2 -> 3.0.3`, `drizzle-orm` `0.45.3 -> 0.45.4`, `zustand` `5.0.15 -> 5.1.0`, `immer` `11.1.21 -> 11.2.10`, `react` & `react-dom` `19.3.0 -> 19.3.1`, `@tanstack/react-query` `5.104.1 -> 5.108.2`, `@vercel/speed-insights` `2.0.0 -> 2.1.0`, `web-vitals` `6.2.2 -> 6.2.3`.
+- **Browser SQLite**: `sql.js` `1.14.2 -> 1.17.0` (`packages/web`). Real SQLite WASM + shipped `phage.db` tests and production web build pass.
+- **3D Renderer**: `three` `0.186.1 -> 0.187.0`, `@types/three` `0.186.0 -> 0.187.0`. Visualization tests and production web build pass.
+- **Dev Tooling & Transitive Refresh**: `playwright` & `@playwright/test` `1.64.0 -> 1.65.1`, `wasm-pack` `0.15.0 -> 0.15.1`, `@huggingface/transformers` `4.3.0 -> 4.3.2` (module-load export smoke verified), plus `bun update` transitive lockfile refresh (`fast-uri` `3.1.8 -> 3.1.9`, `serialize-javascript` `7.1.2 -> 7.1.4`, `brace-expansion` `2.1.7 -> 5.0.13` / `2.1.8`).
+- **Held**:
+  - `typescript` at `^6.0.3` (`7.0.2` is outside `typescript-eslint@8.73.0` peer range `>=4.8.4 <6.1.0`).
+  - `@vercel/og` at exact `1.0.1` (`1.0.3` remains affected by upstream `vercel/satori#801` missing `hb.wasm`).
+- **Security audit**: Reduced from 14 advisories (1 high, 9 moderate, 4 low) to 3 dev/build-tool-only moderate advisories (`glob@11.1.0` and `minimatch` under `workbox-build`/`eslint`, and `satori@0.29.0` under unused `@vercel/og@1.0.1`).
