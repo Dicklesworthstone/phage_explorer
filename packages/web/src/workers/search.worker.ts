@@ -52,15 +52,16 @@ type FuzzyIndex<TMeta = unknown> = {
 
 const fuzzyIndices = new Map<string, FuzzyIndex>();
 
-function escapeRegexLiteral(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function toRegexFromIupac(pattern: string): RegExp {
+function toRegexFromIupac(pattern: string, caseSensitive: boolean): RegExp {
+  if (!/^[ACGTRYSWKMBDHVN]+$/i.test(pattern)) {
+    throw new Error('Motif queries accept IUPAC DNA symbols only (no regular expressions).');
+  }
   const normalized = pattern
-    .toUpperCase()
     .split('')
-    .map((c) => IUPAC_MAP[c] ?? escapeRegexLiteral(c))
+    .map(c => {
+      const motif = IUPAC_MAP[c.toUpperCase()];
+      return caseSensitive && c === c.toLowerCase() ? motif.toLowerCase() : motif;
+    })
     .join('');
   return new RegExp(normalized, 'g');
 }
@@ -213,8 +214,9 @@ function fuzzySearchIndex<TMeta = unknown>(
 
 function extractContext(sequence: string, start: number, end: number, pad = 20): string {
   const s = Math.max(0, start - pad);
-  const e = Math.min(sequence.length, end + pad);
-  return sequence.slice(s, e);
+  const requestedEnd = Math.min(sequence.length, end + pad);
+  const e = Math.min(requestedEnd, s + 240);
+  return sequence.slice(s, e) + (e < requestedEnd ? '…' : '');
 }
 
 function normalizeStrand(strand?: StrandOption | string | null): StrandOption {
@@ -309,7 +311,7 @@ function runSequenceSearch(req: SearchRequest): SearchHit[] {
 function runMotifSearch(req: SearchRequest): SearchHit[] {
   const { query, sequence, options } = req;
   if (!query) return [];
-  const regex = toRegexFromIupac(query);
+  const regex = toRegexFromIupac(query, options?.caseSensitive ?? false);
   const strandOpt = options?.strand ?? 'both';
   const hits: SearchHit[] = [];
   const seqLength = sequence.length;
@@ -321,110 +323,83 @@ function runMotifSearch(req: SearchRequest): SearchHit[] {
       const position = strand === '-' ? seqLength - (match.index + match[0].length) : match.index;
       hits.push(createHit(position, match[0].length, strand, `${strand} motif`, sequence, undefined, 'motif'));
       if (hits.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
+      // Global RegExp matching normally skips overlaps. Each starting base is a
+      // distinct motif occurrence, including on the reverse-complement strand.
+      regex.lastIndex = match.index + 1;
     }
   };
 
   if (strandOpt === 'both' || strandOpt === '+') {
-    scan(sequence.toUpperCase(), '+');
+    scan(options?.caseSensitive ? sequence : sequence.toUpperCase(), '+');
   }
   if (hits.length < (options?.maxResults ?? DEFAULT_MAX_RESULTS) && (strandOpt === 'both' || strandOpt === '-')) {
-    scan(reverseComplement(sequence.toUpperCase()), '-');
+    scan(reverseComplement(options?.caseSensitive ? sequence : sequence.toUpperCase()), '-');
   }
 
   return hits;
 }
 
-function runGeneSearch(req: SearchRequest): SearchHit[] {
+function runAnnotationSearch(req: SearchRequest): SearchHit[] {
   const { query, sequence, features, options } = req;
   if (!query) return [];
-  const needle = options?.caseSensitive ? query : query.toLowerCase();
+  const needle = options?.caseSensitive ? query.trim() : query.trim().toLowerCase();
+  if (!needle) return [];
 
-  const results: SearchHit[] = [];
+  // Rank references first. Large annotations must not each allocate a sequence
+  // context before the result limit is applied.
+  const matches: Array<{ feature: SearchFeature; score: number | undefined }> = [];
   for (const feature of features) {
     const name = feature.name ?? '';
     const product = feature.product ?? '';
     const type = feature.type ?? '';
-    const hay = options?.caseSensitive ? `${name} ${product} ${type}` : `${name} ${product} ${type}`.toLowerCase();
-    if (hay.includes(needle)) {
-      const strand = normalizeStrand(feature.strand);
-      results.push(
-        createHit(
-          feature.start,
-          feature.end - feature.start,
-          strand === 'both' ? '+' : strand,
-          feature.name || feature.product || 'Gene/feature match',
-          sequence,
-          feature,
-          'gene/annotation'
-        )
-      );
+    const text = req.mode === 'feature' ? `${type} ${name} ${product}`
+      : options?.fuzzy ? `${name} ${product}` : `${name} ${product} ${type}`;
+    const hay = options?.caseSensitive ? text : text.toLowerCase();
+    const fuzzy = options?.fuzzy ? fuzzyMatch(needle, hay) : null;
+    if (fuzzy ? fuzzy.match : hay.includes(needle)) {
+      matches.push({ feature, score: fuzzy?.score });
     }
-    if (results.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
+    if (!options?.fuzzy && matches.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
   }
-  return results;
-}
-
-function runFeatureSearch(req: SearchRequest): SearchHit[] {
-  const { query, sequence, features, options } = req;
-  if (!query) return [];
-  const needle = options?.caseSensitive ? query : query.toLowerCase();
-  const results: SearchHit[] = [];
-
-  for (const feature of features) {
-    const type = feature.type ?? '';
-    const name = feature.name ?? '';
-    const product = feature.product ?? '';
-    const hay = options?.caseSensitive ? `${type} ${name} ${product}` : `${type} ${name} ${product}`.toLowerCase();
-    if (hay.includes(needle)) {
-      const strand = normalizeStrand(feature.strand);
-      results.push(
-        createHit(
-          feature.start,
-          feature.end - feature.start,
-          strand === 'both' ? '+' : strand,
-          `${type || 'Feature'}${name ? `: ${name}` : ''}`,
-          sequence,
-          feature,
-          'feature'
-        )
-      );
-    }
-    if (results.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
+  if (options?.fuzzy) {
+    matches.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || a.feature.start - b.feature.start || a.feature.end - b.feature.end);
   }
-
-  return results;
+  return matches.slice(0, options?.maxResults ?? DEFAULT_MAX_RESULTS).map(({ feature, score }) => {
+    const strand = normalizeStrand(feature.strand);
+    return createHit(feature.start, feature.end - feature.start, strand === 'both' ? '+' : strand,
+      req.mode === 'feature' ? `${feature.type || 'Feature'}${feature.name ? `: ${feature.name}` : ''}`
+        : feature.name || feature.product || 'Gene/feature match',
+      sequence, feature, req.mode === 'feature' ? 'feature' : 'gene/annotation', score);
+  });
 }
 
 function runPositionSearch(req: SearchRequest): SearchHit[] {
   const { query, sequence, features, options } = req;
   if (!query) return [];
-  const ranges = query
-    .split(',')
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .map((part) => {
-      if (part.includes('-')) {
-        const [s, e] = part.split('-').map((v) => Number(v.trim()));
-        if (Number.isFinite(s) && Number.isFinite(e)) {
-          return { start: Math.max(0, Math.min(s, e)), end: Math.max(s, e) };
-        }
-        return null;
-      }
-      const pos = Number(part);
-      if (Number.isFinite(pos)) {
-        return { start: pos, end: pos };
-      }
-      return null;
-    })
-    .filter((r): r is { start: number; end: number } => !!r);
-
+  // The explorer stores and searches 0-based half-open intervals. A single
+  // coordinate denotes one base; the exclusive feature end never overlaps it.
+  const ranges = query.split(',').map(part => {
+    const match = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(part);
+    if (!match) throw new Error('Use whole-number positions or ranges such as 0, 1000-2000 (0-based, end exclusive).');
+    const a = Number(match[1]), b = match[2] === undefined ? a + 1 : Number(match[2]);
+    const start = Math.min(a, b), end = Math.max(a, b);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end || end > sequence.length) {
+      throw new Error(`Positions must select bases within 0-${sequence.length} (end exclusive).`);
+    }
+    return { start, end };
+  });
   const results: SearchHit[] = [];
+  const seenFeatures = new Set<number>(), seenMarkers = new Set<string>();
+  const limit = options?.maxResults ?? DEFAULT_MAX_RESULTS;
 
   for (const range of ranges) {
-    // First, capture overlapping features
-    for (const feature of features) {
-      const overlaps = feature.end >= range.start && feature.start <= range.end;
-      if (overlaps) {
+    let hasFeature = false;
+    for (let i = 0; i < features.length; i++) {
+      const feature = features[i];
+      if (feature.start < range.end && feature.end > range.start) {
+        hasFeature = true;
+        if (seenFeatures.has(i)) continue;
+        seenFeatures.add(i);
         const strand = normalizeStrand(feature.strand);
         results.push(
           createHit(
@@ -438,25 +413,28 @@ function runPositionSearch(req: SearchRequest): SearchHit[] {
           )
         );
       }
-      if (results.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
+      if (results.length >= limit) break;
     }
 
-    if (results.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
+    if (results.length >= limit) break;
 
     // If no feature overlaps, still return a positional marker
-    if (!features.some((f) => f.end >= range.start && f.start <= range.end)) {
+    const marker = `${range.start}:${range.end}`;
+    if (!hasFeature && !seenMarkers.has(marker)) {
+      seenMarkers.add(marker);
       results.push(
         createHit(
           range.start,
-          range.end - range.start || 1,
+          range.end - range.start,
           '+',
-          `Position ${range.start}${range.end !== range.start ? `-${range.end}` : ''}`,
+          `Position ${range.start}${range.end !== range.start + 1 ? `-${range.end}` : ''}`,
           sequence,
           undefined,
           'position'
         )
       );
     }
+    if (results.length >= limit) break;
   }
 
   return clampMaxResults(results, options?.maxResults ?? DEFAULT_MAX_RESULTS);
@@ -465,6 +443,13 @@ function runPositionSearch(req: SearchRequest): SearchHit[] {
 function runSearchInternal(request: SearchRequest): SearchResponse {
   const mode: SearchMode = request.mode;
   const options = { ...request.options, maxResults: request.options?.maxResults ?? DEFAULT_MAX_RESULTS };
+  if (!Number.isSafeInteger(options.maxResults) || options.maxResults < 1 || options.maxResults > 2000) {
+    throw new Error('Search result limit must be a whole number from 1 to 2,000.');
+  }
+  if (options.mismatches !== undefined && (!Number.isSafeInteger(options.mismatches) || options.mismatches < 0 || options.mismatches > 3)) {
+    throw new Error('Search mismatches must be a whole number from 0 to 3.');
+  }
+  if (options.strand !== undefined && !['+', '-', 'both'].includes(options.strand)) throw new Error('Unsupported search strand.');
 
   let hits: SearchHit[] = [];
   switch (mode) {
@@ -475,16 +460,14 @@ function runSearchInternal(request: SearchRequest): SearchResponse {
       hits = runMotifSearch({ ...request, options });
       break;
     case 'gene':
-      hits = runGeneSearch({ ...request, options });
-      break;
     case 'feature':
-      hits = runFeatureSearch({ ...request, options });
+      hits = runAnnotationSearch({ ...request, options });
       break;
     case 'position':
       hits = runPositionSearch({ ...request, options });
       break;
     default:
-      hits = [];
+      throw new Error('Unsupported search mode.');
   }
 
   return {
@@ -496,17 +479,9 @@ function runSearchInternal(request: SearchRequest): SearchResponse {
 
 const workerAPI: SearchWorkerAPI = {
   async runSearch(request: SearchRequest): Promise<SearchResponse> {
-    try {
-      return runSearchInternal(request);
-    } catch (error) {
-      // Log error for debugging and return empty results instead of crashing worker
-      console.error('Search worker error:', error);
-      return {
-        mode: request.mode,
-        query: request.query,
-        hits: [],
-      };
-    }
+    // Comlink propagates failures to the caller. Invalid input or failed work is
+    // not evidence that the selected genome contains no matching sequence.
+    return runSearchInternal(request);
   },
 
   // Ping method for SearchOverlay to verify worker is ready

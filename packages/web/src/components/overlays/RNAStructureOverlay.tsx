@@ -708,7 +708,7 @@ export function RNAStructureOverlay({
               {analysis.regulatoryHypotheses.map((hypothesis, index) => <RegulatoryCard key={index} colors={colors}
                 hypothesis={{ ...hypothesis, start: source.start + hypothesis.start, end: source.start + hypothesis.end }} />)}
             </div>
-          </details>
+          </details>}
           <p style={{ color: colors.textMuted }}>{analysis.method.limitations}</p>
         </>}
     </div>

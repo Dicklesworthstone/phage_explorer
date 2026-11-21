@@ -22,22 +22,23 @@ import {
   type SearchFeature,
   type SearchRequest,
   type SearchResponse,
-  type FuzzySearchEntry,
-  type FuzzySearchResult,
 } from '../../workers';
 
 type StrandOption = SearchOptions['strand'];
-
-type SearchOverlayFuzzyMeta = {
-  feature: SearchFeature;
-  label: string;
-  matchType: string;
-};
 
 interface SearchOverlayProps {
   repository: PhageRepository | null;
   currentPhage: PhageFull | null;
 }
+
+interface SearchSource {
+  repository: PhageRepository;
+  phage: PhageFull;
+  loadKey: number;
+  sequence: string;
+  features: SearchFeature[];
+}
+const EMPTY_HITS: SearchHit[] = [];
 
 const MODES: Array<{ id: SearchMode; label: string }> = [
   { id: 'sequence', label: 'Sequence' },
@@ -78,12 +79,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   });
 }
 
-function extractContext(sequence: string, start: number, end: number, pad = 20): string {
-  const s = Math.max(0, start - pad);
-  const e = Math.min(sequence.length, end + pad);
-  return sequence.slice(s, e);
-}
-
 export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps): React.ReactElement | null {
   const { isOpen, close } = useOverlay();
   const overlayOpen = isOpen('search');
@@ -93,23 +88,38 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   const [mode, setMode] = useState<SearchMode>('sequence');
   const [query, setQuery] = useState('');
   const [options, setOptions] = useState<SearchOptions>(DEFAULT_OPTIONS);
-  const [sequence, setSequence] = useState<string>('');
-  const [features, setFeatures] = useState<SearchFeature[]>([]);
-  const [hits, setHits] = useState<SearchHit[]>([]);
   const [status, setStatus] = useState<'idle' | 'loading' | 'searching'>('idle');
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [searchError, setSearchError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<string>('');
   const [workerReady, setWorkerReady] = useState(false);
   const [workerError, setWorkerError] = useState<string | null>(null);
   const [workerInitKey, setWorkerInitKey] = useState(0);
   const [sequenceLoadKey, setSequenceLoadKey] = useState(0);
   const [manualSearchTrigger, setManualSearchTrigger] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [loaded, setLoaded] = useState<{
+    repository: PhageRepository; phage: PhageFull; loadKey: number;
+    source: SearchSource | null; error: string | null;
+  } | null>(null);
+  // Ownership is checked while rendering, before effects can clear stale state.
+  // Numeric IDs alone are reusable across catalog generations and local inputs.
+  const currentLoad = loaded?.repository === repository && loaded?.phage === currentPhage
+    && loaded?.loadKey === sequenceLoadKey ? loaded : null;
+  const source = currentLoad?.source ?? null;
+  const sequence = source?.sequence ?? '';
+  const loadError = currentLoad?.error ?? null;
+  const request = useMemo<SearchRequest | null>(() => source ? {
+    mode, query: query.trim(), sequence: source.sequence, features: source.features,
+    options: { ...options, fuzzy: mode === 'gene' || mode === 'feature' },
+  } : null, [source, mode, query, options]);
+  const [outcome, setOutcome] = useState<{
+    request: SearchRequest; hits: SearchHit[]; summary: string; error: string | null;
+  } | null>(null);
+  const currentOutcome = outcome?.request === request ? outcome : null;
+  const hits = currentOutcome?.hits ?? EMPTY_HITS;
+  const summary = currentOutcome?.summary ?? '';
+  const searchError = currentOutcome?.error ?? null;
 
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
-  const searchAbortRef = useRef<number | null>(null);
   const searchSeqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLUListElement>(null);
@@ -190,7 +200,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
 
   const hasDatabase = Boolean(repository);
   const hasPhage = Boolean(currentPhage);
-  const isInitializing = (!workerReady && !workerError) || status === 'loading';
+  const isInitializing = (!workerReady && !workerError) || (!!repository && !!currentPhage && !currentLoad);
   const hasSequence = sequence.length > 0;
   const showSearchUI = overlayOpen && hasDatabase && hasPhage && !workerError && !isInitializing && !loadError && hasSequence;
 
@@ -212,10 +222,11 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
 
   // Navigate to selected result
   const navigateToResult = useCallback((hit: SearchHit) => {
+    if (!hits.includes(hit)) return;
     const target = viewMode === 'aa' ? Math.floor(hit.position / 3) : hit.position;
     setScrollPosition(target);
     close('search');
-  }, [close, setScrollPosition, viewMode]);
+  }, [close, setScrollPosition, viewMode, hits]);
 
   // Keyboard handler for navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -260,32 +271,31 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
     if (!overlayOpen) return;
     if (!repository || !currentPhage) {
       setStatus('idle');
-      setSequence('');
-      setFeatures([]);
-      setHits([]);
-      setSummary('');
-      setLoadError(null);
-      setSearchError(null);
+      setLoaded(null);
+      setOutcome(null);
       return;
     }
 
     let cancelled = false;
     setStatus('loading');
-    setLoadError(null);
-    setSearchError(null);
-    setSequence('');
-    setFeatures([]);
-    setHits([]);
-    setSummary('');
+    setLoaded(null);
+    setOutcome(null);
 
     const load = async () => {
       try {
-        const length = currentPhage.genomeLength ?? 0;
-        const seq = await repository.getSequenceWindow(currentPhage.id, 0, length);
+        const length = await repository.getFullGenomeLength(currentPhage.id);
         if (cancelled) return;
-        setSequence(seq);
+        if (!Number.isSafeInteger(length) || length < 0 || length > 5_000_000) throw new Error('Search requires a complete genome of at most 5,000,000 bases.');
+        const [seq, genes] = await Promise.all([
+          repository.getSequenceWindow(currentPhage.id, 0, length),
+          repository.getGenes(currentPhage.id),
+        ]);
+        if (cancelled) return;
+        if (seq.length !== length) throw new Error('The complete genome could not be read. Reload before searching.');
 
-        const mappedFeatures: SearchFeature[] = (currentPhage.genes ?? []).map((g) => ({
+        // A repository replacement can precede the store's PhageFull refresh.
+        // Load annotations with the bases, never from that previous UI object.
+        const mappedFeatures: SearchFeature[] = genes.map((g) => ({
           start: g.startPos,
           end: g.endPos,
           strand: g.strand === '+' || g.strand === '-' ? g.strand : 'both',
@@ -293,13 +303,14 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
           product: g.product ?? undefined,
           type: g.type ?? 'CDS',
         }));
-        setFeatures(mappedFeatures);
+        const source: SearchSource = { repository, phage: currentPhage, loadKey: sequenceLoadKey, sequence: seq, features: mappedFeatures };
+        setLoaded({ repository, phage: currentPhage, loadKey: sequenceLoadKey, source, error: null });
         setStatus('idle');
       } catch (e) {
         if (cancelled) return;
         setStatus('idle');
         const msg = e instanceof Error ? e.message : 'Failed to load sequence';
-        setLoadError(msg);
+        setLoaded({ repository, phage: currentPhage, loadKey: sequenceLoadKey, source: null, error: msg });
       }
     };
 
@@ -308,90 +319,23 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
     return () => {
       cancelled = true;
     };
-  }, [currentPhage, isOpen, repository, sequenceLoadKey]);
-
-  // Build request payload
-  const request = useMemo<SearchRequest | null>(() => {
-    if (!sequence || !currentPhage) return null;
-    return {
-      mode,
-      query,
-      sequence,
-      features,
-      options,
-    };
-  }, [sequence, currentPhage, mode, query, features, options]);
-
-  // Keep fuzzy indices in sync for fast gene/feature search.
-  useEffect(() => {
-    if (!overlayOpen) return;
-    if (!workerReady || !workerRef.current) return;
-    if (!currentPhage?.id) return;
-    if (features.length === 0) return;
-
-    const geneIndex = `search-overlay-gene:${currentPhage.id}`;
-    const featureIndex = `search-overlay-feature:${currentPhage.id}`;
-
-    const geneEntries: Array<FuzzySearchEntry<SearchOverlayFuzzyMeta>> = [];
-    const featureEntries: Array<FuzzySearchEntry<SearchOverlayFuzzyMeta>> = [];
-
-    for (let idx = 0; idx < features.length; idx++) {
-      const f = features[idx];
-
-      const name = f.name ?? '';
-      const product = f.product ?? '';
-      const geneText = `${name} ${product}`.trim();
-      if (geneText) {
-        geneEntries.push({
-          id: `${currentPhage.id}:${idx}:${f.start}-${f.end}`,
-          text: geneText,
-          meta: {
-            feature: f,
-            label: f.name || f.product || 'Gene/feature match',
-            matchType: 'gene/annotation',
-          },
-        });
-      }
-
-      const type = f.type ?? '';
-      const featureText = `${type} ${name} ${product}`.trim();
-      if (featureText) {
-        featureEntries.push({
-          id: `${currentPhage.id}:${idx}:${f.start}-${f.end}`,
-          text: featureText,
-          meta: {
-            feature: f,
-            label: `${type || 'Feature'}${name ? `: ${name}` : ''}`,
-            matchType: 'feature',
-          },
-        });
-      }
-    }
-
-    void workerRef.current.setFuzzyIndex({ index: geneIndex, entries: geneEntries }).catch(() => {});
-    void workerRef.current.setFuzzyIndex({ index: featureIndex, entries: featureEntries }).catch(() => {});
-  }, [currentPhage?.id, features, isOpen, workerReady]);
+  }, [currentPhage, overlayOpen, repository, sequenceLoadKey]);
 
   const runSearch = useCallback(
     async (req: SearchRequest, seq: number) => {
       if (!workerRef.current) return;
       try {
         setStatus('searching');
-        setSearchError(null);
-        setSummary('');
         const res = (await workerRef.current.runSearch(req)) as SearchResponse;
         if (searchSeqRef.current !== seq) return;
-        setHits(res.hits);
-        const truncated = req.options?.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
-        setSummary(
-          `${res.hits.length}/${truncated} results for "${res.query}" in ${res.mode} mode${res.hits.length === truncated ? ' (truncated)' : ''}`
-        );
+        if (res.mode !== req.mode || res.query !== req.query || !Array.isArray(res.hits)) throw new Error('Search engine returned results for a different query.');
+        const limit = req.options?.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
+        setOutcome({ request: req, hits: res.hits, error: null,
+          summary: `${res.hits.length}/${limit} results for "${res.query}" in ${res.mode} mode${res.hits.length === limit ? ' (result limit reached)' : ''}` });
       } catch (e) {
         if (searchSeqRef.current !== seq) return;
         const msg = e instanceof Error ? e.message : 'Search failed';
-        setSearchError(msg);
-        setHits([]);
-        setSummary('');
+        setOutcome({ request: req, hits: [], summary: '', error: msg });
       } finally {
         if (searchSeqRef.current !== seq) return;
         setStatus('idle');
@@ -400,112 +344,22 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
     []
   );
 
-  // Debounced search on query/options/mode
+  // Invalidate at cleanup, not when the next debounce timer fires. A reply
+  // during the 200 ms input window cannot repopulate a newer query or source.
   useEffect(() => {
-    if (!overlayOpen) return;
-    const q = query.trim();
-    if (!q) {
-      // Invalidate any in-flight searches so results can't repopulate after clearing the query.
-      searchSeqRef.current += 1;
-      if (searchAbortRef.current) {
-        window.clearTimeout(searchAbortRef.current);
-        searchAbortRef.current = null;
-      }
-      setHits([]);
-      setSummary('');
-      setSearchError(null);
+    const seq = ++searchSeqRef.current;
+    setOutcome(null);
+    if (!overlayOpen || !workerReady || !request?.query || !request.sequence) {
       setStatus('idle');
       return;
     }
-
-    if (searchAbortRef.current) {
-      window.clearTimeout(searchAbortRef.current);
-    }
-    searchAbortRef.current = window.setTimeout(() => {
-      const seq = ++searchSeqRef.current;
-      setSearchError(null);
-
-      const shouldUseFuzzy =
-        (mode === 'gene' || mode === 'feature') &&
-        workerReady &&
-        workerRef.current &&
-        currentPhage?.id &&
-        features.length > 0 &&
-        sequence.length > 0;
-      if (!shouldUseFuzzy) {
-        if (request) void runSearch(request, seq);
-        return;
-      }
-
-      void (async () => {
-        try {
-          setStatus('searching');
-          setSearchError(null);
-          setSummary('');
-          const indexName =
-            mode === 'gene' ? `search-overlay-gene:${currentPhage!.id}` : `search-overlay-feature:${currentPhage!.id}`;
-          const limit = options.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
-
-          const results = (await workerRef.current!.fuzzySearch({
-            index: indexName,
-            query: q,
-            limit,
-          })) as Array<FuzzySearchResult<SearchOverlayFuzzyMeta>>;
-          if (searchSeqRef.current !== seq) return;
-
-          const mapped: SearchHit[] = results
-            .map((r): SearchHit | null => {
-              const f = r.meta?.feature;
-              if (!f) return null;
-              const strand: SearchHit['strand'] = f.strand === '-' ? '-' : '+';
-              return {
-                position: f.start,
-                end: f.end,
-                strand,
-                label: r.meta?.label ?? r.text,
-                context: extractContext(sequence, f.start, f.end),
-                feature: f,
-                matchType: r.meta?.matchType,
-                score: r.score,
-              } as SearchHit;
-            })
-            .filter((h): h is SearchHit => h !== null);
-
-          setHits(mapped);
-          setSummary(
-            `${mapped.length}/${limit} results for "${q}" in ${mode} mode${mapped.length === limit ? ' (truncated)' : ''}`
-          );
-        } catch (e) {
-          if (searchSeqRef.current !== seq) return;
-          const msg = e instanceof Error ? e.message : 'Search failed';
-          setSearchError(msg);
-          setHits([]);
-          setSummary('');
-        } finally {
-          if (searchSeqRef.current !== seq) return;
-          setStatus('idle');
-        }
-      })();
-    }, 200);
-
+    setStatus('searching');
+    const timer = window.setTimeout(() => { void runSearch(request, seq); }, 200);
     return () => {
-      if (searchAbortRef.current) {
-        window.clearTimeout(searchAbortRef.current);
-      }
+      searchSeqRef.current++;
+      window.clearTimeout(timer);
     };
-  }, [
-    currentPhage,
-    features,
-    isOpen,
-    mode,
-    options.maxResults,
-    query,
-    request,
-    runSearch,
-    sequence,
-    workerReady,
-    manualSearchTrigger,
-  ]);
+  }, [overlayOpen, request, runSearch, workerReady, manualSearchTrigger]);
 
   const toggleStrand = (value: StrandOption) => {
     setOptions((prev) => ({ ...prev, strand: value }));
@@ -704,7 +558,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                   mode === 'sequence'
                     ? 'ATCG...'
                     : mode === 'motif'
-                      ? 'IUPAC motif (e.g., TATAWR or regex fragment)'
+                      ? 'IUPAC motif (e.g., TATAWR)'
                       : mode === 'gene'
                         ? 'Gene name/product'
                         : mode === 'feature'
@@ -722,6 +576,10 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                 }}
               />
               {renderOptions()}
+              <p style={{ color: colors.textDim, fontSize: '0.9rem', margin: 0 }}>
+                Positions are 0-based; range ends are exclusive. A single position selects one base.
+                {mode === 'motif' && ' Motifs include overlapping matches; ambiguity in the query matches resolved A/C/G/T bases.'}
+              </p>
             </div>
 
             {(summary || status === 'searching') && (
@@ -749,6 +607,8 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                   details={searchError}
                   onRetry={() => setManualSearchTrigger((t) => t + 1)}
                 />
+              ) : status === 'searching' ? (
+                <OverlayLoadingState message="Searching the selected genome…" />
               ) : hits.length === 0 ? (
                 <OverlayEmptyState
                   message={query.trim().length === 0 ? 'Type to search within the genome and annotations.' : 'No matches found.'}

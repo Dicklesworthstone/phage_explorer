@@ -79,6 +79,8 @@ export interface SearchOptions {
   caseSensitive?: boolean;
   mismatches?: number;
   maxResults?: number;
+  /** Rank annotation subsequence matches within this request's exact feature snapshot. */
+  fuzzy?: boolean;
 }
 
 export interface SearchRequest {
