@@ -4,7 +4,33 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
-## Unreleased — source changes on main
+## [v1.9.0] — 2026-11-21
+
+[Compare: v1.8.0...v1.9.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.8.0...v1.9.0)
+
+The downloads keep the v1.8.0 format: five raw standalone binaries (`linux-x64`, `linux-arm64`, `macos-arm64`, `macos-x64`, `windows-x64.exe`), each with a `.sha256` sidecar, the unchanged `phage.db` (SHA-256 `c07f30d2…`), and `sha256.txt`. Both macOS binaries (`macos-arm64` and `macos-x64`) are natively ad-hoc Apple `codesign`-signed and verified.
+
+### Search, workflow replay & database snapshots
+
+- **Source-bound genome search** — overlapping IUPAC motif matches are enumerated on both strands, zero-based half-open coordinate queries are validated and deduplicated, and loaded sequence/annotation results stay bound to repository, phage, and request identity so stale worker replies cannot overwrite active results. [Commit 9e08903](https://github.com/Dicklesworthstone/phage_explorer/commit/9e089031ab3e30791cd9c52c7d7df21126b95f3b).
+- **Equivalent imported source replay** — saved workflows accept already-imported genomes with identical verified sequence and annotations across filename, line-ending, or wrapping differences while rejecting changed sequences, annotations, original annotation content, and mid-execution source replacement. [Commit 00ad83e](https://github.com/Dicklesworthstone/phage_explorer/commit/00ad83e9125efd2552014ab1f7f962b9348b2e13).
+- **Live WAL snapshot publication** — web database builds serialize transaction-consistent snapshots from live WAL-mode SQLite databases without checkpointing or modifying the source file. [Commit 26efee5](https://github.com/Dicklesworthstone/phage_explorer/commit/26efee5).
+
+### Standalone CLI, growth, dot-plot & temporal phylogeny workflows
+
+- **Database-free standalone research subcommands** — the compiled binary embeds workers and headless subcommands for `epistasis`, `environment`, `host-metabolism`, `protein-alignment`, `protein-structure`, `protein-interaction`, `ancestral`, `mosaic`, `codon-selection`, `cds-consequences`, `growth`, `pfu-growth`, `plaque-growth`, `resistance-sim`, `spacer`, and `abundance`, alongside multi-step research workflow authoring and complete-result archive replay ([39c6ea8](https://github.com/Dicklesworthstone/phage_explorer/commit/39c6ea8), [6a0347f](https://github.com/Dicklesworthstone/phage_explorer/commit/6a0347f), [5569933](https://github.com/Dicklesworthstone/phage_explorer/commit/5569933)).
+- **Reproducible restriction digests and packed pairwise dot plots** — exact restriction digest experiments, packed-buffer pairwise dot plots with transferable arrays, and lossless JSON/TSV replay across browser and terminal ([0898b05](https://github.com/Dicklesworthstone/phage_explorer/commit/0898b05), [fce5507](https://github.com/Dicklesworthstone/phage_explorer/commit/fce5507), [4cc999e](https://github.com/Dicklesworthstone/phage_explorer/commit/4cc999e)).
+- **Exposure-aware and inclusive censored plaque growth** — Poisson exposure-aware plaque-count fitting with inclusive `exact`/`at-most`/`at-least` count bounds, finite plateau validation, and corrected-PFU replay ([ba4775f](https://github.com/Dicklesworthstone/phage_explorer/commit/ba4775f), [1bc433c](https://github.com/Dicklesworthstone/phage_explorer/commit/1bc433c), [586ff91](https://github.com/Dicklesworthstone/phage_explorer/commit/586ff91)).
+- **Alignment-backed temporal phylogeny and strict-clock dating** — portable alignment-to-dating experiments, temporal residual and node-date exports, and K80 distance support across browser and CLI ([91e3033](https://github.com/Dicklesworthstone/phage_explorer/commit/91e3033), [df448a3](https://github.com/Dicklesworthstone/phage_explorer/commit/df448a3), [0af075f](https://github.com/Dicklesworthstone/phage_explorer/commit/0af075f)).
+
+### Installer
+
+- **Minified GitHub API JSON parsing** — `install.sh` resolves the latest release `tag_name` even when GitHub returns minified single-line JSON and validates the tag format before proceeding. [Commit f5dc37a](https://github.com/Dicklesworthstone/phage_explorer/commit/f5dc37a).
+
+### Dependencies & quality gates
+
+- **Workspace dependency refresh & security fixes** — upgraded Vite (`8.3.2 -> 8.3.8`), `@vitejs/plugin-react` (`6.1.1 -> 6.3.0`), React/React DOM (`19.3.0 -> 19.3.1`), `sql.js` (`1.14.2 -> 1.17.0`), `three` & `@types/three` (`0.186 -> 0.187.0`), `zustand` (`5.1.0`), `immer` (`11.2.10`), `drizzle-orm` (`0.45.4`), `pako` (`3.0.3`), `@tanstack/react-query` (`5.108.2`), ESLint (`10.15.0`), `typescript-eslint` (`8.73.0`), `@types/bun` (`1.4.5`), Playwright (`1.65.1`), `wasm-pack` (`0.15.1`), `@huggingface/transformers` (`4.3.2`), and transitive lockfile packages (`fast-uri` `3.1.9`, `serialize-javascript` `7.1.4`). Eliminated 11 audit advisories including all 6 Vite/`launch-editor` CVEs (1 high); 3 dev/build-tool-only moderate advisories remain (`glob`/`minimatch` in `workbox-build`/`eslint`, `satori` in unused `@vercel/og@1.0.1`). TypeScript stays at `6.0.3` (`typescript-eslint` `<6.1` peer) and `@vercel/og` stays pinned at `1.0.1` (`vercel/satori#801`). [Commit 11bffc7](https://github.com/Dicklesworthstone/phage_explorer/commit/11bffc7).
+- **Full lint, typecheck, and test hygiene** — repaired 6 ESLint errors, root & web TypeScript check regressions (including missing `SearchResultsSkeleton` child in `SearchOverlay` loading state and pairwise `dotplot.worker` type narrowing), and synchronized 9 outdated test assertions with stricter post-v1.8.0 invariants. [Commit a5f583a](https://github.com/Dicklesworthstone/phage_explorer/commit/a5f583a).
 
 ### Genomic neighbors in complete signature space
 
@@ -320,6 +346,13 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   it no longer treats missing or partial diff evidence as identical sequences.
   The highlighted mask and coordinate table come from the same alignment.
   [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/7d71d500d4f7be292bb8516415425e5b8ac58578).
+
+### Known limitations
+
+- GC skew with the default 500 bp window and 125 bp step covers genomes up to about 2.5 Mb. Larger imports, up to the 5 Mb import limit, need a larger step.
+- The command palette (Ctrl+P), where Local genomes lives, unlocks at the power tier (after about 60 minutes of use, or by manual promotion).
+- `install.sh --with-database` replaces `phage.db`, and preferences saved in it go with it ([issue #10](https://github.com/Dicklesworthstone/phage_explorer/issues/10)).
+- Optional WASM regeneration still needs a tracked version contract: [issue #6](https://github.com/Dicklesworthstone/phage_explorer/issues/6).
 
 ## [v1.8.0] — 2026-10-14
 
