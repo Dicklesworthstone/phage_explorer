@@ -11,8 +11,9 @@ import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/g
 import { parseAnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandPlan, parseCommandTape } from '../../../core/src/command-session';
 import { parseWorkflowResults } from '../../../core/src/workflow-results';
+import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import type { ResearchView } from '../../../web/src/keyboard/ResearchWorkflow';
+import type { ResearchView, ResearchPangenomeParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 import { TerminalGenomeSession } from '../local-genome-session';
@@ -194,6 +195,89 @@ describe('Ink research workflow workspace', () => {
       assert.deepEqual(digest.enzymes, ['BamHI', 'EcoRI']); assert.equal(digest.topology, 'linear');
       assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
       assert.equal(genomes.getSnapshot().review, null);
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
+  it('authors and edits an annotated multi-genome comparison through keyboard controls, then records and verifies real variants', async () => {
+    const reference = (await importLocalGenomes({ name: 'reference.gb',
+      text: 'LOCUS       reference 18 bp DNA linear\nACCESSION   SAME\nFEATURES             Location/Qualifiers\n'
+        + '     CDS             1..9\n                     /gene="first"\n'
+        + '     CDS             10..18\n                     /gene="second"\n'
+        + 'ORIGIN\n        1 ATGAAATAAATGAAATAA\n//\n' })).genomes[0];
+    const query = (await importLocalGenomes({ name: 'query.fa', text: '>SAME\nATGAAGTAAATGAAGTAA\n' })).genomes[0];
+    const wrong = (await importLocalGenomes({ name: 'unrelated.gb', text: reference.original.text.replace('reference', 'unrelated').replace('ATGAAATAAATGAAATAA', 'CCCCCCCCCCCCCCCCCC') })).genomes[0];
+    const genomes = new TerminalGenomeSession(null, [reference, query, wrong]), session = new TerminalResearchSession();
+    const ids = [reference, query].map(genome => genome.phage.localGenome!.contentId);
+    assert(await session.createDraft('Graph keyboard experiment', genomes.exportBundle()));
+    const test = terminal(session, genomes, () => assert.fail('the graph editor owns its shortcuts'), () => assert.fail('drafts never install genomes'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key); await waitFor(() => test.output().slice(start).includes(expected));
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    const replace = async (before: string, after: string) => {
+      for (const _character of before) { test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10)); }
+      test.input(after); await new Promise(resolve => setTimeout(resolve, 30));
+    };
+    try {
+      await waitFor(test.ready);
+      await press('i', 'Choose a workflow action');
+      for (let index = 0; index < 6; index++) await down();
+      await press('\r', 'Choose the captured reference genome');
+      test.input('q'); await new Promise(resolve => setTimeout(resolve, 20));
+      await press('\r', 'Choose comparison genomes');
+      await press(' ', 'The selected reference stays');
+      await press('\r', 'Select 2–24 distinct captured genomes');
+      await down(); await press(' ', '2 selected genomes');
+      const annotationStart = test.output().length;
+      await press('\r', 'Choose exact-reference GenBank annotations');
+      assert(!test.output().slice(annotationStart).includes('unrelated'), 'different annotation bases are never offered as a reference');
+      await down(); await press('\r', 'Choose reference CDS');
+      await down(); await press(' ', '[x] first');
+      await down(); await press(' ', '[x] second');
+      await press('\r', 'Choose the alignment method');
+      await down(); await press('\r', 'Terminal gaps (missing or alleles)');
+      await replace('missing', 'alleles'); await press('\r', 'Input normalization');
+      await press('\r', 'Mismatch penalty'); await replace('4', '3');
+      await press('\r', 'Gap-opening penalty'); await replace('6', '5');
+      await press('\r', 'Gap-extension penalty'); test.input('\r');
+      await waitFor(() => session.getSnapshot().draft!.plan.commands.length === 1);
+      const step = structuredClone(session.getSnapshot().draft!.plan.commands[0]);
+      const parameters = step.parameters as unknown as ResearchPangenomeParameters;
+      assert.equal(step.actionId, ActionIds.OverlayPangenomeGraph);
+      assert.deepEqual(parameters.contentIds, [...ids].sort());
+      assert.deepEqual(parameters.annotation, { contentId: ids[0], geneIds: [1, 2] });
+      assert.deepEqual(parameters.options, { referenceId: `local-${ids[0]}`, alignment: 'affine', terminalGaps: 'alleles',
+        affinePenalties: { mismatch: 3, gapOpen: 5, gapExtend: 1 } });
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      await waitFor(() => test.output().includes('2 genomes; reference'));
+
+      // Reopening the form preserves every selected source, CDS and penalty.
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose the captured reference genome');
+      await press('\r', 'Choose comparison genomes'); await press('\r', 'Choose exact-reference GenBank annotations');
+      await press('\r', 'Choose reference CDS'); await press('\r', 'Choose the alignment method');
+      await press('\r', 'Terminal gaps (missing or alleles)'); await press('\r', 'Input normalization');
+      await press('\r', 'Mismatch penalty'); await press('\r', 'Gap-opening penalty');
+      await press('\r', 'Gap-extension penalty'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step]);
+      await press('i', 'Choose a workflow action');
+      for (let index = 0; index < 6; index++) await down();
+      await press('\r', 'Choose the captured reference genome'); await press('\u001b', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step], 'discarding another editor does not change the saved draft');
+
+      test.input('c'); await waitFor(() => !!session.getSnapshot().document && !session.getSnapshot().busy);
+      const record = session.analysis(1), graph = await replayAlignmentPangenome(JSON.stringify(record));
+      assert.deepEqual(graph.graph.variants.map(row => [row.referenceStart, row.reference, row.alternate]), [[5, 'A', 'G'], [14, 'A', 'G']]);
+      assert.equal(graph.graph.diagnostics.affine!.pairs[0].score, 6);
+      assert.equal(graph.cds!.consequences.length, 2);
+      for (const consequence of graph.cds!.consequences) {
+        assert.deepEqual(consequence.effects, ['synonymous']); assert.equal(consequence.queryProtein, 'MK*');
+      }
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      const baseline = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => !!session.getSnapshot().completedRun && !session.getSnapshot().busy);
+      assert.equal(session.availableResults()?.provenance, 'verified'); assert.equal(session.availableResults()!.json, baseline);
+      assert(!test.output().includes(reference.sequence) && !test.output().includes(query.sequence), 'the interactive editor never prints private sequences');
+      assert.equal(genomes.getSnapshot().review, null); assert.equal(genomes.getSnapshot().localCount, 3);
     } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
   });
 

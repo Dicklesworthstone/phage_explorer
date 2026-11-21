@@ -5,8 +5,9 @@ import { usePhageStore } from '@phage-explorer/state';
 import { analysisJson } from '../../../core/src/analysis-result';
 import { resolveExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { resolveRestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
+import { DEFAULT_AFFINE_PENALTIES, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import type { ResearchView } from '../../../web/src/keyboard/ResearchWorkflow';
+import { researchPangenomeParameters, type ResearchView, type ResearchPangenomeParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
 import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep } from '../terminal-research-session';
 import { readTerminalSize } from './terminal-size';
@@ -18,6 +19,7 @@ const editorActions = [
   { kind: 'codons', id: ActionIds.OverlayCodonAdaptation, label: 'CDS statistics + illustrative host model' },
   { kind: 'digest', id: ActionIds.OverlayGel, label: 'Restriction digest' },
   { kind: 'dot-plot', id: ActionIds.OverlayDotPlot, label: 'Self or ordered pairwise dot plot' },
+  { kind: 'pangenome', id: ActionIds.OverlayPangenomeGraph, label: 'Multi-genome pangenome + reference CDS consequences' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
@@ -38,6 +40,7 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
     case 'dot-plot': return [field('bins', 'Display bins (1–256)', 64), field('window', 'Comparison window (bases; must fit both inputs)', Math.min(20, source.bases))];
+    case 'pangenome': return []; // The multi-source editor owns these settings.
   }
 }
 function integer(value: string, label: string, signed = false): number {
@@ -45,6 +48,168 @@ function integer(value: string, label: string, signed = false): number {
     throw new Error(label + ' must be an explicit whole number.');
   }
   return Number(value);
+}
+
+const graphAlignments = [
+  { value: 'wavefront', label: 'Exact unit-edit wavefront alignment' },
+  { value: 'affine', label: 'Exact affine-gap alignment with explicit penalties' },
+  { value: 'global', label: 'Global locus alignment (bounded dynamic programming)' },
+  { value: 'provided', label: 'Use input columns unchanged (equal lengths required)' },
+] as const;
+
+/** Compose the existing multi-genome command without copying sequences into
+ * form state. The captured bundle is the only sequence/annotation source.
+ */
+function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
+  draft: TerminalResearchDraft; initial: TerminalResearchStep | null; rows: number;
+  onSave: (step: TerminalResearchStep) => void; onCancel: () => void;
+}): React.ReactElement {
+  const { colors } = usePhageStore(state => state.currentTheme);
+  const prior = initial?.actionId === ActionIds.OverlayPangenomeGraph
+    ? initial.parameters as unknown as ResearchPangenomeParameters : null;
+  const [stage, setStage] = useState<'reference' | 'members' | 'annotation' | 'cds' | 'alignment' | 'settings'>('reference');
+  const [referenceIndex, setReferenceIndex] = useState(Math.max(0,
+    draft.sources.findIndex(source => `local-${source.contentId}` === prior?.options.referenceId)));
+  const [members, setMembers] = useState<string[]>(prior ? [...prior.contentIds] : []);
+  const [memberIndex, setMemberIndex] = useState(0);
+  const [annotationId, setAnnotationId] = useState<string | null>(prior?.annotation?.contentId ?? null);
+  const [annotationIndex, setAnnotationIndex] = useState(0);
+  const [geneIds, setGeneIds] = useState<number[] | null>(prior?.annotation?.geneIds ? [...prior.annotation.geneIds] : null);
+  const [geneIndex, setGeneIndex] = useState(0);
+  const [alignmentIndex, setAlignmentIndex] = useState(Math.max(0, graphAlignments.findIndex(mode => mode.value === prior?.options.alignment)));
+  const [settings, setSettings] = useState<Setting[]>([]), [values, setValues] = useState<Record<string, string>>({});
+  const [settingIndex, setSettingIndex] = useState(0), [error, setError] = useState<string | null>(null);
+  const reference = draft.sources[referenceIndex], alignment = graphAlignments[alignmentIndex].value;
+  const annotations = draft.sources.filter(source => source.format === 'genbank'
+    && source.sequenceSha256 === reference.sequenceSha256 && source.bases === reference.bases);
+  const annotation = annotations.find(source => source.contentId === annotationId);
+  const genes = annotation?.genes.filter(gene => gene.type === 'CDS') ?? [];
+  const label = (source: TerminalResearchDraftSource) => terminalGenomeLabel(`${source.name} · ${source.accession}`)
+    + ` · ${source.bases} bp · ${source.topology}`;
+  const choices = stage === 'reference' ? draft.sources.map(label)
+    : stage === 'members' ? draft.sources.map(source => `${members.includes(source.contentId) ? '[x]' : '[ ]'} ${label(source)}${source === reference ? ' · REFERENCE' : ''}`)
+      : stage === 'annotation' ? ['No coding consequences', ...annotations.map(label)]
+        : stage === 'cds' ? [`${geneIds === null ? '[x]' : '[ ]'} All captured CDS`, ...genes.map(gene =>
+          `${geneIds?.includes(gene.id) ? '[x]' : '[ ]'} ${terminalGenomeLabel(gene.name || gene.locusTag || 'CDS')} · feature ${gene.id} · ${gene.startPos + 1}–${gene.endPos}`)]
+          : graphAlignments.map(mode => mode.label);
+  const cursor = stage === 'reference' ? referenceIndex : stage === 'members' ? memberIndex
+    : stage === 'annotation' ? annotationIndex : stage === 'cds' ? geneIndex : alignmentIndex;
+  const pageSize = Math.max(1, Math.min(8, rows - 18)), start = Math.floor(cursor / pageSize) * pageSize;
+  const beginSettings = () => {
+    const options = prior?.options;
+    const next: Setting[] = [{ key: 'terminalGaps', label: 'Terminal gaps (missing or alleles)', initial: options?.terminalGaps ?? 'missing' }];
+    if (alignment === 'wavefront' || alignment === 'affine') next.push({ key: 'normalization',
+      label: 'Input normalization (none, strand, circular)', initial: options?.normalization ?? 'none' });
+    if (alignment === 'affine') {
+      const penalties = options?.affinePenalties ?? DEFAULT_AFFINE_PENALTIES;
+      next.push({ key: 'mismatch', label: 'Mismatch penalty (1–64)', initial: String(penalties.mismatch) },
+        { key: 'gapOpen', label: 'Gap-opening penalty (0–64)', initial: String(penalties.gapOpen) },
+        { key: 'gapExtend', label: 'Gap-extension penalty per base (1–64)', initial: String(penalties.gapExtend) });
+    }
+    setSettings(next); setValues(Object.fromEntries(next.map(field => [field.key, field.initial])));
+    setSettingIndex(0); setStage('settings');
+  };
+  const save = (entered: Record<string, string>) => {
+    if (entered.terminalGaps !== 'missing' && entered.terminalGaps !== 'alleles') throw new Error('Choose missing or alleles for terminal gaps.');
+    const normalization = entered.normalization ?? 'none';
+    if (!['none', 'strand', 'circular'].includes(normalization)) throw new Error('Choose none, strand or circular normalization.');
+    const options: AlignmentGraphOptions = { referenceId: `local-${reference.contentId}`, alignment,
+      terminalGaps: entered.terminalGaps, ...(normalization === 'none' ? {} : { normalization: normalization as 'strand' | 'circular' }),
+      ...(alignment === 'affine' ? { affinePenalties: { mismatch: integer(entered.mismatch, 'Mismatch penalty'),
+        gapOpen: integer(entered.gapOpen, 'Gap-opening penalty'), gapExtend: integer(entered.gapExtend, 'Gap-extension penalty') } } : {}) };
+    const parameters = researchPangenomeParameters(members, options, annotationId ? { contentId: annotationId, geneIds } : null);
+    onSave({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(parameters) });
+  };
+  useInput((input, key) => {
+    if (key.escape) { onCancel(); return; }
+    if (stage === 'settings') {
+      if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
+      return;
+    }
+    if (input === ' ' && stage === 'members') {
+      const id = draft.sources[memberIndex].contentId;
+      if (id === reference.contentId) { setError('The selected reference stays in the comparison.'); return; }
+      setError(null);
+      setMembers(before => before.includes(id) ? before.filter(value => value !== id) : [...before, id]);
+      return;
+    }
+    if (input === ' ' && stage === 'cds') {
+      setError(null);
+      if (!geneIndex) setGeneIds(null);
+      else {
+        const id = genes[geneIndex - 1].id;
+        setGeneIds(before => before === null ? [id] : before.includes(id) ? before.filter(value => value !== id) : [...before, id]);
+      }
+      return;
+    }
+    if (key.return) {
+      try {
+        setError(null);
+        if (stage === 'reference') {
+          setMembers(before => before.includes(reference.contentId) ? before : [...before, reference.contentId]);
+          setMemberIndex(referenceIndex); setStage('members');
+        } else if (stage === 'members') {
+          if (members.length < 2 || members.length > 24) throw new Error('Select 2–24 distinct captured genomes, including the reference.');
+          setAnnotationIndex(Math.max(0, annotations.findIndex(source => source.contentId === annotationId) + 1));
+          setStage('annotation');
+        } else if (stage === 'annotation') {
+          const chosen = annotationIndex ? annotations[annotationIndex - 1] : null;
+          setAnnotationId(chosen?.contentId ?? null);
+          if (!chosen) { setGeneIds(null); setStage('alignment'); }
+          else {
+            if (!chosen.genes.some(gene => gene.type === 'CDS')) throw new Error('This reference annotation has no captured CDS. Choose no coding consequences.');
+            if (chosen.contentId !== prior?.annotation?.contentId) setGeneIds(null);
+            setGeneIndex(0); setStage('cds');
+          }
+        } else if (stage === 'cds') {
+          if (geneIds?.length === 0) throw new Error('Select at least one captured CDS or choose all CDS.');
+          setStage('alignment');
+        } else beginSettings();
+      } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
+      return;
+    }
+    const delta = key.downArrow ? 1 : key.upArrow ? -1 : key.rightArrow ? pageSize : key.leftArrow ? -pageSize : 0;
+    if (!delta) return;
+    const next = Math.max(0, Math.min(cursor + delta, choices.length - 1));
+    if (stage === 'reference') setReferenceIndex(next);
+    else if (stage === 'members') setMemberIndex(next);
+    else if (stage === 'annotation') setAnnotationIndex(next);
+    else if (stage === 'cds') setGeneIndex(next);
+    else setAlignmentIndex(next);
+  });
+  const field = settings[settingIndex];
+  const submitSetting = (value: string) => {
+    try {
+      setError(null); const next = { ...values, [field.key]: value }; setValues(next);
+      if (settingIndex + 1 < settings.length) setSettingIndex(settingIndex + 1);
+      else save(next);
+    } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
+  };
+  return <Box flexDirection="column">
+    <Text bold>Multi-genome pangenome and coding consequences</Text>
+    <Text wrap="truncate-end">Reference: {terminalGenomeLabel(reference.name)} · {members.length} selected genomes</Text>
+    {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
+    {stage === 'settings' && field ? <>
+      <Text wrap="truncate-end">{graphAlignments[alignmentIndex].label} · setting {settingIndex + 1}/{settings.length}</Text>
+      <Text>{field.label}</Text>
+      <TextInput key={field.key} value={values[field.key]} onChange={value => { if (value.length <= 256) setValues(before => ({ ...before, [field.key]: value })); }} onSubmit={submitSetting} />
+      {field.key === 'terminalGaps' && <Text color={colors.textDim}>Missing ends are excluded; alleles treats terminal differences as biological variants.</Text>}
+      {field.key === 'normalization' && <Text color={colors.textDim}>Circular asserts every selected sequence is a complete circle; linear annotations are refused.</Text>}
+      <Text color={colors.textDim}>Enter accepts · Shift+Tab edits the previous value · Esc discards</Text>
+    </> : <>
+      <Text bold>{stage === 'reference' ? 'Choose the captured reference genome'
+        : stage === 'members' ? 'Choose comparison genomes (Space toggles)'
+          : stage === 'annotation' ? 'Choose exact-reference GenBank annotations'
+            : stage === 'cds' ? 'Choose reference CDS (Space selects a subset)' : 'Choose the alignment method'}</Text>
+      {choices.slice(start, start + pageSize).map((text, offset) => <Text key={start + offset} wrap="truncate-end" color={start + offset === cursor ? colors.accent : colors.text}>
+        {start + offset === cursor ? '›' : ' '} {start + offset + 1}. {text}
+      </Text>)}
+      {stage === 'annotation' && <Text color={colors.textDim}>Only captured GenBank records with identical reference bases and origin are offered.</Text>}
+      {stage === 'cds' && <Text color={colors.textDim}>Space on a CDS starts/toggles a subset; Space on All restores the full CDS selection.</Text>}
+      <Text color={colors.textDim}>Up/Down select · Left/Right page · Enter continues · Esc discards</Text>
+    </>}
+    <Text color={colors.textDim}>Drafting runs no analyses. Genomes and original annotations remain in the private input bundle.</Text>
+  </Box>;
 }
 /** A form over canonical action IDs. It never creates a second executor or runs
  * an analysis while the user selects sources and reviews effective settings.
@@ -102,6 +267,7 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
   const cursor = stage === 'method' ? methodIndex : stage === 'source' ? sourceIndex : stage === 'comparison' ? comparisonIndex : geneIndex;
   const pageSize = Math.max(1, Math.min(8, rows - 15)), start = Math.floor(cursor / pageSize) * pageSize;
   useInput((_input, key) => {
+    if (action.kind === 'pangenome' && stage !== 'method') return;
     if (key.escape) { onCancel(); return; }
     if (stage === 'settings') {
       if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
@@ -140,6 +306,8 @@ function ResearchStepEditor({ draft, initial, rows, onSave, onCancel }: {
       else save(next);
     } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
   };
+  if (action.kind === 'pangenome' && stage !== 'method') return <PangenomeStepEditor
+    draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
   return <Box flexDirection="column">
     {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
     {stage === 'settings' && field ? <>
@@ -311,9 +479,11 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
           {detailLines.slice(detailStart, detailStart + perPage).map((text, index) => <Text key={detailStart + index} wrap="truncate-end">{text}</Text>)}
           <Text color={colors.textDim}>Lines {detailStart + 1}–{Math.min(detailStart + perPage, detailLines.length)} / {detailLines.length} · Esc returns to draft</Text>
         </> : draft.plan.commands.slice(start, start + perPage).map((step, offset) => {
-          const source = draft.sources.find(item => item.contentId === (step.parameters as Record<string, unknown>).contentId);
+          const graph = step.actionId === ActionIds.OverlayPangenomeGraph ? step.parameters as unknown as ResearchPangenomeParameters : null;
+          const source = draft.sources.find(item => graph ? `local-${item.contentId}` === graph.options.referenceId
+            : item.contentId === (step.parameters as Record<string, unknown>).contentId);
           return <Text key={start + offset} wrap="truncate-end" color={start + offset === selected ? colors.accent : colors.text}>
-            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {terminalGenomeLabel(source?.name ?? 'missing source')}
+            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {graph ? `${graph.contentIds.length} genomes; reference ` : ''}{terminalGenomeLabel(source?.name ?? 'missing source')}
           </Text>;
         })}
         <Text>[I] Add · [E] Edit · [X] Remove step · [ / ] Reorder · Enter reviews parameters</Text>

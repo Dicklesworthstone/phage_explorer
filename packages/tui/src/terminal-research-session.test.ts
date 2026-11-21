@@ -9,8 +9,10 @@ import { parseCommandTape, parseCommandPlan, serializeCommandPlan, serializeComm
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, serializeWorkflowResults } from '../../core/src/workflow-results';
 import type { GCSkewWindow } from '../../core/src/analysis/gc-skew';
+import { replayAlignmentPangenome } from '../../core/src/analysis/alignment-pangenome';
 import type { PhageRepository } from '../../db-runtime/src/types';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
+import { researchPangenomeParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from './research-replay';
 import { runTerminalResearchWorker } from '../../../scripts/research-workflow';
 import { TerminalGenomeSession, type TerminalGenomeAccepted } from './local-genome-session';
@@ -37,6 +39,17 @@ async function fixture() {
   await writeFile(file, authored.tapeJson, { flag: 'wx', mode: 0o600 });
   return { directory, file, imported, genome, view, tape: authored.tapeJson, archive: authored.allResultsJson! };
 }
+async function graphFixture() {
+  const reference = (await importLocalGenomes({ name: 'reference.gb',
+    text: 'LOCUS       SAME 9 bp DNA linear\nACCESSION   SAME\nFEATURES             Location/Qualifiers\n'
+      + '     CDS             1..9\n                     /gene="known"\n     misc_feature    4..6\n'
+      + 'ORIGIN\n        1 ATGAAATAA\n//\n' })).genomes[0];
+  const queries = (await importLocalGenomes({ name: 'queries.fa', text: '>SAME\nATGAAGTAA\n>STOP\nATGAAATAG\n' })).genomes;
+  const genomes = [reference, ...queries], ids = genomes.map(genome => genome.phage.localGenome!.contentId);
+  return { reference, genomes, ids, parameters: researchPangenomeParameters(ids,
+    { referenceId: `local-${ids[0]}`, alignment: 'affine', terminalGaps: 'alleles', affinePenalties: { mismatch: 3, gapOpen: 5, gapExtend: 1 } },
+    { contentId: ids[0], geneIds: [1] }) };
+}
 async function absent(path: string) { await assert.rejects(stat(path), { code: 'ENOENT' }); }
 async function waitFor(predicate: () => boolean) {
   const end = Date.now() + 5000;
@@ -47,7 +60,7 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
-  it('authors all six supported step types from captured inputs and exports a new baseline before separately verifying it', async () => {
+  it('authors six sequence step types from captured inputs and exports a new baseline before separately verifying it', async () => {
     const f = await fixture(), session = new TerminalResearchSession();
     assert(await session.load(f.file)); assert(await session.replay());
     const previous = session.getSnapshot().completedRun, selected = structuredClone(f.view);
@@ -91,6 +104,91 @@ describe('interactive terminal research sessions', () => {
     assert.equal(await session.replay(), true, session.getSnapshot().error ?? '');
     assert.equal(session.availableResults()?.provenance, 'verified');
     assert.equal(session.availableResults()!.json, baseline);
+    session.cancel();
+  });
+
+  it('authors a three-genome graph with exact GenBank CDS, exports every input and result, then freshly replays the archive', async () => {
+    const f = await graphFixture(), session = new TerminalResearchSession();
+    const bundle = exportLocalGenomeBundle(f.genomes);
+    assert(await session.createDraft('Captured graph and coding consequences', bundle));
+    const sourceSummary = JSON.stringify(session.getSnapshot().draft!.sources);
+    assert(!sourceSummary.includes('ATGAAATAA') && !sourceSummary.includes('ATGAAGTAA'), 'draft summaries never copy private bases');
+    session.setStep({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(f.parameters) });
+    assert.equal(session.getSnapshot().document, null, 'choosing sources and settings runs no analysis');
+    // Later imports or caller edits cannot rewrite the captured command inputs.
+    f.reference.sequence = 'CCCCCCCCC'; f.reference.original.text = '>changed\nCCCCCCCCC\n';
+    assert.equal(await session.recordDraft(), true, session.getSnapshot().error ?? '');
+    const record = session.analysis(1), graph = await replayAlignmentPangenome(JSON.stringify(record));
+    assert.equal(record.method.id, 'alignment-pangenome');
+    assert.deepEqual(record.parameters.graph, f.parameters.options);
+    assert.deepEqual(graph.graph.variants.map(variant => [variant.referenceStart, variant.reference, variant.alternate]), [[5, 'A', 'G'], [8, 'A', 'G']]);
+    assert.deepEqual(graph.graph.diagnostics.affine!.pairs.map(pair => pair.score), [3, 3]);
+    assert.equal(graph.cds!.consequences.length, 2);
+    for (const consequence of graph.cds!.consequences) {
+      assert.deepEqual(consequence.effects, ['synonymous']);
+      assert.equal(consequence.queryProtein, 'MK*');
+    }
+    assert.equal(session.availableResults()?.provenance, 'recorded');
+    const directory = await mkdtemp(join(tmpdir(), 'phage-terminal-graph-'));
+    const planPath = join(directory, 'plan.json'), tapePath = join(directory, 'tape.json'), archivePath = join(directory, 'archive.json'), analysisPath = join(directory, 'analysis.json');
+    assert(await session.save(planPath, 'plan')); assert(await session.save(tapePath, 'tape'));
+    assert(await session.save(archivePath)); assert(await session.save(analysisPath, 1));
+    const plan = parseCommandPlan(await readFile(planPath, 'utf8')), tape = parseCommandTape(await readFile(tapePath, 'utf8'));
+    assert.deepEqual(plan.commands, [{ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(f.parameters) }]);
+    assert.deepEqual(plan.context, { bundle }); assert.deepEqual(tape.context, plan.context);
+    assert.deepEqual(await parseAnalysisRecord(await readFile(analysisPath, 'utf8')), record);
+    const baseline = await readFile(archivePath, 'utf8');
+    const fresh = new TerminalResearchSession();
+    assert(await fresh.load(archivePath)); assert.equal(fresh.availableResults()?.replayed, false);
+    assert(await fresh.replay(), fresh.getSnapshot().error ?? '');
+    assert.equal(fresh.availableResults()?.provenance, 'verified'); assert.equal(fresh.availableResults()!.json, baseline);
+    assert.deepEqual(fresh.analysis(1), record);
+    assert.equal(await fresh.save(archivePath), false, 'an existing complete archive cannot be overwritten');
+    assert.equal(await readFile(archivePath, 'utf8'), baseline);
+    session.cancel(); fresh.cancel();
+  });
+
+  it('rejects foreign graph sources, mismatched annotations and invalid biological or alignment settings without changing accepted work', async () => {
+    const f = await graphFixture(), session = new TerminalResearchSession();
+    const wrongAnnotation = (await importLocalGenomes({ name: 'wrong.gb', text: f.reference.original.text.replace('ATGAAATAA', 'ATGAAGTAA') })).genomes[0];
+    assert(await session.createDraft('Reviewed graph', exportLocalGenomeBundle([...f.genomes, wrongAnnotation])));
+    session.setStep({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(f.parameters) });
+    assert(await session.recordDraft(), session.getSnapshot().error ?? '');
+    const accepted = session.getSnapshot().document, before = serializeCommandPlan(session.getSnapshot().draft!.plan);
+    const foreign = 'f'.repeat(64);
+    for (const parameters of [
+      { ...f.parameters, contentIds: [f.ids[0], foreign] },
+      { ...f.parameters, contentIds: [f.ids[0], f.ids[0]] },
+      { ...f.parameters, contentIds: [f.ids[0]] },
+      { ...f.parameters, options: { ...f.parameters.options, referenceId: `local-${foreign}` } },
+      { ...f.parameters, options: { ...f.parameters.options, affinePenalties: { mismatch: 0, gapOpen: 5, gapExtend: 1 } } },
+      { ...f.parameters, options: { ...f.parameters.options, normalization: 'circular' } },
+      { ...f.parameters, annotation: { contentId: foreign, geneIds: null } },
+      { ...f.parameters, annotation: { contentId: f.ids[1], geneIds: null } },
+      { ...f.parameters, annotation: { contentId: wrongAnnotation.phage.localGenome!.contentId, geneIds: null } },
+      { ...f.parameters, annotation: { contentId: f.ids[0], geneIds: [2] } },
+      { ...f.parameters, annotation: { contentId: f.ids[0], geneIds: [999] } },
+      { ...f.parameters, annotation: { contentId: f.ids[0], geneIds: [] } },
+    ]) {
+      assert.throws(() => session.setStep({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(parameters) }, 0));
+      assert.equal(serializeCommandPlan(session.getSnapshot().draft!.plan), before);
+      assert.strictEqual(session.getSnapshot().document, accepted);
+    }
+    session.cancel();
+  });
+
+  it('bounds captured pangenome input and refuses an unchanged-column comparison with unequal lengths before recording', async () => {
+    const f = await graphFixture(), session = new TerminalResearchSession();
+    const short = (await importLocalGenomes({ name: 'short.fa', text: '>short\nATGAAA\n' })).genomes[0];
+    const oversized = (await importLocalGenomes({ name: 'long.fa', text: '>long\n' + 'A'.repeat(250001) })).genomes[0];
+    assert(await session.createDraft('Bounded inputs', exportLocalGenomeBundle([...f.genomes, short, oversized])));
+    const columnParameters = researchPangenomeParameters([f.ids[0], short.phage.localGenome!.contentId],
+      { referenceId: `local-${f.ids[0]}`, alignment: 'provided', terminalGaps: 'missing' });
+    assert.throws(() => session.setStep({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(columnParameters) }), /same length/);
+    const largeParameters = researchPangenomeParameters([f.ids[0], oversized.phage.localGenome!.contentId],
+      { referenceId: `local-${f.ids[0]}`, alignment: 'wavefront', terminalGaps: 'missing' });
+    assert.throws(() => session.setStep({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(largeParameters) }), /250,000/);
+    assert.equal(session.getSnapshot().draft!.plan.commands.length, 0); assert.equal(session.getSnapshot().document, null);
     session.cancel();
   });
 
