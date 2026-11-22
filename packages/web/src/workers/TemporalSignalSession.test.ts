@@ -2,6 +2,7 @@ import {describe,it} from 'bun:test';
 import assert from 'node:assert/strict';
 import {serializeAnalysisRecord,parseAnalysisRecord,createAnalysisRecord} from '../../../core/src/analysis-result';
 import {executeTemporalRequest,TemporalSignalSession,type TemporalRequest,type TemporalWorker,type TemporalMessage} from './TemporalSignalSession';
+import {replaySavedResearch} from '../db/research-storage';
 
 function deferred<T>(){let resolve!:(value:T)=>void;let reject!:(reason:Error)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};}
 async function flush(){for(let i=0;i<12;i++)await Promise.resolve();}
@@ -48,6 +49,20 @@ describe('temporal worker operations',()=>{
 });
 
 describe('private temporal workspace lifecycle',()=>{
+  it('reports actual acceptance to the saved library and preserves evidence on rejected or cancelled restore',async()=>{
+    const f=sessionFixture();await acceptExample(f.session,f.workers);const prior=f.session.getSnapshot().accepted;
+    const restore=(signal:AbortSignal)=>replaySavedResearch(signal,{run:()=>f.session.run({kind:'import',content:'saved record'}),
+      cancel:f.session.cancel,error:()=>f.session.getSnapshot().error});
+    const failed=restore(new AbortController().signal),rejected=assert.rejects(failed,/Original parent changed/);await flush();
+    f.workers[1].send({kind:'error',message:'Original parent changed'});await rejected;
+    assert.strictEqual(f.session.getSnapshot().accepted,prior);
+    const controller=new AbortController(),pending=restore(controller.signal),cancelled=assert.rejects(pending,{name:'AbortError'});await flush();
+    const late=f.workers[2].onmessage!;controller.abort();await cancelled;
+    late({data:{kind:'result',value:{...prior!,verified:true}}} as MessageEvent<TemporalMessage>);
+    assert.strictEqual(f.session.getSnapshot().accepted,prior);assert.equal(f.workers[2].terminated,true);
+    const accepted=f.session.run({kind:'example'});await flush();f.workers[3].send({kind:'result',value:prior!});assert.equal(await accepted,true);
+    f.session.deactivate();assert.equal(await f.session.run({kind:'example'}),false);
+  });
   it('does not allocate workers while inactive and terminates each successful worker',async()=>{
     let count=0;const session=new TemporalSignalSession(()=>{count++;return new FakeWorker();});await session.run({kind:'example'});assert.equal(count,0);
     const f=sessionFixture();await acceptExample(f.session,f.workers);assert.equal(f.workers[0].terminated,true);assert.equal(f.session.getSnapshot().busy,false);

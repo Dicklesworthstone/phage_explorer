@@ -8,6 +8,8 @@ import { downloadString } from '../../utils/export';
 import { preparePhylogenyDownload, type PhylogenyDownloadFormat } from '../../utils/phylogeny-download';
 import { useTheme } from '../../hooks/useTheme';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const example: PhylogenySource = {
   name: 'Synthetic aligned quartet — not experimental data', kind: 'demo',
@@ -60,7 +62,9 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   const { theme } = useTheme(); const id = useId();
   const session = useMemo(() => new AlignedPhylogenySession(() => new Worker(new URL('../../workers/aligned-phylogeny.worker.ts', import.meta.url), { type: 'module' })), []);
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-  const { accepted, busy, phase, error, verified } = snapshot;
+  const { accepted, busy: computeBusy, phase, error, verified } = snapshot;
+  const [libraryBusy, setLibraryBusy] = useState(false);
+  const busy = computeBusy || libraryBusy;
   const [source, setSource] = useState<PhylogenySource>({ name: '', fasta: '', kind: 'local', reference: '' });
   const [file, setFile] = useState<File | null>(null);
   const [inputMode, setInputMode] = useState<'alignment' | 'pangenome'>('alignment');
@@ -108,7 +112,8 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
     } catch (cause) { report(cause); }
   };
   const replay = (input: File) => {
-    invalidate(); void session.run(async () => ({ kind: 'replay', content: await readAlignedPhylogenyFile(input, 10 * 1024 * 1024) }));
+    setLocalError(null);
+    void session.run(async () => ({ kind: 'replay', content: await readAlignedPhylogenyFile(input, 10 * 1024 * 1024) }), { preserveAccepted: true });
   };
   const exportResult = (format: PhylogenyDownloadFormat) => {
     if (!accepted || busy) return;
@@ -156,8 +161,10 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
     onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
     <h3 id={`${id}-heading`}>Aligned DNA · unrooted phylogeny</h3>
     <p>Infer a neighbor-joining tree from your aligned DNA or a saved pangenome experiment. A pangenome is freshly reconstructed with its recorded alignment settings before inference.
-      This workspace never searches a catalog or uploads sequences. Homology and a biological root are not independently established. Export before closing; data are held in memory only.</p>
+      This workspace never searches a catalog or uploads sequences. Homology and a biological root are not independently established.
+      Save a snapshot locally or export JSON before closing. Reopening a snapshot recomputes its complete recorded inference and any parent experiments.</p>
     <form onSubmit={submit} style={{ display: 'grid', gap: '.75rem' }}>
+      <fieldset disabled={libraryBusy} style={{ display: 'contents', border: 0, padding: 0, margin: 0 }}>
       <label style={label}>Phylogeny input<select style={control} value={inputMode} onChange={e => { invalidate(); setInputMode(e.target.value as typeof inputMode); setConfirmed(false); }}>
         <option value="alignment">Already aligned DNA FASTA</option><option value="pangenome">Saved pangenome experiment · reference backbone</option></select></label>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,220px),1fr))', gap: '.75rem' }}>
@@ -193,9 +200,20 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
         <button type="button" style={control} onClick={() => { invalidate(); setInputMode('alignment'); setPangenomeFile(null); setPangenomeContent(''); setSource({ ...example }); setFile(null); setDistance('p-distance'); setBootstrap('20'); setSeed('0'); setConfirmed(true); }}>Load synthetic quartet</button>
         <button type="button" style={control} disabled={!busy} onClick={session.cancel}>Cancel tree computation</button>
       </div>
+      </fieldset>
     </form>
-    <label style={label}>Restore verified phylogeny experiment JSON (up to 10 MiB)<input style={control} type="file" accept=".json,application/json" onChange={e => { const selected = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (selected) replay(selected); }} /></label>
-    <p role="status" data-testid="aligned-phylogeny-status">{phase || 'No alignment has been analyzed.'}</p>
+    <label style={label}>Restore verified phylogeny experiment JSON (up to 10 MiB)<input style={control} type="file" accept=".json,application/json" disabled={busy} onChange={e => { const selected = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (selected) replay(selected); }} /></label>
+    <SavedResearchPanel kind="phylogeny" suggestedName={`${accepted?.source.name || 'Aligned phylogeny'}${acceptedRoot ? ' · rooted' : ''}`}
+      disabled={computeBusy} onActivityChange={setLibraryBusy}
+      capture={accepted && (!acceptedRoot || !rootChanged) ? () => serializeAnalysisRecord(acceptedRoot?.record ?? accepted.record) : null}
+      restore={(content, signal) => {
+        setLocalError(null);
+        return replaySavedResearch(signal, { run: () => session.run({ kind: 'replay', content }),
+          cancel: session.cancel, error: () => session.getSnapshot().error });
+      }} />
+    <p>A phylogeny snapshot includes the accepted root when present and the original pangenome parent when used.
+      Draft changes are not saved; create the new root hypothesis before saving changed rooting settings.</p>
+    <p role="status" data-testid="aligned-phylogeny-status">{phase || (accepted ? 'The previous accepted phylogeny remains available.' : 'No alignment has been analyzed.')}</p>
     {(localError || error) && <p role="alert">{localError ?? error}</p>}
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('experiment')}>Export phylogeny experiment JSON</button>

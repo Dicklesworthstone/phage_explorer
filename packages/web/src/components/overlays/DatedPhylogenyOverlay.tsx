@@ -11,6 +11,8 @@ import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { StrictClockPanel } from './StrictClockPanel';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const AncestralReconstructionPanel = lazy(() => import('./AncestralReconstructionPanel').then(module => ({default:module.AncestralReconstructionPanel})));
 const AlignedPhylogenyPanel = lazy(() => import('./AlignedPhylogenyPanel').then(module => ({default:module.AlignedPhylogenyPanel})));
@@ -48,7 +50,9 @@ const readInput=(file:File|null,fallback:string):Promise<string>=>{
 function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:boolean;canSearch:boolean;onCatalog:()=>void}):React.ReactElement {
   const id=useId();const {theme}=useTheme();
   const session=useMemo(()=>new TemporalSignalSession(()=>new Worker(new URL('../../workers/temporal-signal.worker.ts',import.meta.url),{type:'module'})),[]);
-  const {accepted,busy,phase,error,notice}=useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
+  const {accepted,busy:computeBusy,phase,error,notice}=useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
+  const [libraryBusy,setLibraryBusy]=useState(false);
+  const busy=computeBusy||libraryBusy;
   const [newick,setNewick]=useState(''),[sampleTable,setSampleTable]=useState('');
   const [treeFile,setTreeFile]=useState<File|null>(null),[sampleFile,setSampleFile]=useState<File|null>(null);
   const [name,setName]=useState(''),[description,setDescription]=useState(''),[reference,setReference]=useState(''),[license,setLicense]=useState('');
@@ -77,6 +81,10 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
   const labelStyle:React.CSSProperties={display:'flex',flexDirection:'column',gap:'.25rem'};
   const grid:React.CSSProperties={display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:'.75rem'};
   const run=(request:TemporalRequest|Promise<TemporalRequest>)=>{setExportError(null);void session.run(request);};
+  const restoreLocal=(content:string,signal:AbortSignal)=>{
+    setExportError(null);
+    return replaySavedResearch(signal,{run:()=>session.run({kind:'import',content}),cancel:session.cancel,error:()=>session.getSnapshot().error});
+  };
   const save=(analysis:boolean)=>{
     try{if(!accepted)return;downloadString(analysis&&accepted.record?serializeAnalysisRecord(accepted.record):JSON.stringify(validateTemporalDataset(accepted.dataset),null,2),
       analysis?'temporal-diagnostics.json':'dated-tree-dataset.json','application/json');setExportError(null);}
@@ -89,16 +97,18 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
     {!accepted?'No input data':accepted.dataset.source.kind==='demo'?'Synthetic example':'User-supplied local phylogram'}</span>}>
     <section aria-label="Private dated-tree diagnostics" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
       <p>Inspect collection dates against a rooted, date-independent phylogram. Input stays local; this cohort is independent of the selected catalog genome.
-        Exploratory diagnostics and optional conditional strict-clock dating are separate operations. No population skyline or selection estimate is generated. Export before closing this workspace.</p>
+        Exploratory diagnostics and optional conditional strict-clock dating are separate operations. No population skyline or selection estimate is generated.
+        Save accepted experiments locally or export JSON before closing this workspace.</p>
       <button type="button" aria-expanded={phylogenyOpen} disabled={busy} onClick={()=>setPhylogenyOpen(!phylogenyOpen)}>
-        {phylogenyOpen?'Close aligned phylogeny (export first)':'Infer an unrooted tree from aligned DNA'}
+        {phylogenyOpen?'Close aligned phylogeny (save or export first)':'Infer an unrooted tree from aligned DNA'}
       </button>
       {phylogenyOpen&&<Suspense fallback={<p>Loading local aligned-DNA inference…</p>}><AlignedPhylogenyPanel onTemporalRoot={root=>{
+        if(busy)return;
         session.cancel();setRootDraft(root);setName(root.name);setConfirmed(false);setDateKind(root.kind);setExportError(null);
         if(draftRef.current){draftRef.current.open=true;draftRef.current.scrollIntoView({block:'start'});}
       }} onAncestralRoot={root=>{setAncestralRoot(root);setAncestralOpen(true);}}/></Suspense>}
       <button type="button" aria-expanded={ancestralOpen} disabled={busy} onClick={()=>{setAncestralOpen(!ancestralOpen);if(ancestralOpen)setAncestralRoot(undefined);}}>
-        {ancestralOpen?'Close ancestral reconstruction (export first)':'Open ancestral nucleotide reconstruction'}
+        {ancestralOpen?'Close ancestral reconstruction (save or export first)':'Open ancestral nucleotide reconstruction'}
       </button>
       {ancestralOpen&&<Suspense fallback={<p>Loading alignment-based reconstruction…</p>}><AncestralReconstructionPanel temporalInput={accepted?.dataset} rootedInput={ancestralRoot}/></Suspense>}
       {localGenome&&<p>Reference data unavailable for this local genome. Its name and sequence are not sent to external reference services. Sequence analyses remain available.</p>}
@@ -113,9 +123,17 @@ function TemporalSignalPanel({localGenome,canSearch,onCatalog}:{localGenome:bool
         run(file.size>10*1024*1024?Promise.reject(new Error('Saved temporal file exceeds the 10 MiB limit.')):readAlignedPhylogenyFile(file,10*1024*1024).then(content=>({kind:'import' as const,content})));
       }}/>
       <div><button type="button" disabled={busy} onClick={()=>run({kind:'example'})}>Load synthetic dated-tree example</button>{' '}
-        <button type="button" disabled={!busy} onClick={session.cancel}>Cancel temporal work</button></div>
-      <p role="status" data-testid="temporal-status">{busy?`${phase}. The last accepted data remain unchanged.`:notice??'No temporal data loaded.'}</p>
+        <button type="button" disabled={!computeBusy||libraryBusy} onClick={session.cancel}>Cancel temporal work</button></div>
+      <p role="status" data-testid="temporal-status">{busy?`${phase||'Working locally'}. The last accepted data remain unchanged.`:notice??(accepted?'The accepted temporal dataset and results remain available.':'No temporal data loaded.')}</p>
       {(error||exportError)&&<p role="alert">{error??exportError}</p>}
+      <SavedResearchPanel kind="temporal" suggestedName={`${accepted?.dataset.name||'Dated tree'} · diagnostics`}
+        disabled={busy} onActivityChange={setLibraryBusy}
+        capture={accepted?.record?()=>serializeAnalysisRecord(accepted.record!):null} restore={restoreLocal}/>
+      <SavedResearchPanel kind="strict-clock" suggestedName={`${accepted?.dataset.name||'Dated tree'} · strict clock`}
+        disabled={busy} onActivityChange={setLibraryBusy}
+        capture={accepted?.datingRecord?()=>serializeAnalysisRecord(accepted.datingRecord!):null} restore={restoreLocal}/>
+      <p>Saved diagnostics and clock fits keep their accepted settings and source records. A linked clock snapshot contains its complete
+        alignment, root and temporal-diagnostic parents; standalone diagnostic and clock experiments can be saved separately.</p>
       <details ref={draftRef} open={!accepted||!!rootDraft}><summary>Prepare a new rooted tree and collection-date table</summary>
         <form onSubmit={event=>{
           event.preventDefault();if(!confirmed)return;

@@ -89,7 +89,7 @@ test('private homologous alignments reach actual workers, node and joint-edge pr
     await expect(panel.getByTestId('ancestral-result')).toHaveAttribute('data-result-id',record.resultId);
     await page.unroute(/ancestral\.worker[^/]*\.(?:js|ts)/);
     // Closing the actual panel cancels its lifecycle; reopening does not pretend a saved session exists.
-    await page.getByRole('button',{name:'Close ancestral reconstruction (export first)',exact:true}).click();
+    await page.getByRole('button',{name:'Close ancestral reconstruction (save or export first)',exact:true}).click();
     await expect(panel).toHaveCount(0);
     expect(requests.some(request=>request.includes('private-no-upload-ancestral-29'))).toBe(false);
     expect(pageErrors).toEqual([]);

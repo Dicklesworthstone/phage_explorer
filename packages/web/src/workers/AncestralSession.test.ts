@@ -6,6 +6,7 @@ import { AncestralSession, executeAncestralRequest, ancestralAnalysisRequest, ty
 
 import { createAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
 import { rootAlignedPhylogenyExperiment, ROOTED_ANCESTRAL_METHOD } from '../../../core/src/analysis/phylogeny-rooting';
+import { replaySavedResearch } from '../db/research-storage';
 
 const input=():AncestralDataset=>({format:'phage-explorer-ancestral',version:1,name:'Synthetic two-tip input',
   source:{kind:'demo',description:'Hand-derived transition fixture',reference:'At t=3/4 log 3, Pii=1/2, Pij=1/6',license:'Test fixture'},
@@ -50,6 +51,30 @@ describe('ancestral worker request boundary',()=>{
 });
 
 describe('accepted ancestral evidence lifecycle',()=>{
+  it('reports verified saved restoration without treating a caught rejection as success',async()=>{
+    const session=new AncestralSession(()=>new TestWorker());session.activate();
+    assert.equal(await session.run({kind:'analyze',input:input(),options:{minPosterior:.7}}),true);
+    const prior=session.getSnapshot().accepted!,content=serializeAnalysisRecord(prior.record!);
+    const restore=(text:string)=>replaySavedResearch(new AbortController().signal,{run:()=>session.run({kind:'import',content:text}),
+      cancel:session.cancel,error:()=>session.getSnapshot().error});
+    await assert.rejects(restore('not JSON'));assert.strictEqual(session.getSnapshot().accepted,prior);
+    await restore(content);assert.equal(session.getSnapshot().accepted!.verified,true);
+    assert.deepEqual(session.getSnapshot().accepted!.record,prior.record);
+    session.deactivate();assert.equal(await session.run({kind:'import',content}),false);
+  });
+  it('settles library cancellation and ignores late evidence even if worker termination throws',async()=>{
+    const workers:TestWorker[]=[];const session=new AncestralSession(()=>{const w=new TestWorker(false);workers.push(w);return w;});session.activate();
+    const initial=session.run({kind:'load',input:input()});await flush();
+    workers[0].send({kind:'result',value:await executeAncestralRequest({kind:'load',input:input()})});assert.equal(await initial,true);
+    const prior=session.getSnapshot().accepted,controller=new AbortController();
+    const pending=replaySavedResearch(controller.signal,{run:()=>session.run({kind:'import',content:'saved record'}),
+      cancel:session.cancel,error:()=>session.getSnapshot().error});
+    const rejection=assert.rejects(pending,{name:'AbortError'});await flush();
+    const late=workers[1].onmessage!;workers[1].terminate=()=>{throw new Error('Already detached');};controller.abort();await rejection;
+    late({data:{kind:'result',value:{...prior!,verified:true}}} as MessageEvent<AncestralMessage>);
+    assert.strictEqual(session.getSnapshot().accepted,prior);assert.equal(session.getSnapshot().busy,false);
+    assert.equal(workers[1].onmessage,null);session.deactivate();
+  });
   it('snapshots submitted inputs and options, ignoring edits while the worker is scheduled',async()=>{
     const session=new AncestralSession(()=>new TestWorker());session.activate();
     const data=input(),options={minPosterior:.7};const running=session.run({kind:'analyze',input:data,options});

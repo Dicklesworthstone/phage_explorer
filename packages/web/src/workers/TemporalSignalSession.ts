@@ -138,14 +138,14 @@ export class TemporalSignalSession {
     const previous=this.operation; this.operation=null; previous?.abort();
     this.publish({busy:false,phase:'',...(previous?{notice:'Temporal work cancelled; the last accepted dataset and result were preserved.'}:{})});
   };
-  run = async (input: TemporalRequest | Promise<TemporalRequest>): Promise<void> => {
-    if(!this.active)return;
+  run = async (input: TemporalRequest | Promise<TemporalRequest>): Promise<boolean> => {
+    if(!this.active){if(input instanceof Promise)void input.catch(()=>{});return false;}
     this.cancel();const owner=new AbortController();this.operation=owner;
     const current=()=>this.active&&this.operation===owner&&!owner.signal.aborted;
     this.publish({busy:true,error:null,notice:null,phase:'Reading private input'});
     try {
       const request=await untilCancelled(input instanceof Promise?input.then(value=>structuredClone(value)):Promise.resolve(structuredClone(input)),owner.signal);
-      if(!current())return;
+      if(!current())return false;
       const value=await new Promise<TemporalWorkResult>((resolve,reject)=>{
         const worker=this.factory(); let done=false;
         const finish=(result?:TemporalWorkResult,error?:Error)=>{
@@ -192,8 +192,10 @@ export class TemporalSignalSession {
           :value.dating?value.dating.status==='fitted'?'Conditional strict-clock dating computed. Review branch residuals and model assumptions.'
             :'Strict-clock dates unavailable. Inspect the numerical certificate and rate-bound explanation.'
           :value.result?'Temporal diagnostics computed. Review exclusions, residuals and assumptions.':'Dataset loaded. Review inputs and select Run temporal diagnostics.'});
+        return true;
       }
-    } catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});}
+      return false;
+    } catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});return false;}
     finally {if(current()){this.operation=null;this.publish({busy:false,phase:''});}}
   };
 }

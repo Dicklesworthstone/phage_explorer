@@ -4,6 +4,7 @@ import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src
 import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../../core/src/analysis/alignment-pangenome';
 import { AlignedPhylogenySession, executeAlignedPhylogenyRequest, readAlignedPhylogenyFile,
   type AlignedPhylogenyRequest, type AlignedPhylogenyWorker, type AlignedPhylogenyMessage } from './AlignedPhylogenySession';
+import { replaySavedResearch } from '../db/research-storage';
 
 const request = (): Extract<AlignedPhylogenyRequest, {kind:'infer'}> => ({ kind: 'infer',
   source: { name: 'Synthetic quartet', kind: 'demo', reference: 'Four synthetic aligned sequences; not experimental data.',
@@ -71,6 +72,42 @@ describe('aligned phylogeny real execution and evidence', () => {
 });
 
 describe('aligned phylogeny ownership and cancellation', () => {
+  test('a failed or cancelled saved replay preserves accepted evidence and never reports library success', async () => {
+    const { session, workers } = workspace(), experiment = await executeAlignedPhylogenyRequest(request());
+    const initial = session.run(request()); await tick(); workers[0].emit({ kind: 'result', experiment, verified: false });
+    assert.equal(await initial, true);
+    const accepted = session.getSnapshot().accepted;
+    const restore = (signal: AbortSignal) => replaySavedResearch(signal, {
+      run: () => session.run({ kind: 'replay', content: serializeAnalysisRecord(experiment.record) }),
+      cancel: session.cancel, error: () => session.getSnapshot().error,
+    });
+    const failed = restore(new AbortController().signal);
+    const rejection = assert.rejects(failed, /Parent evidence differs/); await tick();
+    workers[1].emit({ kind: 'error', message: 'Parent evidence differs' }); await rejection;
+    assert.strictEqual(session.getSnapshot().accepted, accepted);
+    const controller = new AbortController(), pending = restore(controller.signal);
+    const cancelled = assert.rejects(pending, { name: 'AbortError' }); await tick();
+    const late = workers[2].onmessage!; controller.abort(); await cancelled;
+    assert.equal(workers[2].terminated, 1); assert.strictEqual(session.getSnapshot().accepted, accepted);
+    late({ data: { kind: 'result', experiment, verified: true } } as MessageEvent<AlignedPhylogenyMessage>);
+    assert.equal(session.getSnapshot().verified, false);
+    const fresh = restore(new AbortController().signal); await tick();
+    workers[3].emit({ kind: 'result', experiment: await executeAlignedPhylogenyRequest(workers[3].request!), verified: true });
+    await fresh; assert.equal(session.getSnapshot().verified, true);
+    assert.equal(session.getSnapshot().accepted!.record.resultId, experiment.record.resultId); session.deactivate();
+  });
+  test('failed delayed file restoration leaves accepted evidence intact but a later source edit invalidates it', async () => {
+    const { session, workers } = workspace(), experiment = await executeAlignedPhylogenyRequest(request());
+    const initial = session.run(request()); await tick(); workers[0].emit({ kind: 'result', experiment, verified: false }); await initial;
+    const accepted = session.getSnapshot().accepted;
+    assert.equal(await session.run(() => Promise.reject(new Error('Unreadable file')), { preserveAccepted: true }), false);
+    assert.strictEqual(session.getSnapshot().accepted, accepted);
+    const read = deferred<AlignedPhylogenyRequest>();
+    const loading = session.run(() => read.promise, { preserveAccepted: true });
+    session.invalidate(); assert.equal(await loading, false);
+    read.resolve({ kind: 'replay', content: serializeAnalysisRecord(experiment.record) }); await tick();
+    assert.equal(session.getSnapshot().accepted, null); assert.equal(workers.length, 1); session.deactivate();
+  });
   test('does not instantiate a worker before an explicit operation', async () => {
     const {session,workers}=workspace();assert.equal(workers.length,0);
     session.deactivate();assert.equal(await session.run(request()),false);assert.equal(workers.length,0);

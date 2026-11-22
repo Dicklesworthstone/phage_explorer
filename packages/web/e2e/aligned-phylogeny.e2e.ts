@@ -120,7 +120,7 @@ test('aligned DNA reaches the real worker, browser exports and actual database-f
     const fields = structuredClone(record.fields); fields.phylogeny.value = { forged: true };
     const forged = await createAnalysisRecord({ ...record, fields });
     await load(serializeAnalysisRecord(forged)); await expect(panel.getByRole('alert')).toContainText('Recomputed phylogeny differs');
-    await expect(accepted()).toHaveCount(0); await expect(exportButton()).toBeDisabled();
+    await expect(accepted()).toHaveAttribute('data-result-id', record.resultId); await expect(exportButton()).toBeEnabled();
     expect(privateLeak).toBe(false); expect(pageErrors).toEqual([]);
   } finally { await finalize(); }
 });
@@ -227,7 +227,8 @@ test('explicit browser roots retain original evidence, survive CLI replay, and i
     const fields = structuredClone(rooted.fields); fields.rooting.value = { invented: true };
     await load(serializeAnalysisRecord(await createAnalysisRecord({ ...rooted, fields })));
     await expect(panel.getByRole('alert')).toContainText('Recomputed rooted phylogeny differs');
-    await expect(originalResult()).toHaveCount(0); await expect(rootExport()).toHaveCount(0);
+    await expect(originalResult()).toHaveAttribute('data-result-id', original.record.resultId);
+    await expect(rootResult()).toHaveAttribute('data-root-result-id', rooted.resultId); await expect(rootExport()).toBeEnabled();
     expect(privateLeak).toBe(false); expect(pageErrors).toEqual([]);
   } finally { await finalize(); }
 });

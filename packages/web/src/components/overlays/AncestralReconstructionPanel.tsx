@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { ancestralConsensus, ancestralFasta, NUCLEOTIDES,
   type AncestralOptions, type AncestralResult } from '../../../../core/src/analysis/ancestral-reconstruction';
 import type { TemporalDataset } from '../../../../core/src/analysis/temporal-signal';
@@ -8,6 +8,8 @@ import { AncestralSession, ancestralAnalysisRequest, type AncestralRequest } fro
 import { downloadString } from '../../utils/export';
 import { useTheme } from '../../hooks/useTheme';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const show=(n:number|null|undefined)=>n===null||n===undefined?'Unavailable':n.toPrecision(8);
 function TreeInspector({result,selected,onSelect}:{result:AncestralResult;selected:number;onSelect:(index:number)=>void}):React.ReactElement{
@@ -33,7 +35,10 @@ const read=(file:File|null,fallback:string):Promise<string>=>file&&file.size>2*1
 export function AncestralReconstructionPanel({temporalInput,rootedInput}:{temporalInput?:TemporalDataset;rootedInput?:{content:string;name:string;kind:'local'|'demo'}}):React.ReactElement{
   const id=useId(),{theme}=useTheme();
   const session=useMemo(()=>new AncestralSession(()=>new Worker(new URL('../../workers/ancestral.worker.ts',import.meta.url),{type:'module'})),[]);
-  const {accepted,busy,phase,error,notice}=useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
+  const {accepted,busy:computeBusy,phase,error,notice}=useSyncExternalStore(session.subscribe,session.getSnapshot,session.getSnapshot);
+  const [libraryBusy,setLibraryBusy]=useState(false);
+  const busy=computeBusy||libraryBusy;
+  const currentRoot=useRef(rootedInput);currentRoot.current=rootedInput;
   const [metadata,setMetadata]=useState<Metadata>(()=>Object.fromEntries(Object.keys(LABELS).map(k=>[k,''])) as Metadata);
   const [newick,setNewick]=useState(''),[fasta,setFasta]=useState(''),[treeFile,setTreeFile]=useState<File|null>(null),[alignmentFile,setAlignmentFile]=useState<File|null>(null);
   const [confirmed,setConfirmed]=useState(false),[start,setStart]=useState('1'),[end,setEnd]=useState('1'),[threshold,setThreshold]=useState('0.9');
@@ -63,14 +68,28 @@ export function AncestralReconstructionPanel({temporalInput,rootedInput}:{tempor
   return <section aria-label="Ancestral nucleotide reconstruction" style={{display:'grid',gap:'1rem',color:theme.colors.text,overflowWrap:'anywhere'}}>
     <h3>Alignment-based ancestral nucleotide reconstruction</h3>
     <p>Supply a homologous DNA alignment and an explicitly rooted phylogram in substitutions/site. Reconstruction is conditional on the supplied tree and the chosen JC69, HKY85 or GTR model.
-      This does not align raw genomes, fit branch lengths, infer a mutation timeline, or estimate selection. Input stays local. Export before closing this panel.</p>
+      This does not align raw genomes, fit branch lengths, infer a mutation timeline, or estimate selection. Input stays local.
+      Save accepted evidence locally or export JSON before closing this panel.</p>
     <label htmlFor={`${id}-import`}>Import ancestral dataset or saved evidence JSON</label><input id={`${id}-import`} type="file" accept=".json,application/json" disabled={busy} onChange={event=>{
       const file=event.currentTarget.files?.[0];event.currentTarget.value='';if(!file)return;
       run(file.size>10*1024*1024?Promise.reject(new Error('Ancestral file exceeds 10 MiB.')):file.text().then(content=>({kind:'import' as const,content})));
     }}/>
-    <button type="button" disabled={!busy} onClick={session.cancel}>Cancel ancestral work</button>
-    <p role="status" data-testid="ancestral-status">{busy?`${phase}. Accepted evidence remains unchanged.`:notice??'No ancestral alignment loaded.'}</p>
+    <button type="button" disabled={!computeBusy||libraryBusy} onClick={session.cancel}>Cancel ancestral work</button>
+    <p role="status" data-testid="ancestral-status">{busy?`${phase||'Working locally'}. Accepted evidence remains unchanged.`:notice??(accepted?'The accepted ancestral input and evidence remain available.':'No ancestral alignment loaded.')}</p>
     {(error||localError)&&<p role="alert">{localError??error}</p>}
+    <SavedResearchPanel kind="ancestral" suggestedName={`${accepted?.input.name||'Ancestral reconstruction'} · evidence`}
+      disabled={computeBusy} onActivityChange={setLibraryBusy}
+      capture={accepted?.record?()=>serializeAnalysisRecord(accepted.record!):null}
+      restore={(content,signal)=>{
+        setLocalError(null);
+        return replaySavedResearch(signal,{run:()=>{
+          // A newer root handoff supersedes an earlier, still-pending storage read.
+          if(currentRoot.current!==rootedInput)throw new DOMException('A newer rooted input replaced this saved open.','AbortError');
+          return session.run({kind:'import',content});
+        },cancel:session.cancel,error:()=>session.getSnapshot().error});
+      }}/>
+    <p>Snapshots retain the complete accepted model and probabilities. Linked evidence also retains the original alignment, inferred tree and explicit root;
+      opening it recomputes every parent before accepting the reconstruction.</p>
     {rootDraft&&<form onSubmit={event=>{
       event.preventDefault();run({kind:'prepare-rooted',content:rootDraft.content,license:rootLicense});
     }}><fieldset disabled={busy} style={{display:'grid',gap:'.75rem'}}><legend>Prepare linked ancestral input</legend>

@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { ResearchStorage, RESEARCH_STORAGE_LIMITS, researchSnapshotName, validateResearchSnapshotContent, replaySavedResearch } from './research-storage';
 import { createDemoEnvironmentalDataset, analyzeEnvironmentalDataset, createEnvironmentalAnalysisRecord,
   replayEnvironmentalAnalysisRecord } from '../../../core/src/analysis/environmental-evidence';
-import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../../core/src/analysis/alignment-pangenome';
+import { resolvePhylogenyOptions } from '../../../core/src/analysis/aligned-phylogeny';
+import { executeAlignedPhylogenyRequest } from '../workers/AlignedPhylogenySession';
+import { executeTemporalRequest, temporalDatingRequest } from '../workers/TemporalSignalSession';
+import { executeAncestralRequest } from '../workers/AncestralSession';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -120,6 +125,21 @@ describe('saved research format routing', () => {
       for (const [other] of methods) if (other !== kind) assert.throws(() => validateResearchSnapshotContent(other, saved), /match/);
     }
   });
+  it('routes every standalone and linked phylogeny method without dropping its lineage', () => {
+    const routes = [
+      ['phylogeny', 'aligned-dna-neighbor-joining'], ['phylogeny', 'explicit-outgroup-rooted-nj'],
+      ['temporal', 'fixed-root-temporal-signal'], ['temporal', 'rooted-nj-temporal-signal'],
+      ['strict-clock', 'fixed-root-strict-clock-dating'], ['strict-clock', 'rooted-nj-strict-clock-dating'],
+      ['ancestral', 'ancestral-jc69'], ['ancestral', 'ancestral-reversible-dna'], ['ancestral', 'rooted-nj-ancestral'],
+    ] as const;
+    for (const [kind, id] of routes) {
+      const json = JSON.stringify({ format: 'phage-explorer-analysis', version: 1, method: { id } });
+      assert(validateResearchSnapshotContent(kind, json) > 0);
+      for (const other of ['phylogeny', 'temporal', 'strict-clock', 'ancestral'] as const) {
+        if (other !== kind) assert.throws(() => validateResearchSnapshotContent(other, json), /match/);
+      }
+    }
+  });
 });
 
 describe('saved experiment replay ownership', () => {
@@ -155,6 +175,63 @@ describe('saved experiment replay ownership', () => {
 });
 
 describe('saved research client transaction ownership (event fixture)', () => {
+  it('reopens the complete pangenome, root, temporal, clock and ancestral chain through fresh production replay', () => fixture(async ({ store }) => {
+    const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, name: 'Private saved quartet', source: 'demo',
+      sequences: ['A', 'B', 'C', 'D'].map((id, i) => ({ id, description: 'Synthetic sequence',
+        sequence: 'A'.repeat(i * 5) + 'G'.repeat(i + 1) + 'A'.repeat(99 - i * 6) })) };
+    const parent = await createAlignmentPangenomeRecord(input, buildAlignmentPangenome(input, { referenceId: 'A', alignment: 'provided' }));
+    const parentText = '\ufeff' + serializeAnalysisRecord(parent).replace(/\n/g, '\r\n');
+    const inference = await executeAlignedPhylogenyRequest({ kind: 'pangenome', source: {
+      name: input.name, reference: 'Synthetic aligned columns; no biological homology claim', experiment: parentText,
+    }, options: resolvePhylogenyOptions({ distance: 'jc69', bootstrap: 0, seed: 0 }) });
+    const rooted = await executeAlignedPhylogenyRequest({ kind: 'root', content: serializeAnalysisRecord(inference.record),
+      rooting: { outgroup: ['A'], fractionFromOutgroup: .25, dateIndependent: true, evidence: 'Synthetic outgroup and position chosen without dates' } });
+    const rootText = serializeAnalysisRecord(rooted.rooting!.record);
+    const temporal = await executeTemporalRequest({ kind: 'analyze-rooted', rootedSource: { content: rootText, metadata: {
+      name: 'Private collection cohort', kind: 'demo', description: 'Synthetic dates', reference: null, license: 'CC0 synthetic fixture', dateIndependent: true,
+      sampleTable: 'sampleId,collectionDate,dateSource\nD,2003.0,fixture\nA,2000.0,fixture\nC,2002.0,fixture\nB,2001.0,fixture\n',
+    } }, options: { permutations: 24, seed: 0 } });
+    const dated = await executeTemporalRequest(temporalDatingRequest(temporal, {}));
+    assert.equal(dated.dating!.status, 'fitted');
+    const ancestral = await executeAncestralRequest({ kind: 'analyze-rooted', rootedSource: { content: rootText, license: 'CC0 synthetic fixture' },
+      options: { startColumn: 1, endColumn: 6, minPosterior: .7, substitution: { model: 'HKY85', source: 'Explicit synthetic model assumption',
+        frequencies: [.25, .25, .25, .25], kappa: 2, siteRates: [{ rate: 1, weight: 1 }] } } });
+    const saved = await Promise.all([
+      store.save('phylogeny', 'Rooted backbone', rootText),
+      store.save('temporal', 'Temporal diagnostics', serializeAnalysisRecord(temporal.record!)),
+      store.save('strict-clock', 'Conditional clock', serializeAnalysisRecord(dated.datingRecord!)),
+      store.save('ancestral', 'Conditional ancestors', serializeAnalysisRecord(ancestral.record!)),
+    ]);
+    const reopened = new ResearchStorage('isolated-test');
+    const tree = await executeAlignedPhylogenyRequest({ kind: 'replay', content: (await reopened.read(saved[0].id, 'phylogeny')).content });
+    assert.equal(tree.rooting!.record.resultId, rooted.rooting!.record.resultId);
+    assert.equal(tree.record.resultId, inference.record.resultId);
+    assert.equal(tree.pangenome!.source.experiment, parentText);
+    const diagnostic = await executeTemporalRequest({ kind: 'import', content: (await reopened.read(saved[1].id, 'temporal')).content });
+    assert.equal(diagnostic.verified, true); assert.deepEqual(diagnostic.record, temporal.record);
+    assert.deepEqual(diagnostic.rootedSource, temporal.rootedSource);
+    const clock = await executeTemporalRequest({ kind: 'import', content: (await reopened.read(saved[2].id, 'strict-clock')).content });
+    assert.equal(clock.verified, true); assert.deepEqual(clock.datingRecord, dated.datingRecord);
+    assert.deepEqual(clock.record, temporal.record); assert.deepEqual(clock.rootedSource, temporal.rootedSource);
+    assert.deepEqual(clock.dating!.nodes, dated.dating!.nodes);
+    const ancestors = await executeAncestralRequest({ kind: 'import', content: (await reopened.read(saved[3].id, 'ancestral')).content });
+    assert.equal(ancestors.verified, true); assert.deepEqual(ancestors.record, ancestral.record);
+    assert.equal(ancestors.rootedResultId, rooted.rooting!.record.resultId);
+    assert.equal(ancestors.unrootedResultId, inference.record.resultId);
+    assert.deepEqual(ancestors.result!.patterns, ancestral.result!.patterns);
+    assert.deepEqual(ancestors.options.substitution, ancestral.options.substitution);
+    // Storage integrity and a valid outer hash do not verify a changed embedded parent.
+    const inputs = structuredClone(dated.datingRecord!.inputs).map(({ sha256: _sha, ...row }) => row);
+    const nested = inputs.find(row => row.id === 'temporalExperiment')!;
+    const forgedParent = structuredClone(temporal.record!);
+    forgedParent.fields.regression.value = { forged: true };
+    nested.data = JSON.parse(serializeAnalysisRecord(await createAnalysisRecord({ ...forgedParent,
+      inputs: forgedParent.inputs.map(({ sha256: _sha, ...row }) => row) })));
+    const forged = await createAnalysisRecord({ ...dated.datingRecord!, inputs });
+    const corrupted = await store.save('strict-clock', 'Changed parent', serializeAnalysisRecord(forged));
+    await assert.rejects(executeTemporalRequest({ kind: 'import', content: (await reopened.read(corrupted.id, 'strict-clock')).content }), /differs|mismatch/i);
+    assert.equal((await reopened.read(saved[2].id, 'strict-clock')).content, serializeAnalysisRecord(dated.datingRecord!));
+  }));
   it('retains a complete environmental experiment for independent fresh replay after reopening storage', () => fixture(async ({ store }) => {
     const dataset = createDemoEnvironmentalDataset();
     const record = await createEnvironmentalAnalysisRecord(dataset, analyzeEnvironmentalDataset(dataset));

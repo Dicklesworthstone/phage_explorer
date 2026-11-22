@@ -3,6 +3,11 @@
  */
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
+import { createAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
+import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../core/src/analysis/alignment-pangenome';
+import { createPangenomePhylogenyExperiment } from '../../core/src/analysis/aligned-phylogeny';
+import { createRootedAncestralExperiment, rootAlignedPhylogenyExperiment } from '../../core/src/analysis/phylogeny-rooting';
+import { createRootedDatingExperiment, createRootedTemporalExperiment } from '../../core/src/analysis/phylogeny-temporal';
 
 const GENBANK = `LOCUS       SAVED_CDS                 12 bp    DNA     linear
 DEFINITION  Saved private CDS.
@@ -23,6 +28,82 @@ async function palette(page: Page, title: string) {
   const palette = page.getByTestId('overlay-commandPalette');
   await palette.getByRole('combobox').fill(title);
   await palette.getByRole('option').filter({ hasText: title }).first().click();
+}
+
+for (const journey of ['phylogeny', 'temporal', 'strict-clock', 'ancestral'] as const) {
+  test(`saved ${journey} preserves its full parent chain through reload, verified reopen and rejected replacement`, async ({ page }, info) => {
+    test.setTimeout(180000);
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    const marker = 'private-saved-phylogeny-source-e24c';
+    const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, name: marker, source: 'demo',
+      sequences: ['A', 'B', 'C', 'D'].map((id, i) => ({ id, description: 'Synthetic sequence',
+        sequence: 'A'.repeat(i * 5) + 'G'.repeat(i + 1) + 'A'.repeat(99 - i * 6) })) };
+    const graph = await createAlignmentPangenomeRecord(input, buildAlignmentPangenome(input, { referenceId: 'A', alignment: 'provided' }));
+    const originalParent = '\ufeff' + serializeAnalysisRecord(graph).replace(/\n/g, '\r\n');
+    const inferred = await createPangenomePhylogenyExperiment({ name: marker, reference: 'Explicit synthetic aligned columns', experiment: originalParent },
+      { distance: 'jc69', bootstrap: 0, seed: 0 });
+    const root = await rootAlignedPhylogenyExperiment(serializeAnalysisRecord(inferred.record), {
+      outgroup: ['A'], fractionFromOutgroup: .25, dateIndependent: true, evidence: 'Synthetic outgroup and root placement without dates',
+    });
+    const rootText = serializeAnalysisRecord(root.record);
+    const diagnostic = await createRootedTemporalExperiment(rootText, { name: marker, kind: 'demo', description: 'Synthetic collection metadata',
+      reference: null, license: 'CC0 synthetic fixture', dateIndependent: true,
+      sampleTable: 'sampleId,collectionDate,dateSource\nD,2003.0,fixture\nA,2000.0,fixture\nC,2002.0,fixture\nB,2001.0,fixture\n',
+    }, { permutations: 24, seed: 0 });
+    const record = journey === 'phylogeny' ? root.record : journey === 'temporal' ? diagnostic.record
+      : journey === 'strict-clock' ? (await createRootedDatingExperiment(serializeAnalysisRecord(diagnostic.record), {})).datingRecord
+      : (await createRootedAncestralExperiment(rootText, 'CC0 synthetic fixture', { endColumn: 6, minPosterior: .7 })).record;
+    const content = serializeAnalysisRecord(record);
+    let leaked = false;
+    page.on('request', request => { if (request.url().includes(marker) || request.postData()?.includes(marker)) leaked = true; });
+    const title = journey === 'phylogeny' ? 'phylogeny experiments' : journey === 'temporal' ? 'temporal diagnostic experiments'
+      : journey === 'strict-clock' ? 'strict-clock experiments' : 'ancestral experiments';
+    const openWorkspace = async () => {
+      await page.keyboard.press('Control+Shift+y');
+      if (journey === 'phylogeny') {
+        await page.getByRole('button', { name: 'Infer an unrooted tree from aligned DNA', exact: true }).click();
+        return page.getByRole('region', { name: 'Aligned DNA · unrooted phylogeny', exact: true });
+      }
+      if (journey === 'ancestral') {
+        await page.getByRole('button', { name: 'Open ancestral nucleotide reconstruction', exact: true }).click();
+        return page.getByRole('region', { name: 'Ancestral nucleotide reconstruction', exact: true });
+      }
+      return page.getByRole('region', { name: 'Private dated-tree diagnostics', exact: true });
+    };
+    const importLabel = journey === 'phylogeny' ? 'Restore verified phylogeny experiment JSON (up to 10 MiB)'
+      : journey === 'ancestral' ? 'Import ancestral dataset or saved evidence JSON' : 'Import dated-tree dataset or saved diagnostics JSON';
+    const evidence = (panel: Locator) => journey === 'phylogeny' ? panel.getByRole('region', { name: 'Accepted root hypothesis', exact: true })
+      : panel.getByTestId(journey === 'ancestral' ? 'ancestral-result' : journey === 'temporal' ? 'temporal-result' : 'strict-clock-result');
+    const attribute = journey === 'phylogeny' ? 'data-root-result-id' : 'data-result-id';
+    try {
+      await page.goto('/?phage=lambda&model=0'); await expectExplorerIdentity(page, info);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      let panel = await openWorkspace();
+      await panel.getByLabel(importLabel, { exact: true }).setInputFiles({ name: 'complete-chain.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+      await expect(evidence(panel)).toHaveAttribute(attribute, record.resultId);
+      let saved = await library(panel, title); await save(saved, `${journey} complete lineage`);
+      expect(await download(page, () => saved.getByRole('button', { name: 'Export saved JSON', exact: true }).click())).toBe(content);
+      await page.reload(); await expectExplorerIdentity(page, info); panel = await openWorkspace();
+      await expect(evidence(panel)).toHaveCount(0); // Explicit reopening, never automatic private-data restoration.
+      saved = await library(panel, title); await openFirst(saved);
+      await expect(saved.getByRole('status')).toContainText('recomputed and verified');
+      await expect(evidence(panel)).toHaveAttribute(attribute, record.resultId);
+      const replay = await download(page, () => saved.getByRole('button', { name: 'Export saved JSON', exact: true }).click());
+      expect(replay).toBe(content);
+      if (journey === 'phylogeny') {
+        expect(await download(page, () => panel.getByRole('button', { name: 'Export original pangenome experiment', exact: true }).click())).toBe(originalParent);
+      }
+      if (journey === 'strict-clock') await expect(panel.getByTestId('temporal-result')).toHaveAttribute('data-result-id', diagnostic.record.resultId);
+      if (journey === 'ancestral') await expect(panel.getByTestId('ancestral-lineage')).toContainText(root.record.resultId);
+      const fields = structuredClone(record.fields); fields[Object.keys(fields)[0]].value = { forged: true };
+      const forged = await createAnalysisRecord({ ...record, fields });
+      await panel.getByLabel(importLabel, { exact: true }).setInputFiles({ name: 'forged.json', mimeType: 'application/json', buffer: Buffer.from(serializeAnalysisRecord(forged)) });
+      await expect(panel.getByRole('alert').first()).toContainText(/differs|mismatch/i);
+      await expect(evidence(panel)).toHaveAttribute(attribute, record.resultId);
+      expect(leaked).toBe(false); expect(pageErrors).toEqual([]);
+    } finally { await finalize(); }
+  });
 }
 async function localPanel(page: Page) {
   await palette(page, 'Local genomes: import or export');

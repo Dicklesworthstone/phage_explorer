@@ -97,18 +97,20 @@ export class AncestralSession {
     const old=this.owner;this.owner=null;old?.abort();
     this.publish({busy:false,phase:'',...(old?{notice:'Ancestral work cancelled; accepted evidence was preserved.'}:{})});
   };
-  run=async(input:AncestralRequest|Promise<AncestralRequest>):Promise<void>=>{
-    if(!this.active){if(input instanceof Promise)void input.catch(()=>{});return;}
+  run=async(input:AncestralRequest|Promise<AncestralRequest>):Promise<boolean>=>{
+    if(!this.active){if(input instanceof Promise)void input.catch(()=>{});return false;}
     this.cancel();const owner=new AbortController();this.owner=owner;
     const current=()=>this.active&&this.owner===owner&&!owner.signal.aborted;
     this.publish({busy:true,error:null,notice:null,phase:'Reading local ancestral input'});
     try{
       const request=await awaitRead(input instanceof Promise?input.then(value=>structuredClone(value)):Promise.resolve(structuredClone(input)),owner.signal);
-      if(!current())return;
+      if(!current())return false;
       const value=await new Promise<AncestralWork>((resolve,reject)=>{
         const worker=this.factory();let done=false;
         const finish=(value?:AncestralWork,error?:Error)=>{
-          if(done)return;done=true;owner.signal.removeEventListener('abort',cancel);worker.terminate();
+          if(done)return;done=true;owner.signal.removeEventListener('abort',cancel);
+          worker.onmessage=null;worker.onerror=null;worker.onmessageerror=null;
+          try{worker.terminate();}catch{/* A completed or cancelled operation must still settle. */}
           if(error)reject(error);else resolve(value!);
         };
         const cancel=()=>finish(undefined,aborted());owner.signal.addEventListener('abort',cancel,{once:true});
@@ -123,8 +125,10 @@ export class AncestralSession {
         try{if(owner.signal.aborted)cancel();else worker.postMessage(request);}
         catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}
       });
-      if(current())this.publish({accepted:value,notice:value.verified?'Verified ancestral replay: fresh node and edge probabilities and complete evidence identity match.':value.result?'Ancestral reconstruction computed. Inspect excluded sites and conditional model assumptions.':'Alignment and tree loaded. Review inputs, then run reconstruction.'});
-    }catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});}
+      if(!current())return false;
+      this.publish({accepted:value,notice:value.verified?'Verified ancestral replay: fresh node and edge probabilities and complete evidence identity match.':value.result?'Ancestral reconstruction computed. Inspect excluded sites and conditional model assumptions.':'Alignment and tree loaded. Review inputs, then run reconstruction.'});
+      return true;
+    }catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});return false;}
     finally{if(current()){this.owner=null;this.publish({busy:false,phase:''});}}
   };
 }

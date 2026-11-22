@@ -112,11 +112,14 @@ export class AlignedPhylogenySession {
   invalidate = (): void => {
     this.cancel(); this.publish({ accepted: null, verified: false, error: null, phase: '' });
   };
-  run = async (input: AlignedPhylogenyRequest | (() => Promise<AlignedPhylogenyRequest>)): Promise<boolean> => {
+  run = async (input: AlignedPhylogenyRequest | (() => Promise<AlignedPhylogenyRequest>),
+    options: { preserveAccepted?: boolean } = {}): Promise<boolean> => {
     if (!this.active) return false;
-    // A root is a derivative of an accepted inference, not an input edit. Keep
-    // the original visible if the new hypothesis fails or is cancelled.
-    if (typeof input !== 'function' && input.kind === 'root') { this.cancel(); this.publish({ error: null, phase: '' }); }
+    // Rooting and replay commit only after successful verification. File replay
+    // opts in before its delayed read; edits still explicitly invalidate evidence.
+    if (options.preserveAccepted || typeof input !== 'function' && (input.kind === 'root' || input.kind === 'replay')) {
+      this.cancel(); this.publish({ error: null, phase: '' });
+    }
     else this.invalidate();
     const owner = new AbortController(); this.operation = owner;
     const current = () => this.active && this.operation === owner && !owner.signal.aborted;

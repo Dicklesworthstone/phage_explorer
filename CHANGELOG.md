@@ -6,6 +6,16 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Save and reopen the complete phylogeny research chain
+
+- Explicit local snapshots now cover unrooted/rooted phylogenies, temporal
+  diagnostics, strict-clock fits and ancestral evidence through the existing
+  saved-research controls. Accepted records retain their original inputs,
+  parameters and any embedded pangenome, inference, root or diagnostic parents.
+- Reopening recomputes and verifies the full recorded chain. Failed or cancelled
+  restoration preserves the last accepted analysis, and a newer root handoff
+  supersedes an earlier pending saved open. Saving remains opt-in and local.
+
 ### Complete resistance runs at every supported playback speed
 
 - The browser records and replays a full 48-hour resistance run at 0.25×,
@@ -14,6 +24,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 - Zero-rate controls are available for controlled resistance experiments.
   Paused fractional ticks, exact requested deltas and existing version 2 result
   identities survive export and replay without changing the model equations.
+  [Commit 48dd3ae](https://github.com/Dicklesworthstone/phage_explorer/commit/48dd3ae8601af9d59b99ccce4e2967896d056adc).
 
 ### Terminal analyses follow the accepted genome
 
