@@ -6,6 +6,16 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Consistent comparison scores and interruptible output
+
+- Whole-genome comparisons now treat uppercase and lowercase IUPAC DNA
+  identically across exact and sampled metrics while retaining the original
+  source text and fingerprints in portable records. Method version 2 prevents
+  replay from silently accepting results produced by the earlier behavior.
+- The comparison CLI responds to cancellation while stdout, progress or help
+  output is stalled; a late write callback cannot report an interrupted run as
+  successful. Error reporting also respects cancellation.
+
 ### Save and reopen sourced host-model experiments
 
 - Host metabolism now saves complete accepted flux-scenario and gene-knockout

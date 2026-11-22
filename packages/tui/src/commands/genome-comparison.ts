@@ -62,15 +62,32 @@ function plain(cause: unknown): string {
   return stripVTControlCharacters(cause instanceof Error ? cause.message : String(cause))
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ');
 }
-function writeStream(stream: Writable, content: string): Promise<void> {
+function writeStream(stream: Writable, content: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(cancelled());
   return new Promise((yes, no) => {
-    const fail = (cause: Error) => { stream.off('error', fail); no(cause); };
+    let settled = false;
+    const finish = (cause?: Error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      if (cause) no(cause); else yes();
+    };
+    const abort = () => finish(cancelled());
+    const fail = (cause: Error) => { stream.off('error', fail); finish(cause); };
     stream.once('error', fail);
-    stream.write(content, cause => {
-      // A failed callback is followed by an error event; keep its listener alive.
-      if (cause) { no(cause); return; }
-      stream.off('error', fail); yes();
-    });
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      stream.write(content, cause => {
+        // Keep the error listener until an in-flight write completes or fails,
+        // even when cancellation has already settled the command.
+        if (cause) { finish(cause); return; }
+        stream.off('error', fail); finish();
+      });
+    } catch (cause) {
+      stream.off('error', fail);
+      finish(cause instanceof Error ? cause : new Error(String(cause)));
+    }
+    if (signal?.aborted) abort();
   });
 }
 function requireText(value: unknown, limit: number, label: string): asserts value is string {
@@ -180,13 +197,22 @@ async function assertNewOutput(filename: string): Promise<void> {
 export async function runGenomeComparisonCommand(args: string[], io: GenomeComparisonIO): Promise<number> {
   let command: GenomeComparisonCommand | null;
   try { command = parseGenomeComparisonCommand(args); }
-  catch (cause) { await writeStream(io.stderr, `Comparison: ${plain(cause)}\n`); return 2; }
-  if (!command) { await writeStream(io.stdout, GENOME_COMPARISON_HELP); return 0; }
+  catch (cause) {
+    await writeStream(io.stderr, `Comparison: ${plain(cause)}\n`, io.signal).catch(() => {});
+    return io.signal?.aborted ? 130 : 2;
+  }
+  if (!command) {
+    try { await writeStream(io.stdout, GENOME_COMPARISON_HELP, io.signal); check(io.signal); return 0; }
+    catch (cause) {
+      await writeStream(io.stderr, `Comparison: ${plain(cause)}\n`, io.signal).catch(() => {});
+      return io.signal?.aborted || cause instanceof Error && cause.name === 'AbortError' ? 130 : 1;
+    }
+  }
   try {
     check(io.signal);
     const destination = command.output ? resolve(command.output) : undefined;
     if (destination) await assertNewOutput(destination);
-    await writeStream(io.stderr, 'Comparison: reading inputs\n');
+    await writeStream(io.stderr, 'Comparison: reading inputs\n', io.signal);
     const read = (path: string, limit: number) => path === '-'
       ? readAbundanceStdin(io.stdin, limit, io.signal) : readAbundanceFile(path, limit, io.signal);
     let job: GenomeComparisonJob;
@@ -196,7 +222,7 @@ export async function runGenomeComparisonCommand(args: string[], io: GenomeCompa
       genomeB: { name: command.inputB === '-' ? 'stdin-genome-b' : basename(command.inputB), text: await read(command.inputB, GENOME_IMPORT_LIMITS.bytes) },
       parameters: command.parameters === undefined ? undefined : await read(command.parameters, PARAMETER_LIMIT) };
     check(io.signal);
-    await writeStream(io.stderr, `Comparison: ${command.operation === 'replay' ? 'recomputing saved evidence' : 'computing complete evidence'}\n`);
+    await writeStream(io.stderr, `Comparison: ${command.operation === 'replay' ? 'recomputing saved evidence' : 'computing complete evidence'}\n`, io.signal);
     const content = await (io.execute ?? runGenomeComparisonJob)(job, io.signal);
     check(io.signal);
     requireText(content, RECORD_LIMIT, 'Comparison output');
@@ -206,10 +232,11 @@ export async function runGenomeComparisonCommand(args: string[], io: GenomeCompa
     if (record.method.implementation !== GENOME_COMPARISON_METHOD.implementation) throw new Error('Unexpected comparison implementation in worker output.');
     check(io.signal);
     if (destination) await writeFile(destination, content, { encoding: 'utf8', flag: 'wx', mode: 0o600, signal: io.signal });
-    else await writeStream(io.stdout, content);
+    else await writeStream(io.stdout, content, io.signal);
+    check(io.signal);
     return 0;
   } catch (cause) {
-    await writeStream(io.stderr, `Comparison: ${plain(cause)}\n`);
+    await writeStream(io.stderr, `Comparison: ${plain(cause)}\n`, io.signal).catch(() => {});
     return io.signal?.aborted || cause instanceof Error && cause.name === 'AbortError' ? 130 : 1;
   }
 }
@@ -222,4 +249,7 @@ export async function runGenomeComparisonProcess(args: string[]): Promise<void> 
     const code = await runGenomeComparisonCommand(args, { stdin: process.stdin, stdout: process.stdout, stderr: process.stderr, signal: controller.signal });
     process.exitCode = code === 130 && terminated ? 143 : code;
   } finally { process.off('SIGINT', interrupt); process.off('SIGTERM', terminate); process.stdin.pause(); }
+  // An outstanding pipe write can keep the event loop alive after cancellation.
+  // Only the process entry point owns shutdown; injected command streams stay open.
+  if (controller.signal.aborted) process.exit(terminated ? 143 : 130);
 }

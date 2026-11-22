@@ -92,6 +92,41 @@ describe('complete portable genome comparison', () => {
   });
 });
 
+
+describe('case-independent comparison evidence', () => {
+  for (const exactLimit of [8, 0]) {
+    it(`keeps DNA distances consistent with the exact diff (edit limit ${exactLimit})`, async () => {
+      const a = genome('ACGTACGT'), b = genome('acgtacgt');
+      const accepted = await createGenomeComparisonExperiment(a, b, {
+        kmerSizes: [2, 3], maxEditDistanceLength: exactLimit,
+        editDistanceWindowSize: 4, editDistanceWindowCount: 2,
+      });
+      expect(accepted.result.editDistance).toMatchObject({
+        levenshteinDistance: 0, normalizedLevenshtein: 0, levenshteinSimilarity: 1,
+        substitutions: 0, insertions: 0, deletions: 0, isApproximate: exactLimit === 0,
+      });
+      const diff = accepted.result.sequenceDiff;
+      expect(diff?.status).toBe('complete');
+      if (!diff || diff.status !== 'complete') throw new Error('Expected a complete exact diff.');
+      expect(diff.stats.distance).toBe(0);
+      expect(Array.from(diff.mask)).toEqual(new Array(a.sequence.length).fill(0));
+      expect(accepted.genomeA.sequence).toBe(a.sequence);
+      expect(accepted.genomeB.sequence).toBe(b.sequence);
+      expect((accepted.record.inputs[1].data as unknown as ComparisonGenomeInput).sequence).toBe(b.sequence);
+      expect(accepted.record.inputs[0].sha256).not.toBe(accepted.record.inputs[1].sha256);
+      expect(accepted.record.method.version).toBe('2');
+      expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(accepted.record))).record).toEqual(accepted.record);
+    });
+  }
+
+  it('rejects records declaring the former case-dependent method', async () => {
+    const current = (await createGenomeComparisonExperiment(genome('ACGTACGT'), genome('acgtacgt'))).record;
+    const previous = structuredClone(current);
+    previous.method.version = '1';
+    await expect(replayGenomeComparisonExperiment(await rehash(previous))).rejects.toThrow('incompatible');
+  });
+});
+
 describe('portable comparison verification', () => {
   it('rejects checksum edits before accepting an input or output', async () => {
     const original = await createGenomeComparisonExperiment(genome('AAACCC'), genome('AAAGCC'));

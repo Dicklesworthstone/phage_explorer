@@ -47,6 +47,43 @@ async function processRun(args: string[], cwd: string, input = '') {
 }
 
 describe('portable genome comparison command', () => {
+
+  for (const phase of ['stdout', 'stderr', 'help'] as const) {
+    it(`cancels a stalled ${phase} write without waiting for its callback`, async () => {
+      const accepted = await createGenomeComparisonExperiment(await genome(firstInput), await genome(secondInput), options);
+      const content = serializeAnalysisRecord(accepted.record) + '\n';
+      const streams = io(content), controller = new AbortController();
+      let release: ((cause?: Error | null) => void) | undefined;
+      let writing!: () => void;
+      const started = new Promise<void>(resolve => { writing = resolve; });
+      const blocked = new Writable({ write(_chunk, _encoding, done) { release = done; writing(); } });
+      const command = runGenomeComparisonCommand(phase === 'help' ? ['--help'] : ['replay', '-'], {
+        ...streams, signal: controller.signal, execute: async () => content,
+        stdout: phase === 'stderr' ? streams.stdout : blocked,
+        stderr: phase === 'stderr' ? blocked : streams.stderr,
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await started;
+        controller.abort();
+        const code = await Promise.race([
+          command,
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Cancellation waited for a blocked output write.')), 1000);
+          }),
+        ]);
+        assert.equal(code, 130);
+        const finishWrite = release; release = undefined; finishWrite?.();
+        assert.equal(await command, 130, 'a late successful write cannot turn cancellation into success');
+        assert.equal(blocked.listenerCount('error'), 0);
+      } finally {
+        clearTimeout(timer);
+        release?.();
+        blocked.end();
+      }
+    });
+  }
+
   it('validates explicit file roles, one stdin stream and immutable replay settings', () => {
     assert.equal(parseGenomeComparisonCommand([]), null);
     assert.deepEqual(parseGenomeComparisonCommand(['run', 'a.gb', '-', '--params', 'parameters.json', '--output', '-']),

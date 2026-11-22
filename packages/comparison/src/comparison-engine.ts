@@ -52,6 +52,13 @@ export async function compareGenomes(
 ): Promise<GenomeComparisonResult> {
   const startTime = Date.now();
 
+  // Analyze accepted DNA without case-dependent distances; retain source text
+  // outside the engine so portable records still fingerprint the exact input.
+  // Restrict folding to IUPAC DNA to avoid Unicode expansions moving coordinates.
+  const dna = /^[ACGTRYSWKMBDHVNacgtryswkmbdhvn]*$/;
+  if (dna.test(sequenceA)) sequenceA = sequenceA.toUpperCase();
+  if (dna.test(sequenceB)) sequenceB = sequenceB.toUpperCase();
+
   // Run k-mer analysis at multiple resolutions
   const kmerAnalysis = multiResolutionKmerAnalysis(
     sequenceA,

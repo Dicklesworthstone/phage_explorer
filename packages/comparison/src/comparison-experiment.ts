@@ -29,7 +29,7 @@ export interface GenomeComparisonExperiment {
   record: AnalysisRecord;
 }
 export const GENOME_COMPARISON_METHOD = {
-  id: 'genome-comparison', version: '1', implementation: 'typescript-comparison-engine',
+  id: 'genome-comparison', version: '2', implementation: 'typescript-comparison-engine',
 } as const;
 export const GENOME_COMPARISON_LIMITS = {
   sequenceBases: 1_000_000, genes: 20_000, recordBytes: 10 * 1024 * 1024,
