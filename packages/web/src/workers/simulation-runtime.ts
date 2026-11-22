@@ -3,7 +3,8 @@
  * state, never with the worker that happens to execute the next step.
  */
 import type { Simulation, SimState, SimulationId, SimulationWorkerAPI } from './types';
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisJson, type AnalysisRecord, type PhageFull, type SimulationContext } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, RESISTANCE_MAX_TICKS, SPEED_OPTIONS,
+  type AnalysisJson, type AnalysisRecord, type PhageFull, type SimulationContext } from '@phage-explorer/core';
 
 export interface SimulationRandomState {
   algorithm: 'lcg32-v1';
@@ -14,6 +15,13 @@ export interface SimulationRandomState {
 export type SeededSimState = SimState & { randomState: SimulationRandomState };
 export const MAX_SIMULATION_BATCH_STEPS = 1000;
 export const MAX_SIMULATION_EXPERIMENT_STEPS = 10000;
+
+/** Bound recorded calls while allowing the finite resistance horizon at the slowest UI speed. */
+export function getSimulationExperimentStepLimit(simId: SimulationId): number {
+  return simId === 'resistance-cocktail'
+    ? Math.ceil(RESISTANCE_MAX_TICKS / SPEED_OPTIONS[0])
+    : MAX_SIMULATION_EXPERIMENT_STEPS;
+}
 
 // Advance the version when the model equations, defaults or checkpoint encoding change.
 const EXPERIMENT_VERSION = '1';
@@ -165,16 +173,18 @@ export interface SimulationExperimentInput {
   finalState: SimState;
 }
 
-function validateExperimentSteps(steps: unknown): asserts steps is number[] {
-  if (!Array.isArray(steps) || steps.length > MAX_SIMULATION_EXPERIMENT_STEPS ||
-    steps.some(dt => typeof dt !== 'number' || !Number.isFinite(dt) || dt < 0.25 || dt > 8)) {
-    throw new Error(`Simulation experiment requires at most ${MAX_SIMULATION_EXPERIMENT_STEPS} step deltas between 0.25 and 8.`);
+function validateExperimentSteps(steps: unknown, simId: SimulationId): asserts steps is number[] {
+  const limit = getSimulationExperimentStepLimit(simId);
+  const min = SPEED_OPTIONS[0], max = SPEED_OPTIONS[SPEED_OPTIONS.length - 1];
+  if (!Array.isArray(steps) || steps.length > limit ||
+    steps.some(dt => typeof dt !== 'number' || !Number.isFinite(dt) || dt < min || dt > max)) {
+    throw new Error(`Simulation experiment requires at most ${limit} step deltas between ${min} and ${max}.`);
   }
 }
 
 /** Bind a completed run to its actual initialization input and accepted step partition. */
 export function createSimulationExperimentRecord(input: SimulationExperimentInput): Promise<AnalysisRecord> {
-  validateExperimentSteps(input.stepDeltas);
+  validateExperimentSteps(input.stepDeltas, input.simId);
   if (!uint32(input.seed) || input.initialState.type !== input.simId || input.finalState.type !== input.simId ||
     getSimulationRandomState(input.initialState).seed !== input.seed || getSimulationRandomState(input.finalState).seed !== input.seed) {
     throw new Error('Simulation experiment state, method and seed disagree.');
@@ -216,7 +226,7 @@ export async function parseSimulationExperiment(content: string, simId: Simulati
     !['string', 'boolean', 'number'].includes(typeof value) || typeof value === 'number' && !Number.isFinite(value))) {
     throw new Error('Simulation initial parameters must be finite primitive values.');
   }
-  validateExperimentSteps(record.parameters.stepDeltas);
+  validateExperimentSteps(record.parameters.stepDeltas, simId);
   if (!equal(Object.keys(record.fields).sort(), ['finalState', 'initialState']) ||
     Object.values(record.fields).some(field => field.kind !== 'simulation' || field.units !== 'records')) {
     throw new Error('Simulation experiment lacks the initial and final model-state fields.');

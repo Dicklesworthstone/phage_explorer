@@ -921,8 +921,8 @@ export function makePackagingSimulation(): Simulation<PackagingMotorState> {
  * Fixed 0.01-hour ticks are subdivided to limit active individual hazards.
  * Random reaction order avoids permanent first-member priority.
  */
-const RESISTANCE_TICK_HOURS = 0.01;
-const RESISTANCE_MAX_TICKS = 4800;
+export const RESISTANCE_TICK_HOURS = 0.01;
+export const RESISTANCE_MAX_TICKS = 4800;
 const RESISTANCE_MAX_SUBSTEPS = 10000;
 
 const resistanceCount: (value: unknown) => boolean = value =>
@@ -1150,12 +1150,12 @@ export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> 
       { id: 'initialBacteria', label: 'Initial bacteria', type: 'number', min: 1e5, max: 1e9, step: 1e5, defaultValue: 1e7 },
       { id: 'initialPhage', label: 'Initial phage (per type)', type: 'number', min: 1e4, max: 1e10, step: 1e4, defaultValue: 1e8 },
       { id: 'carryingCap', label: 'Carrying capacity', type: 'number', min: 1e7, max: 1e10, step: 1e7, defaultValue: 1e9 },
-      { id: 'growthRate', label: 'Growth rate (per hour)', type: 'number', min: 0.1, max: 2.0, step: 0.1, defaultValue: 0.5 },
-      { id: 'infectionRate', label: 'Infection rate (mL/phage/hr)', type: 'number', min: 1e-10, max: 1e-7, step: 1e-10, defaultValue: 2e-9 },
+      { id: 'growthRate', label: 'Growth rate (per hour)', type: 'number', min: 0, max: 2.0, step: 0.1, defaultValue: 0.5 },
+      { id: 'infectionRate', label: 'Infection rate (mL/phage/hr)', type: 'number', min: 0, max: 1e-7, step: 1e-10, defaultValue: 2e-9 },
       { id: 'burstSize', label: 'Burst size', type: 'number', min: 10, max: 500, step: 10, defaultValue: 100 },
       { id: 'latentPeriod', label: 'Mean lysis waiting time (hours)', type: 'number', min: 0.1, max: 2.0, step: 0.1, defaultValue: 0.5 },
-      { id: 'mutationRate', label: 'Resistance mutation rate', type: 'number', min: 1e-9, max: 1e-5, step: 1e-9, defaultValue: 1e-7 },
-      { id: 'multiResRate', label: 'Full resistance rate', type: 'number', min: 1e-10, max: 1e-6, step: 1e-10, defaultValue: 1e-8 },
+      { id: 'mutationRate', label: 'Resistance mutation rate', type: 'number', min: 0, max: 1e-5, step: 1e-9, defaultValue: 1e-7 },
+      { id: 'multiResRate', label: 'Full resistance rate', type: 'number', min: 0, max: 1e-6, step: 1e-10, defaultValue: 1e-8 },
       { id: 'phageDecay', label: 'Phage decay (per hour)', type: 'number', min: 0, max: 0.5, step: 0.01, defaultValue: 0.1 },
     ],
     init: (_phage, params): ResistanceCocktailState => {

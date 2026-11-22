@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import { SPEED_OPTIONS } from '@phage-explorer/core';
 import { useTheme } from '../../hooks/useTheme';
 import type { SimulationControls } from '../../hooks/useSimulation';
 
@@ -25,8 +26,6 @@ interface TimeControlsProps {
   /** Additional info to display */
   statusText?: string;
 }
-
-const SPEED_OPTIONS = [0.25, 0.5, 1, 2, 4, 8];
 
 export function TimeControls({
   controls,

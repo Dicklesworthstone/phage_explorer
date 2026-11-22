@@ -1,8 +1,8 @@
 import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation,
-  type PhageFull, type AnalysisRecord, type RibosomeTrafficState } from '@phage-explorer/core';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation, SPEED_OPTIONS,
+  type PhageFull, type AnalysisRecord, type RibosomeTrafficState, type ResistanceCocktailState } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
 import { SimulationSession, loadRibosomeSimulationInput, type SimulationInput } from './SimulationSession';
@@ -619,6 +619,141 @@ describe('portable simulation experiment replay', () => {
 });
 
 describe('terminal resistance playback', () => {
+  const zeroRates = { growthRate: 0, infectionRate: 0, mutationRate: 0, multiResRate: 0, phageDecay: 0 };
+  const resistanceBackend = () => {
+    const api = createSimulationAPI([makeResistanceSimulation() as unknown as Simulation]);
+    return {
+      getSimulationMetadata: (id: Simulation['id']) => api.getMetadata(id),
+      initSimulation: (params: SimInitParams) => api.init(params),
+      stepSimulation: (state: SimState, dt: number) => api.step({ state, dt }),
+    };
+  };
+
+  it('runs all 48 hours at the slowest UI speed and replays the portable experiment exactly', async () => {
+    const sourceService = resistanceBackend(), targetService = resistanceBackend();
+    const source = new SimulationSession('resistance-cocktail', null, () => sourceService, {}, 7);
+    const target = new SimulationSession('resistance-cocktail', null, () => targetService, {}, 99);
+    try {
+      await source.activate();
+      // Actual public controls, not a replacement transition or test-only parameter metadata.
+      await source.init(zeroRates);
+      assert.equal(source.getSnapshot().error, null);
+      source.setSpeed(SPEED_OPTIONS[0]);
+      assert.equal(source.getSnapshot().speed, 0.25);
+      source.play();
+      for (let i = 0; i < 19200; i++) await source.step();
+      const final = source.getSnapshot().state as ResistanceCocktailState;
+      assert.equal(source.getSnapshot().error, null);
+      assert.equal(source.getSnapshot().completedSteps, 19200);
+      assert.equal(source.getSnapshot().isRunning, false);
+      assert.equal(final.running, false);
+      assert.equal(final.simTime, 48);
+      assert.equal(final.time, 4800);
+      assert.equal(final.completedSteps, 4800);
+      assert.equal(final.pendingSteps, 0);
+      assert.equal(final.sensitiveBacteria, 1e7);
+      assert.deepEqual(final.phageCounts, [1e8, 1e8, 1e8]);
+      assert.deepEqual(final.infectedByPhage, [0, 0, 0]);
+      assert.deepEqual(final.partialResistant, [0, 0, 0]);
+      assert.equal(final.fullyResistant, 0);
+      assert.equal(final.history.at(-1)?.t, 48);
+      const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
+      assert.deepEqual(record.parameters.stepDeltas, Array(19200).fill(0.25));
+      assert.equal(record.method.version, '2');
+      assert.ok(new TextEncoder().encode(content).length < 10 * 1024 * 1024);
+
+      await target.activate();
+      await target.replayExperiment(content);
+      assert.equal(target.getSnapshot().error, null);
+      assert.deepEqual(target.getSnapshot().state, final);
+      assert.equal(target.getSnapshot().completedSteps, 19200);
+      assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId, record.resultId);
+      const replayed = target.getSnapshot().state;
+      target.play();
+      await target.step();
+      assert.equal(target.getSnapshot().isRunning, false);
+      assert.equal(target.getSnapshot().completedSteps, 19200);
+      assert.strictEqual(target.getSnapshot().state, replayed);
+
+      // Hash-valid but oversized input must fail before any replay initialization.
+      const accepted = target.getSnapshot().state;
+      let initializations = 0;
+      targetService.initSimulation = async () => { initializations++; throw new Error('Unexpected replay work'); };
+      await target.replayExperiment(await rewriteRecord(content, changed => {
+        changed.parameters.stepDeltas = Array(19201).fill(0.25);
+      }));
+      assert.match(target.getSnapshot().error!, /at most 19200 step deltas/);
+      assert.equal(initializations, 0);
+      assert.strictEqual(target.getSnapshot().state, accepted);
+    } finally { source.deactivate(); target.deactivate(); }
+  }, 30000);
+
+  it('preserves paused fractional ticks and the exact final delta when the horizon clamps a step', async () => {
+    const sourceService = resistanceBackend(), targetService = resistanceBackend(), replayService = resistanceBackend();
+    const source = new SimulationSession('resistance-cocktail', null, () => sourceService, {}, 7);
+    const target = new SimulationSession('resistance-cocktail', null, () => targetService, {}, 99);
+    const replay = new SimulationSession('resistance-cocktail', null, () => replayService, {}, 42);
+    try {
+      await source.activate();
+      await source.init(zeroRates);
+      source.setSpeed(0.25);
+      source.play();
+      await source.step();
+      source.pause();
+      const partial = source.getSnapshot().state as ResistanceCocktailState;
+      assert.equal(partial.completedSteps, 0);
+      assert.equal(partial.pendingSteps, 0.25);
+      assert.equal(partial.simTime, 0);
+      assert.equal(partial.time, 0.25);
+      const partialContent = await source.exportExperiment();
+      await target.activate();
+      await target.replayExperiment(partialContent);
+      assert.equal(target.getSnapshot().error, null);
+      assert.deepEqual(target.getSnapshot().state, partial);
+      assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId,
+        (await parseAnalysisRecord(partialContent)).resultId);
+
+      target.setSpeed(8);
+      target.play();
+      for (let i = 0; i < 600; i++) await target.step();
+      const final = target.getSnapshot().state as ResistanceCocktailState;
+      assert.equal(target.getSnapshot().error, null);
+      assert.equal(final.simTime, 48);
+      assert.equal(final.pendingSteps, 0);
+      const finalContent = await target.exportExperiment(), finalRecord = await parseAnalysisRecord(finalContent);
+      // The last requested step overruns the remaining horizon by 0.25 ticks.
+      // Keep it intact: replay must use the accepted calls, not a rewritten partition.
+      assert.deepEqual(finalRecord.parameters.stepDeltas, [0.25, ...Array(600).fill(8)]);
+      await replay.activate();
+      await replay.replayExperiment(finalContent);
+      assert.equal(replay.getSnapshot().error, null);
+      assert.deepEqual(replay.getSnapshot().state, final);
+      assert.equal((await parseAnalysisRecord(await replay.exportExperiment())).resultId, finalRecord.resultId);
+    } finally { source.deactivate(); target.deactivate(); replay.deactivate(); }
+  });
+
+  it('still stops other simulations after 10000 recorded calls without losing their accepted run', async () => {
+    const service = backend();
+    let calls = 0;
+    const actualStep = service.stepSimulation;
+    service.stepSimulation = (state, dt, signal) => { calls++; return actualStep(state, dt, signal); };
+    const session = new SimulationSession(probe.id, null, () => service, {}, 7);
+    try {
+      await session.activate();
+      for (let i = 0; i < 10000; i++) await session.step();
+      const accepted = session.getSnapshot().state;
+      session.play();
+      await session.step();
+      assert.equal(calls, 10000);
+      assert.equal(session.getSnapshot().completedSteps, 10000);
+      assert.strictEqual(session.getSnapshot().state, accepted);
+      assert.equal(session.getSnapshot().isRunning, false);
+      assert.match(session.getSnapshot().error!, /Run reached 10000 recorded steps/);
+      const record = await parseAnalysisRecord(await session.exportExperiment());
+      assert.deepEqual(record.parameters.stepDeltas, Array(10000).fill(1));
+    } finally { session.deactivate(); }
+  });
+
   it('stops animation and recording when the resistance backend returns a completed checkpoint', async () => {
     // Lifecycle fixture: numerical extinction/lysis is covered in the core suite.
     // This backend deliberately completes on its first accepted step.

@@ -6,6 +6,15 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Complete resistance runs at every supported playback speed
+
+- The browser records and replays a full 48-hour resistance run at 0.25×,
+  including all 19,200 accepted updates. Session, export and replay share the
+  same finite model-specific budget; other simulations retain their prior limit.
+- Zero-rate controls are available for controlled resistance experiments.
+  Paused fractional ticks, exact requested deltas and existing version 2 result
+  identities survive export and replay without changing the model equations.
+
 ### Terminal analyses follow the accepted genome
 
 - Cached overlays now retain the exact repository, complete bases and annotation

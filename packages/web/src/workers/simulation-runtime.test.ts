@@ -4,7 +4,8 @@ import type { ResistanceCocktailState } from '../../../core/src/simulation';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import type { Simulation, SimState, PlaqueAutomataState } from './types';
-import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_BATCH_STEPS, createSimulationExperimentRecord, parseSimulationExperiment, type SeededSimState } from './simulation-runtime';
+import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_BATCH_STEPS, createSimulationExperimentRecord,
+  getSimulationExperimentStepLimit, parseSimulationExperiment, type SeededSimState } from './simulation-runtime';
 
 // Deliberately mutating model: tests must protect checkpoints even when a core
 // implementation changes its arrays in place. Numeric draws are checked against
@@ -155,6 +156,10 @@ describe('resistance worker checkpoints and experiment version', () => {
     });
     assert.equal(record.method.version, '2');
     assert.equal(record.references[0].version, '2');
+    // Captured from the version 2 implementation before the recording-budget fix.
+    // UI bounds must not change the identity of an existing accepted trajectory.
+    assert.equal(record.cacheKey, 'f47448443c6e8e5addbdcb525275aef32b5017d9a058a5e9b3898506ed10e70f');
+    assert.equal(record.resultId, '951f58e67acfe7249c1ea9a8ea3980a186940edafc6521836a3048ecea16d7e9');
     const parsed = await parseSimulationExperiment(serializeAnalysisRecord(record), 'resistance-cocktail', null);
     const fresh = createSimulationAPI([resistance]);
     let state = await fresh.init({ simId: 'resistance-cocktail', seed: parsed.seed, params: parsed.parameters });
@@ -162,5 +167,20 @@ describe('resistance worker checkpoints and experiment version', () => {
     assert.deepEqual(state, final);
     const earlier = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' } });
     await assert.rejects(parseSimulationExperiment(serializeAnalysisRecord(earlier), 'resistance-cocktail', null), /version/i);
+  });
+  it('bounds resistance recordings by its finite horizon without enlarging other model budgets', async () => {
+    assert.equal(getSimulationExperimentStepLimit('resistance-cocktail'), 19200);
+    for (const id of ['lysogeny-circuit', 'ribosome-traffic', 'plaque-automata', 'evolution-replay',
+      'packaging-motor', 'infection-kinetics'] as const) {
+      assert.equal(getSimulationExperimentStepLimit(id), 10000);
+    }
+    for (const simulation of [resistance, probe]) {
+      const initial = await createSimulationAPI([simulation]).init({ simId: simulation.id, seed: 7 });
+      const limit = getSimulationExperimentStepLimit(simulation.id);
+      assert.throws(() => createSimulationExperimentRecord({
+        simId: simulation.id, phage: null, seed: 7, parameters: initial.params,
+        stepDeltas: Array(limit + 1).fill(0.25), initialState: initial, finalState: initial,
+      }), new RegExp(`at most ${limit} step deltas`));
+    }
   });
 });

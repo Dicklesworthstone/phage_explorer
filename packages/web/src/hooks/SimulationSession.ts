@@ -1,10 +1,10 @@
 /** One selected simulation's lifecycle, independent of React render timing. */
-import { serializeAnalysisRecord, RIBOSOME_TRAFFIC_LIMITS, type PhageFull, type SimulationContext } from '@phage-explorer/core';
+import { serializeAnalysisRecord, RIBOSOME_TRAFFIC_LIMITS, SPEED_OPTIONS, type PhageFull, type SimulationContext } from '@phage-explorer/core';
 import type { PhageRepository } from '../db';
 import type { ComputeOrchestrator } from '../workers/ComputeOrchestrator';
 import type { SimParameter, SimState, SimulationId } from '../workers/types';
 import { getSimulationRandomState, createSimulationExperimentRecord, parseSimulationExperiment,
-  simulationStateJson, MAX_SIMULATION_EXPERIMENT_STEPS } from '../workers/simulation-runtime';
+  simulationStateJson, getSimulationExperimentStepLimit } from '../workers/simulation-runtime';
 
 type Parameters = Record<string, number | boolean | string>;
 type Backend = Pick<ComputeOrchestrator, 'initSimulation' | 'stepSimulation' | 'getSimulationMetadata'>;
@@ -199,9 +199,10 @@ export class SimulationSession {
   step = async (): Promise<void> => {
     if (!this.active || !this.snapshot.state || this.operation) return;
     if (this.snapshot.state.type === 'resistance-cocktail' && !this.snapshot.state.running) return;
-    if (this.acceptedDeltas.length >= MAX_SIMULATION_EXPERIMENT_STEPS) {
+    const stepLimit = getSimulationExperimentStepLimit(this.simId);
+    if (this.acceptedDeltas.length >= stepLimit) {
       this.pause();
-      this.publish({ error: `Run reached ${MAX_SIMULATION_EXPERIMENT_STEPS} recorded steps. Export it, then reset to start another run.` });
+      this.publish({ error: `Run reached ${stepLimit} recorded steps. Export it, then reset to start another run.` });
       return;
     }
     const operation: Operation = { controller: new AbortController(), kind: 'step' };
@@ -251,8 +252,9 @@ export class SimulationSession {
   reset = async (): Promise<void> => { await this.init(); };
   setSpeed = (speed: number): void => {
     if (!this.active) return;
-    if (!Number.isFinite(speed) || speed < 0.25 || speed > 8) {
-      this.publish({ error: 'Simulation speed must be between 0.25 and 8.' });
+    const min = SPEED_OPTIONS[0], max = SPEED_OPTIONS[SPEED_OPTIONS.length - 1];
+    if (!Number.isFinite(speed) || speed < min || speed > max) {
+      this.publish({ error: `Simulation speed must be between ${min} and ${max}.` });
       return;
     }
     this.publish({ speed });
