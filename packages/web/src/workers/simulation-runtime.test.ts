@@ -1,6 +1,6 @@
-import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
+import { makePackagingSimulation, makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import type { ResistanceCocktailState } from '../../../core/src/simulation';
+import type { PackagingMotorState, ResistanceCocktailState } from '../../../core/src/simulation';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import type { Simulation, SimState, PlaqueAutomataState } from './types';
@@ -182,5 +182,41 @@ describe('resistance worker checkpoints and experiment version', () => {
         stepDeltas: Array(limit + 1).fill(0.25), initialState: initial, finalState: initial,
       }), new RegExp(`at most ${limit} step deltas`));
     }
+  });
+});
+
+describe('packaging worker checkpoints and experiment version', () => {
+  const motor = makePackagingSimulation() as unknown as Simulation;
+
+  it('preserves physical state and the unused random cursor across fractional batches and fresh workers', async () => {
+    const first = createSimulationAPI([motor]);
+    const initial = await first.init({ simId: 'packaging-motor', seed: 42 });
+    const whole = await first.step({ state: initial, dt: 8 });
+    const batches = await createSimulationAPI([motor]).stepBatch(initial, 0.25, 32);
+    assert.deepEqual(batches.at(-1), whole);
+    assert.deepEqual(getSimulationRandomState(whole), getSimulationRandomState(initial));
+    assert.equal((whole as PackagingMotorState).completedSteps, 160);
+    assert.equal((whole as PackagingMotorState).history.length, 9);
+    assert.equal((initial as PackagingMotorState).bpPackaged, 0);
+  });
+
+  it('binds the revised equations and terminal semantics to version 2 and refuses version 1', async () => {
+    const api = createSimulationAPI([motor]);
+    const initial = await api.init({ simId: 'packaging-motor', seed: 7 });
+    const final = await api.step({ state: initial, dt: 8 });
+    const record = await createSimulationExperimentRecord({
+      simId: 'packaging-motor', phage: null, seed: 7, parameters: initial.params,
+      stepDeltas: [8], initialState: initial, finalState: final,
+    });
+    assert.equal(record.method.version, '2');
+    assert.match(record.method.implementation, /-dE\/dV/);
+    const parsed = await parseSimulationExperiment(serializeAnalysisRecord(record), 'packaging-motor', null);
+    const fresh = createSimulationAPI([motor]);
+    let state = await fresh.init({ simId: 'packaging-motor', seed: parsed.seed, params: parsed.parameters });
+    for (const dt of parsed.stepDeltas) state = await fresh.step({ state, dt });
+    assert.deepEqual(state, final);
+    const earlier = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' } });
+    await assert.rejects(parseSimulationExperiment(serializeAnalysisRecord(earlier), 'packaging-motor', null), /version/i);
+    await assert.rejects(api.step({ state: { ...initial, modelVersion: 1 } as unknown as SimState, dt: 1 }), /checkpoint/);
   });
 });

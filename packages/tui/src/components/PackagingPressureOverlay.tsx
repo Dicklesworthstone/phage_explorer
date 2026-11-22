@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import { useOverlayWidth } from './terminal-size';
 import { OverlayProvenance } from './OverlayProvenance';
 import { usePhageStore } from '@phage-explorer/state';
+import { packagingStateAt, PACKAGING_MIN_SPACING_NM } from '@phage-explorer/core';
 
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
@@ -23,25 +24,15 @@ export function PackagingPressureOverlay(): React.ReactElement {
 
   const genomeLength = phage?.genomeLength ?? 0;
 
-  const { fill, force, pressure, atp } = useMemo(() => {
-    if (!genomeLength || genomeLength <= 0) {
-      return { fill: 0, force: 0, pressure: 0, atp: 0 };
-    }
+  const state = useMemo(() => {
+    if (!Number.isFinite(genomeLength) || genomeLength <= 0) return null;
     const scrollBp = viewMode === 'aa' ? scroll * 3 : scroll;
-    const clampedBp = Math.max(0, Math.min(genomeLength, scrollBp));
-    const fillingFraction = clamp01(clampedBp / genomeLength);
-    const packedLengthNm = clampedBp * 0.34;
-    const force = 5 + 50 * Math.pow(fillingFraction, 3); // pN
-    const pressure = Math.min(60, 5 + 55 * fillingFraction); // atm (cap)
-    const atpConsumed = Math.floor(clampedBp / 2);
-    return {
-      fill: fillingFraction,
-      force,
-      pressure,
-      atp: atpConsumed,
-      packedLengthNm,
-    };
-  }, [genomeLength, scroll, viewMode]);
+    // Match the browser cursor's default molar salt assumption. The motor's
+    // editable millimolar controls are separate from this cursor experiment.
+    return packagingStateAt(scrollBp, genomeLength, phage?.morphology, 0.1);
+  }, [genomeLength, phage?.morphology, scroll, viewMode]);
+  const withinPackingLimit = state !== null &&
+    (state.spacingNm === null || state.spacingNm >= PACKAGING_MIN_SPACING_NM);
 
   useInput((input, key) => {
     if (key.escape || input === 'v' || input === 'V') {
@@ -66,35 +57,44 @@ export function PackagingPressureOverlay(): React.ReactElement {
       </Box>
 
       <Box marginBottom={1}>
-        <OverlayProvenance level="heuristic" source="closed-form estimate from genome length" />
+        <OverlayProvenance level="simulated" source="uncalibrated spherical dsDNA energy model" />
       </Box>
 
-      {!genomeLength ? (
+      {!state ? (
         <Text color={colors.textDim}>No genome loaded</Text>
       ) : (
         <>
           <Text color={colors.text}>
-            Position: {(viewMode === 'aa' ? scroll * 3 : scroll).toLocaleString()} / {genomeLength.toLocaleString()} bp · Fill {(fill * 100).toFixed(1)}%
+            Position: {state.bpPackaged.toLocaleString()} / {genomeLength.toLocaleString()} bp · Fill {(state.fillFraction * 100).toFixed(1)}%
           </Text>
           <Text color={colors.text}>
-            Force: {force.toFixed(1)} pN · Pressure: {pressure.toFixed(1)} atm · ATP consumed: {atp.toLocaleString()}
+            Force: {withinPackingLimit ? `${state.forcePn.toFixed(1)} pN` : 'Unavailable'} · Model pressure: {withinPackingLimit ? `${state.pressureAtm.toFixed(1)} atm` : 'Unavailable'}
           </Text>
+          <Text color={colors.text}>
+            Nominal ATP: {state.atpCount.toLocaleString()} (2 bp/ATP) · Ionic strength: 0.10 M
+          </Text>
+          <Text color={colors.textDim}>
+            Assumed radius: {state.capsidRadiusNm.toFixed(1)} nm · Implied DNA spacing: {state.spacingNm === null ? 'empty capsid' : `${state.spacingNm.toFixed(2)} nm`}
+          </Text>
+          {!withinPackingLimit && <Text color={colors.warning}>
+            This position requires DNA spacing below {PACKAGING_MIN_SPACING_NM} nm. Load and pressure are unavailable beyond the non-overlap limit of this spherical model.
+          </Text>}
 
           <Box flexDirection="column" marginTop={1}>
             <Text color={colors.textDim}>Fill fraction gauge</Text>
-            <Text color={colors.text}>{gauge(fill)}</Text>
+            <Text color={colors.text}>{gauge(state.fillFraction)}</Text>
           </Box>
 
-          <Box flexDirection="column" marginTop={1}>
-            <Text color={colors.textDim}>Pressure gauge (warn above 50 atm)</Text>
-            <Text color={pressure > 50 ? colors.error : colors.text}>
-              {gauge(pressure / 60)}
+          {withinPackingLimit && <Box flexDirection="column" marginTop={1}>
+            <Text color={colors.textDim}>Model pressure gauge (0–60 atm display scale)</Text>
+            <Text color={colors.text}>
+              {gauge(state.pressureAtm / 60)}
             </Text>
-          </Box>
+          </Box>}
 
           <Box marginTop={1}>
             <Text color={colors.textDim} dimColor>
-              Scroll the genome to feel pressure rise; model: force = 5 + 50·φ³, pressure capped at 60 atm.
+              Scroll to vary packaged length. Force = dE/dL; pressure = −dE/dV. Hypothetical dsDNA teaching model; no per-genome calibration.
             </Text>
           </Box>
         </>

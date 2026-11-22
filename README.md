@@ -699,15 +699,41 @@ occupancy; `.` steps and `R` resets it. Bounds are 5 million genome bases,
 **Reproducibility:** Version 2 experiment records include infected populations in JSON/TSV. Version 1 records require an explicit rerun under the corrected model and are not silently reinterpreted.
 
 ### 6. Packaging Motor Pressure Gauge
-**Model:** Inverse-spool continuum model (Riemer & Bloomfield 1978; Purohit, Kondev & Phillips, PNAS 2003)
-**Energy terms:**
-- DNA bending: `E/L = ξ_p·kT / (2R²)`, with persistence length ξ_p = 50 nm and R the volume-weighted mean radius of the DNA-occupied shell
-- Screened interstrand repulsion: `E/L = F₀·exp(−d_s/λ_D)`, with hexagonal interaxial spacing `d_s = √(2V / (√3·L))` and Debye length `λ_D = 0.304/√I nm`
-- Capsid radius per morphology (13–45 nm); ATP at the measured 2 bp per hydrolysis
 
-**Output:** Force = dE/dL in pN, pressure = force over the portal channel cross-section in atm, plus the interaxial spacing and Debye length the model computes on the way.
+**Model:** An uncalibrated spherical dsDNA teaching model. Its energy per unit
+contour length is `E/L = ξ_p·kT/(2r_eff²) + A·exp(−d/λ_D)`, with a mean occupied-shell
+radius `r_eff`, persistence length 50 nm, thermal energy 4.11 pN·nm, and an effective
+interaction amplitude `A = 380.84 pN`. Hexagonal spacing is
+`d = √(2V/(√3·L))`; screening uses `λ_D = 0.304/√I nm` with ionic strength `I` in
+mol/L. The motor's millimolar control is converted explicitly. Morphology supplies
+an illustrative spherical radius; neither that radius nor the retained amplitude
+is a measured calibration for the selected genome.
 
-**Calibration and accuracy:** one fitted constant, F₀, solved so λ at full packing gives the ~57 pN measured by optical tweezers. Everything else is a published value. Across this catalogue the model gives 12–73 pN at full packing, and the interaxial spacing comes out at 2.67 nm for λ against a measured 2.5–2.8 nm — an independent check, since spacing is not fitted. Expect the right scale and the right shape, not a per-genome figure to three digits: the capsid table carries one radius per morphology and treats every head as a sphere, which understates phi29's prolate head badly.
+**Force and pressure:** Force is the analytic length derivative `dE/dL`, in pN.
+Internal pressure is the independent negative volume derivative `−dE/dV` at fixed
+packaged and total genome lengths, converted from pN/nm² to atm. The distinction
+follows [Purohit, Kondev and Phillips (2003)](https://pmc.ncbi.nlm.nih.gov/articles/PMC404299/);
+this simpler shell energy does not reproduce their minimized-spacing model. An
+empty capsid has zero internal pressure and no DNA lattice spacing.
+
+**Motor behavior:** Genome length, radius, ionic strength and nominal motor preset
+control load-dependent progress. The headful, cos and phi29 presets declare their
+unloaded speeds, load limits and ATP accounting. They are teaching assumptions.
+The simulation starts empty, retains fractional time, advances with fixed
+0.05-second midpoint steps, and applies playback speed once. It stops at complete
+packaging, below 0.01 bp/s, at the 2 nm non-overlap limit, or after 30 model minutes.
+The display shows actual trajectory history, packaged bases, velocity, load,
+pressure, nominal ATP and the stop reason. Parameter edits restart the model;
+terminal controls include parameter selection/editing, pause, step and reset.
+
+**Cursor and saved experiments:** The browser cursor-state tab, terminal `V`
+overlay and live motor share this energy law. Cursor views withhold force and
+pressure beyond the non-overlap limit. The separate capsid-energetics tab has its
+own model and assumptions. Version-2 motor exports preserve exact inputs,
+parameters and accepted steps for fresh replay; older motor records require a new
+run. Controls allow 0.001–5,000 kb, 10–60 nm radius and 1–200 mM ionic strength.
+Using a selected genome's exact length does not establish that a spherical dsDNA
+packaging model applies to its virion.
 
 ### 7. Evolution Replay
 **Model:** Molecular clock with mutations and genetic drift

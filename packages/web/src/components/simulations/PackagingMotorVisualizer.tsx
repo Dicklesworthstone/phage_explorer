@@ -24,45 +24,9 @@ export function PackagingMotorVisualizer({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const history = useMemo(() => {
-    const hist = (state as unknown as {
-      history?: Array<
-        Partial<{
-          time: number;
-          t: number;
-          fill: number;
-          fillFraction: number;
-          pressure: number;
-          force: number;
-        }>
-      >;
-    }).history;
-
-    const points =
-      hist && hist.length > 0
-        ? hist
-        : [
-            {
-              time: state.time,
-              fillFraction: state.fillFraction,
-              pressure: state.pressure,
-              force: state.force,
-            },
-          ];
-
-    const normalizeNumber = (value: unknown, fallback: number): number =>
-      Number.isFinite(value as number) ? (value as number) : fallback;
-
-    const normalized = points.map((point) => {
-      const time = normalizeNumber(point.time ?? point.t, state.time);
-      const fillRaw = point.fillFraction ?? point.fill;
-      const fill = Math.max(0, Math.min(1, normalizeNumber(fillRaw, state.fillFraction)));
-      const pressure = normalizeNumber(point.pressure, state.pressure);
-      const force = normalizeNumber(point.force, state.force);
-      return { time, fill, pressure, force };
-    });
-
-    normalized.sort((a, b) => a.time - b.time);
-    return normalized;
+    const points = state.history.at(-1)?.time === state.time ? state.history
+      : [...state.history, { time: state.time, fillFraction: state.fillFraction, pressure: state.pressure, force: state.force }];
+    return points.map(point => ({ ...point, fill: point.fillFraction }));
   }, [state]);
 
   useEffect(() => {
@@ -101,20 +65,12 @@ export function PackagingMotorVisualizer({
 
     const fill = Math.max(0, Math.min(1, state.fillFraction ?? 0));
     drawGauge('DNA packaged (%)', fill * 100, 100, topY, COLORS.fill);
-    drawGauge('Pressure (atm)', state.pressure ?? 0, 80, topY + 36, COLORS.pressure);
-    drawGauge('Force (pN)', state.force ?? 0, 200, topY + 72, COLORS.force);
+    drawGauge('Model pressure (atm)', state.pressure, Math.max(10, Math.ceil(state.pressure)), topY + 36, COLORS.pressure);
+    drawGauge('Motor load (pN)', state.force, Math.max(state.motorStallForcePn, Math.ceil(state.force)), topY + 72, COLORS.force);
 
-    const stall = Math.max(0, Math.min(1, state.stallProbability ?? 0));
     ctx.fillStyle = colors.textDim;
     ctx.font = '12px monospace';
-    ctx.fillText('Stall probability', gaugeX, topY + 112);
-    ctx.fillStyle = stall > 0.7 ? colors.error : stall > 0.3 ? colors.warning : colors.success;
-    ctx.beginPath();
-    ctx.arc(gaugeX + 130, topY + 108, 10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = colors.background;
-    ctx.font = '10px monospace';
-    ctx.fillText((stall * 100).toFixed(0) + '%', gaugeX + 124, topY + 112);
+    ctx.fillText(`${state.velocityBpPerSec.toFixed(2)} bp/s · ${state.status}`, gaugeX, topY + 112);
 
     // History plots
     const pad = { left: 70, right: 20, top: topY + 140, bottom: 28 };
@@ -140,7 +96,7 @@ export function PackagingMotorVisualizer({
       ctx.lineWidth = key === 'fill' ? 1.2 : 1.8;
       history.forEach((p, i) => {
         const x = xScale(p.time);
-        const y = yScale(key === 'fill' ? p.fill * 100 : (p as any)[key], maxVal);
+        const y = yScale(key === 'fill' ? p.fill * 100 : p[key], maxVal);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -155,16 +111,23 @@ export function PackagingMotorVisualizer({
     ctx.font = '11px monospace';
     ctx.fillText('History: pressure / force / fill', pad.left, pad.top - 6);
     ctx.textAlign = 'center';
-    ctx.fillText('Time', pad.left + w / 2, height - 6);
-  }, [history, state.fillFraction, state.force, state.pressure, state.stallProbability, width, height, colors]);
+    ctx.fillText('Time (s)', pad.left + w / 2, height - 6);
+  }, [history, state.fillFraction, state.force, state.pressure, state.motorStallForcePn, state.velocityBpPerSec, state.status, width, height, colors]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      role="img"
-      aria-label="DNA packaging motor simulation showing pressure, force, and fill fraction over time"
-      style={{ width: `${width}px`, height: `${height}px`, display: 'block' }}
-    />
+    <div>
+      <p aria-live="polite">{state.status}: {state.bpPackaged.toFixed(1)} bp packaged · {state.velocityBpPerSec.toFixed(2)} bp/s · nominal ATP {state.atpCount.toFixed(1)}</p>
+      <canvas
+        ref={canvasRef}
+        role="img"
+        aria-label={`DNA packaging model: ${state.status}; ${(state.fillFraction * 100).toFixed(1)} percent packaged, ${state.force.toFixed(2)} pN load and ${state.pressure.toFixed(2)} atm model pressure`}
+        style={{ width: `${width}px`, height: `${height}px`, display: 'block' }}
+      />
+      <p style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
+        Uncalibrated dsDNA teaching model at 25°C: spherical shell, nominal motor preset and linear load-speed law.
+        Force is dE/dL; pressure is −dE/dV. Stops below 0.01 bp/s, at complete DNA or the non-overlap packing limit, or after 30 model minutes.
+      </p>
+    </div>
   );
 }
 

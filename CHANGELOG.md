@@ -6,6 +6,22 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Packaging motor with consistent physics, timing and replay
+
+- The live motor and browser/terminal cursor displays now share analytic force
+  and pressure derivatives of the declared spherical-shell energy. Ionic units,
+  empty-capsid behavior and the non-overlap domain are explicit. Unsupported
+  cursor positions withhold load and pressure instead of showing extrapolated
+  physical values.
+- Motor parameters drive actual load-dependent progress, nominal ATP accounting
+  and bounded history. Fixed midpoint steps retain fractional time and apply
+  playback speed once; completion, operational stall, packing limit and model
+  horizon stop both frontends consistently. Parameter edits reset derived state.
+- Version-2 records bind the corrected model, source, settings and complete
+  accepted run. Fresh replay rejects incompatible or altered records. The
+  implementation remains an uncalibrated dsDNA teaching model with nominal motor
+  presets. See [model, controls and limits](README.md#6-packaging-motor-pressure-gauge).
+
 ### Record and replay the complete pangenome-to-phylogeny workflow
 
 - Browser and terminal workflow authors can now record a linked unrooted tree
@@ -17,6 +33,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   execution. Accepted results expose backbone coverage, warnings and Newick
   export; changed inputs/settings and cancellation preserve user control.
   [Controls and replay](docs/RECORDED_PANGENOME_WORKFLOWS.md#record-a-linked-phylogeny).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/2ac95558ea27f7b6659546fe15199b2d93be7c6b).
 
 ### Portable annotation-order synteny experiments
 

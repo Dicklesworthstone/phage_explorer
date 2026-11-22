@@ -57,10 +57,13 @@ function renderDetails(sim: Simulation, state: SimState): React.ReactElement {
       );
     case 'packaging-motor':
       return (
-        <Text>
-          Fill {(state.fillFraction * 100).toFixed(1)}% · Pressure {state.pressure.toFixed(1)} atm · Force {state.force.toFixed(1)} pN
-          {'  '}Fill gauge {bar(state.fillFraction)}
-        </Text>
+        <Box flexDirection="column">
+          <Text>Packaged {state.bpPackaged.toFixed(1)} bp · Speed {state.velocityBpPerSec.toFixed(2)} bp/s</Text>
+          <Text>Load {state.force.toFixed(2)} / {state.motorStallForcePn} pN · Nominal ATP {state.atpCount.toFixed(1)}</Text>
+          <Text>Fill {bar(state.fillFraction)} · {state.status}</Text>
+          <Text>Assumes dsDNA, spherical geometry and nominal motor presets; no per-genome calibration.</Text>
+          <Text>Stops below 0.01 bp/s, at complete DNA/packing limit, or at 30 model minutes.</Text>
+        </Box>
       );
     case 'infection-kinetics':
       return (
@@ -127,7 +130,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
   // Keep simState out of dependencies so the interval is not recreated on every tick.
   useEffect(() => {
     if (!simulation || !latestStateRef.current) return;
-    if (paused) return;
+    if (paused || ['resistance-cocktail', 'packaging-motor'].includes(latestStateRef.current.type) && !latestStateRef.current.running) return;
     const interval = setInterval(() => {
       const current = latestStateRef.current;
       if (!current) return;
@@ -135,7 +138,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
         const next = simulation.step(current, speed);
         latestStateRef.current = next;
         updateState(next);
-        if (next.type === 'resistance-cocktail' && !next.running) setPaused(true);
+        if (['resistance-cocktail', 'packaging-motor'].includes(next.type) && !next.running) setPaused(true);
       } catch (cause) {
         setPaused(true);
         setRuntimeError(cause instanceof Error ? cause.message : String(cause));
@@ -152,14 +155,15 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
     }
     if (input === ' ') {
       if (runtimeError) return;
+      if (latestStateRef.current && ['resistance-cocktail', 'packaging-motor'].includes(latestStateRef.current.type) && !latestStateRef.current.running) return;
       togglePause();
       return;
     }
     if (input === 'r' || input === 'R') {
       if (initialRef.current && latestStateRef.current) {
-        // Resistance counts and array dimensions derive from the current parameters.
+        // Derived model states must be rebuilt from the current parameters.
         const currentParams = latestStateRef.current.params;
-        const resetState = latestStateRef.current.type === 'resistance-cocktail' && simulation
+        const resetState = ['resistance-cocktail', 'packaging-motor'].includes(latestStateRef.current.type) && simulation
           ? simulation.init(null, currentParams)
           : { ...initialRef.current, params: currentParams };
         latestStateRef.current = resetState;
@@ -176,7 +180,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
         const next = simulation.step(latestStateRef.current, speed);
         latestStateRef.current = next;
         updateState(next);
-        if (next.type === 'resistance-cocktail' && !next.running) setPaused(true);
+        if (['resistance-cocktail', 'packaging-motor'].includes(next.type) && !next.running) setPaused(true);
         setRuntimeError(null);
       } catch (cause) {
         setPaused(true);
@@ -200,6 +204,20 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       setSelectedParam(i => Math.min(Math.max(0, paramDefs.length - 1), i + 1));
       return;
     }
+    if ((input === '=' || input === '+' || input === '-') && paramDefs[selectedParam]?.type === 'select') {
+      const meta = paramDefs[selectedParam], choices = meta.options ?? [];
+      if (!latestStateRef.current || !simulation || !choices.length) return;
+      const index = Math.max(0, choices.findIndex(choice => choice.value === latestStateRef.current!.params[meta.id]));
+      const next = choices[(index + (input === '-' ? choices.length - 1 : 1)) % choices.length].value;
+      if (latestStateRef.current.type === 'packaging-motor') {
+        try {
+          const restarted = simulation.init(null, { ...latestStateRef.current.params, [meta.id]: next });
+          initialRef.current = restarted; latestStateRef.current = restarted;
+          resetSimulation(restarted); setRuntimeError(null);
+        } catch (cause) { setRuntimeError(cause instanceof Error ? cause.message : String(cause)); setPaused(true); }
+      }
+      return;
+    }
     if ((input === '=' || input === '+' || input === '-') && paramDefs[selectedParam]?.type === 'number') {
       const meta = paramDefs[selectedParam];
       if (!meta) return;
@@ -209,6 +227,14 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       const currentVal = Number(latestStateRef.current?.params[meta.id] ?? meta.defaultValue ?? 0);
       const nextVal = Math.min(max, Math.max(min, currentVal + (input === '-' ? -step : step)));
       if (latestStateRef.current) {
+        if (latestStateRef.current.type === 'packaging-motor' && simulation) {
+          try {
+            const restarted = simulation.init(null, { ...latestStateRef.current.params, [meta.id]: nextVal });
+            initialRef.current = restarted; latestStateRef.current = restarted;
+            resetSimulation(restarted); setRuntimeError(null);
+          } catch (cause) { setRuntimeError(cause instanceof Error ? cause.message : String(cause)); setPaused(true); }
+          return;
+        }
         if (latestStateRef.current.type === 'resistance-cocktail' && simulation &&
           ['cocktailSize', 'initialBacteria', 'initialPhage'].includes(meta.id)) {
           const restarted = simulation.init(null, { ...latestStateRef.current.params, [meta.id]: nextVal });
@@ -276,7 +302,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       </Box>
 
       <Box marginBottom={1}>
-        <Text color="#9ca3af">Status: {paused ? 'Paused' : 'Running'} · Speed {speed}x</Text>
+        <Text color="#9ca3af">Status: {simState.type === 'packaging-motor' && !simState.running ? simState.status : paused ? 'Paused' : 'Running'} · Speed {speed}x</Text>
       </Box>
 
       {/* Parameters */}

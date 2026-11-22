@@ -7,11 +7,13 @@ import { useOverlay } from './OverlayProvider';
 import { usePhageStore } from '../../store';
 import {
   packagingStateAt,
+  PACKAGING_MIN_SPACING_NM,
   analyzeCapsidPackagingEnergetics,
   CANONICAL_CAPSIDS,
   CANONICAL_MOTORS,
   type CapsidGeometry,
   type MotorProperties,
+  type PackagingState,
 } from '@phage-explorer/core';
 import {
   OverlayDescription,
@@ -50,6 +52,21 @@ function progressBar(fraction: number, color: string): React.ReactElement {
       />
     </div>
   );
+}
+
+/** Do not present extrapolated loads as physical evidence beyond duplex overlap. */
+export function PackagingCursorLoad({ state }: {
+  state: Pick<PackagingState, 'forcePn' | 'pressureAtm' | 'spacingNm'>;
+}): React.ReactElement {
+  const supported = state.spacingNm === null || state.spacingNm >= PACKAGING_MIN_SPACING_NM;
+  return <>
+    {!supported && <p role="status" style={{ gridColumn: '1 / -1' }}>
+      This position would require DNA spacing below {PACKAGING_MIN_SPACING_NM} nm.
+      Load and pressure are unavailable beyond the non-overlap limit of this spherical model.
+    </p>}
+    <OverlayStatCard label="Force" value={supported ? `${state.forcePn.toFixed(1)} pN` : 'Unavailable'} />
+    <OverlayStatCard label="Model pressure" value={supported ? `${state.pressureAtm.toFixed(1)} atm` : 'Unavailable'} />
+  </>;
 }
 
 export function PackagingPressureOverlay(): React.ReactElement | null {
@@ -91,7 +108,7 @@ export function PackagingPressureOverlay(): React.ReactElement | null {
         forcePn: 0,
         pressureAtm: 0,
         atpCount: 0,
-        spacingNm: 0,
+        spacingNm: null,
         debyeNm: 0,
         capsidRadiusNm: 0,
       };
@@ -143,6 +160,7 @@ export function PackagingPressureOverlay(): React.ReactElement | null {
   const genomeLength = phage?.genomeLength ?? 0;
   const fillPercent = (cursorMetrics.fillFraction * 100).toFixed(1);
   const pressureFraction = cursorMetrics.pressureAtm / 60;
+  const cursorWithinPackingLimit = cursorMetrics.spacingNm === null || cursorMetrics.spacingNm >= PACKAGING_MIN_SPACING_NM;
 
   return (
     <Overlay
@@ -191,13 +209,14 @@ export function PackagingPressureOverlay(): React.ReactElement | null {
         {genomeLength > 0 ? (
           activeTab === 'cursor_state' ? (
             <>
-              <OverlayDescription title="Inverse-spool packaging model">
+              <OverlayDescription title="Spherical-shell packaging teaching model">
                 Bending energy ξ<sub>p</sub>kT/2R² plus screened interstrand repulsion
-                F₀·e<sup>−d/λ<sub>D</sub></sup>, with λ<sub>D</sub> = 0.304/√I nm. Force is
-                dE/dL; pressure is that force over the portal channel. Capsid radius comes
-                from morphology ({cursorMetrics.capsidRadiusNm} nm here). ATP at the measured 2 bp
-                per hydrolysis. One fitted constant, F₀, anchored to the ~57 pN measured for
-                λ at full packing.
+                A·e<sup>−d/λ<sub>D</sub></sup> per unit DNA length, with λ<sub>D</sub> = 0.304/√I nm.
+                Force is dE/dL; internal pressure is −dE/dV at fixed packaged length.
+                The effective amplitude A = 380.84 pN and spherical morphology radius
+                ({cursorMetrics.capsidRadiusNm} nm here) are illustrative assumptions.
+                This is an uncalibrated dsDNA model, not a measured prediction for the selected genome.
+                ATP accounting assumes 2 bp per ATP. The motor simulation uses the same energy law.
               </OverlayDescription>
 
               <OverlayStatGrid>
@@ -206,24 +225,12 @@ export function PackagingPressureOverlay(): React.ReactElement | null {
                   value={`${cursorMetrics.positionBp.toLocaleString()} / ${genomeLength.toLocaleString()} bp`}
                 />
                 <OverlayStatCard label="Fill" value={`${fillPercent}%`} />
-                <OverlayStatCard label="Force" value={`${cursorMetrics.forcePn.toFixed(1)} pN`} />
+                <PackagingCursorLoad state={cursorMetrics} />
+                <OverlayStatCard label="Nominal ATP" value={cursorMetrics.atpCount.toLocaleString()} />
                 <OverlayStatCard
-                  label="Pressure"
+                  label="Implied DNA spacing"
                   value={
-                    <span
-                      style={{
-                        color: pressureFraction > 0.8 ? 'var(--color-error)' : 'var(--color-text)',
-                      }}
-                    >
-                      {cursorMetrics.pressureAtm.toFixed(1)} atm
-                    </span>
-                  }
-                />
-                <OverlayStatCard label="ATP consumed" value={cursorMetrics.atpCount.toLocaleString()} />
-                <OverlayStatCard
-                  label="DNA spacing"
-                  value={
-                    Number.isFinite(cursorMetrics.spacingNm) ? `${cursorMetrics.spacingNm.toFixed(2)} nm` : '\u2014'
+                    cursorMetrics.spacingNm !== null && Number.isFinite(cursorMetrics.spacingNm) ? `${cursorMetrics.spacingNm.toFixed(2)} nm` : '\u2014'
                   }
                 />
                 <OverlayStatCard label="Debye length" value={`${cursorMetrics.debyeNm.toFixed(2)} nm`} />
@@ -285,12 +292,12 @@ export function PackagingPressureOverlay(): React.ReactElement | null {
                         fontSize: 'var(--text-xs)',
                       }}
                     >
-                      Pressure (warn above 50 atm)
+                      Model pressure (display scale 0–60 atm)
                     </div>
-                    {progressBar(
+                    {cursorWithinPackingLimit ? progressBar(
                       pressureFraction,
-                      pressureFraction > 0.83 ? 'var(--color-error)' : 'var(--color-accent)'
-                    )}
+                      'var(--color-accent)'
+                    ) : <p>Unavailable beyond the model packing limit.</p>}
                   </div>
                 </div>
               </OverlaySection>

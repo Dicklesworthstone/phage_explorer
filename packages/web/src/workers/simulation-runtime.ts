@@ -46,9 +46,18 @@ const LYSOGENY_EXPERIMENT = {
   references: [{ id: 'core-lysogeny-circuit', version: '2',
     description: 'Bundled illustrative CI/Cro/CII/RecA kinetics and numerical equilibria; no empirical calibration or computed basin boundaries.' }],
 };
+const PACKAGING_EXPERIMENT = {
+  version: '2',
+  implementation: 'spherical-shell energy-v2; analytic dE/dL and -dE/dV; linear motor load-speed; 0.05-second midpoint ticks; complete/stall/packing/horizon stops',
+  references: [{ id: 'core-packaging-motor', version: '2',
+    description: 'Uncalibrated dsDNA teaching model with effective interaction amplitude 380.84 pN, spherical morphology defaults and nominal motor presets. Pressure is the negative volume derivative at fixed packaged length. Operational stall below 0.01 bp/s; non-overlap spacing at 2 nm; 1800-second horizon.' },
+  { id: 'purohit-kondev-phillips-2003', version: 'doi:10.1073/pnas.0737893100',
+    description: 'Primary source for the distinct force and pressure derivatives; this implementation does not reproduce its minimized-spacing potential or experimental calibration.' }],
+};
 const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT
   : simId === 'resistance-cocktail' ? RESISTANCE_EXPERIMENT
-  : simId === 'lysogeny-circuit' ? LYSOGENY_EXPERIMENT : {
+  : simId === 'lysogeny-circuit' ? LYSOGENY_EXPERIMENT
+  : simId === 'packaging-motor' ? PACKAGING_EXPERIMENT : {
   version: EXPERIMENT_VERSION, implementation: EXPERIMENT_IMPLEMENTATION, references: EXPERIMENT_REFERENCES,
 };
 

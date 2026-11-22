@@ -33,11 +33,11 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 /**
  * Approximate capsid radius (nm) by virion morphology.
  *
- * These are the standard published outer radii for the morphotypes in the
- * catalogue; they are what makes a 26 nm microvirus behave differently from a
- * 90 nm myovirus head in the packaging model. Filamentous phages (M13) have no
- * icosahedral capsid at all, so they fall through to the generic default and
- * the packaging model should be read as illustrative for them.
+ * These are illustrative morphology defaults, not measured internal dimensions
+ * for the selected genome. Every head is treated as spherical. Filamentous,
+ * non-dsDNA and unknown phages do not acquire a validated packaging model from
+ * this lookup; their genome length can only parameterize a hypothetical dsDNA
+ * teaching example.
  */
 const CAPSID_RADIUS_NM_BY_MORPHOLOGY: Record<string, number> = {
   microvirus: 13,
@@ -65,41 +65,29 @@ export function capsidRadiusNm(morphology?: string | null): number {
 // DNA packaging physics
 // ===========================================================================
 
-/**
- * Physical constants for the packaging model. Every one is a published value
- * with its source named; none is fitted here except FZERO_PN_PER_NM2, which
- * says so.
- */
+/** Constants for the simplified spherical-shell teaching model. */
 /** Thermal energy at 25 degrees C, in pN*nm. */
 const KBT_PN_NM = 4.11;
 /** DNA persistence length in nm (Hagerman 1988; Bustamante et al. 1994). */
 const PERSISTENCE_LENGTH_NM = 50;
 /** Rise per base pair for B-form DNA, in nm. */
 const RISE_PER_BP_NM = 0.34;
+/** Minimum center-to-center spacing in the non-overlapping duplex teaching model. */
+export const PACKAGING_MIN_SPACING_NM = 2;
 /**
- * Portal channel radius in nm, used to convert the packaging force into an
- * internal pressure. The portal lumen is roughly 3.5-4 nm across in the
- * tailed phages (Simpson et al. 2000, phi29 connector structure).
+ * Effective interaction ENERGY PER LENGTH, in pN = (pN nm)/nm.
+ * The retained phenomenological amplitude is not the pressure amplitude F0
+ * from Purohit's minimized-spacing model. Its historical tuning is not a
+ * biological calibration or a sourced solvent-specific interaction potential.
  */
-const PORTAL_CHANNEL_RADIUS_NM = 1.8;
-/**
- * Amplitude of the interstrand repulsion, in pN/nm^2.
- *
- * THIS ONE IS CALIBRATED, not independently derived. It is the single free
- * parameter in the model, solved so that lambda at full packing comes out at
- * 57 pN, the force measured by optical tweezers for phages of this class
- * (Smith et al., Nature 413:748, 2001 for phi29; Fuller et al., PNAS
- * 104:11245, 2007 for lambda). The functional FORM is the screened-Coulomb
- * term the README describes; only the amplitude is fitted.
- *
- * Lambda is the anchor rather than phi29 because lambda's head is close to
- * spherical, so the single-radius-per-morphology table below represents it
- * well. See the accuracy note on `packagingStateAt`.
- *
- * Stated here rather than buried because a reader has to be able to tell which
- * numbers in this file are measured and which are tuned.
- */
-const FZERO_PN_PER_NM2 = 380.84;
+const REPULSION_PER_LENGTH_PN = 380.84;
+
+function packagingDomain(bpPackaged: number, genomeLengthBp: number, radius: number, ionicStrengthM: number): void {
+  if (![bpPackaged, genomeLengthBp, radius, ionicStrengthM].every(Number.isFinite) ||
+    genomeLengthBp < 0 || bpPackaged < 0 || bpPackaged > genomeLengthBp || radius <= 0 || ionicStrengthM <= 0) {
+    throw new Error('Packaging requires finite nonnegative genome/packed lengths, packed length within the genome, and positive radius and molar ionic strength.');
+  }
+}
 
 /**
  * Interaxial spacing of hexagonally packed DNA, in nm.
@@ -119,8 +107,8 @@ function interaxialSpacingNm(packedLengthNm: number, volumeNm3: number): number 
  * strength in mol/L, and is the figure the README quotes.
  */
 export function debyeLengthNm(ionicStrengthM: number): number {
-  const I = Math.max(1e-4, ionicStrengthM);
-  return 0.304 / Math.sqrt(I);
+  if (!Number.isFinite(ionicStrengthM) || ionicStrengthM <= 0) throw new Error('Ionic strength must be finite and positive in mol/L.');
+  return 0.304 / Math.sqrt(ionicStrengthM);
 }
 
 /**
@@ -133,13 +121,10 @@ export function debyeLengthNm(ionicStrengthM: number): number {
  * the innermost, tightest turns, which is where the force actually comes from.
  */
 function meanSpoolRadiusNm(capsidRadiusNm: number, fillFraction: number): number {
-  const phi = Math.min(1, Math.max(0, fillFraction));
+  const phi = fillFraction;
   if (phi <= 0) return capsidRadiusNm;
-  const rIn = capsidRadiusNm * Math.cbrt(1 - phi);
-  const num = Math.pow(capsidRadiusNm, 4) - Math.pow(rIn, 4);
-  const den = Math.pow(capsidRadiusNm, 3) - Math.pow(rIn, 3);
-  if (den <= 0) return capsidRadiusNm * 0.75;
-  return 0.75 * (num / den);
+  // Avoid subtracting nearly equal radii in a very thin outer shell.
+  return 0.75 * capsidRadiusNm * -Math.expm1((4 / 3) * Math.log1p(-phi)) / phi;
 }
 
 /**
@@ -148,13 +133,12 @@ function meanSpoolRadiusNm(capsidRadiusNm: number, fillFraction: number): number
  * Two terms, both named in the README:
  *
  *   bending      E/L = xi_p * kT / (2 R^2)      elastic rod bent to radius R
- *   electrostatic E/L = F0 * exp(-d_s / lambda_D)  screened interstrand repulsion
+ *   interaction E/L = A * exp(-d_s / lambda_D), A = 380.84 pN
  *
- * This is the inverse-spool picture used by Riemer & Bloomfield (1978) and
- * Purohit, Kondev & Phillips (PNAS 100:3173, 2003). It is a continuum model: it
- * has no sequence dependence, no explicit ions, and no kinetics, so it predicts
- * the SCALE and the SHAPE of the force curve rather than a per-genome number to
- * three digits.
+ * This simplified shell model does not minimize DNA spacing or implement the
+ * full Purohit model. Fraction of genome packaged parameterizes the shell;
+ * uniform hexagonal spacing is derived from the spherical volume. No sequence,
+ * measured per-phage geometry or solvent calibration is supplied.
  */
 export function packagingEnergyPnNm(
   bpPackaged: number,
@@ -162,20 +146,22 @@ export function packagingEnergyPnNm(
   capsidRadiusNm: number,
   ionicStrengthM: number
 ): number {
+  packagingDomain(bpPackaged, genomeLengthBp, capsidRadiusNm, ionicStrengthM);
   if (bpPackaged <= 0 || genomeLengthBp <= 0) return 0;
 
   const packedLengthNm = bpPackaged * RISE_PER_BP_NM;
   const volumeNm3 = (4 / 3) * Math.PI * Math.pow(capsidRadiusNm, 3);
-  const fill = Math.min(1, bpPackaged / genomeLengthBp);
+  const fill = bpPackaged / genomeLengthBp;
 
   const rEff = meanSpoolRadiusNm(capsidRadiusNm, fill);
   const bendingPerNm = (PERSISTENCE_LENGTH_NM * KBT_PN_NM) / (2 * rEff * rEff);
 
   const ds = interaxialSpacingNm(packedLengthNm, volumeNm3);
   const lambda = debyeLengthNm(ionicStrengthM);
-  const elecPerNm = FZERO_PN_PER_NM2 * Math.exp(-ds / lambda);
-
-  return packedLengthNm * (bendingPerNm + elecPerNm);
+  const elecPerNm = REPULSION_PER_LENGTH_PN * Math.exp(-ds / lambda);
+  const energy = packedLengthNm * (bendingPerNm + elecPerNm);
+  if (!Number.isFinite(energy)) throw new Error('Packaging inputs exceed the supported numerical domain.');
+  return energy;
 }
 
 export interface PackagingState {
@@ -185,15 +171,15 @@ export interface PackagingState {
   fillFraction: number;
   /** Force the motor works against, in pN. */
   forcePn: number;
-  /** Internal pressure, in atmospheres. */
+  /** Model internal pressure -dE/dV at fixed packaged length, in atmospheres. */
   pressureAtm: number;
-  /** Interaxial DNA spacing at this fill, in nm. */
-  spacingNm: number;
+  /** Interaxial DNA spacing, in nm; no lattice exists when the capsid is empty. */
+  spacingNm: number | null;
   /** Debye screening length at this ionic strength, in nm. */
   debyeNm: number;
   /** Capsid radius used, in nm. */
   capsidRadiusNm: number;
-  /** ATP hydrolysed so far, at the measured 2 bp per ATP. */
+  /** Nominal accounting under an explicitly assumed 2 bp per ATP. */
   atpCount: number;
 }
 
@@ -203,66 +189,51 @@ const PA_PER_ATM = 101325;
 /**
  * Packaging force and pressure at a given fill.
  *
- * Force is dE/dL evaluated numerically, which is what the motor works against
- * and what optical-tweezer experiments measure. Pressure is that force spread
- * over the portal channel cross-section, which is how the ~6 MPa figure quoted
- * for phi29 is obtained from the ~57 pN force.
- *
- * Replaces `force = 5 + 50*phi^3` and `pressure = min(60, 5 + 55*phi)`, closed
- * forms in which nothing but genome length and cursor position appeared, while
- * the README described a bending-energy and Debye-screening model that did not
- * exist anywhere in the code.
- *
- * ## How accurate is this
- *
- * At full packing the model gives 12-73 pN across this catalogue, centred on
- * the measured 50-60 pN band, and the force rises steeply above about half
- * packing, which is the shape the tweezer experiments show. That is the level
- * of agreement to expect: scale and shape, not a per-genome number to three
- * digits.
- *
- * The dominant source of per-phage error is the capsid radius table, which
- * carries ONE radius per morphology and treats every head as a sphere. Phi29 is
- * the clearest casualty: its head is prolate, roughly 42 by 54 nm, so a single
- * 30 nm sphere overstates its volume and the model reports about 13 pN where
- * 57 pN was measured. Fixing that means per-phage capsid dimensions, not a
- * different force law.
+ * Analytic derivatives of packagingEnergyPnNm, with contour length L in nm:
+ * F = dE/dL and P = -dE/dV at fixed L and total genome length.
+ * For the spherical shell E_bend scales as V^(-2/3). The uniform hexagonal
+ * spacing d scales as sqrt(V/L), so P = (2E_bend/3 + E_interaction*d/(2lambda))/V.
+ * Force divided by portal area is not internal pressure. See Purohit et al.,
+ * PNAS 2003, doi:10.1073/pnas.0737893100, discussion following equation 17:
+ * https://pmc.ncbi.nlm.nih.gov/articles/PMC404299/ . These derivative identities
+ * do not validate this simplified energy law as a calibrated biological model.
  */
 export function packagingStateAt(
   bpPackaged: number,
   genomeLengthBp: number,
   morphology?: string | null,
-  ionicStrengthM = 0.1
+  ionicStrengthM = 0.1,
+  radiusOverrideNm?: number
 ): PackagingState {
-  const radius = capsidRadiusNm(morphology);
+  const radius = radiusOverrideNm ?? capsidRadiusNm(morphology);
+  if (!Number.isFinite(bpPackaged)) throw new Error('Packaged length must be finite.');
   const clamped = Math.max(0, Math.min(genomeLengthBp, bpPackaged));
+  packagingDomain(clamped, genomeLengthBp, radius, ionicStrengthM);
   const fill = genomeLengthBp > 0 ? clamped / genomeLengthBp : 0;
-
-  // Central difference over one nanometre of duplex, in bp.
-  const hBp = Math.max(1, genomeLengthBp * 1e-4);
-  const lo = Math.max(0, clamped - hBp);
-  const hi = Math.min(genomeLengthBp, clamped + hBp);
-  const dLnm = (hi - lo) * RISE_PER_BP_NM;
-
-  const eLo = packagingEnergyPnNm(lo, genomeLengthBp, radius, ionicStrengthM);
-  const eHi = packagingEnergyPnNm(hi, genomeLengthBp, radius, ionicStrengthM);
-  const forcePn = dLnm > 0 ? Math.max(0, (eHi - eLo) / dLnm) : 0;
-
-  const areaNm2 = Math.PI * PORTAL_CHANNEL_RADIUS_NM * PORTAL_CHANNEL_RADIUS_NM;
-  // pN/nm^2 = 1e-12 N / 1e-18 m^2 = 1e6 Pa.
-  const pressureAtm = (forcePn / areaNm2) * 1e6 / PA_PER_ATM;
-
+  const contourLengthNm = clamped * RISE_PER_BP_NM;
   const volumeNm3 = (4 / 3) * Math.PI * Math.pow(radius, 3);
+  const rEff = meanSpoolRadiusNm(radius, fill);
+  const bendPerNm = PERSISTENCE_LENGTH_NM * KBT_PN_NM / (2 * rEff * rEff);
+  const spacing = clamped > 0 ? interaxialSpacingNm(contourLengthNm, volumeNm3) : null;
+  const debye = debyeLengthNm(ionicStrengthM);
+  const interactionPerNm = spacing === null ? 0 : REPULSION_PER_LENGTH_PN * Math.exp(-spacing / debye);
+  const spacingRatio = spacing === null ? 0 : spacing / (2 * debye);
+  const forcePn = genomeLengthBp === 0 ? 0
+    : bendPerNm * (3 - 2 * Math.cbrt(1 - fill) * radius / rEff) + interactionPerNm * (1 + spacingRatio);
+  const pressurePnNm2 = contourLengthNm * (2 * bendPerNm / 3 + interactionPerNm * spacingRatio) / volumeNm3;
+  // 1 pN/nm² = 10^6 Pa, independently of any portal geometry.
+  const pressureAtm = pressurePnNm2 * 1e6 / PA_PER_ATM;
+  if (![forcePn, pressureAtm, debye].every(Number.isFinite)) throw new Error('Packaging inputs exceed the supported numerical domain.');
 
   return {
     bpPackaged: clamped,
     fillFraction: fill,
     forcePn,
     pressureAtm,
-    spacingNm: interaxialSpacingNm(clamped * RISE_PER_BP_NM, volumeNm3),
-    debyeNm: debyeLengthNm(ionicStrengthM),
+    spacingNm: spacing,
+    debyeNm: debye,
     capsidRadiusNm: radius,
-    // 2 bp per ATP, measured for phi29 (Guo et al. 1987; Smith et al. 2001).
+    // Accounting assumption, not a measured consumption for the selected genome.
     atpCount: Math.floor(clamped / 2),
   };
 }
@@ -330,7 +301,7 @@ export function derivePhageSimDefaults(
   if (simId === 'packaging-motor') {
     const derived: Record<string, number | boolean | string> = {};
     if (typeof phage.genomeLength === 'number' && phage.genomeLength > 0) {
-      derived.genomeKb = Math.round((phage.genomeLength / 1000) * 10) / 10;
+      derived.genomeKb = phage.genomeLength / 1000;
     }
     const morphology = phage.morphology?.toLowerCase() ?? '';
     derived.capsidRadius =
@@ -835,83 +806,137 @@ export function makeInfectionSimulation(): Simulation<InfectionKineticsState> {
   };
 }
 
+export const PACKAGING_TICK_SECONDS = 0.05;
+export const PACKAGING_MAX_TICKS = 36000; // Explicit 30-minute model horizon.
+/** Operational stop, not an experimentally estimated stall probability. */
+export const PACKAGING_STALL_VELOCITY = 0.01; // bp/s
+// Retain the bundled motor presets as declared teaching assumptions, not fits
+// to the selected phage. Each preset changes kinetics and ATP accounting only.
+const PACKAGING_MOTORS = {
+  headful: { velocity: 700, stallForce: 60, atpPerBp: 0.5 },
+  cos: { velocity: 600, stallForce: 52, atpPerBp: 0.5 },
+  phi29: { velocity: 120, stallForce: 57, atpPerBp: 0.25 },
+} as const;
+const PACKAGING_DEFAULTS = { genomeKb: 50, capsidRadius: 30, ionic: 50, mode: 'cos' } as const;
+
+function packagingInputs(params: Record<string, number | boolean | string>) {
+  if (Object.keys(params).length !== 4 || Object.keys(params).some(key => !Object.hasOwn(PACKAGING_DEFAULTS, key))) {
+    throw new Error('Unsupported packaging parameters; reset using the current model controls.');
+  }
+  for (const [name, lower, upper] of [['genomeKb', 0.001, 5000], ['capsidRadius', 10, 60], ['ionic', 1, 200]] as const) {
+    const value = params[name];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < lower || value > upper) {
+      throw new Error(`${name} must be finite and between ${lower} and ${upper}.`);
+    }
+  }
+  if (typeof params.mode !== 'string' || !Object.hasOwn(PACKAGING_MOTORS, params.mode)) throw new Error('Unsupported packaging motor preset.');
+  const genomeLengthBp = Number(params.genomeKb) * 1000;
+  const radius = Number(params.capsidRadius), ionicM = Number(params.ionic) / 1000;
+  const volume = 4 * Math.PI * radius ** 3 / 3;
+  // Uniform hexagonal DNA cylinders may not overlap: d >= 2 nm.
+  const capacityBp = 2 * volume / (Math.sqrt(3) * PACKAGING_MIN_SPACING_NM ** 2 * RISE_PER_BP_NM);
+  const motor = PACKAGING_MOTORS[params.mode as keyof typeof PACKAGING_MOTORS];
+  const physics = (bp: number) => packagingStateAt(bp, genomeLengthBp, null, ionicM, radius);
+  // Declared linear load-speed approximation, not a fit to a motor assay.
+  const velocity = (force: number) => motor.velocity * Math.max(0, 1 - force / motor.stallForce);
+  return { genomeLengthBp, capacityBp, motor, physics, velocity };
+}
+
+function packagingStatus(bp: number, ticks: number, force: number, model: ReturnType<typeof packagingInputs>): PackagingMotorState['status'] {
+  return bp >= model.genomeLengthBp ? 'complete'
+    : bp >= model.capacityBp ? 'packing-limit'
+    : model.velocity(force) < PACKAGING_STALL_VELOCITY ? 'stalled'
+    : ticks === PACKAGING_MAX_TICKS ? 'time-limit' : 'packaging';
+}
+
+function advancePackaging(state: PackagingMotorState, dt: number): PackagingMotorState {
+  const model = packagingInputs(state.params);
+  if (!Number.isFinite(dt) || dt < 0 || dt > 10000) throw new Error('Packaging delta must be finite and between 0 and 10000 seconds.');
+  if (state.modelVersion !== 2 || !Number.isSafeInteger(state.completedSteps) || state.completedSteps < 0 || state.completedSteps > PACKAGING_MAX_TICKS ||
+    !Number.isFinite(state.pendingSteps) || state.pendingSteps < 0 || state.pendingSteps >= 1 ||
+    !Number.isFinite(state.bpPackaged) || state.bpPackaged < 0 || state.bpPackaged > Math.min(model.genomeLengthBp, model.capacityBp) ||
+    !Number.isFinite(state.speed) || state.speed <= 0 || state.fillFraction !== state.bpPackaged / model.genomeLengthBp ||
+    state.time !== (state.completedSteps + state.pendingSteps) * PACKAGING_TICK_SECONDS ||
+    state.motorStallForcePn !== model.motor.stallForce || !Array.isArray(state.history) || state.history.length < 1 || state.history.length > 300 ||
+    state.history.some(point => !point || ![point.time, point.fillFraction, point.pressure, point.force].every(Number.isFinite) ||
+      point.time < 0 || point.time > state.time || point.fillFraction < 0 || point.fillFraction > state.fillFraction || point.pressure < 0 || point.force < 0) ||
+    !['packaging', 'complete', 'stalled', 'packing-limit', 'time-limit'].includes(state.status) || state.running !== (state.status === 'packaging')) {
+    throw new Error('Packaging checkpoint is incompatible or invalid; reset after changing model parameters.');
+  }
+  const accepted = model.physics(state.bpPackaged);
+  if (state.force !== accepted.forcePn || state.pressure !== accepted.pressureAtm || state.atpCount !== state.bpPackaged * model.motor.atpPerBp ||
+    state.status !== packagingStatus(state.bpPackaged, state.completedSteps, accepted.forcePn, model) ||
+    state.velocityBpPerSec !== (state.running ? model.velocity(accepted.forcePn) : 0) || !state.running && state.pendingSteps !== 0) {
+    throw new Error('Packaging checkpoint does not match its model inputs; reset after changing parameters.');
+  }
+  if (dt === 0 || state.status !== 'packaging') return state;
+  const accumulated = state.pendingSteps + dt / PACKAGING_TICK_SECONDS;
+  const nearest = Math.round(accumulated);
+  const snapped = Math.abs(accumulated - nearest) <= 8 * Number.EPSILON * Math.max(1, accumulated) ? nearest : accumulated;
+  const ticks = Math.min(Math.floor(snapped), PACKAGING_MAX_TICKS - state.completedSteps);
+  const limit = Math.min(model.genomeLengthBp, model.capacityBp);
+  let current = state;
+  for (let tick = 0; tick < ticks; tick++) {
+    const midpoint = Math.min(limit, current.bpPackaged + model.velocity(current.force) * PACKAGING_TICK_SECONDS / 2);
+    const midpointVelocity = model.velocity(model.physics(midpoint).forcePn);
+    const bpPackaged = Math.min(limit, current.bpPackaged + midpointVelocity * PACKAGING_TICK_SECONDS);
+    const physics = model.physics(bpPackaged);
+    const completedSteps = current.completedSteps + 1;
+    const status = packagingStatus(bpPackaged, completedSteps, physics.forcePn, model);
+    const time = completedSteps * PACKAGING_TICK_SECONDS;
+    const fillFraction = bpPackaged / model.genomeLengthBp;
+    const terminal = status !== 'packaging';
+    const history = completedSteps % 20 === 0 || terminal
+      ? [...current.history, { time, fillFraction, pressure: physics.pressureAtm, force: physics.forcePn }].slice(-300)
+      : current.history;
+    current = { ...current, completedSteps, pendingSteps: 0, time, bpPackaged, fillFraction,
+      pressure: physics.pressureAtm, force: physics.forcePn, velocityBpPerSec: terminal ? 0 : model.velocity(physics.forcePn),
+      atpCount: bpPackaged * model.motor.atpPerBp, status, running: !terminal, history };
+    if (terminal) return current;
+  }
+  const pendingSteps = snapped - Math.floor(snapped);
+  return { ...current, pendingSteps, time: (current.completedSteps + pendingSteps) * PACKAGING_TICK_SECONDS };
+}
+
 export function makePackagingSimulation(): Simulation<PackagingMotorState> {
   return {
     id: 'packaging-motor',
     name: 'Packaging Motor',
-    description: 'DNA fill → pressure/force with salt and capsid geometry.',
+    description: 'Uncalibrated spherical-shell model: force dE/dL, pressure −dE/dV, and load-dependent motor progress.',
     controls: STANDARD_CONTROLS,
     parameters: [
-      // Ranges span the catalogue: MS2 at 3.6 kb through phiKZ at 280 kb, and
-      // microvirus capsids at ~13 nm through myovirus heads at ~45 nm.
-      { id: 'genomeKb', label: 'Genome length (kb)', type: 'number', min: 3, max: 300, step: 1, defaultValue: 50 },
+      { id: 'genomeKb', label: 'Genome length (kb)', type: 'number', min: 0.001, max: 5000, step: 1, defaultValue: 50 },
       { id: 'capsidRadius', label: 'Capsid radius (nm)', type: 'number', min: 10, max: 60, step: 1, defaultValue: 30 },
       { id: 'ionic', label: 'Ionic strength (mM)', type: 'number', min: 1, max: 200, step: 5, defaultValue: 50 },
-      { id: 'mode', label: 'Packaging mode', type: 'select', options: [
-        { value: 'headful', label: 'Headful' },
-        { value: 'cos', label: 'Cos' },
-        { value: 'phi29', label: 'Phi29 motor' },
+      { id: 'mode', label: 'Motor teaching preset', type: 'select', options: [
+        { value: 'headful', label: 'Headful: 700 bp/s, 60 pN limit' },
+        { value: 'cos', label: 'Cos: 600 bp/s, 52 pN limit' },
+        { value: 'phi29', label: 'Phi29: 120 bp/s, 57 pN limit' },
       ], defaultValue: 'cos' },
     ],
     init: (phage, params): PackagingMotorState => {
-      const base = getDefaultParams([{ id: 'stall', label: '', type: 'number', defaultValue: 0.02 }]);
-      // Phage-derived geometry sits under any explicit caller params so a user
-      // who drags the genome-length slider still wins.
       const merged = {
-        ...base,
+        ...PACKAGING_DEFAULTS,
         ...derivePhageSimDefaults('packaging-motor', phage),
         ...(params ?? {}),
       } as Record<string, number | boolean | string>;
+      const model = packagingInputs(merged);
+      const physics = model.physics(0);
       return {
         type: 'packaging-motor',
         time: 0,
         running: true,
         speed: 1,
         params: merged,
-        fillFraction: 0.1,
-        pressure: 5,
-        force: 20,
-        stallProbability: 0,
+        modelVersion: 2, completedSteps: 0, pendingSteps: 0, bpPackaged: 0,
+        fillFraction: 0, pressure: physics.pressureAtm, force: physics.forcePn,
+        status: 'packaging', velocityBpPerSec: model.velocity(physics.forcePn), motorStallForcePn: model.motor.stallForce,
+        atpCount: 0, history: [{ time: 0, fillFraction: 0, pressure: physics.pressureAtm, force: physics.forcePn }],
       };
     },
-    step: (state: PackagingMotorState, dt: number): PackagingMotorState => {
-      const genomeKb = Number(state.params.genomeKb ?? 50);
-      const capsidRadius = Number(state.params.capsidRadius ?? 30); // nm
-      const ionic = Number(state.params.ionic ?? 50); // mM
-      const mode = String(state.params.mode ?? 'cos');
-
-      // Progress fill; faster when under-stuffed, slower near full
-      const fillDelta = 0.015 * state.speed * (1 - state.fillFraction) * dt;
-      const fill = clamp(state.fillFraction + fillDelta, 0, 1);
-
-      // Very lightweight physics-inspired approximations
-      const persistenceLen = 50; // nm
-      const contourNm = genomeKb * 0.34 * 1000; // nm
-      const packedDensity = (contourNm * fill) / ((4 / 3) * Math.PI * Math.pow(capsidRadius, 3));
-
-      // Bending energy ~ (L / R^2)
-      const bendingEnergy = (contourNm * fill) / Math.max(1, capsidRadius * capsidRadius * persistenceLen);
-
-      // Electrostatics damped by ionic strength (Debye ~ 0.304/sqrt(I) nm)
-      const debye = 0.304 / Math.sqrt(Math.max(1, ionic)); // nm
-      const electrostatic = packedDensity * 0.5 * (1 / Math.max(debye, 0.05));
-
-      // Mode-specific pressure scaling
-      const modeFactor = mode === 'headful' ? 1.0 : mode === 'phi29' ? 1.2 : 0.9;
-
-      const pressure = clamp(5 + 30 * fill + 200 * bendingEnergy * 1e-6 + 80 * electrostatic * 1e-3, 0, 80) * modeFactor;
-      const force = clamp(10 + 150 * fill + pressure * 0.8, 0, 200);
-
-      return {
-        ...state,
-        time: state.time + dt,
-        fillFraction: fill,
-        pressure,
-        force,
-        stallProbability: 0,
-      };
-    },
-    getSummary: (state) => `t=${state.time.toFixed(0)} fill ${(state.fillFraction * 100).toFixed(1)}% · P=${state.pressure.toFixed(1)} atm · F=${state.force.toFixed(1)} pN`,
+    step: advancePackaging,
+    isComplete: state => state.status !== 'packaging',
+    getSummary: state => `t=${state.time.toFixed(2)} s · ${(state.fillFraction * 100).toFixed(1)}% packaged · P=${state.pressure.toFixed(1)} atm · F=${state.force.toFixed(1)} pN · ${state.status}`,
   };
 }
 

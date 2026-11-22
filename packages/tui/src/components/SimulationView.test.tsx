@@ -3,11 +3,12 @@ import React from 'react';
 import { render, renderToString } from 'ink';
 import { PassThrough, Writable } from 'node:stream';
 import { stripVTControlCharacters } from 'node:util';
-import { importLocalGenomes, ribosomeTrafficSimulation, type RibosomeTrafficState } from '@phage-explorer/core';
+import { importLocalGenomes, makePackagingSimulation, packagingStateAt, ribosomeTrafficSimulation, type RibosomeTrafficState, type PackagingMotorState } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
 import { SimulationHubOverlay } from './SimulationHubOverlay';
 import { SimulationView } from './SimulationView';
 import { RibosomeTrafficView } from './RibosomeTrafficView';
+import { PackagingPressureOverlay } from './PackagingPressureOverlay';
 
 async function fixture() {
   const parsed = await importLocalGenomes({ name: 'translation.gb', text:
@@ -127,6 +128,120 @@ describe('terminal exact-CDS ribosome simulation', () => {
       test.press('r'); await waitFor(() => usePhageStore.getState().simulationState?.time === 0);
       test.press('.'); await waitFor(() => usePhageStore.getState().simulationState?.time === 1);
       expect((usePhageStore.getState().simulationState as RibosomeTrafficState).ribosomes).toEqual([0]);
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+});
+
+describe('terminal packaging cursor uses the shared physical model', () => {
+  it.each([
+    { viewMode: 'dna' as const, scrollPosition: 20000, morphology: 'podovirus', bp: 20000 },
+    { viewMode: 'aa' as const, scrollPosition: 6000, morphology: 'myovirus', bp: 18000 },
+  ])('uses exact bp and morphology in $viewMode view', async ({ viewMode, scrollPosition, morphology, bp }) => {
+    const previous = usePhageStore.getState(), genome = await fixture();
+    usePhageStore.setState({ currentPhage: { ...genome.phage, genomeLength: 50000, morphology },
+      scrollPosition, viewMode });
+    const expected = packagingStateAt(bp, 50000, morphology, 0.1);
+    const test = terminal(<PackagingPressureOverlay />);
+    try {
+      await waitFor(test.ready);
+      expect(test.output()).toContain(`Position: ${bp.toLocaleString()} / 50,000 bp`);
+      expect(test.output()).toContain(`Force: ${expected.forcePn.toFixed(1)} pN`);
+      expect(test.output()).toContain(`Model pressure: ${expected.pressureAtm.toFixed(1)} atm`);
+      expect(test.output()).toContain(`Nominal ATP: ${expected.atpCount.toLocaleString()}`);
+      expect(test.output()).toContain('Ionic strength: 0.10 M');
+      expect(test.output()).toContain(`Assumed radius: ${expected.capsidRadiusNm.toFixed(1)} nm`);
+      expect(test.output()).not.toContain('Unavailable');
+      expect(test.output()).not.toContain('warn above 50 atm');
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+
+  it('shows zero internal pressure and no DNA lattice at the empty capsid', async () => {
+    const previous = usePhageStore.getState(), genome = await fixture();
+    usePhageStore.setState({ currentPhage: { ...genome.phage, genomeLength: 50000, morphology: 'podovirus' },
+      scrollPosition: 0, viewMode: 'dna' });
+    const expected = packagingStateAt(0, 50000, 'podovirus', 0.1);
+    const test = terminal(<PackagingPressureOverlay />);
+    try {
+      await waitFor(test.ready);
+      expect(test.output()).toContain(`Force: ${expected.forcePn.toFixed(1)} pN`);
+      expect(test.output()).toContain('Model pressure: 0.0 atm');
+      expect(test.output()).toContain('Nominal ATP: 0');
+      expect(test.output()).toContain('Implied DNA spacing: empty capsid');
+      expect(test.output()).not.toContain('Unavailable');
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+
+  it('withholds physical load and pressure beyond the dsDNA non-overlap limit', async () => {
+    const previous = usePhageStore.getState(), genome = await fixture();
+    usePhageStore.setState({ currentPhage: { ...genome.phage, genomeLength: 1000000, morphology: 'podovirus' },
+      scrollPosition: 1000000, viewMode: 'dna' });
+    const extrapolation = packagingStateAt(1000000, 1000000, 'podovirus', 0.1);
+    expect(extrapolation.spacingNm!).toBeLessThan(2);
+    const test = terminal(<PackagingPressureOverlay />);
+    try {
+      await waitFor(test.ready);
+      expect(test.output()).toContain('Force: Unavailable');
+      expect(test.output()).toContain('Model pressure: Unavailable');
+      expect(test.output()).toContain('DNA spacing below 2 nm');
+      expect(test.output()).not.toContain(`${extrapolation.forcePn.toFixed(1)} pN`);
+      expect(test.output()).not.toContain(`${extrapolation.pressureAtm.toFixed(1)} atm`);
+      expect(test.output()).not.toContain('Model pressure gauge');
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+});
+
+describe('terminal physical packaging motor', () => {
+  it('steps, edits salt and presets, applies speed once and resets using the current controls', async () => {
+    const previous = usePhageStore.getState();
+    await fixture();
+    const sim = makePackagingSimulation(), initial = sim.init();
+    usePhageStore.setState({ activeSimulationId: 'packaging-motor', simulationState: initial,
+      simulationPaused: true, simulationSpeed: 1 });
+    const test = terminal(<SimulationView onClose={() => {}} />);
+    try {
+      await waitFor(test.ready); test.press('.');
+      await waitFor(() => usePhageStore.getState().simulationState?.time === 1);
+      test.press(']'); await flush(); test.press(']'); await flush(); test.press('+');
+      await waitFor(() => usePhageStore.getState().simulationState?.params.ionic === 55);
+      const changed = usePhageStore.getState().simulationState as PackagingMotorState;
+      expect(changed.bpPackaged).toBe(0); expect(changed.time).toBe(0);
+      expect(changed.params.genomeKb).toBe(50);
+      test.press(']'); await flush(); test.press('+');
+      await waitFor(() => usePhageStore.getState().simulationState?.params.mode === 'phi29');
+      const restarted = usePhageStore.getState().simulationState as PackagingMotorState;
+      expect(restarted.motorStallForcePn).toBe(57);
+      test.press('\u001b[C'); await waitFor(() => usePhageStore.getState().simulationSpeed === 2);
+      test.press('.'); await waitFor(() => usePhageStore.getState().simulationState?.time === 2);
+      const advanced = usePhageStore.getState().simulationState as PackagingMotorState;
+      expect(advanced.bpPackaged).toBe(sim.step(restarted, 2).bpPackaged);
+      expect(test.output()).toContain('Nominal ATP');
+      expect(test.output()).toMatch(/no per-genome[\s║]*calibration/);
+      expect(test.output()).not.toContain('Stall probability');
+      test.press('r'); await waitFor(() => usePhageStore.getState().simulationState?.time === 0);
+      expect(usePhageStore.getState().simulationState?.params).toEqual(restarted.params);
+      test.press('.'); await waitFor(() => usePhageStore.getState().simulationState?.time === 2);
+      expect((usePhageStore.getState().simulationState as PackagingMotorState).bpPackaged).toBe(advanced.bpPackaged);
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+
+  it('stops playback at completion, ignores resume and further steps, and can reset', async () => {
+    const previous = usePhageStore.getState();
+    await fixture();
+    const initial = makePackagingSimulation().init(null, { genomeKb: 3, capsidRadius: 60, ionic: 200 });
+    usePhageStore.setState({ activeSimulationId: 'packaging-motor', simulationState: initial,
+      simulationPaused: false, simulationSpeed: 8 });
+    const test = terminal(<SimulationView onClose={() => {}} />);
+    try {
+      await waitFor(test.ready);
+      await waitFor(() => (usePhageStore.getState().simulationState as PackagingMotorState).status === 'complete');
+      const final = usePhageStore.getState().simulationState as PackagingMotorState;
+      expect(final.bpPackaged).toBe(3000);
+      expect(usePhageStore.getState().simulationPaused).toBe(true);
+      test.press(' '); await flush(); test.press('.'); await flush();
+      expect(usePhageStore.getState().simulationState).toBe(final);
+      expect(usePhageStore.getState().simulationPaused).toBe(true);
+      test.press('r'); await waitFor(() => usePhageStore.getState().simulationState?.time === 0);
+      expect((usePhageStore.getState().simulationState as PackagingMotorState).status).toBe('packaging');
     } finally { test.ui.unmount(); usePhageStore.setState(previous); }
   });
 });

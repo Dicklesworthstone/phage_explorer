@@ -5,7 +5,11 @@ import {
   makeEvolutionSimulation,
   makeResistanceSimulation,
   packagingStateAt,
+  packagingEnergyPnNm,
   debyeLengthNm,
+  PACKAGING_TICK_SECONDS,
+  PACKAGING_MAX_TICKS,
+  PACKAGING_STALL_VELOCITY,
 } from './simulation-implementations';
 import { ribosomeTrafficSimulation } from './analysis/translation-simulation';
 import type { PhageFull } from './types';
@@ -69,8 +73,8 @@ describe('derivePhageSimDefaults', () => {
   });
 
   it('derives genome size in kb from the real genome length', () => {
-    expect(derivePhageSimDefaults('packaging-motor', MS2).genomeKb).toBeCloseTo(3.6, 5);
-    expect(derivePhageSimDefaults('packaging-motor', PHIKZ).genomeKb).toBeCloseTo(280.3, 5);
+    expect(derivePhageSimDefaults('packaging-motor', MS2).genomeKb).toBe(3.569);
+    expect(derivePhageSimDefaults('packaging-motor', PHIKZ).genomeKb).toBe(280.334);
   });
 
   it('derives capsid radius from morphology, not a single constant', () => {
@@ -108,11 +112,15 @@ describe('packaging-motor uses the selected phage', () => {
     expect(large.force).not.toBeCloseTo(small.force, 3);
   });
 
-  it('packs a jumbo genome to a higher pressure than a tiny one at equal fill', () => {
-    const small = pressureAfter(MS2, 60);
-    const large = pressureAfter(PHIKZ, 60);
-    expect(large.fillFraction).toBeCloseTo(small.fillFraction, 6);
-    expect(large.pressure).toBeGreaterThan(small.pressure);
+  it('uses the cursor energy law at the actually packaged length', () => {
+    for (const phage of [MS2, PHIKZ]) {
+      const state = pressureAfter(phage, 60);
+      const physics = packagingStateAt(state.bpPackaged, phage.genomeLength!, phage.morphology,
+        Number(state.params.ionic) / 1000, Number(state.params.capsidRadius));
+      expect(state.force).toBe(physics.forcePn);
+      expect(state.pressure).toBe(physics.pressureAtm);
+      expect(state.fillFraction).toBe(state.bpPackaged / phage.genomeLength!);
+    }
   });
 
   it('lets an explicit caller parameter override the phage-derived value', () => {
@@ -123,7 +131,134 @@ describe('packaging-motor uses the selected phage', () => {
   it('still initialises with no phage loaded', () => {
     const state = sim.init(undefined, undefined, () => 0.5);
     expect(state.type).toBe('packaging-motor');
-    expect(state.pressure).toBeGreaterThan(0);
+    expect(state.pressure).toBe(0);
+    expect(state.fillFraction).toBe(0);
+    expect(state.force).toBeGreaterThan(0); // prospective bending load on the first duplex
+    expect(state.params).toEqual({ genomeKb: 50, capsidRadius: 30, ionic: 50, mode: 'cos' });
+  });
+});
+
+describe('packaging motor elapsed time, controls and terminal states', () => {
+  const sim = makePackagingSimulation();
+
+  it('preserves zero time, retains partial ticks and applies caller speed only once', () => {
+    const initial = sim.init();
+    expect(sim.step(initial, 0)).toBe(initial);
+    const partial = sim.step(initial, 0.01);
+    expect(partial.bpPackaged).toBe(0);
+    expect(partial.pendingSteps).toBeCloseTo(0.2, 12);
+    expect(partial.time).toBe(0.01);
+    const ordinary = sim.step(initial, 4);
+    const fast = sim.step({ ...initial, speed: 4 }, 4);
+    expect({ ...fast, speed: 1 }).toEqual(ordinary);
+  });
+
+  it('reaches identical checkpoints and history across elapsed-time partitions without mutating inputs', () => {
+    const initial = sim.init();
+    const whole = sim.step(initial, 8);
+    let partitioned = initial;
+    for (const dt of [0.25, 0.5, 1, 2, 4, 0.25]) partitioned = sim.step(partitioned, dt);
+    expect(partitioned).toEqual(whole);
+    let decimal = initial;
+    for (let i = 0; i < 800; i++) decimal = sim.step(decimal, 0.01);
+    expect(decimal).toEqual(whole);
+    expect(whole.history.length).toBe(9);
+    expect(whole.history.at(-1)?.time).toBe(8);
+    expect(initial.bpPackaged).toBe(0);
+    expect(initial.history).toHaveLength(1);
+  });
+
+  it('uses molar salt units and changes actual motor progress with salt and geometry', () => {
+    const low = sim.step(sim.init(undefined, { ionic: 50 }), 30);
+    const high = sim.step(sim.init(undefined, { ionic: 200 }), 30);
+    expect(high.bpPackaged).toBeGreaterThan(low.bpPackaged);
+    expect(high.force).toBeLessThan(low.force);
+    expect(high.pressure).toBeLessThan(low.pressure);
+    const compact = sim.step(sim.init(undefined, { capsidRadius: 20 }), 30);
+    const roomy = sim.step(sim.init(undefined, { capsidRadius: 50 }), 30);
+    expect(roomy.bpPackaged).toBeGreaterThan(compact.bpPackaged);
+  });
+
+  it('changes motor kinetics and nominal ATP accounting without changing the energy law', () => {
+    const cos = sim.init(undefined, { mode: 'cos' });
+    const phi29 = sim.init(undefined, { mode: 'phi29' });
+    expect(cos.force).toBe(phi29.force);
+    expect(cos.pressure).toBe(phi29.pressure);
+    expect(cos.velocityBpPerSec).toBeGreaterThan(phi29.velocityBpPerSec);
+    const a = sim.step(cos, 10), b = sim.step(phi29, 10);
+    expect(a.bpPackaged).toBeGreaterThan(b.bpPackaged);
+    expect(a.atpCount).toBe(a.bpPackaged * 0.5);
+    expect(b.atpCount).toBe(b.bpPackaged * 0.25);
+  });
+
+  it('agrees with an independently integrated continuous motor law within the tick resolution', () => {
+    // Fourth-order reference integration at 50x finer time resolution; the
+    // product uses midpoint updates. Energy derivatives are checked separately.
+    const initial = sim.init(undefined, { genomeKb: 50, capsidRadius: 20, ionic: 50 });
+    const rate = (bp: number) => 600 * Math.max(0, 1 - packagingStateAt(bp, 50000, null, 0.05, 20).forcePn / 52);
+    let referenceBp = 0;
+    const h = 0.001;
+    for (let i = 0; i < 5000; i++) {
+      const a = rate(referenceBp), b = rate(referenceBp + h * a / 2), c = rate(referenceBp + h * b / 2), d = rate(referenceBp + h * c);
+      referenceBp += h * (a + 2 * b + 2 * c + d) / 6;
+    }
+    expect(Math.abs(sim.step(initial, 5).bpPackaged - referenceBp)).toBeLessThan(0.01);
+  });
+
+  it('completes a small genome exactly, stops time and preserves the terminal checkpoint', () => {
+    const initial = sim.init(undefined, { genomeKb: 3, capsidRadius: 60, ionic: 200 });
+    const final = sim.step(initial, 1000);
+    expect(sim.isComplete!(initial)).toBe(false);
+    expect(sim.isComplete!(final)).toBe(true);
+    expect(final.status).toBe('complete');
+    expect(final.running).toBe(false);
+    expect(final.bpPackaged).toBe(3000);
+    expect(final.fillFraction).toBe(1);
+    expect(final.time).toBeGreaterThan(5);
+    expect(final.time).toBeLessThan(6);
+    expect(final.velocityBpPerSec).toBe(0);
+    expect(final.history.at(-1)?.fillFraction).toBe(1);
+    expect(sim.step(final, 8)).toBe(final);
+  });
+
+  it('reports operational stall without inventing a probability or forcing completion', () => {
+    const final = sim.step(sim.init(undefined, { genomeKb: 50, capsidRadius: 20, ionic: 1 }), 1800);
+    expect(final.status).toBe('stalled');
+    expect(final.running).toBe(false);
+    expect(final.fillFraction).toBeLessThan(1);
+    expect(final.velocityBpPerSec).toBe(0);
+    expect(600 * Math.max(0, 1 - final.force / 52)).toBeLessThan(PACKAGING_STALL_VELOCITY);
+    expect('stallProbability' in final).toBe(false);
+  });
+
+  it('stops before duplex overlap and preserves exact physical time at the finite horizon', () => {
+    const packed = sim.step(sim.init(undefined, { genomeKb: 300, capsidRadius: 10, ionic: 200, mode: 'headful' }), 1800);
+    expect(packed.status).toBe('packing-limit');
+    expect(packed.running).toBe(false);
+    const volume = 4 * Math.PI * 10 ** 3 / 3;
+    expect(Math.sqrt(2 * volume / (Math.sqrt(3) * packed.bpPackaged * 0.34))).toBeCloseTo(2, 12);
+    const limited = sim.step(sim.init(undefined, { genomeKb: 5000, capsidRadius: 60, ionic: 200, mode: 'phi29' }), 10000);
+    expect(limited.status).toBe('time-limit');
+    expect(limited.completedSteps).toBe(PACKAGING_MAX_TICKS);
+    expect(limited.time).toBe(PACKAGING_MAX_TICKS * PACKAGING_TICK_SECONDS);
+    expect(limited.pendingSteps).toBe(0);
+    expect(limited.history).toHaveLength(300);
+    expect(limited.history.at(-1)?.time).toBe(1800);
+    expect(sim.step(limited, 1)).toBe(limited);
+  });
+
+  it('rejects unsupported controls and stale or nonfinite checkpoints', () => {
+    for (const parameters of [{ ionic: 0 }, { ionic: NaN }, { capsidRadius: Infinity }, { genomeKb: -1 },
+      { genomeKb: '50' }, { mode: 'unknown' }, { stall: 0.02 }]) expect(() => sim.init(undefined, parameters)).toThrow();
+    const initial = sim.init();
+    for (const dt of [-1, NaN, Infinity, 10001]) expect(() => sim.step(initial, dt)).toThrow(/delta/);
+    expect(() => sim.step({ ...initial, modelVersion: 1 } as unknown as PackagingMotorState, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, params: { ...initial.params, capsidRadius: 40 } }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, bpPackaged: NaN }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, velocityBpPerSec: NaN }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, speed: Infinity }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, status: 'complete', running: false }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, history: [{ ...initial.history[0], pressure: NaN }] }, 1)).toThrow(/checkpoint/);
   });
 });
 
@@ -262,11 +397,9 @@ describe('packaging physics', () => {
     expect(myo.capsidRadiusNm).toBeGreaterThan(podo.capsidRadiusNm);
   });
 
-  it('lands in the measured force range at full packing', () => {
-    // Optical tweezers give ~57 pN for phages of this class. One constant is
-    // fitted to that, so this is partly a self-check -- but the model must not
-    // be free to wander an order of magnitude away for other genomes, and this
-    // is what notices if it does.
+  it('retains the illustrative force scale without claiming biological calibration', () => {
+    // Regression range for the retained phenomenological amplitude. Independent
+    // derivative checks below establish numerical correctness, not biology.
     const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
     expect(lambda.forcePn).toBeGreaterThan(30);
     expect(lambda.forcePn).toBeLessThan(90);
@@ -288,20 +421,54 @@ describe('packaging physics', () => {
     expect(f - h).toBeGreaterThan((h - q) * 1.5);
   });
 
-  it('reproduces the measured interaxial DNA spacing', () => {
-    // An independent check: the spacing is computed on the way to the force and
-    // is not fitted to anything. Tightly packed phage heads measure 2.5-2.8 nm.
+  it('derives interaxial spacing from hexagonal volume conservation', () => {
     const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
-    expect(lambda.spacingNm).toBeGreaterThan(2.3);
-    expect(lambda.spacingNm).toBeLessThan(3.0);
+    const reconstructedVolume = Math.sqrt(3) / 2 * lambda.spacingNm! ** 2 * LAMBDA_BP * 0.34;
+    expect(reconstructedVolume).toBeCloseTo(4 * Math.PI * 29 ** 3 / 3, 8);
   });
 
-  it('gives a pressure consistent with the force and the portal geometry', () => {
-    // ~57 pN through the portal channel is the standard route to the ~6 MPa
-    // (~60 atm) figure quoted for phage heads.
-    const lambda = packagingStateAt(LAMBDA_BP, LAMBDA_BP, 'siphovirus');
-    expect(lambda.pressureAtm).toBeGreaterThan(20);
-    expect(lambda.pressureAtm).toBeLessThan(120);
+  it('matches separate fixed-volume force and fixed-length pressure derivatives', () => {
+    // Perturb contour length and capsid volume separately. A force/portal-area
+    // estimate of internal pressure cannot pass these independent derivatives.
+    for (const fill of [0.01, 0.25, 0.8]) {
+      const bp = LAMBDA_BP * fill, radius = 29, ionic = 0.1;
+      const state = packagingStateAt(bp, LAMBDA_BP, null, ionic, radius);
+      const hNm = 0.01;
+      const derivativeL = (packagingEnergyPnNm(bp + hNm / 0.34, LAMBDA_BP, radius, ionic)
+        - packagingEnergyPnNm(bp - hNm / 0.34, LAMBDA_BP, radius, ionic)) / (2 * hNm);
+      expect(state.forcePn).toBeCloseTo(derivativeL, 6);
+      const volume = 4 * Math.PI * radius ** 3 / 3, hVolume = volume * 1e-5;
+      const radiusForVolume = (v: number) => Math.cbrt(3 * v / (4 * Math.PI));
+      const derivativeV = -(packagingEnergyPnNm(bp, LAMBDA_BP, radiusForVolume(volume + hVolume), ionic)
+        - packagingEnergyPnNm(bp, LAMBDA_BP, radiusForVolume(volume - hVolume), ionic)) / (2 * hVolume);
+      expect(state.pressureAtm).toBeCloseTo(derivativeV * 1e6 / 101325, 6);
+      expect(state.pressureAtm).not.toBeCloseTo(state.forcePn / (Math.PI * 1.8 ** 2) * 1e6 / 101325, 4);
+    }
+  });
+
+  it('has the thin-shell limit and the independently evaluated full-shell derivative', () => {
+    const radius = 29, length = LAMBDA_BP * 0.34, volume = 4 * Math.PI * radius ** 3 / 3;
+    const bareBend = 50 * 4.11 / (2 * radius ** 2);
+    expect(packagingStateAt(LAMBDA_BP * 1e-14, LAMBDA_BP, null, 0.1, radius).forcePn).toBeCloseTo(bareBend, 12);
+    const empty = packagingStateAt(0, LAMBDA_BP, null, 0.1, radius);
+    expect(empty.forcePn).toBe(bareBend);
+    expect(empty.pressureAtm).toBe(0);
+    expect(empty.spacingNm).toBeNull();
+    // At phi=1, r_eff=3R/4 and dr_eff/dphi=-3R/4, hence F_b=3 E_b/L.
+    const bendPerNm = 50 * 4.11 / (2 * (0.75 * radius) ** 2);
+    const spacing = Math.sqrt(2 * volume / (Math.sqrt(3) * length));
+    const lambda = 0.304 / Math.sqrt(0.1), interaction = 380.84 * Math.exp(-spacing / lambda);
+    const full = packagingStateAt(LAMBDA_BP, LAMBDA_BP, null, 0.1, radius);
+    expect(full.forcePn).toBeCloseTo(3 * bendPerNm + interaction * (1 + spacing / (2 * lambda)), 10);
+    expect(full.pressureAtm).toBeCloseTo(length / volume * (2 * bendPerNm / 3 + interaction * spacing / (2 * lambda)) * 1e6 / 101325, 10);
+  });
+
+  it('rejects nonfinite or unsupported energy domains without manufacturing finite results', () => {
+    for (const ionic of [0, -1, NaN, Infinity]) expect(() => debyeLengthNm(ionic)).toThrow();
+    expect(() => packagingEnergyPnNm(-1, 100, 30, 0.1)).toThrow();
+    expect(() => packagingEnergyPnNm(101, 100, 30, 0.1)).toThrow();
+    expect(() => packagingStateAt(NaN, 100)).toThrow();
+    expect(() => packagingStateAt(10, 100, null, 0.1, Infinity)).toThrow();
   });
 
   it('responds to ionic strength through the Debye length', () => {

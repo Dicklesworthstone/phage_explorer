@@ -1,8 +1,8 @@
-import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
+import { makePackagingSimulation, makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation, SPEED_OPTIONS, makeLysogenySimulation,
-  type PhageFull, type AnalysisRecord, type RibosomeTrafficState, type ResistanceCocktailState } from '@phage-explorer/core';
+  type PhageFull, type AnalysisRecord, type RibosomeTrafficState, type ResistanceCocktailState, type PackagingMotorState } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
 import { SimulationSession, loadRibosomeSimulationInput, type SimulationInput } from './SimulationSession';
@@ -33,6 +33,80 @@ const ribosomeBackend = () => {
 };
 const codingInput = (genomeSequence = codingSequence): SimulationInput => ({ phage: structuredClone(codingPhage),
   context: { genomeSequence, geneId: 7 } });
+
+describe('complete packaging experiment sessions', () => {
+  const motorBackend = () => {
+    const api = createSimulationAPI([makePackagingSimulation() as unknown as Simulation]);
+    return {
+      getSimulationMetadata: (id: Simulation['id']) => api.getMetadata(id),
+      initSimulation: (params: SimInitParams) => api.init(params),
+      stepSimulation: (state: SimState, dt: number) => api.step({ state, dt }),
+    };
+  };
+
+  it('completes, stops recording, exports and reopens through a fresh motor session', async () => {
+    const source = new SimulationSession('packaging-motor', null, motorBackend, {}, 7);
+    const target = new SimulationSession('packaging-motor', null, motorBackend, {}, 19);
+    try {
+      await source.activate();
+      await source.init({ genomeKb: 3, capsidRadius: 60, ionic: 200 });
+      assert.equal(source.getSnapshot().error, null);
+      source.setSpeed(8); source.play(); await source.step();
+      const final = source.getSnapshot().state as PackagingMotorState;
+      assert.equal(final.status, 'complete');
+      assert.equal(final.bpPackaged, 3000);
+      assert.equal(final.running, false);
+      assert.equal(source.getSnapshot().isRunning, false);
+      assert.equal(source.getSnapshot().completedSteps, 1);
+      source.play(); await source.step();
+      assert.equal(source.getSnapshot().isRunning, false);
+      assert.equal(source.getSnapshot().completedSteps, 1, 'terminal state does not record no-op worker calls');
+      const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
+      assert.equal(record.method.version, '2');
+      assert.deepEqual(record.parameters.stepDeltas, [8], 'retain the requested delta even when completion occurs earlier');
+      await target.activate(); await target.replayExperiment(content);
+      assert.equal(target.getSnapshot().error, null);
+      assert.deepEqual(target.getSnapshot().state, final);
+      assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId, record.resultId);
+      target.play(); await target.step();
+      assert.equal(target.getSnapshot().completedSteps, 1);
+      await target.setParam('mode', 'phi29');
+      const restarted = target.getSnapshot().state as PackagingMotorState;
+      assert.equal(restarted.bpPackaged, 0);
+      assert.equal(restarted.time, 0);
+      assert.equal(restarted.status, 'packaging');
+      assert.equal(restarted.motorStallForcePn, 57);
+      assert.equal(restarted.params.ionic, 200);
+    } finally { source.deactivate(); target.deactivate(); }
+  });
+
+  it('retains a partial physical tick and refuses obsolete or freshly rehashed false results', async () => {
+    const source = new SimulationSession('packaging-motor', null, motorBackend, {}, 8);
+    const target = new SimulationSession('packaging-motor', null, motorBackend, {}, 19);
+    try {
+      await source.activate(); source.setSpeed(0.27); await source.step();
+      const partial = source.getSnapshot().state as PackagingMotorState;
+      assert.equal(partial.completedSteps, 5);
+      assert(Math.abs(partial.pendingSteps - 0.4) < 1e-12);
+      const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
+      await target.activate(); await target.replayExperiment(content);
+      assert.equal(target.getSnapshot().error, null);
+      assert.deepEqual(target.getSnapshot().state, partial);
+      const accepted = target.getSnapshot().state;
+      const old = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' } });
+      await target.replayExperiment(serializeAnalysisRecord(old));
+      assert.match(target.getSnapshot().error!, /version/i);
+      assert.strictEqual(target.getSnapshot().state, accepted);
+      const finalState = record.fields.finalState;
+      assert(finalState.kind === 'simulation' || finalState.kind === 'demo');
+      const falseRecord = await createAnalysisRecord({ ...record, fields: { ...record.fields,
+        finalState: { ...finalState, value: { ...finalState.value as object, pressure: 123 } } } });
+      await target.replayExperiment(serializeAnalysisRecord(falseRecord));
+      assert.match(target.getSnapshot().error!, /differs/);
+      assert.strictEqual(target.getSnapshot().state, accepted);
+    } finally { source.deactivate(); target.deactivate(); }
+  });
+});
 
 describe('lysogeny numerical-method replay', () => {
   it('replays verified equilibria and rejects obsolete portrait results before changing the accepted state', async () => {

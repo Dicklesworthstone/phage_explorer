@@ -196,14 +196,23 @@ export interface InfectionKineticsState extends SimStateBase {
  */
 export interface PackagingMotorState extends SimStateBase {
   type: 'packaging-motor';
+  modelVersion: 2;
+  /** Completed 0.05-second integration ticks, with fractional ticks retained. */
+  completedSteps: number;
+  pendingSteps: number;
+  bpPackaged: number;
+  status: 'packaging' | 'complete' | 'stalled' | 'packing-limit' | 'time-limit';
   /** Fraction of genome packaged (0-1) */
   fillFraction: number;
-  /** Current internal pressure (atmospheres) */
+  /** Model internal pressure -dE/dV (atmospheres). */
   pressure: number;
-  /** Force on portal (pN) */
+  /** dE/dL, the load against the motor (pN). */
   force: number;
-  /** Motor stall probability */
-  stallProbability: number;
+  velocityBpPerSec: number;
+  motorStallForcePn: number;
+  /** Nominal consumption under the motor preset, not a measured yield. */
+  atpCount: number;
+  history: Array<{ time: number; fillFraction: number; pressure: number; force: number }>;
 }
 
 /**
