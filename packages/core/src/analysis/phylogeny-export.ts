@@ -1,7 +1,7 @@
 /** Interoperable views of a computed phylogeny. Replay untrusted records before exporting. */
 import type { AlignedPhylogenyExperiment } from './aligned-phylogeny';
 
-export const PHYLOGENY_EXPORT_FORMATS = ['newick', 'distances-tsv', 'splits-tsv', 'alignment-fasta'] as const;
+export const PHYLOGENY_EXPORT_FORMATS = ['newick', 'distances-tsv', 'splits-tsv', 'alignment-fasta', 'pangenome-experiment'] as const;
 export type PhylogenyExportFormat = typeof PHYLOGENY_EXPORT_FORMATS[number];
 
 /** Use the same unrooted bipartition from either side of an edge. */
@@ -41,8 +41,13 @@ export function exportSupportedNewick(experiment: AlignedPhylogenyExperiment): s
 export function exportPhylogeny(experiment: AlignedPhylogenyExperiment, format: PhylogenyExportFormat): string {
   if (format === 'newick') return exportSupportedNewick(experiment);
   if (format === 'alignment-fasta') return experiment.source.fasta;
+  if (format === 'pangenome-experiment') {
+    if (!experiment.pangenome) throw new Error('This phylogeny has no retained pangenome parent.');
+    return experiment.pangenome.source.experiment;
+  }
   const { result, options, record } = experiment;
-  const metadata = `# method\t${record.method.id}\n# method_version\t${record.method.version}\n# result_id\t${record.resultId}\n# distance_method\t${options.distance}\n# used_sites\t${result.usedSites}\n`;
+  const metadata = `# method\t${record.method.id}\n# method_version\t${record.method.version}\n# result_id\t${record.resultId}\n# distance_method\t${options.distance}\n# used_sites\t${result.usedSites}\n`
+    + (experiment.pangenome ? `# pangenome_result_id\t${experiment.pangenome.parentResultId}\n# column_policy\t${experiment.pangenome.columnPolicy}\n# pangenome_alignment_sites\t${experiment.pangenome.alignmentColumns}\n# reference_backbone_sites\t${experiment.pangenome.backboneColumns.length}\n# excluded_reference_gap_sites\t${experiment.pangenome.excludedReferenceGapColumns.length}\n` : '');
   if (format === 'distances-tsv') {
     return metadata + ['taxon\t' + result.taxa.join('\t'), ...result.taxa.map((id, i) =>
       [id, ...result.distances[i]].join('\t'))].join('\n') + '\n';

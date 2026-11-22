@@ -4,11 +4,14 @@
  * Kimura (1980), doi:10.1007/BF01731581, Eq. 10 (K80 distance).
  * Site resampling: Felsenstein (1985), doi:10.1111/j.1558-5646.1985.tb00420.x.
  * A shared complete-deletion mask retains homologous A/C/G/T columns in every
- * taxon. This module does not align sequences or establish their homology.
+ * taxon. Pangenome input replays its recorded alignment before projection;
+ * neither import path independently establishes biological homology.
  */
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 export const ALIGNED_PHYLOGENY_METHOD = { id: 'aligned-dna-neighbor-joining', version: '1.0.0', implementation: 'typescript' } as const;
+export const PANGENOME_PHYLOGENY_METHOD = { id: ALIGNED_PHYLOGENY_METHOD.id, version: '2.0.0',
+  implementation: 'typescript; freshly reconstructed pangenome reference backbone followed by complete deletion and neighbor joining' } as const;
 export const PHYLOGENY_LIMITS = { bytes: 2 * 1024 * 1024, taxa: 64, sites: 100000, bootstrap: 200, work: 100000000 } as const;
 export interface AlignedTaxon { id: string; sequence: string }
 export interface PhylogenySource { name: string; fasta: string; kind: 'local' | 'demo'; reference: string }
@@ -29,7 +32,23 @@ export interface AlignedPhylogenyResult {
   bootstrap: { requested: number; completed: number; saturated: number; supportAvailable: boolean };
   negativeEdges: number; zeroEdges: number; distanceResidualRMSE: number; warnings: string[];
 }
-export interface AlignedPhylogenyExperiment { record: AnalysisRecord; source: PhylogenySource; options: PhylogenyOptions; result: AlignedPhylogenyResult }
+export interface PangenomePhylogenySource { name: string; experiment: string; reference: string }
+export interface PangenomePhylogenyOrigin {
+  source: PangenomePhylogenySource;
+  parentResultId: string;
+  referenceId: string;
+  columnPolicy: 'reference-backbone-complete';
+  alignmentColumns: number;
+  /** Zero-based positions in the reconstructed parent alignment, in source order. */
+  backboneColumns: number[];
+  excludedReferenceGapColumns: number[];
+  /** Original parent positions remaining after common complete deletion. */
+  retainedAlignmentColumns: number[];
+}
+export interface AlignedPhylogenyExperiment {
+  record: AnalysisRecord; source: PhylogenySource; options: PhylogenyOptions; result: AlignedPhylogenyResult;
+  pangenome?: PangenomePhylogenyOrigin;
+}
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0;
 const identifier = (id: unknown): id is string => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$/.test(id);
 function boundedText(text: unknown, limit: number, label: string): asserts text is string {
@@ -264,11 +283,91 @@ export async function createAlignedPhylogenyExperiment(input: PhylogenySource, s
       value: analysisJson(result), coverage: { available: result.usedSites, total: result.alignmentSites, unit: 'bases' }, limitations: result.warnings } } });
   abort(signal); return { record, source, options, result };
 }
+/** Reconstruct the parent alignment before deriving its reference backbone.
+ * Independent insertions are left-justified by the graph renderer; their columns
+ * are never admitted as homologous phylogenetic observations. Remaining homology
+ * is an explicit user assertion, not a consequence of a graph or good alignment.
+ */
+export async function createPangenomePhylogenyExperiment(input: PangenomePhylogenySource,
+  supplied: Partial<PhylogenyOptions> = {}, signal?: AbortSignal): Promise<AlignedPhylogenyExperiment> {
+  abort(signal);
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+    || Object.keys(input).sort().join('|') !== 'experiment|name|reference') throw new Error('Supply a pangenome experiment, name and explicit backbone homology provenance.');
+  boundedText(input.experiment, 10 * 1024 * 1024, 'Pangenome experiment');
+  // Capture every caller-owned field before the first asynchronous operation.
+  const captured = { name: input.name, experiment: input.experiment, reference: input.reference };
+  validateSource({ name: captured.name, reference: captured.reference, fasta: '', kind: 'local' });
+  const options = resolvePhylogenyOptions(supplied);
+  const { replayAlignmentPangenome } = await import('./alignment-pangenome');
+  abort(signal);
+  const parent = await replayAlignmentPangenome(captured.experiment.replace(/^\uFEFF/, ''));
+  abort(signal);
+  const reference = parent.graph.alignment.find(row => row.id === parent.graph.options.referenceId);
+  if (!reference) throw new Error('Reconstructed pangenome has no reference sequence.');
+  const backboneColumns: number[] = [], excludedReferenceGapColumns: number[] = [];
+  for (let column = 0; column < reference.sequence.length; column++) {
+    (reference.sequence[column] === '-' ? excludedReferenceGapColumns : backboneColumns).push(column);
+  }
+  if (!backboneColumns.length || backboneColumns.length > PHYLOGENY_LIMITS.sites) {
+    throw new Error(`Pangenome reference backbone requires 1–${PHYLOGENY_LIMITS.sites} columns; no automatic truncation is performed.`);
+  }
+  const fasta = parent.graph.alignment.map(row => `>${row.id}\n${backboneColumns.map(column => row.sequence[column]).join('')}`).join('\n') + '\n';
+  const source = { name: captured.name, fasta, kind: parent.input.source, reference: captured.reference };
+  // Reuse the existing inference/record producer; its v1 contract and identities
+  // remain unchanged. The new record binds that computation to the full parent.
+  const inferred = await createAlignedPhylogenyExperiment(source, options, signal);
+  const excluded = new Set(inferred.result.excludedColumns);
+  const pangenome: PangenomePhylogenyOrigin = {
+    source: captured, parentResultId: parent.record.resultId, referenceId: reference.id,
+    columnPolicy: 'reference-backbone-complete', alignmentColumns: reference.sequence.length,
+    backboneColumns, excludedReferenceGapColumns,
+    retainedAlignmentColumns: backboneColumns.filter((_, column) => !excluded.has(column)),
+  };
+  const warnings = [
+    'The original pangenome experiment was freshly replayed, including its sequence normalization, alignment settings and graph. Reconstruction does not independently establish biological homology or absence of recombination.',
+    'Only reference-backbone columns enter this inference. All reference-gap columns are excluded because left-justified independent insertions do not establish mutual homology. Complete deletion then excludes gaps and ambiguity in any retained taxon.',
+    'Reference choice, alignment penalties and optional orientation/circular normalization are conditional assumptions. Their uncertainty is not represented by site-bootstrap proportions.',
+    ...parent.graph.diagnostics.limitations,
+    ...inferred.result.warnings.slice(1),
+  ];
+  const result = { ...inferred.result, warnings };
+  const { source: _original, ...coverage } = pangenome;
+  const phylogenyField = inferred.record.fields.phylogeny;
+  if (phylogenyField.kind !== 'sequence-score') throw new Error('Reference-backbone inference did not produce a phylogeny score.');
+  const record = await createAnalysisRecord({ method: PANGENOME_PHYLOGENY_METHOD,
+    inputs: [{ id: 'pangenome', accession: null, source: source.kind,
+      description: 'Exact original sequence-pangenome experiment and user-supplied backbone homology provenance', data: analysisJson(captured) }],
+    parameters: analysisJson({ ...options, columnPolicy: pangenome.columnPolicy }) as AnalysisRecord['parameters'], seed: options.seed,
+    references: [...inferred.record.references, { id: 'alignment-pangenome', version: parent.record.method.version,
+      description: 'Fresh parent reconstruction; reference-backbone projection excludes independent insertion columns before complete deletion.' }],
+    fields: {
+      phylogeny: { ...phylogenyField, value: analysisJson(result), limitations: warnings },
+      pangenome: { kind: 'sequence-score', label: 'Replayed parent identity and exact zero-based alignment-column projection', units: 'base-pairs',
+        value: analysisJson(coverage), coverage: { available: result.usedSites, total: reference.sequence.length, unit: 'bases' }, limitations: warnings },
+    } });
+  abort(signal); return { record, source, options, result, pangenome };
+}
 /** Verify content hashes AND recompute all outputs. Self-consistent forged output is not accepted. */
 export async function replayAlignedPhylogenyExperiment(content: string, signal?: AbortSignal): Promise<AlignedPhylogenyExperiment> {
   abort(signal);
-  const saved = await parseAnalysisRecord(content, { methodId: ALIGNED_PHYLOGENY_METHOD.id, methodVersion: ALIGNED_PHYLOGENY_METHOD.version });
+  boundedText(content, 10 * 1024 * 1024, 'Saved phylogeny');
+  const header: unknown = JSON.parse(content);
+  const method = header && typeof header === 'object' && 'method' in header ? header.method : null;
+  const version = method && typeof method === 'object' && 'version' in method && method.version === PANGENOME_PHYLOGENY_METHOD.version
+    ? PANGENOME_PHYLOGENY_METHOD.version : ALIGNED_PHYLOGENY_METHOD.version;
+  const saved = await parseAnalysisRecord(content, { methodId: ALIGNED_PHYLOGENY_METHOD.id, methodVersion: version });
   abort(signal);
+  if (saved.method.version === PANGENOME_PHYLOGENY_METHOD.version) {
+    if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'pangenome'
+      || Object.keys(saved.parameters).sort().join('|') !== 'bootstrap|columnPolicy|deletion|distance|seed'
+      || saved.parameters.columnPolicy !== 'reference-backbone-complete') throw new Error('Pangenome phylogeny replay requires the full parent and explicit reference-backbone policy.');
+    const { columnPolicy: _policy, ...options } = saved.parameters;
+    const fresh = await createPangenomePhylogenyExperiment(saved.inputs[0].data as unknown as PangenomePhylogenySource,
+      options as unknown as PhylogenyOptions, signal);
+    if (fresh.record.cacheKey !== saved.cacheKey || fresh.record.resultId !== saved.resultId) throw new Error('Recomputed pangenome alignment, projection or phylogeny differs from the saved experiment.');
+    return fresh;
+  }
+  if (saved.method.version !== ALIGNED_PHYLOGENY_METHOD.version) throw new Error('Unsupported aligned-phylogeny method version.');
   if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'alignment' || Object.keys(saved.parameters).sort().join('|') !== 'bootstrap|deletion|distance|seed') throw new Error('Experiment requires one original alignment and all explicit options.');
   const experiment = await createAlignedPhylogenyExperiment(saved.inputs[0].data as unknown as PhylogenySource, saved.parameters as unknown as PhylogenyOptions, signal);
   if (experiment.record.cacheKey !== saved.cacheKey || experiment.record.resultId !== saved.resultId) throw new Error('Recomputed phylogeny differs from the saved experiment.');

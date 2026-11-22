@@ -112,13 +112,17 @@ function placeRoot(unrooted: AlignedPhylogenyExperiment, rooting: OutgroupRootin
       'Original alignment, complete-deletion, distance-model and sampling assumptions still apply. p-distance branch units remain observed differences, not calibrated time.',
       'Bootstrap support belongs to the original unrooted splits and supplies no root-placement support. Zero-length resolutions remain unresolved.',
       'Rooting does not validate a clock, infer dates, estimate populations or establish biological ancestry. Downstream inferences are conditional on the supplied root.',
+      ...(unrooted.pangenome ? ['The original pangenome is retained and freshly reconstructed on replay. Only its reference backbone is projected into phylogeny; independent insertion columns are excluded before complete deletion. Reference/alignment uncertainty and biological homology are not established by this root.'] : []),
     ] };
 }
 async function bindRoot(unrooted: AlignedPhylogenyExperiment, rooting: OutgroupRooting, signal?: AbortSignal): Promise<RootedPhylogenyExperiment> {
   active(signal);
   const result = placeRoot(unrooted, rooting);
-  const record = await createAnalysisRecord({ method: ROOTED_PHYLOGENY_METHOD,
-    inputs: unrooted.record.inputs.map(({ sha256: _sha, ...input }) => input),
+  const record = await createAnalysisRecord({ method: unrooted.pangenome ? { ...ROOTED_PHYLOGENY_METHOD, version: '2.0.0',
+      implementation: 'typescript; explicit root retaining the complete pangenome-derived inference chain' } : ROOTED_PHYLOGENY_METHOD,
+    inputs: unrooted.pangenome ? [{ id: 'unrootedPhylogeny', accession: null, source: unrooted.source.kind,
+      description: 'Complete verified pangenome-derived inference and original parent experiment', data: analysisJson(unrooted.record) }]
+      : unrooted.record.inputs.map(({ sha256: _sha, ...input }) => input),
     parameters: analysisJson({ phylogeny: unrooted.options, rooting }) as AnalysisRecord['parameters'], seed: unrooted.options.seed,
     references: [...unrooted.record.references, { id: 'https://phylipweb.github.io/phylip/doc/main.html', version: '3.69',
       description: 'PHYLIP Outgroup option: root placement on a specified separating branch; placement is distinct from unrooted inference.' }],
@@ -134,8 +138,10 @@ export async function rootAlignedPhylogenyExperiment(content: string, supplied: 
 /** Derived records retain the original alignment and options, not a trusted cached tree. */
 export async function replayRootedPhylogenyExperiment(content: string, signal?: AbortSignal): Promise<RootedPhylogenyExperiment> {
   active(signal);
-  const saved = await parseAnalysisRecord(content, { methodId: ROOTED_PHYLOGENY_METHOD.id, methodVersion: ROOTED_PHYLOGENY_METHOD.version });
-  if (saved.inputs.length !== 1 || saved.inputs[0].id !== 'alignment' || Object.keys(saved.parameters).sort().join('|') !== 'phylogeny|rooting') {
+  const saved = await parseAnalysisRecord(content, { methodId: ROOTED_PHYLOGENY_METHOD.id });
+  const linked = saved.method.version === '2.0.0';
+  if (!linked && saved.method.version !== ROOTED_PHYLOGENY_METHOD.version) throw new Error('Analysis method/version is incompatible.');
+  if (saved.inputs.length !== 1 || saved.inputs[0].id !== (linked ? 'unrootedPhylogeny' : 'alignment') || Object.keys(saved.parameters).sort().join('|') !== 'phylogeny|rooting') {
     throw new Error('Rooted replay requires the original alignment, phylogeny settings and explicit rooting decision.');
   }
   const options = saved.parameters.phylogeny;
@@ -143,7 +149,12 @@ export async function replayRootedPhylogenyExperiment(content: string, signal?: 
     throw new Error('Rooted replay requires every original phylogeny option.');
   }
   const rooting = resolveOutgroupRooting(saved.parameters.rooting as unknown as OutgroupRooting);
-  const unrooted = await createAlignedPhylogenyExperiment(saved.inputs[0].data as unknown as PhylogenySource, options as unknown as PhylogenyOptions, signal);
+  const unrooted = linked
+    ? await replayAlignedPhylogenyExperiment(JSON.stringify(saved.inputs[0].data), signal)
+    : await createAlignedPhylogenyExperiment(saved.inputs[0].data as unknown as PhylogenySource, options as unknown as PhylogenyOptions, signal);
+  if (linked && (!unrooted.pangenome || JSON.stringify(analysisJson(unrooted.options)) !== JSON.stringify(analysisJson(options)))) {
+    throw new Error('Linked root requires the exact pangenome-derived parent and its original phylogeny options.');
+  }
   const replayed = await bindRoot(unrooted, rooting, signal);
   if (replayed.record.cacheKey !== saved.cacheKey || replayed.record.resultId !== saved.resultId) throw new Error('Recomputed rooted phylogeny differs from the saved experiment.');
   return replayed;
@@ -194,7 +205,9 @@ export async function prepareRootedAncestralDataset(content: string, license: st
       method: `${options.distance.toUpperCase()} neighbor joining ${rooted.unrooted.record.method.version}; original substitution-length branches, not a dated/clock-fitted tree.`,
       rooting: `User-specified root ${rootedResultId}; ${rooted.result.rooting.outgroup.length} outgroup tips; fraction ${rooted.result.rooting.fractionFromOutgroup} from outgroup endpoint. Full choice and evidence retained in the parent.` },
     alignment: { fasta: parseAlignedDNA(source.fasta).map(row => `>${row.id}\n${row.sequence}`).join('\n') + '\n', homologous: true,
-      method: 'Original user-supplied homologous columns; normalized FASTA IDs, case, row order and line formatting. No realignment, taxon removal or site deletion.',
+      method: rooted.unrooted.pangenome
+        ? 'Reference-backbone columns from a freshly reconstructed pangenome; independent reference-gap insertions excluded. Includes backbone sites omitted by distance complete deletion. Original parent inputs and column mapping are retained in the inference chain; homology is user-supplied.'
+        : 'Original user-supplied homologous columns; normalized FASTA IDs, case, row order and line formatting. No realignment, taxon removal or site deletion.',
       reference: singleLine(source.reference) } });
   active(signal);
   return { input, rootedResultId, unrootedResultId,

@@ -1,4 +1,4 @@
-/** Aligned FASTA -> unrooted NJ -> portable evidence. Never infers homology or a temporal root. */
+/** Aligned FASTA or reconstructed pangenome -> unrooted NJ -> portable evidence. */
 import React, { useEffect, useId, useMemo, useState, useSyncExternalStore } from 'react';
 import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { PHYLOGENY_LIMITS, resolvePhylogenyOptions, type AlignedPhylogenyResult, type PhylogenyOptions, type PhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
@@ -63,6 +63,8 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   const { accepted, busy, phase, error, verified } = snapshot;
   const [source, setSource] = useState<PhylogenySource>({ name: '', fasta: '', kind: 'local', reference: '' });
   const [file, setFile] = useState<File | null>(null);
+  const [inputMode, setInputMode] = useState<'alignment' | 'pangenome'>('alignment');
+  const [pangenomeFile, setPangenomeFile] = useState<File | null>(null), [pangenomeContent, setPangenomeContent] = useState('');
   const [distance, setDistance] = useState<PhylogenyOptions['distance']>('p-distance');
   const [bootstrap, setBootstrap] = useState('0'), [seed, setSeed] = useState('1');
   const [confirmed, setConfirmed] = useState(false), [localError, setLocalError] = useState<string | null>(null);
@@ -73,6 +75,8 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   useEffect(() => {
     if (!accepted) return;
     setSource(accepted.source); setFile(null); setDistance(accepted.options.distance);
+    setInputMode(accepted.pangenome ? 'pangenome' : 'alignment'); setPangenomeFile(null);
+    setPangenomeContent(accepted.pangenome?.source.experiment ?? '');
     setBootstrap(String(accepted.options.bootstrap)); setSeed(String(accepted.options.seed)); setConfirmed(true); setDistancePage(0);
     const rooting = accepted.rooting?.result.rooting;
     setOutgroup(rooting?.outgroup ?? []); setRootFraction(rooting ? String(rooting.fractionFromOutgroup) : '');
@@ -86,9 +90,18 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   const submit = (event: React.FormEvent) => {
     event.preventDefault(); invalidate();
     try {
-      if (!confirmed) throw new Error('Confirm that these are homologous, already aligned DNA columns.');
+      if (!confirmed) throw new Error(inputMode === 'pangenome'
+        ? 'Confirm the reference-backbone column policy and the supplied homology provenance.'
+        : 'Confirm that these are homologous, already aligned DNA columns.');
       if (!/^\d+$/.test(bootstrap) || !/^\d+$/.test(seed)) throw new Error('Bootstrap count and seed must be explicit nonnegative decimal integers.');
       const options = resolvePhylogenyOptions({ distance, deletion: 'complete', bootstrap: Number(bootstrap), seed: Number(seed) });
+      if (inputMode === 'pangenome') {
+        const captured = { name: source.name, reference: source.reference, experiment: pangenomeContent }, submittedFile = pangenomeFile;
+        if (!submittedFile && !captured.experiment) throw new Error('Choose a saved pangenome experiment JSON.');
+        void session.run(async () => ({ kind: 'pangenome', options, source: { ...captured,
+          experiment: submittedFile ? await readAlignedPhylogenyFile(submittedFile, 10 * 1024 * 1024, true) : captured.experiment } }));
+        return;
+      }
       const captured = { ...source }, submittedFile = file;
       void session.run(async () => ({ kind: 'infer', options, source: { ...captured,
         fasta: submittedFile ? await readAlignedPhylogenyFile(submittedFile, PHYLOGENY_LIMITS.bytes) : captured.fasta } }));
@@ -142,27 +155,42 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
   return <section aria-labelledby={`${id}-heading`} style={{ display: 'grid', gap: '.75rem', minWidth: 0, overflowWrap: 'anywhere', color: theme.colors.text }}
     onKeyDown={event => { if (event.key !== 'Escape') event.stopPropagation(); }}>
     <h3 id={`${id}-heading`}>Aligned DNA · unrooted phylogeny</h3>
-    <p>Infer a neighbor-joining tree from your own aligned DNA. This workspace never searches a catalog or uploads the alignment.
-      It neither aligns sequences nor supplies a biological root, molecular clock, selection estimate or population history. Export before closing; data are held in memory only.</p>
+    <p>Infer a neighbor-joining tree from your aligned DNA or a saved pangenome experiment. A pangenome is freshly reconstructed with its recorded alignment settings before inference.
+      This workspace never searches a catalog or uploads sequences. Homology and a biological root are not independently established. Export before closing; data are held in memory only.</p>
     <form onSubmit={submit} style={{ display: 'grid', gap: '.75rem' }}>
+      <label style={label}>Phylogeny input<select style={control} value={inputMode} onChange={e => { invalidate(); setInputMode(e.target.value as typeof inputMode); setConfirmed(false); }}>
+        <option value="alignment">Already aligned DNA FASTA</option><option value="pangenome">Saved pangenome experiment · reference backbone</option></select></label>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(100%,220px),1fr))', gap: '.75rem' }}>
         <label style={label}>Alignment name<input style={control} required maxLength={200} value={source.name} onChange={e => editSource('name', e.target.value)} /></label>
         <label style={label}>Alignment source and homology provenance<input style={control} required maxLength={2000} value={source.reference} onChange={e => editSource('reference', e.target.value)} /></label>
-        <label style={label}>Alignment provenance type<select style={control} value={source.kind} onChange={e => editSource('kind', e.target.value as PhylogenySource['kind'])}>
-          <option value="local">User-supplied local alignment — not independently verified</option><option value="demo">Synthetic demonstration — not experimental evidence</option></select></label>
+        {inputMode === 'alignment' && <label style={label}>Alignment provenance type<select style={control} value={source.kind} onChange={e => editSource('kind', e.target.value as PhylogenySource['kind'])}>
+          <option value="local">User-supplied local alignment — not independently verified</option><option value="demo">Synthetic demonstration — not experimental evidence</option></select></label>}
         <label style={label}>Sequence distance<select style={control} value={distance} onChange={e => { invalidate(); setDistance(e.target.value as PhylogenyOptions['distance']); }}>
           <option value="p-distance">Observed p-distance</option><option value="jc69">JC69 correction (rejects saturation)</option><option value="k80">K80 transition/transversion correction (rejects saturation)</option></select></label>
         <label style={label}>Site-bootstrap replicates (0 or 20–200)<input style={control} type="number" required min={0} max={200} step={1} value={bootstrap} onChange={e => { invalidate(); setBootstrap(e.target.value); }} /></label>
         <label style={label}>Phylogeny seed (0–4294967295)<input style={control} type="number" required min={0} max={0xffffffff} step={1} value={seed} onChange={e => { invalidate(); setSeed(e.target.value); }} /></label>
       </div>
+      {inputMode === 'alignment' ? <>
       <label style={label}>Already aligned DNA FASTA<textarea rows={6} maxLength={PHYLOGENY_LIMITS.bytes} value={source.fasta} disabled={!!file} spellCheck={false} onChange={e => editSource('fasta', e.target.value)} /></label>
       <label style={label}>Or choose aligned FASTA (up to 2 MiB)<input style={control} type="file" accept=".fa,.fasta,.fas,.fna,.txt" onChange={e => { const selected = e.currentTarget.files?.[0]; e.currentTarget.value = ''; if (selected) { invalidate(); setFile(selected); setConfirmed(false); } }} /></label>
       {file && <p>Selected: {file.name}. <button type="button" onClick={() => { invalidate(); setFile(null); setConfirmed(false); }}>Use pasted alignment instead</button></p>}
+      </> : <>
+        <label style={label}>Pangenome experiment JSON (up to 10 MiB)<input style={control} type="file" accept=".json,application/json" onChange={e => {
+          const selected = e.currentTarget.files?.[0]; e.currentTarget.value = '';
+          if (selected) { invalidate(); setPangenomeFile(selected); setPangenomeContent(''); setConfirmed(false); }
+        }} /></label>
+        <p>{pangenomeFile ? `Selected: ${pangenomeFile.name}.` : pangenomeContent ? 'Original pangenome experiment retained from the accepted inference.' : 'Export an experiment JSON from the sequence pangenome workspace, then choose it here.'}</p>
+        <p>The parent inputs, normalization and alignment settings are replayed and checked. Only columns where the reference has a base enter the backbone;
+          independently placed insertions are excluded because their mutual homology is unknown. Complete deletion then removes missing or ambiguous backbone columns.
+          Local or synthetic provenance is inherited from the parent. The complete original parent is kept in every inference and linked rooted record.</p>
+      </>}
       <p>3–64 unique FASTA IDs, equal nonzero sequence lengths, up to 100,000 columns. Every column with a gap, missing value or ambiguous base in any taxon is removed from every pair. A work budget may require fewer taxa, sites or bootstrap replicates.</p>
-      <label style={{ display: 'flex', alignItems: 'center', minHeight: 44, gap: '.5rem' }}><input type="checkbox" checked={confirmed} onChange={e => { invalidate(); setConfirmed(e.target.checked); }} />I confirm these are homologous, already aligned DNA columns, not unaligned genomes.</label>
+      <label style={{ display: 'flex', alignItems: 'center', minHeight: 44, gap: '.5rem' }}><input type="checkbox" checked={confirmed} onChange={e => { invalidate(); setConfirmed(e.target.checked); }} />{inputMode === 'pangenome'
+        ? 'I accept the reference-backbone column policy and have supplied the biological basis for treating the retained columns as homologous.'
+        : 'I confirm these are homologous, already aligned DNA columns, not unaligned genomes.'}</label>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
         <button type="submit" style={control} disabled={busy}>Infer unrooted tree</button>
-        <button type="button" style={control} onClick={() => { invalidate(); setSource({ ...example }); setFile(null); setDistance('p-distance'); setBootstrap('20'); setSeed('0'); setConfirmed(true); }}>Load synthetic quartet</button>
+        <button type="button" style={control} onClick={() => { invalidate(); setInputMode('alignment'); setPangenomeFile(null); setPangenomeContent(''); setSource({ ...example }); setFile(null); setDistance('p-distance'); setBootstrap('20'); setSeed('0'); setConfirmed(true); }}>Load synthetic quartet</button>
         <button type="button" style={control} disabled={!busy} onClick={session.cancel}>Cancel tree computation</button>
       </div>
     </form>
@@ -175,12 +203,24 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('distances')}>Export distance matrix TSV</button>
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('splits')}>Export split supports JSON</button>
       <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('splits-tsv')}>Export split supports TSV</button>
-      <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('alignment-fasta')}>Export original aligned FASTA</button>
+      <button type="button" style={control} disabled={!accepted || busy} onClick={() => exportResult('alignment-fasta')}>{accepted?.pangenome ? 'Export reference-backbone FASTA' : 'Export original aligned FASTA'}</button>
+      {accepted?.pangenome && <button type="button" style={control} disabled={busy} onClick={() => exportResult('pangenome-experiment')}>Export original pangenome experiment</button>}
     </div>
     {accepted && result && <section aria-label="Accepted aligned phylogeny" data-result-id={accepted.record.resultId}>
       <h4>{accepted.source.name}</h4>
       <p><strong>{accepted.source.kind === 'demo' ? 'SYNTHETIC — NOT EXPERIMENTAL EVIDENCE' : 'USER-SUPPLIED ALIGNMENT — HOMOLOGY NOT INDEPENDENTLY VERIFIED'}</strong></p>
       <p>{accepted.source.reference}</p>
+      {accepted.pangenome && <section aria-label="Pangenome backbone coverage">
+        <h5>Verified pangenome → reference backbone</h5>
+        <p>Reference: {accepted.pangenome.referenceId}. Of {accepted.pangenome.alignmentColumns} original alignment columns,
+          {' '}{accepted.pangenome.excludedReferenceGapColumns.length} reference-gap columns were excluded before inference.
+          {' '}{accepted.pangenome.backboneColumns.length} backbone columns remain, of which {accepted.pangenome.retainedAlignmentColumns.length} passed complete deletion.</p>
+        <p>Parent result: {accepted.pangenome.parentResultId}. Bootstrap support is conditional on this reference, alignment and column policy.</p>
+        <details><summary>Original pangenome column mapping (0-based)</summary>
+          <p>Excluded reference-gap columns: {accepted.pangenome.excludedReferenceGapColumns.join(', ') || 'None'}</p>
+          <p>Retained inference columns: {accepted.pangenome.retainedAlignmentColumns.join(', ')}</p>
+        </details>
+      </section>}
       <p>{verified ? 'Replay verified against fresh computation. ' : ''}{result.taxa.length} taxa; {result.usedSites}/{result.alignmentSites} columns retained; {result.variableSites} variable sites.
         {' '}{result.negativeEdges} negative and {result.zeroEdges} numerically zero edges; distance reconstruction RMSE {number(result.distanceResidualRMSE)}.</p>
       <Topology result={result} />
@@ -200,8 +240,10 @@ export function AlignedPhylogenyPanel({ onTemporalRoot, onAncestralRoot }: {
       <p>Unrooted Newick preserves signed lengths and labels supported internal branches with bootstrap percentages (0–100), not probabilities.
         The split table and TSV use fractions (0–1); unavailable support is omitted, not zero. The arbitrary serialization root has no support label.
         Do not feed that root into dated-tree diagnostics as a biological rooting decision. Independently justified rooting and compatible nonnegative lengths are separate prerequisites.</p>
-      <p>Distance and split TSV include method and result identity in # metadata comments. Original FASTA retains submitted descriptions, gaps and ambiguous columns,
-        including columns excluded from inference. These downloads contain private data and are not anonymized.</p>
+      <p>Distance and split TSV include method and result identity in # metadata comments.
+        {accepted.pangenome ? ' Reference-backbone FASTA retains all projected columns before complete deletion. The original pangenome JSON retains every input sequence and alignment setting, including excluded insertions.'
+          : ' Original FASTA retains submitted descriptions, gaps and ambiguous columns, including columns excluded from inference.'}
+        {' '}These downloads contain private data and are not anonymized.</p>
       <details><summary>Replay this unrooted experiment without a browser</summary>
         <p>Save the experiment JSON for a complete, reproducible record; Newick and TSV alone cannot be replayed.
           The headless command recomputes the saved tree and all support before accepting or exporting it. No database or network is required.</p>
@@ -212,7 +254,7 @@ bun run phylogeny export --experiment aligned-phylogeny-experiment.json --format
       <section aria-label="Explicit outgroup rooting">
         <h4>Record an explicit outgroup root hypothesis</h4>
         <p>Choose the outgroup and position along its separating branch. No midpoint, rooting evidence or date-independence is assumed.
-          This operation does not infer a biological root, rerun an alignment, validate a clock or supply root confidence.</p>
+          The original inference and any parent pangenome are freshly replayed. This operation does not independently infer a biological root, validate a clock or supply root confidence.</p>
         <form onSubmit={root}><fieldset disabled={busy} style={{ display: 'grid', gap: '.75rem' }}><legend>User-specified rooting decision</legend>
           <label style={label}>Outgroup taxa (explicit selection)<select multiple required value={outgroup} size={Math.min(result.taxa.length, 8)}
             onChange={event => { setOutgroup(Array.from(event.target.selectedOptions, option => option.value)); setLocalError(null); }}>

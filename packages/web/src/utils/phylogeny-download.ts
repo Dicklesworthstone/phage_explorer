@@ -3,7 +3,7 @@ import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import type { AlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
 import { exportPhylogeny, type PhylogenyExportFormat } from '../../../core/src/analysis/phylogeny-export';
 
-export type PhylogenyDownloadFormat = 'experiment' | 'newick' | 'distances' | 'splits' | 'splits-tsv' | 'alignment-fasta';
+export type PhylogenyDownloadFormat = 'experiment' | 'newick' | 'distances' | 'splits' | 'splits-tsv' | 'alignment-fasta' | 'pangenome-experiment';
 export interface PhylogenyDownload { content: string; filename: string; mimeType: string }
 
 /** Preserve the existing JSON downloads; use the same Newick/TSV/FASTA bytes as the headless command. */
@@ -20,6 +20,7 @@ export function preparePhylogenyDownload(experiment: AlignedPhylogenyExperiment,
     distances: { format: 'distances-tsv', extension: 'tsv', mimeType: 'text/tab-separated-values' },
     'splits-tsv': { format: 'splits-tsv', extension: 'tsv', mimeType: 'text/tab-separated-values' },
     'alignment-fasta': { format: 'alignment-fasta', extension: 'fasta', mimeType: 'text/plain' },
+    'pangenome-experiment': { format: 'pangenome-experiment', extension: 'json', mimeType: 'application/json' },
   };
   if (!Object.hasOwn(formats, format)) throw new Error('Unsupported phylogeny download format.');
   const selected = formats[format];

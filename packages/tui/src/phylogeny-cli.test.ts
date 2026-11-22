@@ -8,6 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { executeAlignedPhylogenyRequest } from '../../web/src/workers/AlignedPhylogenySession';
 import { replayRootedAncestralExperiment } from '../../core/src/analysis/phylogeny-rooting';
 import { ancestralFasta } from '../../core/src/analysis/ancestral-reconstruction';
+import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../core/src/analysis/alignment-pangenome';
+import { serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { parsePhylogenyCommand, executePhylogenyCommand, phylogenyMain, readPhylogenyInput } from '../../../scripts/phylogeny';
 const alignment = '>A\nAAAAAAAA\n>B\nAAAAAAAA\n>C\nCCCCAAAA\n>D\nCCCCAAAA';
 async function fixture() {
@@ -108,6 +110,27 @@ function launch(args: string[], cwd: string) {
   return spawnSync(process.execPath, [launcher, ...args], { cwd, encoding: 'utf8', timeout: 20000,
     env: { ...process.env, PHAGE_EXPLORER_DB_PATH: join(cwd, 'no-catalog.db'), PHAGE_DB_PATH: join(cwd, 'no-catalog.db') } });
 }
+test('actual launcher infers a reference-backbone tree, replays it and recovers the exact original pangenome', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'phage-pangenome-launcher-'));
+  const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, source: 'demo', name: 'PRIVATE_PARENT',
+    sequences: ['AAAA--CCCCGGGGTTTT', 'TAAATTCCCCGGGGTTTT', 'AAAAGGTTTTGGGGTTTT', 'AAAATTTTTTGGGGTTTA']
+      .map((sequence, i) => ({ id: ['A', 'B', 'C', 'D'][i], description: '', sequence })) };
+  const graph = buildAlignmentPangenome(input, { alignment: 'provided', referenceId: 'A', terminalGaps: 'missing' });
+  const original = '\ufeff' + serializeAnalysisRecord(await createAlignmentPangenomeRecord(input, graph)).replace(/\n/g, '\r\n');
+  await writeFile(join(dir, 'parent.json'), original, { flag: 'wx' });
+  const args = ['phylogeny', 'infer-pangenome', '--experiment', 'parent.json', '--column-policy', 'reference-backbone-complete',
+    '--source', 'PRIVATE_HOMOLOGY', '--name', 'PRIVATE_NAME', '--bootstrap', '20', '--seed', '0', '--output', 'tree.json'];
+  const created = launch(args, dir);
+  assert.equal(created.status, 0, created.stderr); assert.ok(!created.stdout.includes('PRIVATE_'));
+  const summary = JSON.parse(created.stdout); assert.equal(summary.usedSites, 16); assert.equal(summary.pangenome.excludedReferenceGapColumns, 2);
+  const replayed = launch(['phylogeny', 'replay', '--experiment', 'tree.json', '--output', 'verified.json'], dir);
+  assert.equal(replayed.status, 0, replayed.stderr); assert.equal(JSON.parse(replayed.stdout).resultId, summary.resultId);
+  assert.equal(await readFile(join(dir, 'verified.json'), 'utf8'), await readFile(join(dir, 'tree.json'), 'utf8'));
+  const exported = launch(['phylogeny', 'export', '--experiment', 'tree.json', '--format', 'pangenome-experiment', '--output', 'original.json'], dir);
+  assert.equal(exported.status, 0, exported.stderr); assert.equal(await readFile(join(dir, 'original.json'), 'utf8'), original);
+  const bad = launch(args.filter((_, i) => i !== 4 && i !== 5), dir);
+  assert.notEqual(bad.status, 0); assert.match(bad.stderr, /column-policy/);
+});
 test('real terminal entry point exposes phylogeny help and inspection without a catalog or Ink', async () => {
   const f = await fixture();
   const help = launch(['phylogeny', '--help'], f.dir);

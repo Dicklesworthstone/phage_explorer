@@ -19,6 +19,9 @@ export const PHYLOGENY_HELP = `Aligned DNA neighbor joining (offline, unrooted)
 bun scripts/phylogeny.ts inspect --alignment aligned.fasta
 bun scripts/phylogeny.ts infer --alignment aligned.fasta --source CITATION --output experiment.json
   [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--demo]
+bun scripts/phylogeny.ts infer-pangenome --experiment pangenome.json
+  --column-policy reference-backbone-complete --source HOMOLOGY_PROVENANCE --output experiment.json
+  [--name NAME] [--distance p-distance|jc69|k80] [--bootstrap 0|20..200] [--seed UINT32] [--timeout-ms 300000]
 bun scripts/phylogeny.ts root --experiment experiment.json --outgroup A,B --fraction 0.25
   --rooting-evidence 'Outgroup and branch-placement rationale' --date-independent --output rooted.json
 bun scripts/phylogeny.ts ancestral --experiment rooted.json --license ALIGNMENT_LICENSE
@@ -32,7 +35,7 @@ bun scripts/phylogeny.ts date --experiment temporal.json --output dated.json
   [--minimum-rate RATE] [--maximum-rate RATE] [--iterations 1..20000]
 bun scripts/phylogeny.ts replay --experiment experiment.json [--output verified.json]
 bun scripts/phylogeny.ts export --experiment experiment.json --format FORMAT --output NEW_FILE
-  FORMAT: newick|distances|splits|dated-newick|alignment-fasta|ancestral-fasta
+  FORMAT: newick|distances|splits|dated-newick|alignment-fasta|ancestral-fasta|pangenome-experiment
 
 Input must already be aligned DNA: 3–64 unique taxa, equal nonzero lengths,
 up to 100000 sites and 2 MiB UTF-8. Gaps and ambiguity exclude the entire column
@@ -40,6 +43,17 @@ from every pair. All retained columns, including invariant ones, are resampled.
 Inference defaults: observed p-distance, complete deletion, bootstrap 0, seed 1.
 JC69 and K80 reject saturated distances; any saturated bootstrap withholds all support.
 K80 distinguishes transitions from transversions under equal equilibrium base frequencies.
+
+infer-pangenome reconstructs the exact saved parent sequences and alignment in a
+terminable worker. The explicit reference-backbone-complete policy excludes
+reference-gap columns before complete deletion: independently placed insertions
+have no established mutual homology. --source supplies the biological basis for
+treating the backbone as homologous; reconstruction does not establish it.
+Original parent bytes, settings, provenance and original-column coverage are
+retained. Local/demo provenance is inherited. The parent and phylogeny work/size
+limits both apply; bootstrap conditions on the chosen reference and alignment.
+alignment-fasta exports the derived backbone for this input; pangenome-experiment
+recovers the exact original JSON, including sequences and excluded insertions.
 
 The inferred tree is unrooted: its Newick serialization root is not an ancestor
 or date. Negative NJ limbs are retained, not repaired silently. Bootstrap
@@ -87,17 +101,19 @@ Summaries go to stdout, errors to stderr. No network, database or terminal UI.
 export type PhylogenyCommand = { type: 'help' }
   | { type: 'inspect'; alignment: string }
   | { type: 'infer'; alignment: string; output: string; source: string; name?: string; demo: boolean; options: PhylogenyOptions }
+  | { type: 'infer-pangenome'; experiment: string; output: string; source: string; name?: string; options: PhylogenyOptions; timeoutMs: number }
   | { type: 'root'; experiment: string; output: string; rooting: OutgroupRooting }
   | { type: 'ancestral'; experiment: string; output: string; license: string; optionsPath?: string; timeoutMs: number }
   | { type: 'temporal'; experiment: string; dates: string; output: string; metadata: Omit<RootedTemporalMetadata, 'sampleTable'>; options: TemporalOptions }
   | { type: 'date'; experiment: string; output: string; options: DatingOptions }
   | { type: 'replay'; experiment: string; output?: string }
-  | { type: 'export'; experiment: string; output: string; format: 'newick' | 'distances' | 'splits' | 'dated-newick' | 'alignment-fasta' | 'ancestral-fasta' };
+  | { type: 'export'; experiment: string; output: string; format: 'newick' | 'distances' | 'splits' | 'dated-newick' | 'alignment-fasta' | 'ancestral-fasta' | 'pangenome-experiment' };
 export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   const [type, ...rest] = args;
-  if (!['inspect', 'infer', 'root', 'ancestral', 'temporal', 'date', 'replay', 'export'].includes(type)) throw new Error('Choose inspect, infer, root, ancestral, temporal, date, replay or export; use --help for usage.');
+  if (!['inspect', 'infer', 'infer-pangenome', 'root', 'ancestral', 'temporal', 'date', 'replay', 'export'].includes(type)) throw new Error('Choose inspect, infer, infer-pangenome, root, ancestral, temporal, date, replay or export; use --help for usage.');
   const allowed = type === 'infer' ? ['--alignment', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--demo']
+    : type === 'infer-pangenome' ? ['--experiment', '--column-policy', '--output', '--source', '--name', '--distance', '--bootstrap', '--seed', '--timeout-ms']
     : type === 'root' ? ['--experiment', '--output', '--outgroup', '--fraction', '--rooting-evidence', '--date-independent']
     : type === 'ancestral' ? ['--experiment', '--output', '--license', '--options', '--timeout-ms']
     : type === 'temporal' ? ['--experiment', '--dates', '--output', '--name', '--source', '--reference', '--license', '--date-independent', '--demo-dates', '--permutations', '--seed', '--scheme', '--exclude']
@@ -168,7 +184,7 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   if (type === 'export') {
     const format = required('--format');
     if (format !== 'newick' && format !== 'distances' && format !== 'splits' && format !== 'dated-newick'
-      && format !== 'alignment-fasta' && format !== 'ancestral-fasta') throw new Error('Export format must be newick, distances, splits, dated-newick, alignment-fasta or ancestral-fasta.');
+      && format !== 'alignment-fasta' && format !== 'ancestral-fasta' && format !== 'pangenome-experiment') throw new Error('Export format must be newick, distances, splits, dated-newick, alignment-fasta, ancestral-fasta or pangenome-experiment.');
     return { type, experiment: required('--experiment'), output: required('--output'), format };
   }
   const number = (key: string, fallback: number): number => {
@@ -179,6 +195,13 @@ export function parsePhylogenyCommand(args: readonly string[]): PhylogenyCommand
   };
   const options = resolvePhylogenyOptions({ distance: (values.get('--distance') ?? 'p-distance') as PhylogenyOptions['distance'],
     deletion: 'complete', bootstrap: number('--bootstrap', 0), seed: number('--seed', 1) });
+  if (type === 'infer-pangenome') {
+    if (required('--column-policy') !== 'reference-backbone-complete') throw new Error('--column-policy must be reference-backbone-complete; independent insertion homology is not inferred.');
+    const timeoutMs = number('--timeout-ms', 300000);
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 3600000) throw new Error('--timeout-ms must be an integer from 1 to 3600000.');
+    return { type, experiment: required('--experiment'), output: required('--output'), source: required('--source'), options, timeoutMs,
+      ...(values.has('--name') ? { name: values.get('--name')! } : {}) };
+  }
   return { type: 'infer', alignment: required('--alignment'), output: required('--output'), source: required('--source'),
     ...(values.has('--name') ? { name: values.get('--name')! } : {}), demo: values.has('--demo'), options };
 }
@@ -249,6 +272,15 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
     await writeOutput(command.output, serializeAnalysisRecord(experiment.record));
     return summary(experiment, false);
   }
+  if (command.type === 'infer-pangenome') {
+    const { runPhylogenyCommand } = await import('../packages/tui/src/headless-phylogeny');
+    const result = await runPhylogenyCommand(['infer-pangenome', '--experiment', command.experiment,
+      '--column-policy', 'reference-backbone-complete', '--name', command.name ?? basename(command.experiment),
+      '--reference', command.source, '--distance', command.options.distance, '--bootstrap', String(command.options.bootstrap),
+      '--seed', String(command.options.seed), '--output', command.output, '--timeout-ms', String(command.timeoutMs)]);
+    if (typeof result === 'string') throw new Error('Pangenome phylogeny worker returned no result summary.');
+    return { ...result, verified: false };
+  }
   if (command.type === 'root') {
     const rooted = await rootAlignedPhylogenyExperiment(await readPhylogenyInput(command.experiment, 10 * 1024 * 1024), command.rooting);
     await writeOutput(command.output, serializeAnalysisRecord(rooted.record));
@@ -278,7 +310,9 @@ export async function executePhylogenyCommand(command: Exclude<PhylogenyCommand,
   const selected: unknown = JSON.parse(savedContent);
   const method = selected && typeof selected === 'object' && 'method' in selected ? selected.method : null;
   if (method && typeof method === 'object' && 'id' in method && method.id === ROOTED_ANCESTRAL_METHOD.id
-    || command.type === 'export' && (command.format === 'ancestral-fasta' || command.format === 'alignment-fasta')) {
+    || command.type === 'export' && (command.format === 'ancestral-fasta' || command.format === 'alignment-fasta' || command.format === 'pangenome-experiment')
+    || method && typeof method === 'object' && 'id' in method && 'version' in method && method.version === '2.0.0'
+      && (method.id === 'aligned-dna-neighbor-joining' || method.id === ROOTED_PHYLOGENY_METHOD.id)) {
     const { executePhylogenyTask } = await import('../packages/tui/src/headless-phylogeny');
     const result = await executePhylogenyTask(command.type === 'replay' ? { type: 'verify', content: savedContent }
       : { type: 'export', content: savedContent, format: command.format === 'distances' ? 'distances-tsv'

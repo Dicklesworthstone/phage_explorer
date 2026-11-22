@@ -1,6 +1,7 @@
 import { describe, test } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../../core/src/analysis/alignment-pangenome';
 import { AlignedPhylogenySession, executeAlignedPhylogenyRequest, readAlignedPhylogenyFile,
   type AlignedPhylogenyRequest, type AlignedPhylogenyWorker, type AlignedPhylogenyMessage } from './AlignedPhylogenySession';
 
@@ -139,12 +140,66 @@ describe('aligned phylogeny ownership and cancellation', () => {
 describe('private file boundaries', () => {
   test('accepts UTF-8 with a BOM and rejects malformed UTF-8', async () => {
     assert.equal(await readAlignedPhylogenyFile(new Blob(['\ufeff>A\nACGT']),100),'>A\nACGT');
+    assert.equal(await readAlignedPhylogenyFile(new Blob(['\ufeff{\r\n"parent":true\r\n}']),100,true),'\ufeff{\r\n"parent":true\r\n}');
     await assert.rejects(readAlignedPhylogenyFile(new Blob([new Uint8Array([0xc3,0x28])]),100));
   });
   test('checks byte count before and after reading, including a provider that understates size', async () => {
     let reads=0;const file={size:200,arrayBuffer:async()=>{reads++;return new ArrayBuffer(200);}};
     await assert.rejects(readAlignedPhylogenyFile(file,100),/limit/);assert.equal(reads,0);
     await assert.rejects(readAlignedPhylogenyFile({...file,size:1},100),/limit/);assert.equal(reads,1);
+  });
+});
+
+describe('pangenome backbone browser workspace', () => {
+  async function pangenomeRequest(): Promise<Extract<AlignedPhylogenyRequest, {kind: 'pangenome'}>> {
+    const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, name: 'Synthetic insertion quartet', source: 'demo',
+      sequences: ['AAAA--CCCCGGGGTTTT', 'TAAATTCCCCGGGGTTTT', 'AAAAGGTTTTGGGGTTTT', 'AAAATTTTTTGGGGTTTA']
+        .map((sequence, i) => ({ id: ['A', 'B', 'C', 'D'][i], description: '', sequence })) };
+    const record = await createAlignmentPangenomeRecord(input, buildAlignmentPangenome(input, { alignment: 'provided', referenceId: 'A', terminalGaps: 'missing' }));
+    return { kind: 'pangenome', source: { name: 'Backbone quartet', reference: 'Synthetic AB|CD homology fixture; independent insertions excluded.',
+      experiment: '\ufeff' + serializeAnalysisRecord(record).replace(/\n/g, '\r\n') }, options: request().options };
+  }
+  test('executes fresh parent reconstruction with independent distances and replays the entire linked root', async () => {
+    const input = await pangenomeRequest(); const phases: string[] = [];
+    const experiment = await executeAlignedPhylogenyRequest(input, phase => phases.push(phase));
+    assert.deepEqual(experiment.result.distances, [[0,1/16,4/16,5/16],[1/16,0,5/16,6/16],[4/16,5/16,0,1/16],[5/16,6/16,1/16,0]]);
+    assert.deepEqual(experiment.pangenome?.excludedReferenceGapColumns, [4,5]);
+    assert.equal(experiment.pangenome?.source.experiment, input.source.experiment);
+    assert.match(phases.join(' '), /Reconstructing the pangenome/);
+    const rooted = await executeAlignedPhylogenyRequest({ kind: 'root', content: serializeAnalysisRecord(experiment.record),
+      rooting: { outgroup: ['A','B'], fractionFromOutgroup: .5, evidence: 'Synthetic date-independent choice.', dateIndependent: true } });
+    assert.equal(rooted.rooting?.record.method.version, '2.0.0');
+    assert.deepEqual(await executeAlignedPhylogenyRequest({ kind: 'replay', content: serializeAnalysisRecord(rooted.rooting!.record) }), rooted);
+  });
+  test('snapshots all parent bytes and inference settings before a worker operation', async () => {
+    const { session, workers } = workspace(), input = await pangenomeRequest(), expected = structuredClone(input);
+    const pending = session.run(input); input.source.experiment = '{}'; input.options.seed = 9;
+    await tick(); assert.deepEqual(workers[0].request, expected);
+    workers[0].emit({ kind: 'result', experiment: await executeAlignedPhylogenyRequest(expected), verified: false });
+    assert.equal(await pending, true);
+    assert.equal(session.getSnapshot().accepted?.pangenome?.source.experiment, expected.source.experiment);
+    session.deactivate();
+  });
+  test('cancels delayed parent reads and ignores a superseded reconstruction result', async () => {
+    const { session, workers } = workspace(), input = await pangenomeRequest(), read = deferred<AlignedPhylogenyRequest>();
+    const fileRead = session.run(() => read.promise); session.cancel(); assert.equal(await fileRead, false);
+    read.resolve(input); await tick(); assert.equal(workers.length, 0);
+    const first = session.run(input); await tick(); const stale = workers[0].onmessage!;
+    const second = session.run(request()); await tick(); assert.equal(await first, false); assert.equal(workers[0].terminated, 1);
+    stale({ data: { kind: 'result', experiment: await executeAlignedPhylogenyRequest(input), verified: false } } as MessageEvent<AlignedPhylogenyMessage>);
+    assert.equal(session.getSnapshot().accepted, null);
+    workers[1].emit({ kind: 'result', experiment: await executeAlignedPhylogenyRequest(request()), verified: false });
+    assert.equal(await second, true); assert.equal(session.getSnapshot().accepted?.pangenome, undefined);
+    session.deactivate();
+  });
+  test('refuses a direct-FASTA result for a parent-reconstruction request and vice versa', async () => {
+    const graph = await pangenomeRequest(), direct = request();
+    for (const [submitted, response] of [[graph, direct], [direct, graph]] as const) {
+      const { session, workers } = workspace(); const pending = session.run(submitted); await tick();
+      workers[0].emit({ kind: 'result', experiment: await executeAlignedPhylogenyRequest(response), verified: false });
+      assert.equal(await pending, false); assert.equal(session.getSnapshot().accepted, null);
+      assert.match(session.getSnapshot().error!, /Unexpected/); session.deactivate();
+    }
   });
 });
 

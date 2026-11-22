@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { createAlignedPhylogenyExperiment, type AlignedPhylogenyResult } from '../../core/src/analysis/aligned-phylogeny';
+import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../core/src/analysis/alignment-pangenome';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 
 const launcher = fileURLToPath(new URL('../../tui/src/index.tsx', import.meta.url));
@@ -26,6 +27,57 @@ async function downloaded(page: Page, action: () => Promise<void>): Promise<stri
   const chunks: Buffer[] = []; for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks).toString('utf8');
 }
+
+test('pangenome import reconstructs a backbone tree, preserves its parent through exports, and restores an editable source', async ({ page }, info) => {
+  test.setTimeout(180000); const { pageErrors, finalize } = setupTestHarness(page, info);
+  const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, name: 'Private insertion quartet', source: 'demo',
+    sequences: ['AAAA--CCCCGGGGTTTT', 'TAAATTCCCCGGGGTTTT', 'AAAAGGTTTTGGGGTTTT', 'AAAATTTTTTGGGGTTTA']
+      .map((sequence, i) => ({ id: ['A', 'B', 'C', 'D'][i], description: '', sequence })) };
+  const parent = await createAlignmentPangenomeRecord(input, buildAlignmentPangenome(input, { referenceId: 'A', alignment: 'provided', terminalGaps: 'missing' }));
+  const parentContent = '\ufeff' + serializeAnalysisRecord(parent).replace(/\n/g, '\r\n');
+  const marker = 'private-pangenome-homology-bca318'; let privateLeak = false;
+  page.on('request', request => { if (request.url().includes(marker) || request.postData()?.includes(marker)) privateLeak = true; });
+  await page.addInitScript(() => localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' })));
+  try {
+    const panel = await open(page); await expectExplorerIdentity(page, info);
+    const accepted = () => panel.getByRole('region', { name: 'Accepted aligned phylogeny', exact: true });
+    const infer = () => panel.getByRole('button', { name: 'Infer unrooted tree', exact: true });
+    const exportButton = () => panel.getByRole('button', { name: 'Export phylogeny experiment JSON', exact: true });
+    await panel.getByLabel('Phylogeny input', { exact: true }).selectOption('pangenome');
+    await panel.getByLabel('Alignment name', { exact: true }).fill('Private backbone quartet');
+    await panel.getByLabel('Alignment source and homology provenance', { exact: true }).fill(marker);
+    await panel.getByLabel('Pangenome experiment JSON (up to 10 MiB)', { exact: true }).setInputFiles({
+      name: 'parent.json', mimeType: 'application/json', buffer: Buffer.from(parentContent),
+    });
+    await expect(panel.getByLabel('Alignment provenance type', { exact: true })).toHaveCount(0);
+    await infer().click(); await expect(panel.getByRole('alert')).toContainText('Confirm the reference-backbone');
+    await panel.getByRole('checkbox', { name: /I accept the reference-backbone column policy/ }).check();
+    await infer().click();
+    await expect(accepted()).toContainText('4 taxa; 16/16 columns retained');
+    await expect(accepted()).toContainText('SYNTHETIC — NOT EXPERIMENTAL EVIDENCE');
+    await expect(accepted().getByRole('region', { name: 'Pangenome backbone coverage' })).toContainText('2 reference-gap columns were excluded');
+    const saved = await downloaded(page, () => exportButton().click()), record = await parseAnalysisRecord(saved);
+    const result = record.fields.phylogeny.value as unknown as AlignedPhylogenyResult;
+    expect(result.distances).toEqual([[0,1/16,4/16,5/16],[1/16,0,5/16,6/16],[4/16,5/16,0,1/16],[5/16,6/16,1/16,0]]);
+    expect(result.splits[0].side).toEqual(['A','B']);
+    expect(await downloaded(page, () => panel.getByRole('button', { name: 'Export original pangenome experiment', exact: true }).click())).toBe(parentContent);
+    const path = info.outputPath('browser-pangenome-phylogeny.json'); await writeFile(path, saved, { flag: 'wx' });
+    const replayed = JSON.parse(execFileSync('bun', [launcher, 'phylogeny', 'replay', '--experiment', path], { cwd: dirname(path), encoding: 'utf8' }));
+    expect(replayed.resultId).toBe(record.resultId); expect(replayed.pangenome.parentResultId).toBe(parent.resultId);
+    await panel.getByLabel('Phylogeny seed (0–4294967295)', { exact: true }).fill('17');
+    await expect(accepted()).toHaveCount(0); await expect(exportButton()).toBeDisabled();
+    await panel.getByLabel('Restore verified phylogeny experiment JSON (up to 10 MiB)', { exact: true }).setInputFiles({
+      name: 'phylogeny.json', mimeType: 'application/json', buffer: Buffer.from(saved),
+    });
+    await expect(accepted()).toHaveAttribute('data-result-id', record.resultId);
+    await expect(panel.getByLabel('Phylogeny input', { exact: true })).toHaveValue('pangenome');
+    await panel.getByLabel('Phylogeny seed (0–4294967295)', { exact: true }).fill('17');
+    await infer().click(); await expect(accepted()).toBeVisible();
+    await expect(accepted()).not.toHaveAttribute('data-result-id', record.resultId);
+    expect(await downloaded(page, () => panel.getByRole('button', { name: 'Export original pangenome experiment', exact: true }).click())).toBe(parentContent);
+    expect(privateLeak).toBe(false); expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
 
 test('aligned DNA reaches the real worker, browser exports and actual database-free terminal launcher', async ({ page }, info) => {
   test.setTimeout(180000); const { pageErrors, finalize } = setupTestHarness(page, info);

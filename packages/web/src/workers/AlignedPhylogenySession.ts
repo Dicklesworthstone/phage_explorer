@@ -1,5 +1,5 @@
 /** Local aligned-DNA workspace; synchronous inference runs only in a disposable worker. */
-import type { AlignedPhylogenyExperiment, PhylogenyOptions, PhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
+import type { AlignedPhylogenyExperiment, PangenomePhylogenySource, PhylogenyOptions, PhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
 import type { OutgroupRooting, RootedPhylogenyExperiment } from '../../../core/src/analysis/phylogeny-rooting';
 
 /** Keep original inference distinct from the optional, user-conditioned root record. */
@@ -12,6 +12,7 @@ function withRoot(rooted: RootedPhylogenyExperiment): AlignedPhylogenyWorkResult
 
 export type AlignedPhylogenyRequest =
   | { kind: 'infer'; source: PhylogenySource; options: PhylogenyOptions }
+  | { kind: 'pangenome'; source: PangenomePhylogenySource; options: PhylogenyOptions }
   | { kind: 'replay'; content: string }
   | { kind: 'root'; content: string; rooting: OutgroupRooting };
 export type AlignedPhylogenyMessage =
@@ -36,11 +37,15 @@ export interface AlignedPhylogenySnapshot {
 /** Worker and tests call the real inference/replay APIs. No cached result is installed on replay. */
 export async function executeAlignedPhylogenyRequest(request: AlignedPhylogenyRequest,
   progress: (phase: string) => void = () => {}): Promise<AlignedPhylogenyWorkResult> {
-  const { createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment } = await import('../../../core/src/analysis/aligned-phylogeny');
+  const { createAlignedPhylogenyExperiment, createPangenomePhylogenyExperiment, replayAlignedPhylogenyExperiment } = await import('../../../core/src/analysis/aligned-phylogeny');
   if (!request || typeof request !== 'object') throw new Error('Unsupported aligned-phylogeny request.');
   if (request.kind === 'infer') {
     progress('Checking aligned DNA and computing distances, tree and requested site resampling');
     return createAlignedPhylogenyExperiment(request.source, request.options);
+  }
+  if (request.kind === 'pangenome') {
+    progress('Reconstructing the pangenome, retaining reference-backbone columns and inferring the tree');
+    return createPangenomePhylogenyExperiment(request.source, request.options);
   }
   if (request.kind === 'replay' || request.kind === 'root') {
     if (typeof request.content !== 'string' || request.content.length > 10 * 1024 * 1024
@@ -65,13 +70,13 @@ export async function executeAlignedPhylogenyRequest(request: AlignedPhylogenyRe
 }
 
 /** Fatal UTF-8 decoding, not File.text() replacement characters inside private sequence data. */
-export async function readAlignedPhylogenyFile(file: Pick<File, 'size' | 'arrayBuffer'>, maximum: number): Promise<string> {
+export async function readAlignedPhylogenyFile(file: Pick<File, 'size' | 'arrayBuffer'>, maximum: number, preserveBom = false): Promise<string> {
   if (!Number.isSafeInteger(maximum) || maximum < 1 || !Number.isSafeInteger(file.size) || file.size < 0 || file.size > maximum) {
     throw new Error(`Input exceeds the ${maximum}-byte limit.`);
   }
   const buffer = await file.arrayBuffer();
   if (buffer.byteLength > maximum) throw new Error(`Input exceeds the ${maximum}-byte limit.`);
-  return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: preserveBom }).decode(buffer);
 }
 
 function cancelled(): DOMException { return new DOMException('Aligned phylogeny cancelled.', 'AbortError'); }
@@ -140,7 +145,8 @@ export class AlignedPhylogenySession {
             && message.experiment?.record?.method?.id === 'aligned-dna-neighbor-joining'
             && Array.isArray(message.experiment.result?.tree?.nodes)
             && (request.kind !== 'root' || !!message.experiment.rooting)
-            && (request.kind !== 'infer' || !message.experiment.rooting)
+            && (request.kind !== 'infer' || (!message.experiment.rooting && !message.experiment.pangenome))
+            && (request.kind !== 'pangenome' || (!message.experiment.rooting && !!message.experiment.pangenome))
             && (!message.experiment.rooting || (message.experiment.rooting.record?.method?.id === 'explicit-outgroup-rooted-nj'
               && message.experiment.rooting.result?.sourceResultId === message.experiment.record.resultId))) finish(message.experiment);
           else if (message?.kind === 'error' && typeof message.message === 'string') finish(undefined, new Error(message.message));
