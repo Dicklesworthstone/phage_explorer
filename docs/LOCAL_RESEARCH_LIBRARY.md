@@ -21,6 +21,7 @@ room. Unsaved changes are not included in an earlier snapshot.
 | Abundance network | Complete accepted local abundance dataset, missingness, analysis parameters and numerical evidence | Import through the abundance worker and freshly verify the result and identity. |
 | Environmental sample evidence | Complete accepted observations, source metadata, missingness and numerical evidence | Import through the environmental worker and independently recompute the result. |
 | Sourced host-model scenarios and gene knockouts | Complete accepted COBRA model, host/source/license, explicit medium, reaction edits or gene-deletion rules, flux-range settings and solver evidence | Recompute the original experiment in the host-model worker and verify its complete result identity before restoring it. Both experiment types share the host-model saved list. |
+| Supplied attachment reconstruction | Complete host and phage bases, source declarations, oriented attB/attP cores, topology/circularization assumptions, exact product and coordinate map | Recompute and verify the self-contained reconstruction; the current catalog selection does not replace its saved sources. |
 
 For these experiment panels, **Save** captures the last accepted result, not
 unapplied draft edits. An import failure, numerical mismatch or cancellation

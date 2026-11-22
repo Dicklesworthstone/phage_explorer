@@ -8,8 +8,12 @@ import {
   findDirectRepeats,
   analyzeProphageExcision,
   isLikelyTemperate,
+  ATTACHMENT_LIMITS, parseAttachmentDna, validateAttachmentInput, resolveAttachmentOptions,
+  reconstructAttachment, createAttachmentExperimentRecord, replayAttachmentExperiment,
+  type AttachmentReconstructionInput, type AttachmentReconstructionResult,
 } from './prophage-excision';
 import type { GeneInfo } from '../types';
+import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 // Helper to create gene info objects
 function makeGene(overrides: Partial<GeneInfo> & { id: number }): GeneInfo {
@@ -305,5 +309,275 @@ describe('edge cases', () => {
     const result = analyzeProphageExcision(seq, []);
     expect(result.diagnostics.length).toBeGreaterThan(0);
     expect(result.isTemperate).toBe(false);
+  });
+});
+
+
+// These deliberately tiny controls are hand-constructed sequence algebra,
+// not observations of functional biological attachment sites.
+function attachmentFixture(hostStrand: '+' | '-' = '+', phageStrand: '+' | '-' = '+'): AttachmentReconstructionInput {
+  const source = { kind: 'local' as const, reference: 'Hand-constructed sequence-composition control; not experimental observations',
+    version: '1', license: 'CC0-1.0' };
+  return {
+    format: 'phage-explorer-attachment-reconstruction', version: 1,
+    host: { name: 'Control host locus', accession: null, sequence: hostStrand === '+' ? 'TTAGCC' : 'GGCTAA',
+      topology: 'linear', source: { ...source } },
+    phage: { name: 'Control phage substrate', accession: null, sequence: phageStrand === '+' ? 'CAAGTG' : 'CACTTG',
+      topology: 'circular', source: { ...source } },
+    attB: { start: 2, end: 4, strand: hostStrand, evidence: 'Declared synthetic shared AG core' },
+    attP: { start: 2, end: 4, strand: phageStrand, evidence: 'Declared synthetic shared AG core' },
+    circularization: 'already-circular',
+  };
+}
+function independentReverse(sequence: string): string {
+  const complements: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+  return [...sequence].reverse().map(base => complements[base]).join('');
+}
+function expectExactSourceMap(input: AttachmentReconstructionInput, result: AttachmentReconstructionResult): void {
+  const used = { host: Array(input.host.sequence.length).fill(0), phage: Array(input.phage.sequence.length).fill(0) };
+  let position = 0, rebuilt = '';
+  for (const segment of result.segments) {
+    expect(segment.productStart).toBe(position);
+    expect(segment.sourceStart).toBeGreaterThanOrEqual(0);
+    expect(segment.sourceEnd).toBeLessThanOrEqual(input[segment.source].sequence.length);
+    expect(segment.sourceEnd).toBeGreaterThan(segment.sourceStart);
+    const sequence = input[segment.source].sequence.slice(segment.sourceStart, segment.sourceEnd);
+    rebuilt += segment.strand === '+' ? sequence : independentReverse(sequence);
+    for (let index = segment.sourceStart; index < segment.sourceEnd; index++) used[segment.source][index]++;
+    position += sequence.length;
+    expect(segment.productEnd).toBe(position);
+  }
+  expect(rebuilt).toBe(result.integratedSequence);
+  expect(used.host).toEqual(Array(input.host.sequence.length).fill(1));
+  expect(used.phage).toEqual(Array(input.phage.sequence.length).fill(1));
+  expect(position).toBe(input.host.sequence.length + input.phage.sequence.length);
+  for (const junction of [result.attL, result.attR]) {
+    const covered: number[] = [];
+    const context = junction.integratedSegments.map(segment => {
+      for (let index = segment.start; index < segment.end; index++) covered.push(index);
+      return result.integratedSequence.slice(segment.start, segment.end);
+    }).join('');
+    expect(new Set(covered).size).toBe(covered.length);
+    expect(junction.sequence).toBe(junction.strand === '+' ? context : independentReverse(context));
+    expect(junction.sequence.slice(junction.core.start, junction.core.end)).toBe(result.sharedCore);
+  }
+}
+function rehashAttachmentRecord(record: AnalysisRecord): Promise<AnalysisRecord> {
+  return createAnalysisRecord({ method: record.method, inputs: record.inputs, parameters: record.parameters,
+    seed: record.seed, references: record.references, fields: record.fields });
+}
+
+describe('conditional attachment sequence reconstruction', () => {
+  for (const hostStrand of ['+', '-'] as const) for (const phageStrand of ['+', '-'] as const) {
+    it('preserves exact source coverage and oriented junctions for attB ' + hostStrand + ' / attP ' + phageStrand, () => {
+      const input = attachmentFixture(hostStrand, phageStrand), before = structuredClone(input);
+      const result = reconstructAttachment(input, { flankLength: 2 });
+      // Independent literal expectations, not assembled using the production algorithm.
+      expect(result.integratedSequence).toBe(hostStrand === '+' ? 'TTAGTGCAAGCC' : 'GGCTTGCACTAA');
+      expect(result.sharedCore).toBe('AG');
+      expect(result.attL.sequence).toBe('TTAGTG');
+      expect(result.attR.sequence).toBe('CAAGCC');
+      expect(result.attL.core).toEqual({ start: 2, end: 4 });
+      expect(result.attR.core).toEqual({ start: 2, end: 4 });
+      expect(result.attL.strand).toBe(hostStrand);
+      expect(result.attR.strand).toBe(hostStrand);
+      expect(result.insertionStrand).toBe(hostStrand === phageStrand ? '+' : '-');
+      expect(result.hostCut).toBe(2);
+      expect(result.phageCut).toBe(hostStrand === phageStrand ? 2 : 4);
+      expect(result.integratedTopology).toBe('linear');
+      expect(result.conservation).toEqual({ hostBases: 6, phageBases: 6, integratedBases: 12, expectedBases: 12, conserved: true });
+      expectExactSourceMap(input, result);
+      expect(input).toEqual(before);
+    });
+  }
+
+  it('splices boundary cores without fabricated bases or empty map segments', () => {
+    const first = attachmentFixture();
+    first.host.sequence = 'AGCC'; first.phage.sequence = 'AGTG';
+    first.attB = { ...first.attB, start: 0, end: 2 }; first.attP = { ...first.attP, start: 0, end: 2 };
+    const firstResult = reconstructAttachment(first, { flankLength: 3 });
+    expect(firstResult.integratedSequence).toBe('AGTGAGCC');
+    expect(firstResult.attL.leftFlankBases).toBe(0);
+    expectExactSourceMap(first, firstResult);
+    const last = attachmentFixture();
+    last.host.sequence = 'TTAG'; last.phage.sequence = 'CAAG';
+    const lastResult = reconstructAttachment(last, { flankLength: 3 });
+    expect(lastResult.integratedSequence).toBe('TTAGCAAG');
+    expect(lastResult.attR.rightFlankBases).toBe(0);
+    expectExactSourceMap(last, lastResult);
+  });
+
+  it('wraps circular host junction context exactly once and records its coordinate slices', () => {
+    const input = attachmentFixture();
+    input.host.sequence = 'TTAG'; input.host.topology = 'circular'; input.phage.sequence = 'CAAG';
+    const result = reconstructAttachment(input, { flankLength: 1000 });
+    expect(result.integratedTopology).toBe('circular');
+    expect(result.integratedSequence).toBe('TTAGCAAG');
+    expect(result.attL.sequence).toBe('GTTAGCAA');
+    expect(result.attR.sequence).toBe('GCAAGTTA');
+    expect(result.attL.integratedSegments).toEqual([{ start: 7, end: 8 }, { start: 0, end: 7 }]);
+    expect(result.attR.integratedSegments).toEqual([{ start: 3, end: 8 }, { start: 0, end: 3 }]);
+    expect(result.attL.core).toEqual({ start: 3, end: 5 });
+    expect(result.attR.core).toEqual({ start: 3, end: 5 });
+    expectExactSourceMap(input, result);
+  });
+
+  it('supports core-only previews and records an explicit circularization assumption', () => {
+    const input = attachmentFixture();
+    input.phage.topology = 'linear'; input.circularization = 'assumed-circularized';
+    const result = reconstructAttachment(input, { flankLength: 0 });
+    expect(result.attL.sequence).toBe('AG'); expect(result.attR.sequence).toBe('AG');
+    expect(result.warnings.some(item => item.includes('explicit modeling assumption'))).toBe(true);
+    expect(input.phage.topology).toBe('linear');
+  });
+
+  it('parses one FASTA record or raw unambiguous DNA without joining distinct records', () => {
+    expect(parseAttachmentDna('\uFEFF>host locus\n tt ag \r\ncc\n')).toBe('TTAGCC');
+    expect(parseAttachmentDna('tt\t ag\ncc')).toBe('TTAGCC');
+    for (const content of ['', '>empty\n', '>\nACGT', '>one\nAG\n>two\nAG', 'ACNGT', 'ACRGT', 'AC-GT', 'ACGT12']) {
+      expect(() => parseAttachmentDna(content)).toThrow();
+    }
+    expect(() => parseAttachmentDna(' '.repeat(ATTACHMENT_LIMITS.inputBytes + 1))).toThrow(/4 MiB/);
+  });
+
+  it('normalizes bases without mutating source metadata or input coordinates', () => {
+    const input = attachmentFixture();
+    input.host.sequence = 'tt ag\ncc'; input.phage.sequence = 'caagtg';
+    const valid = validateAttachmentInput(input);
+    expect(valid.host.sequence).toBe('TTAGCC');
+    expect(valid.phage.sequence).toBe('CAAGTG');
+    expect(valid.attB).toEqual(input.attB);
+    expect(input.host.sequence).toBe('tt ag\ncc');
+  });
+
+  it('rejects mismatching, differently oriented, unresolved or unequal cores', () => {
+    const changes: Array<(input: AttachmentReconstructionInput) => void> = [
+      input => { input.phage.sequence = 'CACGTG'; },
+      input => { input.attP.strand = '-'; },
+      input => { input.attP.end = 5; },
+      input => { input.host.sequence = 'TNAGCC'; },
+      input => { input.phage.sequence = 'CAAGTR'; },
+    ];
+    for (const change of changes) {
+      const input = attachmentFixture(); change(input);
+      expect(() => reconstructAttachment(input)).toThrow();
+    }
+  });
+
+  it('rejects absent, wrapping, fractional and out-of-source coordinates', () => {
+    const invalidSites = [
+      { start: -1 }, { end: 7 }, { start: 4, end: 2 }, { start: 2, end: 2 }, { start: 2.5 },
+      { start: NaN }, { end: Infinity }, { strand: '?' }, { strand: ['+'] }, { evidence: '' },
+    ];
+    for (const site of invalidSites) {
+      const input = attachmentFixture();
+      expect(() => validateAttachmentInput({ ...input, attB: { ...input.attB, ...site } })).toThrow();
+      expect(() => validateAttachmentInput({ ...input, attP: { ...input.attP, ...site } })).toThrow();
+    }
+    const paired = attachmentFixture();
+    expect(() => validateAttachmentInput({ ...paired, attB: { ...paired.attB, strand: ['+'] },
+      attP: { ...paired.attP, strand: ['+'] } })).toThrow(/explicit strand/);
+    const large = attachmentFixture();
+    large.host.sequence = large.phage.sequence = 'A'.repeat(257);
+    large.attB.start = large.attP.start = 0; large.attB.end = large.attP.end = 257;
+    expect(() => reconstructAttachment(large)).toThrow(/1–256/);
+  });
+
+  it('requires explicit topology, source provenance, evidence and circularization semantics', () => {
+    const original = attachmentFixture();
+    for (const host of [
+      { ...original.host, topology: 'unknown' }, { ...original.host, topology: ['linear'] },
+      { ...original.host, source: { ...original.host.source, version: '' } },
+      { ...original.host, source: { ...original.host.source, reference: 'bad\nreference' } },
+      { ...original.host, source: { ...original.host.source, kind: ['local'] } },
+      { ...original.host, unsupported: true },
+    ]) expect(() => validateAttachmentInput({ ...original, host })).toThrow();
+    for (const topology of ['linear', 'unknown'] as const) {
+      const input = attachmentFixture(); input.phage.topology = topology;
+      expect(() => reconstructAttachment(input)).toThrow(/circularization/);
+      input.circularization = 'assumed-circularized';
+      expect(reconstructAttachment(input).integratedSequence).toBe('TTAGTGCAAGCC');
+    }
+    expect(() => validateAttachmentInput({ ...original, circularization: ['already-circular'] })).toThrow();
+    const missing = JSON.parse(JSON.stringify(original));
+    delete missing.host.source.license;
+    expect(() => validateAttachmentInput(missing)).toThrow();
+  });
+
+  it('enforces source/combined size limits and strict bounded context options', () => {
+    const input = attachmentFixture();
+    input.host.sequence = 'A'.repeat(ATTACHMENT_LIMITS.sequenceBases + 1);
+    expect(() => validateAttachmentInput(input)).toThrow(/1,000,000/);
+    input.host.sequence = 'A'.repeat(750001); input.phage.sequence = 'A'.repeat(750000);
+    expect(() => validateAttachmentInput(input)).toThrow(/1,500,000/);
+    expect(resolveAttachmentOptions()).toEqual({ flankLength: 50 });
+    for (const flankLength of [-1, 0.1, NaN, Infinity, 1001, null, '2', undefined]) {
+      expect(() => resolveAttachmentOptions({ flankLength })).toThrow();
+    }
+    for (const options of [null, [], { flankLength: 2, extra: true }]) {
+      expect(() => resolveAttachmentOptions(options)).toThrow();
+    }
+  });
+});
+
+describe('complete source-bound attachment experiment records', () => {
+  it('exports exact inputs, coordinate conventions and assumptions, then recomputes an identical result', async () => {
+    const input = attachmentFixture('-', '+'), result = reconstructAttachment(input, { flankLength: 2 });
+    const record = await createAttachmentExperimentRecord(input, result);
+    expect(record.method).toMatchObject({ id: 'attachment-reconstruction', version: '1' });
+    expect(record.inputs.map(item => item.id)).toEqual(['hostLocus', 'phageGenome', 'attachmentSites']);
+    expect(record.fields.reconstruction.kind).toBe('simulation');
+    expect(record.fields.reconstruction.coverage).toEqual({ available: 12, total: 12, unit: 'bases' });
+    expect(record.references[0].id).toBe('doi:10.1371/journal.pgen.1003490');
+    const replayed = await replayAttachmentExperiment('\uFEFF' + serializeAnalysisRecord(record));
+    expect(replayed.input).toEqual(input);
+    expect(replayed.options).toEqual({ flankLength: 2 });
+    expect(replayed.result).toEqual(result);
+    expect(replayed.record.resultId).toBe(record.resultId);
+  });
+
+  it('optionally binds replay to the selected phage including provenance, while allowing self-contained replay', async () => {
+    const input = attachmentFixture(), record = await createAttachmentExperimentRecord(input, reconstructAttachment(input));
+    const content = serializeAnalysisRecord(record);
+    expect((await replayAttachmentExperiment(content, input.phage)).input.phage).toEqual(input.phage);
+    const changed = structuredClone(input.phage); changed.sequence = 'CAAGTA';
+    await expect(replayAttachmentExperiment(content, changed)).rejects.toThrow(/Selected phage/);
+    changed.sequence = input.phage.sequence; changed.source.version = 'different source revision';
+    await expect(replayAttachmentExperiment(content, changed)).rejects.toThrow(/Selected phage/);
+    expect((await replayAttachmentExperiment(content)).record.resultId).toBe(record.resultId);
+  });
+
+  it('rejects a newly checksummed but scientifically inconsistent product or changed output description', async () => {
+    const input = attachmentFixture(), result = reconstructAttachment(input, { flankLength: 2 });
+    const record = await createAttachmentExperimentRecord(input, result);
+    const altered = structuredClone(result); altered.integratedSequence = 'TTAGTGCAAGCT';
+    await expect(createAttachmentExperimentRecord(input, altered)).rejects.toThrow(/does not match/);
+    const tampered = structuredClone(record);
+    tampered.fields.reconstruction.value = analysisJson(altered);
+    await expect(replayAttachmentExperiment(serializeAnalysisRecord(await rehashAttachmentRecord(tampered))))
+      .rejects.toThrow(/Fresh attachment reconstruction differs/);
+    const relabeled = structuredClone(record);
+    relabeled.fields.reconstruction.label = 'Unjustified confirmed biological integration';
+    await expect(replayAttachmentExperiment(serializeAnalysisRecord(await rehashAttachmentRecord(relabeled))))
+      .rejects.toThrow(/Fresh attachment reconstruction differs/);
+  });
+
+  it('rejects rehashed method/reference/options drift, unsupported seeds and changed source roles', async () => {
+    const input = attachmentFixture(), record = await createAttachmentExperimentRecord(input, reconstructAttachment(input, { flankLength: 2 }));
+    const variants: Array<(changed: AnalysisRecord) => void> = [
+      changed => { changed.method.version = '999'; },
+      changed => { changed.method.implementation = 'unreviewed composition'; },
+      changed => { changed.references[0].version = 'different'; },
+      changed => { changed.parameters.flankLength = 0; },
+      changed => { changed.parameters.unrecognized = true; },
+      changed => { changed.seed = 17; },
+      changed => { changed.inputs[0].id = 'differentHostRole'; },
+    ];
+    for (const alter of variants) {
+      const changed = structuredClone(record); alter(changed);
+      const rehashed = await rehashAttachmentRecord(changed);
+      await expect(replayAttachmentExperiment(serializeAnalysisRecord(rehashed))).rejects.toThrow();
+    }
+    await expect(replayAttachmentExperiment(' '.repeat(10 * 1024 * 1024 + 1))).rejects.toThrow(/10 MiB/);
   });
 });

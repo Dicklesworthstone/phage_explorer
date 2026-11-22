@@ -10,6 +10,7 @@
 
 import type { GeneInfo } from '../types';
 import { reverseComplement } from '../codons';
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../analysis-result';
 
 // Keywords that indicate integrase/recombinase genes
 const INTEGRASE_KEYWORDS = [
@@ -715,4 +716,237 @@ export function analyzeProphageExcision(
  */
 export function isLikelyTemperate(genes: GeneInfo[]): boolean {
   return findIntegrases(genes).length > 0;
+}
+
+
+/** Conditional sequence composition from explicitly supplied attachment cores.
+ * Biological background: Singh, Ghosh & Hatfull (2013), PLoS Genetics,
+ * https://doi.org/10.1371/journal.pgen.1003490, Figure 1 and site-selection results.
+ * Compatible core sequence alone does not establish functional attachment sites:
+ * binding, synapsis, accessory factors and directionality are not predicted here.
+ */
+export const ATTACHMENT_LIMITS = {
+  sequenceBases: 1_000_000, totalBases: 1_500_000, coreBases: 256,
+  flankBases: 1000, inputBytes: 4 * 1024 * 1024,
+} as const;
+export interface AttachmentSequenceInput {
+  name: string; accession: string | null; sequence: string;
+  topology: 'linear' | 'circular' | 'unknown';
+  source: { kind: 'local' | 'catalog' | 'external'; reference: string; version: string; license: string | null };
+}
+/** A non-wrapping shared crossover core, not the entire integrase binding site. */
+export interface AttachmentCoreSite {
+  start: number; end: number; strand: '+' | '-'; evidence: string;
+}
+export interface AttachmentReconstructionInput {
+  format: 'phage-explorer-attachment-reconstruction'; version: 1;
+  host: AttachmentSequenceInput; phage: AttachmentSequenceInput;
+  attB: AttachmentCoreSite; attP: AttachmentCoreSite;
+  circularization: 'already-circular' | 'assumed-circularized';
+}
+export interface AttachmentOptions { flankLength: number }
+export interface AttachmentJunction {
+  /** Sequence is oriented to the declared attB strand. */
+  sequence: string; strand: '+' | '-';
+  /** Offsets inside sequence, not genomic coordinates. */
+  core: { start: number; end: number };
+  /** Ordered forward-coordinate slices; reverse-complement their concatenation for a minus junction. */
+  integratedSegments: Array<{ start: number; end: number }>;
+  leftFlankBases: number; rightFlankBases: number;
+}
+export interface AttachmentProductSegment {
+  source: 'host' | 'phage'; sourceStart: number; sourceEnd: number; strand: '+' | '-';
+  productStart: number; productEnd: number;
+}
+export interface AttachmentReconstructionResult {
+  options: AttachmentOptions; insertionStrand: '+' | '-'; sharedCore: string;
+  integratedSequence: string; integratedTopology: 'linear' | 'circular';
+  /** Between-base positions in the original stored source sequences. */
+  hostCut: number; phageCut: number;
+  segments: AttachmentProductSegment[];
+  attL: AttachmentJunction; attR: AttachmentJunction;
+  conservation: { hostBases: number; phageBases: number; integratedBases: number; expectedBases: number; conserved: true };
+  warnings: string[];
+}
+function attachmentObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function attachmentKeys(value: Record<string, unknown>, required: string[], context: string): void {
+  if (required.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => !required.includes(key))) {
+    throw new Error('Unsupported or missing ' + context + ' fields.');
+  }
+}
+function attachmentText(value: unknown, context: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2000 || /[\u0000-\u001f\u007f-\u009f]/.test(value)) {
+    throw new Error(context + ' requires nonempty text of at most 2000 characters without control characters.');
+  }
+  return value.trim();
+}
+function attachmentDna(value: unknown): string {
+  if (typeof value !== 'string' || value.length > ATTACHMENT_LIMITS.inputBytes) throw new Error('Attachment DNA input is absent or too large.');
+  const sequence = value.replace(/[ \t\r\n]/g, '').toUpperCase();
+  if (!sequence || sequence.length > ATTACHMENT_LIMITS.sequenceBases || /[^ACGT]/.test(sequence)) {
+    throw new Error('Each attachment sequence requires 1–1,000,000 unambiguous A/C/G/T bases; ambiguous bases cannot be resolved by reconstruction.');
+  }
+  return sequence;
+}
+/** Single-record FASTA or raw DNA; multiple records are never silently concatenated. */
+export function parseAttachmentDna(content: string): string {
+  if (typeof content !== 'string' || new TextEncoder().encode(content).length > ATTACHMENT_LIMITS.inputBytes) {
+    throw new Error('Attachment sequence file exceeds the 4 MiB limit.');
+  }
+  const lines = content.replace(/^\uFEFF/, '').split(/\r\n?|\n/).map(line => line.trim()).filter(Boolean);
+  if (lines[0]?.startsWith('>')) {
+    if (!lines[0].slice(1).trim() || lines.slice(1).some(line => line.startsWith('>'))) {
+      throw new Error('Supply exactly one named FASTA record for the host locus.');
+    }
+    return attachmentDna(lines.slice(1).join(''));
+  }
+  return attachmentDna(lines.join(''));
+}
+function validateAttachmentSequence(value: unknown, context: string): AttachmentSequenceInput {
+  if (!attachmentObject(value) || !attachmentObject(value.source)) throw new Error(context + ' sequence and source are required.');
+  attachmentKeys(value, ['name', 'accession', 'sequence', 'topology', 'source'], context);
+  attachmentKeys(value.source, ['kind', 'reference', 'version', 'license'], context + ' source');
+  if (!['linear', 'circular', 'unknown'].includes(value.topology as string) ||
+    !['local', 'catalog', 'external'].includes(value.source.kind as string)) throw new Error('Explicit attachment source kind and topology are required.');
+  return { name: attachmentText(value.name, context + ' name'),
+    accession: value.accession === null ? null : attachmentText(value.accession, context + ' accession'),
+    sequence: attachmentDna(value.sequence), topology: value.topology as AttachmentSequenceInput['topology'],
+    source: { kind: value.source.kind as AttachmentSequenceInput['source']['kind'],
+      reference: attachmentText(value.source.reference, context + ' reference'),
+      version: attachmentText(value.source.version, context + ' source version'),
+      license: value.source.license === null ? null : attachmentText(value.source.license, context + ' license') } };
+}
+function validateAttachmentSite(value: unknown, length: number, context: string): AttachmentCoreSite {
+  if (!attachmentObject(value)) throw new Error(context + ' core coordinates and evidence are required.');
+  attachmentKeys(value, ['start', 'end', 'strand', 'evidence'], context);
+  if (typeof value.start !== 'number' || typeof value.end !== 'number' || !Number.isSafeInteger(value.start) ||
+    !Number.isSafeInteger(value.end) || value.start < 0 || value.end <= value.start || value.end > length ||
+    value.end - value.start > ATTACHMENT_LIMITS.coreBases || !['+', '-'].includes(value.strand as string)) {
+    throw new Error(context + ' requires an explicit strand and a non-wrapping 0-based half-open core of 1–256 bases inside its source.');
+  }
+  return { start: value.start, end: value.end, strand: value.strand as '+' | '-', evidence: attachmentText(value.evidence, context + ' evidence or assumption') };
+}
+export function validateAttachmentInput(value: unknown): AttachmentReconstructionInput {
+  if (!attachmentObject(value) || value.format !== 'phage-explorer-attachment-reconstruction' || value.version !== 1) {
+    throw new Error('Unsupported attachment reconstruction input format/version.');
+  }
+  attachmentKeys(value, ['format', 'version', 'host', 'phage', 'attB', 'attP', 'circularization'], 'attachment input');
+  const host = validateAttachmentSequence(value.host, 'Host locus'), phage = validateAttachmentSequence(value.phage, 'Phage');
+  if (host.sequence.length + phage.sequence.length > ATTACHMENT_LIMITS.totalBases) throw new Error('Combined attachment inputs exceed 1,500,000 bases.');
+  if (host.topology === 'unknown') throw new Error('Declare the host as a linear locus or a circular sequence; unknown host topology is unsupported.');
+  if (!['already-circular', 'assumed-circularized'].includes(value.circularization as string) ||
+    value.circularization === 'already-circular' && phage.topology !== 'circular') {
+    throw new Error('A linear or unknown phage sequence needs an explicit circularization assumption.');
+  }
+  const attB = validateAttachmentSite(value.attB, host.sequence.length, 'attB');
+  const attP = validateAttachmentSite(value.attP, phage.sequence.length, 'attP');
+  const core = (sequence: string, site: AttachmentCoreSite) => site.strand === '+' ? sequence.slice(site.start, site.end) : reverseComplement(sequence.slice(site.start, site.end));
+  if (core(host.sequence, attB) !== core(phage.sequence, attP)) {
+    throw new Error('The declared attB and attP cores do not match exactly in their supplied orientations. No product was reconstructed.');
+  }
+  return { format: 'phage-explorer-attachment-reconstruction', version: 1, host, phage, attB, attP,
+    circularization: value.circularization as AttachmentReconstructionInput['circularization'] };
+}
+export function resolveAttachmentOptions(value: unknown = {}): AttachmentOptions {
+  if (!attachmentObject(value) || Object.keys(value).some(key => key !== 'flankLength')) throw new Error('Unsupported attachment options.');
+  const flankLength = Object.hasOwn(value, 'flankLength') ? value.flankLength : 50;
+  if (typeof flankLength !== 'number' || !Number.isInteger(flankLength) || flankLength < 0 || flankLength > ATTACHMENT_LIMITS.flankBases) {
+    throw new Error('Junction flank length must be an integer from 0 to 1000 bases.');
+  }
+  return { flankLength };
+}
+function attachmentPreview(sequence: string, start: number, length: number, flank: number, circular: boolean, strand: '+' | '-'): AttachmentJunction {
+  const n = sequence.length;
+  const left = circular ? Math.min(flank, Math.floor((n - length) / 2)) : Math.min(flank, start);
+  const right = circular ? Math.min(flank, n - length - left) : Math.min(flank, n - start - length);
+  const first = circular ? ((start - left) % n + n) % n : start - left;
+  const count = left + length + right;
+  const integratedSegments = first + count <= n ? [{ start: first, end: first + count }]
+    : [{ start: first, end: n }, { start: 0, end: first + count - n }];
+  const forward = integratedSegments.map(segment => sequence.slice(segment.start, segment.end)).join('');
+  const leftFlankBases = strand === '+' ? left : right, rightFlankBases = strand === '+' ? right : left;
+  return { sequence: strand === '+' ? forward : reverseComplement(forward), strand, integratedSegments,
+    core: { start: leftFlankBases, end: leftFlankBases + length }, leftFlankBases, rightFlankBases };
+}
+/** Conservative composition of a declared circular substrate into a host locus.
+ * The canonical splice is at the forward-coordinate start of the identical core.
+ * Moving that splice within the shared core yields the same product bases; this
+ * convention does not infer an enzyme's strand-cleavage position or activity.
+ */
+export function reconstructAttachment(raw: AttachmentReconstructionInput, settings: Partial<AttachmentOptions> = {}): AttachmentReconstructionResult {
+  const input = validateAttachmentInput(raw), options = resolveAttachmentOptions(settings);
+  const { host, phage, attB, attP } = input, h = host.sequence.length, p = phage.sequence.length;
+  const insertionStrand = attB.strand === attP.strand ? '+' : '-';
+  const orientedPhage = insertionStrand === '+' ? phage.sequence : reverseComplement(phage.sequence);
+  const cut = insertionStrand === '+' ? attP.start : p - attP.end, hostCut = attB.start;
+  const rotated = orientedPhage.slice(cut) + orientedPhage.slice(0, cut);
+  const integratedSequence = host.sequence.slice(0, hostCut) + rotated + host.sequence.slice(hostCut);
+  const segments: AttachmentProductSegment[] = [];
+  let productStart = 0;
+  const add = (source: 'host' | 'phage', lo: number, hi: number, strand: '+' | '-') => {
+    if (lo === hi) return;
+    segments.push({ source, sourceStart: lo, sourceEnd: hi, strand, productStart, productEnd: productStart + hi - lo });
+    productStart += hi - lo;
+  };
+  add('host', 0, hostCut, '+');
+  if (insertionStrand === '+') { add('phage', cut, p, '+'); add('phage', 0, cut, '+'); }
+  else { add('phage', 0, p - cut, '-'); add('phage', p - cut, p, '-'); }
+  add('host', hostCut, h, '+');
+  if (integratedSequence.length !== h + p || productStart !== h + p) throw new Error('Attachment composition failed its length conservation invariant.');
+  const length = attB.end - attB.start, sharedCore = attB.strand === '+' ? host.sequence.slice(attB.start, attB.end) : reverseComplement(host.sequence.slice(attB.start, attB.end));
+  const left = attachmentPreview(integratedSequence, hostCut, length, options.flankLength, host.topology === 'circular', attB.strand);
+  const right = attachmentPreview(integratedSequence, hostCut + p, length, options.flankLength, host.topology === 'circular', attB.strand);
+  const warnings = [
+    'This is a conditional sequence reconstruction from supplied core coordinates and orientations, not discovery of functional attachment sites or a prediction of integration, excision, infection, or clinical risk.',
+    'Identical cores do not establish integrase binding, accessory-factor availability, directionality, or compatibility of the full attachment sites. Core evidence is a supplied declaration, not independently verified.',
+    'The phage is treated as a complete circular substrate. No input bases are removed, duplicated, repaired or resolved; non-wrapping cores and unambiguous input DNA are required.',
+    'The splice at the forward start of the identical core is a sequence convention; the biochemical strand-cleavage location is not inferred.',
+    'Junction strings are local context previews, not inferred full binding-site boundaries. Flanks are shortened at linear ends or to avoid repeating bases of a circular product.',
+  ];
+  if (input.circularization === 'assumed-circularized') warnings.push('Circularization of the supplied phage sequence is an explicit modeling assumption; the input topology is retained in the record.');
+  if (host.source.license === null || phage.source.license === null) warnings.push('At least one source has no supplied license declaration. No usage permission is inferred.');
+  return { options, insertionStrand, sharedCore, integratedSequence, integratedTopology: host.topology as 'linear' | 'circular',
+    hostCut, phageCut: insertionStrand === '+' ? cut : p - cut, segments,
+    attL: attB.strand === '+' ? left : right, attR: attB.strand === '+' ? right : left,
+    conservation: { hostBases: h, phageBases: p, integratedBases: integratedSequence.length, expectedBases: h + p, conserved: true }, warnings };
+}
+export async function createAttachmentExperimentRecord(raw: AttachmentReconstructionInput, supplied: AttachmentReconstructionResult): Promise<AnalysisRecord> {
+  const input = validateAttachmentInput(raw), result = reconstructAttachment(input, supplied.options);
+  if (JSON.stringify(analysisJson(result)) !== JSON.stringify(analysisJson(supplied))) throw new Error('Attachment result does not match its exact input and options.');
+  const { host, phage, attB, attP, circularization } = input;
+  return createAnalysisRecord({
+    method: { id: 'attachment-reconstruction', version: '1', implementation: 'explicit oriented identical cores; circular-substrate conservative composition; coordinate-map-v1' },
+    inputs: [
+      { id: 'hostLocus', accession: host.accession, source: host.source.kind, description: 'Exact supplied host locus bases, declared topology and source metadata.', data: analysisJson(host) },
+      { id: 'phageGenome', accession: phage.accession, source: phage.source.kind, description: 'Exact supplied phage bases, input topology and source metadata.', data: analysisJson(phage) },
+      { id: 'attachmentSites', accession: null, source: 'local', description: 'Supplied shared-core coordinates, orientations, evidence declarations and circularization assumption.',
+        data: analysisJson({ format: input.format, version: input.version, attB, attP, circularization }) },
+    ],
+    parameters: { flankLength: result.options.flankLength }, seed: null,
+    references: [{ id: 'doi:10.1371/journal.pgen.1003490', version: '2013', description: 'Singh, Ghosh and Hatfull: attachment-site half-site identities and biological requirements; sequence composition here does not predict recombinase activity.' }],
+    fields: { reconstruction: { label: 'Conditional integrated sequence, oriented junctions and source-coordinate map', kind: 'simulation', units: 'records',
+      value: analysisJson(result), coverage: { available: host.sequence.length + phage.sequence.length, total: host.sequence.length + phage.sequence.length, unit: 'bases' },
+      assumptions: ['User-supplied attB/attP cores and strand assignments are the intended substrates.', 'A complete circular phage substrate undergoes a conservative sequence exchange at an identical shared core.'],
+      limitations: result.warnings } },
+  });
+}
+export async function replayAttachmentExperiment(content: string, expectedPhage?: AttachmentSequenceInput): Promise<{
+  input: AttachmentReconstructionInput; options: AttachmentOptions; result: AttachmentReconstructionResult; record: AnalysisRecord;
+}> {
+  if (typeof content !== 'string' || new TextEncoder().encode(content).length > 10 * 1024 * 1024) throw new Error('Saved attachment experiment exceeds the 10 MiB limit.');
+  const saved = await parseAnalysisRecord(content.replace(/^\uFEFF/, ''), { methodId: 'attachment-reconstruction', methodVersion: '1' });
+  if (saved.inputs.length !== 3 || saved.seed !== null) throw new Error('Attachment record has unsupported inputs or seed.');
+  const get = (id: string) => saved.inputs.find(item => item.id === id)?.data;
+  const sites = get('attachmentSites');
+  if (!attachmentObject(sites)) throw new Error('Saved attachment coordinates are absent.');
+  const input = validateAttachmentInput({ ...sites, host: get('hostLocus'), phage: get('phageGenome') });
+  if (expectedPhage && JSON.stringify(analysisJson(validateAttachmentSequence(expectedPhage, 'Selected phage'))) !== JSON.stringify(analysisJson(input.phage))) {
+    throw new Error('Selected phage bases or provenance differ from the saved attachment experiment.');
+  }
+  const options = resolveAttachmentOptions(saved.parameters), result = reconstructAttachment(input, options);
+  const record = await createAttachmentExperimentRecord(input, result);
+  if (record.resultId !== saved.resultId || record.cacheKey !== saved.cacheKey) throw new Error('Fresh attachment reconstruction differs from the saved result or reference contract.');
+  return { input, options, result, record };
 }

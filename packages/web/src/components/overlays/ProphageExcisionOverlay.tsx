@@ -1,9 +1,8 @@
 /**
- * ProphageExcisionOverlay - Prophage Excision Precision Mapper
+ * ProphageExcisionOverlay - Supplied attachment reconstruction and sequence clues.
  *
- * Predicts exact attL/attR attachment sites for temperate phages.
- * Finds integrase genes, searches for imperfect direct repeats at boundaries,
- * and models the excision product.
+ * Reconstruct explicit host/phage attachment hypotheses from their exact sources.
+ * Integrase-name and repeat heuristics remain available as an optional view.
  *
  * Part of: phage_explorer-w71 (Layer 2: Prophage Excision Precision Mapper)
  */
@@ -30,6 +29,7 @@ import {
   OverlayErrorState,
 } from './primitives';
 import { IconDna, IconTarget, IconAlertTriangle, IconRepeat } from '../ui';
+import { AttachmentExperimentPanel } from './AttachmentExperimentPanel';
 
 // Confidence color scale
 function getConfidenceColor(confidence: number): string {
@@ -60,6 +60,7 @@ export function ProphageExcisionOverlay({
   const sequence = loaded?.repository === repository && loaded?.phage === currentPhage ? loaded.sequence : '';
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showHeuristics, setShowHeuristics] = useState(false);
   const [viewMode, setViewMode] = useState<'summary' | 'integrases' | 'sites' | 'hotspots'>(
     'summary'
   );
@@ -73,7 +74,9 @@ export function ProphageExcisionOverlay({
 
   // Fetch sequence when overlay opens
   useEffect(() => {
-    if (!isOpen('prophageExcision')) return;
+    if (!isOpen('prophageExcision') || !showHeuristics) {
+      setLoaded(null); setError(null); setLoading(false); return;
+    }
     setLoaded(null);
     setError(null);
     if (!repository || !currentPhage) {
@@ -103,20 +106,20 @@ export function ProphageExcisionOverlay({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, repository, currentPhage]);
+  }, [isOpen, repository, currentPhage, showHeuristics]);
 
   // Compute analysis
   const analysis = useMemo((): ProphageExcisionAnalysis | null => {
-    if (!sequence || !currentPhage?.genes) return null;
+    if (!showHeuristics || !sequence || !currentPhage?.genes) return null;
     return analyzeProphageExcision(sequence, currentPhage.genes);
-  }, [sequence, currentPhage?.genes]);
+  }, [sequence, currentPhage?.genes, showHeuristics]);
 
   if (!isOpen('prophageExcision')) return null;
 
   return (
     <Overlay
       id="prophageExcision"
-      title="Prophage Excision Mapper"
+      title="Prophage Attachment Workspace"
       hotkey="Alt+X"
       size="lg"
     >
@@ -127,6 +130,13 @@ export function ProphageExcisionOverlay({
           fontSize: '0.85rem',
         }}
       >
+        <AttachmentExperimentPanel repository={repository} currentPhage={currentPhage} />
+        <details open={showHeuristics} style={{ marginTop: '1.5rem' }} onToggle={event => {
+          if (event.target === event.currentTarget) setShowHeuristics(event.currentTarget.open);
+        }}>
+          <summary>Optional sequence repeat and integrase clues</summary>
+          <p>These sequence heuristics do not use a host locus or confirm attachment boundaries.
+            They are separate from the explicitly supplied reconstruction above.</p>
         {/* Header */}
         <div
           style={{
@@ -149,13 +159,13 @@ export function ProphageExcisionOverlay({
             </span>
           </div>
           <div style={{ color: colors.textMuted, fontSize: '0.75rem' }}>
-            Predict attachment sites (attL/attR) and model excision product
+            Inspect repeat patterns and integrase annotations in the selected sequence
           </div>
         </div>
 
         {/* Loading State */}
         {loading && (
-          <OverlayLoadingState message="Analyzing prophage integration sites...">
+          <OverlayLoadingState message="Reading selected sequence for heuristic clues...">
             <AnalysisPanelSkeleton rows={5} />
           </OverlayLoadingState>
         )}
@@ -165,7 +175,7 @@ export function ProphageExcisionOverlay({
         {!loading && !error && !analysis && (
           <OverlayEmptyState
             message="No sequence data available"
-            hint={!currentPhage ? 'Select a phage to analyze prophage excision.' : 'Sequence data is required to predict attachment sites.'}
+            hint={!currentPhage ? 'Select a phage to analyze prophage excision.' : 'Sequence data is required to inspect repeat and integrase clues.'}
           />
         )}
 
@@ -228,6 +238,7 @@ export function ProphageExcisionOverlay({
             )}
           </>
         )}
+        </details>
       </div>
     </Overlay>
   );

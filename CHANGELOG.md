@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Reconstruct attachment junctions from supplied host and phage sequences
+
+- The prophage workspace now accepts a sourced host locus and explicit oriented
+  attB/attP cores alongside the complete selected phage. Strict core matching
+  produces a conditional integrated sequence, attL/attR contexts, a coordinate
+  map and a base-conservation check. Host topology and phage circularization
+  declarations stay explicit; the operation does not predict biological activity.
+- Complete experiments can be exported, saved locally and freshly recomputed
+  from embedded sources. FASTA exports contain the full integrated sequence or
+  both junction previews. Cancelled/stale source reads and malformed worker
+  replies cannot replace accepted evidence. The prior sequence-repeat heuristics
+  remain an optional view. [Workflow and example](docs/ATTACHMENT_RECONSTRUCTION.md).
+
 ### Consistent comparison scores and interruptible output
 
 - Whole-genome comparisons now treat uppercase and lowercase IUPAC DNA
@@ -26,6 +39,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   downloading the source model again. Failed or cancelled restoration preserves
   the accepted result, and competing model controls are locked during a local
   storage operation. Saving and restoring remain explicit actions.
+  [Commit d67a5d0](https://github.com/Dicklesworthstone/phage_explorer/commit/d67a5d0d5064b87608153dc4343cd165c301b62f).
 
 ### Portable complete genome comparisons
 
