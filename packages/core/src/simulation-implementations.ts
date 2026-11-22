@@ -425,6 +425,7 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
     },
     step: (state: LysogenyCircuitState, dt: number): LysogenyCircuitState => {
       const simResult = simulateSwitchStep(state, dt, state.params);
+      if (dt === 0) return state;
       const predicted = predictLysogenyFate(state.params, state.circuitInfo);
 
       const history = [

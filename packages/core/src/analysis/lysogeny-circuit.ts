@@ -149,6 +149,31 @@ function clamp(val: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, val));
 }
 
+/** Bounds on computation, not caps on the simulated concentrations. */
+export const LYSOGENY_INTEGRATION_LIMITS = {
+  elapsedTime: 10000,
+  attempts: 20000,
+  relativeTolerance: 1e-7,
+  absoluteTolerance: 1e-10,
+} as const;
+
+function resolveSwitchParameters(params: Partial<LysogenySwitchParameters>): LysogenySwitchParameters {
+  const resolved = { ...DEFAULT_LYSOGENY_PARAMS, ...params };
+  for (const name of Object.keys(DEFAULT_LYSOGENY_PARAMS) as Array<keyof LysogenySwitchParameters>) {
+    const value = resolved[name];
+    const strictlyPositive = name === 'hill' || name === 'omega' || name.startsWith('kd');
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || strictlyPositive && value === 0) {
+      throw new Error(`${name} must be finite and ${strictlyPositive ? 'positive' : 'nonnegative'}.`);
+    }
+  }
+  return resolved;
+}
+
+function concentration(value: number, name: string): number {
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a finite nonnegative concentration.`);
+  return value;
+}
+
 /**
  * Calculate Shea-Ackers three-site operator occupancy partition function Z
  * and resulting promoter transcription activities for PRM and PR.
@@ -163,12 +188,12 @@ export function calculateOperatorOccupancy(
   cro: number,
   params: Partial<LysogenySwitchParameters> = {}
 ): OperatorOccupancy {
-  const p = { ...DEFAULT_LYSOGENY_PARAMS, ...params };
+  const p = resolveSwitchParameters(params);
   const hill = p.hill;
   const omega = p.omega;
 
-  const safeCi = Math.max(0, ci);
-  const safeCro = Math.max(0, cro);
+  const safeCi = concentration(ci, 'CI');
+  const safeCro = concentration(cro, 'Cro');
 
   // Dimensionless affinities with cooperativity exponent
   const u = Math.pow(safeCi / p.kdCiOr1, hill); // OR1 binding weight
@@ -222,11 +247,11 @@ export function calculateDerivatives(
   state: { ci: number; cro: number; cII?: number; recAStar?: number },
   params: Partial<LysogenySwitchParameters> = {}
 ): { dCi: number; dCro: number; dCII: number; dRecAStar: number; occupancy: OperatorOccupancy } {
-  const p = { ...DEFAULT_LYSOGENY_PARAMS, ...params };
-  const ci = Math.max(0, state.ci);
-  const cro = Math.max(0, state.cro);
-  const cII = Math.max(0, state.cII ?? 0.1);
-  const recAStar = Math.max(0, state.recAStar ?? 0);
+  const p = resolveSwitchParameters(params);
+  const ci = concentration(state.ci, 'CI');
+  const cro = concentration(state.cro, 'Cro');
+  const cII = concentration(state.cII ?? 0.1, 'CII');
+  const recAStar = concentration(state.recAStar ?? 0, 'RecA*');
 
   const occupancy = calculateOperatorOccupancy(ci, cro, p);
 
@@ -270,7 +295,10 @@ export function calculateDerivatives(
 }
 
 /**
- * Step the mutual repression simulation forward by dt (Euler integration with stabilization)
+ * Integrate the complete requested interval with adaptive RK4 step doubling.
+ * Negative trial states are rejected and retried at a smaller step; concentrations
+ * are never clipped to fabricate a trajectory. The independent RecA* equation
+ * provides an analytic conformance check in the accompanying tests.
  */
 export function simulateSwitchStep(
   state: { ci: number; cro: number; cII?: number; recAStar?: number; time?: number },
@@ -284,13 +312,52 @@ export function simulateSwitchStep(
   phase: 'lysogenic' | 'lytic' | 'undecided';
   occupancy: OperatorOccupancy;
 } {
-  const clampedDt = Math.min(0.5, Math.max(0.01, dt));
-  const { dCi, dCro, dCII, dRecAStar, occupancy } = calculateDerivatives(state, params);
+  if (!Number.isFinite(dt) || dt < 0 || dt > LYSOGENY_INTEGRATION_LIMITS.elapsedTime) {
+    throw new Error('Lysogeny elapsed time must be finite and between 0 and 10,000 model time units.');
+  }
+  const p = resolveSwitchParameters(params);
+  let y = [concentration(state.ci, 'CI'), concentration(state.cro, 'Cro'),
+    concentration(state.cII ?? 0.1, 'CII'), concentration(state.recAStar ?? 0, 'RecA*')];
+  const valid = (values: number[]) => values.every(value => Number.isFinite(value) && value >= 0);
+  const rates = (values: number[]) => {
+    const { dCi, dCro, dCII, dRecAStar } = calculateDerivatives({
+      ci: values[0], cro: values[1], cII: values[2], recAStar: values[3],
+    }, p);
+    return [dCi, dCro, dCII, dRecAStar];
+  };
+  const rk4 = (values: number[], h: number): number[] | null => {
+    const a = rates(values), va = values.map((value, i) => value + h * a[i] / 2);
+    if (!valid(va)) return null;
+    const b = rates(va), vb = values.map((value, i) => value + h * b[i] / 2);
+    if (!valid(vb)) return null;
+    const c = rates(vb), vc = values.map((value, i) => value + h * c[i]);
+    if (!valid(vc)) return null;
+    const d = rates(vc);
+    const next = values.map((value, i) => value + h * (a[i] + 2 * b[i] + 2 * c[i] + d[i]) / 6);
+    return valid(next) ? next : null;
+  };
 
-  const nextCi = clamp(state.ci + dCi * clampedDt, 0, 4.0);
-  const nextCro = clamp(state.cro + dCro * clampedDt, 0, 4.0);
-  const nextCII = clamp((state.cII ?? 0.1) + dCII * clampedDt, 0, 3.0);
-  const nextRecA = clamp((state.recAStar ?? 0) + dRecAStar * clampedDt, 0, 5.0);
+  let elapsed = 0, h = Math.min(0.25, dt), attempts = 0;
+  while (elapsed < dt) {
+    if (++attempts > LYSOGENY_INTEGRATION_LIMITS.attempts) {
+      throw new Error('Lysogeny integration exceeded its step budget; reduce elapsed time or the kinetic rates.');
+    }
+    h = Math.min(h, dt - elapsed);
+    if (elapsed + h === elapsed || h <= 0) throw new Error('Lysogeny integration cannot advance at the requested tolerance.');
+    const coarse = rk4(y, h), half = rk4(y, h / 2), fine = half ? rk4(half, h / 2) : null;
+    if (!coarse || !fine) { h /= 2; continue; }
+    const error = Math.max(...fine.map((value, i) => Math.abs(value - coarse[i]) /
+      (15 * (LYSOGENY_INTEGRATION_LIMITS.absoluteTolerance + LYSOGENY_INTEGRATION_LIMITS.relativeTolerance * Math.max(y[i], value)))));
+    if (error <= 1) {
+      const corrected = fine.map((value, i) => value + (value - coarse[i]) / 15);
+      y = valid(corrected) ? corrected : fine;
+      elapsed = h === dt - elapsed ? dt : elapsed + h;
+    }
+    h *= Math.min(2, Math.max(0.2, error === 0 ? 2 : 0.9 * error ** -0.2));
+    h = Math.min(h, 0.5);
+  }
+  const [nextCi, nextCro, nextCII, nextRecA] = y;
+  const occupancy = calculateOperatorOccupancy(nextCi, nextCro, p);
 
   const phase: 'lysogenic' | 'lytic' | 'undecided' =
     nextCi - nextCro > 0.25 ? 'lysogenic' : nextCro - nextCi > 0.25 ? 'lytic' : 'undecided';

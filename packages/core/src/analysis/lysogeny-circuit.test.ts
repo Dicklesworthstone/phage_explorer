@@ -83,6 +83,44 @@ describe('Lysogeny Decision Circuit - Shea-Ackers Operator Occupancy', () => {
 });
 
 describe('Lysogeny Decision Circuit - ODE Derivatives & Simulation Steps', () => {
+  it('preserves all concentrations at zero elapsed time without artificial ceilings', () => {
+    const initial = { ci: 6, cro: 8, cII: 4, recAStar: 9 };
+    const next = simulateSwitchStep(initial, 0);
+    for (const key of ['ci', 'cro', 'cII', 'recAStar'] as const) expect(next[key]).toBe(initial[key]);
+  });
+
+  it('integrates the complete requested interval against the independent RecA solution', () => {
+    // R(t) = 50 UV + (R(0) - 50 UV) exp(-0.2t), independent of the other proteins.
+    const initial = { ci: 0.3, cro: 0.2, cII: 0.1, recAStar: 7 };
+    for (const dt of [0.001, 0.1, 2, 20]) {
+      const next = simulateSwitchStep(initial, dt, { uv: 0.8 });
+      expect(next.recAStar).toBeCloseTo(40 + (7 - 40) * Math.exp(-0.2 * dt), 5);
+      expect(next.occupancy).toEqual(calculateOperatorOccupancy(next.ci, next.cro, { uv: 0.8 }));
+    }
+  });
+
+  it('converges to the same coupled trajectory when elapsed time is partitioned', () => {
+    const initial = { ci: 1.8, cro: 0.2, cII: 0.3, recAStar: 0 };
+    const params = { uv: 0.7, moi: 3.5 };
+    const whole = simulateSwitchStep(initial, 4, params);
+    let partitioned = initial;
+    for (let i = 0; i < 400; i++) partitioned = simulateSwitchStep(partitioned, 0.01, params);
+    for (const key of ['ci', 'cro', 'cII', 'recAStar'] as const) {
+      expect(whole[key]).toBeCloseTo(partitioned[key], 5);
+      expect(whole[key]).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('rejects invalid time, concentration and kinetic parameters instead of clipping them', () => {
+    const initial = { ci: 1, cro: 1 };
+    for (const dt of [-1, NaN, Infinity, 10001]) expect(() => simulateSwitchStep(initial, dt)).toThrow();
+    for (const ci of [-1, NaN, Infinity]) expect(() => simulateSwitchStep({ ci, cro: 1 }, 0.1)).toThrow();
+    for (const params of [{ kdCiOr1: 0 }, { kdCroOr: -1 }, { decay: -1 }, { moi: NaN }, { hill: 0 }]) {
+      expect(() => simulateSwitchStep(initial, 0.1, params)).toThrow();
+      expect(() => calculateDerivatives(initial, params)).toThrow();
+    }
+  });
+
   it('exhibits bistable convergence to lysogenic attractor when initialized with high CI', () => {
     let state: ReturnType<typeof simulateSwitchStep> | { ci: number; cro: number; cII: number; recAStar: number; phase?: string } = { ci: 1.8, cro: 0.2, cII: 0.3, recAStar: 0 };
     for (let i = 0; i < 50; i++) {
@@ -266,5 +304,15 @@ describe('Lysogeny Decision Circuit - Simulation Integration', () => {
     expect(state.history.length).toBe(2);
     expect(state.time).toBeCloseTo(0.1, 5);
     expect(sim.getSummary?.(state)).toContain('CI=');
+  });
+
+  it('keeps model time, concentrations and history synchronized at accelerated speed', () => {
+    const sim = makeLysogenySimulation();
+    const initial = sim.init(null, { uv: 1 });
+    const next = sim.step(initial, 3);
+    expect(next.time).toBe(3);
+    expect(next.history.at(-1)?.time).toBe(3);
+    expect(next.recAStar).toBeCloseTo(50 * (1 - Math.exp(-0.6)), 5);
+    expect(sim.step(next, 0)).toBe(next);
   });
 });
