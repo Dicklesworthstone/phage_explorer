@@ -1,37 +1,43 @@
 import { describe, expect, it } from 'bun:test';
 import type { GeneInfo } from '@phage-explorer/core';
-import { buildHeatmap, toLabel } from './synteny-worker';
+import { buildSyntenyHeatmap } from '../../../comparison/src/synteny';
+import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import type { SyntenyExperimentInput } from '../../../comparison/src/synteny-experiment';
+import { executeSyntenyRequest } from './synteny-worker';
 
 function gene(partial: Partial<GeneInfo>): GeneInfo {
-  return {
-    id: 1,
-    name: null,
-    locusTag: null,
-    startPos: 0,
-    endPos: 10,
-    strand: '+',
-    product: null,
-    type: 'CDS',
-    ...partial,
-  };
+  return { id: 1, name: null, locusTag: null, startPos: 0, endPos: 10, strand: '+', product: null, type: 'CDS', ...partial };
 }
-
-describe('synteny-worker gene labels', () => {
-  it('prefers product, then name, then locus tag', () => {
-    expect(toLabel(gene({ product: 'Tail fiber', name: 'tfb', locusTag: 'L1' }))).toBe('tail fiber');
-    expect(toLabel(gene({ name: 'Holin', locusTag: 'L2' }))).toBe('holin');
-    expect(toLabel(gene({ locusTag: 'Gp23' }))).toBe('gp23');
-    expect(toLabel(undefined)).toBe('');
+describe('synteny worker and shared annotation matrix', () => {
+  it('uses informative products before names and excludes locus-tag-only matches', () => {
+    const named = gene({ product: 'Tail fiber', name: 'Holin', locusTag: 'L1' });
+    expect([...buildSyntenyHeatmap([named], [gene({ product: 'Tail fiber' }), gene({ name: 'Holin' })]).values]).toEqual([1, 0]);
+    expect([...buildSyntenyHeatmap([gene({ name: 'Holin' })], [gene({ name: 'Holin' })]).values]).toEqual([1]);
+    expect([...buildSyntenyHeatmap([gene({ locusTag: 'Gp23' })], [gene({ locusTag: 'Gp23' })]).values]).toEqual([0]);
+    expect([...buildSyntenyHeatmap([gene({ product: 'hypothetical protein' })], [gene({ product: 'hypothetical protein' })]).values]).toEqual([0]);
   });
 
-  it('scores identical gene products as 1 on the heatmap diagonal', () => {
+  it('scores informative products on the diagonal and retains an empty matrix as empty', () => {
     const genes = [gene({ id: 1, product: 'Major capsid' }), gene({ id: 2, product: 'Holin' })];
-    const heatmap = buildHeatmap(genes, genes);
-    expect(heatmap.rows).toBe(2);
-    expect(heatmap.cols).toBe(2);
-    expect(heatmap.values[0]).toBe(1);
-    expect(heatmap.values[3]).toBe(1);
-    expect(heatmap.values[1]).toBe(0);
-    expect(heatmap.values[2]).toBe(0);
+    const heatmap = buildSyntenyHeatmap(genes, genes);
+    expect(heatmap.rows).toBe(2); expect(heatmap.cols).toBe(2);
+    expect([...heatmap.values]).toEqual([1, 0, 0, 1]);
+    expect(buildSyntenyHeatmap([], [])).toEqual({ rows: 0, cols: 0, values: new Float32Array(), min: 0, max: 0 });
+  });
+
+  it('runs both producer and replay operations through the worker request boundary', async () => {
+    const input: SyntenyExperimentInput = {
+      query: { id: 1, name: 'A', accession: 'A', length: 20, source: 'local', contentId: 'A', annotationMetadata: null },
+      reference: { id: 2, name: 'B', accession: 'B', length: 20, source: 'local', contentId: 'B', annotationMetadata: null },
+      genesQuery: [gene({ name: 'capsid' })], genesReference: [gene({ name: 'capsid' })],
+    };
+    const phases: string[] = [];
+    const first = await executeSyntenyRequest({ kind: 'analyze', input }, phase => phases.push(phase));
+    const replay = await executeSyntenyRequest({ kind: 'replay', content: serializeAnalysisRecord(first.record) }, phase => phases.push(phase));
+    expect(first.result.stats.globalScore).toBe(1);
+    expect(replay.record.resultId).toBe(first.record.resultId);
+    expect(phases.some(phase => phase.includes('recomputing'))).toBe(true);
+    await expect(executeSyntenyRequest({ kind: 'unknown' } as never)).rejects.toThrow('Unsupported');
+    await expect(executeSyntenyRequest({ kind: 'replay', content: 'not JSON' })).rejects.toThrow();
   });
 });

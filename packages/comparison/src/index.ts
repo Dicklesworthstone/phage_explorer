@@ -80,6 +80,7 @@ export {
 export * from './biological-metrics';
 export * from './sequence-diff';
 export * from './synteny';
+export * from './synteny-experiment';
 export { analyzeStructuralVariants } from './structural-variants';
 
 // Main comparison engine

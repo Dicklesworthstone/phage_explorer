@@ -1,5 +1,6 @@
 import { test, expect, type Locator } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
 
 declare global {
@@ -58,7 +59,7 @@ const fixtureSource = String.raw`
       }
       super(url, options);
       this.addEventListener('message', event => {
-        if (!fixture.holdReply || event.data?.ok !== true || !event.data.heatmap) return;
+        if (!fixture.holdReply || event.data?.kind !== 'result' || !event.data.value?.result?.heatmap) return;
         fixture.holdReply = false; event.stopImmediatePropagation();
         fixture.replyPending = true;
         // Deliver a real computed message after cancellation to exercise queued replies.
@@ -120,7 +121,7 @@ const fixtureSource = String.raw`
   );
 `;
 
-for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test(
+for (const scenario of ['source-and-reads', 'cancel-and-recover', 'save-and-replay'] as const) test(
   'synteny owns its ' + scenario, async ({ page }, info) => {
     test.setTimeout(180000);
     const root = process.cwd(), fixtureId = resolve(root, 'src/synteny-identity-fixture.tsx');
@@ -170,7 +171,7 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test
         await page.evaluate(() => window.syntenyIdentityFixture.select('b'));
         await result(overlay, '0.0', 3);
         await expect(overlay.getByText('Synteny Blocks', { exact: true }).locator('..')).toContainText('0');
-      } else {
+      } else if (scenario === 'cancel-and-recover') {
         await page.evaluate(() => {
           window.syntenyIdentityFixture.holdReply = true;
           window.syntenyIdentityFixture.select('b');
@@ -223,6 +224,69 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test
         await page.evaluate(() => window.syntenyIdentityFixture.select('none'));
         await expect(overlay.getByText('Database is still loading.', { exact: true })).toBeVisible();
         await expect(overlay.getByText('Global Score', { exact: true })).toHaveCount(0);
+      } else {
+        const downloadWait = page.waitForEvent('download');
+        await overlay.getByRole('button', { name: 'Export synteny experiment JSON', exact: true }).click();
+        const download = await downloadWait, path = await download.path();
+        expect(path).not.toBeNull();
+        const content = await readFile(path!, 'utf8'), original = JSON.parse(content);
+        expect(original.inputs.map((row: { id: string }) => row.id)).toEqual(['query', 'reference']);
+        expect(original.fields.synteny.value.heatmap.values).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+        const evidence = overlay.getByTestId('synteny-experiment');
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        const rejectedBeforeAnyReplay = structuredClone(original);
+        rejectedBeforeAnyReplay.fields.synteny.value.stats.dtwDistance = 999;
+        await overlay.getByLabel('Restore and verify synteny experiment JSON', { exact: true }).setInputFiles({
+          name: 'rejected-before-replay.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rejectedBeforeAnyReplay)),
+        });
+        await expect(overlay.getByRole('alert')).toContainText('checksum');
+        await result(overlay, '100.0', 3);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await expect(overlay.getByRole('button', { name: 'Return to current genome comparison', exact: true })).toHaveCount(0);
+        let library = overlay.locator('details[aria-label="Saved synteny experiments"]');
+        await library.locator('summary').click();
+        await library.getByLabel('Snapshot name', { exact: true }).fill('Exact annotation pair');
+        await library.getByRole('button', { name: 'Save snapshot locally', exact: true }).click();
+        await expect(library.getByRole('status')).toContainText('Saved an immutable local snapshot');
+        const snapshotId = await library.getByLabel('Saved snapshot', { exact: true }).inputValue();
+        expect(snapshotId).not.toBe('');
+        await page.evaluate(() => window.syntenyIdentityFixture.select('b'));
+        await result(overlay, '0.0', 3);
+        await library.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+        await result(overlay, '100.0', 3);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await expect(library.getByRole('status')).toContainText('recomputed and verified');
+        await page.evaluate(() => window.syntenyIdentityFixture.select('none'));
+        await result(overlay, '100.0', 3);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        await page.reload();
+        await expect(overlay).toBeVisible();
+        library = overlay.locator('details[aria-label="Saved synteny experiments"]');
+        await library.locator('summary').click();
+        await library.getByLabel('Saved snapshot', { exact: true }).selectOption(snapshotId);
+        await library.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+        await result(overlay, '100.0', 3);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        const modified = structuredClone(original);
+        modified.fields.synteny.value.stats.dtwDistance = 999;
+        await overlay.getByLabel('Restore and verify synteny experiment JSON', { exact: true }).setInputFiles({
+          name: 'edited-result.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(modified)),
+        });
+        await expect(overlay.getByRole('alert')).toContainText('checksum');
+        await result(overlay, '100.0', 3);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        await page.evaluate(() => { window.syntenyIdentityFixture.holdReply = true; window.syntenyIdentityFixture.replyPending = false; });
+        await overlay.getByLabel('Restore and verify synteny experiment JSON', { exact: true }).setInputFiles({
+          name: 'original-result.json', mimeType: 'application/json', buffer: Buffer.from(content),
+        });
+        await expect.poll(() => page.evaluate(() => window.syntenyIdentityFixture.replyPending)).toBe(true);
+        await overlay.getByRole('button', { name: 'Cancel synteny replay', exact: true }).click();
+        await page.evaluate(() => window.syntenyIdentityFixture.releaseReply());
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await result(overlay, '100.0', 3);
       }
       expect(errors).toEqual([]);
     } finally { await page.close(); await server.close(); }

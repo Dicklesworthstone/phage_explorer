@@ -10,6 +10,7 @@ export const RESEARCH_SNAPSHOT_TYPES = {
   workflow: { title: 'command workflows', format: 'phage-explorer-commands', methods: [] },
   'codon-reference': { title: 'reference experiments', format: 'phage-explorer-analysis', methods: ['reference-codon-adaptation'] },
   pangenome: { title: 'pangenome experiments', format: 'phage-explorer-analysis', methods: ['alignment-pangenome'] },
+  synteny: { title: 'synteny experiments', format: 'phage-explorer-analysis', methods: ['annotation-order-synteny'] },
   phylogeny: { title: 'phylogeny experiments', format: 'phage-explorer-analysis', methods: ['aligned-dna-neighbor-joining', 'explicit-outgroup-rooted-nj'] },
   temporal: { title: 'temporal diagnostic experiments', format: 'phage-explorer-analysis', methods: ['fixed-root-temporal-signal', 'rooted-nj-temporal-signal'] },
   'strict-clock': { title: 'strict-clock experiments', format: 'phage-explorer-analysis', methods: ['fixed-root-strict-clock-dating', 'rooted-nj-strict-clock-dating'] },

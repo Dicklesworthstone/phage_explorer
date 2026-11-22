@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Portable annotation-order synteny experiments
+
+- Synteny comparisons now retain both exact annotation sets, source metadata,
+  every matrix cell, blocks and numerical evidence in self-contained JSON.
+  Import and local snapshot reopening recompute and verify the complete result
+  independently of the current genome selection. Failed or cancelled replay
+  preserves accepted evidence; full annotation, block and matrix TSVs are available.
+- The heatmap now uses the same informative-label and domain distance as the
+  alignment, including refusal to match generic hypothetical-protein labels
+  alone. Coordinate spans include long interior annotations. The interface
+  explains that these are annotation-order heuristics, not sequence identity,
+  homology or validated rearrangement calls. [Workflow](docs/SYNTENY_WORKFLOW.md).
+
 ### Reconstruct attachment junctions from supplied host and phage sequences
 
 - The prophage workspace now accepts a sourced host locus and explicit oriented
@@ -18,6 +31,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   both junction previews. Cancelled/stale source reads and malformed worker
   replies cannot replace accepted evidence. The prior sequence-repeat heuristics
   remain an optional view. [Workflow and example](docs/ATTACHMENT_RECONSTRUCTION.md).
+  [Commit 38362b8](https://github.com/Dicklesworthstone/phage_explorer/commit/38362b8dafa38796362dddaaec4b83474fccbee7).
 
 ### Consistent comparison scores and interruptible output
 

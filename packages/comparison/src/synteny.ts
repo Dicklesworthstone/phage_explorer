@@ -30,6 +30,14 @@ export interface SyntenyAnalysis {
   warpingPath: [number, number][]; // [geneIdxA, geneIdxB][]
 }
 
+export interface SyntenyHeatmap {
+  rows: number;
+  cols: number;
+  values: Float32Array;
+  min: number;
+  max: number;
+}
+
 interface GeneTokens {
   name: string;
   terms: string[];
@@ -130,6 +138,25 @@ function geneDistanceOptimized(t1: GeneTokens, t2: GeneTokens): number {
   // If neither has informative name tokens and neither shares Pfam domains,
   // both domainDist and nameDist are 1.0, so distance is 1.0 (no match).
   return Math.min(domainDist, nameDist);
+}
+
+/** The displayed matrix uses exactly the annotation distance used by the aligner.
+ * Generic product labels and locus tags alone provide no similarity evidence.
+ * This is an annotation heuristic, not nucleotide or protein sequence identity.
+ */
+export function buildSyntenyHeatmap(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyHeatmap {
+  const rows = genesA.length, cols = genesB.length;
+  const values = new Float32Array(rows * cols);
+  const a = genesA.map(gene => preprocessGene(gene)), b = genesB.map(gene => preprocessGene(gene));
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const score = Math.fround(1 - geneDistanceOptimized(a[i], b[j]));
+      values[i * cols + j] = score;
+      min = Math.min(min, score); max = Math.max(max, score);
+    }
+  }
+  return { rows, cols, values, min: Number.isFinite(min) ? min : 0, max: Number.isFinite(max) ? max : 0 };
 }
 
 /**

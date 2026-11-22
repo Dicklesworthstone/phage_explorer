@@ -1,236 +1,34 @@
-import type { GeneInfo } from '@phage-explorer/core';
-import { alignSynteny, type SyntenyAnalysis, type SyntenyBlock } from '@phage-explorer/comparison';
+import { analyzeSyntenyExperiment, replaySyntenyExperiment, type SyntenyExperiment,
+  type SyntenyExperimentInput } from '../../../comparison/src/synteny-experiment';
 
-interface PhageDescriptor {
-  id: number;
-  name: string;
-  length?: number | null;
-}
+export type SyntenyRequest =
+  | { kind: 'analyze'; input: SyntenyExperimentInput }
+  | { kind: 'replay'; content: string };
+export type SyntenyWorkerJob = SyntenyRequest & { jobId: string };
+export type SyntenyWorkerMessage =
+  | { jobId: string; kind: 'progress'; phase: string }
+  | { jobId: string; kind: 'result'; value: SyntenyExperiment }
+  | { jobId: string; kind: 'error'; message: string };
 
-export interface SyntenyJob {
-  jobId?: string;
-  query: PhageDescriptor;
-  reference: PhageDescriptor;
-  genesQuery: GeneInfo[];
-  genesReference: GeneInfo[];
-}
-
-export interface SyntenyHeatmap {
-  rows: number;
-  cols: number;
-  values: Float32Array;
-  min: number;
-  max: number;
-}
-
-export interface SyntenyBlockBp {
-  startIdxQuery: number;
-  endIdxQuery: number;
-  startIdxReference: number;
-  endIdxReference: number;
-  startBpQuery: number;
-  endBpQuery: number;
-  startBpReference: number;
-  endBpReference: number;
-  score: number;
-  orientation: SyntenyBlock['orientation'];
-}
-
-export interface SyntenyStats {
-  blockCount: number;
-  globalScore: number;
-  scsScore: number;
-  dtwDistance: number;
-  coverageQuery: number;
-  coverageReference: number;
-  inversionCount: number;
-  translocationCount: number;
-  indelCount: number;
-}
-
-export interface WorkerResponse {
-  ok: boolean;
-  jobId?: string;
-  analysis?: SyntenyAnalysis;
-  blocksBp?: SyntenyBlockBp[];
-  heatmap?: SyntenyHeatmap;
-  stats?: SyntenyStats;
-  error?: string;
-}
-
-interface PreparsedGene {
-  name: string;
-  terms: Set<string>;
-}
-
-export function toLabel(gene: GeneInfo | undefined): string {
-  return (gene?.product || gene?.name || gene?.locusTag || '').toLowerCase();
-}
-
-function preparseGene(gene: GeneInfo | undefined): PreparsedGene {
-  const name = toLabel(gene);
-  const terms = new Set<string>();
-  if (name) {
-    for (const term of name.split(/[\s-]+/)) {
-      if (term.length > 3) terms.add(term);
-    }
+export async function executeSyntenyRequest(request: SyntenyRequest,
+  progress: (phase: string) => void = () => {}): Promise<SyntenyExperiment> {
+  if (request?.kind === 'analyze') {
+    progress('Comparing exact ordered annotations and binding the complete matrix');
+    return analyzeSyntenyExperiment(request.input);
   }
-  return { name, terms };
+  if (request?.kind === 'replay') {
+    if (typeof request.content !== 'string') throw new Error('Saved synteny evidence must be JSON text.');
+    progress('Verifying saved inputs and recomputing the complete annotation comparison');
+    return replaySyntenyExperiment(request.content);
+  }
+  throw new Error('Unsupported synteny operation.');
 }
 
-function fastGeneSimilarity(a: PreparsedGene, b: PreparsedGene): number {
-  if (!a.name || !b.name) return 0;
-  if (a.name === b.name) return 1;
-  if (a.name.includes(b.name) || b.name.includes(a.name)) return 0.8;
-
-  for (const term of a.terms) {
-    if (b.terms.has(term)) return 0.5;
-  }
-
-  return 0;
-}
-
-export function buildHeatmap(genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyHeatmap {
-  const rows = genesA.length;
-  const cols = genesB.length;
-  const values = new Float32Array(rows * cols);
-  let min = Number.POSITIVE_INFINITY;
-  let max = Number.NEGATIVE_INFINITY;
-
-  const prepA = genesA.map(preparseGene);
-  const prepB = genesB.map(preparseGene);
-
-  for (let r = 0; r < rows; r++) {
-    const a = prepA[r];
-    const rowOffset = r * cols;
-    for (let c = 0; c < cols; c++) {
-      const sim = fastGeneSimilarity(a, prepB[c]);
-      values[rowOffset + c] = sim;
-      if (sim < min) min = sim;
-      if (sim > max) max = sim;
-    }
-  }
-
-  // Normalize bounds in case of empty genes
-  if (!Number.isFinite(min)) min = 0;
-  if (!Number.isFinite(max)) max = 1;
-
-  return { rows, cols, values, min, max };
-}
-
-function toBpBlocks(analysis: SyntenyAnalysis, genesA: GeneInfo[], genesB: GeneInfo[]): SyntenyBlockBp[] {
-  return analysis.blocks.map((block) => {
-    const startGeneA = genesA[block.startIdxA];
-    const endGeneA = genesA[block.endIdxA];
-    const startGeneB = genesB[block.startIdxB];
-    const endGeneB = genesB[block.endIdxB];
-
-    const startBpQuery = Math.min(startGeneA?.startPos ?? 0, endGeneA?.startPos ?? 0);
-    const endBpQuery = Math.max(startGeneA?.endPos ?? 0, endGeneA?.endPos ?? 0);
-    const startBpReference = Math.min(startGeneB?.startPos ?? 0, endGeneB?.startPos ?? 0);
-    const endBpReference = Math.max(startGeneB?.endPos ?? 0, endGeneB?.endPos ?? 0);
-
-    return {
-      startIdxQuery: block.startIdxA,
-      endIdxQuery: block.endIdxA,
-      startIdxReference: block.startIdxB,
-      endIdxReference: block.endIdxB,
-      startBpQuery,
-      endBpQuery,
-      startBpReference,
-      endBpReference,
-      score: block.score,
-      orientation: block.orientation,
-    };
-  });
-}
-
-function sumCoverage(segments: Array<{ start: number; end: number }>): number {
-  const filtered = segments
-    .map((s) => ({
-      start: Math.min(s.start, s.end),
-      end: Math.max(s.start, s.end),
-    }))
-    .filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start)
-    .sort((a, b) => a.start - b.start);
-
-  let total = 0;
-  let currentStart = -1;
-  let currentEnd = -1;
-
-  for (const seg of filtered) {
-    if (currentStart < 0) {
-      currentStart = seg.start;
-      currentEnd = seg.end;
-      continue;
-    }
-    if (seg.start <= currentEnd) {
-      currentEnd = Math.max(currentEnd, seg.end);
-    } else {
-      total += currentEnd - currentStart;
-      currentStart = seg.start;
-      currentEnd = seg.end;
-    }
-  }
-
-  if (currentStart >= 0 && currentEnd > currentStart) {
-    total += currentEnd - currentStart;
-  }
-
-  return total;
-}
-
-self.onmessage = (event: MessageEvent<SyntenyJob>) => {
-  const job = event.data;
-  const message: WorkerResponse = { ok: false, jobId: job?.jobId };
-
-  try {
-    if (!job || !job.genesQuery?.length || !job.genesReference?.length) {
-      throw new Error('Missing gene data for synteny analysis');
-    }
-
-    const analysis = alignSynteny(job.genesQuery, job.genesReference);
-    const heatmap = buildHeatmap(job.genesQuery, job.genesReference);
-    const blocksBp = toBpBlocks(analysis, job.genesQuery, job.genesReference);
-
-    const coverageQuery = sumCoverage(blocksBp.map((b) => ({ start: b.startBpQuery, end: b.endBpQuery })));
-    const coverageReference = sumCoverage(blocksBp.map((b) => ({ start: b.startBpReference, end: b.endBpReference })));
-
-    const inversionCount = analysis.breakpointDetails.filter(b => b.type === 'inversion').length;
-    const translocationCount = analysis.breakpointDetails.filter(b => b.type === 'translocation').length;
-    const indelCount = analysis.breakpointDetails.filter(b => b.type === 'indel').length;
-
-    const stats: SyntenyStats = {
-      blockCount: blocksBp.length,
-      globalScore: analysis.globalScore,
-      scsScore: analysis.scsScore,
-      dtwDistance: analysis.dtwDistance,
-      coverageQuery,
-      coverageReference,
-      inversionCount,
-      translocationCount,
-      indelCount,
-    };
-
-    message.ok = true;
-    message.analysis = analysis;
-    message.blocksBp = blocksBp;
-    message.heatmap = heatmap;
-    message.stats = stats;
-
-    const transferList: Transferable[] = [];
-    if (heatmap.values?.buffer) {
-      transferList.push(heatmap.values.buffer);
-    }
-
-    (self as any).postMessage(message, transferList);
-    return;
-  } catch (err) {
-    console.error('Synteny worker error:', err);
-    message.error = err instanceof Error ? err.message : 'Synteny computation failed';
-  }
-
-  (self as any).postMessage(message);
+if (typeof self !== 'undefined') self.onmessage = (event: MessageEvent<SyntenyWorkerJob>) => {
+  const job = event.data, jobId = job?.jobId;
+  if (typeof jobId !== 'string') return;
+  void executeSyntenyRequest(job, phase => self.postMessage({ jobId, kind: 'progress', phase } satisfies SyntenyWorkerMessage))
+    .then(value => self.postMessage({ jobId, kind: 'result', value } satisfies SyntenyWorkerMessage))
+    .catch((cause: unknown) => self.postMessage({ jobId, kind: 'error',
+      message: cause instanceof Error ? cause.message : 'Synteny computation failed.' } satisfies SyntenyWorkerMessage));
 };
-
-

@@ -8,7 +8,7 @@
  * - DTW-based alignment scoring
  */
 
-import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { PhageFull, GeneInfo } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
 import { useTheme } from '../../hooks/useTheme';
@@ -26,77 +26,24 @@ import {
 } from './primitives';
 import { HeatmapCanvas } from '../primitives/HeatmapCanvas';
 import type { GenomeTrackSegment, GenomeTrackInteraction, HeatmapHover, ColorScale } from '../primitives/types';
-import type { SyntenyJob, SyntenyHeatmap, SyntenyBlockBp, SyntenyStats, WorkerResponse } from '../../workers/synteny-worker';
-
-interface SyntenyPayload { heatmap: SyntenyHeatmap; blocksBp: SyntenyBlockBp[]; stats: SyntenyStats }
-
-/** An analysis owns its worker, so abandoned computations cannot delay or replace the next pair. */
-export function runWebSynteny(
-  job: SyntenyJob & { jobId: string },
-  signal?: AbortSignal,
-  timeoutMs = 300000,
-  createWorker: () => Worker = () => new Worker(new URL('../../workers/synteny-worker.ts', import.meta.url), { type: 'module' }),
-): Promise<SyntenyPayload> {
-  return new Promise((resolve, reject) => {
-    const cancelled = () => new DOMException('Synteny analysis cancelled.', 'AbortError');
-    if (signal?.aborted) { reject(cancelled()); return; }
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-      reject(new Error('Synteny timeout must be a positive integer.')); return;
-    }
-    let worker: Worker;
-    try { worker = createWorker(); } catch (error) { reject(error); return; }
-    let settled = false;
-    const finish = (error?: Error, payload?: SyntenyPayload) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
-      try { worker.terminate(); } catch { /* Preserve the original outcome if cleanup fails. */ }
-      if (error) reject(error); else resolve(payload!);
-    };
-    const onAbort = () => finish(cancelled());
-    const timer = setTimeout(() => finish(new Error('Synteny worker timed out. Retry the analysis.')), timeoutMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    worker.onmessage = (event: MessageEvent<WorkerResponse>) => {
-      if (settled) return;
-      const response = event.data;
-      if (!response || response.jobId !== job.jobId) {
-        finish(new Error('Synteny worker returned a result for a different request.')); return;
-      }
-      if (response.ok !== true || !response.heatmap || !response.stats || !Array.isArray(response.blocksBp)) {
-        finish(new Error(response.error ?? 'Synteny worker returned no complete response.')); return;
-      }
-      const { heatmap, stats, blocksBp } = response;
-      if (heatmap.rows !== job.genesQuery.length || heatmap.cols !== job.genesReference.length
-        || !(heatmap.values instanceof Float32Array) || heatmap.values.length !== heatmap.rows * heatmap.cols
-        || stats.blockCount !== blocksBp.length) {
-        finish(new Error('Synteny worker returned a result for different gene inputs.')); return;
-      }
-      finish(undefined, { heatmap, stats, blocksBp });
-    };
-    worker.onerror = event => {
-      event.preventDefault();
-      finish(new Error('The synteny worker failed. Retry the analysis.'));
-    };
-    worker.onmessageerror = () => finish(new Error('The synteny worker returned unreadable data. Retry the analysis.'));
-    try { if (signal?.aborted) onAbort(); else worker.postMessage(job); }
-    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
-  });
-}
+import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
+import { exportSyntenyTsv, SYNTENY_EXPERIMENT_LIMITATIONS, type SyntenyExperiment, type SyntenyBlockBp,
+  type SyntenyTable } from '../../../../comparison/src/synteny-experiment';
+import { SyntenySession, readSyntenyPair, runSyntenyTask } from '../../workers/SyntenySession';
+import { downloadString } from '../../utils/export';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 
 interface OwnedSynteny {
   repository: PhageRepository;
   selectedQuery: PhageFull;
   referenceId: number;
   revision: number;
-  query: PhageFull | null;
-  reference: PhageFull | null;
-  payload: SyntenyPayload | null;
+  payload: SyntenyExperiment | null;
   loading: boolean;
   error: string | null;
 }
-let nextSyntenyJob = 0;
 const NO_BLOCKS: SyntenyBlockBp[] = [];
 
 // Block score color scale
@@ -144,19 +91,59 @@ export function SyntenyOverlay({
   const [referencePhageId, setReferencePhageId] = useState<number | null>(null);
   const [analysis, setAnalysis] = useState<OwnedSynteny | null>(null);
   const [revision, setRevision] = useState(0);
-  const source = useRef({ repository, currentPhage, referencePhageId, revision, open });
-  source.current = { repository, currentPhage, referencePhageId, revision, open };
+  const [mode, setMode] = useState<'live' | 'saved'>('live');
+  const [libraryBusy, setLibraryBusy] = useState(false), [fileError, setFileError] = useState<string | null>(null);
+  const replaySession = useMemo(() => new SyntenySession(), []);
+  const replayScope = useMemo(() => ({}), []);
+  const replay = useSyncExternalStore(replaySession.subscribe, replaySession.getSnapshot, replaySession.getSnapshot);
+  const source = useRef({ repository, currentPhage, referencePhageId, revision, open, mode });
+  source.current = { repository, currentPhage, referencePhageId, revision, open, mode };
   const owned = open && analysis?.repository === repository && analysis.selectedQuery === currentPhage
     && analysis.referenceId === referencePhageId && analysis.revision === revision ? analysis : null;
-  const queryPhage = owned?.query ?? null;
-  const referencePhage = owned?.reference ?? null;
-  const heatmap = owned?.payload?.heatmap ?? null;
-  const blocks = owned?.payload?.blocksBp ?? NO_BLOCKS;
-  const stats = owned?.payload?.stats ?? null;
+  const accepted = mode === 'saved' ? replay.accepted : owned?.payload ?? null;
+  const queryPhage = accepted ? { ...accepted.input.query, genomeLength: accepted.input.query.length, genes: accepted.input.genesQuery } : null;
+  const referencePhage = accepted ? { ...accepted.input.reference, genomeLength: accepted.input.reference.length, genes: accepted.input.genesReference } : null;
+  const heatmap = useMemo(() => accepted ? { ...accepted.result.heatmap, values: Float32Array.from(accepted.result.heatmap.values) } : null, [accepted]);
+  const blocks = accepted?.result.blocksBp ?? NO_BLOCKS;
+  const stats = accepted?.result.stats ?? null;
   const currentCatalog = catalog?.repository === repository && catalog.revision === revision ? catalog : null;
   const phages = currentCatalog?.phages ?? [];
-  const error = currentCatalog?.error ?? owned?.error ?? null;
-  const loading = Boolean(open && repository && currentPhage && referencePhageId !== null && (!owned || owned.loading));
+  const error = mode === 'saved' ? replay.error : currentCatalog?.error ?? owned?.error ?? null;
+  const loading = replay.busy || mode === 'live'
+    && Boolean(open && repository && currentPhage && referencePhageId !== null && (!owned || owned.loading));
+  const busy = loading || libraryBusy;
+
+  useEffect(() => { replaySession.activate(); return replaySession.deactivate; }, [replaySession]);
+  useEffect(() => { if (!open) replaySession.cancel(); }, [open, replaySession]);
+  const restore = async (content: string, signal: AbortSignal): Promise<void> => {
+    setFileError(null);
+    await replaySavedResearch(signal, {
+      run: () => replaySession.run(replayScope, { kind: 'replay', content }),
+      cancel: () => replaySession.cancel(replayScope), error: () => replaySession.getSnapshot().error,
+    });
+    if (signal.aborted || !source.current.open) throw new DOMException('Synteny restore cancelled.', 'AbortError');
+    setMode('saved');
+  };
+  const importExperiment = (file: File) => {
+    setFileError(null);
+    void replaySession.run(replayScope, async () => {
+      if (file.size > 10 * 1024 * 1024) throw new Error('Saved synteny evidence exceeds 10 MiB.');
+      return { kind: 'replay', content: await file.text() };
+    }).then(ok => {
+      if (!source.current.open) return;
+      if (ok) setMode('saved');
+      else if (replaySession.getSnapshot().error) setFileError(replaySession.getSnapshot().error);
+    });
+  };
+  const save = (format: 'json' | SyntenyTable) => {
+    if (!accepted || busy) return;
+    try {
+      downloadString(format === 'json' ? serializeAnalysisRecord(accepted.record) : exportSyntenyTsv(accepted, format),
+        format === 'json' ? 'synteny-experiment.json' : 'synteny-' + format + '.tsv',
+        format === 'json' ? 'application/json' : 'text/tab-separated-values');
+      setFileError(null);
+    } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Could not export synteny evidence.'); }
+  };
 
   // Hover states
   const [heatmapHover, setHeatmapHover] = useState<HeatmapHover | null>(null);
@@ -196,6 +183,7 @@ export function SyntenyOverlay({
   // its replacement is still loading from a different repository.
   useEffect(() => {
     setHeatmapHover(null); setTrackHover(null); setSelectedBlock(null);
+    if (mode !== 'live') return;
     if (!open || !repository || !currentPhage || referencePhageId === null
       || catalog?.repository !== repository || catalog.revision !== revision || catalog.error
       || !catalog.phages.some(phage => phage.id === referencePhageId)) {
@@ -204,38 +192,23 @@ export function SyntenyOverlay({
     }
     const controller = new AbortController();
     const owner = { repository, selectedQuery: currentPhage, referenceId: referencePhageId, revision };
-    const current = () => !controller.signal.aborted && source.current.open
+    const current = () => !controller.signal.aborted && source.current.open && source.current.mode === 'live'
       && source.current.repository === repository && source.current.currentPhage === currentPhage
       && source.current.referencePhageId === referencePhageId && source.current.revision === revision;
-    setAnalysis({ ...owner, query: null, reference: null, payload: null, loading: true, error: null });
+    setAnalysis({ ...owner, payload: null, loading: true, error: null });
     void (async () => {
       try {
-        if (referencePhageId === currentPhage.id) throw new Error('Select a reference different from the current query.');
-        const [query, reference] = await Promise.all([
-          repository.getPhageById(currentPhage.id), repository.getPhageById(referencePhageId),
-        ]);
+        const input = await readSyntenyPair(repository, currentPhage, referencePhageId, controller.signal);
         if (!current()) return;
-        if (!query || !reference) throw new Error('A selected genome is no longer available. Select the genomes again.');
-        if (query.id !== currentPhage.id || query.accession !== currentPhage.accession || reference.id !== referencePhageId) {
-          throw new Error('The loaded genomes do not match the selected sources.');
-        }
-        if (!query.genes?.length || !reference.genes?.length) {
-          throw new Error('Both phages need gene annotations for synteny analysis');
-        }
-        const payload = await runWebSynteny({
-          jobId: `synteny-${++nextSyntenyJob}`,
-          query: { id: query.id, name: query.name, length: query.genomeLength },
-          reference: { id: reference.id, name: reference.name, length: reference.genomeLength },
-          genesQuery: query.genes, genesReference: reference.genes,
-        }, controller.signal);
-        if (current()) setAnalysis({ ...owner, query, reference, payload, loading: false, error: null });
+        const payload = await runSyntenyTask({ kind: 'analyze', input }, controller.signal);
+        if (current()) setAnalysis({ ...owner, payload, loading: false, error: null });
       } catch (cause) {
-        if (current()) setAnalysis({ ...owner, query: null, reference: null, payload: null, loading: false,
+        if (current()) setAnalysis({ ...owner, payload: null, loading: false,
           error: cause instanceof Error ? cause.message : 'Synteny analysis failed' });
       }
     })();
     return () => { controller.abort(); };
-  }, [open, repository, currentPhage, referencePhageId, revision, catalog]);
+  }, [open, repository, currentPhage, referencePhageId, revision, catalog, mode]);
 
   // Convert blocks to track segments for query genome
   const queryBlockSegments = useMemo((): GenomeTrackSegment[] => {
@@ -298,7 +271,7 @@ export function SyntenyOverlay({
 
   if (!open) return null;
 
-  const queryGenes = (queryPhage ?? currentPhage)?.genes ?? [];
+  const queryGenes = accepted?.input.genesQuery ?? (mode === 'live' ? currentPhage?.genes : null) ?? [];
   const referenceGenes = referencePhage?.genes ?? [];
 
   return (
@@ -326,11 +299,43 @@ export function SyntenyOverlay({
             )}
           </div>
           <div>
-            Compares gene order conservation between two phage genomes. Syntenic blocks indicate
-            conserved functional modules and evolutionary relationships. Blue = forward orientation,
-            Red = inverted.
+            Compare the order of informative annotation labels and supplied protein domains.
+            Blue blocks follow the same annotation order; red blocks follow the reverse order.
+            Scores are heuristics, not sequence identity, homology or validated rearrangement calls.
           </div>
         </div>
+
+        <section aria-label="Portable synteny experiments" style={{ display: 'grid', gap: '.65rem' }}>
+          <SavedResearchPanel kind="synteny" suggestedName={accepted
+            ? accepted.input.query.name + ' vs ' + accepted.input.reference.name : 'Annotation synteny experiment'}
+            capture={accepted ? () => serializeAnalysisRecord(accepted.record) : null}
+            restore={restore} disabled={loading} onActivityChange={setLibraryBusy} />
+          <label htmlFor="synteny-experiment-file">Restore and verify synteny experiment JSON</label>
+          <input id="synteny-experiment-file" type="file" accept=".json,application/json" disabled={busy}
+            onChange={event => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (file) importExperiment(file); }} />
+          <p>Saved experiments contain both exact ordered annotation sets, source metadata and every matrix cell.
+            Reopening recomputes all results locally. Genome bases are not part of this annotation method.
+            At most 2,000 rows per genome, 500,000 comparisons and 2 MiB of annotation inputs; experiment JSON is limited to 10 MiB.</p>
+          {mode === 'saved' && <div>
+            <p>Viewing a self-contained saved annotation experiment. The current explorer selection does not relabel or replace it.</p>
+            <button type="button" disabled={busy} onClick={() => { setMode('live'); setFileError(null); }}>Return to current genome comparison</button>
+          </div>}
+          {replay.busy && <button type="button" onClick={() => replaySession.cancel(replayScope)}>Cancel synteny replay</button>}
+          {(replay.busy || replay.notice) && <p role="status">{replay.busy ? replay.phase : replay.notice}</p>}
+          {(fileError || mode === 'saved' && error) && <p role="alert">{fileError ?? error}</p>}
+          {accepted && <div data-testid="synteny-experiment" data-result-id={accepted.record.resultId}>
+            <p><strong>{accepted.input.query.name} / {accepted.input.reference.name}</strong> · {mode === 'saved'
+              ? 'Saved annotations verified by fresh computation' : 'Current repository annotation snapshot'}.
+              {(accepted.input.query.source === 'demo' || accepted.input.reference.source === 'demo') && ' Synthetic inputs — not empirical evidence.'}</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
+              <button type="button" disabled={busy} onClick={() => save('json')}>Export synteny experiment JSON</button>
+              <button type="button" disabled={busy} onClick={() => save('blocks')}>Export all synteny blocks TSV</button>
+              <button type="button" disabled={busy} onClick={() => save('matrix')}>Export complete similarity matrix TSV</button>
+              <button type="button" disabled={busy} onClick={() => save('annotations')}>Export source annotations TSV</button>
+            </div>
+            <AnalysisRecordDetails record={accepted.record} />
+          </div>}
+        </section>
 
         {/* Reference phage selector */}
         <div
@@ -349,14 +354,15 @@ export function SyntenyOverlay({
               <InfoButton
                 size="sm"
                 label="Why choose a reference?"
-                tooltip="Synteny compares your current phage to a reference to highlight conserved gene order and rearrangements."
+                tooltip="Compare the order of informative annotation labels and domain calls against another genome."
                 onClick={() => showContextFor('synteny')}
               />
             )}
             <select
               id={referenceSelectId}
               value={referencePhageId ?? ''}
-              onChange={(e) => setReferencePhageId(e.target.value ? Number(e.target.value) : null)}
+              disabled={mode === 'saved' || libraryBusy || replay.busy}
+              onChange={(e) => { setFileError(null); setReferencePhageId(e.target.value ? Number(e.target.value) : null); }}
               style={{
                 padding: '0.25rem',
                 backgroundColor: colors.backgroundAlt,
@@ -377,27 +383,27 @@ export function SyntenyOverlay({
             </select>
           </div>
 
-          {currentPhage && (
+          {(queryPhage || mode === 'live' && currentPhage) && (
             <span style={{ color: colors.textDim }}>
-              Query: {(queryPhage ?? currentPhage).name} ({queryGenes.length} genes)
+              Query: {(queryPhage ?? currentPhage)!.name} ({queryGenes.length} annotation rows)
             </span>
           )}
         </div>
 
-        {!repository || !currentPhage ? (
+        {mode === 'live' && (!repository || !currentPhage) ? (
           <p role="status">{!repository ? 'Database is still loading.' : 'Select a query phage to compare.'}</p>
-        ) : error ? (
+        ) : error && !accepted ? (
           <>
             <OverlayErrorState message="Analysis failed" details={error} />
-            <button type="button" onClick={() => setRevision(value => value + 1)}>Retry synteny analysis</button>
+            {mode === 'live' && <button type="button" onClick={() => setRevision(value => value + 1)}>Retry synteny analysis</button>}
           </>
         ) : loading ? (
-          <OverlayLoadingState message="Computing gene similarity matrix...">
+          <OverlayLoadingState message={replay.busy ? replay.phase : "Computing gene similarity matrix..."}>
             <AnalysisPanelSkeleton />
           </OverlayLoadingState>
         ) : !referencePhage ? (
           <div style={{ padding: '2rem', textAlign: 'center', color: colors.textMuted }}>
-            Select a reference phage to compare
+            {mode === 'saved' ? 'No saved synteny experiment has been accepted. Import an experiment or return to the current comparison.' : 'Select a reference phage to compare'}
           </div>
         ) : (
           <>
@@ -507,7 +513,7 @@ export function SyntenyOverlay({
                   flexWrap: 'wrap',
                 }}
               >
-                <span style={{ fontWeight: 600, color: colors.textDim }}>Rearrangements:</span>
+                <span style={{ fontWeight: 600, color: colors.textDim }}>Heuristic breakpoint labels:</span>
                 {Boolean(stats.inversionCount) && (
                   <span style={{ color: '#ef4444', fontWeight: 600 }}>
                     ↺ {stats.inversionCount} Inversion{stats.inversionCount! > 1 ? 's' : ''}
@@ -544,7 +550,7 @@ export function SyntenyOverlay({
                     <InfoButton
                       size="sm"
                       label="What is this matrix?"
-                      tooltip="Each cell reflects similarity between a query gene and a reference gene; blocks of high similarity suggest conserved modules."
+                      tooltip="Each cell uses the alignment’s informative annotation-name and domain distance. It is not nucleotide or protein sequence identity."
                       onClick={() => showContextFor('synteny')}
                     />
                   )}
@@ -771,7 +777,7 @@ export function SyntenyOverlay({
                     borderRadius: '2px',
                   }}
                 />
-                <span style={{ color: colors.textMuted }}>Inverted orientation</span>
+                <span style={{ color: colors.textMuted }}>Reversed annotation order</span>
               </div>
             </div>
 
@@ -785,18 +791,10 @@ export function SyntenyOverlay({
                 color: colors.textDim,
               }}
             >
-              <strong>Interpretation:</strong> Syntenic blocks represent conserved gene order
-              between phages. Forward blocks (blue) indicate genes in the same relative order.
-              Inverted blocks (red) suggest genome rearrangements. High global scores indicate
-              close evolutionary relationships and conserved functional modules.
-              {' '}
-              <span style={{ opacity: 0.85 }}>
-                Blocks are matched on gene product names, and roughly two thirds of genes in
-                this catalogue are annotated only as &ldquo;hypothetical protein&rdquo;. An
-                inversion is therefore only detectable where several consecutive genes on both
-                sides carry informative names, which is uncommon here. Absence of red blocks is
-                not evidence that no rearrangement exists.
-              </span>
+              <strong>Interpretation:</strong> Global Score is the fraction of query annotation rows in accepted heuristic blocks.
+              Query Coverage is the union of their coordinate spans, including intervening bases. Continuity additionally penalizes fragmentation.
+              Generic labels such as “hypothetical protein” do not match by name alone; supplied shared domains may still contribute.
+              <ul>{SYNTENY_EXPERIMENT_LIMITATIONS.map(limitation => <li key={limitation}>{limitation}</li>)}</ul>
             </div>
           </>
         )}
