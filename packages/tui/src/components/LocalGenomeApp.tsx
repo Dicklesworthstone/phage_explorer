@@ -6,6 +6,7 @@ import type { LocalGenomeView } from '../../../core/src/genome-import';
 import type { ResearchView } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession, type TerminalGenomeAccepted } from '../local-genome-session';
 import { TerminalResearchSession } from '../terminal-research-session';
+import { TerminalNavigationSession } from '../terminal-navigation-session';
 import { registerCommand, unregisterCommand } from '../commands/registry';
 import { App } from './App';
 import { readTerminalSize } from './terminal-size';
@@ -72,6 +73,7 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
   const [open, setOpen] = useState(initiallyOpen);
   const [researchOpen, setResearchOpen] = useState(false);
   const [research] = useState(() => new TerminalResearchSession());
+  const [navigation] = useState(() => new TerminalNavigationSession(() => session.getSnapshot().repository));
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   useEffect(() => {
     registerCommand({ id: IMPORT_COMMAND, label: 'Local genomes: import, restore or export',
@@ -88,7 +90,7 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
     ? researchOpen
       ? <ResearchWorkflowView session={research} genomes={session} onReturn={() => setResearchOpen(false)} onReviewGenomes={() => setResearchOpen(false)} captureView={currentTerminalResearchView} />
       : <TerminalGenomeView session={session} onReturn={() => setOpen(false)} onWorkflow={() => { session.discardReview(); setResearchOpen(true); }} />
-    : <App repository={state.repository} />;
+    : <App repository={state.repository} navigation={navigation} />;
 }
 
 export function TerminalGenomeView({ session, onReturn, onWorkflow }: {

@@ -6,6 +6,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Terminal browsing history and portable named views
+
+- Back and Forward now restore accepted genome, position, selected CDS, display
+  mode and reading frame. Ctrl+B/Ctrl+N and command-palette actions share bounded
+  session history, with scroll coalescing and a new branch after fresh browsing.
+- The Saved views panel names, renames, exports, opens and restores collections.
+  Exact sequence and annotation fingerprints reject changed sources; catalog
+  identifiers may be renumbered without breaking valid views. Private genomes
+  remain in the existing local-genome workspace and must be imported before
+  restoration in a fresh session.
+- Source loading, cancellation and late replies preserve the current user's
+  selection. Collection files use explicit paths and exclusive creation.
+  [Controls, source requirements and limits](docs/TERMINAL_SAVED_VIEWS.md).
+
 ### Independent navigation for live and reopened comparison diffs
 
 - Comparison diffs now own position, zoom, DNA/amino-acid mode and reading frame.
@@ -105,6 +119,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   outputs. Saved comparisons reopen without their original catalog; failed or
   cancelled replay preserves accepted evidence. Browser and native records can
   be exchanged and freshly verified. [Workflow](docs/GENOME_COMPARISON_WORKFLOW.md).
+  [Commit fbae50e](https://github.com/Dicklesworthstone/phage_explorer/commit/fbae50e9c102660a7e102e3265da84befaaf7734).
 - A shared producer binds both complete genomes, original annotations, supplied
   codon counts and explicit comparison settings to every metric and the exact
   diff, including its unavailable state when the alignment budget is exceeded.

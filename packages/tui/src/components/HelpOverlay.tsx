@@ -88,6 +88,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'PgUp/PgDn', desc: 'Scroll by page' },
             { key: 'Home/End', desc: 'Jump to start / end' },
             { key: '[ / ]', desc: 'Jump to prev / next gene' },
+            { key: 'Ctrl+B/N', desc: 'Back / forward through explorer views' },
           ],
         },
         {
@@ -136,7 +137,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'A → Phase portraits / Shift+P', desc: 'AA property PCA / domain map' },
             { key: 'A → Bias', desc: 'Bias PCA (1=di, 2=codon)' },
             { key: 'Shift+S', desc: 'Simulation hub' },
-            { key: ': / Ctrl+P', desc: 'Commands: inspect CDS, import, export' },
+            { key: ': / Ctrl+P', desc: 'Commands: saved views, CDS, import, export' },
           ],
         },
         {

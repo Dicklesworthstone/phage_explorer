@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { Box, Text, useInput, useApp, useStdout, useStdin } from 'ink';
 import { usePhageStore, useOverlayStack } from '@phage-explorer/state';
 import type { OverlayId, ExperienceLevel } from '@phage-explorer/state';
@@ -21,6 +21,8 @@ import { AnalysisMenuOverlay } from './MenuOverlays';
 import { GCOverlay } from './GCOverlay';
 import { CommandPalette } from './CommandPalette';
 import { SelectedCdsView } from './SelectedCdsView';
+import { SavedViewsView } from './SavedViewsView';
+import { TerminalNavigationSession } from '../terminal-navigation-session';
 import { SequenceComplexityOverlay } from './SequenceComplexityOverlay';
 import { BendabilityOverlay } from './BendabilityOverlay';
 import { PromoterOverlay } from './PromoterOverlay';
@@ -62,6 +64,7 @@ import type { FoldEmbedding, StructuralConstraintReport, MosaicDataset, MosaicSe
 import { analyzeStructuralConstraints, MOSAIC_LIMITS } from '@phage-explorer/core';
 import { reconstructCdsReference } from '../../../core/src/analysis/cds-consequences';
 import { initializeCommands } from '../commands/definitions';
+import { unregisterCommand } from '../commands/registry';
 import {
   findNextGenePosition,
   findPreviousGenePosition,
@@ -192,6 +195,7 @@ export function matchesTerminalOverlaySource(
 interface AppProps {
   repository: PhageRepository;
   foldEmbeddings?: FoldEmbedding[]; // Optional preloaded embeddings
+  navigation?: TerminalNavigationSession;
 }
 
 /**
@@ -235,7 +239,7 @@ export function matchModifierBinding(
 }
 
 
-export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactElement {
+export function App({ repository, foldEmbeddings = [], navigation: suppliedNavigation }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { stdin } = useStdin();
@@ -244,6 +248,21 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // replacement and the preceding effect's cleanup.
   const currentRepositoryRef = React.useRef(repository);
   currentRepositoryRef.current = repository;
+  const [ownNavigation] = useState(() => new TerminalNavigationSession(() => currentRepositoryRef.current));
+  const navigation = suppliedNavigation ?? ownNavigation;
+  const navigationState = useSyncExternalStore(navigation.subscribe, navigation.getSnapshot, navigation.getSnapshot);
+  const [savedViewsOpen, setSavedViewsOpen] = useState(false);
+  const savedViewsOpenRef = React.useRef(savedViewsOpen);
+  savedViewsOpenRef.current = savedViewsOpen;
+  const navigationMounted = React.useRef(false);
+  useEffect(() => {
+    navigationMounted.current = true;
+    const disconnect = navigation.connect();
+    return () => { navigationMounted.current = false; disconnect(); };
+  }, [navigation]);
+  const moveHistory = React.useCallback((direction: -1 | 1) => {
+    void navigation.moveHistory(direction).then(accepted => { if (!accepted && navigationMounted.current) setSavedViewsOpen(true); });
+  }, [navigation]);
   const acceptedSourceRef = React.useRef<{
     repository: PhageRepository; phages: PhageSummary[]; index: number;
     phage: PhageFull; sequence: string; phageJson: string;
@@ -264,7 +283,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const scrollPosition = usePhageStore(s => s.scrollPosition);
   const theme = usePhageStore(s => s.currentTheme);
   const overlayStack = useOverlayStack();
-  const activeOverlay = overlayStack.at(-1) ?? null;
+  const activeOverlay = savedViewsOpen ? 'savedViews' : overlayStack.at(-1) ?? null;
   const [structureReport, setStructureReport] = useState<StructuralConstraintReport | null>(null);
   const terminalCols = usePhageStore(s => s.terminalCols);
   const terminalRows = usePhageStore(s => s.terminalRows);
@@ -311,8 +330,9 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Initialize commands
   useEffect(() => {
-    initializeCommands();
-  }, []);
+    initializeCommands({ back: () => moveHistory(-1), forward: () => moveHistory(1), views: () => setSavedViewsOpen(true) });
+    return () => { for (const id of ['nav.back', 'nav.forward', 'nav.savedViews']) unregisterCommand(id); };
+  }, [moveHistory]);
 
   // Sequence state
   const [sequence, setSequence] = useState<string>('');
@@ -550,20 +570,22 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       setStructureReport(null);
       usePhageStore.setState({ overlayData: {} });
       try {
-        const fetched = await repository.getPhageById(selectedId);
+        const prepared = navigation.takePreparedSource(repository, phages, currentPhageIndex);
+        const fetched = prepared?.phage ?? await repository.getPhageById(selectedId);
         if (isStale()) return;
         // An annotation snapshot must not change while its sequence is loading.
-        const phage = fetched ? structuredClone(fetched) : null;
+        const phage = prepared?.phage ?? (fetched ? structuredClone(fetched) : null);
 
         // Load sequence
         if (phage) {
-          const length = await repository.getFullGenomeLength(phage.id);
-          const seq = await repository.getSequenceWindow(phage.id, 0, length);
+          const length = prepared?.sequence.length ?? await repository.getFullGenomeLength(phage.id);
+          const seq = prepared?.sequence ?? await repository.getSequenceWindow(phage.id, 0, length);
           if (isStale()) return;
           const phageJson = JSON.stringify(phage);
           acceptedSourceRef.current = { repository, phages, index: currentPhageIndex, phage, sequence: seq, phageJson };
           setSequence(seq);
           setCurrentPhage(phage);
+          navigation.acceptSource({ repository, phages, index: currentPhageIndex, phage, sequence: seq });
           setMosaicQuery({ repository, phage, input: {
             id: `phage-${phage.id}`, label: `${phage.name ?? `phage-${phage.id}`} (${phage.host ?? 'unknown host'}) #${phage.id}`,
             accession: phage.accession || null, sequence: seq, source: phage.localGenome ? 'local' : 'catalog',
@@ -661,6 +683,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         await repository.prefetchAround(currentPhageIndex, 3);
       } catch (err) {
         if (isStale()) return;
+        navigation.failSource(err);
         setError(`Failed to load phage: ${err}`);
         setLoadingPhage(false);
         setAnalysisProgress('');
@@ -669,7 +692,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
     loadPhage();
     return () => { cancelled = true; };
-  }, [repository, phages, currentPhageIndex, setCurrentPhage, setLoadingPhage, setError, setOverlayData])
+  }, [repository, phages, currentPhageIndex, navigation, navigationState.loadRevision, setCurrentPhage, setLoadingPhage, setError, setOverlayData])
 
   // Recompute donor-contextual overlays once reference sketches have loaded
   // (or if the current phage was analyzed before sketches were available).
@@ -764,7 +787,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // including on older Ink versions; the ordinary input handler never dispatches F-keys.
   useEffect(() => bindTerminalFunctionKeys(stdin, fKey => {
     const state = usePhageStore.getState();
-    if (state.overlays.length > 0 || state.error) return;
+    if (savedViewsOpenRef.current || state.overlays.length > 0 || state.error) return;
     state.setQuitConfirmPending(false);
     const { toggleOverlay, toggle3DModel, promoteExperienceLevel, openComparison, openOverlay } = state;
 
@@ -839,6 +862,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
   // Handle keyboard input (global layer is disabled while an overlay is open)
   useInput((input, key) => {
+    if (key.escape && navigationState.busy) { navigation.cancel(); return; }
     if (error) {
       if (key.escape) setError(null);
       else if (input === 'q' || input === 'Q') exit();
@@ -917,6 +941,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     // ctrl and no shift, so plain 'p' cannot fall into the Ctrl+P entry.
     // ---------------------------------------------------------------------
     const modifierBindings: ReadonlyArray<ModifierBinding> = [
+      { ctrl: true, keys: ['b', 'B'], run: () => moveHistory(-1) },
+      { ctrl: true, keys: ['n', 'N'], run: () => moveHistory(1) },
       {
         shift: true,
         keys: ['a', 'A'],
@@ -1142,12 +1168,15 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     } else if (input === ':') {
       openOverlay('commandPalette');
     }
-  }, { isActive: !activeOverlay || Boolean(error) });
+  }, { isActive: !savedViewsOpen && (!activeOverlay || Boolean(error)) });
 
   const colors = theme.colors;
 
   // Calculate list height (account for 3D model view)
   const listHeight = Math.max(5, mainHeight - 18);
+
+  // Keep the source loader alive while this full-screen view owns input.
+  if (savedViewsOpen) return <SavedViewsView session={navigation} onClose={() => setSavedViewsOpen(false)} />;
 
   // Error display
   if (error) {

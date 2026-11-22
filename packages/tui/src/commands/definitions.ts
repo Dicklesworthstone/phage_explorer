@@ -1,7 +1,7 @@
 import { usePhageStore } from '@phage-explorer/state';
 import { registerCommand } from './registry';
 
-export function initializeCommands(): void {
+export function initializeCommands(navigation?: { back: () => void; forward: () => void; views: () => void }): void {
 
   // Navigation
   registerCommand({
@@ -33,6 +33,15 @@ export function initializeCommands(): void {
     shortcut: 'S or /',
     action: () => usePhageStore.getState().openOverlay('search'),
   });
+
+  if (navigation) {
+    registerCommand({ id: 'nav.back', label: 'Back to previous explorer view', category: 'Navigation', shortcut: 'Ctrl+B',
+      description: 'Restore the previous exact genome, gene, frame and position.', keywords: ['undo', 'history', 'back'], action: navigation.back });
+    registerCommand({ id: 'nav.forward', label: 'Forward to next explorer view', category: 'Navigation', shortcut: 'Ctrl+N',
+      description: 'Restore the next view in browsing history.', keywords: ['redo', 'history', 'forward'], action: navigation.forward });
+    registerCommand({ id: 'nav.savedViews', label: 'Saved views and browsing history', category: 'Navigation',
+      description: 'Name, restore, export or reopen exact genome/CDS views.', keywords: ['bookmark', 'saved', 'view', 'history', 'navigation', 'open', 'export'], action: navigation.views });
+  }
 
   // View
   registerCommand({
