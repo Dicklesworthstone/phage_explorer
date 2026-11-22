@@ -27,8 +27,8 @@ export function initializeCommands(): void {
   registerCommand({
     id: 'search',
     label: 'Search phages',
-    description: 'Open search overlay',
-    keywords: ['find'],
+    description: 'Find catalog phages or search the selected genome by sequence, motif, gene, feature or coordinate',
+    keywords: ['find', 'catalog', 'sequence', 'motif', 'iupac', 'gene', 'locus', 'feature', 'position', 'coordinate'],
     category: 'Navigation',
     shortcut: 'S or /',
     action: () => usePhageStore.getState().openOverlay('search'),

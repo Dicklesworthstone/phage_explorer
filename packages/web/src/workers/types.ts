@@ -66,6 +66,8 @@ export type SearchMode = 'sequence' | 'motif' | 'gene' | 'feature' | 'position';
 export type StrandOption = 'both' | '+' | '-';
 
 export interface SearchFeature {
+  /** Repository-local feature identity, retained for exact result navigation. */
+  id?: number;
   start: number;
   end: number;
   strand?: StrandOption | string | null;

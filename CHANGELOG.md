@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Genomic search in the terminal
+
+- Terminal search now includes literal DNA, IUPAC motifs, genes, annotation
+  features and genomic coordinates alongside catalog lookup. It uses the same
+  search producer as the browser in a cancellable native worker, including
+  standalone executable packaging.
+- Both-strand searches, up to three sequence mismatches, fuzzy annotation
+  matching and locus-tag lookup lead directly to the selected genomic position
+  and feature. Complete-input checks, bounded queries/results, source ownership
+  and safe pasted input prevent partial or stale results from navigating.
+  [Usage and controls](docs/TERMINAL_SEARCH.md).
+
 ### Inspect and export selected CDS features in the terminal
 
 - The command palette opens a complete CDS inspector for catalog and accepted

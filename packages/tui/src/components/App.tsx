@@ -1277,10 +1277,10 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
       {activeOverlay === 'search' && (
         <Box
           position="absolute"
-          marginLeft={Math.max(0, Math.floor((terminalCols - 60) / 2))}
-          marginTop={Math.max(0, Math.floor((terminalRows - 16) / 2))}
+          marginLeft={Math.max(0, Math.floor((terminalCols - 84) / 2))}
+          marginTop={Math.max(0, Math.floor((terminalRows - 22) / 2))}
         >
-          <SearchOverlay repository={repository} />
+          <SearchOverlay repository={repository} width={Math.min(84, terminalCols)} height={Math.min(22, terminalRows)} />
         </Box>
       )}
 

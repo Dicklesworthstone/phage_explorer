@@ -7,6 +7,7 @@ import { join } from "node:path";
 // Keep runtime URLs, first-stage bundles and embedded executable entries together.
 // Worker sources are not auto-discovered by Bun's standalone compiler.
 export const EXECUTABLE_WORKERS = [
+  { source: 'packages/web/src/workers/search.worker.ts', bundle: 'search.worker.js', define: 'PHAGE_SEARCH_WORKER' },
   { source: 'packages/tui/src/workers/comparison-worker.ts', bundle: 'comparison-worker.js', define: 'PHAGE_COMPARISON_WORKER' },
   { source: 'packages/tui/src/workers/environmental-worker.ts', bundle: 'environmental-worker.js', define: 'PHAGE_ENVIRONMENTAL_WORKER' },
   { source: 'packages/tui/src/workers/epistasis-worker.ts', bundle: 'epistasis-worker.js', define: 'PHAGE_EPISTASIS_WORKER' },
