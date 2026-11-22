@@ -10,7 +10,6 @@ import React, {
   useState,
   useSyncExternalStore,
 } from 'react';
-import type { GeneInfo } from '@phage-explorer/core';
 import { AppShell } from './components/layout/AppShell';
 import OverlayManager from './components/overlays/OverlayManager';
 import { useOverlay } from './components/overlays/OverlayProvider';
@@ -22,6 +21,8 @@ import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotk
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
+import type { SelectedCdsSource } from './hooks/SelectedCdsSession';
+import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
 import {
   APP_SHELL_FOOTER_HINTS,
@@ -216,7 +217,12 @@ export default function App(): React.ReactElement {
   const acceptedSelection = selectionSnapshot.repository === repository ? selectionSnapshot.selection : null;
   const fullSequence = acceptedSelection?.phage === currentPhage ? acceptedSelection.sequence : '';
   const selectionError = selectionSnapshot.repository === repository ? selectionSnapshot.error : null;
-  const [selectedGene, setSelectedGene] = useState<GeneInfo | null>(null);
+  const selectedGeneId = usePhageStore((s) => s.selectedGeneId);
+  const setSelectedGeneId = usePhageStore((s) => s.setSelectedGeneId);
+  const selectedGene = currentPhage?.genes.find(gene => gene.id === selectedGeneId) ?? null;
+  const selectedCdsSource = useMemo<SelectedCdsSource | null>(() => repository && acceptedSelection?.phage === currentPhage
+    ? { owner: repository, phage: acceptedSelection.phage, sequence: acceptedSelection.sequence } : null,
+  [acceptedSelection, currentPhage, repository]);
   const [mobileListOpen, setMobileListOpen] = useState(false);
   const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
   const [phagePickerOpen, setPhagePickerOpen] = useState(false);
@@ -247,9 +253,6 @@ export default function App(): React.ReactElement {
     return key ? getGeneProductContext(key) ?? null : null;
   }, [beginnerModeEnabled, selectedGene]);
 
-  useEffect(() => {
-    setSelectedGene(null);
-  }, [currentPhage]);
   const getLayoutSnapshot = useCallback(() => {
     if (typeof window === 'undefined') {
       return {
@@ -1260,7 +1263,7 @@ export default function App(): React.ReactElement {
                         <GeneMapCanvas
                           height={geneMapHeight}
                           onGeneClick={(pos) => usePhageStore.getState().setScrollPosition(pos)}
-                          onGeneSelect={(gene) => setSelectedGene(gene)}
+                          onGeneSelect={(gene) => setSelectedGeneId(gene?.id ?? null)}
                         />
                       )}
                       {selectedGene && (
@@ -1270,7 +1273,7 @@ export default function App(): React.ReactElement {
                             <button
                               type="button"
                               className="btn btn-ghost btn-sm"
-                              onClick={() => setSelectedGene(null)}
+                              onClick={() => setSelectedGeneId(null)}
                               aria-label="Clear selected gene"
                             >
                               Clear
@@ -1502,6 +1505,7 @@ export default function App(): React.ReactElement {
           )}
         </>
       )}
+      <SelectedGeneDock source={selectedCdsSource} />
       <DataFreshnessIndicator isCached={isCached} isLoading={isLoading} />
       {typeof window !== 'undefined' &&
         window.location.hostname !== 'localhost' &&

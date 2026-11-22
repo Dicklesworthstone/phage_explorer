@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import type { GeneInfo } from '@phage-explorer/core';
+import { importLocalGenomes, type GeneInfo } from '@phage-explorer/core';
 import {
   getAdjacentGene,
   getGeneDisplayLabel,
   getGeneFocusPosition,
+  getSelectedGenePublicLinks,
   sortGenesForNavigation,
 } from './SelectedGeneDock';
 
@@ -54,6 +55,22 @@ describe('sortGenesForNavigation', () => {
       { ...genes[0], id: 6, startPos: 200, endPos: 100 },
     ];
     expect(sortGenesForNavigation(tied).map((gene) => gene.id)).toEqual([6, 7, 8]);
+  });
+});
+
+describe('selected gene source sharing', () => {
+  it('keeps accession-colliding private inputs out of public view links and NCBI citations', async () => {
+    const imported = await importLocalGenomes({ name: 'private.fa', text: '>NC_001416 private local bases\nATGAAATAA\n' });
+    const privatePhage = imported.genomes[0].phage;
+    const view = { viewMode: 'dual' as const, position: 17, readingFrame: 2 as const, show3DModel: false };
+    expect(getSelectedGenePublicLinks('https://phage-explorer.org/?phage=lambda', privatePhage, genes[0], view)).toBeNull();
+    const catalog = { ...privatePhage, localGenome: undefined, slug: 'lambda' };
+    const links = getSelectedGenePublicLinks('https://phage-explorer.org/', catalog, genes[0], view)!;
+    const parsed = new URL(links.shareUrl);
+    expect(parsed.searchParams.get('phage')).toBe('lambda');
+    expect(links.citation).toContain(links.shareUrl);
+    expect(links.ncbiUrl).toContain('NC_001416');
+    expect(links.citation).toContain('gp3');
   });
 });
 

@@ -6,7 +6,9 @@ import {
   useState,
   type ReactElement,
 } from 'react';
-import type { GeneInfo, ViewMode } from '@phage-explorer/core';
+import type { GeneInfo, PhageFull, ViewMode } from '@phage-explorer/core';
+import type { SelectedCdsSource } from '../../hooks/SelectedCdsSession';
+import { SelectedCdsInspector } from '../SelectedCdsInspector';
 import { usePhageStore, useSelectedGeneStore } from '../../store';
 import { copyToClipboard } from '../../utils/export';
 import { formatGeneStrand } from '../../utils/gene-strand';
@@ -16,6 +18,7 @@ import {
   getGeneShareKey,
   normalizeShareableOverlayId,
   type ShareableOverlayId,
+  type ShareUrlState,
 } from '../../utils/share-state';
 import {
   buildNcbiNucleotideUrl,
@@ -163,7 +166,18 @@ function ExternalLinkIcon(): ReactElement {
   );
 }
 
-export function SelectedGeneDock(): ReactElement | null {
+export function getSelectedGenePublicLinks(baseUrl: string, phage: PhageFull, gene: GeneInfo,
+  view: Omit<ShareUrlState, 'phageKey' | 'geneKey'>): { shareUrl: string; ncbiUrl: string; citation: string } | null {
+  if (phage.localGenome) return null;
+  const shareUrl = buildShareUrl(baseUrl, { ...view,
+    phageKey: phage.slug?.trim() || phage.accession, geneKey: getGeneShareKey(gene) });
+  return { shareUrl, ncbiUrl: buildNcbiNucleotideUrl(phage.accession), citation: buildPhageCitation({
+    name: `${getGeneDisplayLabel(gene)} in ${phage.name}`, accession: phage.accession,
+    pdbIds: phage.pdbIds, explorerUrl: shareUrl,
+  }) };
+}
+
+export function SelectedGeneDock({ source }: { source: SelectedCdsSource | null }): ReactElement | null {
   const currentPhage = usePhageStore((state) => state.currentPhage);
   const viewMode = usePhageStore((state) => state.viewMode);
   const readingFrame = usePhageStore((state) => state.readingFrame);
@@ -199,8 +213,8 @@ export function SelectedGeneDock(): ReactElement | null {
   const geneLabel = selectedGene ? getGeneDisplayLabel(selectedGene) : '';
   const geneId = selectedGene ? getGeneShareKey(selectedGene) : null;
 
-  const shareUrl = useMemo(() => {
-    if (!currentPhage || !selectedGene) return '';
+  const publicLinks = useMemo(() => {
+    if (!currentPhage || !selectedGene) return null;
     const baseUrl = typeof window === 'undefined'
       ? 'https://phage-explorer.org/'
       : window.location.href;
@@ -210,9 +224,7 @@ export function SelectedGeneDock(): ReactElement | null {
       if (tool) break;
     }
 
-    return buildShareUrl(baseUrl, {
-      phageKey: currentPhage.slug?.trim() || currentPhage.accession,
-      geneKey: getGeneShareKey(selectedGene),
+    return getSelectedGenePublicLinks(baseUrl, currentPhage, selectedGene, {
       viewMode,
       position: scrollPosition,
       readingFrame,
@@ -220,6 +232,7 @@ export function SelectedGeneDock(): ReactElement | null {
       tool,
     });
   }, [currentPhage, readingFrame, scrollPosition, selectedGene, show3DModel, stack, viewMode]);
+  const shareUrl = publicLinks?.shareUrl;
 
   const showFeedback = useCallback((nextFeedback: Exclude<FeedbackState, null>) => {
     setFeedback(nextFeedback);
@@ -310,22 +323,16 @@ export function SelectedGeneDock(): ReactElement | null {
   }, [currentPhage, geneLabel, selectedGene, shareUrl, showFeedback]);
 
   const handleCopyCitation = useCallback(async () => {
-    if (!currentPhage || !selectedGene || !shareUrl) return;
-    const citation = buildPhageCitation({
-      name: `${geneLabel} in ${currentPhage.name}`,
-      accession: currentPhage.accession,
-      pdbIds: currentPhage.pdbIds,
-      explorerUrl: shareUrl,
-    });
+    if (!publicLinks) return;
 
     try {
-      await copyToClipboard(citation);
+      await copyToClipboard(publicLinks.citation);
       haptics.success();
       showFeedback('citation-copied');
     } catch {
       haptics.error();
     }
-  }, [currentPhage, geneLabel, selectedGene, shareUrl, showFeedback]);
+  }, [publicLinks, showFeedback]);
 
   const handleOpenAnalysis = useCallback((
     overlayId: 'proteinDomains' | 'foldQuickview' | 'selectionPressure' | 'rnaStructure'
@@ -445,36 +452,42 @@ export function SelectedGeneDock(): ReactElement | null {
               <div><dt>Locus tag</dt><dd>{selectedGene.locusTag?.trim() || 'Not provided'}</dd></div>
               <div><dt>Gene name</dt><dd>{selectedGene.name?.trim() || 'Not provided'}</dd></div>
               <div><dt>Feature type</dt><dd>{selectedGene.type?.trim() || 'Not provided'}</dd></div>
-              <div><dt>Coordinates</dt><dd>{coordinates}</dd></div>
+              <div><dt>Feature span (0-based, end exclusive)</dt><dd>{coordinates}</dd></div>
               <div><dt>Strand</dt><dd>{strand}</dd></div>
               <div><dt>Database ID</dt><dd>{selectedGene.id}</dd></div>
             </dl>
           </section>
 
+          {isSheetOpen && <SelectedCdsInspector source={source?.phage === currentPhage ? source : null} gene={selectedGene} />}
+
           <section className="selected-gene-inspector__section" aria-labelledby="selected-gene-actions-heading">
             <h4 id="selected-gene-actions-heading">Use this record</h4>
             <div className="selected-gene-inspector__action-grid">
-              <button type="button" onClick={() => void handleShare()}>
+              <button type="button" onClick={() => {
+                if (currentPhage.localGenome) { setIsSheetOpen(false); open('genomeImport'); }
+                else void handleShare();
+              }}>
                 <ShareIcon />
-                <span>{feedback === 'link-copied' ? 'Link copied' : 'Share exact view'}</span>
+                <span>{currentPhage.localGenome ? 'Export local genome bundle' : feedback === 'link-copied' ? 'Link copied' : 'Share exact view'}</span>
               </button>
-              <button type="button" onClick={() => void handleCopyCitation()}>
+              {publicLinks && <button type="button" onClick={() => void handleCopyCitation()}>
                 <BookIcon />
                 <span>{feedback === 'citation-copied' ? 'Citation copied' : 'Copy citation'}</span>
-              </button>
+              </button>}
               <button type="button" onClick={() => void handleCopyId()}>
                 <CopyIcon />
                 <span>{feedback === 'id-copied' ? 'ID copied' : 'Copy gene ID'}</span>
               </button>
-              <a href={buildNcbiNucleotideUrl(currentPhage.accession)} target="_blank" rel="noopener noreferrer">
+              {publicLinks && <a href={publicLinks.ncbiUrl} target="_blank" rel="noopener noreferrer">
                 <ExternalLinkIcon />
                 <span>NCBI record</span>
-              </a>
+              </a>}
             </div>
+            {currentPhage.localGenome && <p className="selected-gene-inspector__section-intro">This gene belongs to a private local genome. Export a genome bundle to preserve the original sequence and annotations.</p>}
             <div className="selected-gene-inspector__feedback" role="status" aria-live="polite">
               {feedback === 'id-copied' && `Copied ${geneId}`}
-              {feedback === 'link-copied' && 'Copied an exact, restorable gene link'}
-              {feedback === 'citation-copied' && 'Copied a reproducible citation'}
+              {publicLinks && feedback === 'link-copied' && 'Copied an exact, restorable gene link'}
+              {publicLinks && feedback === 'citation-copied' && 'Copied a reproducible citation'}
             </div>
           </section>
 

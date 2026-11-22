@@ -97,26 +97,32 @@ function protein(cds: string, code: number, initiation: boolean): string {
   const translated = translateSequence(cds, 0, code);
   return initiation && getGeneticCode(code).starts.includes(cds.slice(0, 3)) ? 'M' + translated.slice(1) : translated;
 }
-/** Reconstruct a validated transcript without changing its original coordinate system. */
-export function reconstructCdsReference(gene: GeneInfo, genome: string,
-  supportedCodes: readonly GeneticCode[] = SUPPORTED_GENETIC_CODES): CdsReference {
+export interface CdsReferenceDna {
+  codonStart: number;
+  segments: CdsReference['segments'];
+  cds: string | null;
+  reasons: string[];
+}
+
+/** Exact annotated DNA in transcript order. Translation qualifiers do not change
+ * which bases were annotated; an unsupported protein can still have readable DNA.
+ */
+export function extractCdsReferenceDna(gene: GeneInfo, genome: string): CdsReferenceDna {
   const q = gene.qualifiers ?? {}, reasons: string[] = [];
-  // Zero is an explicit unsupported sentinel; never export NaN from malformed qualifiers.
-  const table = Number(q.transl_table ?? 1), start = Number(q.codon_start ?? 1);
-  const geneticCode = Number.isSafeInteger(table) ? table : 0, codonStart = Number.isSafeInteger(start) ? start : 0;
+  const start = Number(q.codon_start ?? 1);
+  const codonStart = Number.isSafeInteger(start) ? start : 0;
   const raw = getGeneMapSegments(gene);
-  if (!isSupportedGeneticCode(geneticCode) || !supportedCodes.includes(geneticCode)) reasons.push('Unsupported translation table.');
   if (![1, 2, 3].includes(codonStart)) reasons.push('Unsupported codon_start.');
-  for (const qualifier of ['pseudo', 'pseudogene', 'exception', 'transl_except', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']) {
-    if (Object.hasOwn(q, qualifier)) reasons.push(`Unsupported /${qualifier} qualifier.`);
+  if (q._segments !== undefined && !Array.isArray(q._segments)
+    || typeof q._location === 'string' && /\b(?:join|order)\s*\(/i.test(q._location) && !Array.isArray(q._segments)) {
+    reasons.push('Exact joined CDS segments are unavailable; its bounding interval cannot be used.');
   }
   const sorted = [...raw].sort((a, b) => a.start - b.start);
   if (!raw.length || Array.isArray(q._segments) && q._segments.length !== raw.length
     || raw.some(s => !Number.isSafeInteger(s.start) || !Number.isSafeInteger(s.end) || s.start < 0 || s.end > genome.length
       || s.start >= s.end || !['+', '-'].includes(s.strand ?? '') || s.strand !== raw[0].strand)
     || sorted.some((s, i) => i > 0 && s.start < sorted[i - 1].end)) reasons.push('Unsupported mixed, overlapping or out-of-bounds CDS segments.');
-  const base: CdsReference = { geneId: gene.id, name: gene.locusTag ?? gene.name ?? `CDS ${gene.id}`,
-    product: gene.product, geneticCode, codonStart, segments: [], cds: null, protein: null, reasons };
+  const base: CdsReferenceDna = { codonStart, segments: [], cds: null, reasons };
   if (reasons.length) return base;
   // codon_start is measured in REFERENCE transcript coordinates, not query bases.
   let skip = codonStart - 1;
@@ -129,6 +135,29 @@ export function reconstructCdsReference(gene: GeneInfo, genome: string,
   base.cds = base.segments.map(s => s.strand === '+' ? genome.slice(s.start, s.end) : reverseComplement(genome.slice(s.start, s.end))).join('');
   if (!base.cds || base.cds.length % 3) reasons.push('Reference CDS lacks complete terminal codons.');
   if (/[^ACGT]/.test(base.cds)) reasons.push('Reference CDS contains unresolved bases.');
+  return base;
+}
+
+/** Reconstruct a validated transcript without changing its original coordinate system. */
+export function reconstructCdsReference(gene: GeneInfo, genome: string,
+  supportedCodes: readonly GeneticCode[] = SUPPORTED_GENETIC_CODES): CdsReference {
+  const q = gene.qualifiers ?? {}, reasons: string[] = [];
+  // Zero is an explicit unsupported sentinel; never export NaN from malformed qualifiers.
+  const table = Number(q.transl_table ?? 1);
+  const geneticCode = Number.isSafeInteger(table) ? table : 0;
+  const dna = extractCdsReferenceDna(gene, genome), { codonStart } = dna;
+  if (!isSupportedGeneticCode(geneticCode) || !supportedCodes.includes(geneticCode)) reasons.push('Unsupported translation table.');
+  if (![1, 2, 3].includes(codonStart)) reasons.push('Unsupported codon_start.');
+  for (const qualifier of ['pseudo', 'pseudogene', 'exception', 'transl_except', 'ribosomal_slippage', 'trans_splicing', 'artificial_location']) {
+    if (Object.hasOwn(q, qualifier)) reasons.push(`Unsupported /${qualifier} qualifier.`);
+  }
+  if (dna.cds === null) reasons.push(...dna.reasons.filter(reason => reason !== 'Unsupported codon_start.'));
+  const base: CdsReference = { geneId: gene.id, name: gene.locusTag ?? gene.name ?? `CDS ${gene.id}`,
+    product: gene.product, geneticCode, codonStart, segments: [], cds: null, protein: null, reasons };
+  if (reasons.length) return base;
+  base.segments = dna.segments;
+  base.cds = dna.cds!;
+  reasons.push(...dna.reasons);
   if (!reasons.length) {
     base.protein = protein(base.cds, geneticCode, codonStart === 1);
     if (base.protein.slice(0, -1).includes('*')) reasons.push('Reference CDS has an internal stop; recoding is not inferred.');

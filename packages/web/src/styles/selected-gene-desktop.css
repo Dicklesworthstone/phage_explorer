@@ -1,9 +1,8 @@
 /* Authoritative selected-gene surface for desktop layouts. */
 
 @media (min-width: 901px) {
-  /* The legacy App-local card is driven by a separate React state. Keep it out
-     of the rendered experience so deep links, browser history, and dock
-     navigation cannot show two conflicting selected genes. */
+  /* The shared dock supplies desktop details, sequence inspection and exports.
+     Keep the compact in-page card hidden to avoid duplicating that surface. */
   .panel[aria-label='Selected gene details'] {
     display: none !important;
   }
