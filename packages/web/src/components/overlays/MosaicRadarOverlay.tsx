@@ -31,6 +31,7 @@ import {
 import { MosaicSession, readMosaicFile, readMosaicSequence, readRepositoryMosaicDataset,
   REPOSITORY_MOSAIC_PANEL } from '../../workers/MosaicSession';
 import { downloadString } from '../../utils/export';
+import { AlignmentCompatibilityPanel } from './AlignmentCompatibilityPanel';
 
 // Color palette for donors (distinct, accessible colors)
 const DONOR_PALETTE = [
@@ -342,6 +343,7 @@ export function MosaicRadarOverlay({
       size="lg"
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <AlignmentCompatibilityPanel />
         {/* Description */}
         <div
           style={{

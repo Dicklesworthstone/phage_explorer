@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Exact aligned-DNA site compatibility
+
+- Mosaic radar now accepts a sourced homologous DNA alignment and exhaustively
+  counts all four haplotypes for eligible site pairs. The matrix and pair table
+  retain original alignment coordinates, exact taxon witnesses and explicit
+  missing, monomorphic, multiallelic and singleton exclusions. No inferred
+  event counts, biological breakpoints, donors or p-values are reported.
+- Full JSON and sites/pairs TSV exports preserve all evidence. Local snapshots
+  and imported JSON freshly recompute from the embedded alignment; failed or
+  cancelled work preserves accepted results. The existing k-mer comparison
+  remains available. [Workflow and exact example](docs/ALIGNMENT_COMPATIBILITY_WORKFLOW.md).
+
 ### Terminal browsing history and portable named views
 
 - Back and Forward now restore accepted genome, position, selected CDS, display
@@ -19,6 +31,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 - Source loading, cancellation and late replies preserve the current user's
   selection. Collection files use explicit paths and exclusive creation.
   [Controls, source requirements and limits](docs/TERMINAL_SAVED_VIEWS.md).
+  [Commit 9155359](https://github.com/Dicklesworthstone/phage_explorer/commit/915535958bbb996aaf953998f0ee20dd322ada19).
 
 ### Independent navigation for live and reopened comparison diffs
 

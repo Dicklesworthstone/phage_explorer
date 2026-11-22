@@ -11,6 +11,7 @@ import { executeTemporalRequest, temporalDatingRequest } from '../workers/Tempor
 import { executeAncestralRequest } from '../workers/AncestralSession';
 import { executeHostMetabolismRequest } from '../workers/HostMetabolismSession';
 import { hostGeneWorkflowFixture } from '../../../core/src/analysis/host-gene-knockout.fixture';
+import { createCompatibilityExperiment, replayCompatibilityExperiment } from '../../../core/src/analysis/alignment-compatibility';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -96,6 +97,22 @@ async function fixture(test: (value: ReturnType<typeof transactionFixture>) => P
 }
 
 describe('saved research format routing', () => {
+  it('routes complete aligned-site experiments and reopens their exact sources through fresh calculation', async () => {
+    const experiment = await createCompatibilityExperiment({ format: 'phage-explorer-alignment-compatibility', version: 1,
+      name: 'Explicit synthetic compatibility fixture', source: { kind: 'demo', reference: 'Hand-counted fixture', version: '1', license: 'CC0' },
+      alignment: { fasta: '>a\nAA\n>b\nAG\n>c\nGA\n>d\nGG\n', homologous: true, method: 'Constructed columns', reference: 'Synthetic hypothesis' } });
+    const exported = serializeAnalysisRecord(experiment.record);
+    assert(validateResearchSnapshotContent('compatibility', exported) > 0);
+    assert.throws(() => validateResearchSnapshotContent('synteny', exported), /match/);
+    assert.throws(() => validateResearchSnapshotContent('compatibility', content), /match/);
+    assert.equal((await replayCompatibilityExperiment(exported)).record.resultId, experiment.record.resultId);
+    await fixture(async ({ store }) => {
+      const saved = await store.save('compatibility', 'Private exact alignment', exported);
+      const read = await store.read(saved.id, 'compatibility');
+      assert.equal(read.content, exported);
+      assert.equal((await replayCompatibilityExperiment(read.content)).result.coverage.incompatiblePairs, 1);
+    });
+  });
   it('accepts existing portable formats without relabeling analysis methods', () => {
     assert.equal(validateResearchSnapshotContent('genomes', content), new TextEncoder().encode(content).length);
     assert(validateResearchSnapshotContent('workflow', JSON.stringify({ format: 'phage-explorer-commands', version: 1 })) > 0);
