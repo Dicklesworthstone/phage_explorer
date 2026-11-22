@@ -44,8 +44,11 @@ export interface TerminalResearchDraft {
   initialView: ResearchView | null;
 }
 export interface TerminalResearchRNASource { bases: number; synonymousSupported: boolean }
+export interface TerminalResearchDraftReview { name: string; sourceCount: number; stepCount: number }
 export interface TerminalResearchSnapshot {
   draft: TerminalResearchDraft | null;
+  /** Only the proposed replacement's summary is exposed before approval. */
+  pendingDraft: TerminalResearchDraftReview | null;
   document: TerminalResearchDocument | null;
   completedRun: TerminalResearchRun | null;
   busy: 'reading' | 'drafting' | 'recording' | 'replaying' | 'saving' | 'restoring' | null;
@@ -54,6 +57,7 @@ export interface TerminalResearchSnapshot {
   notice: string | null;
 }
 interface Operation { controller: AbortController; timer: ReturnType<typeof setTimeout> }
+interface PreparedDraft { draft: TerminalResearchDraft; genomes: LocalGenome[] }
 export interface TerminalResearchRuntime {
   run?: typeof runTerminalResearchWorker;
   parseBundle?: typeof loadTerminalGenomeBundle;
@@ -83,11 +87,12 @@ export class TerminalResearchSession {
    * Extract a selected transcript on demand instead of copying every CDS.
    */
   private draftGenomes: LocalGenome[] = [];
+  private draftReplacement: { prepared: PreparedDraft; notice: string } | null = null;
   private readonly run: typeof runTerminalResearchWorker;
   private readonly parseBundle: typeof loadTerminalGenomeBundle;
   private readonly timeoutMs: number;
   private listeners = new Set<() => void>();
-  private state: TerminalResearchSnapshot = { draft: null, document: null, completedRun: null,
+  private state: TerminalResearchSnapshot = { draft: null, pendingDraft: null, document: null, completedRun: null,
     busy: null, progress: null, error: null, notice: null };
   constructor(runtime: TerminalResearchRuntime = {}) {
     this.run = runtime.run ?? runTerminalResearchWorker;
@@ -105,6 +110,7 @@ export class TerminalResearchSession {
   }
   private begin(busy: NonNullable<TerminalResearchSnapshot['busy']>): Operation {
     if (this.operation) throw new Error('Cancel or finish the active research operation first.');
+    if (this.draftReplacement) throw new Error('Accept or discard the reviewed draft replacement first.');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new Error('Research operation timed out. Previous accepted work is unchanged.')), this.timeoutMs);
     const operation = { controller, timer };
@@ -127,6 +133,7 @@ export class TerminalResearchSession {
     const operation = this.operation;
     const saving = this.state.busy === 'saving';
     this.operation = null;
+    if (this.draftReplacement) this.discardDraftReplacement();
     if (operation) {
       clearTimeout(operation.timer);
       operation.controller.abort(new DOMException('Research operation cancelled.', 'AbortError'));
@@ -135,6 +142,56 @@ export class TerminalResearchSession {
         : 'Cancelled. Previously accepted workflow results and explorer selection are unchanged.' });
     }
   };
+  /** Parse and validate every proposed step against its own captured sources.
+   * Nothing is published until the whole draft is ready, including RNA/CDS
+   * checks that require the new annotations rather than the previous draft.
+   */
+  private async prepareDraft(content: string, signal: AbortSignal, capturedView?: ResearchView | null): Promise<PreparedDraft> {
+    const plan = validateResearchPlan(content);
+    // validateResearchPlan requires exactly this embedded-bundle context.
+    const bundle = (plan.context as { bundle: string }).bundle;
+    const parsed = await cancellable(this.parseBundle(bundle, signal), signal);
+    check(signal);
+    const genomes = structuredClone(parsed.genomes);
+    const sources = genomes.map(genome => ({ contentId: genome.phage.localGenome!.contentId,
+      name: genome.phage.name, accession: genome.phage.accession, bases: genome.sequence.length,
+      format: genome.phage.localGenome!.format, sequenceSha256: genome.phage.localGenome!.sequenceSha256,
+      topology: genome.phage.localGenome!.topology,
+      genes: genome.phage.genes.map(({ id, name, locusTag, type, startPos, endPos }) => ({ id, name, locusTag, type, startPos, endPos })) }));
+    const first = plan.commands[0];
+    const initialView = capturedView !== undefined ? capturedView
+      : first?.actionId === ActionIds.NavGoto ? first.parameters as unknown as ResearchView : null;
+    const draft = { plan, sources, initialView: initialView ? structuredClone(initialView) : null };
+    for (const [index, step] of plan.commands.entries()) {
+      try { this.validateStep(draft, step, genomes); }
+      catch (cause) { throw new Error(`Step ${index + 1}: ${cause instanceof Error ? cause.message : String(cause)}`); }
+    }
+    return { draft, genomes };
+  }
+  private publishDraft(prepared: PreparedDraft, notice: string): void {
+    this.draftGenomes = prepared.genomes;
+    this.draftReplacement = null;
+    this.publish({ draft: prepared.draft, pendingDraft: null, error: null, notice });
+  }
+  private reviewDraft(prepared: PreparedDraft, notice: string): void {
+    if (!this.state.draft) { this.publishDraft(prepared, notice); return; }
+    this.draftReplacement = { prepared, notice };
+    this.publish({ pendingDraft: { name: prepared.draft.plan.name,
+      sourceCount: prepared.draft.sources.length, stepCount: prepared.draft.plan.commands.length },
+      notice: 'Reviewed the proposed draft. Confirm replacement before changing the current editable draft. Accepted recordings and results are unchanged.' });
+  }
+  acceptDraftReplacement = (): void => {
+    if (this.operation) throw new Error('Finish or cancel active work before accepting the replacement.');
+    const replacement = this.draftReplacement;
+    if (!replacement) throw new Error('There is no reviewed draft replacement to accept.');
+    this.publishDraft(replacement.prepared, replacement.notice);
+  };
+  discardDraftReplacement = (): void => {
+    if (!this.draftReplacement) return;
+    this.draftReplacement = null;
+    this.publish({ pendingDraft: null, error: null,
+      notice: 'Kept the existing editable draft. The reviewed replacement was not installed; accepted results are unchanged.' });
+  };
   /** Capture originals and view once. Later explorer navigation/imports cannot
    * relabel this draft; existing accepted results survive a failed new draft.
    */
@@ -142,32 +199,23 @@ export class TerminalResearchSession {
     const operation = this.begin('drafting'), signal = operation.controller.signal;
     try {
       const initialView = view ? structuredClone(view) : null;
-      const plan = validateResearchPlan(serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1,
-        name, context: { bundle }, commands: initialView ? [{ actionId: ActionIds.NavGoto, parameters: analysisJson(initialView) }] : [] }));
-      const parsed = await cancellable(this.parseBundle(bundle, signal), signal);
-      check(signal);
-      const sources = parsed.genomes.map(genome => ({ contentId: genome.phage.localGenome!.contentId,
-        name: genome.phage.name, accession: genome.phage.accession, bases: genome.sequence.length,
-        format: genome.phage.localGenome!.format, sequenceSha256: genome.phage.localGenome!.sequenceSha256,
-        topology: genome.phage.localGenome!.topology,
-        genes: genome.phage.genes.map(({ id, name, locusTag, type, startPos, endPos }) => ({ id, name, locusTag, type, startPos, endPos })) }));
-      const draft = { plan, sources, initialView };
-      if (initialView) this.validateStep(draft, plan.commands[0]);
+      const prepared = await this.prepareDraft(serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1,
+        name, context: { bundle }, commands: initialView ? [{ actionId: ActionIds.NavGoto, parameters: analysisJson(initialView) }] : [] }), signal, initialView);
       if (!this.current(operation)) return false;
-      this.draftGenomes = structuredClone(parsed.genomes);
-      this.publish({ draft, notice: 'Draft captured the accepted private inputs' + (initialView ? ' and selected view' : '')
-        + '. No analyses have run; previous accepted results are unchanged.' });
+      this.reviewDraft(prepared, 'Draft captured the accepted private inputs' + (initialView ? ' and selected view' : '')
+        + '. No analyses have run; previous accepted results are unchanged.');
       return true;
     } catch (cause) { this.failed(operation, cause); return false; }
     finally { this.finish(operation); }
   };
   private editableDraft(): TerminalResearchDraft {
     if (this.operation) throw new Error('Finish or cancel active work before editing the draft.');
+    if (this.draftReplacement) throw new Error('Accept or discard the reviewed draft replacement before editing.');
     if (!this.state.draft) throw new Error('Create a named draft from accepted private genomes first.');
     return this.state.draft;
   }
-  private draftGenome(contentId: string): LocalGenome {
-    const source = this.draftGenomes.find(genome => genome.phage.localGenome?.contentId === contentId);
+  private draftGenome(contentId: string, genomes = this.draftGenomes): LocalGenome {
+    const source = genomes.find(genome => genome.phage.localGenome?.contentId === contentId);
     if (!source) throw new Error('Select a genome from this draft\'s captured input bundle.');
     return source;
   }
@@ -175,7 +223,7 @@ export class TerminalResearchSession {
     const source = researchRNASource(this.draftGenome(contentId), geneId);
     return { bases: source.sequence.length, synonymousSupported: source.synonymousSupported };
   };
-  private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep): void {
+  private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep, genomes = this.draftGenomes): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
       ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph,
       ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar];
@@ -229,7 +277,7 @@ export class TerminalResearchSession {
     if (step.actionId === ActionIds.OverlayRNAStructure) {
       // The same extraction and interval checks used by browser/native replay
       // preserve complement/join/codon_start and exceptional-code boundaries.
-      researchRNARequest(this.draftGenome(source.contentId), step.parameters as unknown as ResearchRNAParameters);
+      researchRNARequest(this.draftGenome(source.contentId, genomes), step.parameters as unknown as ResearchRNAParameters);
     }
     if (step.actionId === ActionIds.NavGoto) {
       validateResearchView(step.parameters);
@@ -318,6 +366,14 @@ export class TerminalResearchSession {
       path(filePath);
       const content = await readInput(filePath, signal, WORKFLOW_RESULTS_LIMITS.bytes);
       const envelope: unknown = JSON.parse(content);
+      if (envelope && typeof envelope === 'object' && 'format' in envelope
+        && envelope.format === 'phage-explorer-command-plan') {
+        const prepared = await this.prepareDraft(content, signal);
+        check(signal);
+        if (!this.current(operation)) return false;
+        this.reviewDraft(prepared, 'Opened the saved draft with its exact captured inputs and parameters. No commands ran; accepted recordings and results are unchanged.');
+        return true;
+      }
       const isArchive = !!envelope && typeof envelope === 'object' && 'format' in envelope
         && envelope.format === 'phage-explorer-workflow-results';
       const archive = isArchive ? await parseWorkflowResults(content, signal) : null;
@@ -333,6 +389,24 @@ export class TerminalResearchSession {
         savedResults: archive ? { archive, json: content } : null }, completedRun: null,
         notice: archive ? 'Opened archive: record integrity checked. No numerical methods have run and no genomes were installed.'
           : 'Opened workflow for inspection only. No commands ran and no genomes were installed.' });
+      return true;
+    } catch (cause) { this.failed(operation, cause); return false; }
+    finally { this.finish(operation); }
+  };
+  /** Explicitly author a NEW experiment from inspected commands. The accepted
+   * recording, its expectations and any verified results remain untouched.
+   */
+  forkDraft = async (name: string): Promise<boolean> => {
+    const operation = this.begin('drafting'), signal = operation.controller.signal;
+    try {
+      const document = this.state.document;
+      if (!document) throw new Error('Open a recording or complete archive before making an editable copy.');
+      const tape = parseCommandTape(document.tapeJson);
+      const prepared = await this.prepareDraft(serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1,
+        name, context: tape.context, commands: tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })) }), signal);
+      check(signal);
+      if (!this.current(operation)) return false;
+      this.reviewDraft(prepared, 'Copied the inspected commands and original inputs into an unexecuted draft. Recording will compute a NEW baseline, not verify the old expectations. Accepted recordings and results are unchanged.');
       return true;
     } catch (cause) { this.failed(operation, cause); return false; }
     finally { this.finish(operation); }

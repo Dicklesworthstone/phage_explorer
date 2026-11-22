@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
+import { importLocalGenomes, exportLocalGenomeBundle, type GenomeImportResult } from '../../core/src/genome-import';
 import { parseCommandTape, parseCommandPlan, serializeCommandPlan, serializeCommandTape } from '../../core/src/command-session';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowResults, serializeWorkflowResults } from '../../core/src/workflow-results';
@@ -17,7 +17,7 @@ import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from './research-replay';
 import { runTerminalResearchWorker } from '../../../scripts/research-workflow';
-import { TerminalGenomeSession, type TerminalGenomeAccepted } from './local-genome-session';
+import { TerminalGenomeSession, loadTerminalGenomeBundle, type TerminalGenomeAccepted } from './local-genome-session';
 import { TerminalResearchSession } from './terminal-research-session';
 
 const genbank = 'LOCUS       joined                    18 bp    DNA     linear\n'
@@ -62,6 +62,160 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
+  it('reopens an unrecorded saved plan, edits exact captured inputs, and records and verifies a fresh baseline', async () => {
+    const f = await fixture(), author = new TerminalResearchSession(), calls: string[] = [];
+    const bundle = exportLocalGenomeBundle(f.imported.genomes), id = f.view.contentId;
+    assert(await author.createDraft('Resume this private experiment', bundle, f.view));
+    author.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId: id, windowSize: 4, stepSize: 4 } });
+    author.setStep({ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson(researchRNAParameters(id,
+      { geneId: f.view.geneId, start: 0, end: 12, strand: '+' },
+      { windowSize: 12, stepSize: 12, minLoopSize: 0, allowWobble: false, includeSynonymousStress: false })) });
+    const file = join(f.directory, 'unfinished-plan.json');
+    assert(await author.save(file, 'plan'));
+    const original = await readFile(file, 'utf8'), proposed = parseCommandPlan(original);
+    assert.equal(author.getSnapshot().document, null);
+    author.cancel();
+
+    const resumed = new TerminalResearchSession({ run: (...args) => { calls.push(args[0].type); return runTerminalResearchWorker(...args); } });
+    assert(await resumed.load(file), resumed.getSnapshot().error ?? '');
+    assert.deepEqual(calls, [], 'opening a plan must not record, inspect a recording, or run numerical methods');
+    assert.deepEqual(resumed.getSnapshot().draft!.plan, proposed);
+    assert.deepEqual(resumed.getSnapshot().draft!.initialView, f.view);
+    assert.equal(resumed.getSnapshot().document, null); assert.equal(resumed.availableResults(), null);
+    assert.deepEqual(resumed.describeRNA(id, f.view.geneId), { bases: 12, synonymousSupported: true });
+    // The reopened draft must use its saved input, even after an unrelated
+    // explorer/source object has changed in the current process.
+    f.genome.sequence = 'N'.repeat(18); f.genome.phage.genes[0].qualifiers = { transl_table: '999' };
+    resumed.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId: id, windowSize: 6, stepSize: 6 } }, 1);
+    assert.equal(await readFile(file, 'utf8'), original, 'editing never overwrites the saved plan');
+    assert(await resumed.recordDraft(), resumed.getSnapshot().error ?? '');
+    const windows = resumed.analysis(2).fields.windows.value as unknown as GCSkewWindow[];
+    // ATGAAA | CCCGGG | TTTCAT has G/C counts 1/0, 3/3, 0/1.
+    assert.deepEqual(windows.map(row => [row.g, row.c, row.skew]), [[1, 0, 1], [3, 3, 0], [0, 1, -1]]);
+    const rna = await replayRNAStructureRecord(JSON.stringify(resumed.analysis(3)));
+    assert.equal(rna.request.sequence, 'ATGAAATTTCAT'); assert.equal(rna.analysis.windows[0].pairCount, 6);
+    assert.equal(resumed.availableResults()?.provenance, 'recorded');
+    const baseline = resumed.availableResults()!.json;
+    assert(await resumed.replay(), resumed.getSnapshot().error ?? '');
+    assert.equal(resumed.availableResults()!.json, baseline); assert.equal(resumed.availableResults()?.provenance, 'verified');
+    assert.deepEqual(parseCommandTape(resumed.getSnapshot().document!.tapeJson).context, { bundle });
+    resumed.cancel();
+  });
+
+  it('forks inspected recordings explicitly while retaining their expectations and accepted results', async () => {
+    const f = await fixture(), archiveFile = join(f.directory, 'inspected-results.json');
+    await writeFile(archiveFile, f.archive, { flag: 'wx', mode: 0o600 });
+    for (const file of [f.file, archiveFile]) {
+      let computations = 0;
+      const session = new TerminalResearchSession({ run: (...args) => { computations++; return runTerminalResearchWorker(...args); } });
+      assert(await session.load(file));
+      assert.equal(session.getSnapshot().draft, null, 'opening recorded evidence never silently makes a new baseline');
+      assert(await session.replay());
+      const document = session.getSnapshot().document, verified = session.getSnapshot().completedRun;
+      const before = computations, tape = parseCommandTape(document!.tapeJson);
+      assert(await session.forkDraft('Alternative window study'), session.getSnapshot().error ?? '');
+      assert.equal(computations, before, 'explicit copying still runs no numerical methods');
+      const draft = session.getSnapshot().draft!;
+      assert.equal(draft.plan.name, 'Alternative window study');
+      assert.deepEqual(draft.plan.context, tape.context);
+      assert.deepEqual(draft.plan.commands, tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })));
+      assert(draft.plan.commands.every(step => !Object.hasOwn(step, 'expected')));
+      assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, verified);
+      assert.equal(session.availableResults()?.provenance, 'verified');
+      session.setStep({ actionId: ActionIds.OverlayGCSkew,
+        parameters: { contentId: f.view.contentId, windowSize: 6, stepSize: 6 } }, 0);
+      assert.strictEqual(session.getSnapshot().completedRun, verified);
+      assert.equal(session.getSnapshot().document!.tapeJson, f.tape, 'editing cannot rewrite the recording being verified');
+      assert(await session.recordDraft(), session.getSnapshot().error ?? '');
+      assert.equal(session.getSnapshot().completedRun, null, 'a freshly computed branch is not verification of its parent');
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      assert.notDeepEqual(parseCommandTape(session.getSnapshot().document!.tapeJson).commands[0].expected, tape.commands[0].expected);
+      assert.equal(await readFile(file, 'utf8'), file === f.file ? f.tape : f.archive);
+      session.cancel();
+    }
+  });
+
+  it('reviews draft replacement against the new sources and preserves accepted work on rejection', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    assert(await session.load(f.file)); assert(await session.replay());
+    assert(await session.createDraft('Unfinished original', exportLocalGenomeBundle(f.imported.genomes), f.view));
+    const original = session.getSnapshot().draft, document = session.getSnapshot().document, verified = session.getSnapshot().completedRun;
+    const newer = await importLocalGenomes({ name: 'different-input.gb', text:
+      'LOCUS       joined 9 bp DNA linear\nACCESSION   joined\nFEATURES             Location/Qualifiers\n     CDS             1..9\nORIGIN\n        1 ATGAAATAG\n//\n' });
+    const id = newer.genomes[0].phage.localGenome!.contentId;
+    const rna = researchRNAParameters(id, { geneId: 1, start: 0, end: 9, strand: '+' },
+      { windowSize: 9, stepSize: 9, minLoopSize: 0, allowWobble: false, includeSynonymousStress: false });
+    const plan = { format: 'phage-explorer-command-plan' as const, version: 1 as const, name: 'Reviewed replacement',
+      context: { bundle: exportLocalGenomeBundle(newer.genomes) },
+      commands: [{ actionId: ActionIds.OverlayRNAStructure, parameters: analysisJson(rna) }] };
+    const file = join(f.directory, 'replacement-plan.json'), content = serializeCommandPlan(plan);
+    await writeFile(file, content, { flag: 'wx', mode: 0o600 });
+    assert(await session.load(file), session.getSnapshot().error ?? '');
+    assert.strictEqual(session.getSnapshot().draft, original);
+    assert.deepEqual(session.getSnapshot().pendingDraft, { name: plan.name, sourceCount: 1, stepCount: 1 });
+    assert.deepEqual(session.describeRNA(f.view.contentId, f.view.geneId), { bases: 12, synonymousSupported: true });
+    assert.throws(() => session.describeRNA(id, 1), /captured input/);
+    assert.throws(() => session.removeStep(0), /replacement/);
+    await assert.rejects(session.recordDraft(), /replacement/);
+    session.discardDraftReplacement();
+    assert.strictEqual(session.getSnapshot().draft, original); assert.equal(session.getSnapshot().pendingDraft, null);
+    assert(await session.load(file));
+    // The user approves an already validated snapshot, not a pathname that may
+    // have changed between review and approval.
+    await writeFile(file, '{changed by another process');
+    session.acceptDraftReplacement();
+    assert.deepEqual(session.getSnapshot().draft!.plan, plan);
+    assert.deepEqual(session.describeRNA(id, 1), { bases: 9, synonymousSupported: true });
+    assert.throws(() => session.describeRNA(f.view.contentId, f.view.geneId), /captured input/);
+    assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, verified);
+    const accepted = session.getSnapshot().draft;
+    for (const [index, changed] of [
+      { ...plan, commands: [{ actionId: ActionIds.OverlayRNAStructure, parameters: { ...rna, end: 12 } }] },
+      { ...plan, commands: [{ actionId: ActionIds.OverlayRNAStructure, parameters: { ...rna, contentId: 'f'.repeat(64) } }] },
+      { ...plan, commands: [{ ...plan.commands[0], expected: null }] },
+    ].entries()) {
+      const invalid = join(f.directory, `invalid-reopened-plan-${index}.json`);
+      await writeFile(invalid, JSON.stringify(changed), { flag: 'wx', mode: 0o600 });
+      assert.equal(await session.load(invalid), false);
+      assert.strictEqual(session.getSnapshot().draft, accepted); assert.equal(session.getSnapshot().pendingDraft, null);
+      assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, verified);
+    }
+    assert(await session.createDraft('Another empty draft', exportLocalGenomeBundle(f.imported.genomes)));
+    assert(session.getSnapshot().pendingDraft);
+    session.cancel();
+    assert.strictEqual(session.getSnapshot().draft, accepted); assert.equal(session.getSnapshot().pendingDraft, null);
+  });
+
+  it('settles cancelled plan reads and cannot publish late source parsing over later edits', async () => {
+    const f = await fixture();
+    let held = false, entered = false, release!: (value: GenomeImportResult) => void;
+    const gate = new Promise<GenomeImportResult>(resolve => { release = resolve; });
+    const session = new TerminalResearchSession({ parseBundle: (content, signal) => {
+      if (held) { entered = true; return gate; }
+      return loadTerminalGenomeBundle(content, signal);
+    }, run: async () => { throw new Error('Opening or cancelling a draft must not run analyses.'); } });
+    try {
+      const bundle = exportLocalGenomeBundle(f.imported.genomes);
+      assert(await session.createDraft('Keep these edits', bundle));
+      const file = join(f.directory, 'held-plan.json');
+      await writeFile(file, serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1,
+        name: 'Delayed draft', context: { bundle }, commands: [] }), { flag: 'wx', mode: 0o600 });
+      held = true;
+      const opening = session.load(file); await waitFor(() => entered);
+      session.cancel();
+      assert.equal(await opening, false);
+      session.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId: f.view.contentId, windowSize: 6, stepSize: 6 } });
+      const edited = session.getSnapshot().draft;
+      release(f.imported); await new Promise(resolve => setTimeout(resolve, 20));
+      assert.strictEqual(session.getSnapshot().draft, edited); assert.equal(session.getSnapshot().pendingDraft, null);
+      assert.equal(session.getSnapshot().busy, null); assert.equal(session.getSnapshot().document, null);
+      held = false;
+      assert(await session.load(file)); session.acceptDraftReplacement();
+      assert.equal(session.getSnapshot().draft!.plan.commands.length, 0, 'empty saved drafts remain editable');
+      assert.equal(await session.recordDraft(), false); assert.match(session.getSnapshot().error!, /at least one command/);
+    } finally { session.cancel(); }
+  });
+
   it('authors exact joined-CDS RNA and sourced mosaic steps, exports them, and freshly replays every result', async () => {
     const f = await fixture(), session = new TerminalResearchSession();
     const mosaic = (await importLocalGenomes({ name: 'mosaic.fa', text: '>query\nAAAC\n>reference\nAAGT\n' })).genomes;

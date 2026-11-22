@@ -479,7 +479,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
   const { stdout } = useStdout();
   const { colors } = usePhageStore(state => state.currentTheme);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-  const [mode, setMode] = useState<'browse' | 'open' | 'archive' | 'analysis' | 'new' | 'step' | 'plan' | 'tape'>('browse');
+  const [mode, setMode] = useState<'browse' | 'open' | 'archive' | 'analysis' | 'new' | 'fork' | 'step' | 'plan' | 'tape'>('browse');
   const [pane, setPane] = useState<'draft' | 'draft-fields' | 'steps' | 'results' | 'fields'>('steps');
   const [editing, setEditing] = useState<number | null>(null);
   const [filename, setFilename] = useState('');
@@ -506,9 +506,20 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
     ? available.archive.records.find(record => record.resultId === entry.analysis!.resultId) ?? null : null, [entry, available]);
   // Only result fields are shown, never the original sequence/reference inputs.
   // The complete bounded record can be exported without truncation.
-  const detailLines = useMemo(() => pane === 'draft-fields' && draft?.plan.commands[selected]
-    ? JSON.stringify(draft.plan.commands[selected], null, 2).split('\n').map(terminalGenomeLabel)
-    : analysis ? JSON.stringify(analysis.fields, null, 2).split('\n').map(terminalGenomeLabel) : [], [analysis, draft, selected, pane]);
+  const detailLines = useMemo(() => {
+    const step = draft?.plan.commands[selected];
+    if (pane === 'draft-fields' && step) {
+      const parameters = step.parameters;
+      // Imported reference commands can embed a private CDS corpus. Keep its
+      // exact bytes in the plan/export, never in the terminal's parameter view.
+      const display = parameters && typeof parameters === 'object' && !Array.isArray(parameters)
+        && typeof parameters.referenceText === 'string'
+        ? { ...step, parameters: { ...parameters, referenceText: `[Captured reference: ${new TextEncoder().encode(parameters.referenceText).length} UTF-8 bytes; included in plan exports]` } }
+        : step;
+      return JSON.stringify(display, null, 2).split('\n').map(terminalGenomeLabel);
+    }
+    return analysis ? JSON.stringify(analysis.fields, null, 2).split('\n').map(terminalGenomeLabel) : [];
+  }, [analysis, draft, selected, pane]);
   const perPage = Math.max(1, Math.min(12, rows - (draftPane ? 17 : 15)));
   const start = Math.floor(selected / perPage) * perPage;
   const detailStart = Math.max(0, Math.min(line, Math.max(0, detailLines.length - perPage)));
@@ -528,10 +539,19 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
         perform(() => session.createDraft(filename, bundle, view), () => { setMode('browse'); setPane('draft'); setSelection(0); setLine(0); });
         return;
       }
+      if (mode === 'fork') {
+        perform(() => session.forkDraft(filename), () => { setMode('browse'); setPane('draft'); setSelection(0); setLine(0); });
+        return;
+      }
       const path = terminalGenomePath(filename);
-      if (mode === 'open') perform(() => session.load(path), () => {
-        setMode('browse'); setPane('steps'); setSelection(0); setLine(0); setRepetitions(1);
-      });
+      if (mode === 'open') {
+        const previousDraft = session.getSnapshot().draft;
+        perform(() => session.load(path), () => {
+          const opened = session.getSnapshot();
+          setMode('browse'); setPane(opened.pendingDraft || opened.draft !== previousDraft ? 'draft' : 'steps');
+          setSelection(0); setLine(0); setRepetitions(1);
+        });
+      }
       else {
         const execution = mode === 'plan' || mode === 'tape' ? mode : mode === 'analysis' ? entry?.execution : null;
         if (mode === 'analysis' && (!entry?.analysis || !execution)) throw new Error('Select an analysis execution before exporting.');
@@ -544,6 +564,15 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
     // Publication cannot be cancelled from this screen once file creation starts.
     // Process interruption is handled separately and can leave a new partial file.
     if (busy) { if (busy !== 'saving' && key.escape) session.cancel(); return; }
+    if (session.getSnapshot().pendingDraft) {
+      try {
+        if (key.escape || input.toLowerCase() === 'n') session.discardDraftReplacement();
+        else if (input.toLowerCase() === 'y') session.acceptDraftReplacement();
+        else return;
+        setMode('browse'); setPane('draft'); setSelection(0); setLine(0); setFormError(null);
+      } catch (cause) { setFormError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
+      return;
+    }
     if (mode === 'step') return; // The owned editor handles all of its input.
     if (mode !== 'browse') {
       if (key.escape) { setMode('browse'); setFormError(null); }
@@ -557,6 +586,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
     const action = input.toLowerCase();
     if (action === 'q') { onReturn(); return; }
     if (action === 'n') { chooseFile('new'); return; }
+    if (action === 'f' && document) { chooseFile('fork'); return; }
     if (action === 'd' && draft) { setPane('draft'); setSelection(0); setLine(0); return; }
     if (action === 'i' && draft) { setEditing(null); setFormError(null); setMode('step'); return; }
     if (action === 'p' && draft) { chooseFile('plan'); return; }
@@ -567,7 +597,14 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
     if (draftPane && draft?.plan.commands.length && (action === 'x' || input === '[' || input === ']' || action === 'e')) {
       try {
         setFormError(null);
-        if (action === 'e') { setEditing(selected); setMode('step'); }
+        if (action === 'e') {
+          const step = draft.plan.commands[selected], parameters = step.parameters;
+          if (step.actionId === ActionIds.OverlayCodonAdaptation && parameters && typeof parameters === 'object'
+            && !Array.isArray(parameters) && parameters.method === 'reference-cai') {
+            throw new Error('This form cannot edit reference-backed codon settings. The captured command is unchanged.');
+          }
+          setEditing(selected); setMode('step');
+        }
         else if (action === 'x') { session.removeStep(selected); setSelection(Math.max(0, selected - 1)); setPane('draft'); }
         else { const direction = input === '[' ? -1 : 1; session.moveStep(selected, direction);
           setSelection(Math.max(0, Math.min(selected + direction, count - 1))); }
@@ -594,7 +631,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
   const repeats = document?.savedResults?.archive.repetitions ?? repetitions;
   return <Box flexDirection="column" borderStyle="round" borderColor={colors.borderLight} paddingX={1}>
     <Text bold color={colors.accent}>RESEARCH WORKFLOWS — AUTHOR AND REPLAY</Text>
-    <Text wrap="truncate-end">{document ? terminalGenomeLabel(document.name) + ' · ' + steps.length + ' commands · ' + document.inspection.genomes.length + ' private genomes' : 'Open a command workflow or complete results archive.'}</Text>
+    <Text wrap="truncate-end">{document ? terminalGenomeLabel(document.name) + ' · ' + steps.length + ' commands · ' + document.inspection.genomes.length + ' private genomes' : 'Open a saved plan, command workflow or complete results archive.'}</Text>
     {available && <Text color={colors.textDim}>{available.replayed ? 'Fresh numerical replay verified'
       : available.provenance === 'recorded' ? 'New computed baseline; independent replay not run' : 'Archive integrity checked; numerical replay not run'} · {executions.length} executions · {available.archive.records.length} distinct analyses</Text>}
     {state.notice && <Text wrap="truncate-end" color={colors.textDim}>{state.notice}</Text>}
@@ -603,14 +640,23 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
       <Text>{state.busy === 'saving' ? 'Saving the new output file. Wait for completion.' : 'Working: ' + state.busy + '. Esc cancels.'}</Text>
       {state.progress && <Text wrap="truncate-end">{state.progress.phase}: {state.progress.completed}/{state.progress.total} · {terminalGenomeLabel(state.progress.actionId ?? 'Validating original inputs')}</Text>}
       {state.busy === 'saving' && <Text color={colors.textDim}>Process interruption can leave a partial new file. Existing files are never overwritten.</Text>}
+    </> : state.pendingDraft ? <>
+      <Text bold>Replace the current editable draft?</Text>
+      <Text wrap="truncate-end">Current: {terminalGenomeLabel(draft!.plan.name)} · {draft!.plan.commands.length} steps</Text>
+      <Text wrap="truncate-end">Reviewed: {terminalGenomeLabel(state.pendingDraft.name)} · {state.pendingDraft.sourceCount} captured genomes · {state.pendingDraft.stepCount} steps</Text>
+      <Text>Only the editable draft will change. Accepted recordings and results remain available.</Text>
+      <Text>[Y] Replace draft · [N] or Esc keeps the current draft</Text>
     </> : mode === 'step' && draft ? <ResearchStepEditor draft={draft} initial={editing === null ? null : draft.plan.commands[editing]} rows={rows} describeRNA={session.describeRNA}
       onCancel={() => setMode('browse')} onSave={step => { session.setStep(step, editing); setMode('browse'); setPane('draft');
         setSelection(editing ?? draft.plan.commands.length); setLine(0); }} /> : mode !== 'browse' ? <>
-      <Text bold>{mode === 'new' ? 'New workflow draft name:' : mode === 'open' ? 'Workflow or complete archive path:'
+      <Text bold>{mode === 'new' ? 'New workflow draft name:' : mode === 'fork' ? 'New draft name for the inspected recording:'
+        : mode === 'open' ? 'Saved plan, workflow or complete archive path:'
         : mode === 'plan' ? 'New declarative plan destination:' : mode === 'tape' ? 'New command recording destination:'
           : mode === 'archive' ? 'New complete archive destination:' : 'New analysis destination (execution ' + entry?.execution + '):'}</Text>
       <TextInput value={filename} onChange={setFilename} onSubmit={submit} />
+      {mode === 'fork' && <Text>Copies exact inputs and commands without running them. New output expectations require explicit computation; the accepted recording is kept.</Text>}
       <Text color={colors.textDim}>{mode === 'new' ? 'Enter captures accepted private inputs and view · Esc returns without changes'
+        : mode === 'fork' ? 'Enter prepares the editable copy · Esc returns without changes'
         : 'Enter submits · Esc returns · Literal paths; ~/ supported; no shell quotes.'}</Text>
     </> : <>
       {draftPane && draft ? <>
@@ -624,8 +670,10 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
           const mosaic = step.actionId === ActionIds.OverlayMosaicRadar ? step.parameters as unknown as ResearchMosaicParameters : null;
           const source = draft.sources.find(item => graph ? `local-${item.contentId}` === graph.options.referenceId
             : item.contentId === (mosaic?.queryContentId ?? (step.parameters as Record<string, unknown>).contentId));
+          const referenceCodons = step.actionId === ActionIds.OverlayCodonAdaptation
+            && (step.parameters as Record<string, unknown>).method === 'reference-cai';
           return <Text key={start + offset} wrap="truncate-end" color={start + offset === selected ? colors.accent : colors.text}>
-            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {graph ? `${graph.contentIds.length} genomes; reference ` : mosaic ? `${mosaic.referenceContentIds.length} references; query ` : ''}{terminalGenomeLabel(source?.name ?? 'missing source')}
+            {start + offset === selected ? '›' : ' '} {start + offset + 1}. {referenceCodons ? 'CDS statistics + captured reference CAI' : editorActions.find(action => action.id === step.actionId)?.label ?? step.actionId} · {graph ? `${graph.contentIds.length} genomes; reference ` : mosaic ? `${mosaic.referenceContentIds.length} references; query ` : ''}{terminalGenomeLabel(source?.name ?? 'missing source')}
           </Text>;
         })}
         <Text>[I] Add · [E] Edit · [X] Remove step · [ / ] Reorder · Enter reviews parameters</Text>
@@ -649,6 +697,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
       </>}
       {pane !== 'fields' && pane !== 'draft-fields' && count > 0 && <Text color={colors.textDim}>Selected {selected + 1}/{count} · Up/Down select · Left/Right page</Text>}
       <Text>[N] New draft from accepted private genomes · [D] Draft · [T] Export accepted tape</Text>
+      <Text dimColor={!document}>[F] Fork inspected recording into a new editable draft</Text>
       <Text>[O] Open · [R] Replay ×{repeats}{document?.savedResults ? ' (saved count)' : ' [+/-]'} · [S] Steps · [V] Results</Text>
       <Text dimColor={!available}>[A] Export archive{draftPane ? '' : ' · [E] Export selected analysis'}</Text>
       <Text dimColor={!state.completedRun}>[G] Restore genomes/view (review first) · Esc back</Text>

@@ -7,18 +7,20 @@ import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
-import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
-import { parseAnalysisRecord } from '../../../core/src/analysis-result';
-import { parseCommandPlan, parseCommandTape } from '../../../core/src/command-session';
+import { importLocalGenomes, exportLocalGenomeBundle, type GenomeImportResult } from '../../../core/src/genome-import';
+import { analysisJson, parseAnalysisRecord } from '../../../core/src/analysis-result';
+import { parseCommandPlan, parseCommandTape, serializeCommandPlan } from '../../../core/src/command-session';
 import { parseWorkflowResults } from '../../../core/src/workflow-results';
+import type { GCSkewWindow } from '../../../core/src/analysis/gc-skew';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
 import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
 import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import type { ResearchView, ResearchPangenomeParameters, ResearchRNAParameters, ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+import { researchReferenceCodonParameters,
+  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
-import { TerminalGenomeSession } from '../local-genome-session';
+import { TerminalGenomeSession, loadTerminalGenomeBundle } from '../local-genome-session';
 import { TerminalResearchSession } from '../terminal-research-session';
 import { installTerminalGenomes } from './LocalGenomeApp';
 import { ResearchWorkflowView } from './ResearchWorkflowView';
@@ -63,6 +65,159 @@ function terminal(session: TerminalResearchSession, genomes: TerminalGenomeSessi
     resize: (rows: number) => { stdout.rows = rows; stdout.emit('resize'); } };
 }
 describe('Ink research workflow workspace', () => {
+  it('saves unfinished work, reopens and edits it without installing inputs, then records, verifies and explicitly forks a recording', async () => {
+    const f = await fixture(), author = new TerminalResearchSession();
+    const originalGenomes = new TerminalGenomeSession(null, f.imported.genomes);
+    assert(await author.createDraft('Saved keyboard experiment', originalGenomes.exportBundle()));
+    author.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId: f.view.contentId, windowSize: 4, stepSize: 4 } });
+    const planFile = join(f.directory, 'unfinished keyboard plan.json');
+    const first = terminal(author, originalGenomes, () => assert.fail('the export form owns shortcut letters'), () => assert.fail('saving cannot install inputs'));
+    try {
+      await waitFor(first.ready);
+      first.input('p'); await waitFor(() => first.output().includes('New declarative plan destination:'));
+      first.input(planFile); await new Promise(resolve => setTimeout(resolve, 20)); first.input('\r');
+      await waitFor(() => author.getSnapshot().notice?.startsWith('Saved the declarative') ?? false);
+      assert.equal(author.getSnapshot().document, null, 'saving an unfinished draft must not compute it');
+    } finally { first.ui.unmount(); author.cancel(); await originalGenomes.close(); }
+    const original = await readFile(planFile, 'utf8'), saved = parseCommandPlan(original), calls: string[] = [];
+    const session = new TerminalResearchSession({ run: (...args) => { calls.push(args[0].type); return runTerminalResearchWorker(...args); } });
+    const genomes = new TerminalGenomeSession(null, []);
+    let returned = 0;
+    const test = terminal(session, genomes, () => { returned++; }, () => assert.fail('opening or forking cannot stage inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key);
+      try { await waitFor(() => test.output().slice(start).includes(expected)); }
+      catch (cause) { throw new Error(`Expected terminal stage: ${expected}. Last rendering: ${test.output().slice(-1600)}`, { cause }); }
+    };
+    const enterText = async (value: string) => { test.input(value); await new Promise(resolve => setTimeout(resolve, 20)); test.input('\r'); };
+    const open = async (file: string) => { await press('o', 'Saved plan, workflow or complete archive path:'); await enterText(file); };
+    try {
+      await waitFor(test.ready);
+      await open(planFile);
+      await waitFor(() => !!session.getSnapshot().draft && !session.getSnapshot().busy);
+      await waitFor(() => test.output().includes('Draft: Saved keyboard experiment'));
+      assert.deepEqual(session.getSnapshot().draft!.plan, saved); assert.deepEqual(calls, []);
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Window size (bases)');
+      test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10));
+      test.input('6'); await new Promise(resolve => setTimeout(resolve, 20)); await press('\r', 'Step size (bases)');
+      test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10));
+      test.input('6'); await new Promise(resolve => setTimeout(resolve, 20)); await press('\r', '[I] Add');
+      const revised = session.getSnapshot().draft!;
+      assert.deepEqual(revised.plan.commands[0].parameters, { contentId: f.view.contentId, windowSize: 6, stepSize: 6 });
+      assert.deepEqual(revised.plan.context, saved.context); assert.deepEqual(calls, []);
+      const revisedFile = join(f.directory, 'revised keyboard plan.json');
+      await press('p', 'New declarative plan destination:'); await enterText(revisedFile);
+      await waitFor(() => session.getSnapshot().notice?.startsWith('Saved the declarative') ?? false);
+      assert.deepEqual(parseCommandPlan(await readFile(revisedFile, 'utf8')), revised.plan);
+      assert.equal(await readFile(planFile, 'utf8'), original);
+      test.input('c'); await waitFor(() => !!session.getSnapshot().document && !session.getSnapshot().busy);
+      const windows = session.analysis(1).fields.windows.value as unknown as GCSkewWindow[];
+      assert.deepEqual(windows.map(row => [row.g, row.c, row.skew]), [[1, 0, 1], [3, 3, 0], [0, 1, -1]]);
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      const baseline = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => !!session.getSnapshot().completedRun && !session.getSnapshot().busy);
+      assert.equal(session.availableResults()?.provenance, 'verified'); assert.equal(session.availableResults()!.json, baseline);
+
+      await open(f.file);
+      await waitFor(() => session.getSnapshot().document?.tapeJson === f.tape && !session.getSnapshot().busy);
+      const inspected = session.getSnapshot().document, beforeFork = calls.length;
+      assert.strictEqual(session.getSnapshot().draft, revised);
+      await press('f', 'New draft name for the inspected recording:'); await enterText('A discarded copy');
+      await waitFor(() => !!session.getSnapshot().pendingDraft && !session.getSnapshot().busy);
+      await waitFor(() => test.output().includes('Replace the current editable draft?'));
+      test.input('q'); test.input('c'); await new Promise(resolve => setTimeout(resolve, 30));
+      assert.equal(returned, 0); assert.equal(calls.length, beforeFork);
+      await press('n', 'Draft: Saved keyboard experiment');
+      assert.strictEqual(session.getSnapshot().draft, revised); assert.equal(session.getSnapshot().pendingDraft, null);
+      await press('f', 'New draft name for the inspected recording:'); await enterText('Accepted alternate experiment');
+      await waitFor(() => !!session.getSnapshot().pendingDraft && !session.getSnapshot().busy);
+      await press('y', 'Draft: Accepted alternate experiment');
+      const fork = session.getSnapshot().draft!, tape = parseCommandTape(f.tape);
+      assert.equal(calls.length, beforeFork, 'forking and confirming only copy validated input values');
+      assert.deepEqual(fork.plan.context, tape.context);
+      assert.deepEqual(fork.plan.commands, tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })));
+      assert.strictEqual(session.getSnapshot().document, inspected); assert.equal(session.getSnapshot().completedRun, null);
+      assert.equal(session.availableResults(), null, 'an unexecuted fork is not a completed result');
+
+      const invalid = join(f.directory, 'invalid keyboard plan.json');
+      await writeFile(invalid, JSON.stringify({ ...fork.plan, commands: [{ ...fork.plan.commands[0], expected: {} }] }), { flag: 'wx', mode: 0o600 });
+      await open(invalid); await waitFor(() => !!session.getSnapshot().error && !session.getSnapshot().busy);
+      assert.strictEqual(session.getSnapshot().draft, fork); assert.strictEqual(session.getSnapshot().document, inspected);
+      assert.equal(session.getSnapshot().pendingDraft, null);
+      await press('\u001b', '[I] Add');
+      assert.equal(returned, 0); assert.equal(genomes.getSnapshot().localCount, 0); assert.equal(genomes.getSnapshot().review, null);
+      assert(!test.output().includes(f.imported.genomes[0].sequence), 'reopening shows metadata, never private source bases');
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
+  it('cancels an outstanding saved-plan read through Escape without allowing late parsing to replace new keyboard edits', async () => {
+    const f = await fixture(), genomes = new TerminalGenomeSession(null, []);
+    let held = false, parsing = false, release!: (value: GenomeImportResult) => void;
+    const gate = new Promise<GenomeImportResult>(resolve => { release = resolve; });
+    const session = new TerminalResearchSession({ parseBundle: (content, signal) => {
+      if (held) { parsing = true; return gate; }
+      return loadTerminalGenomeBundle(content, signal);
+    }, run: async () => { throw new Error('Opening or cancelling cannot compute a draft.'); } });
+    assert(await session.createDraft('Keep editing after cancellation', exportLocalGenomeBundle(f.imported.genomes)));
+    session.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: { contentId: f.view.contentId, windowSize: 4, stepSize: 4 } });
+    const file = join(f.directory, 'delayed draft.json');
+    assert(await session.save(file, 'plan'));
+    let returned = 0;
+    const test = terminal(session, genomes, () => { returned++; }, () => assert.fail('cancelled reads never stage inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key); await waitFor(() => test.output().slice(start).includes(expected));
+    };
+    try {
+      await waitFor(test.ready); await press('o', 'Saved plan, workflow or complete archive path:');
+      test.input(file); await new Promise(resolve => setTimeout(resolve, 20)); held = true; test.input('\r');
+      await waitFor(() => parsing && session.getSnapshot().busy === 'reading');
+      test.input('\u001b'); await waitFor(() => !session.getSnapshot().busy);
+      assert.equal(returned, 0);
+      await press('\u001b', 'Recorded steps'); await press('d', 'Draft: Keep editing after cancellation');
+      test.input('x'); await waitFor(() => session.getSnapshot().draft!.plan.commands.length === 0);
+      const edited = session.getSnapshot().draft;
+      release(f.imported); await new Promise(resolve => setTimeout(resolve, 30));
+      assert.strictEqual(session.getSnapshot().draft, edited); assert.equal(session.getSnapshot().pendingDraft, null);
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.getSnapshot().busy, null);
+      assert.equal(returned, 0); assert.equal(genomes.getSnapshot().review, null); assert.equal(genomes.getSnapshot().localCount, 0);
+    } finally { release(f.imported); test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
+  it('preserves imported reference-backed commands without exposing private reference text or silently converting their method', async () => {
+    const f = await fixture(), genomes = new TerminalGenomeSession(null, []);
+    const referenceText = JSON.stringify({ format: 'phage-explorer-codon-reference', version: 1,
+      name: 'Count fixture', organism: 'Synthetic fixture', geneticCode: 1,
+      source: { citation: 'PRIVATE_REFERENCE_INPUT_TEXT', version: 'fixture-1' }, counts: { AAA: 3, AAG: 1 } });
+    const step = { actionId: ActionIds.OverlayCodonAdaptation,
+      parameters: analysisJson(researchReferenceCodonParameters(f.view.contentId, referenceText, [f.view.geneId], 0.5)) };
+    const file = join(f.directory, 'captured reference plan.json');
+    await writeFile(file, serializeCommandPlan({ format: 'phage-explorer-command-plan', version: 1, name: 'Preserved reference method',
+      context: { bundle: exportLocalGenomeBundle(f.imported.genomes) }, commands: [step] }), { flag: 'wx', mode: 0o600 });
+    const session = new TerminalResearchSession({ run: async () => { throw new Error('Reviewing a saved plan cannot run analyses.'); } });
+    const test = terminal(session, genomes, () => assert.fail('owned forms cannot leave'), () => assert.fail('opening never stages inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key); await waitFor(() => test.output().slice(start).includes(expected));
+    };
+    try {
+      await waitFor(test.ready); await press('o', 'Saved plan, workflow or complete archive path:');
+      test.input(file); await new Promise(resolve => setTimeout(resolve, 20)); test.input('\r');
+      await waitFor(() => !!session.getSnapshot().draft && !session.getSnapshot().busy);
+      await waitFor(() => test.output().includes('CDS statistics + captured reference CAI'));
+      await press('\r', 'Captured reference:');
+      assert(!test.output().includes('PRIVATE_REFERENCE_INPUT_TEXT'));
+      await press('\u001b', '[I] Add');
+      await press('e', 'This form cannot edit reference-backed codon settings.');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step]);
+      const saved = join(f.directory, 'preserved reference export.json');
+      assert(await session.save(saved, 'plan'));
+      assert.deepEqual(parseCommandPlan(await readFile(saved, 'utf8')).commands, [step]);
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      assert.equal(genomes.getSnapshot().localCount, 0); assert(!test.output().includes('PRIVATE_REFERENCE_INPUT_TEXT'));
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
   it('authors and edits RNA transcript intervals and mosaic panels through the keyboard, then records and verifies both results', async () => {
     const f = await fixture();
     const references = (await importLocalGenomes({ name: 'reference-panel.fa', text: '>query\nAAAC\n>reference\nAAGT\n' })).genomes;
@@ -383,7 +538,7 @@ describe('Ink research workflow workspace', () => {
     const test = terminal(session, genomes, () => { returned++; }, () => { review++; });
     try {
       await waitFor(test.ready);
-      test.input('o'); await waitFor(() => test.output().includes('Workflow or complete archive path:'));
+      test.input('o'); await waitFor(() => test.output().includes('Saved plan, workflow or complete archive path:'));
       test.input(f.file); await new Promise(resolve => setTimeout(resolve, 30));
       assert.equal(returned, 0); assert.equal(session.getSnapshot().completedRun, null);
       test.input('\r');
