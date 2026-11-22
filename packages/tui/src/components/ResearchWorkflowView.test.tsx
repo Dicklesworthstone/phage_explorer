@@ -15,9 +15,11 @@ import type { GCSkewWindow } from '../../../core/src/analysis/gc-skew';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
 import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
 import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
+import type { ReferenceSpacerHit } from '../../../core/src/analysis/spacer-reference';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
 import { researchReferenceCodonParameters,
-  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
+  type ResearchReferenceCodonParameters, type ResearchSpacerParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 import { TerminalGenomeSession, loadTerminalGenomeBundle } from '../local-genome-session';
@@ -185,7 +187,7 @@ describe('Ink research workflow workspace', () => {
     } finally { release(f.imported); test.ui.unmount(); session.cancel(); await genomes.close(); }
   });
 
-  it('preserves imported reference-backed commands without exposing private reference text or silently converting their method', async () => {
+  it('reopens the reference-backed editor for imported commands without exposing private inputs or changing their method', async () => {
     const f = await fixture(), genomes = new TerminalGenomeSession(null, []);
     const referenceText = JSON.stringify({ format: 'phage-explorer-codon-reference', version: 1,
       name: 'Count fixture', organism: 'Synthetic fixture', geneticCode: 1,
@@ -208,13 +210,157 @@ describe('Ink research workflow workspace', () => {
       await press('\r', 'Captured reference:');
       assert(!test.output().includes('PRIVATE_REFERENCE_INPUT_TEXT'));
       await press('\u001b', '[I] Add');
-      await press('e', 'This form cannot edit reference-backed codon settings.');
+      await press('e', 'Choose a workflow action');
+      await press('\r', 'Choose a captured reference-analysis query');
+      await press('\r', 'Enter keeps the embedded reference');
+      await press('\r', 'Choose CDS for reference-relative CAI');
+      assert(test.output().includes('[x] joined'));
+      await press('\r', 'Choose the explicit zero-count policy');
+      await press('\r', '[I] Add');
       assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step]);
       const saved = join(f.directory, 'preserved reference export.json');
       assert(await session.save(saved, 'plan'));
       assert.deepEqual(parseCommandPlan(await readFile(saved, 'utf8')).commands, [step]);
       assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
       assert.equal(genomes.getSnapshot().localCount, 0); assert(!test.output().includes('PRIVATE_REFERENCE_INPUT_TEXT'));
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
+  it('authors both reference methods from the action menu and reopens, forks and edits their embedded inputs without changing accepted evidence', async () => {
+    const coding = (await importLocalGenomes({ name: 'coding.gb', text:
+      'LOCUS       CODING 12 bp DNA linear\nACCESSION   CODING\nFEATURES             Location/Qualifiers\n'
+      + '     CDS             1..12\n                     /gene="alpha"\n                     /transl_table=11\n'
+      + 'ORIGIN\n        1 ATGGCTGCCTAA\n//\n' })).genomes[0];
+    const spacer = 'ACGTACGATCGTTAACCGTA', query = 'GG' + spacer + 'AGGTT';
+    const target = (await importLocalGenomes({ name: 'target.fa', text: '>TARGET\n' + query })).genomes[0];
+    const referenceText = JSON.stringify({ format: 'phage-explorer-codon-reference', version: 1,
+      name: 'Alanine counts', organism: 'Synthetic control', geneticCode: 11,
+      source: { citation: 'PRIVATE_CODON_REFERENCE_MARKER', version: '1' }, counts: { GCT: 4, GCC: 1, GCA: 0, GCG: 0 } });
+    const libraryText = JSON.stringify({ format: 'phage-explorer-spacer-library', version: 1, name: 'Explicit sequence controls',
+      source: { kind: 'local', reference: 'PRIVATE_SPACER_REFERENCE_MARKER', version: '1', license: 'CC0', scope: 'Two control hosts' },
+      hosts: [{ id: 'positive', name: 'Supplied spacer', strain: 'fixture', accession: 'HOST1' },
+        { id: 'empty', name: 'No supplied spacers', strain: 'fixture', accession: 'HOST2' }],
+      spacers: [{ id: 'guide1', hostId: 'positive', arrayAccession: 'ARRAY1', sequence: spacer, system: null,
+        target: 'DNA', orientation: 'guide-equivalent', pam: { side: '3prime', motif: 'NGG', reference: 'Explicit motif' },
+        seed: { start: 0, end: 8, maxMismatches: 0, reference: 'Explicit interval' } }] });
+    const directory = await mkdtemp(join(tmpdir(), 'phage-parent-reference-'));
+    const referenceFile = join(directory, 'quite explicit codon reference.json'), libraryFile = join(directory, 'quite explicit spacer library.json');
+    const planFile = join(directory, 'mixed reference plan.json'), archiveFile = join(directory, 'mixed reference archive.json');
+    await writeFile(referenceFile, referenceText, { flag: 'wx', mode: 0o600 });
+    await writeFile(libraryFile, libraryText, { flag: 'wx', mode: 0o600 });
+    const calls: string[] = [], session = new TerminalResearchSession({ run: (...args) => {
+      calls.push(args[0].type); return runTerminalResearchWorker(...args);
+    } });
+    const genomes = new TerminalGenomeSession(null, [coding, target]);
+    assert(await session.createDraft('Mixed reference keyboard experiment', genomes.exportBundle()));
+    // The two codon methods deliberately share an action ID. Both must retain
+    // their own editors and command shapes through saved-plan and archive flows.
+    const illustrative = { actionId: ActionIds.OverlayCodonAdaptation,
+      parameters: { contentId: coding.phage.localGenome!.contentId, geneId: coding.phage.genes[0].id } };
+    session.setStep(illustrative);
+    let returned = 0;
+    const test = terminal(session, genomes, () => { returned++; }, () => assert.fail('reference authoring never installs inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key);
+      try { await waitFor(() => test.output().slice(start).includes(expected)); }
+      catch (cause) { throw new Error(`Expected reference workflow stage: ${expected}. Last rendering: ${test.output().slice(-1600)}`, { cause }); }
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    const enterText = async (value: string) => { test.input(value); await new Promise(resolve => setTimeout(resolve, 20)); test.input('\r'); };
+    const method = async (index: number) => {
+      await press('i', 'Choose a workflow action');
+      for (let position = 0; position < index; position++) await down();
+      await press('\r', 'Choose a captured reference-analysis query');
+    };
+    const editReference = async (changePolicy: boolean) => {
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured reference-analysis query');
+      await press('\r', 'Enter keeps the embedded reference'); await press('\r', 'Choose CDS for reference-relative CAI');
+      await press('\r', 'Choose the explicit zero-count policy');
+      if (changePolicy) { test.input('\u001b[A'); await new Promise(resolve => setTimeout(resolve, 20)); }
+      await press('\r', '[I] Add');
+    };
+    const editSpacer = async (emptyHost: boolean) => {
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured reference-analysis query');
+      await press('\r', 'Enter keeps the embedded reference'); await press('\r', 'Choose reference-library hosts');
+      if (emptyHost) await down();
+      await press('\r', 'Choose spacer-search topology'); await press('\r', 'Maximum spacer mismatches');
+      await press('\r', '[I] Add');
+    };
+    try {
+      await waitFor(test.ready);
+      await method(9); test.input('q'); await new Promise(resolve => setTimeout(resolve, 20));
+      assert.equal(returned, 0, 'the reference source editor owns parent shortcut letters');
+      await press('\r', 'Load a codon reference or source corpus'); await enterText(referenceFile);
+      await waitFor(() => test.output().includes('Choose CDS for reference-relative CAI'));
+      await down(); await press(' ', '[x] alpha'); await press('\r', 'Choose the explicit zero-count policy');
+      await down(); await press('\r', '[I] Add');
+      const codons = session.getSnapshot().draft!.plan.commands[1].parameters as unknown as ResearchReferenceCodonParameters;
+      assert.equal(codons.referenceText, referenceText); assert.equal(codons.zeroCountReplacement, 0.5);
+      assert.deepEqual(codons.geneIds, [coding.phage.genes[0].id]);
+      await method(10); await down(); await press('\r', 'Load a sourced spacer library'); await enterText(libraryFile);
+      await waitFor(() => test.output().includes('Choose reference-library hosts'));
+      await down(); await press('\r', 'Choose spacer-search topology');
+      await down(); await press('\r', 'Maximum spacer mismatches'); await press('\r', '[I] Add');
+      const spacers = session.getSnapshot().draft!.plan.commands[2].parameters as unknown as ResearchSpacerParameters;
+      assert.equal(spacers.contentId, target.phage.localGenome!.contentId); assert.equal(spacers.libraryText, libraryText);
+      assert.equal(spacers.hostId, 'positive'); assert.equal(spacers.topology, 'linear'); assert.equal(spacers.maxMismatches, 0);
+      assert.deepEqual(calls, []); assert.equal(session.availableResults(), null);
+      await press('\r', 'Captured reference:'); await press('\u001b', '[I] Add');
+      await press('p', 'New declarative plan destination:'); await enterText(planFile);
+      await waitFor(() => session.getSnapshot().notice?.startsWith('Saved the declarative') ?? false);
+      const savedPlan = parseCommandPlan(await readFile(planFile, 'utf8'));
+      await writeFile(referenceFile, '{}'); await writeFile(libraryFile, '{}');
+      test.input('c'); await waitFor(() => !!session.getSnapshot().document && !session.getSnapshot().busy);
+      assert.equal(session.analysis(2).fields.pooledCai.value, 0.5);
+      const hits = session.analysis(3).fields.matches.value as unknown as ReferenceSpacerHit[];
+      assert(hits.some(hit => hit.start === 2 && hit.end === 22 && hit.strand === '+' && hit.protospacer === spacer
+        && hit.pam.status === 'matched' && hit.seed.status === 'matched'));
+      const recorded = session.getSnapshot().document, acceptedResults = session.availableResults()!.json;
+      await press('a', 'New complete archive destination:'); await enterText(archiveFile);
+      await waitFor(() => session.getSnapshot().notice?.startsWith('Saved the complete') ?? false);
+
+      const beforeOpen = calls.length;
+      await press('o', 'Saved plan, workflow or complete archive path:'); await enterText(planFile);
+      await waitFor(() => !!session.getSnapshot().pendingDraft && !session.getSnapshot().busy);
+      await press('y', 'Draft: Mixed reference keyboard experiment');
+      assert.equal(calls.length, beforeOpen); assert.deepEqual(session.getSnapshot().draft!.plan, savedPlan);
+      assert.strictEqual(session.getSnapshot().document, recorded); assert.equal(session.availableResults()?.provenance, 'recorded');
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose a captured feature'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands[0], illustrative);
+      await down(); await editReference(true);
+      assert.equal((session.getSnapshot().draft!.plan.commands[1].parameters as unknown as ResearchReferenceCodonParameters).zeroCountReplacement, 0);
+      await down(); await editSpacer(true);
+      assert.equal((session.getSnapshot().draft!.plan.commands[2].parameters as unknown as ResearchSpacerParameters).hostId, 'empty');
+      assert.equal(session.availableResults()!.json, acceptedResults); assert.equal(calls.length, beforeOpen);
+
+      await press('o', 'Saved plan, workflow or complete archive path:'); await enterText(archiveFile);
+      await waitFor(() => session.availableResults()?.provenance === 'loaded' && !session.getSnapshot().busy);
+      const inspected = session.getSnapshot().document, beforeFork = calls.length;
+      await press('f', 'New draft name for the inspected recording:'); await enterText('Forked reference experiment');
+      await waitFor(() => !!session.getSnapshot().pendingDraft && !session.getSnapshot().busy);
+      await press('y', 'Draft: Forked reference experiment');
+      assert.equal(calls.length, beforeFork); assert.strictEqual(session.getSnapshot().document, inspected);
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, savedPlan.commands);
+      assert.equal(session.availableResults()?.provenance, 'loaded'); assert.equal(session.availableResults()!.json, acceptedResults);
+      await down(); await press('\r', 'Captured reference:'); await press('\u001b', '[I] Add');
+      await editReference(false); await down(); await editSpacer(true);
+      assert.equal(session.availableResults()?.provenance, 'loaded'); assert.equal(calls.length, beforeFork);
+      test.input('c'); await waitFor(() => session.availableResults()?.provenance === 'recorded' && !session.getSnapshot().busy);
+      assert.deepEqual(session.analysis(3).fields.matches.value, []);
+      assert.equal((session.analysis(3).fields.coverage.value as Record<string, unknown>).status, 'no-spacer-data');
+      const baseline = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => session.availableResults()?.provenance === 'verified' && !session.getSnapshot().busy);
+      assert.equal(session.availableResults()!.json, baseline);
+      const exported = join(directory, 'edited embedded references.json');
+      assert(await session.save(exported, 'plan'));
+      const editedPlan = parseCommandPlan(await readFile(exported, 'utf8'));
+      assert.equal((editedPlan.commands[1].parameters as unknown as ResearchReferenceCodonParameters).referenceText, referenceText);
+      assert.equal((editedPlan.commands[2].parameters as unknown as ResearchSpacerParameters).libraryText, libraryText);
+      for (const privateText of [coding.sequence, query, spacer, 'PRIVATE_CODON_REFERENCE_MARKER', 'PRIVATE_SPACER_REFERENCE_MARKER']) {
+        assert(!test.output().includes(privateText), 'workflow forms and parameter previews must not print private reference inputs');
+      }
+      assert.equal(returned, 0); assert.equal(genomes.getSnapshot().review, null); assert.equal(genomes.getSnapshot().localCount, 2);
     } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
   });
 

@@ -14,7 +14,7 @@ import { replayRNAStructureRecord } from '../../core/src/analysis/rna-structure-
 import { mosaicResultFromRecord } from '../../core/src/analysis/recombination-radar';
 import type { PhageRepository } from '../../db-runtime/src/types';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters } from '../../web/src/keyboard/ResearchWorkflow';
+import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters, researchSpacerParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from './research-replay';
 import { runTerminalResearchWorker } from '../../../scripts/research-workflow';
 import { TerminalGenomeSession, loadTerminalGenomeBundle, type TerminalGenomeAccepted } from './local-genome-session';
@@ -62,6 +62,51 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
+  it('validates sourced spacer drafts against their own captured genome and topology before accepting edits or replacements', async () => {
+    const f = await fixture(), session = new TerminalResearchSession();
+    const libraryText = JSON.stringify({ format: 'phage-explorer-spacer-library', version: 1, name: 'No supplied spacer control',
+      source: { kind: 'local', reference: 'Explicit empty control', version: '1', license: 'CC0', scope: 'One host without records' },
+      hosts: [{ id: 'empty', name: 'Control host', strain: 'fixture', accession: 'EMPTY' }], spacers: [] });
+    try {
+      assert(await session.load(f.file)); assert(await session.replay());
+      assert(await session.createDraft('Keep the accepted source', exportLocalGenomeBundle(f.imported.genomes)));
+      const parameters = researchSpacerParameters(f.view.contentId, libraryText, 'linear', { hostId: 'empty', maxMismatches: 0 });
+      session.setStep({ actionId: ActionIds.OverlayCRISPR, parameters: analysisJson(parameters) });
+      const original = session.getSnapshot().draft, document = session.getSnapshot().document, completed = session.getSnapshot().completedRun;
+      for (const changed of [{ ...parameters, topology: 'circular' }, { ...parameters, topology: 'unknown' },
+        { ...parameters, contentId: 'f'.repeat(64) }, { ...parameters, hostId: 'absent' }]) {
+        assert.throws(() => session.setStep({ actionId: ActionIds.OverlayCRISPR, parameters: analysisJson(changed) }, 0));
+        assert.strictEqual(session.getSnapshot().draft, original);
+      }
+      // A different source with unknown topology may carry an explicit circular
+      // assumption. Validation must use this proposal's captured input, not the
+      // active draft's known-linear annotation or its same accession label.
+      const unknown = (await importLocalGenomes({ name: 'unknown.fa', text: '>joined\n' + f.genome.sequence })).genomes[0];
+      const circular = researchSpacerParameters(unknown.phage.localGenome!.contentId, libraryText, 'circular', { hostId: 'empty' });
+      const plan = { format: 'phage-explorer-command-plan' as const, version: 1 as const, name: 'Explicit topology assumption',
+        context: { bundle: exportLocalGenomeBundle([unknown]) },
+        commands: [{ actionId: ActionIds.OverlayCRISPR, parameters: analysisJson(circular) }] };
+      const input = join(f.directory, 'unknown-topology-plan.json');
+      await writeFile(input, serializeCommandPlan(plan), { flag: 'wx', mode: 0o600 });
+      assert(await session.load(input), session.getSnapshot().error ?? '');
+      assert.strictEqual(session.getSnapshot().draft, original); assert(session.getSnapshot().pendingDraft);
+      session.acceptDraftReplacement();
+      const accepted = session.getSnapshot().draft;
+      assert.deepEqual(accepted!.plan, plan); assert.equal(accepted!.sources[0].topology, 'unknown');
+      for (const [index, changed] of [{ ...parameters, topology: 'circular' }, { ...parameters, topology: 'unknown' },
+        { ...parameters, contentId: unknown.phage.localGenome!.contentId }].entries()) {
+        const invalid = join(f.directory, `wrong-source-spacer-plan-${index}.json`);
+        await writeFile(invalid, serializeCommandPlan({ ...plan, context: { bundle: exportLocalGenomeBundle(f.imported.genomes) },
+          commands: [{ actionId: ActionIds.OverlayCRISPR, parameters: analysisJson(changed) }] }), { flag: 'wx', mode: 0o600 });
+        assert.equal(await session.load(invalid), false);
+        assert.strictEqual(session.getSnapshot().draft, accepted); assert.equal(session.getSnapshot().pendingDraft, null);
+        assert.strictEqual(session.getSnapshot().document, document); assert.strictEqual(session.getSnapshot().completedRun, completed);
+      }
+      assert.equal(session.availableResults()?.provenance, 'verified');
+      assert.equal(session.getSnapshot().document!.tapeJson, f.tape);
+    } finally { session.cancel(); }
+  });
+
   it('reopens an unrecorded saved plan, edits exact captured inputs, and records and verifies a fresh baseline', async () => {
     const f = await fixture(), author = new TerminalResearchSession(), calls: string[] = [];
     const bundle = exportLocalGenomeBundle(f.imported.genomes), id = f.view.contentId;

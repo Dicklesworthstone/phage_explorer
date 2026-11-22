@@ -4,6 +4,44 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ---
 
+## Unreleased
+
+### Exact selected-CDS inspection and export
+
+- The shared desktop/mobile gene inspector now extracts transcript-order DNA and
+  annotation-aware protein from the accepted complete genome. Joined, reverse,
+  origin-spanning and `codon_start` features retain their exact coordinates.
+  Unsupported translation remains explicit while readable DNA stays available.
+- Complete FASTA and JSON exports retain source fingerprints, original qualifiers
+  and translation limitations. Replaced sources or annotations retire stale
+  exports; private genes use local genome bundles for sharing.
+  [Commit 53d1f4a](https://github.com/Dicklesworthstone/phage_explorer/commit/53d1f4a2736c3c1a52e78b9e9c2acf7c5f1208a8).
+
+### Pangenome experiments into reproducible phylogenies
+
+- Browser and both terminal entry points reconstruct a saved pangenome and infer
+  a tree from its reference backbone. Reference-gap insertion columns are
+  excluded before common complete deletion; original-column mappings and
+  coverage remain inspectable. Biological homology requires explicit provenance.
+- Exact parent JSON survives export, replay, explicit rooting and conditional
+  ancestral reconstruction. Existing direct-alignment replay identities remain
+  compatible.
+  [Commit 82c9534](https://github.com/Dicklesworthstone/phage_explorer/commit/82c953465e49a47a65db07f3c7c80e028defe710).
+
+### Resumable terminal research and supplied references
+
+- Saved declarative plans reopen as editable drafts. Inspected recordings and
+  complete archives can be explicitly forked into new unexecuted experiments;
+  validated replacement review preserves existing drafts and accepted results.
+  [Commit 4eee2cb](https://github.com/Dicklesworthstone/phage_explorer/commit/4eee2cbc195d8f0036dc93c3e510dde3d45aa207).
+- The [terminal reference editor](packages/tui/src/components/ReferenceStepEditor.tsx)
+  authors and edits reference-relative CAI from supplied counts or a source
+  corpus, and CRISPR searches against supplied spacer libraries. CDS selection,
+  zero-count policy, host, topology and mismatches are explicit. Exact references
+  are embedded for native computation and replay while parameter previews redact
+  their contents. Reference-relative scores and spacer matches do not establish
+  expression, infectivity or host susceptibility.
+
 ## [v1.9.0] — 2026-11-21
 
 [Compare: v1.8.0...v1.9.0](https://github.com/Dicklesworthstone/phage_explorer/compare/v1.8.0...v1.9.0)

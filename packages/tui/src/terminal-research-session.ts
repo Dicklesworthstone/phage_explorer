@@ -10,8 +10,9 @@ import type { LocalGenome } from '../../core/src/genome-import';
 import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
 import { MOSAIC_LIMITS } from '../../core/src/analysis/recombination-radar';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
-import { validateResearchView, researchRNASource, researchRNARequest,
-  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters } from '../../web/src/keyboard/ResearchWorkflow';
+import { validateResearchView, researchRNASource, researchRNARequest, researchSpacerGenome,
+  type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
+  type ResearchSpacerParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { parseWorkflowResults, workflowResultIndex, workflowAnalysisAt, WORKFLOW_RESULTS_LIMITS,
   type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { readInput, writeNewOutput, runTerminalResearchWorker } from '../../../scripts/research-workflow';
@@ -226,8 +227,8 @@ export class TerminalResearchSession {
   private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep, genomes = this.draftGenomes): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
       ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph,
-      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar];
-    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, RNA and mosaic commands.');
+      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar, ActionIds.OverlayCRISPR];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, RNA, mosaic and sourced spacer commands.');
     validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
     if (step.actionId === ActionIds.OverlayMosaicRadar) {
       const parameters = step.parameters as unknown as ResearchMosaicParameters;
@@ -278,6 +279,12 @@ export class TerminalResearchSession {
       // The same extraction and interval checks used by browser/native replay
       // preserve complement/join/codon_start and exceptional-code boundaries.
       researchRNARequest(this.draftGenome(source.contentId, genomes), step.parameters as unknown as ResearchRNAParameters);
+    }
+    if (step.actionId === ActionIds.OverlayCRISPR) {
+      const { topology } = step.parameters as unknown as ResearchSpacerParameters;
+      // Share replay's captured-input, topology and bounded DNA checks. A
+      // reopened plan must be checked against its own private source snapshot.
+      researchSpacerGenome(this.draftGenome(source.contentId, genomes), topology);
     }
     if (step.actionId === ActionIds.NavGoto) {
       validateResearchView(step.parameters);

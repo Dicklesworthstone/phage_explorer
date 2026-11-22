@@ -13,6 +13,7 @@ import { researchPangenomeParameters, researchRNAParameters, researchMosaicParam
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
 import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep, TerminalResearchRNASource } from '../terminal-research-session';
 import { readTerminalSize } from './terminal-size';
+import { ReferenceStepEditor } from './ReferenceStepEditor';
 
 const editorActions = [
   { kind: 'view', id: ActionIds.NavGoto, label: 'Saved genome / CDS view' },
@@ -24,6 +25,8 @@ const editorActions = [
   { kind: 'pangenome', id: ActionIds.OverlayPangenomeGraph, label: 'Multi-genome pangenome + reference CDS consequences' },
   { kind: 'rna', id: ActionIds.OverlayRNAStructure, label: 'RNA pairing in an exact genome or CDS interval' },
   { kind: 'mosaic', id: ActionIds.OverlayMosaicRadar, label: 'Mosaic reference similarity across captured genomes' },
+  { kind: 'reference-codons', id: ActionIds.OverlayCodonAdaptation, label: 'CDS statistics + captured reference CAI' },
+  { kind: 'spacers', id: ActionIds.OverlayCRISPR, label: 'Sourced CRISPR spacer matches with explicit PAM and seed rules' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
@@ -45,7 +48,7 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
     case 'dot-plot': return [field('bins', 'Display bins (1–256)', 64), field('window', 'Comparison window (bases; must fit both inputs)', Math.min(20, source.bases))];
-    case 'pangenome': case 'mosaic': return []; // The multi-source editors own these settings.
+    case 'pangenome': case 'mosaic': case 'reference-codons': case 'spacers': return []; // Dedicated editors own these settings.
     case 'rna': {
       if (!rna) throw new Error('Choose a supported RNA source first.');
       const options = initial.options as Record<string, unknown> | undefined;
@@ -340,7 +343,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
   const parameters = initial?.parameters && typeof initial.parameters === 'object' && !Array.isArray(initial.parameters)
     ? initial.parameters as Record<string, unknown> : {};
   const [stage, setStage] = useState<'method' | 'source' | 'comparison' | 'gene' | 'settings'>('method');
-  const [methodIndex, setMethodIndex] = useState(Math.max(0, editorActions.findIndex(item => item.id === initial?.actionId)));
+  const [methodIndex, setMethodIndex] = useState(Math.max(0, editorActions.findIndex(item => item.id === initial?.actionId
+    && (item.id !== ActionIds.OverlayCodonAdaptation || (item.kind === 'reference-codons') === (parameters.method === 'reference-cai')))));
   const [sourceIndex, setSourceIndex] = useState(Math.max(0, draft.sources.findIndex(item => item.contentId === parameters.contentId)));
   const [comparisonIndex, setComparisonIndex] = useState(typeof parameters.comparisonContentId === 'string'
     ? draft.sources.findIndex(item => item.contentId === parameters.comparisonContentId) + 1 : 0);
@@ -400,7 +404,7 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
   const cursor = stage === 'method' ? methodIndex : stage === 'source' ? sourceIndex : stage === 'comparison' ? comparisonIndex : geneIndex;
   const pageSize = Math.max(1, Math.min(8, rows - 15)), start = Math.floor(cursor / pageSize) * pageSize;
   useInput((_input, key) => {
-    if ((action.kind === 'pangenome' || action.kind === 'mosaic') && stage !== 'method') return;
+    if ((action.kind === 'pangenome' || action.kind === 'mosaic' || action.kind === 'reference-codons' || action.kind === 'spacers') && stage !== 'method') return;
     if (key.escape) { onCancel(); return; }
     if (stage === 'settings') {
       if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
@@ -443,6 +447,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
     draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
   if (action.kind === 'mosaic' && stage !== 'method') return <MosaicStepEditor
     draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
+  if ((action.kind === 'reference-codons' || action.kind === 'spacers') && stage !== 'method') return <ReferenceStepEditor
+    kind={action.kind} draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
   return <Box flexDirection="column">
     {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
     {stage === 'settings' && field ? <>
@@ -480,6 +486,9 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
   const { colors } = usePhageStore(state => state.currentTheme);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [mode, setMode] = useState<'browse' | 'open' | 'archive' | 'analysis' | 'new' | 'fork' | 'step' | 'plan' | 'tape'>('browse');
+  // Ink may retire an input listener after the next screen has rendered. A
+  // retired filename form must not consume that screen's shortcut or submit.
+  const activeMode = useRef(mode); activeMode.current = mode;
   const [pane, setPane] = useState<'draft' | 'draft-fields' | 'steps' | 'results' | 'fields'>('steps');
   const [editing, setEditing] = useState<number | null>(null);
   const [filename, setFilename] = useState('');
@@ -513,8 +522,9 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
       // Imported reference commands can embed a private CDS corpus. Keep its
       // exact bytes in the plan/export, never in the terminal's parameter view.
       const display = parameters && typeof parameters === 'object' && !Array.isArray(parameters)
-        && typeof parameters.referenceText === 'string'
-        ? { ...step, parameters: { ...parameters, referenceText: `[Captured reference: ${new TextEncoder().encode(parameters.referenceText).length} UTF-8 bytes; included in plan exports]` } }
+        ? { ...step, parameters: Object.fromEntries(Object.entries(parameters).map(([key, value]) => [key,
+          (key === 'referenceText' || key === 'libraryText') && typeof value === 'string'
+            ? `[Captured reference: ${new TextEncoder().encode(value).length} UTF-8 bytes; included in plan exports]` : value])) }
         : step;
       return JSON.stringify(display, null, 2).split('\n').map(terminalGenomeLabel);
     }
@@ -597,14 +607,7 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
     if (draftPane && draft?.plan.commands.length && (action === 'x' || input === '[' || input === ']' || action === 'e')) {
       try {
         setFormError(null);
-        if (action === 'e') {
-          const step = draft.plan.commands[selected], parameters = step.parameters;
-          if (step.actionId === ActionIds.OverlayCodonAdaptation && parameters && typeof parameters === 'object'
-            && !Array.isArray(parameters) && parameters.method === 'reference-cai') {
-            throw new Error('This form cannot edit reference-backed codon settings. The captured command is unchanged.');
-          }
-          setEditing(selected); setMode('step');
-        }
+        if (action === 'e') { setEditing(selected); setMode('step'); }
         else if (action === 'x') { session.removeStep(selected); setSelection(Math.max(0, selected - 1)); setPane('draft'); }
         else { const direction = input === '[' ? -1 : 1; session.moveStep(selected, direction);
           setSelection(Math.max(0, Math.min(selected + direction, count - 1))); }
@@ -653,7 +656,11 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
         : mode === 'open' ? 'Saved plan, workflow or complete archive path:'
         : mode === 'plan' ? 'New declarative plan destination:' : mode === 'tape' ? 'New command recording destination:'
           : mode === 'archive' ? 'New complete archive destination:' : 'New analysis destination (execution ' + entry?.execution + '):'}</Text>
-      <TextInput value={filename} onChange={setFilename} onSubmit={submit} />
+      <TextInput key={mode} value={filename}
+        onChange={value => {
+          const current = session.getSnapshot();
+          if (activeMode.current === mode && !current.busy && !current.pendingDraft) setFilename(value);
+        }} onSubmit={() => { if (activeMode.current === mode) submit(); }} />
       {mode === 'fork' && <Text>Copies exact inputs and commands without running them. New output expectations require explicit computation; the accepted recording is kept.</Text>}
       <Text color={colors.textDim}>{mode === 'new' ? 'Enter captures accepted private inputs and view · Esc returns without changes'
         : mode === 'fork' ? 'Enter prepares the editable copy · Esc returns without changes'
