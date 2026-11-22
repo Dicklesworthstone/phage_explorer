@@ -16,13 +16,24 @@ function fixture(sequences = ['ACGT', 'GGCC', 'TTAA']) {
     family: null, host: null, genomeLength: sequence.length, gcContent: null, morphology: null, lifecycle: null,
     description: null, baltimoreGroup: null, genomeType: null, pdbIds: [], genes: [], codonUsage: null, hasModel: false,
   }));
-  const repository = {
+  const unexpectedRead = async (): Promise<never> => { throw new Error('Unexpected repository access in selection test.'); };
+  const repository: PhageRepository = {
     listPhages: async () => phages,
     getPhageByIndex: async (index: number) => phages[index] ?? null,
     getFullGenomeLength: async (id: number) => sequences[id - 1]?.length ?? 0,
     getSequenceWindow: async (id: number, start: number, end: number) => sequences[id - 1]?.slice(start, end) ?? '',
     prefetchAround: async () => {},
-  } as PhageRepository;
+    getPhageById: unexpectedRead,
+    getPhageBySlug: unexpectedRead,
+    getGenes: unexpectedRead,
+    getCodonUsage: unexpectedRead,
+    hasModel: unexpectedRead,
+    getModelFrames: unexpectedRead,
+    searchPhages: unexpectedRead,
+    getPreference: unexpectedRead,
+    setPreference: unexpectedRead,
+    close: unexpectedRead,
+  };
   return { repository, phages, sequences };
 }
 
