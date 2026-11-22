@@ -7,19 +7,122 @@ import {
   findPreviousGenePosition,
   genePositionToScroll,
 } from './gene-navigation';
-import { matchModifierBinding, type ModifierBinding } from './App';
+import { App, matchModifierBinding, matchesTerminalOverlaySource, type ModifierBinding, type TerminalOverlayCacheEntry } from './App';
+import type { PhageRepository } from '@phage-explorer/db-runtime';
+import { createLocalGenomeRepository } from '@phage-explorer/db-runtime';
 import React from 'react';
-import { renderToString } from 'ink';
+import { render, renderToString } from 'ink';
+import { PassThrough, Writable } from 'node:stream';
 import { stripVTControlCharacters } from 'node:util';
 import { importLocalGenomes } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
 import { GeneMap } from './GeneMap';
+import { Header } from './Header';
 import { Model3DView } from './Model3DView';
 import { FoldQuickview } from './FoldQuickview';
 import { GelView } from './GelView';
 import { RepeatOverlay } from './RepeatOverlay';
 import { GCOverlay, computeTerminalGCSkew } from './GCOverlay';
-import { computeRepeatMarks, findTerminalPalindromes } from '../overlay-computations';
+import { computeRepeatMarks, findTerminalPalindromes, type NumericOverlay } from '../overlay-computations';
+
+describe('terminal analysis cache source identity', () => {
+  const repository = {} as PhageRepository;
+  const phage = { id: 1, name: 'snapshot', accession: 'same-accession', genomeLength: 12000,
+    genes: [{ id: 1, name: 'first', startPos: 0, endPos: 12, strand: '+', qualifiers: { codon_start: 1 } }],
+    tropismPredictions: [{ geneId: 1, receptor: 'LamB', confidence: 0.5, evidence: ['source'] }] };
+  const sequence = 'A'.repeat(12000);
+  const entry = (): TerminalOverlayCacheEntry => ({ repository, sequence, phageJson: JSON.stringify(phage), refVersion: 3, data: {} });
+
+  it('retains an unchanged cache hit while rejecting same-length changes between sampled bases', () => {
+    const cached = entry();
+    expect(matchesTerminalOverlaySource(cached, repository, sequence, JSON.stringify(phage))).toBe(true);
+    // The former sampler inspected offsets 0, 2, 4, ... at this length.
+    const edited = 'AC' + sequence.slice(2);
+    expect(edited.length).toBe(sequence.length);
+    expect(matchesTerminalOverlaySource(cached, repository, edited, JSON.stringify(phage))).toBe(false);
+  });
+
+  it('invalidates annotation and prediction changes even when sequence and numeric ID are unchanged', () => {
+    const cached = entry();
+    for (const modified of [
+      { ...phage, genes: [{ ...phage.genes[0], qualifiers: { codon_start: 2 } }] },
+      { ...phage, genes: [{ ...phage.genes[0], name: 'renamed' }] },
+      { ...phage, tropismPredictions: [{ ...phage.tropismPredictions[0], evidence: ['replacement source'] }] },
+    ]) {
+      expect(matchesTerminalOverlaySource(cached, repository, sequence, JSON.stringify(modified))).toBe(false);
+    }
+    expect(cached.phageJson).toBe(JSON.stringify(phage));
+  });
+
+  it('binds a numeric genome ID to its exact repository and complete snapshot', () => {
+    const cached = entry();
+    expect(matchesTerminalOverlaySource(cached, {} as PhageRepository, sequence, cached.phageJson)).toBe(false);
+    expect(matchesTerminalOverlaySource(cached, repository, sequence.slice(1), cached.phageJson)).toBe(false);
+    expect(matchesTerminalOverlaySource(undefined, repository, sequence, cached.phageJson)).toBe(false);
+  });
+});
+
+describe('native terminal cache publication', () => {
+  it('renders a measured zero GC fraction without treating it as missing or emitting raw text', async () => {
+    const prior = usePhageStore.getState();
+    const imported = await importLocalGenomes({ name: 'zero.fa', text: '>zero\nAAAATTTT' });
+    try {
+      usePhageStore.setState({ currentPhage: imported.genomes[0].phage, isLoadingPhage: false });
+      const zero = stripVTControlCharacters(renderToString(React.createElement(Header), { columns: 120 }));
+      expect(zero).toContain('0.0%');
+      usePhageStore.setState({ currentPhage: { ...imported.genomes[0].phage, gcContent: null } });
+      const missing = stripVTControlCharacters(renderToString(React.createElement(Header), { columns: 120 }));
+      expect(missing).toContain('?%');
+    } finally { usePhageStore.setState(prior); }
+  });
+
+  it('recomputes real overlay values for an unsampled edit when returning to a genome', async () => {
+    const prior = usePhageStore.getState();
+    const imported = await importLocalGenomes({ name: 'cache.fa', text: '>query\n' + 'A'.repeat(12000) + '\n>other\nTTTTTTTTTTTT' });
+    const queryId = imported.genomes[0].phage.id, otherId = imported.genomes[1].phage.id;
+    const base = createLocalGenomeRepository(null, imported.genomes);
+    let querySequence = imported.genomes[0].sequence;
+    const repository = new Proxy(base, { get(target, property) {
+      if (property === 'getSequenceWindow') return async (id: number, start: number, end: number) => id === queryId
+        ? querySequence.slice(start, end) : base.getSequenceWindow(id, start, end);
+      return Reflect.get(target, property);
+    } });
+    let output = '';
+    const stdout = Object.assign(new Writable({ write(chunk, _encoding, done) { output += chunk.toString(); done(); } }), { columns: 100, rows: 30 });
+    const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode() {}, ref() {}, unref() {} });
+    usePhageStore.setState({ phages: [], currentPhage: null, currentPhageIndex: 0, overlays: [], overlayData: {},
+      error: null, isLoadingPhage: false, show3DModel: false, model3DFullscreen: false, diffEnabled: false,
+      viewMode: 'dna', readingFrame: 0, scrollPosition: 0, quitConfirmPending: false });
+    const ui = render(React.createElement(App, { repository }), {
+      stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
+      stderr: stdout as unknown as NodeJS.WriteStream, debug: true, patchConsole: false, exitOnCtrlC: false,
+    });
+    const ready = async (id: number) => {
+      const deadline = Date.now() + 5000;
+      while (usePhageStore.getState().currentPhage?.id !== id || !usePhageStore.getState().overlayData.tropism) {
+        if (usePhageStore.getState().error) throw new Error(usePhageStore.getState().error!);
+        if (Date.now() > deadline) throw new Error('Terminal analysis did not finish: ' + JSON.stringify({
+          selected: usePhageStore.getState().currentPhage?.id, expected: id, overlays: Object.keys(usePhageStore.getState().overlayData),
+        }) + '\n' + stripVTControlCharacters(output).slice(-1200));
+        await new Promise(done => setTimeout(done, 10));
+      }
+    };
+    try {
+      await ready(queryId);
+      const original = usePhageStore.getState().overlayData.gcSkew as NumericOverlay;
+      expect(original.values).toEqual(Array(24).fill(0.5)); // Every GC ratio is zero, normalized as a flat trace.
+      querySequence = 'AC' + querySequence.slice(2); // The old two-base sampler never read this position.
+      usePhageStore.getState().setCurrentPhageIndex(1);
+      await ready(otherId);
+      usePhageStore.getState().setCurrentPhageIndex(0);
+      await ready(queryId);
+      const changed = usePhageStore.getState().overlayData.gcSkew as NumericOverlay;
+      // First 500-base window has one C and no G (-1); the rest have zero.
+      expect(changed.values).toEqual([0, ...Array(23).fill(1)]);
+      expect(original.values).toEqual(Array(24).fill(0.5));
+    } finally { ui.unmount(); await repository.close(); usePhageStore.setState(prior); }
+  }, 20000);
+});
 
 describe('terminal GC count evidence', () => {
   const renderGC = (sequence: string) => stripVTControlCharacters(

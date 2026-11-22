@@ -198,7 +198,7 @@ export const Header = memo(function Header(): React.ReactElement {
               <Text color={colors.textDim}>GC</Text>
               <Text color={separatorColor}>{ICONS.separator}</Text>
               <Text color={colors.text}>{phage.gcContent?.toFixed(1) ?? '?'}%</Text>
-              {phage.gcContent && <GCBar gc={phage.gcContent} width={8} colors={colors} />}
+              {phage.gcContent !== null && <GCBar gc={phage.gcContent} width={8} colors={colors} />}
             </Box>
 
             <Text color={separatorColor}>{ICONS.dotSeparator}</Text>

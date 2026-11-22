@@ -171,6 +171,23 @@ export async function computeEmbeddingsForPhage(args: {
   return embeddings;
 }
 
+/** The cache retains the exact consumed inputs; numeric IDs and sampled hashes
+ * cannot distinguish replaced repositories, annotations or unsampled edits. */
+export interface TerminalOverlayCacheEntry {
+  repository: PhageRepository;
+  sequence: string;
+  phageJson: string;
+  refVersion: number;
+  data: Record<string, unknown>;
+}
+export function matchesTerminalOverlaySource(
+  entry: TerminalOverlayCacheEntry | undefined, repository: PhageRepository,
+  sequence: string, phageJson: string
+): entry is TerminalOverlayCacheEntry {
+  return entry !== undefined && entry.repository === repository
+    && entry.sequence === sequence && entry.phageJson === phageJson;
+}
+
 interface AppProps {
   repository: PhageRepository;
   foldEmbeddings?: FoldEmbedding[]; // Optional preloaded embeddings
@@ -221,25 +238,20 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { stdin } = useStdin();
-  const overlayCacheRef = React.useRef<
-    Map<number, { length: number; hash: number; refVersion: number; data: Record<string, unknown> }>
-  >(new Map());
+  const overlayCacheRef = React.useRef<Map<number, TerminalOverlayCacheEntry>>(new Map());
+  // Update during render so a late read cannot publish between a repository
+  // replacement and the preceding effect's cleanup.
+  const currentRepositoryRef = React.useRef(repository);
+  currentRepositoryRef.current = repository;
+  const acceptedSourceRef = React.useRef<{
+    repository: PhageRepository; phages: PhageSummary[]; index: number;
+    phage: PhageFull; sequence: string; phageJson: string;
+  } | null>(null);
   const referenceSketchesRef = React.useRef<Record<string, string>>({});
   const mosaicReferencesRef = React.useRef<{ repository: PhageRepository; phages: PhageSummary[]; records: MosaicSequenceInput[];
     excluded: MosaicDataset['excludedReferences'] } | null>(null);
   const referenceVersionRef = React.useRef(0);
   const [referenceVersion, setReferenceVersion] = useState(0);
-
-  const hashSeq = React.useCallback((seq: string): number => {
-    let h = 0;
-    // Sample every ~5000 chars to keep it fast on long genomes
-    const step = Math.max(1, Math.floor(seq.length / 5000));
-    for (let i = 0; i < seq.length; i += step) {
-      h = (h * 31 + seq.charCodeAt(i)) >>> 0;
-    }
-    h = (h ^ seq.length) >>> 0;
-    return h;
-  }, []);
 
   // Store state
   const phages = usePhageStore(s => s.phages);
@@ -424,9 +436,9 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     const loadPhages = async () => {
       try {
         const list = await repository.listPhages();
-        if (!cancelled) setPhages(list);
+        if (!cancelled && currentRepositoryRef.current === repository) setPhages(list);
       } catch (err) {
-        if (!cancelled) setError(`Failed to load phages: ${err}`);
+        if (!cancelled && currentRepositoryRef.current === repository) setError(`Failed to load phages: ${err}`);
       }
     };
 
@@ -477,7 +489,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         for (const entry of entries) {
           if ('input' in entry) sketches[entry.label] = entry.sketch;
         }
-        if (!cancelled) {
+        if (!cancelled && currentRepositoryRef.current === repository
+          && usePhageStore.getState().phages === phages) {
           referenceSketchesRef.current = sketches;
           mosaicReferencesRef.current = { repository, phages, records: entries.flatMap(entry => 'input' in entry ? [entry.input] : []),
             excluded: [...entries.flatMap(entry => 'excluded' in entry ? [entry.excluded] : []), ...phages.slice(50).map(p => ({ id: `phage-${p.id}`,
@@ -487,7 +500,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
           setReferenceVersion(v => v + 1);
         }
       } catch (err) {
-        if (!cancelled && !currentError) {
+        if (!cancelled && currentRepositoryRef.current === repository
+          && usePhageStore.getState().phages === phages && !currentError) {
           setError(`Failed to preload donor sketches: ${err}`);
         }
       }
@@ -506,23 +520,30 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     let cancelled = false;
     const isStale = () => {
       const state = usePhageStore.getState();
-      return cancelled || state.phages[state.currentPhageIndex]?.id !== selectedId;
+      return cancelled || currentRepositoryRef.current !== repository
+        || state.phages !== phages || state.currentPhageIndex !== currentPhageIndex
+        || state.phages[state.currentPhageIndex]?.id !== selectedId;
     };
 
     const loadPhage = async () => {
       setLoadingPhage(true);
       setAnalysisProgress('Loading sequence...');
+      acceptedSourceRef.current = null;
       setStructureReport(null);
       usePhageStore.setState({ overlayData: {} });
       try {
-        const phage = await repository.getPhageById(selectedId);
+        const fetched = await repository.getPhageById(selectedId);
         if (isStale()) return;
+        // An annotation snapshot must not change while its sequence is loading.
+        const phage = fetched ? structuredClone(fetched) : null;
 
         // Load sequence
         if (phage) {
           const length = await repository.getFullGenomeLength(phage.id);
           const seq = await repository.getSequenceWindow(phage.id, 0, length);
           if (isStale()) return;
+          const phageJson = JSON.stringify(phage);
+          acceptedSourceRef.current = { repository, phages, index: currentPhageIndex, phage, sequence: seq, phageJson };
           setSequence(seq);
           setCurrentPhage(phage);
           setMosaicQuery({ repository, phage, input: {
@@ -533,11 +554,15 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
             sourceStart: 0, sourceLength: length,
           } });
           
-          // Check cache
-          const seqHash = hashSeq(seq);
+          // Capture one reference context for every incremental job. A newer
+          // panel is applied after this run finishes, never mixed into its cache.
+          const panel = mosaicReferencesRef.current;
+          const hasReferences = panel?.repository === repository && panel.phages === phages;
+          const analysisReferences = hasReferences ? referenceSketchesRef.current : {};
+          const analysisReferenceVersion = hasReferences ? referenceVersionRef.current : 0;
           const cache = overlayCacheRef.current.get(phage.id);
           
-         if (cache && cache.length === length && cache.hash === seqHash && cache.refVersion === referenceVersionRef.current) {
+         if (matchesTerminalOverlaySource(cache, repository, seq, phageJson) && cache.refVersion === analysisReferenceVersion) {
              // Refresh LRU order (delete and re-set)
              overlayCacheRef.current.delete(phage.id);
              overlayCacheRef.current.set(phage.id, cache);
@@ -558,7 +583,7 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
              { id: 'promoter', label: 'Promoters', fn: () => computePromoterMarks(seq) },
              { id: 'repeats', label: 'Repeats', fn: () => computeRepeatMarks(seq) },
              { id: 'kmerAnomaly', label: 'K-mer Anomaly', fn: () => computeKmerAnomaly(seq) },
-             { id: 'hgt', label: 'HGT Analysis', fn: () => analyzeHGTProvenance(seq, phage.genes ?? [], referenceSketchesRef.current) },
+             { id: 'hgt', label: 'HGT Analysis', fn: () => analyzeHGTProvenance(seq, phage.genes ?? [], analysisReferences) },
              {
                id: STRUCTURE_ID,
                label: 'Structural constraints',
@@ -604,7 +629,8 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
                  overlayCacheRef.current.delete(oldest);
                }
              }
-             overlayCacheRef.current.set(phage.id, { length, hash: seqHash, refVersion: referenceVersionRef.current, data: partialData });
+             overlayCacheRef.current.set(phage.id, { repository, sequence: seq, phageJson,
+               refVersion: analysisReferenceVersion, data: partialData });
              setAnalysisProgress('');
           }
         } else {
@@ -630,9 +656,18 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   // Recompute donor-contextual overlays once reference sketches have loaded
   // (or if the current phage was analyzed before sketches were available).
   useEffect(() => {
-    if (!currentPhage || !sequence) return;
-    if (phages[currentPhageIndex]?.id !== currentPhage.id) return;
-    if (Object.keys(referenceSketchesRef.current).length === 0) return;
+    if (!currentPhage || !sequence || analysisProgress) return;
+    const source = acceptedSourceRef.current;
+    const panel = mosaicReferencesRef.current;
+    const state = usePhageStore.getState();
+    if (!source || currentRepositoryRef.current !== repository || source.repository !== repository
+      || source.phages !== phages || source.index !== currentPhageIndex
+      || source.phage !== currentPhage || source.sequence !== sequence
+      || state.phages !== phages || state.currentPhageIndex !== currentPhageIndex
+      || state.currentPhage !== currentPhage || panel?.repository !== repository || panel.phages !== phages) return;
+    const cached = overlayCacheRef.current.get(currentPhage.id);
+    if (!matchesTerminalOverlaySource(cached, repository, sequence, source.phageJson)
+      || cached.refVersion === referenceVersionRef.current) return;
 
     const hgtResult = analyzeHGTProvenance(sequence, currentPhage.genes ?? [], referenceSketchesRef.current);
     const predictions =
@@ -656,11 +691,9 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
 
     // Keep the LRU cache consistent so returning to this phage does not
     // show the pre-sketch result.
-    const cached = overlayCacheRef.current.get(currentPhage.id);
-    if (cached) {
-      cached.data = { ...cached.data, hgt: hgtResult, tropism: tropismResult };
-    }
-  }, [currentPhage, currentPhageIndex, phages, sequence, referenceVersion, setOverlayData]);
+    cached.data = { ...cached.data, hgt: hgtResult, tropism: tropismResult };
+    cached.refVersion = referenceVersionRef.current;
+  }, [repository, currentPhage, currentPhageIndex, phages, sequence, referenceVersion, analysisProgress, setOverlayData]);
 
   // Load diff reference sequence when needed
   useEffect(() => {

@@ -6,6 +6,16 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Terminal analyses follow the accepted genome
+
+- Cached overlays now retain the exact repository, complete bases and annotation
+  snapshot. Returning to an edited genome recomputes its results even when its
+  numeric ID and sequence length are unchanged.
+- Replaced selections and repositories cannot publish late results. Donor
+  context is applied consistently after the accepted analysis completes, and
+  its cache records the reference version actually used.
+- A measured 0% GC genome now renders correctly in the terminal header.
+
 ### Resistance simulation with explicit infected cells
 
 - Each cocktail member infects susceptible classes, consumes a free virion, and
@@ -16,6 +26,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   applied once, zero-valued random draws stay finite, and completed runs stop at
   extinction or 48 hours. Version 2 records identify the corrected transitions
   and reject incompatible version 1 replay.
+  [Commit 7d1a2e5](https://github.com/Dicklesworthstone/phage_explorer/commit/7d1a2e59bb12d749465ff48c7f01a229c194e19f).
 
 ### Immediate terminal research access
 
