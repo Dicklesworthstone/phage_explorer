@@ -37,6 +37,31 @@ const makeGene = (name: string, product: string, start: number, end: number): Ge
 });
 
 describe('compareGenomes', () => {
+  test('propagates coherent information metrics without reporting dependence as identity', async () => {
+    const a = { id: 1, name: 'A', accession: 'A' }, b = { id: 2, name: 'B', accession: 'B' };
+    const identical = await compareGenomes(a, b, 'ACGTACGT', 'ACGTACGT');
+    expect(identical.informationTheory.normalizedMI).toBe(1);
+    expect(identical.informationTheory.mutualInformation).toBe(0.4);
+    const insight = identical.summary.insights.find(row => row.category === 'Information');
+    expect(insight?.value).toBe(1);
+    expect(insight?.type).toBe('notable');
+    expect(insight?.message).toContain('100.0%');
+    expect(insight?.message).toContain('4 resolved pairs');
+    expect(insight?.message).toContain('not nucleotide identity');
+
+    // Both genomes have observed 5-mer distributions, but not at shared positions.
+    const disjoint = await compareGenomes(a, b, 'ACGTACGTNNNNNNNN', 'NNNNNNNNACGTACGT');
+    expect(disjoint.informationTheory.coverage.resolvedWindowPairs).toBe(0);
+    expect(disjoint.informationTheory.normalizedMI).toBeNull();
+    expect(disjoint.informationTheory.jensenShannonDivergence).toBe(0);
+    expect(disjoint.summary.insights.some(row => row.category === 'Information')).toBe(false);
+
+    const constant = await compareGenomes(a, b, 'AAAAAAAA', 'TTTTTTTT');
+    expect(constant.informationTheory.mutualInformation).toBe(0);
+    expect(constant.informationTheory.normalizedMI).toBeNull();
+    expect(constant.summary.insights.some(row => row.category === 'Information')).toBe(false);
+  });
+
   test('returns complete result structure for identical sequences', async () => {
     const phageA = { id: 1, name: 'Phage A', accession: 'NC_001' };
     const phageB = { id: 2, name: 'Phage B', accession: 'NC_002' };

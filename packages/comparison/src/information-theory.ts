@@ -12,6 +12,37 @@
 
 import type { InformationTheoryMetrics } from './types';
 
+const KL_PROBABILITY_FLOOR = 1e-10;
+
+function positiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive integer.`);
+}
+
+// Inspect submitted positions without deleting ambiguity, gaps or whitespace.
+// ASCII case folding also avoids changing coordinates for non-DNA Unicode text.
+function isResolvedBase(sequence: string, position: number): boolean {
+  const code = sequence.charCodeAt(position) | 32;
+  return code === 97 || code === 99 || code === 103 || code === 116;
+}
+
+function resolvedKmerCounts(sequence: string, k: number): { counts: Map<string, number>; total: number } {
+  positiveInteger(k, 'K-mer size');
+  const counts = new Map<string, number>();
+  let run = 0, total = 0;
+  for (let position = 0; position < sequence.length; position++) {
+    run = isResolvedBase(sequence, position) ? run + 1 : 0;
+    if (run < k) continue;
+    const word = sequence.slice(position - k + 1, position + 1).toUpperCase();
+    counts.set(word, (counts.get(word) ?? 0) + 1);
+    total++;
+  }
+  return { counts, total };
+}
+
+function countEntropy(counts: Map<string, number>, total: number): number {
+  return shannonEntropy(Array.from(counts.values(), count => count / total));
+}
+
 /**
  * Compute Shannon entropy of a discrete probability distribution.
  *
@@ -34,7 +65,8 @@ export function shannonEntropy(probabilities: number[]): number {
 
 /**
  * Get nucleotide frequencies from a DNA sequence.
- * Returns array [pA, pC, pG, pT] normalized to sum to 1.
+ * Returns [pA, pC, pG, pT], or all zeros when no resolved bases exist.
+ * The zero vector denotes no observations, not a probability distribution.
  */
 export function getNucleotideFrequencies(sequence: string): number[] {
   const counts = { A: 0, C: 0, G: 0, T: 0 };
@@ -47,7 +79,7 @@ export function getNucleotideFrequencies(sequence: string): number[] {
     }
   }
 
-  if (total === 0) return [0.25, 0.25, 0.25, 0.25];
+  if (total === 0) return [0, 0, 0, 0];
 
   return [
     counts.A / total,
@@ -59,7 +91,8 @@ export function getNucleotideFrequencies(sequence: string): number[] {
 
 /**
  * Get dinucleotide frequencies from a DNA sequence.
- * Returns 16-element array for AA, AC, AG, AT, CA, CC, ... TT
+ * Returns 16-element array for AA, AC, AG, AT, CA, CC, ... TT.
+ * All zeros denotes no resolved windows, not a uniform distribution.
  */
 export function getDinucleotideFrequencies(sequence: string): number[] {
   const dinucs = ['AA', 'AC', 'AG', 'AT', 'CA', 'CC', 'CG', 'CT',
@@ -76,41 +109,23 @@ export function getDinucleotideFrequencies(sequence: string): number[] {
     }
   }
 
-  if (total === 0) return new Array(16).fill(1 / 16);
+  if (total === 0) return new Array(16).fill(0);
 
   return dinucs.map(d => (counts.get(d) ?? 0) / total);
 }
 
 /**
  * Compute sequence entropy in bits per base.
- * Uses k-mer frequencies to capture local dependencies.
+ * Uses resolved A/C/G/T k-mer frequencies to capture local dependencies.
+ * Returns 0 by convention without observations; use analyzeInformationTheory
+ * for coverage and explicit unavailable values in user-facing results.
  *
  * @param sequence DNA sequence
  * @param k K-mer size (1 = single nucleotide, 2 = dinucleotide, etc.)
  */
 export function sequenceEntropy(sequence: string, k: number = 1): number {
-  if (k === 1) {
-    return shannonEntropy(getNucleotideFrequencies(sequence));
-  }
-
-  // General k-mer entropy
-  const freqs = new Map<string, number>();
-  let total = 0;
-  const seq = sequence.toUpperCase();
-
-  for (let i = 0; i <= seq.length - k; i++) {
-    const kmer = seq.substring(i, i + k);
-    if (!kmer.includes('N')) {
-      freqs.set(kmer, (freqs.get(kmer) ?? 0) + 1);
-      total++;
-    }
-  }
-
-  if (total === 0) return 0;
-
-  // Normalize to probabilities and compute entropy
-  const probs = Array.from(freqs.values()).map(c => c / total);
-  return shannonEntropy(probs) / k; // Normalize per base
+  const { counts, total } = resolvedKmerCounts(sequence, k);
+  return total ? countEntropy(counts, total) / k : 0;
 }
 
 /**
@@ -119,14 +134,14 @@ export function sequenceEntropy(sequence: string, k: number = 1): number {
  * KL(P||Q) = Σ P(x) log₂(P(x) / Q(x))
  *
  * Note: KL divergence is asymmetric. KL(P||Q) ≠ KL(Q||P)
- * Returns Infinity if Q(x) = 0 where P(x) > 0.
- *
- * For stability, we use a small epsilon when Q(x) = 0.
+ * Exact KL is infinite if Q(x) = 0 where P(x) > 0. This implementation
+ * deliberately floors denominator probabilities at epsilon, giving a finite
+ * approximation when the floor applies; the analysis result declares it.
  */
 export function kullbackLeiblerDivergence(
   p: number[],
   q: number[],
-  epsilon: number = 1e-10
+  epsilon: number = KL_PROBABILITY_FLOOR
 ): number {
   if (p.length !== q.length) {
     throw new Error('Probability distributions must have same length');
@@ -170,57 +185,56 @@ export function jensenShannonDivergence(p: number[], q: number[]): number {
  *
  * I(X;Y) = H(X) + H(Y) - H(X,Y)
  *
- * We estimate this using k-mer co-occurrence frequencies.
+ * Empirical k-mer co-occurrence at the same submitted start position in the
+ * common prefix. All three distributions use only jointly resolved windows;
+ * positions valid on just one side cannot contribute to either marginal.
+ * This is position pairing, not an inferred homologous alignment or identity.
+ * Entropies here are bits/k-mer; zero without pairs is only a numeric sentinel.
  */
 export function mutualInformation(
   sequenceA: string,
   sequenceB: string,
   k: number = 3
-): { mi: number; hA: number; hB: number; hJoint: number } {
-  const seqA = sequenceA.toUpperCase();
-  const seqB = sequenceB.toUpperCase();
-
-  // Use the shorter length for comparison
-  const len = Math.min(seqA.length, seqB.length);
+): { mi: number; hA: number; hB: number; hJoint: number; pairedWindows: number } {
+  positiveInteger(k, 'K-mer size');
+  const len = Math.min(sequenceA.length, sequenceB.length);
 
   // Extract k-mer frequencies from each sequence
   const freqsA = new Map<string, number>();
   const freqsB = new Map<string, number>();
   const jointFreqs = new Map<string, number>();
-  let totalA = 0, totalB = 0, totalJoint = 0;
+  let pairedWindows = 0, run = 0;
 
-  for (let i = 0; i <= len - k; i++) {
-    const kmerA = seqA.substring(i, i + k);
-    const kmerB = seqB.substring(i, i + k);
-
-    if (!kmerA.includes('N')) {
-      freqsA.set(kmerA, (freqsA.get(kmerA) ?? 0) + 1);
-      totalA++;
-    }
-    if (!kmerB.includes('N')) {
-      freqsB.set(kmerB, (freqsB.get(kmerB) ?? 0) + 1);
-      totalB++;
-    }
-    if (!kmerA.includes('N') && !kmerB.includes('N')) {
-      const joint = `${kmerA}|${kmerB}`;
-      jointFreqs.set(joint, (jointFreqs.get(joint) ?? 0) + 1);
-      totalJoint++;
-    }
+  for (let i = 0; i < len; i++) {
+    run = isResolvedBase(sequenceA, i) && isResolvedBase(sequenceB, i) ? run + 1 : 0;
+    if (run < k) continue;
+    const kmerA = sequenceA.slice(i - k + 1, i + 1).toUpperCase();
+    const kmerB = sequenceB.slice(i - k + 1, i + 1).toUpperCase();
+    freqsA.set(kmerA, (freqsA.get(kmerA) ?? 0) + 1);
+    freqsB.set(kmerB, (freqsB.get(kmerB) ?? 0) + 1);
+    const joint = `${kmerA}|${kmerB}`;
+    jointFreqs.set(joint, (jointFreqs.get(joint) ?? 0) + 1);
+    pairedWindows++;
   }
 
-  // Compute entropies
-  const probsA = Array.from(freqsA.values()).map(c => c / totalA);
-  const probsB = Array.from(freqsB.values()).map(c => c / totalB);
-  const probsJoint = Array.from(jointFreqs.values()).map(c => c / totalJoint);
-
-  const hA = shannonEntropy(probsA);
-  const hB = shannonEntropy(probsB);
-  const hJoint = shannonEntropy(probsJoint);
+  if (!pairedWindows) return { mi: 0, hA: 0, hB: 0, hJoint: 0, pairedWindows: 0 };
+  const hA = countEntropy(freqsA, pairedWindows);
+  const hB = countEntropy(freqsB, pairedWindows);
+  const hJoint = countEntropy(jointFreqs, pairedWindows);
 
   // I(X;Y) = H(X) + H(Y) - H(X,Y)
   const mi = Math.max(0, hA + hB - hJoint);
 
-  return { mi, hA, hB, hJoint };
+  return { mi, hA, hB, hJoint, pairedWindows };
+}
+
+function normalizedMIFor(paired: ReturnType<typeof mutualInformation>): number | null {
+  const denominator = paired.hA + paired.hB;
+  // Both constant inputs have observed zero MI but an undefined 0/0 normalizer.
+  if (!paired.pairedWindows || denominator === 0) return null;
+  // All entropies came from the same joint table; clamp only floating-point
+  // roundoff at the mathematical [0, 1] bound, never incompatible marginals.
+  return Math.min(1, (2 * paired.mi) / denominator);
 }
 
 /**
@@ -228,17 +242,15 @@ export function mutualInformation(
  *
  * NMI = 2 * I(X;Y) / (H(X) + H(Y))
  *
- * Range: [0, 1] where 1 = perfect mutual dependence
+ * Range: [0, 1] where 1 = perfect empirical dependence, not sequence identity.
+ * Null means no jointly resolved windows or zero entropy in both marginals.
  */
 export function normalizedMutualInformation(
   sequenceA: string,
   sequenceB: string,
   k: number = 3
-): number {
-  const { mi, hA, hB } = mutualInformation(sequenceA, sequenceB, k);
-
-  const denom = hA + hB;
-  return denom > 0 ? (2 * mi) / denom : 0;
+): number | null {
+  return normalizedMIFor(mutualInformation(sequenceA, sequenceB, k));
 }
 
 /**
@@ -258,60 +270,52 @@ export function analyzeInformationTheory(
   sequenceB: string,
   k: number = 3
 ): InformationTheoryMetrics {
-  // Compute individual entropies
-  const entropyA = sequenceEntropy(sequenceA, k);
-  const entropyB = sequenceEntropy(sequenceB, k);
-
-  // Compute mutual information
-  const { mi, hJoint } = mutualInformation(sequenceA, sequenceB, k);
-  const normalizedMI = (entropyA + entropyB) > 0
-    ? (2 * mi) / (entropyA + entropyB)
-    : 0;
-
-  // Get k-mer frequency distributions for divergence calculations
-  const freqsA = new Map<string, number>();
-  const freqsB = new Map<string, number>();
-  let totalA = 0, totalB = 0;
-
-  const seqA = sequenceA.toUpperCase();
-  const seqB = sequenceB.toUpperCase();
-
-  for (let i = 0; i <= seqA.length - k; i++) {
-    const kmer = seqA.substring(i, i + k);
-    if (!kmer.includes('N')) {
-      freqsA.set(kmer, (freqsA.get(kmer) ?? 0) + 1);
-      totalA++;
-    }
-  }
-  for (let i = 0; i <= seqB.length - k; i++) {
-    const kmer = seqB.substring(i, i + k);
-    if (!kmer.includes('N')) {
-      freqsB.set(kmer, (freqsB.get(kmer) ?? 0) + 1);
-      totalB++;
-    }
-  }
+  const a = resolvedKmerCounts(sequenceA, k), b = resolvedKmerCounts(sequenceB, k);
+  const paired = mutualInformation(sequenceA, sequenceB, k);
+  const normalizedMI = normalizedMIFor(paired);
+  const normalizedMIUnavailableReason = !paired.pairedWindows
+    ? 'No jointly resolved k-mer windows at the same input positions.'
+    : normalizedMI === null ? 'Both paired distributions are constant; normalized MI is undefined (0/0), while observed MI is zero.' : null;
+  const summary = {
+    k,
+    coverage: {
+      totalWindowsA: Math.max(0, sequenceA.length - k + 1),
+      totalWindowsB: Math.max(0, sequenceB.length - k + 1),
+      resolvedWindowsA: a.total,
+      resolvedWindowsB: b.total,
+      pairedWindowSlots: Math.max(0, Math.min(sequenceA.length, sequenceB.length) - k + 1),
+      resolvedWindowPairs: paired.pairedWindows,
+    },
+    // Full-input distributions and position-paired distributions are distinct
+    // samples when lengths or masks differ. Expose both, with coherent units.
+    entropyA: a.total ? countEntropy(a.counts, a.total) / k : null,
+    entropyB: b.total ? countEntropy(b.counts, b.total) / k : null,
+    pairedEntropyA: paired.pairedWindows ? paired.hA / k : null,
+    pairedEntropyB: paired.pairedWindows ? paired.hB / k : null,
+    jointEntropy: paired.pairedWindows ? paired.hJoint / k : null,
+    mutualInformation: paired.pairedWindows ? paired.mi / k : null,
+    normalizedMI,
+    normalizedMIUnavailableReason,
+    klProbabilityFloor: KL_PROBABILITY_FLOOR,
+  };
 
   // Create aligned probability arrays over union of k-mers
-  const allKmers = new Set([...freqsA.keys(), ...freqsB.keys()]);
+  const allKmers = new Set([...a.counts.keys(), ...b.counts.keys()]);
   const kmerArray = Array.from(allKmers);
 
-  // Guard against division by zero
-  if (totalA === 0 || totalB === 0) {
+  // Missing data is not evidence that two distributions have zero divergence.
+  if (a.total === 0 || b.total === 0) {
     return {
-      entropyA,
-      entropyB,
-      jointEntropy: 0,
-      mutualInformation: 0,
-      normalizedMI: 0,
-      jensenShannonDivergence: 0,
-      kullbackLeiblerAtoB: 0,
-      kullbackLeiblerBtoA: 0,
-      relativeEntropy: 0,
+      ...summary,
+      jensenShannonDivergence: null,
+      kullbackLeiblerAtoB: null,
+      kullbackLeiblerBtoA: null,
+      relativeEntropy: null,
     };
   }
 
-  const pA = kmerArray.map(kmer => (freqsA.get(kmer) ?? 0) / totalA);
-  const pB = kmerArray.map(kmer => (freqsB.get(kmer) ?? 0) / totalB);
+  const pA = kmerArray.map(kmer => (a.counts.get(kmer) ?? 0) / a.total);
+  const pB = kmerArray.map(kmer => (b.counts.get(kmer) ?? 0) / b.total);
 
   // Compute divergences
   const jsd = jensenShannonDivergence(pA, pB);
@@ -319,11 +323,7 @@ export function analyzeInformationTheory(
   const klBtoA = kullbackLeiblerDivergence(pB, pA);
 
   return {
-    entropyA,
-    entropyB,
-    jointEntropy: hJoint,
-    mutualInformation: mi,
-    normalizedMI: normalizedMI,
+    ...summary,
     jensenShannonDivergence: jsd,
     kullbackLeiblerAtoB: klAtoB,
     kullbackLeiblerBtoA: klBtoA,
@@ -342,6 +342,8 @@ export function entropyProfile(
   windowSize: number = 100,
   step: number = 50
 ): number[] {
+  positiveInteger(windowSize, 'Window size');
+  positiveInteger(step, 'Step size');
   const profile: number[] = [];
   const seq = sequence.toUpperCase();
 

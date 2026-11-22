@@ -23,15 +23,28 @@ export interface KmerAnalysis {
 
 // Information theory metrics
 export interface InformationTheoryMetrics {
-  entropyA: number;                   // Shannon entropy of sequence A (bits/base)
-  entropyB: number;                   // Shannon entropy of sequence B (bits/base)
-  jointEntropy: number;               // H(A,B) - joint entropy
-  mutualInformation: number;          // I(A;B) = H(A) + H(B) - H(A,B)
-  normalizedMI: number;               // NMI = 2*I(A;B) / (H(A) + H(B))
-  jensenShannonDivergence: number;    // JSD - symmetric KLD, sqrt gives metric
-  kullbackLeiblerAtoB: number;        // KL(A||B) - divergence from A to B
-  kullbackLeiblerBtoA: number;        // KL(B||A) - divergence from B to A
-  relativeEntropy: number;            // Average of KL divergences
+  k: number;
+  coverage: {
+    totalWindowsA: number;
+    totalWindowsB: number;
+    resolvedWindowsA: number;
+    resolvedWindowsB: number;
+    pairedWindowSlots: number;        // Same start positions in the common input prefix
+    resolvedWindowPairs: number;      // Both k-mers contain only A/C/G/T
+  };
+  entropyA: number | null;            // Full-input marginal entropy (bits/base); null without resolved windows
+  entropyB: number | null;
+  pairedEntropyA: number | null;      // Marginal entropy on jointly resolved positions (bits/base)
+  pairedEntropyB: number | null;
+  jointEntropy: number | null;        // Joint entropy on those same pairs (bits/base)
+  mutualInformation: number | null;   // I(A;B) = pairedEntropyA + pairedEntropyB - jointEntropy
+  normalizedMI: number | null;        // 2*I/(pairedEntropyA+pairedEntropyB); null without pairs or entropy
+  normalizedMIUnavailableReason: string | null;
+  jensenShannonDivergence: number | null; // Full-input k-mer distributions (bits/k-mer); null if either is absent
+  kullbackLeiblerAtoB: number | null;  // KL with the declared floor for denominator probabilities in B
+  kullbackLeiblerBtoA: number | null;
+  relativeEntropy: number | null;     // Average of the floored KL divergences
+  klProbabilityFloor: number;
 }
 
 // Rank correlation metrics (for frequency distributions)

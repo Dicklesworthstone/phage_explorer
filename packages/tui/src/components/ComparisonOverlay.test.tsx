@@ -61,6 +61,9 @@ describe('owned terminal comparison worker', () => {
     expect(result.kmerAnalysis.every(row => row.jaccardIndex === 1)).toBe(true);
     expect(result.biological.kmerIdentity.percent).toBe(100);
     expect(result.biological.kmerIdentity.coverageA.validWindows).toBe(108);
+    expect(result.informationTheory.normalizedMI).toBe(1);
+    expect(result.informationTheory.mutualInformation).toBeCloseTo(0.4, 12);
+    expect(result.informationTheory.coverage.resolvedWindowPairs).toBe(124);
   });
 
   it('preserves strand-independent identity and unavailability through the native worker', async () => {
@@ -154,6 +157,36 @@ function terminal(repository: PhageRepository, runWorker?: typeof runComparisonI
 }
 
 describe('terminal comparison source ownership and recovery', () => {
+  it('renders coherent information units and 100% NMI from the actual native worker', async () => {
+    const previous = usePhageStore.getState();
+    const { repository } = await fixture('>REFERENCE\nACGTACGT\n>QUERY\nACGTACGT\n');
+    usePhageStore.setState({ comparisonTab: 'information' });
+    const test = terminal(repository);
+    try {
+      await waitFor(() => test.output().includes('Normalized MI = 100.0%'));
+      expect(test.output()).toContain('I(A;B) = 0.4000 bits/base');
+      expect(test.output()).toContain('Jointly resolved pairs: 4/4');
+      expect(test.output()).toContain('not nucleotide identity');
+      expect(test.output()).not.toContain('500.0%');
+    } finally { test.ui.unmount(); await flush(); usePhageStore.setState(previous); }
+  });
+
+  it('does not render missing paired evidence as observed zero mutual information', async () => {
+    const previous = usePhageStore.getState();
+    const { repository } = await fixture('>REFERENCE\nACGTACGTNNNNNNNN\n>QUERY\nNNNNNNNNACGTACGT\n');
+    usePhageStore.setState({ comparisonTab: 'information' });
+    const test = terminal(repository);
+    try {
+      await waitFor(() => test.output().includes('Normalized MI = Unavailable'));
+      expect(test.output()).toContain('I(A;B) = Unavailable');
+      expect(test.output()).toContain('No jointly resolved');
+      expect(test.output()).toContain('Jointly resolved pairs: 0/12');
+      expect(test.output()).toContain('Jensen-Shannon: 0.0000');
+      expect(test.output()).not.toContain('I(A;B) = 0.0000');
+      expect(test.output()).not.toContain('Normalized MI = 0.0%');
+    } finally { test.ui.unmount(); await flush(); usePhageStore.setState(previous); }
+  });
+
   it('shows an exact sequence-only insertion in the actual structural tab with correct coordinates', async () => {
     const previous = usePhageStore.getState();
     const { repository } = await fixture('>REFERENCE\nCCGG\n>QUERY\nCC' + 'A'.repeat(60) + 'GG\n');

@@ -2,8 +2,43 @@ import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
-import { analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
-import { ComparisonDiffView, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
+import { analyzeInformationTheory, analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
+import { ComparisonDiffView, ComparisonInformationTheory, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
+
+describe('comparison information evidence rendering', () => {
+  it('renders actual 5-mer MI in coherent units and NMI at 100%, not 500%', () => {
+    const html = renderToStaticMarkup(<ComparisonInformationTheory info={analyzeInformationTheory('ACGTACGT', 'ACGTACGT', 5)} />);
+    expect(html).toContain('100.0%');
+    expect(html).not.toContain('500');
+    expect(html).toContain('0.400');
+    expect(html).toContain('mutual information (bits/base)');
+    expect(html).toContain('Jointly resolved pairs: 4/4');
+    expect(html).toContain('not nucleotide identity');
+  });
+
+  it('keeps full-input divergence separate from absent paired observations', () => {
+    const html = renderToStaticMarkup(<ComparisonInformationTheory info={analyzeInformationTheory('AN', 'NA', 1)} />);
+    expect(html).toContain('Unavailable');
+    expect(html).toContain('No jointly resolved');
+    expect(html).toContain('Jointly resolved pairs: 0/2');
+    expect(html).toContain('Resolved windows A: 1/2; B: 1/2');
+    expect(html).toContain('JSD (bits/k-mer)');
+    expect(html).not.toContain('100.0%');
+    expect(html).not.toContain('0.0%');
+  });
+
+  it('reports zero-entropy normalization separately from wholly unresolved inputs', () => {
+    const constant = renderToStaticMarkup(<ComparisonInformationTheory info={analyzeInformationTheory('AAAA', 'TTTT', 1)} />);
+    expect(constant).toContain('constant');
+    expect(constant).toContain('observed MI is zero');
+    expect(constant).toContain('Jointly resolved pairs: 4/4');
+    const missing = renderToStaticMarkup(<ComparisonInformationTheory info={analyzeInformationTheory('NRY', 'NRY', 1)} />);
+    expect(missing).toContain('Unavailable');
+    expect(missing).toContain('Jointly resolved pairs: 0/3');
+    expect(missing).not.toContain('0.000');
+    expect(missing).not.toContain('constant');
+  });
+});
 
 describe('comparison identity evidence rendering', () => {
   it('renders absent resolved evidence as unavailable in both identity and summary', async () => {

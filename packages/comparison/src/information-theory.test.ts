@@ -84,9 +84,10 @@ describe('getNucleotideFrequencies', () => {
     expect(freqs[3]).toBeCloseTo(0.25); // T
   });
 
-  it('returns uniform distribution for empty sequence', () => {
+  it('returns no observed frequencies for empty or unresolved sequence', () => {
     const freqs = getNucleotideFrequencies('');
-    expect(freqs).toEqual([0.25, 0.25, 0.25, 0.25]);
+    expect(freqs).toEqual([0, 0, 0, 0]);
+    expect(getNucleotideFrequencies('NRY')).toEqual([0, 0, 0, 0]);
   });
 
   it('frequencies sum to 1', () => {
@@ -114,10 +115,10 @@ describe('getDinucleotideFrequencies', () => {
     expect(sum).toBeCloseTo(1, 5);
   });
 
-  it('returns uniform for empty sequence', () => {
+  it('does not invent dinucleotide observations for empty sequence', () => {
     const freqs = getDinucleotideFrequencies('');
     expect(freqs.length).toBe(16);
-    expect(freqs[0]).toBeCloseTo(1/16, 5);
+    expect(freqs.every(frequency => frequency === 0)).toBe(true);
   });
 });
 
@@ -147,8 +148,8 @@ describe('sequenceEntropy', () => {
 
   it('returns 0 for empty sequence', () => {
     const entropy = sequenceEntropy('', 1);
-    // getNucleotideFrequencies returns uniform for empty, so entropy is 2
-    expect(entropy).toBeCloseTo(2, 1);
+    // Numeric convenience convention only; the analysis result exposes null.
+    expect(entropy).toBe(0);
   });
 });
 
@@ -276,7 +277,7 @@ describe('normalizedMutualInformation', () => {
     expect(nmi).toBeLessThanOrEqual(1);
   });
 
-  it('returns higher NMI for identical sequences', () => {
+  it('detects deterministic recoding, not just nucleotide identity', () => {
     const seqA = 'ACGTACGTACGTACGT';
     const seqB = 'ACGTACGTACGTACGT';
     const seqC = 'TGCATGCATGCATGCA';
@@ -284,17 +285,17 @@ describe('normalizedMutualInformation', () => {
     const nmiSame = normalizedMutualInformation(seqA, seqB, 2);
     const nmiDiff = normalizedMutualInformation(seqA, seqC, 2);
 
-    expect(nmiSame).toBeGreaterThanOrEqual(nmiDiff);
+    expect(nmiSame).toBeCloseTo(1, 12);
+    expect(nmiDiff).toBeCloseTo(1, 12);
   });
 
-  it('returns 0 when entropy is 0', () => {
+  it('reports an undefined normalizer when both observed entropies are zero', () => {
     // Homopolymer sequences have 0 entropy
     const seqA = 'AAAAAAAAAA';
     const seqB = 'AAAAAAAAAA';
     const nmi = normalizedMutualInformation(seqA, seqB, 1);
 
-    // Both have 0 entropy, so denominator is 0 -> returns 0
-    expect(nmi).toBe(0);
+    expect(nmi).toBeNull();
   });
 });
 
@@ -334,20 +335,137 @@ describe('analyzeInformationTheory', () => {
     expect(result).toHaveProperty('relativeEntropy');
   });
 
-  it('returns zeros for empty sequence', () => {
+  it('withholds divergence when one input has no observations', () => {
     const result = analyzeInformationTheory('', 'ACGT', 2);
 
-    // When totalA is 0, should return zeros for divergence metrics
-    expect(result.jensenShannonDivergence).toBe(0);
-    expect(result.kullbackLeiblerAtoB).toBe(0);
-    expect(result.kullbackLeiblerBtoA).toBe(0);
+    expect(result.entropyA).toBeNull();
+    expect(result.entropyB).toBeCloseTo(Math.log2(3) / 2, 12);
+    expect(result.jensenShannonDivergence).toBeNull();
+    expect(result.kullbackLeiblerAtoB).toBeNull();
+    expect(result.kullbackLeiblerBtoA).toBeNull();
   });
 
   it('computes higher JSD for different sequences', () => {
     const similar = analyzeInformationTheory('ACGTACGTACGT', 'ACGTACGTACGT', 2);
     const different = analyzeInformationTheory('AAAAAAAAAAA', 'TTTTTTTTTTT', 2);
 
-    expect(different.jensenShannonDivergence).toBeGreaterThan(similar.jensenShannonDivergence);
+    expect(similar.jensenShannonDivergence).toBe(0);
+    expect(different.jensenShannonDivergence).toBe(1);
+  });
+});
+
+describe('information theory observation and unit oracles', () => {
+  it('reports 100% NMI and coherent per-base units for identical 5-mer observations', () => {
+    // ACGTA, CGTAC, GTACG and TACGT each occur once: every entropy is
+    // log2(4) = 2 bits/window, or 2/5 bits/base; I(X;X) = H(X).
+    const result = analyzeInformationTheory('ACGTACGT', 'acgtacgt', 5);
+    expect(result.entropyA).toBeCloseTo(0.4, 12);
+    expect(result.entropyB).toBeCloseTo(0.4, 12);
+    expect(result.pairedEntropyA).toBeCloseTo(0.4, 12);
+    expect(result.pairedEntropyB).toBeCloseTo(0.4, 12);
+    expect(result.jointEntropy).toBeCloseTo(0.4, 12);
+    expect(result.mutualInformation).toBeCloseTo(0.4, 12);
+    expect(result.normalizedMI).toBeCloseTo(1, 12);
+    expect(result.normalizedMIUnavailableReason).toBeNull();
+    expect(result.coverage).toEqual({ totalWindowsA: 4, totalWindowsB: 4,
+      resolvedWindowsA: 4, resolvedWindowsB: 4, pairedWindowSlots: 4, resolvedWindowPairs: 4 });
+  });
+
+  it('finds zero MI from a balanced independent two-by-two joint table', () => {
+    // (A,A), (A,C), (C,A), (C,C) have probability 1/4 each.
+    const result = analyzeInformationTheory('AACC', 'ACAC', 1);
+    expect(result.pairedEntropyA).toBe(1);
+    expect(result.pairedEntropyB).toBe(1);
+    expect(result.jointEntropy).toBe(2);
+    expect(result.mutualInformation).toBe(0);
+    expect(result.normalizedMI).toBe(0);
+  });
+
+  it('derives both MI marginals from the jointly observed windows only', () => {
+    // Joint positions 0 and 3 are (A,A), (C,G), each with probability 1/2.
+    // Unpaired C observations must not enter either paired marginal.
+    const result = analyzeInformationTheory('ANCC', 'ACNG', 1);
+    expect(result.coverage).toEqual({ totalWindowsA: 4, totalWindowsB: 4,
+      resolvedWindowsA: 3, resolvedWindowsB: 3, pairedWindowSlots: 4, resolvedWindowPairs: 2 });
+    expect(result.pairedEntropyA).toBe(1);
+    expect(result.pairedEntropyB).toBe(1);
+    expect(result.jointEntropy).toBe(1);
+    expect(result.mutualInformation).toBe(1);
+    expect(result.normalizedMI).toBe(1);
+    expect(result.entropyA).toBeCloseTo(0.9182958340544896, 12);
+    expect(result.entropyB).toBeCloseTo(Math.log2(3), 12);
+  });
+
+  it('retains full-input divergence but withholds MI when resolved masks do not intersect', () => {
+    for (const [a, b] of [['AN', 'NA'], ['ACNNNNNN', 'NNACGTAC']]) {
+      const result = analyzeInformationTheory(a, b, 1);
+      expect(result.coverage.resolvedWindowPairs).toBe(0);
+      expect(result.pairedEntropyA).toBeNull();
+      expect(result.pairedEntropyB).toBeNull();
+      expect(result.jointEntropy).toBeNull();
+      expect(result.mutualInformation).toBeNull();
+      expect(result.normalizedMI).toBeNull();
+      expect(normalizedMutualInformation(a, b, 1)).toBeNull();
+      expect(result.jensenShannonDivergence).not.toBeNull();
+      expect(result.normalizedMIUnavailableReason).toContain('No jointly resolved');
+    }
+    expect(analyzeInformationTheory('AN', 'NA', 1).jensenShannonDivergence).toBe(0);
+  });
+
+  it('excludes every unresolved symbol without joining bases across it or changing positions', () => {
+    for (const symbol of ['N', 'R', 'Y', 'S', 'W', 'K', 'M', 'B', 'D', 'H', 'V', 'U', '-', '?', '.', ' ', '\n', 'ß']) {
+      // Only AC and CA survive, each once. Symbols remain a gap in sampling.
+      const input = `AC${symbol}CA`;
+      const result = analyzeInformationTheory(input, input, 2);
+      expect(result.coverage.resolvedWindowsA).toBe(2);
+      expect(result.coverage.resolvedWindowPairs).toBe(2);
+      expect(result.coverage.totalWindowsA).toBe(4);
+      expect(result.entropyA).toBe(0.5);
+      expect(result.mutualInformation).toBe(0.5);
+      expect(result.normalizedMI).toBe(1);
+    }
+    const missing = analyzeInformationTheory('NRYU-.?', 'NRYU-.?', 1);
+    expect(missing.entropyA).toBeNull();
+    expect(missing.mutualInformation).toBeNull();
+    expect(missing.normalizedMI).toBeNull();
+    expect(missing.jensenShannonDivergence).toBeNull();
+  });
+
+  it('separates common-prefix pairing from full-input distributions for unequal lengths', () => {
+    const result = analyzeInformationTheory('AC', 'ACGT', 1);
+    expect(result.entropyA).toBe(1);
+    expect(result.entropyB).toBe(2);
+    expect(result.pairedEntropyA).toBe(1);
+    expect(result.pairedEntropyB).toBe(1);
+    expect(result.jointEntropy).toBe(1);
+    expect(result.mutualInformation).toBe(1);
+    expect(result.normalizedMI).toBe(1);
+    // P=(1/2,1/2,0,0), Q=(1/4,1/4,1/4,1/4).
+    expect(result.jensenShannonDivergence).toBeCloseTo(0.31127812445913283, 12);
+    expect(result.coverage.resolvedWindowsB).toBe(4);
+    expect(result.coverage.pairedWindowSlots).toBe(2);
+  });
+
+  it('distinguishes observed constant distributions from absent data', () => {
+    const result = analyzeInformationTheory('AAAA', 'TTTT', 1);
+    expect(result.entropyA).toBe(0);
+    expect(result.entropyB).toBe(0);
+    expect(result.jointEntropy).toBe(0);
+    expect(result.mutualInformation).toBe(0);
+    expect(result.normalizedMI).toBeNull();
+    expect(result.normalizedMIUnavailableReason).toContain('constant');
+    expect(result.coverage.resolvedWindowPairs).toBe(4);
+    expect(result.jensenShannonDivergence).toBe(1);
+    expect(result.klProbabilityFloor).toBe(1e-10);
+  });
+
+  it('rejects invalid k-mer sizes before sampling and validates profile progress', () => {
+    for (const invalid of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => analyzeInformationTheory('ACGT', 'ACGT', invalid)).toThrow(RangeError);
+      expect(() => mutualInformation('ACGT', 'ACGT', invalid)).toThrow(RangeError);
+      expect(() => sequenceEntropy('ACGT', invalid)).toThrow(RangeError);
+      expect(() => entropyProfile('ACGT', 2, invalid)).toThrow(RangeError);
+    }
   });
 });
 

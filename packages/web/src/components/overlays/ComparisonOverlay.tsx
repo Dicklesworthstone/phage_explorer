@@ -180,6 +180,38 @@ export function ComparisonGcContent({ biological }: {
   </div>;
 }
 
+/** Information-tab values retain the distinct full-input and paired samples. */
+export function ComparisonInformationTheory({ info }: {
+  info: GenomeComparisonResult['informationTheory'];
+}): React.ReactElement {
+  const value = (number: number | null) => number === null ? 'Unavailable' : number.toFixed(3);
+  const coverage = info.coverage;
+  return <div className="panel" aria-label="Information theory evidence">
+    <div className="panel-header"><h3>Information theory</h3><span className="text-dim">Resolved {info.k}-mer observations</span></div>
+    <div className="metrics-grid">
+      <div className="metric-card"><div className="metric-label">Normalized MI</div>
+        <div className="metric-value">{info.normalizedMI === null ? 'Unavailable' : `${(info.normalizedMI * 100).toFixed(1)}%`}</div></div>
+      <div className="metric-card"><div className="metric-label">Position-paired mutual information (bits/base)</div>
+        <div className="metric-value">{value(info.mutualInformation)}</div></div>
+      <div className="metric-card"><div className="metric-label">JSD (bits/k-mer)</div>
+        <div className="metric-value">{value(info.jensenShannonDivergence)}</div></div>
+      <div className="metric-card"><div className="metric-label">Floored KL A→B / B→A (bits/k-mer)</div>
+        <div className="metric-value">{value(info.kullbackLeiblerAtoB)} / {value(info.kullbackLeiblerBtoA)}</div></div>
+    </div>
+    {info.normalizedMIUnavailableReason && <p role="status">{info.normalizedMIUnavailableReason}</p>}
+    <p className="text-dim">Resolved windows A: {coverage.resolvedWindowsA}/{coverage.totalWindowsA}; B: {coverage.resolvedWindowsB}/{coverage.totalWindowsB}.
+      {' '}Jointly resolved pairs: {coverage.resolvedWindowPairs}/{coverage.pairedWindowSlots}.</p>
+    <p className="text-dim">Full-input marginal entropy A/B (bits/base): {value(info.entropyA)} / {value(info.entropyB)}.
+      {' '}Paired marginal entropy A/B (bits/base): {value(info.pairedEntropyA)} / {value(info.pairedEntropyB)};
+      {' '}joint entropy (bits/base): {value(info.jointEntropy)}.</p>
+    <p className="text-dim">MI and its normalization use the same jointly resolved windows at matching start positions in the common input prefix.
+      This pairing does not establish homology; strand and origin affect it. NMI measures empirical dependence, not nucleotide identity.</p>
+    <p className="text-dim">A/C/G/T windows only; ambiguity, gaps and other symbols break windows without shifting coordinates.
+      JSD and KL compare each full input distribution, independent of position pairing. Missing distributions are unavailable.
+      KL uses a denominator probability floor of {info.klProbabilityFloor}; it is a finite approximation when that floor applies.</p>
+  </div>;
+}
+
 export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
   diff: SequenceDiffResult | null; sequenceA: string; sequenceB: string;
 }): React.ReactElement {
@@ -542,38 +574,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       );
     }
     if (comparisonTab === 'information') {
-      const info = comparisonResult.informationTheory;
-      return (
-        <div className="panel">
-          <div className="panel-header">
-            <h3>Information theory</h3>
-            <span className="text-dim">Mutual information & divergence</span>
-          </div>
-          <div className="metrics-grid">
-            <div className="metric-card">
-              <div className="metric-label">Normalized MI</div>
-              <div className="metric-value">{formatPct(info.normalizedMI * 100)}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">Mutual information</div>
-              <div className="metric-value">{info.mutualInformation.toFixed(3)} bits</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">JSD</div>
-              <div className="metric-value">{info.jensenShannonDivergence.toFixed(3)}</div>
-            </div>
-            <div className="metric-card">
-              <div className="metric-label">KL A→B / B→A</div>
-              <div className="metric-value">
-                {info.kullbackLeiblerAtoB.toFixed(3)} / {info.kullbackLeiblerBtoA.toFixed(3)}
-              </div>
-            </div>
-          </div>
-          <p className="text-dim">
-            Entropy A/B: {info.entropyA.toFixed(3)} / {info.entropyB.toFixed(3)} · Joint: {info.jointEntropy.toFixed(3)}
-          </p>
-        </div>
-      );
+      return <ComparisonInformationTheory info={comparisonResult.informationTheory} />;
     }
     if (comparisonTab === 'correlation') {
       const corr = comparisonResult.rankCorrelation;

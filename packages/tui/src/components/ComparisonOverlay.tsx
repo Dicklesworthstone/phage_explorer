@@ -465,6 +465,8 @@ function KmerTab({ result, colors }: TabProps): React.ReactElement {
 
 function InformationTab({ result, colors }: TabProps): React.ReactElement {
   const { informationTheory } = result;
+  const value = (number: number | null) => number === null ? 'Unavailable' : number.toFixed(4);
+  const coverage = informationTheory.coverage;
 
   return (
     <Box flexDirection="column">
@@ -473,20 +475,26 @@ function InformationTab({ result, colors }: TabProps): React.ReactElement {
       </Box>
 
       <Box flexDirection="column" gap={0}>
-        <Text color={colors.accent}>Shannon Entropy (bits/base):</Text>
-        <Text color={colors.text}>  Phage A: {informationTheory.entropyA.toFixed(4)}</Text>
-        <Text color={colors.text}>  Phage B: {informationTheory.entropyB.toFixed(4)}</Text>
-        <Text color={colors.text}>  Joint: {informationTheory.jointEntropy.toFixed(4)}</Text>
+        <Text color={colors.accent}>Full-input {informationTheory.k}-mer Entropy (bits/base):</Text>
+        <Text color={colors.text}>  Phage A: {value(informationTheory.entropyA)}</Text>
+        <Text color={colors.text}>  Phage B: {value(informationTheory.entropyB)}</Text>
+        <Text color={colors.textDim}>  Resolved windows A: {coverage.resolvedWindowsA}/{coverage.totalWindowsA}; B: {coverage.resolvedWindowsB}/{coverage.totalWindowsB}</Text>
 
-        <Box marginTop={1}><Text color={colors.accent}>Mutual Information:</Text></Box>
-        <Text color={colors.text}>  I(A;B) = {informationTheory.mutualInformation.toFixed(4)} bits</Text>
-        <Text color={colors.text}>  Normalized MI = {(informationTheory.normalizedMI * 100).toFixed(1)}%</Text>
+        <Box marginTop={1}><Text color={colors.accent}>Position-paired Information (bits/base):</Text></Box>
+        <Text color={colors.text}>  Paired A/B: {value(informationTheory.pairedEntropyA)} / {value(informationTheory.pairedEntropyB)}</Text>
+        <Text color={colors.text}>  Joint: {value(informationTheory.jointEntropy)}</Text>
+        <Text color={colors.text}>  I(A;B) = {value(informationTheory.mutualInformation)} bits/base</Text>
+        <Text color={colors.text}>  Normalized MI = {informationTheory.normalizedMI === null ? 'Unavailable' : `${(informationTheory.normalizedMI * 100).toFixed(1)}%`}</Text>
+        <Text color={colors.textDim}>  Jointly resolved pairs: {coverage.resolvedWindowPairs}/{coverage.pairedWindowSlots}</Text>
+        {informationTheory.normalizedMIUnavailableReason && <Text color={colors.textDim}>{informationTheory.normalizedMIUnavailableReason}</Text>}
+        <Text color={colors.textDim}>Same input positions in the common prefix, not inferred homology. NMI is dependence, not nucleotide identity.</Text>
 
-        <Box marginTop={1}><Text color={colors.accent}>Divergence Measures:</Text></Box>
-        <Text color={colors.text}>  Jensen-Shannon: {informationTheory.jensenShannonDivergence.toFixed(4)}</Text>
-        <Text color={colors.text}>  KL(A||B): {informationTheory.kullbackLeiblerAtoB.toFixed(4)}</Text>
-        <Text color={colors.text}>  KL(B||A): {informationTheory.kullbackLeiblerBtoA.toFixed(4)}</Text>
-        <Text color={colors.text}>  Relative Entropy: {informationTheory.relativeEntropy.toFixed(4)}</Text>
+        <Box marginTop={1}><Text color={colors.accent}>Full-input Divergence (bits/k-mer):</Text></Box>
+        <Text color={colors.text}>  Jensen-Shannon: {value(informationTheory.jensenShannonDivergence)}</Text>
+        <Text color={colors.text}>  Floored KL(A||B): {value(informationTheory.kullbackLeiblerAtoB)}</Text>
+        <Text color={colors.text}>  Floored KL(B||A): {value(informationTheory.kullbackLeiblerBtoA)}</Text>
+        <Text color={colors.text}>  Mean floored KL: {value(informationTheory.relativeEntropy)}</Text>
+        <Text color={colors.textDim}>Only A/C/G/T windows; other symbols break windows. KL denominator floor: {informationTheory.klProbabilityFloor}.</Text>
       </Box>
     </Box>
   );

@@ -252,11 +252,11 @@ function computeSummary(
   }
 
   // Mutual information insight
-  if (informationTheory.normalizedMI > 0.5) {
+  if (informationTheory.normalizedMI !== null && informationTheory.normalizedMI > 0.5) {
     insights.push({
-      type: 'similarity',
+      type: 'notable',
       category: 'Information',
-      message: `High mutual information (NMI: ${(informationTheory.normalizedMI * 100).toFixed(1)}%)`,
+      message: `Position-paired k-mer dependence (NMI: ${(informationTheory.normalizedMI * 100).toFixed(1)}%, ${informationTheory.coverage.resolvedWindowPairs.toLocaleString()} resolved pairs); this is not nucleotide identity or an alignment.`,
       value: informationTheory.normalizedMI,
       significance: 'medium',
     });
