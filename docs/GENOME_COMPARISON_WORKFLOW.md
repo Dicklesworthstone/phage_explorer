@@ -32,6 +32,19 @@ unit-edit alignment. These sampling settings do not turn an approximate edit
 metric into an exact alignment. When the exact alignment exceeds its budget,
 the experiment retains its explicit unavailable reason and the other metrics.
 
+### Navigate the accepted comparison
+
+The Diff view owns its position, zoom, DNA/amino-acid mode and reading frame.
+Next/previous differences, position jumps, the position bar, canvas clicks,
+wheel scrolling and mode/frame controls operate on the accepted comparison
+sequence. They do not move the main explorer or change its mode, frame or zoom.
+Navigation changes in the main explorer likewise do not move this comparison
+viewport. The ordinary explorer continues to use its existing shared controls.
+
+This separation also applies to reopened experiments whose embedded genomes are
+absent from the current repository. Use the accepted-source banner to identify
+that pair; the comparison's coordinates belong to those embedded sequences.
+
 **Cancel comparison**, changing the selected sources, and closing the overlay
 cancel pending computation. Cancelled or obsolete reads and worker replies
 cannot publish a result for a later selection. Incomplete sequence reads are

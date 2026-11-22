@@ -558,6 +558,21 @@ GenBank annotations are preserved; FASTA does not acquire inferred genes. With n
 supplied codon counts, sequence composition uses frame zero of the whole genome.
 These descriptive similarities do not establish homology, expression or function.
 
+The browser **Comparison** panel uses the same complete experiment format.
+**Comparison settings** exposes the four parameters above; draft edits apply
+when you choose **Run**. **Export comparison JSON**, **Reopen comparison JSON**
+and the local snapshot controls preserve accepted inputs and settings across
+sessions. Reopening recomputes all evidence from the embedded genomes, even when
+their original catalog is absent. Failed or cancelled replay retains the
+previous accepted experiment.
+
+The comparison's **Diff** view has its own position, zoom, DNA/amino-acid mode and
+reading frame. Jumps, scrolling and difference navigation operate on that
+accepted pair while the main explorer retains its own view. Changing the main
+explorer's navigation also leaves this diff view in place. See the
+[complete comparison workflow](docs/GENOME_COMPARISON_WORKFLOW.md) for settings,
+saved snapshots, coordinate conventions and browser/terminal interchange.
+
 Gene-start logos use complete, exact annotated initiation sites with supported
 genetic codes. They display each -20 to +9 genomic window in coding orientation,
 its source gene and every exclusion reason. Joined and reverse-strand starts

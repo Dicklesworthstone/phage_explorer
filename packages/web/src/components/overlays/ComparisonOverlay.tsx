@@ -168,7 +168,7 @@ export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
       {diff.stats.ambiguousColumns > 0 && ` ${diff.stats.ambiguousColumns.toLocaleString()} columns contain ambiguous bases.`}</p>
     {diff.stats.distance === 0 ? <p data-testid="comparison-identical">Sequences have identical symbols (ignoring letter case).</p>
       : <>
-        <DiffHighlighter sequence={sequenceA} diffSequence={sequenceB} diffMask={diff.mask}
+        <DiffHighlighter isolated sequence={sequenceA} diffSequence={sequenceB} diffMask={diff.mask}
           diffPositions={diff.positions} stats={diff.stats} />
         <details><summary>Aligned edit coordinates ({changes.length.toLocaleString()} runs)</summary>
           <p>Base ranges are 1-based and inclusive. Insertions/deletions use interbase boundaries on the empty side.

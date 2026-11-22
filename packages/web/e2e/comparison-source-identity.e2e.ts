@@ -21,6 +21,8 @@ declare global {
       replyReleased: boolean;
       releaseReply: () => void;
       terminatedWorkers: number;
+      navigation: () => { scrollPosition: number; zoomScale: number | null; viewMode: string; readingFrame: number };
+      setNavigation: (value: { scrollPosition: number; zoomScale: number; viewMode: 'dna' | 'aa' | 'dual'; readingFrame: 0 | 1 | 2 | -1 | -2 | -3 }) => void;
     };
   }
 }
@@ -48,6 +50,11 @@ const fixtureSource = String.raw`
     select: name => select(name), reopen: () => reopen(), reads: {}, metadataWaits: 0,
     readPending: false, readReleased: false, holdReply: false, replyPending: false,
     replyReleased: false, releaseReply: () => {}, terminatedWorkers: 0,
+    navigation() {
+      const { scrollPosition, zoomScale, viewMode, readingFrame } = usePhageStore.getState();
+      return { scrollPosition, zoomScale, viewMode, readingFrame };
+    },
+    setNavigation(value) { flushSync(() => usePhageStore.setState(value)); },
     replaceSummaries() {
       flushSync(() => usePhageStore.setState({ phages: usePhageStore.getState().phages.map(p => ({ ...p })) }));
     },
@@ -115,6 +122,7 @@ const fixtureSource = String.raw`
     delayed: await entry('delayed', 'T'.repeat(120), 'T'.repeat(120)),
     replaced: await entry('replaced', 'AC'.repeat(60), 'AC'.repeat(60)),
     truncated: await entry('truncated', 'A'.repeat(120), 'A'.repeat(120)),
+    long: await entry('long', 'G'.repeat(4000), 'G'.repeat(3999) + 'C'),
   };
   function Fixture() {
     const [name, setName] = useState('a');
@@ -137,7 +145,7 @@ const fixtureSource = String.raw`
   );
 `;
 
-for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experiment'] as const) test(
+for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experiment', 'saved-diff-navigation'] as const) test(
   'comparison owns its ' + scenario, async ({ page }, info) => {
     const root = process.cwd(), fixtureId = resolve(root, 'src/comparison-identity-fixture.tsx');
     if (!fixtureConfig) {
@@ -253,7 +261,7 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experim
         await expectGC(overlay, '0.00', '0.00');
         await overlay.getByRole('button', { name: 'Close', exact: true }).click();
         await expect(overlay).toHaveCount(0);
-      } else {
+      } else if (scenario === 'saved-experiment') {
         const evidence = overlay.locator('section[aria-label="Portable comparison experiment"]');
         const initialId = await evidence.getAttribute('data-result-id');
         const settings = overlay.locator('details[aria-label="Comparison settings"]');
@@ -341,6 +349,61 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experim
         await page.evaluate(() => window.comparisonIdentityFixture.releaseReply());
         await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
         await expectGC(overlay, '0.00', '0.00');
+      } else {
+        await page.evaluate(() => window.comparisonIdentityFixture.select('long'));
+        await expectGC(overlay, '100.00', '100.00');
+        const evidence = overlay.locator('section[aria-label="Portable comparison experiment"]');
+        const acceptedId = await evidence.getAttribute('data-result-id');
+        const downloading = page.waitForEvent('download');
+        await overlay.getByRole('button', { name: 'Export comparison JSON', exact: true }).click();
+        const path = await (await downloading).path();
+        if (!path) throw new Error('Expected the saved pair for navigation verification.');
+        const content = await readFile(path, 'utf8');
+
+        // Saved-mode ownership intentionally remains independent of later
+        // explorer selections. Its viewport must be independent as well.
+        await page.evaluate(() => window.comparisonIdentityFixture.select('c'));
+        await expectGC(overlay, '100.00', '98.33');
+        await page.evaluate(() => window.comparisonIdentityFixture.setNavigation({
+          scrollPosition: 42, zoomScale: 2, viewMode: 'aa', readingFrame: -2,
+        }));
+        const originalNavigation = await page.evaluate(() => window.comparisonIdentityFixture.navigation());
+        await overlay.getByLabel('Reopen comparison JSON', { exact: true }).setInputFiles({
+          name: 'foreign-pair.json', mimeType: 'application/json', buffer: Buffer.from(content),
+        });
+        await expect(evidence).toHaveAttribute('data-result-id', acceptedId!);
+        await expect(overlay.getByRole('region', { name: 'Reopened comparison sources' })).toContainText('4,000 bp');
+        await expect.poll(() => page.evaluate(() => window.comparisonIdentityFixture.snapshot().hasResult)).toBe(false);
+        await overlay.getByRole('button', { name: 'Diff', exact: true }).click();
+        const viewer = overlay.getByRole('region', { name: 'Sequence viewer', exact: true });
+        await expect(viewer.getByRole('radio', { name: 'DNA view', exact: true })).toHaveAttribute('aria-checked', 'true');
+        await overlay.getByRole('button', { name: 'Next diff', exact: true }).click();
+        await expect(viewer.locator('.sequence-view__jump-status')).not.toContainText('Pos: 0/');
+        await viewer.getByLabel('Jump to sequence position (index or percent)', { exact: true }).fill('1700');
+        await viewer.getByRole('button', { name: 'Go to jumped position', exact: true }).click();
+        await viewer.getByTitle('Tap or click to jump', { exact: true }).click({ position: { x: 100, y: 4 } });
+        await viewer.getByLabel('Genome sequence canvas', { exact: true }).click({ position: { x: 100, y: 40 } });
+        await viewer.getByLabel('Genome sequence canvas', { exact: true }).hover();
+        await page.mouse.wheel(0, 200);
+        await viewer.getByRole('button', { name: 'Zoom in', exact: true }).click();
+        await viewer.getByRole('radio', { name: 'Dual view', exact: true }).click();
+        await viewer.getByRole('button', { name: /Cycle reading frame, currently/ }).click();
+        await viewer.getByRole('radio', { name: 'DNA view', exact: true }).click();
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(await page.evaluate(() => window.comparisonIdentityFixture.navigation())).toEqual(originalNavigation);
+
+        const positionBefore = await viewer.locator('.sequence-view__jump-status').textContent();
+        const zoomBefore = await viewer.locator('.sequence-view__zoom-label').textContent();
+        await page.evaluate(() => window.comparisonIdentityFixture.setNavigation({
+          scrollPosition: 17, zoomScale: 0.5, viewMode: 'dual', readingFrame: 1,
+        }));
+        await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+        expect(await viewer.locator('.sequence-view__jump-status').textContent()).toBe(positionBefore);
+        expect(await viewer.locator('.sequence-view__zoom-label').textContent()).toBe(zoomBefore);
+        await expect(viewer.getByRole('radio', { name: 'DNA view', exact: true })).toHaveAttribute('aria-checked', 'true');
+        await page.evaluate(() => window.comparisonIdentityFixture.select('none'));
+        await expect(evidence).toHaveAttribute('data-result-id', acceptedId!);
+        await expect(viewer).toBeVisible();
       }
       expect(errors).toEqual([]);
     } finally { await page.close(); await server.close(); }

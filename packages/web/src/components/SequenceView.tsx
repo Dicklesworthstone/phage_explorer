@@ -5,9 +5,9 @@
  * Displays DNA or amino acid sequences with diff highlighting.
  */
 
-import React, { memo, useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo } from 'react';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo, useId } from 'react';
 import { usePhageStore } from '@phage-explorer/state';
-import { translateCodon, type ViewMode } from '@phage-explorer/core';
+import { translateCodon, type ReadingFrame, type ViewMode } from '@phage-explorer/core';
 import { useTheme } from '../hooks/useTheme';
 import { useSequenceGrid } from '../hooks/useSequenceGrid';
 import { useReducedMotion } from '../hooks/useReducedMotion';
@@ -169,6 +169,8 @@ interface SequenceViewProps {
   diffPositions?: number[];
   /** Override diff enabled flag (defaults to store) */
   diffEnabledOverride?: boolean;
+  /** Own the viewport without reading or writing the main explorer navigation. */
+  isolated?: boolean;
   /** Custom class name */
   className?: string;
   /** Height of the canvas */
@@ -212,6 +214,7 @@ function SequenceViewBase({
   diffMask = null,
   diffPositions = [],
   diffEnabledOverride,
+  isolated = false,
   className = '',
   height, // undefined = use internal responsive calculation
   onControlsReady,
@@ -234,6 +237,7 @@ function SequenceViewBase({
     typeof window !== 'undefined' && window.innerWidth < 1024 ? 'compact' : 'standard';
   const [densityMode, setDensityMode] = useState<'compact' | 'standard'>(defaultDensity);
   const [jumpInput, setJumpInput] = useState<string>('');
+  const instanceId = useId();
 
   // Loading state for skeleton - show skeleton on initial mount until sequence arrives or timeout
   const [showLoadingSkeleton, setShowLoadingSkeleton] = useState(!sequence);
@@ -247,17 +251,34 @@ function SequenceViewBase({
   const hudHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Store state
-  const viewMode = usePhageStore((s) => s.viewMode);
-  const readingFrame = usePhageStore((s) => s.readingFrame);
-  const storeScrollPosition = usePhageStore((s) => s.scrollPosition);
-  const storeZoomScale = usePhageStore((s) => s.zoomScale);
-  const setViewMode = usePhageStore((s) => s.setViewMode);
+  const explorerViewMode = usePhageStore((s) => s.viewMode);
+  const explorerReadingFrame = usePhageStore((s) => s.readingFrame);
+  const explorerScrollPosition = usePhageStore((s) => s.scrollPosition);
+  const explorerZoomScale = usePhageStore((s) => s.zoomScale);
+  const setExplorerViewMode = usePhageStore((s) => s.setViewMode);
   const storeToggleViewMode = usePhageStore((s) => s.toggleViewMode);
-  const setReadingFrame = usePhageStore((s) => s.setReadingFrame);
-  const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
-  const setStoreZoomScale = usePhageStore((s) => s.setZoomScale);
+  const setExplorerReadingFrame = usePhageStore((s) => s.setReadingFrame);
+  const setExplorerScrollPosition = usePhageStore((s) => s.setScrollPosition);
+  const setExplorerZoomScale = usePhageStore((s) => s.setZoomScale);
   const storeDiffEnabled = usePhageStore((s) => s.diffEnabled);
   const diffEnabled = diffEnabledOverride ?? storeDiffEnabled;
+  const [localViewMode, setLocalViewMode] = useState<ViewMode>('dna');
+  const [localReadingFrame, setLocalReadingFrame] = useState<ReadingFrame>(0);
+  const [localScrollPosition, setLocalScrollPosition] = useState(0);
+  const [localZoomScale, setLocalZoomScale] = useState<number | null>(null);
+  const viewMode = isolated ? localViewMode : explorerViewMode;
+  const readingFrame = isolated ? localReadingFrame : explorerReadingFrame;
+  // All renderer callbacks and direct jump controls share these setters. An
+  // imported comparison can have unrelated coordinates, even with matching IDs.
+  const storeScrollPosition = isolated ? localScrollPosition : explorerScrollPosition;
+  const storeZoomScale = isolated ? localZoomScale : explorerZoomScale;
+  const setScrollPosition = isolated ? setLocalScrollPosition : setExplorerScrollPosition;
+  const setStoreZoomScale = isolated ? setLocalZoomScale : setExplorerZoomScale;
+  const setReadingFrame = isolated ? setLocalReadingFrame : setExplorerReadingFrame;
+  const setViewMode = useCallback((mode: ViewMode) => {
+    if (isolated) { setLocalViewMode(mode); setLocalScrollPosition(0); }
+    else setExplorerViewMode(mode);
+  }, [isolated, setExplorerViewMode]);
 
   // Web preferences
   const scanlines = useWebPreferences((s) => s.scanlines);
@@ -382,6 +403,13 @@ function SequenceViewBase({
     onZoomChange: handleZoomChange,
   });
 
+  useEffect(() => {
+    if (!isolated) return;
+    lastScrollWeSetRef.current = 0;
+    setLocalScrollPosition(0);
+    scrollToStart();
+  }, [isolated, sequence, diffSequence, scrollToStart]);
+
   const latestVisibleRangeRef = useRef(visibleRange);
 
   const displaySequenceLength = useMemo(() => {
@@ -505,8 +533,12 @@ function SequenceViewBase({
 
   // Cycle view mode (DNA/AA/Dual)
   const cycleViewMode = useCallback(() => {
-    storeToggleViewMode();
-  }, [storeToggleViewMode]);
+    if (!isolated) { storeToggleViewMode(); return; }
+    const next = viewMode === 'dna' ? 'aa' : viewMode === 'aa' ? 'dual' : 'dna';
+    setLocalScrollPosition(position => viewMode === 'dna' && next === 'aa' ? Math.floor(position / 3)
+      : viewMode === 'aa' ? position * 3 : position);
+    setLocalViewMode(next);
+  }, [isolated, viewMode, storeToggleViewMode]);
 
   // Cycle reading frame
   const cycleReadingFrame = useCallback(() => {
@@ -729,13 +761,13 @@ function SequenceViewBase({
 
   // Register hotkeys
   const hotkeys = useMemo(() => ([
-    { actionId: ActionIds.ViewCycleMode, action: cycleViewMode, modes: ['NORMAL'] as const, priority: 2 },
-    { actionId: ActionIds.ViewCycleReadingFrame, action: cycleReadingFrame, modes: ['NORMAL'] as const, priority: 2 },
-    { actionId: ActionIds.ViewScrollStart, action: scrollToStart, modes: ['NORMAL'] as const, priority: 2 },
-    { actionId: ActionIds.ViewScrollEnd, action: scrollToEnd, modes: ['NORMAL'] as const, priority: 2 },
-    { actionId: ActionIds.ViewZoomIn, action: handleZoomIn, modes: ['NORMAL'] as const, priority: 2 },
-    { actionId: ActionIds.ViewZoomOut, action: handleZoomOut, modes: ['NORMAL'] as const, priority: 2 },
-  ]), [cycleReadingFrame, cycleViewMode, handleZoomIn, handleZoomOut, scrollToEnd, scrollToStart]);
+    { actionId: ActionIds.ViewCycleMode, action: cycleViewMode, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+    { actionId: ActionIds.ViewCycleReadingFrame, action: cycleReadingFrame, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+    { actionId: ActionIds.ViewScrollStart, action: scrollToStart, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+    { actionId: ActionIds.ViewScrollEnd, action: scrollToEnd, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+    { actionId: ActionIds.ViewZoomIn, action: handleZoomIn, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+    { actionId: ActionIds.ViewZoomOut, action: handleZoomOut, modes: ['NORMAL'] as const, priority: isolated ? 3 : 2 },
+  ]), [isolated, cycleReadingFrame, cycleViewMode, handleZoomIn, handleZoomOut, scrollToEnd, scrollToStart]);
 
   useHotkeys(hotkeys);
 
@@ -745,7 +777,8 @@ function SequenceViewBase({
   const visibleStart = visibleRange?.startIndex ?? 0;
   const visibleEnd = visibleRange?.endIndex ?? Math.min(seqLength, visibleStart + 1);
   const visiblePercent = seqLength ? Math.round((visibleStart / seqLength) * 100) : 0;
-  const descriptionId = 'sequence-view-description';
+  const descriptionId = isolated ? `sequence-view-description-${instanceId}` : 'sequence-view-description';
+  const jumpId = isolated ? `sequence-view-jump-${instanceId}` : 'sequence-view-jump';
   // Use dvh (dynamic viewport height) when supported, fallback to vh for older browsers.
   // dvh accounts for mobile browser chrome (address bar), vh does not.
   const vhUnit = supportsDvh ? 'dvh' : 'vh';
@@ -984,11 +1017,11 @@ function SequenceViewBase({
             }}
             className="sequence-view__jump-form"
           >
-            <label htmlFor="sequence-view-jump" className="sr-only">
+            <label htmlFor={jumpId} className="sr-only">
               Jump to sequence position (index or percent)
             </label>
             <input
-              id="sequence-view-jump"
+              id={jumpId}
               value={jumpInput}
               onChange={(e) => setJumpInput(e.target.value)}
               placeholder="Jump (idx or %)"

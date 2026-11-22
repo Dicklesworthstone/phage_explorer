@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Independent navigation for live and reopened comparison diffs
+
+- Comparison diffs now own position, zoom, DNA/amino-acid mode and reading frame.
+  Difference navigation, jump controls, canvas interaction and scrolling stay
+  with the accepted comparison pair; explorer navigation remains independent in
+  both directions. Normal explorer controls retain their existing behavior.
+- Preserve the complete experiment replay and local snapshot workflow introduced
+  in [fbae50e](https://github.com/Dicklesworthstone/phage_explorer/commit/fbae50e9c102660a7e102e3265da84befaaf7734),
+  including saved-mode source independence. Native component regressions exercise
+  the real sequence renderer and navigation handlers; a separate browser
+  acceptance scenario is included. [Navigation guide](docs/GENOME_COMPARISON_WORKFLOW.md#navigate-the-accepted-comparison).
+
 ### Packaging motor with consistent physics, timing and replay
 
 - The live motor and browser/terminal cursor displays now share analytic force
@@ -21,6 +33,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   accepted run. Fresh replay rejects incompatible or altered records. The
   implementation remains an uncalibrated dsDNA teaching model with nominal motor
   presets. See [model, controls and limits](README.md#6-packaging-motor-pressure-gauge).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/2b887a2497efb63c073e58f72b45fb45392664e0).
 
 ### Record and replay the complete pangenome-to-phylogeny workflow
 

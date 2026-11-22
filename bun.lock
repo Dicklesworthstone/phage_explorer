@@ -128,8 +128,10 @@
         "@playwright/test": "^1.65.1",
         "@types/react": "^19.3.0",
         "@types/react-dom": "^19.3.0",
+        "@types/react-reconciler": "0.34.1",
         "@vitejs/plugin-react": "^6.3.0",
         "@webgpu/types": "^0.1.74",
+        "react-reconciler": "0.34.0",
         "typescript": "^6.0.3",
         "vite": "^8.3.8",
         "vite-plugin-pwa": "^2.0.0",
@@ -620,6 +622,8 @@
     "@types/react": ["@types/react@19.3.0", "", { "dependencies": { "csstype": "^3.2.2" } }, "sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg=="],
 
     "@types/react-dom": ["@types/react-dom@19.3.0", "", { "peerDependencies": { "@types/react": "^19.3.0" } }, "sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q=="],
+
+    "@types/react-reconciler": ["@types/react-reconciler@0.34.1", "", { "peerDependencies": { "@types/react": "*" } }, "sha512-XAzeH3rARrfApMETpkcFmfJQRS3rPpXsSR/XA8H3sV8WgA0bp6UE7sLNM92l1ZbCclUKmrH28Ik2fSejh9UxRg=="],
 
     "@types/resolve": ["@types/resolve@1.20.2", "", {}, "sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q=="],
 

@@ -22,6 +22,7 @@ interface DiffHighlighterProps {
   diffPositions?: number[];
   stats?: DiffStats;
   height?: number | string;
+  isolated?: boolean;
 }
 
 export function DiffHighlighter({
@@ -31,6 +32,7 @@ export function DiffHighlighter({
   diffPositions = EMPTY_POSITIONS,
   stats,
   height = 320,
+  isolated = false,
 }: DiffHighlighterProps): React.ReactElement {
   const controlsRef = useRef<{ jumpToDiff: (direction: 'next' | 'prev') => number | null } | null>(null);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
@@ -41,9 +43,9 @@ export function DiffHighlighter({
   }, []);
 
   const hotkeys = useMemo(() => ([
-    { actionId: ActionIds.DiffNext, action: () => goToDiff('next'), modes: ['NORMAL'] as const },
-    { actionId: ActionIds.DiffPrev, action: () => goToDiff('prev'), modes: ['NORMAL'] as const },
-  ]), [goToDiff]);
+    { actionId: ActionIds.DiffNext, action: () => goToDiff('next'), modes: ['NORMAL'] as const, priority: isolated ? 3 : 0 },
+    { actionId: ActionIds.DiffPrev, action: () => goToDiff('prev'), modes: ['NORMAL'] as const, priority: isolated ? 3 : 0 },
+  ]), [goToDiff, isolated]);
 
   useHotkeys(hotkeys);
 
@@ -66,6 +68,7 @@ export function DiffHighlighter({
         diffMask={diffMask}
         diffPositions={diffPositions}
         diffEnabledOverride
+        isolated={isolated}
         height={height}
         onControlsReady={(controls) => {
           controlsRef.current = controls;
