@@ -210,10 +210,21 @@ Plans and the completed tape must each fit 10 MiB; allow room for recorded outpu
 
 replay recomputes every supported command and checks its recorded output identity.
 Supported: saved navigation, reference-backed and legacy illustrative codon analysis,
-pangenome/CDS experiments, portable GC-skew counts, exact-pairs repeats, self/pairwise
+pangenome/CDS experiments, linked pangenome-backed phylogenies, portable GC-skew counts, exact-pairs repeats, self/pairwise
 dot plots, restriction digests, RNA pairing intervals, Mosaic reference panels and sourced spacer comparisons. Source-corpus references are freshly
 reparsed and recounted. Legacy browser-bound repeats and unknown actions are
 rejected before any command executes. Navigation is headless, not a TUI rendering.
+
+Recorded phylogeny uses actionId overlay.phylodynamics with parameters
+{pangenome, name, reference, options}. pangenome contains the same explicit
+captured content IDs, reference/alignment settings and optional GenBank CDS
+selection as a pangenome command. Supply 3–24 taxa and a reference backbone of
+at most 100,000 bases; reference states the required homology assessment.
+options explicitly contains distance (p-distance, jc69 or k80), deletion:
+complete, bootstrap (0 or 20–200) and seed (0–4294967295). Every execution
+reconstructs the parent before computing the unrooted tree. Reference-gap
+columns are excluded and complete deletion removes gaps/ambiguity. These steps
+support record/replay and complete-results archives with the full parent.
 
 Recorded RNA pairing uses actionId overlay.rnaStructure and parameters
 {contentId, geneId, start, end, strand, options}. A null geneId selects forward

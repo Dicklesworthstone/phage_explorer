@@ -36,6 +36,53 @@ it is not the multi-genome coding-consequence command.
 embedded counts or source-corpus evidence. It can be interleaved with graph commands
 and replayed in the terminal; see `CODON_REFERENCE_CORPUS.md`.
 
+## Record a linked phylogeny
+
+The same recorder can reconstruct a pangenome and infer an unrooted
+neighbor-joining tree as one typed command. In the browser, use the captured
+pangenome inputs and settings above, select **3–24 distinct genomes**, then
+complete the phylogeny controls. In the terminal workflow editor, add
+**Pangenome-backed phylogeny with explicit homology provenance**; its editor
+collects the reference, panel, optional CDS annotation, alignment settings and
+tree settings before computing anything.
+
+Supply a name and an explicit assessment or source for backbone homology.
+Choose p-distance, JC69 or K80. Complete deletion removes any retained column
+containing a gap or ambiguous base; reference-gap insertion columns are excluded
+before that filter. The reference backbone is limited to 100,000 bases. Site
+bootstrap is either disabled with 0 or uses 20–200 replicates and an explicit
+integer seed from 0 through 4,294,967,295. Alignment and distance validity limits
+still apply; the workflow does not silently substitute a method or accept a
+saturated distance matrix.
+
+The canonical action is `overlay.phylodynamics`. Its parameters contain the
+complete existing `pangenome` parameters plus `name`, `reference` and resolved
+`options: { distance, deletion: "complete", bootstrap, seed }`. The original
+input bundle supplies all sequences and annotations. No open graph or preceding
+command is needed. Optional CDS consequences are included in the exact parent
+record and do not select a different alignment for the tree.
+
+Recording computes new expected results. Replay independently reconstructs the
+parent, checks its identity and the tree's full source/settings/seed, then checks
+the recorded result before publishing it. Changing a source, homology statement,
+alignment penalty or seed requires a new recording. A cancelled or stale job
+cannot install its result. The browser and terminal accept the same tapes and
+complete-results archives:
+
+```bash
+phage-explorer workflow record --input tree-plan.json --output tree-workflow.json
+phage-explorer workflow replay --input tree-workflow.json --repetitions 2 --results --output tree-results.json
+phage-explorer workflow replay-results --input tree-results.json --output verified-tree-results.json
+```
+
+The browser shows the accepted tree's coverage, parent identity and warnings,
+and exports Newick. **Export workflow analysis** retains the full linked parent
+and can be reopened in the aligned phylogeny workspace or through the existing
+phylogeny CLI. Complete-results export retains each ordered execution, including
+repetitions. An unrooted sequence tree and site-bootstrap support do not establish
+ancestry, transfer, host range or biological homology; the supplied homology
+assessment remains an explicit assumption.
+
 ## Save, reopen and replay
 
 Choose **Stop workflow recording**, then export the research workflow JSON or

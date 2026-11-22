@@ -19,10 +19,12 @@ import { COMMAND_LIMITS, CommandSession, commandValuesEqual, parseCommandTape, t
 import { WORKFLOW_RESULTS_LIMITS, WorkflowResultCollector, parseWorkflowResults, serializeWorkflowResults, workflowResultIndex,
   type WorkflowResults } from '../../../core/src/workflow-results';
 import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
+import { PANGENOME_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, resolvePhylogenyOptions,
+  type PhylogenyOptions, type PangenomePhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; phylogeny?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -30,6 +32,15 @@ export interface ResearchPangenomeParameters {
   annotation: { contentId: string; geneIds: number[] | null } | null;
 }
 export type ResearchPangenomeRequest = Extract<PangenomeRequest, { kind: 'analyze' | 'annotate' }>;
+/** One bounded command reconstructs its exact parent; it never depends on an
+ * open graph, a previous command's mutable output or an implicit homology claim.
+ */
+export interface ResearchPhylogenyParameters {
+  pangenome: ResearchPangenomeParameters;
+  name: string;
+  reference: string;
+  options: PhylogenyOptions;
+}
 export interface ResearchEnvironment {
   genomes: () => readonly LocalGenome[];
   bundle: () => string;
@@ -41,6 +52,7 @@ export interface ResearchEnvironment {
   codons: (genome: LocalGenome, geneId: number | null, signal: AbortSignal) => Promise<AnalysisRecord>;
   referenceCodons?: (genome: LocalGenome, referenceText: string, options: Required<ReferenceCodonOptions>, signal: AbortSignal) => Promise<AnalysisRecord>;
   pangenome?: (request: ResearchPangenomeRequest, signal: AbortSignal) => Promise<AnalysisRecord>;
+  phylogeny?: (source: PangenomePhylogenySource, options: PhylogenyOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
@@ -313,6 +325,27 @@ export function validateResearchPangenome(value: CommandValue): void {
     if (Array.isArray(ids)) ids.forEach(id => integer(id, 1, 50000));
   }
 }
+export function researchPhylogenyParameters(pangenome: ResearchPangenomeParameters, name: string, reference: string,
+  options: Partial<PhylogenyOptions> = {}): ResearchPhylogenyParameters {
+  const value = { pangenome: researchPangenomeParameters(pangenome.contentIds, pangenome.options, pangenome.annotation),
+    name, reference, options: resolvePhylogenyOptions(options) };
+  validateResearchPhylogeny(analysisJson(value));
+  return value;
+}
+export function validateResearchPhylogeny(value: CommandValue): void {
+  fields(value, ['pangenome', 'name', 'reference', 'options']);
+  validateResearchPangenome(value.pangenome);
+  const parent = value.pangenome as unknown as ResearchPangenomeParameters;
+  if (parent.contentIds.length < 3) throw new Error('Phylogeny requires at least three distinct captured genomes.');
+  for (const [key, maximum] of [['name', 200], ['reference', 2000]] as const) {
+    const text = value[key];
+    if (typeof text !== 'string' || !text.trim() || new TextEncoder().encode(text).length > maximum) {
+      throw new Error(`Record a nonempty phylogeny ${key === 'reference' ? 'backbone homology provenance' : 'name'} of at most ${maximum} UTF-8 bytes.`);
+    }
+  }
+  const resolved = resolvePhylogenyOptions(value.options as unknown as PhylogenyOptions);
+  if (!commandValuesEqual(value.options, analysisJson(resolved))) throw new Error('Record every distance, complete-deletion, bootstrap and seed setting explicitly.');
+}
 export function validateResearchView(value: CommandValue): asserts value is unknown & ResearchView & CommandValue {
   fields(value, ['contentId', 'geneId', 'viewMode', 'readingFrame', 'scrollPosition']);
   contentId(value.contentId); geneId(value.geneId);
@@ -457,37 +490,39 @@ export class ResearchWorkflow {
     if (ids.pangenome !== undefined) adapters.set(ids.pangenome, {
       validate: validateResearchPangenome,
       prepare: async (parameters, signal) => {
-        const values = parameters as unknown as ResearchPangenomeParameters;
-        const genomes = await this.selectedGenomes(values.contentIds, signal);
-        const input = validatePangenomeInput(pangenomeRequestFromLocalGenomes(genomes, values.contentIds).input);
-        const options = resolveAlignmentGraphOptions(input, values.options);
-        let request: ResearchPangenomeRequest = { kind: 'analyze', input, options };
-        if (values.annotation) {
-          const annotation = await this.genome(values.annotation.contentId, signal);
-          if (annotation.phage.localGenome?.format !== 'genbank') throw new Error('Coding consequences require a bundled GenBank annotation.');
-          const reference = input.sequences.find(row => row.id === options.referenceId)!;
-          if (annotation.sequence !== reference.sequence) throw new Error('Annotation bases and origin must exactly match the recorded reference.');
-          values.annotation.geneIds?.forEach(id => this.checkSelection(annotation, id));
-          genomes.push(annotation);
-          request = { kind: 'annotate', input, options, annotation: annotation.original,
-            selection: { annotationRecord: values.annotation.contentId, geneIds: values.annotation.geneIds } };
-        }
-        // The execution backend receives its own copy, not our publication guard.
-        const record = await environment.pangenome!(structuredClone(request), signal);
-        abort(signal);
-        if (record.method.id !== 'alignment-pangenome' || record.inputs.length !== (values.annotation ? 2 : 1)
-          || !commandValuesEqual(record.inputs.find(i => i.id === 'sequences')?.data, analysisJson(input))
-          || !commandValuesEqual(values.annotation ? record.parameters.graph : record.parameters, analysisJson(options))) {
-          throw new Error('Pangenome worker result does not match the submitted inputs or settings.');
-        }
-        if (request.kind === 'annotate' && (!commandValuesEqual(record.inputs.find(i => i.id === 'genbank')?.data, analysisJson(request.annotation))
-          || record.parameters.annotationRecord !== request.selection!.annotationRecord
-          || !commandValuesEqual(record.parameters.geneIds, request.selection!.geneIds === null ? null : [...request.selection!.geneIds!].sort((a, b) => a - b)))) {
-          throw new Error('Coding evidence does not match the recorded annotation or CDS selection.');
-        }
+        const { record, genomes } = await this.pangenome(parameters as unknown as ResearchPangenomeParameters, signal);
         return this.result(record, genomes, signal);
       },
     });
+    if ((ids.phylogeny === undefined) !== (environment.phylogeny === undefined)) throw new Error('Phylogeny action and executor must be supplied together.');
+    if (ids.phylogeny !== undefined) {
+      if (!environment.pangenome) throw new Error('Recorded phylogeny requires the pangenome executor.');
+      adapters.set(ids.phylogeny, {
+        validate: validateResearchPhylogeny,
+        prepare: async (parameters, signal) => {
+          const values = parameters as unknown as ResearchPhylogenyParameters;
+          const parent = await this.pangenome(values.pangenome, signal, true);
+          abort(signal); parent.genomes.forEach(genome => this.matchLoaded(genome, signal));
+          const source = { name: values.name, reference: values.reference, experiment: serializeAnalysisRecord(parent.record) };
+          const produced = await environment.phylogeny!(structuredClone(source), { ...values.options }, signal);
+          abort(signal);
+          const record = await parseAnalysisRecord(serializeAnalysisRecord(produced));
+          abort(signal);
+          const origin = record.fields.pangenome?.value;
+          if (!commandValuesEqual(analysisJson(record.method), analysisJson(PANGENOME_PHYLOGENY_METHOD))
+            || record.inputs.length !== 1 || record.inputs[0].id !== 'pangenome' || record.inputs[0].source !== 'local'
+            || record.inputs[0].accession !== null || !commandValuesEqual(record.inputs[0].data, analysisJson(source))
+            || !commandValuesEqual(record.parameters, analysisJson({ ...values.options, columnPolicy: 'reference-backbone-complete' }))
+            || record.seed !== values.options.seed || !origin || !object(origin)
+            || origin.parentResultId !== parent.record.resultId || origin.referenceId !== values.pangenome.options.referenceId
+            || record.fields.phylogeny?.kind !== 'sequence-score' || record.fields.phylogeny.units !== 'dimensionless'
+            || record.fields.pangenome?.kind !== 'sequence-score' || record.fields.pangenome.units !== 'base-pairs') {
+            throw new Error('Phylogeny evidence does not match the exact parent, homology provenance or recorded tree settings.');
+          }
+          return this.result(record, parent.genomes, signal);
+        },
+      });
+    }
     if ((ids.gcSkew === undefined) !== (environment.gcSkew === undefined)) throw new Error('GC-skew action and executor must be supplied together.');
     if (ids.gcSkew !== undefined) adapters.set(ids.gcSkew, {
       validate: validateResearchGCSkew,
@@ -628,7 +663,7 @@ export class ResearchWorkflow {
     });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
       + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
-      + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+      + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined) + Number(ids.phylogeny !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {
       this.commandRevision++;
@@ -642,6 +677,39 @@ export class ResearchWorkflow {
   private publish(change: Partial<ResearchSnapshot>): void {
     this.snapshot = { ...this.snapshot, ...change, undoAvailable: this.historyIndex > 0, redoAvailable: this.historyIndex < this.history.length - 1 };
     for (const listener of this.listeners) listener();
+  }
+  private async pangenome(values: ResearchPangenomeParameters, signal: AbortSignal, forPhylogeny = false) {
+    const genomes = await this.selectedGenomes(values.contentIds, signal);
+    const input = validatePangenomeInput(pangenomeRequestFromLocalGenomes(genomes, values.contentIds).input);
+    const options = resolveAlignmentGraphOptions(input, values.options);
+    const reference = input.sequences.find(row => row.id === options.referenceId)!;
+    if (forPhylogeny && reference.sequence.replace(/-/g, '').length > PHYLOGENY_LIMITS.sites) {
+      throw new Error(`Phylogeny reference backbones allow at most ${PHYLOGENY_LIMITS.sites} bases; choose a smaller captured region.`);
+    }
+    let request: ResearchPangenomeRequest = { kind: 'analyze', input, options };
+    if (values.annotation) {
+      const annotation = await this.genome(values.annotation.contentId, signal);
+      if (annotation.phage.localGenome?.format !== 'genbank') throw new Error('Coding consequences require a bundled GenBank annotation.');
+      if (annotation.sequence !== reference.sequence) throw new Error('Annotation bases and origin must exactly match the recorded reference.');
+      values.annotation.geneIds?.forEach(id => this.checkSelection(annotation, id));
+      genomes.push(annotation);
+      request = { kind: 'annotate', input, options, annotation: annotation.original,
+        selection: { annotationRecord: values.annotation.contentId, geneIds: values.annotation.geneIds } };
+    }
+    // The execution backend receives its own copy, not our publication guard.
+    const record = await this.environment.pangenome!(structuredClone(request), signal);
+    abort(signal);
+    if (record.method.id !== 'alignment-pangenome' || record.inputs.length !== (values.annotation ? 2 : 1)
+      || !commandValuesEqual(record.inputs.find(i => i.id === 'sequences')?.data, analysisJson(input))
+      || !commandValuesEqual(values.annotation ? record.parameters.graph : record.parameters, analysisJson(options))) {
+      throw new Error('Pangenome worker result does not match the submitted inputs or settings.');
+    }
+    if (request.kind === 'annotate' && (!commandValuesEqual(record.inputs.find(i => i.id === 'genbank')?.data, analysisJson(request.annotation))
+      || record.parameters.annotationRecord !== request.selection!.annotationRecord
+      || !commandValuesEqual(record.parameters.geneIds, request.selection!.geneIds === null ? null : [...request.selection!.geneIds!].sort((a, b) => a - b)))) {
+      throw new Error('Coding evidence does not match the recorded annotation or CDS selection.');
+    }
+    return { record, genomes };
   }
   private result(record: AnalysisRecord, genomes: readonly LocalGenome[], signal: AbortSignal) {
     abort(signal);

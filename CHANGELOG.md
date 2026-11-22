@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Record and replay the complete pangenome-to-phylogeny workflow
+
+- Browser and terminal workflow authors can now record a linked unrooted tree
+  from captured genomes, explicit alignment settings and homology provenance.
+  Distance model, complete-deletion policy, bootstrap count and seed are bound
+  to the command. Optional reference CDS consequences remain in the parent.
+- Replay reconstructs and checks both stages, preserving every input, parent
+  identity and numerical result across native/browser workers and repeated
+  execution. Accepted results expose backbone coverage, warnings and Newick
+  export; changed inputs/settings and cancellation preserve user control.
+  [Controls and replay](docs/RECORDED_PANGENOME_WORKFLOWS.md#record-a-linked-phylogeny).
+
 ### Portable annotation-order synteny experiments
 
 - Synteny comparisons now retain both exact annotation sets, source metadata,

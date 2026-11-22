@@ -8,11 +8,12 @@ import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../.
 import type { GeneInfo, PhageFull } from '../../core/src/types';
 import type { LocalGenome } from '../../core/src/genome-import';
 import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
+import { PHYLOGENY_LIMITS } from '../../core/src/analysis/aligned-phylogeny';
 import { MOSAIC_LIMITS } from '../../core/src/analysis/recombination-radar';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { validateResearchView, researchRNASource, researchRNARequest, researchSpacerGenome,
   type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
-  type ResearchSpacerParameters } from '../../web/src/keyboard/ResearchWorkflow';
+  type ResearchSpacerParameters, type ResearchPhylogenyParameters } from '../../web/src/keyboard/ResearchWorkflow';
 import { parseWorkflowResults, workflowResultIndex, workflowAnalysisAt, WORKFLOW_RESULTS_LIMITS,
   type WorkflowResults, type WorkflowResultEntry } from '../../core/src/workflow-results';
 import { readInput, writeNewOutput, runTerminalResearchWorker } from '../../../scripts/research-workflow';
@@ -227,8 +228,8 @@ export class TerminalResearchSession {
   private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep, genomes = this.draftGenomes): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
       ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph,
-      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar, ActionIds.OverlayCRISPR];
-    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, RNA, mosaic and sourced spacer commands.');
+      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar, ActionIds.OverlayCRISPR, ActionIds.OverlayPhylodynamics];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, phylogeny, RNA, mosaic and sourced spacer commands.');
     validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
     if (step.actionId === ActionIds.OverlayMosaicRadar) {
       const parameters = step.parameters as unknown as ResearchMosaicParameters;
@@ -242,8 +243,10 @@ export class TerminalResearchSession {
       }
       return;
     }
-    if (step.actionId === ActionIds.OverlayPangenomeGraph) {
-      const parameters = step.parameters as unknown as ResearchPangenomeParameters;
+    if (step.actionId === ActionIds.OverlayPangenomeGraph || step.actionId === ActionIds.OverlayPhylodynamics) {
+      const phylogeny = step.actionId === ActionIds.OverlayPhylodynamics;
+      const parameters = phylogeny ? (step.parameters as unknown as ResearchPhylogenyParameters).pangenome
+        : step.parameters as unknown as ResearchPangenomeParameters;
       const sources = parameters.contentIds.map(id => {
         const source = draft.sources.find(item => item.contentId === id);
         if (!source) throw new Error('Select every pangenome source from this draft\'s captured input bundle.');
@@ -254,6 +257,9 @@ export class TerminalResearchSession {
         throw new Error('Pangenomes allow at most 250,000 bases per sequence and 4,000,000 total input bases. Choose smaller captured regions.');
       }
       const reference = sources.find(source => `local-${source.contentId}` === parameters.options.referenceId)!;
+      if (phylogeny && reference.bases > PHYLOGENY_LIMITS.sites) {
+        throw new Error(`Phylogeny reference backbones allow at most ${PHYLOGENY_LIMITS.sites} bases. Choose a smaller captured region.`);
+      }
       if (parameters.options.alignment === 'provided' && sources.some(source => source.bases !== reference.bases)) {
         throw new Error('Using input columns unchanged requires every captured sequence to have the same length. Choose an alignment method.');
       }

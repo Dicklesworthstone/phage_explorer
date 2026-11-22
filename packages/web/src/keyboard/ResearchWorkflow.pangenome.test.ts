@@ -2,12 +2,16 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { mergeLocalGenomes } from '../../../db-runtime/src/local-genomes';
-import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
-import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
+import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
+import { parseCommandTape, serializeCommandTape, serializeCommandPlan } from '../../../core/src/command-session';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
-import { executePangenomeRequest } from '../workers/PangenomeSession';
-import { ResearchWorkflow, researchPangenomeParameters, validateResearchPangenome,
-  type ResearchView, type ResearchEnvironment } from './ResearchWorkflow';
+import { createPangenomePhylogenyExperiment, replayAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
+import { parseWorkflowResults, workflowAnalysisAt } from '../../../core/src/workflow-results';
+import { executePangenomeRequest, pangenomeRequestFromLocalGenomes } from '../workers/PangenomeSession';
+import { ResearchWorkflow, researchPangenomeParameters, researchPhylogenyParameters, validateResearchPangenome,
+  type ResearchView, type ResearchEnvironment, type ResearchPhylogenyParameters } from './ResearchWorkflow';
+import { ActionIds } from './actionRegistry';
+import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation', pangenome: 'overlay.pangenomeGraph' };
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => { resolve = yes; }); return { promise, resolve }; }
@@ -33,6 +37,187 @@ async function fixture() {
   return { workflow, env, loaded, contentIds, parameters, calculations: () => calculations, view: () => view };
 }
 const run = (f: Awaited<ReturnType<typeof fixture>>) => f.workflow.commands.dispatch(ids.pangenome, analysisJson(f.parameters));
+
+async function phylogenyFixture() {
+  const f = await fixture(); f.workflow.commands.stop();
+  // A common nonrepetitive flank supplies the existing normalizer's required
+  // independent 15-mer anchors. Only the nine-base CDS varies: one transition
+  // in each comparison to the reference and two between query and reverse.
+  const flank = 'GCTACGATCGTACCGATGCTAGCTGACCTGATCGTAGCTAGGCTAACCGTAGGCTATCGACGCTAGCATGACCTAGGCATCGTACGATCGTGCAGATC';
+  const sequence = 'ATGAAATAA' + flank;
+  const complement: Record<string, string> = { A: 'T', T: 'A', C: 'G', G: 'C' };
+  const reverse = Array.from('ATGAAATAG' + flank).reverse().map(base => complement[base]).join('');
+  const annotated = await importLocalGenomes({ name: 'reference.gb', text: `LOCUS       SAME ${sequence.length} bp DNA linear\nACCESSION   SAME\nFEATURES             Location/Qualifiers\n     CDS             1..9\n                     /gene="known"\nORIGIN\n        1 ${sequence}\n//\n` });
+  const extra = await importLocalGenomes({ name: 'other-taxa.fa', text: `>QUERY\nATGAAGTAA${flank}\n>REVERSED\n${reverse}\n>FOURTH\nATGAAGTAG${flank}\n` });
+  f.loaded.splice(0, f.loaded.length, ...annotated.genomes, ...extra.genomes);
+  const contentIds = f.loaded.map(genome => genome.phage.localGenome!.contentId);
+  const pangenome = researchPangenomeParameters(contentIds, { referenceId: `local-${contentIds[0]}`,
+    alignment: 'affine', terminalGaps: 'alleles', normalization: 'strand',
+    affinePenalties: { mismatch: 3, gapOpen: 5, gapExtend: 1 } }, { contentId: contentIds[0], geneIds: [1] });
+  const parameters = researchPhylogenyParameters(pangenome, 'Captured coding-locus tree',
+    'Synthetic coding-locus homology control; reverse taxon orientation explicitly normalized', { bootstrap: 20, seed: 17 });
+  const environment: ResearchEnvironment = { ...f.env,
+    phylogeny: async (source, options, signal) => (await createPangenomePhylogenyExperiment(source, options, signal)).record };
+  const workflow = new ResearchWorkflow({ ...ids, phylogeny: ActionIds.OverlayPhylodynamics }, environment);
+  workflow.start('Linked pangenome and phylogeny');
+  return { ...f, contentIds, pangenome, parameters, environment, workflow };
+}
+
+describe('recorded pangenome-backed phylogenies', () => {
+  it('records all three distance models through production browser workers and deterministically replays both directions through the native worker', async () => {
+    const f = await phylogenyFixture();
+    const { createBrowserResearchWorkflow } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { useLocalGenomes } = await import('../db/local-genomes');
+    const before = useLocalGenomes.getState();
+    useLocalGenomes.setState({ genomes: f.loaded, requestedId: null });
+    const binding = createBrowserResearchWorkflow(async () => { throw new Error('A tree command must not navigate'); });
+    binding.activate();
+    try {
+      const browser = binding.workflow; browser.start('Browser and terminal linked trees');
+      const records: AnalysisRecord[] = [];
+      for (const distance of ['p-distance', 'jc69', 'k80'] as const) {
+        const parameters = researchPhylogenyParameters(f.pangenome, f.parameters.name, f.parameters.reference,
+          { distance, deletion: 'complete', bootstrap: 20, seed: 17 });
+        await browser.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(parameters));
+        const record = browser.getSnapshot().lastAnalysis!;
+        records.push(record);
+        const tree = await replayAlignedPhylogenyExperiment(serializeAnalysisRecord(record));
+        assert.deepEqual(tree.options, parameters.options);
+        assert.equal(tree.pangenome!.source.reference, f.parameters.reference);
+        const parent = await replayAlignmentPangenome(tree.pangenome!.source.experiment);
+        assert.equal(tree.pangenome!.parentResultId, parent.record.resultId);
+        assert.deepEqual(parent.graph.options, f.pangenome.options);
+        assert.deepEqual(parent.record.inputs.find(input => input.id === 'genbank')!.data, analysisJson(f.loaded[0].original));
+        assert.equal(parent.graph.diagnostics.normalization!.sequences.find(row => row.sequenceId === `local-${f.contentIds[2]}`)!.transform.strand, '-');
+        assert.equal(tree.result.usedSites, f.loaded[0].sequence.length);
+        assert.equal(tree.result.taxa.length, 4);
+        assert.equal(record.seed, 17);
+        if (distance === 'p-distance') {
+          const indexes = f.contentIds.map(id => tree.result.taxa.indexOf(`local-${id}`));
+          assert.equal(tree.result.distances[indexes[0]][indexes[1]], 1 / tree.result.usedSites);
+          assert.equal(tree.result.distances[indexes[0]][indexes[2]], 1 / tree.result.usedSites);
+          assert.equal(tree.result.distances[indexes[1]][indexes[2]], 2 / tree.result.usedSites);
+          assert.equal(tree.result.bootstrap.completed, 20);
+        }
+      }
+      browser.commands.stop();
+      const content = browser.commands.export(), archive = await browser.replayWithResults(2);
+      const native = await runTerminalResearchWorker({ type: 'replay', content, repetitions: 2,
+        exportAnalysis: false, captureResults: true }, new AbortController().signal);
+      assert.equal(native.type, 'replayed');
+      if (native.type !== 'replayed') throw new Error('Expected native replay');
+      assert.equal(native.report.completed, 6);
+      assert.equal(native.allResultsJson, archive);
+      assert.equal(native.analysisJson, null, 'complete capture uses the archive rather than a separate last-analysis export');
+      const results = await parseWorkflowResults(archive);
+      records.forEach((record, index) => {
+        assert.deepEqual(workflowAnalysisAt(results, index + 1), record);
+        assert.deepEqual(workflowAnalysisAt(results, index + 4), record);
+      });
+
+      // Author new expected values natively from a declarative plan. The browser
+      // must freshly reconstruct those values, not merely accept their hashes.
+      const tape = parseCommandTape(content), plan = serializeCommandPlan({ ...tape, format: 'phage-explorer-command-plan',
+        commands: tape.commands.map(({ actionId, parameters }) => ({ actionId, parameters })) });
+      const recorded = await runTerminalResearchWorker({ type: 'record', content: plan, captureResults: true }, new AbortController().signal);
+      assert.equal(recorded.type, 'recorded');
+      if (recorded.type !== 'recorded') throw new Error('Expected native recording');
+      assert.equal(recorded.tapeJson, content);
+      await browser.loadResultsAndReview(recorded.allResultsJson!, new AbortController().signal);
+      assert.equal(await browser.verifyCompleteResults(recorded.allResultsJson!), recorded.allResultsJson);
+      assert.deepEqual(browser.getSnapshot().lastAnalysis, records[2]);
+    } finally { binding.dispose(); useLocalGenomes.setState(before); }
+  }, 30000);
+
+  it('validates the whole tree command before navigation and refuses changes to provenance, parent settings or seed under old expectations', async () => {
+    const f = await phylogenyFixture();
+    await f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(f.parameters));
+    f.workflow.commands.stop();
+    const content = f.workflow.commands.export(), prior = f.workflow.getSnapshot().lastAnalysis;
+    for (const mutate of [
+      (value: ResearchPhylogenyParameters) => { value.reference = ' '; },
+      (value: ResearchPhylogenyParameters) => { value.options.bootstrap = 1; },
+      (value: ResearchPhylogenyParameters) => { value.options.seed = -1; },
+      (value: ResearchPhylogenyParameters) => { delete (value.options as Partial<typeof value.options>).seed; },
+      (value: ResearchPhylogenyParameters) => { value.pangenome.contentIds = f.contentIds.slice(0, 2); },
+    ]) {
+      const tape = parseCommandTape(content); mutate(tape.commands[0].parameters as unknown as ResearchPhylogenyParameters);
+      tape.commands.unshift({ actionId: ids.view, parameters: analysisJson({ contentId: f.contentIds[0], geneId: 1,
+        viewMode: 'dna', readingFrame: 0, scrollPosition: 0 }), expected: null });
+      assert.throws(() => f.workflow.load(serializeCommandTape(tape)), /Step 2/);
+      assert.equal(f.workflow.commands.export(), content);
+      assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, prior);
+      assert.equal(f.view(), null);
+    }
+    for (const mutate of [
+      (value: ResearchPhylogenyParameters) => { value.reference += ' Changed assessment'; },
+      (value: ResearchPhylogenyParameters) => { value.options.seed++; },
+      (value: ResearchPhylogenyParameters) => { value.pangenome.options.affinePenalties!.mismatch++; },
+    ]) {
+      const tape = parseCommandTape(content); mutate(tape.commands[0].parameters as unknown as ResearchPhylogenyParameters);
+      f.workflow.load(serializeCommandTape(tape));
+      await assert.rejects(f.workflow.commands.replay(), /differs/);
+      assert.equal(f.workflow.getSnapshot().result, null);
+    }
+  });
+
+  it('binds producer output to the exact parent, provenance, settings, seed and result units', async () => {
+    const f = await phylogenyFixture();
+    const produce = f.environment.phylogeny!;
+    await f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(f.parameters));
+    const prior = f.workflow.getSnapshot().lastAnalysis;
+    for (const alteration of ['provenance', 'parent', 'seed', 'units'] as const) {
+      f.environment.phylogeny = async (source, options, signal) => {
+        if (alteration === 'provenance') source.reference += ' Different evidence';
+        if (alteration === 'parent') {
+          const input = pangenomeRequestFromLocalGenomes(f.loaded, f.contentIds).input;
+          const changed = await executePangenomeRequest({ kind: 'analyze', input, options: f.pangenome.options });
+          source.experiment = serializeAnalysisRecord(changed.record!);
+        }
+        if (alteration === 'seed') options.seed++;
+        const record = await produce(source, options, signal);
+        if (alteration !== 'units') return record;
+        record.fields.phylogeny.units = 'base-pairs';
+        return createAnalysisRecord(record);
+      };
+      await assert.rejects(f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(f.parameters)), /does not match/);
+      assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, prior);
+    }
+    f.environment.phylogeny = produce;
+  });
+
+  it('rejects changed captured input after inference and cancels either producer without accepting late evidence', async () => {
+    for (const phase of ['parent', 'tree', 'stale'] as const) {
+      const f = await phylogenyFixture();
+      await f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(f.parameters));
+      const prior = f.workflow.getSnapshot().lastAnalysis;
+      const ready = deferred<void>(), release = deferred<void>();
+      const parent = f.environment.pangenome!, tree = f.environment.phylogeny!;
+      if (phase === 'parent') f.environment.pangenome = async (request, signal) => {
+        const result = await parent(request, signal); ready.resolve(); await release.promise; return result;
+      };
+      else f.environment.phylogeny = async (source, options, signal) => {
+        const result = await tree(source, options, signal); ready.resolve(); await release.promise; return result;
+      };
+      const pending = f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(f.parameters));
+      await ready.promise;
+      if (phase === 'stale') {
+        f.loaded[2].original.text += '\nchanged during inference';
+        release.resolve(); await assert.rejects(pending, /changed original source/);
+      } else {
+        f.workflow.commands.cancel(); await assert.rejects(pending, /cancel/i);
+        f.environment.pangenome = parent; f.environment.phylogeny = tree;
+        const current = { ...f.parameters, name: 'New accepted tree after cancellation' };
+        await f.workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(current));
+        const accepted = f.workflow.getSnapshot().lastAnalysis;
+        release.resolve(); await new Promise(resolve => setTimeout(resolve, 10));
+        assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, accepted);
+        assert.notEqual(accepted!.resultId, prior!.resultId);
+      }
+      if (phase === 'stale') assert.strictEqual(f.workflow.getSnapshot().lastAnalysis, prior);
+    }
+  });
+});
 
 describe('recorded real pangenome and CDS commands', () => {
   it('records affine defaults, exact content IDs and a real synonymous CDS result; exports a independently replayable experiment', async () => {

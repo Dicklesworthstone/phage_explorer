@@ -13,13 +13,14 @@ import { parseCommandPlan, parseCommandTape, serializeCommandPlan } from '../../
 import { parseWorkflowResults } from '../../../core/src/workflow-results';
 import type { GCSkewWindow } from '../../../core/src/analysis/gc-skew';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
+import { replayAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
 import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
 import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
 import type { ReferenceSpacerHit } from '../../../core/src/analysis/spacer-reference';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
 import { researchReferenceCodonParameters,
   type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
-  type ResearchReferenceCodonParameters, type ResearchSpacerParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+  type ResearchReferenceCodonParameters, type ResearchSpacerParameters, type ResearchPhylogenyParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 import { TerminalGenomeSession, loadTerminalGenomeBundle } from '../local-genome-session';
@@ -675,6 +676,81 @@ describe('Ink research workflow workspace', () => {
       assert.equal(genomes.getSnapshot().review, null); assert.equal(genomes.getSnapshot().localCount, 3);
     } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
   });
+
+  it('authors and edits a linked phylogeny with explicit homology and seed, then records and freshly replays its complete parent', async () => {
+    const imported = await importLocalGenomes({ name: 'tree-taxa.fa', text: '>REF\nATGAAATAA\n>QUERY\nATGAAGTAA\n>THIRD\nATGAAATAG\n' });
+    const genomes = new TerminalGenomeSession(null, imported.genomes), session = new TerminalResearchSession();
+    const ids = imported.genomes.map(genome => genome.phage.localGenome!.contentId);
+    assert(await session.createDraft('Keyboard linked phylogeny', genomes.exportBundle()));
+    const test = terminal(session, genomes, () => assert.fail('the phylogeny editor owns shortcut letters'), () => assert.fail('drafting cannot install inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key); await waitFor(() => test.output().slice(start).includes(expected));
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    const replace = async (before: string, after: string) => {
+      for (const _character of before) { test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10)); }
+      test.input(after); await new Promise(resolve => setTimeout(resolve, 30));
+    };
+    const homology = 'Synthetic CDS homology assessment; query and reference columns explicitly supplied';
+    try {
+      await waitFor(test.ready);
+      await press('i', 'Choose a workflow action');
+      for (let index = 0; index < 11; index++) await down();
+      await press('\r', 'Pangenome-backed unrooted neighbor-joining phylogeny');
+      await press('\r', 'Choose comparison genomes');
+      await down(); await press(' ', '2 selected genomes');
+      await press('\r', 'Select 3–24 distinct captured genomes');
+      await down(); await press(' ', '3 selected genomes');
+      await press('\r', 'Choose exact-reference GenBank annotations');
+      await press('\r', 'Choose the alignment method');
+      for (let index = 0; index < 3; index++) await down();
+      await press('\r', 'Terminal gaps (missing or alleles)');
+      await press('\r', 'Phylogeny name');
+      await replace('Captured reference-backbone phylogeny', 'Terminal typed phylogeny');
+      await press('\r', 'Why are these backbone columns homologous?');
+      test.input(homology); await new Promise(resolve => setTimeout(resolve, 30));
+      await press('\r', 'Distance model');
+      await press('\r', 'Site-bootstrap replicates'); await replace('0', '20');
+      await press('\r', 'Deterministic bootstrap seed'); await replace('1', '42');
+      await press('\r', '[I] Add');
+      const step = structuredClone(session.getSnapshot().draft!.plan.commands[0]);
+      assert.equal(step.actionId, ActionIds.OverlayPhylodynamics);
+      const parameters = step.parameters as unknown as ResearchPhylogenyParameters;
+      assert.equal(parameters.name, 'Terminal typed phylogeny');
+      assert.equal(parameters.reference, homology);
+      assert.deepEqual(parameters.options, { distance: 'p-distance', deletion: 'complete', bootstrap: 20, seed: 42 });
+      assert.deepEqual(parameters.pangenome.contentIds, [...ids].sort());
+      assert.deepEqual(parameters.pangenome.options, { referenceId: `local-${ids[0]}`, alignment: 'provided', terminalGaps: 'missing' });
+      assert.equal(parameters.pangenome.annotation, null);
+      assert.equal(session.getSnapshot().document, null);
+      assert.equal(session.availableResults(), null);
+      assert(test.output().includes('3 genomes; reference'));
+
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose the captured reference genome');
+      await press('\r', 'Choose comparison genomes'); await press('\r', 'Choose exact-reference GenBank annotations');
+      await press('\r', 'Choose the alignment method'); await press('\r', 'Terminal gaps (missing or alleles)');
+      await press('\r', 'Phylogeny name'); await press('\r', 'Why are these backbone columns homologous?');
+      await press('\r', 'Distance model'); await press('\r', 'Site-bootstrap replicates');
+      await press('\r', 'Deterministic bootstrap seed'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step], 'editing retains every parent and tree setting');
+
+      test.input('c'); await waitFor(() => !session.getSnapshot().busy && (!!session.getSnapshot().document || !!session.getSnapshot().error));
+      assert.equal(session.getSnapshot().error, null);
+      const record = session.analysis(1), experiment = await replayAlignedPhylogenyExperiment(JSON.stringify(record));
+      assert.deepEqual(experiment.options, parameters.options);
+      assert.equal(experiment.pangenome!.source.reference, homology);
+      assert.equal(experiment.result.usedSites, 9); assert.equal(experiment.result.bootstrap.completed, 20);
+      const parent = await replayAlignmentPangenome(experiment.pangenome!.source.experiment);
+      assert.equal(experiment.pangenome!.parentResultId, parent.record.resultId);
+      assert.deepEqual(parent.graph.options, parameters.pangenome.options);
+      const baseline = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => !!session.getSnapshot().completedRun && !session.getSnapshot().busy);
+      assert.equal(session.availableResults()?.provenance, 'verified');
+      assert.equal(session.availableResults()!.json, baseline);
+      assert.equal(genomes.getSnapshot().review, null);
+      assert(!test.output().includes(imported.genomes[0].sequence), 'the editor and result index never print private sequence input');
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  }, 20000);
 
   it('opens without filename shortcuts, replays, inspects and exports a result, then stages the final view', async () => {
     const previous = usePhageStore.getState(), f = await fixture();

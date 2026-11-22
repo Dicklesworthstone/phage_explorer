@@ -9,11 +9,13 @@ import { createRestrictionDigestRecord, replayRestrictionDigestRecord, type Rest
 import { createDotPlotExperiment, createPairwiseDotPlotExperiment } from '../../../core/src/analysis/dot-plot';
 import type { MosaicDataset, MosaicRadarConfig } from '../../../core/src/analysis/recombination-radar';
 import type { RNAStructureRequest } from '../../../core/src/analysis/rna-structure-experiment';
+import type { PangenomePhylogenySource, PhylogenyOptions } from '../../../core/src/analysis/aligned-phylogeny';
 import { searchSpacerReferences, createSpacerRecord, type SpacerGenome, type SpacerLibrary,
   type SpacerSearchOptions } from '../../../core/src/analysis/spacer-reference';
 
 export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'rna'; request: RNAStructureRequest } |
+  { type: 'phylogeny'; source: PangenomePhylogenySource; options: PhylogenyOptions } |
   { type: 'spacers'; genome: SpacerGenome; library: SpacerLibrary; options: SpacerSearchOptions } |
   { type: 'mosaic'; dataset: MosaicDataset; options: Required<MosaicRadarConfig> } |
   { type: 'dot-plot'; genome: LocalGenome; comparison: LocalGenome | null; options: { bins: number; window: number } } |
@@ -28,6 +30,10 @@ export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult 
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'phylogeny') {
+    const { createPangenomePhylogenyExperiment } = await import('../../../core/src/analysis/aligned-phylogeny');
+    return { type: 'analysis', record: (await createPangenomePhylogenyExperiment(request.source, request.options)).record };
+  }
   if (request.type === 'rna') {
     const { executeRNAStructureRequest } = await import('../../../core/src/analysis/rna-structure-experiment');
     return { type: 'analysis', record: (await executeRNAStructureRequest(request.request)).record };

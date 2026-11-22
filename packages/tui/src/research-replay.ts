@@ -13,10 +13,10 @@ import type { AnalysisRecord } from '../../core/src/analysis-result';
 import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/workflow-results';
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
-  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
+  codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
   dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
   spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.phylogeny, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -152,6 +152,12 @@ function host(bundle: string) {
       abort(signal);
       if (!result.record) throw new Error('Pangenome computation returned no evidence.');
       return result.record;
+    },
+    phylogeny: async (source, options, signal) => {
+      abort(signal);
+      const { createPangenomePhylogenyExperiment } = await import('../../core/src/analysis/aligned-phylogeny');
+      abort(signal);
+      return (await createPangenomePhylogenyExperiment(source, options, signal)).record;
     },
     mosaic: async (dataset, options, signal) => {
       abort(signal);

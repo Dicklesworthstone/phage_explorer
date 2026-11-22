@@ -1102,6 +1102,16 @@ GC-skew inputs are bounded at 5,000,000 bases and 20,000 output windows; increas
 the step size if a dense scan exceeds that limit. Window sizes are positive
 integers up to 1,000,000 bases. Workflow files contain the private input sequences.
 
+**Recorded pangenome-backed phylogenies** compose the captured alignment and tree
+in one reproducible command. Select 3–24 imported genomes, explicit parent
+alignment settings and homology provenance, then choose p-distance, JC69 or K80,
+complete deletion, and a bootstrap count/seed. The browser recorder and terminal
+workflow editor both support this command. Replaying reconstructs the complete
+pangenome parent before verifying the unrooted tree; the accepted record includes
+both stages and supports Newick export. Reference backbones are limited to
+100,000 bases. See [recorded pangenome workflows](docs/RECORDED_PANGENOME_WORKFLOWS.md#record-a-linked-phylogeny)
+for controls, limits and the native replay commands.
+
 Record SHA-256 values identify canonical JSON content; they do not certify the
 underlying biology or authenticate the author. Records are limited to 10 MiB.
 The shared contract can describe observations, sequence scores, fitted estimates,

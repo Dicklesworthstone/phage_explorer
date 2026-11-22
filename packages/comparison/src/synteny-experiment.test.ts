@@ -22,7 +22,7 @@ describe('portable annotation synteny', () => {
     expect(experiment.result.blocksBp).toEqual([{ startIdxQuery: 0, endIdxQuery: 2, startIdxReference: 0, endIdxReference: 2,
       startBpQuery: 0, endBpQuery: 50, startBpReference: 0, endBpReference: 50, score: 1, orientation: 'forward' }]);
     expect(experiment.record.inputs.map(row => row.source)).toEqual(['local', 'catalog']);
-    expect(experiment.record.inputs[1].data).toEqual({ genome: source.reference, genes: source.genesReference });
+    expect(experiment.record.inputs[1].data).toEqual(analysisJson({ genome: source.reference, genes: source.genesReference }));
     const replay = await replaySyntenyExperiment(serializeAnalysisRecord(experiment.record));
     expect(replay.result).toEqual(experiment.result);
     expect(replay.record.resultId).toBe(experiment.record.resultId);

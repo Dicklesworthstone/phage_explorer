@@ -3,7 +3,7 @@ import { usePhageStore } from '@phage-explorer/state';
 import { analysisJson, exportLocalGenomeBundle, serializeAnalysisRecord, type GenomeImportResult } from '@phage-explorer/core';
 import { useLocalGenomes } from '../../db/local-genomes';
 import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
-import { ResearchWorkflow, researchPangenomeParameters, researchReferenceCodonParameters, validateResearchDotPlot,
+import { ResearchWorkflow, researchPangenomeParameters, researchPhylogenyParameters, researchReferenceCodonParameters, validateResearchDotPlot,
   researchMosaicParameters, researchMosaicDataset, researchSpacerParameters, researchSpacerGenome,
   researchRNAParameters, researchRNARequest, researchRNASource,
   readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
@@ -23,6 +23,8 @@ import { SPACER_METHOD, SPACER_LIMITS, parseSpacerLibrary, validateSpacerLibrary
 import { RESTRICTION_ENZYMES } from '../../../../core/src/data/restriction-enzymes';
 import { parseCdsGeneIds } from '../../../../core/src/analysis/cds-consequences';
 import type { AlignmentGraphOptions } from '../../../../core/src/analysis/alignment-pangenome';
+import { PANGENOME_PHYLOGENY_METHOD, type PhylogenyOptions, type AlignedPhylogenyResult,
+  type PangenomePhylogenyOrigin, type PangenomePhylogenySource } from '../../../../core/src/analysis/aligned-phylogeny';
 import { runPangenomeWorker } from '../../workers/PangenomeSession';
 import { interruptsResearchNavigation, type ResearchNavigationTarget } from '../../keyboard/ResearchNavigation';
 import { getOrchestrator } from '../../workers/ComputeOrchestrator';
@@ -72,7 +74,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let navigationOwner: ResearchNavigationTarget | null = null;
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
-    pangenome: ActionIds.OverlayPangenomeGraph, gcSkew: ActionIds.OverlayGCSkew,
+    pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
     dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
     spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure }, {
     genomes: () => useLocalGenomes.getState().genomes,
@@ -172,6 +174,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
       const result = await runPangenomeWorker(request, signal,
         () => new Worker(new URL('../../workers/pangenome.worker.ts', import.meta.url), { type: 'module' }));
       if (!result.record) throw new Error('The pangenome worker did not produce analysis evidence.');
+      return result.record;
+    },
+    phylogeny: async (source, options, signal) => {
+      const result = await runResearchWorker({ type: 'phylogeny', source, options }, signal);
+      if (result.type !== 'analysis') throw new Error('Expected pangenome-backed phylogeny evidence.');
       return result.record;
     },
   });
@@ -313,6 +320,9 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const [graphTerminals, setGraphTerminals] = useState<AlignmentGraphOptions['terminalGaps']>('missing');
   const [graphMismatch, setGraphMismatch] = useState('4'), [graphOpening, setGraphOpening] = useState('6'), [graphExtension, setGraphExtension] = useState('1');
   const [graphAnnotate, setGraphAnnotate] = useState(false), [graphGeneIds, setGraphGeneIds] = useState('');
+  const [treeName, setTreeName] = useState('Captured reference-backbone phylogeny'), [treeReference, setTreeReference] = useState('');
+  const [treeDistance, setTreeDistance] = useState<PhylogenyOptions['distance']>('p-distance');
+  const [treeBootstrap, setTreeBootstrap] = useState('0'), [treeSeed, setTreeSeed] = useState('1');
   const [error, setError] = useState<string | null>(null);
   const [inputBusy, setInputBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
@@ -340,6 +350,20 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       return { parameters, error: null };
     } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
   }, [graphIds, graphReference, graphAlignment, graphTerminals, graphNormalization, graphMismatch, graphOpening, graphExtension, graphAnnotate, graphGeneIds, annotationGenome]);
+  const treeDraft = useMemo(() => {
+    try {
+      if (!graphDraft.parameters) throw new Error(graphDraft.error ?? 'Choose the parent pangenome inputs and settings.');
+      if (!treeBootstrap.trim() || !treeSeed.trim()) throw new Error('Enter the bootstrap count and seed explicitly.');
+      const parameters = researchPhylogenyParameters(graphDraft.parameters, treeName, treeReference,
+        { distance: treeDistance, deletion: 'complete', bootstrap: Number(treeBootstrap), seed: Number(treeSeed) });
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [graphDraft, treeName, treeReference, treeDistance, treeBootstrap, treeSeed]);
+  const treeResult = acceptedAnalysis?.method.id === PANGENOME_PHYLOGENY_METHOD.id
+    && acceptedAnalysis.method.version === PANGENOME_PHYLOGENY_METHOD.version
+    ? { record: acceptedAnalysis, result: acceptedAnalysis.fields.phylogeny.value as unknown as AlignedPhylogenyResult,
+      origin: acceptedAnalysis.fields.pangenome.value as unknown as Omit<PangenomePhylogenyOrigin, 'source'>,
+      source: acceptedAnalysis.inputs[0].data as unknown as PangenomePhylogenySource } : null;
   const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
   const rnaSource = useMemo(() => {
     try {
@@ -541,7 +565,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, and multi-genome pangenome commands below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, multi-genome pangenomes and their linked phylogenies below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -794,6 +818,23 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         invoke(() => task);
       }}>Run and record pangenome</button>
       <p>The result appears below and exports as a complete pangenome experiment for the graph viewer or CLI. This command does not overwrite an open pangenome workspace. The separate single-genome CDS command above retains its illustrative host model.</p>
+      <fieldset style={{ display: 'grid', gap: '.5rem' }}><legend>Record a linked unrooted phylogeny</legend>
+        <p>Use at least three selected genomes and the exact parent settings above. One command reconstructs and verifies the parent alignment, excludes every reference-gap column, then uses complete deletion before neighbor joining. The exported tree contains its complete parent experiment.</p>
+        <label>Workflow phylogeny name <input value={treeName} maxLength={200} onChange={event => setTreeName(event.target.value)} /></label>
+        <label>Backbone homology provenance <textarea value={treeReference} maxLength={2000} onChange={event => setTreeReference(event.target.value)} placeholder="State the source or assessment supporting homology of these backbone columns" /></label>
+        <label>Workflow phylogeny distance <select value={treeDistance} onChange={event => setTreeDistance(event.target.value as PhylogenyOptions['distance'])}>
+          <option value="p-distance">p-distance</option><option value="jc69">Jukes–Cantor (JC69)</option><option value="k80">Kimura two-parameter (K80)</option>
+        </select></label>
+        <label>Workflow site-bootstrap replicates (0 or 20–200) <input type="number" min={0} max={200} value={treeBootstrap} onChange={event => setTreeBootstrap(event.target.value)} /></label>
+        <label>Workflow bootstrap seed <input type="number" min={0} max={4294967295} value={treeSeed} onChange={event => setTreeSeed(event.target.value)} /></label>
+        <p>Homology is an explicit user assessment. This unrooted tree and conditional site-bootstrap support do not establish ancestry, a donor or transfer direction. Reference backbones are limited to 100,000 bases; all existing inference work limits apply.</p>
+        {treeDraft.error && <p>{treeDraft.error}</p>}
+        <button type="button" disabled={busy || !active || !treeDraft.parameters} onClick={() => {
+          if (busy || !active || !treeDraft.parameters) return;
+          const task = workflow.commands.dispatch(ActionIds.OverlayPhylodynamics, analysisJson(treeDraft.parameters));
+          invoke(() => task);
+        }}>Run and record pangenome-backed phylogeny</button>
+      </fieldset>
     </fieldset>
     <div><button type="button" disabled={busy || !research.undoAvailable} onClick={() => invoke(() => workflow.moveHistory(-1))}>Undo workflow view</button>
       <button type="button" disabled={busy || !research.redoAvailable} onClick={() => invoke(() => workflow.moveHistory(1))}>Redo workflow view</button></div>
@@ -852,6 +893,16 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
       <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. RNA window TSV also contains the analyzed window sequences.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {treeResult && <section aria-label="Recorded phylogeny results">
+        <h4>{treeResult.source.name}: accepted unrooted phylogeny</h4>
+        <p>Homology provenance: {treeResult.source.reference}</p>
+        <p>{treeResult.result.taxa.length} taxa · {treeResult.result.usedSites}/{treeResult.result.alignmentSites} backbone sites retained · {treeResult.origin.excludedReferenceGapColumns.length} independent-insertion columns excluded.</p>
+        <p>Distance: {String(treeResult.record.parameters.distance)} · complete deletion · bootstrap {treeResult.result.bootstrap.completed}/{treeResult.result.bootstrap.requested} · seed {String(treeResult.record.seed)}.</p>
+        <p>Exact parent result: <code>{treeResult.origin.parentResultId}</code>. Export workflow analysis includes that complete parent and can be opened in the aligned phylogeny workspace or replayed by the CLI.</p>
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 180, overflow: 'auto' }}>{treeResult.result.newick}</pre>
+        <button type="button" disabled={busy} onClick={() => downloadString(treeResult.result.newick + '\n', 'workflow-phylogeny.nwk', 'text/plain')}>Export accepted unrooted Newick</button>
+        <details><summary>Tree interpretation and coverage</summary><ul>{treeResult.result.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>
+      </section>}
       {spacerResult && <section aria-label="Recorded spacer results">
         <h4>{spacerResult.genome.name}: accepted sourced spacer comparison</h4>
         <p data-testid="workflow-spacer-outcome">{SPACER_STATUS[spacerResult.coverage.status]}</p>

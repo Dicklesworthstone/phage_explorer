@@ -6,10 +6,11 @@ import { analysisJson } from '../../../core/src/analysis-result';
 import { resolveExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { resolveRestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
 import { DEFAULT_AFFINE_PENALTIES, type AlignmentGraphOptions } from '../../../core/src/analysis/alignment-pangenome';
+import type { PhylogenyOptions } from '../../../core/src/analysis/aligned-phylogeny';
 import { parseRNAInterval } from '../../../core/src/analysis/rna-structure-experiment';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters, researchRNAParameters, researchMosaicParameters,
-  type ResearchView, type ResearchPangenomeParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+import { researchPangenomeParameters, researchPhylogenyParameters, researchRNAParameters, researchMosaicParameters,
+  type ResearchView, type ResearchPangenomeParameters, type ResearchPhylogenyParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
 import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep, TerminalResearchRNASource } from '../terminal-research-session';
 import { readTerminalSize } from './terminal-size';
@@ -27,6 +28,7 @@ const editorActions = [
   { kind: 'mosaic', id: ActionIds.OverlayMosaicRadar, label: 'Mosaic reference similarity across captured genomes' },
   { kind: 'reference-codons', id: ActionIds.OverlayCodonAdaptation, label: 'CDS statistics + captured reference CAI' },
   { kind: 'spacers', id: ActionIds.OverlayCRISPR, label: 'Sourced CRISPR spacer matches with explicit PAM and seed rules' },
+  { kind: 'phylogeny', id: ActionIds.OverlayPhylodynamics, label: 'Pangenome-backed phylogeny with explicit homology provenance' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
@@ -48,7 +50,7 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
     case 'dot-plot': return [field('bins', 'Display bins (1–256)', 64), field('window', 'Comparison window (bases; must fit both inputs)', Math.min(20, source.bases))];
-    case 'pangenome': case 'mosaic': case 'reference-codons': case 'spacers': return []; // Dedicated editors own these settings.
+    case 'pangenome': case 'phylogeny': case 'mosaic': case 'reference-codons': case 'spacers': return []; // Dedicated editors own these settings.
     case 'rna': {
       if (!rna) throw new Error('Choose a supported RNA source first.');
       const options = initial.options as Record<string, unknown> | undefined;
@@ -86,12 +88,15 @@ const graphAlignments = [
 /** Compose the existing multi-genome command without copying sequences into
  * form state. The captured bundle is the only sequence/annotation source.
  */
-function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
+function PangenomeStepEditor({ draft, initial, rows, phylogeny = false, onSave, onCancel }: {
   draft: TerminalResearchDraft; initial: TerminalResearchStep | null; rows: number;
+  phylogeny?: boolean;
   onSave: (step: TerminalResearchStep) => void; onCancel: () => void;
 }): React.ReactElement {
   const { colors } = usePhageStore(state => state.currentTheme);
-  const prior = initial?.actionId === ActionIds.OverlayPangenomeGraph
+  const priorTree = initial?.actionId === ActionIds.OverlayPhylodynamics
+    ? initial.parameters as unknown as ResearchPhylogenyParameters : null;
+  const prior = phylogeny ? priorTree?.pangenome ?? null : initial?.actionId === ActionIds.OverlayPangenomeGraph
     ? initial.parameters as unknown as ResearchPangenomeParameters : null;
   const [stage, setStage] = useState<'reference' | 'members' | 'annotation' | 'cds' | 'alignment' | 'settings'>('reference');
   const [referenceIndex, setReferenceIndex] = useState(Math.max(0,
@@ -132,6 +137,12 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
         { key: 'gapOpen', label: 'Gap-opening penalty (0–64)', initial: String(penalties.gapOpen) },
         { key: 'gapExtend', label: 'Gap-extension penalty per base (1–64)', initial: String(penalties.gapExtend) });
     }
+    if (phylogeny) next.push(
+      { key: 'name', label: 'Phylogeny name (required; at most 200 UTF-8 bytes)', initial: priorTree?.name ?? 'Captured reference-backbone phylogeny' },
+      { key: 'reference', label: 'Why are these backbone columns homologous? Source or assessment (required)', initial: priorTree?.reference ?? '' },
+      { key: 'distance', label: 'Distance model (p-distance, jc69 or k80)', initial: priorTree?.options.distance ?? 'p-distance' },
+      { key: 'bootstrap', label: 'Site-bootstrap replicates (0 to disable, or 20–200)', initial: String(priorTree?.options.bootstrap ?? 0) },
+      { key: 'seed', label: 'Deterministic bootstrap seed (0–4294967295)', initial: String(priorTree?.options.seed ?? 1) });
     setSettings(next); setValues(Object.fromEntries(next.map(field => [field.key, field.initial])));
     setSettingIndex(0); setStage('settings');
   };
@@ -144,7 +155,12 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
       ...(alignment === 'affine' ? { affinePenalties: { mismatch: integer(entered.mismatch, 'Mismatch penalty'),
         gapOpen: integer(entered.gapOpen, 'Gap-opening penalty'), gapExtend: integer(entered.gapExtend, 'Gap-extension penalty') } } : {}) };
     const parameters = researchPangenomeParameters(members, options, annotationId ? { contentId: annotationId, geneIds } : null);
-    onSave({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(parameters) });
+    if (phylogeny) {
+      const tree = researchPhylogenyParameters(parameters, entered.name, entered.reference, {
+        distance: entered.distance as PhylogenyOptions['distance'], deletion: 'complete',
+        bootstrap: integer(entered.bootstrap, 'Bootstrap count'), seed: integer(entered.seed, 'Seed') });
+      onSave({ actionId: ActionIds.OverlayPhylodynamics, parameters: analysisJson(tree) });
+    } else onSave({ actionId: ActionIds.OverlayPangenomeGraph, parameters: analysisJson(parameters) });
   };
   useInput((input, key) => {
     if (key.escape) { onCancel(); return; }
@@ -175,7 +191,7 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
           setMembers(before => before.includes(reference.contentId) ? before : [...before, reference.contentId]);
           setMemberIndex(referenceIndex); setStage('members');
         } else if (stage === 'members') {
-          if (members.length < 2 || members.length > 24) throw new Error('Select 2–24 distinct captured genomes, including the reference.');
+          if (members.length < (phylogeny ? 3 : 2) || members.length > 24) throw new Error(`Select ${phylogeny ? 3 : 2}–24 distinct captured genomes, including the reference.`);
           setAnnotationIndex(Math.max(0, annotations.findIndex(source => source.contentId === annotationId) + 1));
           setStage('annotation');
         } else if (stage === 'annotation') {
@@ -212,13 +228,13 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
     } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
   };
   return <Box flexDirection="column">
-    <Text bold>Multi-genome pangenome and coding consequences</Text>
+    <Text bold>{phylogeny ? 'Pangenome-backed unrooted neighbor-joining phylogeny' : 'Multi-genome pangenome and coding consequences'}</Text>
     <Text wrap="truncate-end">Reference: {terminalGenomeLabel(reference.name)} · {members.length} selected genomes</Text>
     {error && <Text wrap="truncate-end" color={colors.accent}>{error}</Text>}
     {stage === 'settings' && field ? <>
       <Text wrap="truncate-end">{graphAlignments[alignmentIndex].label} · setting {settingIndex + 1}/{settings.length}</Text>
       <Text>{field.label}</Text>
-      <TextInput key={field.key} value={values[field.key]} onChange={value => { if (value.length <= 256) setValues(before => ({ ...before, [field.key]: value })); }} onSubmit={submitSetting} />
+      <TextInput key={field.key} value={values[field.key]} onChange={value => { if (value.length <= (field.key === 'reference' ? 2000 : 256)) setValues(before => ({ ...before, [field.key]: value })); }} onSubmit={submitSetting} />
       {field.key === 'terminalGaps' && <Text color={colors.textDim}>Missing ends are excluded; alleles treats terminal differences as biological variants.</Text>}
       {field.key === 'normalization' && <Text color={colors.textDim}>Circular asserts every selected sequence is a complete circle; linear annotations are refused.</Text>}
       <Text color={colors.textDim}>Enter accepts · Shift+Tab edits the previous value · Esc discards</Text>
@@ -233,6 +249,10 @@ function PangenomeStepEditor({ draft, initial, rows, onSave, onCancel }: {
       {stage === 'annotation' && <Text color={colors.textDim}>Only captured GenBank records with identical reference bases and origin are offered.</Text>}
       {stage === 'cds' && <Text color={colors.textDim}>Space on a CDS starts/toggles a subset; Space on All restores the full CDS selection.</Text>}
       <Text color={colors.textDim}>Up/Down select · Left/Right page · Enter continues · Esc discards</Text>
+    </>}
+    {phylogeny && <>
+      <Text color={colors.textDim}>Reference-gap columns excluded; complete deletion removes columns with any gaps or ambiguity.</Text>
+      <Text color={colors.textDim}>Homology is your explicit assessment. The unrooted tree and site support do not infer transfer or ancestry.</Text>
     </>}
     <Text color={colors.textDim}>Drafting runs no analyses. Genomes and original annotations remain in the private input bundle.</Text>
   </Box>;
@@ -404,7 +424,7 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
   const cursor = stage === 'method' ? methodIndex : stage === 'source' ? sourceIndex : stage === 'comparison' ? comparisonIndex : geneIndex;
   const pageSize = Math.max(1, Math.min(8, rows - 15)), start = Math.floor(cursor / pageSize) * pageSize;
   useInput((_input, key) => {
-    if ((action.kind === 'pangenome' || action.kind === 'mosaic' || action.kind === 'reference-codons' || action.kind === 'spacers') && stage !== 'method') return;
+    if ((action.kind === 'pangenome' || action.kind === 'phylogeny' || action.kind === 'mosaic' || action.kind === 'reference-codons' || action.kind === 'spacers') && stage !== 'method') return;
     if (key.escape) { onCancel(); return; }
     if (stage === 'settings') {
       if (key.shift && key.tab) { setSettingIndex(index => Math.max(0, index - 1)); setError(null); }
@@ -443,8 +463,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
       else save(next);
     } catch (cause) { setError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
   };
-  if (action.kind === 'pangenome' && stage !== 'method') return <PangenomeStepEditor
-    draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
+  if ((action.kind === 'pangenome' || action.kind === 'phylogeny') && stage !== 'method') return <PangenomeStepEditor
+    draft={draft} initial={initial} rows={rows} phylogeny={action.kind === 'phylogeny'} onSave={onSave} onCancel={onCancel} />;
   if (action.kind === 'mosaic' && stage !== 'method') return <MosaicStepEditor
     draft={draft} initial={initial} rows={rows} onSave={onSave} onCancel={onCancel} />;
   if ((action.kind === 'reference-codons' || action.kind === 'spacers') && stage !== 'method') return <ReferenceStepEditor
@@ -673,7 +693,8 @@ export function ResearchWorkflowView({ session, genomes, onReturn, onReviewGenom
           {detailLines.slice(detailStart, detailStart + perPage).map((text, index) => <Text key={detailStart + index} wrap="truncate-end">{text}</Text>)}
           <Text color={colors.textDim}>Lines {detailStart + 1}–{Math.min(detailStart + perPage, detailLines.length)} / {detailLines.length} · Esc returns to draft</Text>
         </> : draft.plan.commands.slice(start, start + perPage).map((step, offset) => {
-          const graph = step.actionId === ActionIds.OverlayPangenomeGraph ? step.parameters as unknown as ResearchPangenomeParameters : null;
+          const graph = step.actionId === ActionIds.OverlayPhylodynamics ? (step.parameters as unknown as ResearchPhylogenyParameters).pangenome
+            : step.actionId === ActionIds.OverlayPangenomeGraph ? step.parameters as unknown as ResearchPangenomeParameters : null;
           const mosaic = step.actionId === ActionIds.OverlayMosaicRadar ? step.parameters as unknown as ResearchMosaicParameters : null;
           const source = draft.sources.find(item => graph ? `local-${item.contentId}` === graph.options.referenceId
             : item.contentId === (mosaic?.queryContentId ?? (step.parameters as Record<string, unknown>).contentId));

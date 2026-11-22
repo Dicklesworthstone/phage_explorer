@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import type { GeneInfo } from '@phage-explorer/core';
-import { serializeAnalysisRecord } from '../../../../core/src/analysis-result';
+import { analysisJson, serializeAnalysisRecord } from '../../../../core/src/analysis-result';
 import { analyzeSyntenyExperiment } from '../../../../comparison/src/synteny-experiment';
 import type { SyntenyRequest, SyntenyWorkerJob, SyntenyWorkerMessage } from '../../workers/synteny-worker';
 import { runSyntenyTask, type SyntenyWorker } from '../../workers/SyntenySession';
@@ -37,7 +37,7 @@ describe('owned synteny worker', () => {
     expect(result.stats.coverageQuery).toBe(50);
     expect(result.blocksBp[0]).toMatchObject({ startBpQuery: 0, endBpQuery: 50,
       startBpReference: 0, endBpReference: 50 });
-    expect(experiment.record.fields.synteny.value).toEqual(result);
+    expect(experiment.record.fields.synteny.value).toEqual(analysisJson(result));
   });
 
   it('accepts repeated-label DTW results with more blocks than query annotations', async () => {
@@ -47,7 +47,7 @@ describe('owned synteny worker', () => {
     expect(repeated.result.heatmap.values).toEqual([1, 1, 1]);
     expect(repeated.result.stats.blockCount).toBe(3);
     expect(repeated.result.stats.globalScore).toBe(1);
-    expect(repeated.record.fields.synteny.value).toEqual(repeated.result);
+    expect(repeated.record.fields.synteny.value).toEqual(analysisJson(repeated.result));
   });
 
   it('does not start cancelled work and terminates an active request exactly once', async () => {
