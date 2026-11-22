@@ -6,7 +6,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { exportLocalGenomeBundle, GENOME_IMPORT_LIMITS, type GenomeImportResult, type LocalGenome, type LocalGenomeView } from '../../core/src/genome-import';
 import type { PhageFull, PhageSummary } from '../../core/src/types';
-import { createLocalGenomeRepository, mergeLocalGenomes } from '../../db-runtime/src/local-genomes';
+import { createLocalGenomeRepository, mergeLocalGenomes, prepareCatalogGenomeSnapshot } from '../../db-runtime/src/local-genomes';
 import type { PhageRepository } from '../../db-runtime/src/types';
 
 declare const PHAGE_LOCAL_GENOME_WORKER: string | undefined;
@@ -76,6 +76,7 @@ export interface TerminalGenomeAccepted {
   /** Present when restoring an explicitly selected workflow feature. */
   selectedGeneId?: number | null;
 }
+export type TerminalGenomeCaptureView = Omit<LocalGenomeView, 'contentId'> & { geneId: number | null };
 export interface TerminalGenomeSnapshot {
   repository: PhageRepository;
   localCount: number;
@@ -139,6 +140,48 @@ export class TerminalGenomeSession {
       if (this.current(controller)) { this.operation = null; this.publish({ busy: null }); }
     }
   };
+  private reviewView(result: GenomeImportResult, view?: LocalGenomeView & { geneId: number | null }): number | null {
+    if (!view) return null;
+    const selected = result.genomes.find(genome => genome.phage.localGenome?.contentId === view.contentId);
+    const positions = selected ? view.viewMode === 'aa' ? Math.ceil(selected.sequence.length / 3) : selected.sequence.length : 0;
+    if (!selected || !['dna', 'aa', 'dual'].includes(view.viewMode) || ![0, 1, 2, -1, -2, -3].includes(view.readingFrame)
+      || !Number.isSafeInteger(view.scrollPosition) || view.scrollPosition < 0 || view.scrollPosition >= positions
+      || view.geneId !== null && (!Number.isSafeInteger(view.geneId) || !selected.phage.genes.some(gene => gene.id === view.geneId))) {
+      throw new Error('The requested view or selected feature is unavailable in its exact input bundle.');
+    }
+    result.view = { contentId: view.contentId, viewMode: view.viewMode, readingFrame: view.readingFrame, scrollPosition: view.scrollPosition };
+    return view.geneId;
+  }
+  /** Capture a selected catalog genome through the same source-bound producer
+   * as the browser. This prepares a review; accession collisions still require
+   * explicit acceptance. The native repository supplies no invented DB version.
+   */
+  prepareCatalog = async (phage: PhageFull, view: TerminalGenomeCaptureView, isCurrent: () => boolean): Promise<boolean> => {
+    const controller = this.begin('reading');
+    this.publish({ review: null, reviewGeneId: null });
+    const repository = this.state.repository, capturedView = { ...view };
+    try {
+      if (!this.base) throw new Error('No catalog is loaded. Import a local genome file to begin.');
+      const result = await prepareCatalogGenomeSnapshot(this.base, phage, {
+        signal: controller.signal,
+        isCurrent: () => this.current(controller) && this.state.repository === repository && isCurrent(),
+        parse: (input, signal) => loadTerminalGenomeBundle(JSON.stringify({
+          format: 'phage-explorer-local-genomes', version: 1, inputs: [input],
+        }), signal),
+      });
+      check(controller.signal);
+      const geneId = this.reviewView(result, { ...capturedView, contentId: result.genomes[0].phage.localGenome!.contentId });
+      if (!this.current(controller)) return false;
+      this.publish({ review: result, reviewGeneId: geneId,
+        notice: 'Catalog sequence, annotations and selected view captured for review only. Nothing has been added. Keep matching accessions explicitly to retain this separate research copy.' });
+      return true;
+    } catch (cause) {
+      if (this.current(controller)) this.publish({ error: terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause)) });
+      return false;
+    } finally {
+      if (this.current(controller)) { this.operation = null; this.publish({ busy: null }); }
+    }
+  };
   /** Reparse original embedded sources off-thread, then stage the replayed view
    * for the SAME explicit collision review used by filesystem imports.
    */
@@ -148,18 +191,7 @@ export class TerminalGenomeSession {
     try {
       const result = await loadTerminalGenomeBundle(content, controller.signal);
       check(controller.signal);
-      let geneId: number | null = null;
-      if (view) {
-        const selected = result.genomes.find(genome => genome.phage.localGenome?.contentId === view.contentId);
-        const positions = selected ? view.viewMode === 'aa' ? Math.ceil(selected.sequence.length / 3) : selected.sequence.length : 0;
-        if (!selected || !['dna', 'aa', 'dual'].includes(view.viewMode) || ![0, 1, 2, -1, -2, -3].includes(view.readingFrame)
-          || !Number.isSafeInteger(view.scrollPosition) || view.scrollPosition < 0 || view.scrollPosition >= positions
-          || view.geneId !== null && (!Number.isSafeInteger(view.geneId) || !selected.phage.genes.some(gene => gene.id === view.geneId))) {
-          throw new Error('The replayed view or selected feature is unavailable in its exact input bundle.');
-        }
-        result.view = { contentId: view.contentId, viewMode: view.viewMode, readingFrame: view.readingFrame, scrollPosition: view.scrollPosition };
-        geneId = view.geneId;
-      }
+      const geneId = this.reviewView(result, view);
       if (!this.current(controller)) return false;
       this.publish({ review: result, reviewGeneId: geneId,
         notice: 'Workflow sources and final view parsed for review only. Nothing has been added.' });

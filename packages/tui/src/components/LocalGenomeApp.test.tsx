@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
 import { importLocalGenomes, exportLocalGenomeBundle, type GenomeImportResult } from '../../../core/src/genome-import';
 import { TerminalGenomeSession } from '../local-genome-session';
-import { currentTerminalResearchView, LocalGenomeApp, TerminalGenomeView } from './LocalGenomeApp';
+import { captureTerminalCatalogGenome, currentTerminalResearchView, LocalGenomeApp, TerminalGenomeView } from './LocalGenomeApp';
+import type { PhageRepository } from '../../../db-runtime/src/types';
 import { initializeCommands } from '../commands/definitions';
 import { getCommands } from '../commands/registry';
 
@@ -32,6 +33,85 @@ function terminal(session: TerminalGenomeSession, onReturn: () => void, element?
   return { ui, input: (value: string) => stdin.write(value), output: () => output, ready: () => inputReady };
 }
 describe('native Ink private-genome input and review', () => {
+  it('captures catalog data with K, requires collision consent and restores the selected residue view', async () => {
+    const previous = usePhageStore.getState();
+    const imported = await importLocalGenomes({ name: 'source.gb', text: [
+      'LOCUS       sample                    18 bp    DNA     linear',
+      'ACCESSION   SAMPLE.1',
+      'FEATURES             Location/Qualifiers',
+      '     CDS             complement(join(1..6,13..18))',
+      '                     /gene="reverse_join"',
+      'ORIGIN',
+      '        1 atgaaacccgggtttcat',
+      '//',
+      '',
+    ].join('\n') });
+    const original = imported.genomes[0], phage = { ...original.phage, id: 7, slug: 'catalog-sample', localGenome: undefined };
+    const base = { listPhages: async () => [phage], getFullGenomeLength: async () => original.sequence.length,
+      getSequenceWindow: async () => original.sequence, close: async () => {} } as unknown as PhageRepository;
+    const session = new TerminalGenomeSession(base);
+    usePhageStore.setState({ phages: [phage], currentPhage: phage, currentPhageIndex: 0, isLoadingPhage: false,
+      viewMode: 'aa', readingFrame: -2, scrollPosition: 3, selectedGeneId: phage.genes[0].id });
+    let returned = 0;
+    const test = terminal(session, () => { returned++; });
+    try {
+      await waitFor(test.ready);
+      assert.match(test.output(), /Capture selected catalog genome for research/);
+      test.input('k'); await waitFor(() => session.getSnapshot().review !== null && !session.getSnapshot().busy);
+      assert.equal(session.getSnapshot().localCount, 0);
+      assert.strictEqual(usePhageStore.getState().currentPhage, phage);
+      test.input('\r'); await waitFor(() => !!session.getSnapshot().error);
+      assert.match(session.getSnapshot().error!, /Explicitly allow/);
+      assert.equal(returned, 0);
+      test.input('c'); await waitFor(() => test.output().includes('YES — keep both'));
+      test.input('\r'); await waitFor(() => returned === 1);
+      const accepted = usePhageStore.getState();
+      assert.equal(accepted.phages.length, 2);
+      assert.equal(accepted.currentPhage?.localGenome?.format, 'catalog-snapshot');
+      assert.equal(accepted.viewMode, 'aa'); assert.equal(accepted.readingFrame, -2); assert.equal(accepted.scrollPosition, 3);
+      assert.equal(accepted.selectedGeneId, phage.genes[0].id);
+      assert.deepEqual(accepted.currentPhage?.genes[0].qualifiers?._segments,
+        [{ start: 12, end: 18, strand: '-' }, { start: 0, end: 6, strand: '-' }]);
+      const restored = await importLocalGenomes({ name: 'saved.json', text: session.exportBundle() });
+      assert.equal(restored.genomes[0].sequence, original.sequence);
+      assert.deepEqual(JSON.parse(restored.genomes[0].original.text).genome.genes, phage.genes);
+    } finally { test.ui.unmount(); await session.close(); usePhageStore.setState(previous); }
+  });
+  it('rejects pending selections and prevents a late catalog capture from replacing a newer view', async () => {
+    const previous = usePhageStore.getState(), imported = await importLocalGenomes({ name: 'source.fa', text: '>catalog\nACGTACGT' });
+    const phage = { ...imported.genomes[0].phage, id: 8, localGenome: undefined };
+    let sequenceReads = 0, resolveLength!: (length: number) => void;
+    const length = new Promise<number>(resolve => { resolveLength = resolve; });
+    const base = { getFullGenomeLength: () => length,
+      getSequenceWindow: async () => { sequenceReads++; return 'ACGTACGT'; }, close: async () => {} } as unknown as PhageRepository;
+    const session = new TerminalGenomeSession(base);
+    try {
+      usePhageStore.setState({ phages: [phage], currentPhage: phage, currentPhageIndex: 0,
+        isLoadingPhage: true, viewMode: 'dna', readingFrame: 0, scrollPosition: 0, selectedGeneId: null });
+      assert.throws(() => captureTerminalCatalogGenome(session), /still loading/);
+      assert.equal(session.getSnapshot().busy, null);
+      usePhageStore.setState({ isLoadingPhage: false });
+      const pending = captureTerminalCatalogGenome(session);
+      usePhageStore.setState({ scrollPosition: 2 });
+      resolveLength(8);
+      assert.equal(await pending, false);
+      assert.match(session.getSnapshot().error!, /selected genome changed/);
+      assert.equal(session.getSnapshot().review, null);
+      assert.equal(sequenceReads, 0);
+      assert.equal(usePhageStore.getState().scrollPosition, 2);
+      let resolveReplacement!: (value: number) => void;
+      const replacement = new Promise<number>(resolve => { resolveReplacement = resolve; });
+      base.getFullGenomeLength = () => replacement;
+      usePhageStore.setState({ scrollPosition: 0 });
+      const staleCatalog = captureTerminalCatalogGenome(session);
+      usePhageStore.setState({ phages: [{ ...phage }] });
+      resolveReplacement(8);
+      assert.equal(await staleCatalog, false);
+      assert.match(session.getSnapshot().error!, /selected genome changed/);
+      assert.equal(session.getSnapshot().review, null);
+      assert.equal(sequenceReads, 0, 'same-ID catalog replacement invalidates the capture before sequence loading');
+    } finally { await session.close(); usePhageStore.setState(previous); }
+  });
   it('captures the accepted feature view and rejects a stale record during asynchronous navigation', async () => {
     const previous = usePhageStore.getState();
     const imported = await importLocalGenomes({ name: 'paired.fa', text: '>first\nACGTACGTACGT\n>second\nTTTTCCCCAAAA' });

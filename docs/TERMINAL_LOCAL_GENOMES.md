@@ -34,6 +34,25 @@ accepted explorer. Late cancelled reads cannot install a genome or replace a new
 review. The import operation never writes genome data to the curated database.
 Reference-dependent views retain their existing local-input availability restrictions.
 
+## Capture a catalog genome for research
+
+Select a fully loaded catalog genome in the explorer, open **Local genomes**, and
+press **K**. This captures its complete bases, annotations, selected feature and
+DNA/AA/dual view into the same review screen. Press **C** to explicitly retain the
+research copy alongside the catalog record with the same accession, then Enter
+to accept it. The curated database remains read-only.
+
+The accepted copy can enter **Research workflows: create, record and replay**
+and can be exported as a portable local-genome bundle. Captures retain an exact
+catalog snapshot, not the original GenBank file. They preserve annotation
+qualifiers and gene identifiers; external reference results, structures and
+precomputed codon statistics are not copied. Native catalogs without a dataset
+version descriptor retain an unknown version, while the imported snapshot has
+its own sequence and annotation fingerprints.
+
+Esc cancels capture. Incomplete reads or a changed catalog selection/view cannot
+publish the pending snapshot. The usual import limits and collision review apply.
+
 ## Export and restore
 
 Press **E** and choose a **new** output path. The bundle contains **all accepted local

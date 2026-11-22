@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Catalog genomes in terminal research workflows
+
+- The terminal Local Genomes screen adds **K** to capture the selected catalog
+  genome, complete annotations, feature selection and sequence view for ordinary
+  import review. Accepted copies enter the existing workflow authoring,
+  recording, replay and portable-bundle export paths.
+- Browser and terminal share the existing source-bound capture producer.
+  Cancellation, incomplete reads and changed selections leave accepted inputs
+  intact; matching accessions require an explicit keep-both decision.
+  [Implementation](packages/tui/src/components/LocalGenomeApp.tsx);
+  [usage](docs/TERMINAL_LOCAL_GENOMES.md).
+
 ### Published host models in the browser
 
 - The [host-metabolism workspace](packages/web/src/components/overlays/HostMetabolismPanel.tsx)

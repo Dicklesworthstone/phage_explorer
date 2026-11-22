@@ -30,6 +30,25 @@ export function currentTerminalResearchView(): ResearchView | null {
   const view = currentTerminalGenomeView();
   return view ? { ...view, geneId: usePhageStore.getState().selectedGeneId } : null;
 }
+/** The selected source and view are captured together before any catalog read.
+ * Changing either while the worker runs invalidates the proposed snapshot.
+ */
+export function captureTerminalCatalogGenome(session: TerminalGenomeSession): Promise<boolean> {
+  const source = usePhageStore.getState(), phage = source.currentPhage;
+  if (source.isLoadingPhage || source.phages[source.currentPhageIndex]?.id !== phage?.id) {
+    throw new Error('The selected genome is still loading. Return to the explorer before capturing it.');
+  }
+  if (!phage || phage.localGenome) throw new Error('Select a catalog genome in the explorer before capturing it for research.');
+  const view = { viewMode: source.viewMode, readingFrame: source.readingFrame,
+    scrollPosition: source.scrollPosition, geneId: source.selectedGeneId };
+  return session.prepareCatalog(phage, view, () => {
+    const current = usePhageStore.getState();
+    return current.currentPhage === phage && current.phages === source.phages && current.currentPhageIndex === source.currentPhageIndex
+      && current.phages[current.currentPhageIndex]?.id === phage.id && !current.isLoadingPhage
+      && current.viewMode === view.viewMode && current.readingFrame === view.readingFrame
+      && current.scrollPosition === view.scrollPosition && current.selectedGeneId === view.geneId;
+  });
+}
 /** One store write: setters that individually reset scroll must not reorder the restored view. */
 export function installTerminalGenomes(accepted: TerminalGenomeAccepted): void {
   const currentPhageIndex = accepted.phages.findIndex(phage => phage.id === accepted.selected.id);
@@ -56,8 +75,8 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   useEffect(() => {
     registerCommand({ id: IMPORT_COMMAND, label: 'Local genomes: import, restore or export',
-      description: 'Review private FASTA/GenBank or save the current local inputs and view without restarting.',
-      keywords: ['file', 'fasta', 'genbank', 'bundle', 'private', 'import', 'export'], category: 'Research',
+      description: 'Import private files, capture a catalog genome for research, or save accepted inputs and view.',
+      keywords: ['file', 'fasta', 'genbank', 'bundle', 'private', 'import', 'export', 'catalog', 'capture', 'snapshot'], category: 'Research',
       action: () => { session.discardReview(); setResearchOpen(false); setOpen(true); } });
     registerCommand({ id: WORKFLOW_COMMAND, label: 'Research workflows: create, record and replay',
       description: 'Build a private analysis workflow, record complete results, or verify a saved recording.',
@@ -78,6 +97,8 @@ export function TerminalGenomeView({ session, onReturn, onWorkflow }: {
   const { exit } = useApp(), { stdout } = useStdout();
   const { colors } = usePhageStore(state => state.currentTheme);
   const canReturn = usePhageStore(state => state.phages.length > 0);
+  const catalog = usePhageStore(state => !state.isLoadingPhage && !state.currentPhage?.localGenome
+    && state.phages[state.currentPhageIndex]?.id === state.currentPhage?.id ? state.currentPhage : null);
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [mode, setMode] = useState<'menu' | 'import' | 'export'>('menu');
   const [path, setPath] = useState('');
@@ -125,6 +146,15 @@ export function TerminalGenomeView({ session, onReturn, onWorkflow }: {
     }
     if (key.escape || input === 'q') { leave(); return; }
     if (input.toLowerCase() === 'i') { session.discardReview(); setMode('import'); setPath(''); setFormError(null); return; }
+    if (input.toLowerCase() === 'k') {
+      setFormError(null); setAllowCollisions(false); setPage(0);
+      try {
+        void captureTerminalCatalogGenome(session).catch(cause => {
+          if (mounted.current) setFormError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause)));
+        });
+      } catch (cause) { setFormError(terminalGenomeLabel(cause instanceof Error ? cause.message : String(cause))); }
+      return;
+    }
     if (input.toLowerCase() === 'e' && state.localCount) { setMode('export'); setPath(''); setFormError(null); return; }
     if (input.toLowerCase() === 'w' && onWorkflow) { onWorkflow(); return; }
     if (!review) return;
@@ -164,6 +194,8 @@ export function TerminalGenomeView({ session, onReturn, onWorkflow }: {
       <Text bold>Enter: add reviewed records and return · I: choose another file · Esc: discard</Text>
     </> : <>
       <Text>[I] Import or restore a local file</Text>
+      <Text dimColor={!catalog} wrap="truncate-end">[K] Capture selected catalog genome for research{catalog ? ': ' + terminalGenomeLabel(catalog.name) : ''}</Text>
+      <Text color={colors.textDim} wrap="truncate-end">Catalog captures preserve bases, annotations and this view; external references remain separate.</Text>
       <Text dimColor={!state.localCount}>[E] Export ALL accepted original inputs and the current local view</Text>
       {onWorkflow && <Text>[W] Create or open research workflows and browse their results</Text>}
       <Text>[Esc] {canReturn ? 'Return to the current explorer session' : 'Quit (or import a file to begin)'}</Text>

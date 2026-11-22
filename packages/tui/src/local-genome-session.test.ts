@@ -7,6 +7,11 @@ import { importLocalGenomes, exportLocalGenomeBundle, GENOME_IMPORT_LIMITS, type
 import type { PhageRepository } from '../../db-runtime/src/types';
 import { TerminalGenomeSession, loadTerminalGenomeFile, terminalGenomeLabel, type TerminalGenomeAccepted } from './local-genome-session';
 import { readTerminalGenomeFile } from './local-genome-import.worker';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { BunSqliteRepository } from '../../db-runtime/src/bun-repository';
+import { ActionIds } from '../../web/src/keyboard/actionRegistry';
+import { TerminalResearchSession } from './terminal-research-session';
 
 const genbank = `LOCUS       joined                    18 bp    DNA     linear
 ACCESSION   joined
@@ -30,6 +35,116 @@ async function fixture() {
   return { directory, source };
 }
 describe('interactive terminal local genome sessions', () => {
+  it('captures the real catalog into an independently replayable research workflow without changing the database', async () => {
+    const dbPath = fileURLToPath(new URL('../../web/public/phage.db', import.meta.url));
+    const hash = async () => createHash('sha256').update(await readFile(dbPath)).digest('hex');
+    const before = await hash(), base = new BunSqliteRepository(dbPath, { readonly: true });
+    const session = new TerminalGenomeSession(base), research = new TerminalResearchSession();
+    try {
+      const catalog = await base.listPhages(), phage = await base.getPhageBySlug('lambda');
+      assert(phage && phage.genes.length > 0);
+      const sequence = await base.getSequenceWindow(phage.id, 0, phage.genomeLength!);
+      const view = { viewMode: 'aa' as const, readingFrame: -2 as const, scrollPosition: 3, geneId: phage.genes[0].id };
+      assert.equal(await session.prepareCatalog(phage, view, () => true), true, session.getSnapshot().error ?? 'capture');
+      const review = session.getSnapshot().review!, snapshot = review.genomes[0];
+      assert.equal(session.getSnapshot().localCount, 0, 'capture stages review, never installs');
+      assert.equal(snapshot.sequence, sequence);
+      assert.equal(snapshot.phage.localGenome!.format, 'catalog-snapshot');
+      assert.equal(snapshot.phage.localGenome!.topology, 'unknown');
+      const source = JSON.parse(snapshot.original.text);
+      assert.deepEqual(source.provenance, { phageId: phage.id, slug: phage.slug, contentVersion: null });
+      assert.deepEqual(source.genome.genes, [...phage.genes].sort((a, b) => a.id - b.id));
+      assert.deepEqual(snapshot.phage.pdbIds, []);
+      assert.equal(snapshot.phage.codonUsage, null);
+      assert.equal(session.getSnapshot().reviewGeneId, phage.genes[0].id);
+      assert.equal(await session.accept(false, () => assert.fail('collision requires explicit acceptance')), false);
+      assert.match(session.getSnapshot().error!, /Explicitly allow/);
+      let installed: TerminalGenomeAccepted | undefined;
+      assert.equal(await session.accept(true, value => { installed = value; }), true);
+      assert.equal(installed!.phages.length, catalog.length + 1);
+      assert.equal(await installed!.repository.getSequenceWindow(snapshot.phage.id, 0, sequence.length), sequence);
+      assert.deepEqual(installed!.view, { viewMode: 'aa', readingFrame: -2, scrollPosition: 3, contentId: snapshot.phage.localGenome!.contentId });
+      const bundle = session.exportBundle(installed!.view);
+      const restored = await importLocalGenomes({ name: 'catalog-research.json', text: bundle });
+      assert.deepEqual(restored.genomes, review.genomes);
+      assert.equal(await research.createDraft('Captured catalog composition', bundle,
+        { ...installed!.view, geneId: installed!.selectedGeneId ?? null }), true);
+      research.setStep({ actionId: ActionIds.OverlayGCSkew, parameters: {
+        contentId: snapshot.phage.localGenome!.contentId, windowSize: 1000, stepSize: 1000,
+      } });
+      assert.equal(await research.recordDraft(), true, research.getSnapshot().error ?? 'record');
+      const recorded = research.analysis(2);
+      assert.equal(recorded.inputs[0].data, sequence);
+      assert.equal(recorded.inputs[0].accession, phage.accession);
+      assert.equal(await research.replay(), true, research.getSnapshot().error ?? 'replay');
+      assert.deepEqual(research.analysis(2), recorded);
+      assert.equal(await hash(), before, 'capture, recording and replay leave catalog bytes untouched');
+    } finally { research.cancel(); await session.close(); }
+  }, 30_000);
+  it('captures annotations before asynchronous reads and refuses changed selection or incomplete DNA', async () => {
+    const local = (await parsed()).genomes[0];
+    const phage = { ...local.phage, id: 1, slug: 'catalog-test', localGenome: undefined };
+    const pending = deferred<number>();
+    const base = { getFullGenomeLength: () => pending.promise, getSequenceWindow: async () => local.sequence,
+      close: async () => {} } as unknown as PhageRepository;
+    const session = new TerminalGenomeSession(base);
+    const originalGenes = structuredClone(phage.genes);
+    const capturing = session.prepareCatalog(phage, { viewMode: 'dna', readingFrame: 0, scrollPosition: 0, geneId: null }, () => true);
+    phage.genes[0].product = 'later mutable annotation';
+    pending.resolve(local.sequence.length);
+    assert.equal(await capturing, true);
+    assert.deepEqual(JSON.parse(session.getSnapshot().review!.genomes[0].original.text).genome.genes, originalGenes);
+    session.discardReview();
+    let current = true;
+    const sequence = deferred<string>();
+    base.getSequenceWindow = () => { current = false; return sequence.promise; };
+    const stale = session.prepareCatalog(phage, { viewMode: 'dna', readingFrame: 0, scrollPosition: 0, geneId: null }, () => current);
+    sequence.resolve(local.sequence);
+    assert.equal(await stale, false);
+    assert.match(session.getSnapshot().error!, /selected genome changed/);
+    assert.equal(session.getSnapshot().review, null);
+    current = true; base.getSequenceWindow = async () => local.sequence.slice(1);
+    assert.equal(await session.prepareCatalog(phage, { viewMode: 'dna', readingFrame: 0, scrollPosition: 0, geneId: null }, () => current), false);
+    assert.match(session.getSnapshot().error!, /complete catalog sequence/);
+    assert.equal(session.getSnapshot().review, null);
+    await session.close();
+  });
+  it('cancels a stuck catalog read promptly and never publishes it over a newer import', async () => {
+    const imported = await parsed(), local = imported.genomes[0], length = deferred<number>();
+    const phage = { ...local.phage, id: 1, localGenome: undefined };
+    let sequenceReads = 0;
+    const base = { getFullGenomeLength: () => length.promise, getSequenceWindow: async () => { sequenceReads++; return local.sequence; },
+      close: async () => {} } as unknown as PhageRepository;
+    const session = new TerminalGenomeSession(base, [], async () => imported);
+    const old = session.prepareCatalog(phage, { viewMode: 'dna', readingFrame: 0, scrollPosition: 0, geneId: null }, () => true);
+    session.cancel();
+    assert.equal(await old, false, 'cancellation settles before the pending catalog read');
+    await session.prepare('new-file');
+    const review = session.getSnapshot().review;
+    length.resolve(local.sequence.length); await Promise.resolve();
+    assert.strictEqual(session.getSnapshot().review, review);
+    assert.equal(sequenceReads, 0, 'abandoned length reply never starts sequence loading');
+    assert.equal(session.getSnapshot().localCount, 0);
+    await session.close();
+  });
+  it('rejects absent catalogs, local recapture and impossible views without staging a result', async () => {
+    const local = (await parsed()).genomes[0], view = { viewMode: 'aa' as const, readingFrame: 0 as const, scrollPosition: 0, geneId: null };
+    const missing = new TerminalGenomeSession(null);
+    assert.equal(await missing.prepareCatalog(local.phage, view, () => true), false);
+    assert.match(missing.getSnapshot().error!, /No catalog/);
+    const base = { getFullGenomeLength: async () => local.sequence.length, getSequenceWindow: async () => local.sequence,
+      close: async () => {} } as unknown as PhageRepository;
+    const session = new TerminalGenomeSession(base);
+    assert.equal(await session.prepareCatalog(local.phage, view, () => true), false);
+    assert.match(session.getSnapshot().error!, /already available/);
+    const phage = { ...local.phage, id: 1, localGenome: undefined };
+    for (const invalid of [{ ...view, scrollPosition: 6 }, { ...view, geneId: 987654 }]) {
+      assert.equal(await session.prepareCatalog(phage, invalid, () => true), false);
+      assert.match(session.getSnapshot().error!, /view or selected feature/);
+      assert.equal(session.getSnapshot().review, null);
+    }
+    await session.close(); await missing.close();
+  });
   it('reads real files in an owned worker and stages them without changing the accepted repository', async () => {
     const { source } = await fixture();
     const session = new TerminalGenomeSession(null);
