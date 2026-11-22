@@ -39,6 +39,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   identities survive export and replay without changing the model equations.
   [Commit 48dd3ae](https://github.com/Dicklesworthstone/phage_explorer/commit/48dd3ae8601af9d59b99ccce4e2967896d056adc).
 
+### Verified lysogeny equilibria and consistent phase portraits
+
+- The lysogeny view now finds residual-checked equilibria of the complete
+  CI/Cro/CII/RecA model and classifies their stability from its Jacobian.
+  Transient simulation endpoints and an assumed midpoint saddle are no longer
+  presented as fixed points. Zero protein decay correctly has no finite
+  equilibrium because basal Cro synthesis remains positive.
+- Arrows and nullcline samples use one documented quasi-steady reduction.
+  Plots include verified equilibria outside the former fixed bounds, distinguish
+  the evolving full-system trajectory, and disclose the numerical search limits.
+- Lysogeny recordings use method version 2; incompatible older recordings are
+  rejected instead of silently replaying different diagnostics.
+  [Implementation](packages/core/src/analysis/lysogeny-circuit.ts).
+
 ### Terminal analyses follow the accepted genome
 
 - Cached overlays now retain the exact repository, complete bases and annotation

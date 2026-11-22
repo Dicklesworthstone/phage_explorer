@@ -82,6 +82,8 @@ export function LysogenyVisualizer({
       // The solver does not cap concentrations. Include the retained trajectory
       // so both the current state and earlier high-concentration states stay visible.
       const maxScale = Math.max(3.2, state.ci, state.cro,
+        ...(state.attractors ?? []).flatMap(point => [point.ci, point.cro]),
+        ...(state.phasePortrait ?? []).flatMap(point => [point.ci, point.cro]),
         ...state.history.flatMap(point => [point.ci, point.cro])) * 1.05;
 
       // Coordinate transforms
@@ -112,11 +114,14 @@ export function LysogenyVisualizer({
       const portraitPoints = state.phasePortrait ?? [];
       if (portraitPoints.length > 0) {
         for (const pt of portraitPoints) {
+          if (pt.magnitude < 1e-10) continue;
           const sx = toScreenX(pt.ci);
           const sy = toScreenY(pt.cro);
 
           const mag = Math.max(0.001, Math.min(2.0, pt.magnitude));
-          const angle = Math.atan2(-pt.dCro, pt.dCi); // Inverted Y screen coords
+          // Both axes share maxScale; their different pixel spans still scale
+          // the vector components before choosing a screen-space direction.
+          const angle = Math.atan2(-pt.dCro * plotHeight, pt.dCi * plotWidth);
           const arrowLen = 5 + mag * 5;
 
           const ex = sx + Math.cos(angle) * arrowLen;
@@ -148,44 +153,20 @@ export function LysogenyVisualizer({
         }
       }
 
-      // Draw Nullclines if available
+      // Draw verified nullcline samples without connecting different branches or
+      // bridging rows where no root exists.
       if (state.nullclines) {
-        // CI-nullcline (dCI/dt = 0)
-        const ciNull = state.nullclines.ciNullcline;
-        if (ciNull.length > 1) {
-          ctx.setLineDash([4, 4]);
-          ctx.strokeStyle = `${ciColor}aa`;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ciNull.forEach((pt, idx) => {
-            const nx = toScreenX(pt.ci);
-            const ny = toScreenY(pt.cro);
-            if (idx === 0) ctx.moveTo(nx, ny);
-            else ctx.lineTo(nx, ny);
-          });
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-
-        // Cro-nullcline (dCro/dt = 0)
-        const croNull = state.nullclines.croNullcline;
-        if (croNull.length > 1) {
-          ctx.setLineDash([4, 4]);
-          ctx.strokeStyle = `${croColor}aa`;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          croNull.forEach((pt, idx) => {
-            const nx = toScreenX(pt.ci);
-            const ny = toScreenY(pt.cro);
-            if (idx === 0) ctx.moveTo(nx, ny);
-            else ctx.lineTo(nx, ny);
-          });
-          ctx.stroke();
-          ctx.setLineDash([]);
+        for (const [samples, color] of [[state.nullclines.ciNullcline, ciColor], [state.nullclines.croNullcline, croColor]] as const) {
+          ctx.fillStyle = `${color}bb`;
+          for (const point of samples) {
+            ctx.beginPath();
+            ctx.arc(toScreenX(point.ci), toScreenY(point.cro), 1.7, 0, Math.PI * 2);
+            ctx.fill();
+          }
         }
       }
 
-      // Draw Attractors and Separatrix
+      // Full-system equilibria; a saddle point alone does not locate a separatrix.
       if (state.attractors) {
         for (const attr of state.attractors) {
           const ax = toScreenX(attr.ci);
@@ -197,15 +178,15 @@ export function LysogenyVisualizer({
             ctx.arc(ax, ay, 4, 0, Math.PI * 2);
             ctx.fill();
             ctx.font = '9px monospace';
-            ctx.fillText('Lysogenic', ax + 6, ay - 4);
+            ctx.fillText('CI stable', ax + 6, ay - 4);
           } else if (attr.type === 'lytic') {
             ctx.fillStyle = croColor;
             ctx.beginPath();
             ctx.arc(ax, ay, 4, 0, Math.PI * 2);
             ctx.fill();
             ctx.font = '9px monospace';
-            ctx.fillText('Lytic', ax + 6, ay + 10);
-          } else if (attr.type === 'saddle') {
+            ctx.fillText('Cro stable', ax + 6, ay + 10);
+          } else {
             ctx.strokeStyle = colors.warning ?? '#eab308';
             ctx.lineWidth = 2;
             const size = 3;
@@ -217,7 +198,7 @@ export function LysogenyVisualizer({
             ctx.stroke();
             ctx.fillStyle = colors.warning ?? '#eab308';
             ctx.font = '8px monospace';
-            ctx.fillText('Separatrix', ax + 5, ay);
+            ctx.fillText(attr.stability === 'saddle' ? 'Saddle' : attr.stability === 'stable' ? 'Mixed stable' : 'Unresolved', ax + 5, ay);
           }
         }
       }
@@ -570,7 +551,7 @@ export function LysogenyVisualizer({
           role="img"
           aria-label={
             activeTab === 'portrait'
-              ? 'Phase portrait of Lysogeny/Lysis decision circuit showing CI versus Cro vector field and attractors'
+              ? 'Quasi-steady CI versus Cro vector field, sampled nullcline zeros, verified equilibria and the projected full-system trajectory'
               : 'Time series trajectories of CI, Cro, and CII proteins'
           }
           style={{
@@ -719,6 +700,32 @@ export function LysogenyVisualizer({
             <span>CI dimer-dimer cooperativity: ω = 10.0 (OR1-OR2 tetramer)</span>
             <span>Partition Function Z: {(occupancy?.partitionZ ?? 1).toFixed(1)}</span>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'portrait' && (
+        <div style={{ fontSize: '0.75rem', color: colors.textMuted }}>
+          <p>
+            Arrows and nullcline dots use CII = 2 PR (1 − Cro occupancy) √MOI × nutrients and RecA* = 50 × UV.
+            The live trajectory evolves all four concentrations, so it can depart from this quasi-steady field.
+            Green dots mark dCI/dt = 0; red dots mark dCro/dt = 0. Basin boundaries are not computed.
+          </p>
+          {(state.attractors?.length ?? 0) > 0 ? (
+            <ul aria-label="Verified model equilibria">
+              {state.attractors!.map((point, index) => (
+                <li key={index}>
+                  {point.label}; maximum ODE residual {point.residual.toExponential(1)}.
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p role="status">
+              {state.params.decay === 0
+                ? 'No finite equilibrium exists at zero protein decay: basal Cro synthesis remains positive.'
+                : 'No residual-checked equilibrium was found in the bounded numerical search.'}
+            </p>
+          )}
+          <p>Stability uses the full model Jacobian. A finite search can miss roots near bifurcations; CI/Cro dominance is a model classification, not a measured infection fate.</p>
         </div>
       )}
 

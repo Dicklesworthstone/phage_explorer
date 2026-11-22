@@ -4,6 +4,7 @@ import {
   derivePhageSimDefaults,
   predictLysogenyFate,
   reconstructLysogenyCircuit,
+  calculateDerivatives,
   type LysogenyCircuitState,
   type PhageFull,
 } from '@phage-explorer/core';
@@ -106,13 +107,31 @@ describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
     expect(state.nullclines).toBeDefined();
     expect(state.nullclines!.ciNullcline.length).toBeGreaterThan(10);
     expect(state.nullclines!.croNullcline.length).toBeGreaterThan(10);
-    expect(state.attractors?.length).toBe(3); // lysogenic, lytic, saddle
+    expect(state.attractors!.length).toBeGreaterThan(0);
+    for (const equilibrium of state.attractors!) {
+      const derivative = calculateDerivatives(equilibrium, state.params);
+      for (const rate of [derivative.dCi, derivative.dCro, derivative.dCII, derivative.dRecAStar]) {
+        expect(Math.abs(rate)).toBeLessThanOrEqual(1e-8);
+      }
+      expect(Math.max(...state.phasePortrait!.map(point => point.ci))).toBeGreaterThan(equilibrium.ci);
+      expect(Math.max(...state.phasePortrait!.map(point => point.cro))).toBeGreaterThan(equilibrium.cro);
+    }
 
     // Shea-Ackers operator occupancy
     expect(state.occupancy).toBeDefined();
     expect(state.occupancy!.partitionZ).toBeGreaterThanOrEqual(1.0);
     expect(state.occupancy!.prmActivity).toBeGreaterThanOrEqual(0);
     expect(state.occupancy!.prActivity).toBeGreaterThanOrEqual(0);
+  });
+
+  it('keeps the zero-decay simulation usable without invented equilibria or Cro nullclines', () => {
+    const sim = makeLysogenySimulation();
+    const state = sim.init(mockPhage(), { decay: 0 });
+    expect(state.attractors).toEqual([]);
+    expect(state.nullclines!.croNullcline).toEqual([]);
+    const next = sim.step(state, 1);
+    expect(next.cro).toBeGreaterThan(state.cro);
+    expect(next.attractors).toEqual([]);
   });
 
   it('updates state dynamically through step simulation with trajectory history', () => {

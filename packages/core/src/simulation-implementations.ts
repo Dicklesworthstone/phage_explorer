@@ -397,9 +397,12 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
 
       const occupancy = calculateOperatorOccupancy(initialCi, initialCro, merged);
       const predicted = predictLysogenyFate(merged, circuit);
-      const phasePortrait = computeCircuitPhasePortrait(merged, 16);
-      const nullclines = computeNullclines(merged, 30);
       const attractors = computeAttractors(merged);
+      // Verified equilibria can lie well beyond the historical 0..3 plotting box.
+      const maxCi = Math.max(3, ...attractors.map(point => point.ci)) * 1.1;
+      const maxCro = Math.max(3, ...attractors.map(point => point.cro)) * 1.1;
+      const phasePortrait = computeCircuitPhasePortrait(merged, 16, maxCi, maxCro);
+      const nullclines = computeNullclines(merged, 30, maxCi, maxCro);
 
       return {
         type: 'lysogeny-circuit',

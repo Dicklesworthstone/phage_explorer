@@ -6,6 +6,8 @@ import {
   computeCircuitPhasePortrait,
   computeNullclines,
   computeAttractors,
+  calculateQuasiSteadyState,
+  LYSOGENY_PHASE_LIMITS,
   predictLysogenyFate,
   findRegulatoryElements,
   reconstructLysogenyCircuit,
@@ -172,27 +174,117 @@ describe('Lysogeny Decision Circuit - Phase Portrait & Attractors', () => {
     }
   });
 
-  it('computes nullclines for CI and Cro', () => {
-    const { ciNullcline, croNullcline } = computeNullclines({}, 15, 3.0, 3.0);
-    expect(ciNullcline.length).toBe(16);
-    expect(croNullcline.length).toBe(16);
-    for (const pt of ciNullcline) {
-      expect(pt.ci).toBeGreaterThanOrEqual(0);
-    }
-    for (const pt of croNullcline) {
-      expect(pt.cro).toBeGreaterThanOrEqual(0);
+  it('uses the same analytic CII/RecA steady reduction for every field arrow', () => {
+    const params = { uv: 0.3, moi: 2.5, nutrients: 0.7 };
+    const grid = computeCircuitPhasePortrait(params, 4, 6, 15);
+    for (const point of grid) {
+      const occupancy = calculateOperatorOccupancy(point.ci, point.cro, params);
+      const cII = 2 * occupancy.prActivity * (1 - occupancy.orCro) * Math.sqrt(params.moi) * params.nutrients;
+      const derivative = calculateDerivatives({ ci: point.ci, cro: point.cro, cII, recAStar: 15 }, params);
+      expect(point.dCi).toBeCloseTo(derivative.dCi, 12);
+      expect(point.dCro).toBeCloseTo(derivative.dCro, 12);
+      expect(Math.abs(derivative.dCII)).toBeLessThan(1e-12);
+      expect(Math.abs(derivative.dRecAStar)).toBeLessThan(1e-12);
+      expect(point.fate).toBe('undecided'); // no basin is inferred from an arrow
     }
   });
 
-  it('locates distinct lysogenic and lytic attractors', () => {
-    const attractors = computeAttractors({});
-    expect(attractors.length).toBe(3); // lysogenic, lytic, saddle
-    const lyso = attractors.find(a => a.type === 'lysogenic');
-    const lytic = attractors.find(a => a.type === 'lytic');
-    expect(lyso).toBeDefined();
-    expect(lytic).toBeDefined();
-    expect(lyso!.ci).toBeGreaterThan(lyso!.cro);
-    expect(lytic!.cro).toBeGreaterThan(lytic!.ci);
+  it('retains only actual nullcline zeros and does not fabricate roots at plot boundaries', () => {
+    for (const params of [{}, { uv: 0.25 }, { moi: 4, nutrients: 0.2 }]) {
+      const { ciNullcline, croNullcline } = computeNullclines(params, 20, 8, 16);
+      expect(ciNullcline.length).toBeGreaterThan(0);
+      expect(croNullcline.length).toBeGreaterThan(0);
+      for (const [points, component] of [[ciNullcline, 'dCi'], [croNullcline, 'dCro']] as const) {
+        for (const point of points) {
+          expect(point.ci).toBeGreaterThanOrEqual(0); expect(point.ci).toBeLessThanOrEqual(8);
+          expect(point.cro).toBeGreaterThanOrEqual(0); expect(point.cro).toBeLessThanOrEqual(16);
+          const derivative = calculateDerivatives(calculateQuasiSteadyState(point.ci, point.cro, params), params);
+          expect(Math.abs(derivative[component])).toBeLessThanOrEqual(LYSOGENY_PHASE_LIMITS.residualTolerance);
+        }
+      }
+    }
+    // Cro synthesis >= 0.05 and decay=0.05 imply Cro >= 1 at every zero.
+    expect(computeNullclines({}, 12, 6, 0.5).croNullcline).toEqual([]);
+  });
+
+  it('finds an independently solvable equilibrium and its four analytic eigenvalues', () => {
+    // With CI synthesis and CII input zero, PR=1 at equilibrium and the
+    // eigenvalues are the four independent loss rates. Cro=(0.6+0.05)/0.05=13.
+    const params = { moi: 0, nutrients: 0, ciProd: 0, croProd: 0.6, decay: 0.05, uv: 0.3 };
+    const roots = computeAttractors(params);
+    expect(roots.length).toBe(1);
+    const root = roots[0];
+    expect(root.ci).toBeCloseTo(0, 7);
+    expect(root.cro).toBeCloseTo(13, 7);
+    expect(root.cII).toBe(0);
+    expect(root.recAStar).toBe(15);
+    expect(root.stability).toBe('stable');
+    expect(root.type).toBe('lytic');
+    const eigenvalues = root.eigenvalues.map(value => value.real).sort((a, b) => a - b);
+    const expected = [-0.05 - 0.25 * 15 - 0.2 * 0.3, -0.05, -0.25, -0.2].sort((a, b) => a - b);
+    eigenvalues.forEach((value, i) => expect(value).toBeCloseTo(expected[i], 5));
+    for (const value of root.eigenvalues) expect(Math.abs(value.imaginary)).toBeLessThan(1e-6);
+  });
+
+  it('does not claim resolved stability across a singular fractional-Hill boundary', () => {
+    const roots = computeAttractors({ hill: 0.5, ciProd: 3e-5, nutrients: 0 });
+    const nearBoundary = roots.find(root => root.ci > 0 && root.ci < 1e-5);
+    expect(nearBoundary).toBeDefined();
+    expect(nearBoundary!.residual).toBeLessThanOrEqual(LYSOGENY_PHASE_LIMITS.residualTolerance);
+    expect(nearBoundary!.stability).toBe('unresolved');
+    expect(nearBoundary!.eigenvalues).toEqual([]);
+  });
+
+  it('verifies full-ODE equilibria and stability at defaults and after environmental changes', () => {
+    for (const params of [{}, { uv: 0.4 }, { moi: 4, nutrients: 0.2 }, { ciProd: 0.05, croProd: 1.2 }]) {
+      const roots = computeAttractors(params);
+      expect(roots.length).toBeGreaterThan(0);
+      for (const root of roots) {
+        const derivative = calculateDerivatives(root, params);
+        for (const rate of [derivative.dCi, derivative.dCro, derivative.dCII, derivative.dRecAStar]) {
+          expect(Math.abs(rate)).toBeLessThanOrEqual(LYSOGENY_PHASE_LIMITS.residualTolerance);
+        }
+        expect(root.residual).toBeLessThanOrEqual(LYSOGENY_PHASE_LIMITS.residualTolerance);
+        expect(root.eigenvalues.length).toBe(4);
+        if (root.stability === 'stable') expect(root.eigenvalues.every(value => value.real < 0)).toBe(true);
+        if (root.stability === 'saddle') {
+          expect(root.eigenvalues.some(value => value.real > 0)).toBe(true);
+          expect(root.eigenvalues.some(value => value.real < 0)).toBe(true);
+        }
+      }
+    }
+    const roots = computeAttractors();
+    const lysogenic = roots.find(root => root.type === 'lysogenic')!;
+    const lytic = roots.find(root => root.type === 'lytic')!;
+    const saddle = roots.find(root => root.type === 'saddle')!;
+    expect(lysogenic).toBeDefined(); expect(lytic).toBeDefined(); expect(saddle).toBeDefined();
+    expect(lytic.cro).toBeGreaterThan(3); // the old plotting window hid this equilibrium
+    // A geometric midpoint is not a saddle: the root must solve the equations itself.
+    expect(Math.abs(saddle.ci - (lysogenic.ci + lytic.ci) / 2)).toBeGreaterThan(0.05);
+    for (const root of [lysogenic, lytic]) {
+      const perturbed = { ...root, ci: root.ci + 0.01, cro: root.cro + 0.01, cII: root.cII + 0.01 };
+      const relaxed = simulateSwitchStep(perturbed, 200);
+      expect(Math.abs(relaxed.ci - root.ci)).toBeLessThan(0.001);
+      expect(Math.abs(relaxed.cro - root.cro)).toBeLessThan(0.001);
+      expect(Math.abs(relaxed.cII - root.cII)).toBeLessThan(0.001);
+    }
+  });
+
+  it('reports no finite equilibrium when basal Cro cannot decay', () => {
+    for (const params of [{ decay: 0 }, { decay: 0, uv: 1 }, { decay: 0, croProd: 0, ciProd: 0 }]) {
+      expect(computeAttractors(params)).toEqual([]);
+      expect(computeNullclines(params, 12, 8, 16).croNullcline).toEqual([]);
+      for (const point of computeCircuitPhasePortrait(params, 4, 8, 16)) expect(point.dCro).toBeGreaterThanOrEqual(0.05);
+    }
+  });
+
+  it('bounds phase-portrait work and rejects invalid grids and parameters', () => {
+    for (const resolution of [0, -1, 0.5, NaN, Infinity, 129]) {
+      expect(() => computeCircuitPhasePortrait({}, resolution)).toThrow();
+      expect(() => computeNullclines({}, resolution)).toThrow();
+    }
+    for (const maximum of [0, -1, NaN, Infinity]) expect(() => computeNullclines({}, 4, maximum, 3)).toThrow();
+    expect(() => computeAttractors({ decay: -1 })).toThrow();
   });
 });
 

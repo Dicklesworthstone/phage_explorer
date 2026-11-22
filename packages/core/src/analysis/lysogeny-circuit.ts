@@ -10,7 +10,7 @@
  *    - Key proteins: CI repressor, Cro, CII decision factor, CIII stabilizer, N antiterminator, Q antiterminator, Integrase
  * 2. Shea-Ackers three-site operator occupancy partition function Z with cooperative binding
  * 3. Mutual repression ODE system with Hill kinetics, RecA* SOS-cleavage, and CII feedback
- * 4. Phase portrait generation: 2D vector fields, nullclines, attractors (lysogenic vs lytic basins), and separatrix
+ * 4. Quasi-steady 2D vector fields, sampled nullcline zeros, and residual-checked equilibria
  * 5. Lysogeny fate probability prediction under environmental perturbations (MOI, UV damage, nutrients)
  */
 
@@ -101,9 +101,16 @@ export interface NullclinePoint {
 }
 
 export interface AttractorPoint {
-  type: 'lysogenic' | 'lytic' | 'saddle';
+  type: 'lysogenic' | 'lytic' | 'undecided' | 'saddle' | 'unresolved';
   ci: number;
   cro: number;
+  cII: number;
+  recAStar: number;
+  /** Classification of the full four-variable ODE, not a simulated endpoint. */
+  stability: 'stable' | 'saddle' | 'unresolved';
+  /** Maximum absolute residual across all four derivatives. */
+  residual: number;
+  eigenvalues: Array<{ real: number; imaginary: number }>;
   label: string;
 }
 
@@ -155,6 +162,15 @@ export const LYSOGENY_INTEGRATION_LIMITS = {
   attempts: 50000,
   relativeTolerance: 1e-7,
   absoluteTolerance: 1e-10,
+} as const;
+
+/** Numerical budgets; a finite search does not prove every equilibrium was found. */
+export const LYSOGENY_PHASE_LIMITS = {
+  residualTolerance: 1e-8,
+  stabilityTolerance: 1e-6,
+  rootIterations: 64,
+  nullclineSamples: 128,
+  maximumGridSize: 128,
 } as const;
 
 function resolveSwitchParameters(params: Partial<LysogenySwitchParameters>): LysogenySwitchParameters {
@@ -373,32 +389,56 @@ export function simulateSwitchStep(
 }
 
 /**
- * Compute 2D Phase Portrait grid (vector field dCI/dt vs dCro/dt)
+ * The portrait eliminates CII and RecA* at their instantaneous steady values:
+ * CII = 2 PR (1 - Cro occupancy) sqrt(MOI) nutrients; RecA* = 50 UV.
+ * This is a quasi-steady reduction, not a slice of the live four-variable
+ * trajectory. Its zeros are equilibria of that full ODE; its arrows need not
+ * describe transient trajectories while CII and RecA* are still relaxing.
  */
+export function calculateQuasiSteadyState(
+  ci: number,
+  cro: number,
+  params: Partial<LysogenySwitchParameters> = {}
+): { ci: number; cro: number; cII: number; recAStar: number } {
+  const p = resolveSwitchParameters(params);
+  const occupancy = calculateOperatorOccupancy(ci, cro, p);
+  return { ci, cro,
+    cII: 2 * occupancy.prActivity * (1 - occupancy.orCro) * Math.sqrt(p.moi) * p.nutrients,
+    recAStar: 50 * p.uv };
+}
+
+function reducedRates(ci: number, cro: number, p: LysogenySwitchParameters): [number, number] {
+  const { dCi, dCro } = calculateDerivatives(calculateQuasiSteadyState(ci, cro, p), p);
+  return [dCi, dCro];
+}
+
+function validatePortraitGrid(steps: number, maxCi: number, maxCro: number): void {
+  if (!Number.isInteger(steps) || steps < 1 || steps > LYSOGENY_PHASE_LIMITS.maximumGridSize) {
+    throw new Error(`Phase portrait resolution must be an integer from 1 to ${LYSOGENY_PHASE_LIMITS.maximumGridSize}.`);
+  }
+  if (![maxCi, maxCro].every(value => Number.isFinite(value) && value > 0)) {
+    throw new Error('Phase portrait concentration bounds must be positive and finite.');
+  }
+}
+
+/** Compute the quasi-steady CI/Cro vector field, using the same reduction as the nullclines. */
 export function computeCircuitPhasePortrait(
   params: Partial<LysogenySwitchParameters> = {},
   gridSize = 16,
   maxCi = 3.0,
   maxCro = 3.0
 ): PhasePortraitPoint[] {
+  validatePortraitGrid(gridSize, maxCi, maxCro);
+  const p = resolveSwitchParameters(params);
   const points: PhasePortraitPoint[] = [];
 
   for (let i = 0; i <= gridSize; i++) {
     const ci = (i / gridSize) * maxCi;
     for (let j = 0; j <= gridSize; j++) {
       const cro = (j / gridSize) * maxCro;
-      const { dCi, dCro } = calculateDerivatives({ ci, cro, cII: 0.2, recAStar: 0 }, params);
-      const mag = Math.sqrt(dCi * dCi + dCro * dCro);
-
-      // Fate basin proxy: if projected trajectory moves toward high CI / low Cro -> lysogenic
-      const fate: 'lysogenic' | 'lytic' | 'undecided' =
-        ci > cro && dCi >= -0.1
-          ? 'lysogenic'
-          : cro > ci && dCro >= -0.1
-            ? 'lytic'
-            : dCi > dCro
-              ? 'lysogenic'
-              : 'lytic';
+      const [dCi, dCro] = reducedRates(ci, cro, p);
+      const mag = Math.hypot(dCi, dCro);
+      if (!Number.isFinite(mag)) throw new Error('Phase portrait exceeds finite model arithmetic.');
 
       points.push({
         ci,
@@ -406,7 +446,8 @@ export function computeCircuitPhasePortrait(
         dCi,
         dCro,
         magnitude: mag,
-        fate,
+        // An instantaneous arrow does not establish a basin of attraction.
+        fate: 'undecided',
       });
     }
   }
@@ -414,8 +455,42 @@ export function computeCircuitPhasePortrait(
   return points;
 }
 
+/** Bracket crossings, refine by bisection, and retain only residual-checked zeros. */
+function sampledZeros(rate: (value: number) => number, maximum: number): number[] {
+  const roots: number[] = [];
+  const tolerance = LYSOGENY_PHASE_LIMITS.residualTolerance;
+  const add = (value: number) => {
+    if (Math.abs(rate(value)) <= tolerance && !roots.some(root => Math.abs(root - value) <= 1e-6 * Math.max(1, value))) {
+      roots.push(value);
+    }
+  };
+  let left = 0, leftRate = rate(left);
+  if (leftRate === 0) add(left);
+  for (let i = 1; i <= LYSOGENY_PHASE_LIMITS.nullclineSamples; i++) {
+    // Denser near zero, where the low-CI branch can be much smaller than one grid cell.
+    const right = maximum * (i / LYSOGENY_PHASE_LIMITS.nullclineSamples) ** 2;
+    const rightRate = rate(right);
+    if (rightRate === 0) add(right);
+    if (Number.isFinite(leftRate) && Number.isFinite(rightRate) && Math.sign(leftRate) * Math.sign(rightRate) < 0) {
+      let lo = left, hi = right, flo = leftRate;
+      for (let iteration = 0; iteration < LYSOGENY_PHASE_LIMITS.rootIterations; iteration++) {
+        const mid = (lo + hi) / 2, fm = rate(mid);
+        if (!Number.isFinite(fm)) break;
+        if (Math.abs(fm) <= tolerance) { add(mid); break; }
+        if (Math.sign(fm) === Math.sign(flo)) { lo = mid; flo = fm; }
+        else hi = mid;
+      }
+    }
+    left = right; leftRate = rightRate;
+  }
+  return roots;
+}
+
 /**
- * Compute nullclines (curves where dCI/dt = 0 and dCro/dt = 0)
+ * Sample all bracketed nullcline zeros within the requested rectangle. Multiple
+ * roots in one row are retained; rows with no zero contribute no point. These
+ * unordered samples must not be joined into a single curve across branches.
+ * Tangencies between samples can be missed; no closest-point substitute is used.
  */
 export function computeNullclines(
   params: Partial<LysogenySwitchParameters> = {},
@@ -423,82 +498,132 @@ export function computeNullclines(
   maxCi = 3.0,
   maxCro = 3.0
 ): { ciNullcline: NullclinePoint[]; croNullcline: NullclinePoint[] } {
+  validatePortraitGrid(steps, maxCi, maxCro);
+  const p = resolveSwitchParameters(params);
   const ciNullcline: NullclinePoint[] = [];
   const croNullcline: NullclinePoint[] = [];
 
-  // Find CI-nullcline: for fixed cro, find ci where dCi ≈ 0
   for (let j = 0; j <= steps; j++) {
     const cro = (j / steps) * maxCro;
-    let bestCi = 0;
-    let minDiff = Infinity;
-    for (let i = 0; i <= 60; i++) {
-      const ci = (i / 60) * maxCi;
-      const { dCi } = calculateDerivatives({ ci, cro, cII: 0.1, recAStar: 0 }, params);
-      if (Math.abs(dCi) < minDiff) {
-        minDiff = Math.abs(dCi);
-        bestCi = ci;
-      }
-    }
-    ciNullcline.push({ ci: bestCi, cro });
+    for (const ci of sampledZeros(value => reducedRates(value, cro, p)[0], maxCi)) ciNullcline.push({ ci, cro });
   }
 
-  // Find Cro-nullcline: for fixed ci, find cro where dCro ≈ 0
   for (let i = 0; i <= steps; i++) {
     const ci = (i / steps) * maxCi;
-    let bestCro = 0;
-    let minDiff = Infinity;
-    for (let j = 0; j <= 60; j++) {
-      const cro = (j / 60) * maxCro;
-      const { dCro } = calculateDerivatives({ ci, cro, cII: 0.1, recAStar: 0 }, params);
-      if (Math.abs(dCro) < minDiff) {
-        minDiff = Math.abs(dCro);
-        bestCro = cro;
-      }
-    }
-    croNullcline.push({ ci, cro: bestCro });
+    for (const cro of sampledZeros(value => reducedRates(ci, value, p)[1], maxCro)) croNullcline.push({ ci, cro });
   }
 
   return { ciNullcline, croNullcline };
 }
 
+/** Finite differences with a one-sided stencil at a nonnegative concentration boundary. */
+function jacobian(rates: (state: number[]) => number[], state: number[]): number[][] {
+  const columns = state.map((value, column) => {
+    const h = 1e-5 * Math.max(1, value);
+    const lo = [...state], hi = [...state];
+    lo[column] = Math.max(0, value - h); hi[column] = value + h;
+    const a = rates(lo), b = rates(hi);
+    return b.map((rate, row) => (rate - a[row]) / (hi[column] - lo[column]));
+  });
+  return state.map((_, row) => columns.map(column => column[row]));
+}
+
+/** Eigenvalues of a real 3x3 Jacobian, scaled before solving its characteristic cubic. */
+function eigenvalues3(matrix: number[][]): Array<{ real: number; imaginary: number }> {
+  const scale = Math.max(...matrix.flat().map(Math.abs));
+  if (!Number.isFinite(scale)) return [];
+  if (scale === 0) return Array.from({ length: 3 }, () => ({ real: 0, imaginary: 0 }));
+  const m = matrix.map(row => row.map(value => value / scale));
+  const a = -(m[0][0] + m[1][1] + m[2][2]);
+  const b = m[0][0] * m[1][1] + m[0][0] * m[2][2] + m[1][1] * m[2][2]
+    - m[0][1] * m[1][0] - m[0][2] * m[2][0] - m[1][2] * m[2][1];
+  const c = -(m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]));
+  const p = b - a * a / 3, q = 2 * a ** 3 / 27 - a * b / 3 + c;
+  const discriminant = (q / 2) ** 2 + (p / 3) ** 3;
+  if (discriminant > 0) {
+    const u = Math.cbrt(-q / 2 + Math.sqrt(discriminant));
+    const v = Math.cbrt(-q / 2 - Math.sqrt(discriminant));
+    const real = (-0.5 * (u + v) - a / 3) * scale;
+    const imaginary = Math.sqrt(3) * (u - v) * scale / 2;
+    return [{ real: (u + v - a / 3) * scale, imaginary: 0 },
+      { real, imaginary }, { real, imaginary: -imaginary }];
+  }
+  if (p >= 0) return Array.from({ length: 3 }, () => ({ real: -a * scale / 3, imaginary: 0 }));
+  const radius = 2 * Math.sqrt(-p / 3);
+  const angle = Math.acos(clamp(-q / (2 * Math.sqrt(-((p / 3) ** 3))), -1, 1)) / 3;
+  return [0, 1, 2].map(k => ({ real: (radius * Math.cos(angle - 2 * Math.PI * k / 3) - a / 3) * scale, imaginary: 0 }));
+}
+
 /**
- * Compute key attractors and saddle point in phase space
+ * Bounded multistart Newton search for zeros of the quasi-steady reduction.
+ * Every returned state satisfies all four ODEs and is classified using the full
+ * Jacobian. A finite search may miss roots, especially near a bifurcation; an
+ * empty list means no verified roots found, not proof of monostability.
  */
 export function computeAttractors(
   params: Partial<LysogenySwitchParameters> = {}
 ): AttractorPoint[] {
-  // Simulate forward from lysogenic attractor basin
-  let lysoState = { ci: 2.2, cro: 0.1, cII: 0.5, recAStar: 0 };
-  for (let i = 0; i < 40; i++) {
-    lysoState = simulateSwitchStep(lysoState, 0.1, params);
+  const p = resolveSwitchParameters(params);
+  // Cro has strictly positive basal production, so decay=0 has no finite fixed point.
+  if (p.decay === 0) return [];
+  const maxCi = (p.ciProd * Math.sqrt(p.moi) + 0.6) / (p.decay + (50 * p.kCleavage + 0.2) * p.uv);
+  const maxCro = (p.croProd + 0.05) / p.decay;
+  if (![maxCi, maxCro].every(Number.isFinite)) throw new Error('Equilibrium search bounds exceed finite model arithmetic.');
+  const tolerance = LYSOGENY_PHASE_LIMITS.residualTolerance;
+  const seeds = (maximum: number, affinities: number[]) => [...new Set([
+    ...Array.from({ length: 9 }, (_, i) => maximum * (i / 8) ** 3),
+    ...affinities.filter(value => value <= maximum),
+  ])];
+  const roots: AttractorPoint[] = [];
+  const rates = ([ci, cro]: number[]) => reducedRates(ci, cro, p);
+  for (const ciSeed of seeds(maxCi, [p.kdCiOr1, p.kdCiOr2, p.kdCiOr3])) {
+    for (const croSeed of seeds(maxCro, [p.kdCroOr])) {
+      let state = [ciSeed, croSeed];
+      for (let iteration = 0; iteration < LYSOGENY_PHASE_LIMITS.rootIterations; iteration++) {
+        const f = rates(state), residual = Math.max(...f.map(Math.abs));
+        if (!Number.isFinite(residual) || residual <= tolerance) break;
+        const [[a, b], [c, d]] = jacobian(rates, state);
+        const determinant = a * d - b * c;
+        if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-16) break;
+        const delta = [(b * f[1] - d * f[0]) / determinant, (c * f[0] - a * f[1]) / determinant];
+        if (!delta.every(Number.isFinite)) break;
+        let improved = false;
+        for (let damping = 1; damping >= 2 ** -20; damping /= 2) {
+          const candidate = [clamp(state[0] + damping * delta[0], 0, maxCi), clamp(state[1] + damping * delta[1], 0, maxCro)];
+          if (Math.max(...rates(candidate).map(Math.abs)) < residual) { state = candidate; improved = true; break; }
+        }
+        if (!improved) break;
+      }
+      const [ci, cro] = state;
+      const fullState = calculateQuasiSteadyState(ci, cro, p);
+      const derivative = calculateDerivatives(fullState, p);
+      const residual = Math.max(...[derivative.dCi, derivative.dCro, derivative.dCII, derivative.dRecAStar].map(Math.abs));
+      if (!Number.isFinite(residual) || residual > tolerance || roots.some(root =>
+        Math.abs(root.ci - ci) <= 1e-5 * Math.max(1, ci) && Math.abs(root.cro - cro) <= 1e-5 * Math.max(1, cro))) continue;
+      const matrix = jacobian(([x, y, z]) => {
+        const value = calculateDerivatives({ ci: x, cro: y, cII: z, recAStar: fullState.recAStar }, p);
+        return [value.dCi, value.dCro, value.dCII];
+      }, [ci, cro, fullState.cII]);
+      // The RecA* equation is independent: the full Jacobian is block triangular.
+      const eigenvalues = [...eigenvalues3(matrix), { real: -0.2, imaginary: 0 }];
+      const margin = LYSOGENY_PHASE_LIMITS.stabilityTolerance;
+      // Fractional Hill powers have a singular derivative at zero. A root
+      // within the one-sided stencil cannot support a reliable linearization.
+      const nearSingularBoundary = p.hill < 1 && [ci, cro].some(value => value <= 1e-5 * Math.max(1, value));
+      const resolved = eigenvalues.length === 4 && eigenvalues.every(value => Number.isFinite(value.real) && Number.isFinite(value.imaginary))
+        && !nearSingularBoundary;
+      const stability = !resolved || eigenvalues.some(value => Math.abs(value.real) <= margin) ? 'unresolved'
+        : eigenvalues.every(value => value.real < -margin) ? 'stable' : 'saddle';
+      const type = stability === 'stable' ? ci - cro > 0.25 ? 'lysogenic' : cro - ci > 0.25 ? 'lytic' : 'undecided' : stability;
+      const name = stability === 'stable' ? `${type === 'undecided' ? 'Mixed CI/Cro' : type === 'lysogenic' ? 'CI-dominant' : 'Cro-dominant'} stable equilibrium`
+        : stability === 'saddle' ? 'Saddle equilibrium' : 'Equilibrium (stability unresolved)';
+      roots.push({ ...fullState, type, stability, residual, eigenvalues: resolved ? eigenvalues : [],
+        label: `${name} (${ci.toFixed(2)}, ${cro.toFixed(2)})` });
+    }
   }
-
-  // Simulate forward from lytic attractor basin
-  let lyticState = { ci: 0.05, cro: 2.0, cII: 0.0, recAStar: 0 };
-  for (let i = 0; i < 40; i++) {
-    lyticState = simulateSwitchStep(lyticState, 0.1, params);
-  }
-
-  return [
-    {
-      type: 'lysogenic',
-      ci: lysoState.ci,
-      cro: lysoState.cro,
-      label: `Lysogenic Attractor (${lysoState.ci.toFixed(2)}, ${lysoState.cro.toFixed(2)})`,
-    },
-    {
-      type: 'lytic',
-      ci: lyticState.ci,
-      cro: lyticState.cro,
-      label: `Lytic Attractor (${lyticState.ci.toFixed(2)}, ${lyticState.cro.toFixed(2)})`,
-    },
-    {
-      type: 'saddle',
-      ci: (lysoState.ci + lyticState.ci) / 2,
-      cro: (lysoState.cro + lyticState.cro) / 2,
-      label: 'Separatrix / Saddle Threshold',
-    },
-  ];
+  return roots.sort((a, b) => a.ci - b.ci || a.cro - b.cro);
 }
 
 /**

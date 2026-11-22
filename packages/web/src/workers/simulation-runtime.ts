@@ -40,7 +40,15 @@ const RESISTANCE_EXPERIMENT = {
   references: [{ id: 'core-resistance-cocktail', version: '2',
     description: 'Uncalibrated teaching model with member-specific susceptibility and explicit infected cells; not an exact Gillespie SSA.' }],
 };
-const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT : simId === 'resistance-cocktail' ? RESISTANCE_EXPERIMENT : {
+const LYSOGENY_EXPERIMENT = {
+  version: '2',
+  implementation: 'adaptive RK4-v1; quasi-steady CII/RecA portrait; bounded residual-checked equilibria and full-Jacobian stability-v1; lcg32-v1',
+  references: [{ id: 'core-lysogeny-circuit', version: '2',
+    description: 'Bundled illustrative CI/Cro/CII/RecA kinetics and numerical equilibria; no empirical calibration or computed basin boundaries.' }],
+};
+const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT
+  : simId === 'resistance-cocktail' ? RESISTANCE_EXPERIMENT
+  : simId === 'lysogeny-circuit' ? LYSOGENY_EXPERIMENT : {
   version: EXPERIMENT_VERSION, implementation: EXPERIMENT_IMPLEMENTATION, references: EXPERIMENT_REFERENCES,
 };
 

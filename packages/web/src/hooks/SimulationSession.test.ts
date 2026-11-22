@@ -1,7 +1,7 @@
 import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation, SPEED_OPTIONS,
+import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation, SPEED_OPTIONS, makeLysogenySimulation,
   type PhageFull, type AnalysisRecord, type RibosomeTrafficState, type ResistanceCocktailState } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
@@ -33,6 +33,34 @@ const ribosomeBackend = () => {
 };
 const codingInput = (genomeSequence = codingSequence): SimulationInput => ({ phage: structuredClone(codingPhage),
   context: { genomeSequence, geneId: 7 } });
+
+describe('lysogeny numerical-method replay', () => {
+  it('replays verified equilibria and rejects obsolete portrait results before changing the accepted state', async () => {
+    const api = createSimulationAPI([makeLysogenySimulation() as unknown as Simulation<SimState>]);
+    let initCalls = 0;
+    const service = {
+      getSimulationMetadata: (id: Simulation['id']) => api.getMetadata(id),
+      initSimulation: (params: SimInitParams) => { initCalls++; return api.init(params); },
+      stepSimulation: (state: SimState, dt: number) => api.step({ state, dt }),
+    };
+    const source = new SimulationSession('lysogeny-circuit', null, () => service, {}, 0);
+    const target = new SimulationSession('lysogeny-circuit', null, () => service, {}, 1);
+    await source.activate(); await source.step();
+    const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
+    assert.equal(record.method.version, '2');
+    assert.match(record.method.implementation, /residual-checked/);
+    await target.activate(); await target.replayExperiment(content);
+    assert.equal(target.getSnapshot().error, null);
+    assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+    assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId, record.resultId);
+    const before = target.getSnapshot().state, previousCalls = initCalls;
+    await target.replayExperiment(await rewriteRecord(content, old => { old.method.version = '1'; }));
+    assert.match(target.getSnapshot().error!, /incompatible/);
+    assert.strictEqual(target.getSnapshot().state, before);
+    assert.equal(initCalls, previousCalls);
+    source.deactivate(); target.deactivate();
+  });
+});
 
 describe('sequence-grounded simulation input and replay', () => {
   it('loads exact bases and canonical genes together instead of stale summary annotations', async () => {
