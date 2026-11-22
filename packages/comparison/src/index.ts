@@ -90,6 +90,7 @@ export {
   getSimilarityColor,
   createSimilarityBar,
 } from './comparison-engine';
+export * from './comparison-experiment';
 
 // HGT provenance tracer
 export {

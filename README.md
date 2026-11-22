@@ -539,6 +539,25 @@ similarity unavailable. GC percentages use resolved A/C/G/T bases and disclose
 their denominators; unknown-only inputs cannot imply a GC match.
 In the terminal, ↑/↓ or Page Up/Down scroll long reports while ←/→ switches tabs.
 
+Complete comparisons can also be created and replayed without a catalog:
+
+```bash
+phage-explorer comparison run reference.gb query.fa --output comparison.json
+phage-explorer comparison replay comparison.json --output verified-comparison.json
+```
+
+Each input contains one accepted genome (FASTA, GenBank or a local genome bundle),
+up to 1 million bases and 20,000 annotations. `--params settings.json` selects
+`kmerSizes`, `maxEditDistanceLength`, `editDistanceWindowSize` and
+`editDistanceWindowCount`. The complete portable record, bounded to 10 MiB,
+retains both accepted sequences, annotations, supplied codon counts, parameters,
+all metrics and the exact diff or its explicit unavailable reason. Replaying
+recomputes the evidence and rejects changed results even if their checksums were
+recalculated. Use `-` for one stdin input; output paths must be new files.
+GenBank annotations are preserved; FASTA does not acquire inferred genes. With no
+supplied codon counts, sequence composition uses frame zero of the whole genome.
+These descriptive similarities do not establish homology, expression or function.
+
 Gene-start logos use complete, exact annotated initiation sites with supported
 genetic codes. They display each -20 to +9 genomic window in coding orientation,
 its source gene and every exclusion reason. Joined and reverse-strand starts

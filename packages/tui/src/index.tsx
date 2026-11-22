@@ -117,6 +117,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     return;
   }
   // Headless scientific workflows must not require a catalog or initialize Ink.
+  if (args[0] === 'comparison') {
+    const { runGenomeComparisonProcess } = await import('./commands/genome-comparison');
+    await runGenomeComparisonProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'epistasis') {
     const { runEpistasisProcess } = await import('./commands/epistasis');
     await runEpistasisProcess(args.slice(1));
@@ -250,6 +255,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
       'The destination must not exist. Input/view bundles are separate from command recordings.\n\n' +
       'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
+      '  phage-explorer comparison run|replay ...\n' +
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +

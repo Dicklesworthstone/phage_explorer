@@ -52,7 +52,7 @@ export function computeSequenceDiff(sequenceA: string, sequenceB: string, option
   const unavailable = (reason: string): SequenceDiffResult => ({ status: 'unavailable', method: SEQUENCE_DIFF_METHOD, reason });
   if (typeof sequenceA !== 'string' || typeof sequenceB !== 'string' ||
       sequenceA.length > WAVEFRONT_LIMITS.length || sequenceB.length > WAVEFRONT_LIMITS.length) {
-    return unavailable(`Exact diff supports at most ${WAVEFRONT_LIMITS.length.toLocaleString()} bases per sequence. Compare a smaller region or use an external alignment.`);
+    return unavailable(`Exact diff supports at most ${WAVEFRONT_LIMITS.length.toLocaleString('en-US')} bases per sequence. Compare a smaller region or use an external alignment.`);
   }
   // Validate original ASCII symbols before case conversion: Unicode uppercasing
   // can expand a single character (for example ß -> SS), corrupting coordinates.

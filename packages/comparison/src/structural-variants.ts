@@ -95,7 +95,7 @@ export function structuralVariantsFromDiff(
     const referenceAllele = a.slice(run.startA, run.endA), alternateAllele = b.slice(run.startB, run.endB);
     if (/[^ACGT]/.test(referenceAllele + alternateAllele)) { unresolved++; continue; }
     if (calls.length === MAX_REPORTED_INDELS) {
-      return unavailable(`Aligned indel reporting exceeded ${MAX_REPORTED_INDELS.toLocaleString()} events. Increase the size threshold or compare a smaller region; no partial report was produced.`);
+      return unavailable(`Aligned indel reporting exceeded ${MAX_REPORTED_INDELS.toLocaleString('en-US')} events. Increase the size threshold or compare a smaller region; no partial report was produced.`);
     }
     counts[run.operation]++;
     calls.push({ id: `${run.operation}-${run.startA}-${run.endA}-${run.startB}-${run.endB}`,

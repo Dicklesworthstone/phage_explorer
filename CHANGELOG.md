@@ -6,6 +6,17 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Portable complete genome comparisons
+
+- A shared producer binds both complete genomes, original annotations, supplied
+  codon counts and explicit comparison settings to every metric and the exact
+  diff, including its unavailable state when the alignment budget is exceeded.
+  Replay recomputes all evidence and rejects freshly rehashed false results.
+- `comparison run` and `comparison replay` use the existing native worker and
+  work without a catalog. Local FASTA/GenBank inputs, stdin, private new-file
+  exports and cancellation are supported. Runtime timestamps are excluded from
+  identity; source data and complete scientific results remain bound.
+
 ### Genomic search in the terminal
 
 - Terminal search now includes literal DNA, IUPAC motifs, genes, annotation
@@ -29,6 +40,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   DNA/protein FASTA and full JSON exports use explicit paths and refuse existing
   files. Changed sources or annotations invalidate pending results and exports;
   the selected CDS can be opened directly in the main sequence view.
+  [Commit 6bae9c1](https://github.com/Dicklesworthstone/phage_explorer/commit/6bae9c18b52955275e6f77cd7b3575c18eb2fe8c).
 
 ### Save and reopen the complete phylogeny research chain
 

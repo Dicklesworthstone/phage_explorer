@@ -189,7 +189,7 @@ function computeSummary(
     insights.push({
       type: 'notable',
       category: 'K-mer identity estimate',
-      message: `Mash-style estimate ${identity.percent.toFixed(1)}% from ${identity.sharedKmers.toLocaleString()} shared canonical ${identity.k}-mers; no alignment or species inference.`,
+      message: `Mash-style estimate ${identity.percent.toFixed(1)}% from ${identity.sharedKmers.toLocaleString('en-US')} shared canonical ${identity.k}-mers; no alignment or species inference.`,
       value: identity.percent,
       significance: 'low',
     });
@@ -256,7 +256,7 @@ function computeSummary(
     insights.push({
       type: 'notable',
       category: 'Information',
-      message: `Position-paired k-mer dependence (NMI: ${(informationTheory.normalizedMI * 100).toFixed(1)}%, ${informationTheory.coverage.resolvedWindowPairs.toLocaleString()} resolved pairs); this is not nucleotide identity or an alignment.`,
+      message: `Position-paired k-mer dependence (NMI: ${(informationTheory.normalizedMI * 100).toFixed(1)}%, ${informationTheory.coverage.resolvedWindowPairs.toLocaleString('en-US')} resolved pairs); this is not nucleotide identity or an alignment.`,
       value: informationTheory.normalizedMI,
       significance: 'medium',
     });
