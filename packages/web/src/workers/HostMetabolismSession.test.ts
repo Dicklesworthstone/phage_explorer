@@ -2,6 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import { type HostModelInput } from '../../../core/src/analysis/host-metabolism';
+import { ECOLI_CORE_REFERENCE } from '../../../core/src/analysis/host-metabolism-reference';
 import { executeHostMetabolismRequest, HostMetabolismSession, type HostMetabolismRequest, type HostMetabolismWorker, type HostMetabolismMessage } from './HostMetabolismSession';
 
 // Two independent routes through a conserved pool. Maximum throughput is seven;
@@ -33,6 +34,37 @@ async function accept(f: ReturnType<typeof fixture>, request = load) {
 }
 
 describe('host-model worker requests', () => {
+  it('downloads only an explicitly selected pinned reference and verifies bytes before accepting it', async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [], phases: string[] = [];
+    await assert.rejects(executeHostMetabolismRequest({ kind: 'reference', id: ECOLI_CORE_REFERENCE.id }, phase => phases.push(phase), {
+      fetcher: async (url, init) => { requests.push({ url, init }); return new Response('{}'); },
+    }), /checksum mismatch/);
+    assert.equal(requests.length, 1); assert.equal(requests[0].url, ECOLI_CORE_REFERENCE.url);
+    assert.equal(requests[0].init.credentials, 'omit'); assert.equal(requests[0].init.redirect, 'error');
+    assert.equal(requests[0].init.referrerPolicy, 'no-referrer'); assert.equal(requests[0].init.body, undefined);
+    assert(phases.some(phase => phase.includes('verifying its checksum')));
+  });
+  it('rejects unknown references and altered local reference files without contacting a server', async () => {
+    let calls = 0;
+    const options = { fetcher: async () => { calls++; throw new Error('Unexpected network request'); } };
+    await assert.rejects(executeHostMetabolismRequest({ kind: 'reference', id: 'other-host' }, undefined, options), /Unknown host-model reference/);
+    await assert.rejects(executeHostMetabolismRequest({ kind: 'reference-file', id: ECOLI_CORE_REFERENCE.id, content: JSON.stringify(input.cobra) }, undefined, options), /checksum mismatch/);
+    await assert.rejects(executeHostMetabolismRequest({ kind: 'reference-file', id: ECOLI_CORE_REFERENCE.id, content: ' '.repeat(2 * 1024 * 1024 + 1) }, undefined, options), /2 MiB/);
+    await executeHostMetabolismRequest(load, undefined, options);
+    assert.equal(calls, 0);
+  });
+  it('preserves reference transport errors and cancels a stalled reference body', async () => {
+    const request: HostMetabolismRequest = { kind: 'reference', id: ECOLI_CORE_REFERENCE.id };
+    await assert.rejects(executeHostMetabolismRequest(request, undefined, {
+      fetcher: async () => new Response('', { status: 503 }),
+    }), /HTTP 503/);
+    const controller = new AbortController(), started = deferred<void>(); let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({ cancel: () => { cancelled = true; } });
+    const pending = executeHostMetabolismRequest(request, undefined, { signal: controller.signal,
+      fetcher: async () => { started.resolve(); return new Response(body); } });
+    await started.promise; await flush(); controller.abort();
+    await assert.rejects(pending, { name: 'AbortError' }); assert.equal(cancelled, true);
+  });
   it('loads canonical and raw COBRA inputs without computing or replacing them with a demo', async () => {
     const loaded = await executeHostMetabolismRequest(load);
     assert.equal(loaded.result, null); assert.equal(loaded.record, null); assert.equal(loaded.input.source.kind, 'local');
@@ -63,6 +95,22 @@ describe('host-model worker requests', () => {
 });
 
 describe('local host-model session lifecycle', () => {
+  it('owns reference downloads and preserves accepted results after cancellation or checksum failure', async () => {
+    const f = fixture(); await accept(f, { kind: 'analyze', input, options: settings });
+    const before = f.session.getSnapshot().accepted;
+    const request: HostMetabolismRequest = { kind: 'reference', id: ECOLI_CORE_REFERENCE.id };
+    const pending = f.session.run(request); await flush();
+    const worker = f.workers.at(-1)!;
+    assert.deepEqual(worker.request, request);
+    f.session.cancel(); await pending;
+    assert.equal(worker.terminated, true); assert.strictEqual(f.session.getSnapshot().accepted, before);
+    worker.send({ kind: 'error', message: 'obsolete download' }); assert.equal(f.session.getSnapshot().error, null);
+    const failed = f.session.run(request); await flush();
+    f.workers.at(-1)!.send({ kind: 'error', message: 'Reference checksum mismatch' }); await failed;
+    assert.strictEqual(f.session.getSnapshot().accepted, before); assert.match(f.session.getSnapshot().error!, /checksum mismatch/);
+    assert.equal(f.session.getSnapshot().busy, false);
+    f.session.deactivate();
+  });
   it('does not create a worker while inactive and terminates successful work', async () => {
     let count = 0; const inactive = new HostMetabolismSession(() => { count++; return new FakeWorker(); }); await inactive.run(load); assert.equal(count, 0);
     const f = fixture(); await accept(f); assert.equal(f.workers[0].terminated, true); assert.equal(f.session.getSnapshot().busy, false);

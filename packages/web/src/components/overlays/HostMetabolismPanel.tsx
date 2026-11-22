@@ -5,6 +5,7 @@ import { HostMetabolismSession, type HostMetabolismRequest } from '../../workers
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
 import { HostGeneKnockoutPanel } from './HostGeneKnockoutPanel';
+import { ECOLI_CORE_REFERENCE } from '../../../../core/src/analysis/host-metabolism-reference';
 
 const SOURCE_LABELS: Record<Exclude<keyof HostModelSource, 'kind'>, string> = {
   name: 'Host model name', version: 'Host model version', organism: 'Host organism', strain: 'Host strain',
@@ -61,6 +62,31 @@ export function HostMetabolismPanel(): React.ReactElement {
     <h3>Sourced host-model scenarios</h3>
     <p>Load an explicit host model and medium, then compare simultaneous reaction-bound changes. No host, biomass objective or AMG capacity is guessed from the selected phage.
       Inputs stay local. Model flux is not measured growth, fitness or burst yield. Export before leaving this workspace.</p>
+    <details open={!accepted}><summary>Use a published E. coli reference model</summary>
+      <p>{ECOLI_CORE_REFERENCE.name}. Loading this reference retains its published aerobic glucose exchange bounds,
+        source and license. It does not choose a host for the selected phage or infer an infected-cell medium.</p>
+      <p><a href={ECOLI_CORE_REFERENCE.publication} target="_blank" rel="noopener noreferrer">Model publication</a>{' · '}
+        <a href={ECOLI_CORE_REFERENCE.url} target="_blank" rel="noopener noreferrer">Original COBRA JSON</a>{' · '}
+        <a href={ECOLI_CORE_REFERENCE.licenseUrl} target="_blank" rel="noopener noreferrer">BiGG license</a>.
+        Educational, research and nonprofit use is permitted by the publisher; commercial use requires permission.</p>
+      <button type="button" disabled={busy} onClick={() => run({ kind: 'reference', id: ECOLI_CORE_REFERENCE.id })}>
+        Download and verify E. coli core model
+      </button>
+      <p>Only this button contacts BiGG. No local genomes or models are sent. If the publisher is unreachable or blocks browser downloads,
+        choose a previously downloaded original JSON file below. Changed or reformatted bytes are rejected by the reference importer;
+        use the sourced-model form for an edited model.</p>
+      <label htmlFor={`${id}-reference`}>Verify original E. coli core JSON file</label>
+      <input id={`${id}-reference`} type="file" accept=".json,application/json" disabled={busy} onChange={event => {
+        const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (!file) return;
+        run(file.size > 2 * 1024 * 1024 ? Promise.reject(new Error('Reference model exceeds 2 MiB.'))
+          : file.arrayBuffer().then(bytes => ({ kind: 'reference-file' as const, id: ECOLI_CORE_REFERENCE.id,
+            content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) })));
+      }} />
+      <details><summary>Pinned reference identity</summary><p>{ECOLI_CORE_REFERENCE.version}</p>
+        <p>SHA-256: <code>{ECOLI_CORE_REFERENCE.sha256}</code></p>
+        <p><a href={ECOLI_CORE_REFERENCE.checksumSource} target="_blank" rel="noopener noreferrer">Independent checksum reference</a></p>
+      </details>
+    </details>
     <label htmlFor={`${id}-saved`}>Import host-model dataset or saved experiment JSON</label>
     <input id={`${id}-saved`} type="file" accept=".json,application/json" disabled={busy} onChange={event => {
       const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (!file) return;
@@ -98,7 +124,7 @@ export function HostMetabolismPanel(): React.ReactElement {
     </details>
     {accepted && <>
       <h4 data-testid="host-model-name">{accepted.input.source.name} · {accepted.input.source.version}</h4>
-      <p>{accepted.input.source.kind === 'demo' ? 'Synthetic model' : 'Supplied source (not independently verified)'}: {accepted.input.source.organism}, {accepted.input.source.strain}, {accepted.input.source.accession}.
+      <p>{accepted.input.source.kind === 'demo' ? 'Synthetic model' : accepted.input.source.kind === 'reference' ? 'Published-reference provenance' : 'User-supplied source'}: {accepted.input.source.organism}, {accepted.input.source.strain}, {accepted.input.source.accession}.
         {' '}{accepted.input.source.reference}. License/permissions: {accepted.input.source.license}. Medium: {accepted.input.medium.name} — {accepted.input.medium.reference}.
         Flux units: {accepted.input.source.fluxUnits}; objective units: {accepted.input.source.objectiveUnits}.</p>
       <form onSubmit={event => {

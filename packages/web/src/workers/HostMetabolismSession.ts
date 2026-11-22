@@ -4,9 +4,12 @@ import { analyzeHostMetabolism, createHostFluxRecord, parseCobraHostModel, repla
   type HostModelInput, type HostModelSource, type HostNetwork } from '../../../core/src/analysis/host-metabolism';
 import { parseAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { analyzeHostGeneKnockouts, createHostGeneRecord, replayHostGeneRecord, HOST_KNOCKOUT_METHOD, type HostGeneResult } from '../../../core/src/analysis/host-gene-knockout';
+import { fetchHostMetabolismReference, importHostMetabolismReference } from '../../../core/src/analysis/host-metabolism-reference';
 
 export type HostMetabolismRequest =
   | { kind: 'import'; content: string }
+  | { kind: 'reference'; id: string }
+  | { kind: 'reference-file'; id: string; content: string }
   | { kind: 'prepare'; content: string; source: HostModelSource; medium: HostModelInput['medium'] }
   | { kind: 'analyze'; input: HostModelInput; options: Partial<HostFluxOptions> }
   | { kind: 'knockout'; input: HostModelInput; options: unknown };
@@ -14,11 +17,17 @@ export interface HostMetabolismWork { input: HostModelInput; network: HostNetwor
   result: HostFluxResult | null; record: AnalysisRecord | null; verified: boolean; geneResult?: HostGeneResult }
 export type HostMetabolismMessage = { kind: 'progress'; phase: string } | { kind: 'result'; value: HostMetabolismWork } | { kind: 'error'; message: string };
 
-export async function executeHostMetabolismRequest(request: HostMetabolismRequest, progress: (phase: string) => void = () => {}): Promise<HostMetabolismWork> {
+export async function executeHostMetabolismRequest(request: HostMetabolismRequest, progress: (phase: string) => void = () => {},
+  referenceOptions: Parameters<typeof fetchHostMetabolismReference>[1] = {}): Promise<HostMetabolismWork> {
   if (!request || typeof request !== 'object') throw new Error('Unsupported host-model request.');
   progress('Validating model, medium and source evidence');
   let input: HostModelInput;
-  if (request.kind === 'import' || request.kind === 'prepare') {
+  if (request.kind === 'reference' || request.kind === 'reference-file') {
+    progress(request.kind === 'reference' ? 'Downloading the published host model and verifying its checksum' : 'Verifying original reference-file bytes');
+    input = request.kind === 'reference'
+      ? await fetchHostMetabolismReference(request.id, referenceOptions)
+      : await importHostMetabolismReference(request.content, request.id);
+  } else if (request.kind === 'import' || request.kind === 'prepare') {
     const limit = request.kind === 'prepare' ? 2 * 1024 * 1024 : 10 * 1024 * 1024;
     if (typeof request.content !== 'string' || new TextEncoder().encode(request.content).length > limit) throw new Error('Host-model input exceeds the file size limit.');
     const content = request.content.replace(/^\uFEFF/, '');
@@ -111,7 +120,10 @@ export class HostMetabolismSession {
       });
       if (current()) this.publish({ accepted: value, notice: value.verified
         ? 'Verified host-model replay: fresh scenarios, flux ranges and complete evidence identity match.'
-        : value.record ? 'Host-model scenarios computed. Inspect each solver status and the recorded assumptions.' : 'Host model loaded. Review source and medium, then run the model.' });
+        : value.record ? 'Host-model scenarios computed. Inspect each solver status and the recorded assumptions.'
+          : request.kind === 'reference' || request.kind === 'reference-file'
+            ? 'Published host model loaded. Original file bytes match the pinned SHA-256. Review source and medium, then run the model.'
+            : 'Host model loaded. Review source and medium, then run the model.' });
     } catch (cause) { if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) }); }
     finally { if (current()) { this.owner = null; this.publish({ busy: false, phase: '' }); } }
   };

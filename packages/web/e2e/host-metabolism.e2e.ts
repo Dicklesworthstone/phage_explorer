@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
+import { ECOLI_CORE_REFERENCE } from '../../core/src/analysis/host-metabolism-reference';
 
 // Independent algebra: -EX=A+B=BIO. Baseline objective=10, routes can each
 // carry anything in [0,10]. Simultaneous capacities A<=2,B<=3 reduce it to 5.
@@ -18,9 +19,10 @@ async function download(page: Page, action: () => Promise<void>): Promise<string
 
 test('private COBRA models reach actual workers, simultaneous scenario ranges and verified replay', async ({ page }) => {
   test.setTimeout(180000);
-  const errors: string[] = [], privateRequests: string[] = [];
+  const errors: string[] = [], privateRequests: string[] = [], referenceRequests: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => {
+    if (request.url() === ECOLI_CORE_REFERENCE.url) referenceRequests.push(request.url());
     const details = `${request.url()} ${request.postData() ?? ''}`;
     if (details.includes('private-host-fixture') || details.includes('field-medium-evidence')) privateRequests.push(details);
   });
@@ -65,6 +67,20 @@ test('private COBRA models reach actual workers, simultaneous scenario ranges an
     await expect(panel.locator('b').filter({ hasText: 'literal route' })).toHaveCount(0);
     await panel.getByLabel('Allowed absolute objective loss', { exact: true }).fill('1');
     expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+    expect(referenceRequests).toEqual([]);
+    await panel.getByText('Use a published E. coli reference model', { exact: true }).click();
+    await page.route(ECOLI_CORE_REFERENCE.url, route => route.fulfill({ status: 503, body: '',
+      headers: { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' } }));
+    await panel.getByRole('button', { name: 'Download and verify E. coli core model', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('HTTP 503');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    expect(referenceRequests).toEqual([ECOLI_CORE_REFERENCE.url]);
+    await page.unroute(ECOLI_CORE_REFERENCE.url);
+    await panel.getByLabel('Verify original E. coli core JSON file', { exact: true })
+      .setInputFiles({ name: 'changed-e-coli-core.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(COBRA)) });
+    await expect(panel.getByRole('alert')).toContainText('checksum mismatch');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    expect(referenceRequests).toHaveLength(1);
     await page.reload(); await expect(panel).toBeVisible();
     const load = (text: string) => panel.getByLabel('Import host-model dataset or saved experiment JSON', { exact: true })
       .setInputFiles({ name: 'private-host-fixture.json', mimeType: 'application/json', buffer: Buffer.from(text) });

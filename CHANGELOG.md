@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Published host models in the browser
+
+- The [host-metabolism workspace](packages/web/src/components/overlays/HostMetabolismPanel.tsx)
+  exposes the existing checksum-pinned BiGG E. coli core reference loader.
+  An explicit download or original-file import retains source provenance,
+  the publisher's license and the published medium bounds before existing
+  reaction scenarios, flux ranges and gene knockouts can run.
+- Cancelled downloads, transport failures and changed reference bytes preserve
+  the previously accepted experiment. Saved datasets remain usable offline.
+  Model fluxes remain conditional predictions, not measured phage fitness.
+
+
 ### Exact selected-CDS inspection and export
 
 - The shared desktop/mobile gene inspector now extracts transcript-order DNA and
