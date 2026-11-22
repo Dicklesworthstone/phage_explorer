@@ -198,6 +198,7 @@ export class SimulationSession {
 
   step = async (): Promise<void> => {
     if (!this.active || !this.snapshot.state || this.operation) return;
+    if (this.snapshot.state.type === 'resistance-cocktail' && !this.snapshot.state.running) return;
     if (this.acceptedDeltas.length >= MAX_SIMULATION_EXPERIMENT_STEPS) {
       this.pause();
       this.publish({ error: `Run reached ${MAX_SIMULATION_EXPERIMENT_STEPS} recorded steps. Export it, then reset to start another run.` });
@@ -217,7 +218,10 @@ export class SimulationSession {
       getSimulationRandomState(next);
       const elapsed = performance.now() - start;
       this.acceptedDeltas.push(dt);
+      const completed = next.type === 'resistance-cocktail' && !next.running;
+      if (completed) this.stopTimer();
       this.publish({ state: next, error: null, replayMessage: null, completedSteps: this.acceptedDeltas.length,
+        ...(completed ? { isRunning: false } : {}),
         avgStepMs: this.snapshot.avgStepMs === 0 ? elapsed : this.snapshot.avgStepMs * 0.8 + elapsed * 0.2 });
     } catch (cause) {
       if (this.current(operation)) {
@@ -234,6 +238,7 @@ export class SimulationSession {
   };
   play = (): void => {
     if (!this.active || !this.snapshot.state || this.snapshot.isLoading || this.timer !== null) return;
+    if (this.snapshot.state.type === 'resistance-cocktail' && !this.snapshot.state.running) return;
     this.publish({ isRunning: true, error: null });
     this.timer = setInterval(() => { void this.step(); }, 50);
   };

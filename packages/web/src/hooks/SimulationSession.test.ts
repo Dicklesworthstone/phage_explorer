@@ -1,3 +1,4 @@
+import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation,
@@ -614,5 +615,40 @@ describe('portable simulation experiment replay', () => {
     const captured = simulationStateJson(values);
     values[0] = 0.5;
     assert.deepEqual(captured, { arrayType: 'Float32Array', values: [0.25] });
+  });
+});
+
+describe('terminal resistance playback', () => {
+  it('stops animation and recording when the resistance backend returns a completed checkpoint', async () => {
+    // Lifecycle fixture: numerical extinction/lysis is covered in the core suite.
+    // This backend deliberately completes on its first accepted step.
+    const resistance = makeResistanceSimulation() as unknown as Simulation;
+    const api = createSimulationAPI([{ ...resistance, step: state => ({ ...state, running: false }) }]);
+    let calls = 0;
+    const service = {
+      getSimulationMetadata: (id: Simulation['id']) => api.getMetadata(id),
+      initSimulation: (params: SimInitParams) => api.init(params),
+      stepSimulation: (state: SimState, dt: number) => { calls++; return api.step({ state, dt }); },
+    };
+    const session = new SimulationSession('resistance-cocktail', null, () => service, {}, 7);
+    try {
+      await session.activate();
+      session.play();
+      await session.step();
+      assert.equal(session.getSnapshot().isRunning, false);
+      assert.equal(session.getSnapshot().isStepping, false);
+      assert.equal(session.getSnapshot().completedSteps, 1);
+      assert.equal(session.getSnapshot().error, null);
+      await session.step();
+      session.play();
+      assert.equal(session.getSnapshot().isRunning, false);
+      assert.equal(calls, 1, 'completed runs must not accumulate no-op worker requests');
+      assert.equal(session.getSnapshot().completedSteps, 1);
+      const record = await parseAnalysisRecord(await session.exportExperiment());
+      assert.deepEqual(record.parameters.stepDeltas, [1]);
+      await session.reset();
+      assert.equal(session.getSnapshot().state?.running, true);
+      assert.equal(session.getSnapshot().completedSteps, 0);
+    } finally { session.deactivate(); }
   });
 });

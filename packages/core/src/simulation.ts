@@ -208,35 +208,42 @@ export interface PackagingMotorState extends SimStateBase {
 
 /**
  * Resistance Cocktail Evolution state
- * Gillespie stochastic simulation of resistance emergence
+ * Bounded Poisson tau-leap teaching model of resistance emergence
  */
 export interface ResistanceCocktailState extends SimStateBase {
   type: 'resistance-cocktail';
   /** Bacteria population (sensitive to all phages) */
   sensitiveBacteria: number;
-  /** Bacteria with partial resistance (per phage index) */
+  /** Bacteria resistant only to the corresponding phage; other members can infect them. */
   partialResistant: number[];
   /** Bacteria with full resistance (to all phages) */
   fullyResistant: number;
   /** Free phage counts (per phage type) */
   phageCounts: number[];
+  /** Infected, nondividing cells grouped by the infecting phage. */
+  infectedByPhage: number[];
+  /** Completed 0.01-hour model ticks; independent of animation frame partition. */
+  completedSteps: number;
+  /** Requested fractional ticks carried forward without consuming random draws. */
+  pendingSteps: number;
   /** Number of phage types in cocktail (1 = mono, 2-5 = cocktail) */
   cocktailSize: number;
   /** Simulation time (hours) */
   simTime: number;
-  /** Has resistance emerged (>10% of carrying capacity)? */
+  /** Has total resistance ever exceeded 10% of carrying capacity? */
   resistanceEmerged: boolean;
   /** Time at which resistance emerged (if any) */
   resistanceTime: number | null;
-  /** History for plotting: [{t, sensitive, resistant, phage}] */
+  /** Retained population history, including infected cells and free phage. */
   history: Array<{
     t: number;
     sensitive: number;
     partialResistant: number;
     fullyResistant: number;
+    infected: number;
     totalPhage: number;
   }>;
-  /** Gillespie event log (last N events) */
+  /** Approximate reaction event log (last N events). */
   events: Array<{ t: number; type: string }>;
 }
 
@@ -436,7 +443,7 @@ export const SIMULATION_METADATA: SimulationMeta[] = [
   {
     id: 'resistance-cocktail',
     name: 'Resistance Evolution Simulator',
-    description: 'Stochastic Gillespie model of resistance emergence: mono vs cocktail',
+    description: 'Illustrative tau-leap resistance model with infected cells: mono vs cocktail',
     icon: '🧪',
     priority: 7,
     requiresPhage: false,

@@ -6,6 +6,25 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Resistance simulation with explicit infected cells
+
+- Each cocktail member infects susceptible classes, consumes a free virion, and
+  retains infected cells until lysis. Infected populations appear in the browser,
+  terminal and exported histories. The model remains an uncalibrated Poisson
+  tau-leap teaching model with an exponential mean lysis waiting time.
+- Fractional animation steps accumulate into fixed model ticks; caller speed is
+  applied once, zero-valued random draws stay finite, and completed runs stop at
+  extinction or 48 hours. Version 2 records identify the corrected transitions
+  and reject incompatible version 1 replay.
+
+### Immediate terminal research access
+
+- `:` and `Ctrl+P` open the command palette for every experience tier, making
+  private genome import and research workflows available in a fresh session.
+  Explicit advanced-tool unlocking now promotes novice and intermediate users
+  through the existing monotonic experience action.
+  [Commit 0807094](https://github.com/Dicklesworthstone/phage_explorer/commit/08070946841d66e8327a119b89507eff03b93de3).
+
 ### Catalog genomes in terminal research workflows
 
 - The terminal Local Genomes screen adds **K** to capture the selected catalog

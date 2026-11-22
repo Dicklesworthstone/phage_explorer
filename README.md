@@ -660,10 +660,11 @@ occupancy; `.` steps and `R` resets it. Bounds are 5 million genome bases,
 - Logistic bacterial growth with carrying capacity
 
 ### 5. Resistance Cocktail Evolution
-**Model:** Gillespie stochastic simulation with tau-leaping
-**States:** Sensitive → Partially resistant (per phage) → Fully resistant
-**Key insight:** Mono-phage resistance emerges faster than cocktail resistance (synergy effect)
-**Tracks:** Sensitive/resistant populations, emergence time, individual phage counts
+**Model:** Illustrative bounded Poisson tau-leaps with fixed 0.01-hour ticks and smaller substeps for high active hazards; this is not an exact Gillespie simulation or an experimentally calibrated predictor.
+**States:** Sensitive, resistant to one cocktail member, fully resistant, infected by each member, and free phage. A cell resistant to one member remains susceptible to the others. Infection consumes one cell and one virion; infected cells occupy carrying capacity without dividing, then release progeny at lysis.
+**Timing:** The latent-period parameter specifies the exponential **mean lysis waiting time**, not a fixed delay. Fractional animation steps accumulate without extra random draws, and runs stop at extinction or 48 model hours.
+**Tracks:** Sensitive/resistant/infected populations, the first resistance-threshold crossing, and individual free-phage counts. Comparisons depend on the supplied parameters; faster resistance under monotherapy is not guaranteed.
+**Reproducibility:** Version 2 experiment records include infected populations in JSON/TSV. Version 1 records require an explicit rerun under the corrected model and are not silently reinterpreted.
 
 ### 6. Packaging Motor Pressure Gauge
 **Model:** Inverse-spool continuum model (Riemer & Bloomfield 1978; Purohit, Kondev & Phillips, PNAS 2003)

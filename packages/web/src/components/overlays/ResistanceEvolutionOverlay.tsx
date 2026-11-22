@@ -1,8 +1,8 @@
 /**
- * ResistanceEvolutionOverlay - Gillespie Stochastic Simulation
+ * ResistanceEvolutionOverlay - Illustrative Resistance Simulation
  *
  * Visualizes resistance emergence under mono vs cocktail phage therapy
- * using the core Gillespie tau-leaping simulation.
+ * using the core bounded Poisson tau-leap simulation.
  */
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
@@ -196,7 +196,7 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
 
     // Find max values for scaling
     const maxPop = Math.max(
-      ...history.map((h) => Math.max(h.sensitive, h.partialResistant, h.fullyResistant, 1))
+      ...history.map((h) => Math.max(h.sensitive, h.partialResistant, h.fullyResistant, h.infected, 1))
     );
     const maxPhage = Math.max(...history.map((h) => h.totalPhage), 1);
     const maxT = Math.max(...history.map((h) => h.t), 1);
@@ -262,6 +262,9 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
       maxPop
     );
 
+    // Infected cells remain occupied until their lysis transition.
+    drawLine(history.map(h => ({ t: h.t, v: h.infected })), colors.primary, maxPop);
+
     // Phage (blue, dashed)
     ctx.setLineDash([4, 4]);
     drawLine(
@@ -277,16 +280,19 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
       { label: 'Sensitive', color: colors.success },
       { label: 'Partial R', color: colors.warning },
       { label: 'Full R', color: colors.error },
+      { label: 'Infected', color: colors.primary },
       { label: 'Phage', color: colors.info },
     ];
     ctx.textAlign = 'left';
+    const legendColumns = Math.max(1, Math.floor(plotW / 88));
     legendItems.forEach((item, i) => {
-      const x = padding.left + 10 + i * 80;
+      const x = padding.left + 10 + (i % legendColumns) * 88;
+      const y = legendY + Math.floor(i / legendColumns) * 12;
       ctx.fillStyle = item.color;
-      ctx.fillRect(x, legendY - 4, 12, 4);
+      ctx.fillRect(x, y - 4, 12, 4);
       ctx.fillStyle = colors.textDim;
       ctx.font = '9px sans-serif';
-      ctx.fillText(item.label, x + 16, legendY);
+      ctx.fillText(item.label, x + 16, y);
     });
 
     // Resistance emergence marker
@@ -314,6 +320,8 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
   const totalResistant = state
     ? state.partialResistant.reduce((a, b) => a + b, 0) + state.fullyResistant
     : 0;
+  const totalInfected = state?.infectedByPhage.reduce((a, b) => a + b, 0) ?? 0;
+  const cleared = state !== null && state.sensitiveBacteria + totalResistant + totalInfected === 0;
   const carryingCap = state ? Number(state.params.carryingCap ?? 1e9) : 1e9;
   const resistFraction = totalResistant / carryingCap;
 
@@ -338,6 +346,8 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
           <strong style={{ color: colors.primary }}>Seeded illustrative stochastic simulation</strong>{' '}
           explores resistance emergence under user-selected model assumptions. It is not fitted to the selected phage,
           host, treatment or experiment. Reusing the same seed and parameters reproduces the same random trajectory.
+          Partial resistance protects against one cocktail member only. Infected cells remain occupied until lysis;
+          the lysis parameter is an exponential mean waiting time, not a fixed delay. Poisson tau-leaping is approximate.
         </div>
 
         {/* Controls */}
@@ -444,6 +454,12 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
               </div>
             </div>
             <div style={{ padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
+              <div style={{ color: colors.primary, fontSize: '0.75rem' }}>Infected</div>
+              <div style={{ fontFamily: 'monospace', color: colors.text, fontSize: '1.1rem' }}>
+                {formatExp(totalInfected)}
+              </div>
+            </div>
+            <div style={{ padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
               <div style={{ color: colors.info, fontSize: '0.75rem' }}>Total Phage</div>
               <div style={{ fontFamily: 'monospace', color: colors.text, fontSize: '1.1rem' }}>
                 {formatExp(state.phageCounts.reduce((a, b) => a + b, 0))}
@@ -455,18 +471,12 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
                 style={{
                   fontFamily: 'monospace',
                   fontSize: '1.1rem',
-                  color: state.resistanceEmerged
-                    ? colors.error
-                    : state.sensitiveBacteria < 1
-                      ? colors.success
-                      : colors.text,
+                  color: cleared ? colors.success : state.resistanceEmerged ? colors.error : colors.text,
                 }}
               >
-                {state.resistanceEmerged
+                {cleared ? 'CLEARED' : state.resistanceEmerged
                   ? `RESIST @ ${state.resistanceTime?.toFixed(1)}h`
-                  : state.sensitiveBacteria < 1
-                    ? 'CLEARED'
-                    : 'Active'}
+                  : simulation.isComplete?.(state) ? 'Finished' : 'Active'}
               </div>
             </div>
           </div>
@@ -476,7 +486,7 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
         {state && (
           <div style={{ padding: '0.75rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
             <div style={{ color: colors.textMuted, fontSize: '0.8rem', marginBottom: '0.5rem' }}>
-              Resistance Risk (fraction of carrying capacity)
+              Resistant cells / carrying capacity
             </div>
             {progressBar(
               resistFraction,
@@ -539,7 +549,10 @@ export function ResistanceEvolutionOverlay(): React.ReactElement | null {
                   {formatExp(count)}
                 </div>
                 <div style={{ color: colors.warning, fontSize: '0.65rem' }}>
-                  R: {formatExp(state.partialResistant[i])}
+                  Resistant only to this member: {formatExp(state.partialResistant[i])}
+                </div>
+                <div style={{ color: colors.primary, fontSize: '0.65rem' }}>
+                  Infected: {formatExp(state.infectedByPhage[i])}
                 </div>
               </div>
             ))}

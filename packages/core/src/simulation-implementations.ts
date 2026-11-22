@@ -913,187 +913,237 @@ export function makePackagingSimulation(): Simulation<PackagingMotorState> {
 }
 
 /**
- * Gillespie/tau-leaping resistance evolution simulation
- * Models resistance emergence under mono vs cocktail phage therapy
- *
- * Model:
- * - Sensitive bacteria (S): susceptible to all phages
- * - Partially resistant (R_i): resistant to phage i only
- * - Fully resistant (R_full): resistant to all phages in cocktail
- * - Free phage (P_i): per phage type
- *
- * Reactions:
- * 1. Bacterial growth: S → 2S (logistic), R → 2R (logistic)
- * 2. Infection: S + P_i → infected (removed)
- * 3. Burst: infected → β * P_i (after latent period, modeled as rate)
- * 4. Resistance mutation: S → R_i (per-phage resistance)
- * 5. Multi-resistance: R_i → R_full (receptor switching)
- * 6. Phage decay: P_i → ∅
+ * Bounded Poisson tau-leap teaching model, not an exact Gillespie SSA.
+ * R_i resists only phage i. I_i is infected by i and does not divide.
+ * S/R_j + P_i -> I_i consumes one cell and virion (j != i);
+ * I_i -> burstSize * P_i has exponential mean waiting time latentPeriod.
+ * Only I present at the start of a leap can lyse in that leap.
+ * Fixed 0.01-hour ticks are subdivided to limit active individual hazards.
+ * Random reaction order avoids permanent first-member priority.
  */
+const RESISTANCE_TICK_HOURS = 0.01;
+const RESISTANCE_MAX_TICKS = 4800;
+const RESISTANCE_MAX_SUBSTEPS = 10000;
 
-// Sample from Poisson distribution using Knuth algorithm
-function poissonSample(lambda: number, rng: () => number): number {
+const resistanceCount: (value: unknown) => boolean = value =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+
+const validateResistanceParameters: (params: Record<string, number | boolean | string>) => void = params => {
+  const ranges = {
+    cocktailSize: [1, 5], initialBacteria: [0, 1e9], initialPhage: [0, 1e10],
+    carryingCap: [1, 1e10], growthRate: [0, 2], infectionRate: [0, 1e-7],
+    burstSize: [1, 500], latentPeriod: [0.1, 2], mutationRate: [0, 1e-5],
+    multiResRate: [0, 1e-6], phageDecay: [0, 0.5],
+  };
+  if (Object.keys(params).some(name => !Object.hasOwn(ranges, name))) throw new Error('Unsupported resistance parameter.');
+  for (const [name, range] of Object.entries(ranges)) {
+    const value = params[name];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < range[0] || value > range[1]) {
+      throw new Error('Resistance parameter ' + name + ' is outside its supported range.');
+    }
+  }
+  for (const name of ['cocktailSize', 'initialBacteria', 'initialPhage', 'burstSize']) {
+    if (!Number.isSafeInteger(params[name])) throw new Error('Resistance parameter ' + name + ' requires an integer.');
+  }
+};
+
+const resistanceComplete: (state: ResistanceCocktailState) => boolean = state => {
+  const infected = state.infectedByPhage.reduce((a, b) => a + b, 0);
+  const bacteria = state.sensitiveBacteria + state.fullyResistant +
+    state.partialResistant.reduce((a, b) => a + b, 0) + infected;
+  const phage = state.phageCounts.reduce((a, b) => a + b, 0);
+  return bacteria === 0 || phage + infected === 0 || state.completedSteps >= RESISTANCE_MAX_TICKS;
+};
+
+const resistanceOrder: (size: number, rng: () => number) => number[] = (size, rng) => {
+  const order = Array.from({ length: size }, (_, index) => index);
+  for (let index = size - 1; index > 0; index--) {
+    const other = Math.floor(rng() * (index + 1));
+    [order[index], order[other]] = [order[other], order[index]];
+  }
+  return order;
+};
+
+// Knuth for small means; explicit normal approximation for means above 30.
+const poissonSample: (lambda: number, rng: () => number) => number = (lambda, rng) => {
   if (lambda <= 0) return 0;
+  if (!Number.isFinite(lambda)) throw new Error('Resistance transition mean is not finite.');
   if (lambda > 30) {
-    // For large lambda, use normal approximation
-    const u1 = rng();
+    // RNG is [0,1); 1-rng() is strictly positive even when a seeded draw is zero.
+    const u1 = 1 - rng();
     const u2 = rng();
     const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
     return Math.max(0, Math.round(lambda + Math.sqrt(lambda) * z));
   }
-  const L = Math.exp(-lambda);
-  let k = 0;
-  let p = 1;
+  const limit = Math.exp(-lambda);
+  let count = 0;
+  let product = 1;
   do {
-    k++;
-    p *= rng();
-  } while (p > L);
-  return k - 1;
-}
+    count++;
+    product *= rng();
+    if (count > 10000) throw new Error('Resistance Poisson draw exceeded its work budget.');
+  } while (product > limit);
+  return count - 1;
+};
 
-// Single Gillespie step with tau-leaping for efficiency
-function runResistanceStep(
-  state: ResistanceCocktailState,
-  tau: number,
-  rng: () => number
-): ResistanceCocktailState {
-  const random = rng ?? Math.random;
+const runResistanceStep: (state: ResistanceCocktailState, tau: number, rng: () => number) => ResistanceCocktailState = (state, tau, rng) => {
+  const carryingCap = Number(state.params.carryingCap);
+  const growthRate = Number(state.params.growthRate);
+  const infectionRate = Number(state.params.infectionRate);
+  const burstSize = Number(state.params.burstSize);
+  const latentPeriod = Number(state.params.latentPeriod);
+  const mutationRate = Number(state.params.mutationRate);
+  const multiResRate = Number(state.params.multiResRate);
+  const phageDecay = Number(state.params.phageDecay);
+  const size = state.cocktailSize;
+  // Index zero is sensitive; index j+1 resists only phage j.
+  const uninfected = [state.sensitiveBacteria, ...state.partialResistant];
+  let fullyResistant = state.fullyResistant;
+  const phage = [...state.phageCounts];
+  const infected = [...state.infectedByPhage];
+  const events = [...state.events];
+  const nextTime = state.simTime + tau;
+  const event = (type: string) => events.push({ t: nextTime, type });
+  const live = uninfected.reduce((a, b) => a + b, 0) + fullyResistant + infected.reduce((a, b) => a + b, 0);
+  const growth = growthRate * Math.max(0, 1 - live / carryingCap) * tau;
 
-  // Extract parameters
-  const carryingCap = Number(state.params.carryingCap ?? 1e8);
-  const growthRate = Number(state.params.growthRate ?? 0.5); // per hour
-  const infectionRate = Number(state.params.infectionRate ?? 2e-9); // mL/(phage*hour)
-  const burstSize = Number(state.params.burstSize ?? 100);
-  const latentPeriod = Number(state.params.latentPeriod ?? 0.5); // hours
-  const mutationRate = Number(state.params.mutationRate ?? 1e-7); // per cell per hour
-  const multiResRate = Number(state.params.multiResRate ?? 1e-8); // rate of full resistance
-  const phageDecay = Number(state.params.phageDecay ?? 0.1); // per hour
-
-  let S = state.sensitiveBacteria;
-  let R_partial = [...state.partialResistant];
-  let R_full = state.fullyResistant;
-  let P = [...state.phageCounts];
-  const cocktailSize = state.cocktailSize;
-
-  const totalBacteria = S + R_partial.reduce((a, b) => a + b, 0) + R_full;
-  const logisticFactor = Math.max(0, 1 - totalBacteria / carryingCap);
-
-  const newEvents: Array<{ t: number; type: string }> = [];
-
-  // 1. Bacterial growth (tau-leaping with Poisson)
-  const growthPropS = growthRate * S * logisticFactor * tau;
-  const growthS = poissonSample(growthPropS, random);
-  S += growthS;
-
-  const growthPropRfull = growthRate * R_full * logisticFactor * tau;
-  const growthRfull = poissonSample(growthPropRfull, random);
-  R_full += growthRfull;
-
-  for (let i = 0; i < cocktailSize; i++) {
-    const growthPropRi = growthRate * R_partial[i] * logisticFactor * tau;
-    const growthRi = poissonSample(growthPropRi, random);
-    R_partial[i] += growthRi;
+  for (let group = 0; group < uninfected.length; group++) {
+    uninfected[group] += poissonSample(growth * uninfected[group], rng);
   }
+  fullyResistant += poissonSample(growth * fullyResistant, rng);
 
-  // 2. Infection by each phage type (only affects sensitive bacteria)
-  for (let i = 0; i < cocktailSize; i++) {
-    const infProp = infectionRate * S * P[i] * tau;
-    const infections = Math.min(S, poissonSample(infProp, random));
-    S -= infections;
+  // Keep the original infected pool distinct so new infections cannot burst immediately.
+  const lysed = infected.map(count => Math.min(count, poissonSample(count / latentPeriod * tau, rng)));
+  for (let member = 0; member < size; member++) infected[member] -= lysed[member];
 
-    // 3. Burst after latent period (modeled as rate-based release)
-    // Infected cells lyse at rate 1/latentPeriod
-    const burstProp = (infections / latentPeriod) * burstSize * tau;
-    const newPhage = poissonSample(burstProp, random);
-    P[i] += newPhage;
-
-    if (infections > 0) {
-      newEvents.push({ t: state.simTime, type: `inf-P${i + 1}` });
+  for (const member of resistanceOrder(size, rng)) {
+    for (const group of resistanceOrder(uninfected.length, rng)) {
+      if (group === member + 1) continue;
+      const count = Math.min(uninfected[group], phage[member],
+        poissonSample(infectionRate * uninfected[group] * phage[member] * tau, rng));
+      uninfected[group] -= count;
+      phage[member] -= count;
+      infected[member] += count;
+      if (count > 0) event('inf-P' + (member + 1));
     }
   }
 
-  // 4. Resistance mutations: S → R_i (partial resistance to one phage)
-  for (let i = 0; i < cocktailSize; i++) {
-    const mutProp = mutationRate * S * tau;
-    const mutations = Math.min(S, poissonSample(mutProp, random));
-    if (mutations > 0) {
-      S -= mutations;
-      R_partial[i] += mutations;
-      newEvents.push({ t: state.simTime, type: `mut-R${i + 1}` });
-    }
+  // Convert only existing partial classes before adding new resistance mutations.
+  for (let member = 0; member < size; member++) {
+    const count = Math.min(uninfected[member + 1], poissonSample(multiResRate * uninfected[member + 1] * tau, rng));
+    uninfected[member + 1] -= count;
+    fullyResistant += count;
+    if (count > 0) event('full-res');
+  }
+  for (const member of resistanceOrder(size, rng)) {
+    const count = Math.min(uninfected[0], poissonSample(mutationRate * uninfected[0] * tau, rng));
+    uninfected[0] -= count;
+    // With one member, resistance to that member is already full resistance.
+    if (size === 1) fullyResistant += count;
+    else uninfected[member + 1] += count;
+    if (count > 0) event(size === 1 ? 'full-res' : 'mut-R' + (member + 1));
   }
 
-  // 5. Multi-resistance: R_partial → R_full (via receptor switching/loss)
-  // This is the key difference: with cocktail, must become resistant to ALL
-  for (let i = 0; i < cocktailSize; i++) {
-    const multiProp = multiResRate * R_partial[i] * tau;
-    const multiMuts = Math.min(R_partial[i], poissonSample(multiProp, random));
-    if (multiMuts > 0) {
-      R_partial[i] -= multiMuts;
-      R_full += multiMuts;
-      newEvents.push({ t: state.simTime, type: 'full-res' });
-    }
+  for (let member = 0; member < size; member++) {
+    // Decay only the free pool surviving adsorption; new progeny enter at leap end.
+    phage[member] -= Math.min(phage[member], poissonSample(phageDecay * phage[member] * tau, rng));
+    phage[member] += lysed[member] * burstSize;
+    if (lysed[member] > 0) event('lysis-P' + (member + 1));
   }
 
-  // 6. Phage decay
-  for (let i = 0; i < cocktailSize; i++) {
-    const decayProp = phageDecay * P[i] * tau;
-    const decayed = Math.min(P[i], poissonSample(decayProp, random));
-    P[i] -= decayed;
+  if (![...uninfected, fullyResistant, ...infected, ...phage].every(resistanceCount)) {
+    throw new Error('Resistance populations exceeded the supported exact-integer range.');
   }
-
-  // Clamp values
-  S = Math.max(0, Math.round(S));
-  R_full = Math.max(0, Math.round(R_full));
-  R_partial = R_partial.map(r => Math.max(0, Math.round(r)));
-  P = P.map(p => Math.max(0, Math.round(p)));
-
-  // Check resistance emergence (>10% of carrying capacity)
-  const totalResistant = R_partial.reduce((a, b) => a + b, 0) + R_full;
-  const resistanceEmerged = totalResistant > carryingCap * 0.1;
-  const resistanceTime = resistanceEmerged && state.resistanceTime === null
-    ? state.simTime + tau
-    : state.resistanceTime;
-
-  // Update history (sample every 0.1 hours)
-  const newTime = state.simTime + tau;
-  const lastHistoryTime = state.history.length > 0 ? state.history[state.history.length - 1].t : -1;
-  let history = state.history;
-  if (newTime - lastHistoryTime >= 0.1) {
-    history = [
-      ...state.history,
-      {
-        t: newTime,
-        sensitive: S,
-        partialResistant: R_partial.reduce((a, b) => a + b, 0),
-        fullyResistant: R_full,
-        totalPhage: P.reduce((a, b) => a + b, 0),
-      },
-    ].slice(-500);
-  }
-
-  // Keep last 20 events
-  const events = [...state.events, ...newEvents].slice(-20);
-
+  const crossed = uninfected.slice(1).reduce((a, b) => a + b, 0) + fullyResistant > carryingCap * 0.1;
   return {
-    ...state,
-    simTime: newTime,
-    sensitiveBacteria: S,
-    partialResistant: R_partial,
-    fullyResistant: R_full,
-    phageCounts: P,
-    resistanceEmerged,
-    resistanceTime,
-    history,
-    events,
+    ...state, simTime: nextTime, sensitiveBacteria: uninfected[0], partialResistant: uninfected.slice(1),
+    fullyResistant, infectedByPhage: infected, phageCounts: phage,
+    resistanceEmerged: state.resistanceEmerged || crossed,
+    resistanceTime: state.resistanceTime ?? (crossed ? nextTime : null),
+    events: events.slice(-20),
   };
-}
+};
+
+// Active competing hazards determine the substep; empty target pools do not constrain it.
+const resistanceHazard: (state: ResistanceCocktailState) => number = state => {
+  const p = state.params;
+  const infectionRate = Number(p.infectionRate);
+  const totalPhage = state.phageCounts.reduce((a, b) => a + b, 0);
+  const totalPartial = state.partialResistant.reduce((a, b) => a + b, 0);
+  let hazard = 0;
+  if (state.sensitiveBacteria > 0) {
+    hazard = Math.max(hazard, Number(p.growthRate) + infectionRate * totalPhage + state.cocktailSize * Number(p.mutationRate));
+  }
+  if (state.fullyResistant > 0) hazard = Math.max(hazard, Number(p.growthRate));
+  for (let member = 0; member < state.cocktailSize; member++) {
+    if (state.partialResistant[member] > 0) {
+      hazard = Math.max(hazard, Number(p.growthRate) + infectionRate * (totalPhage - state.phageCounts[member]) + Number(p.multiResRate));
+    }
+    if (state.phageCounts[member] > 0) {
+      hazard = Math.max(hazard, infectionRate * (state.sensitiveBacteria + totalPartial - state.partialResistant[member]) + Number(p.phageDecay));
+    }
+    if (state.infectedByPhage[member] > 0) hazard = Math.max(hazard, 1 / Number(p.latentPeriod));
+  }
+  return hazard;
+};
+
+const advanceResistance: (state: ResistanceCocktailState, dt: number, rng?: () => number) => ResistanceCocktailState = (state, dt, suppliedRng) => {
+  validateResistanceParameters(state.params);
+  if (!Number.isFinite(dt) || dt < 0 || dt > 10000) throw new Error('Resistance delta must be finite and between 0 and 10000 model ticks.');
+  if (!Number.isSafeInteger(state.completedSteps) || state.completedSteps < 0 || state.completedSteps > RESISTANCE_MAX_TICKS ||
+    !Number.isFinite(state.pendingSteps) || state.pendingSteps < 0 || state.pendingSteps >= 1 ||
+    state.cocktailSize !== state.params.cocktailSize ||
+    state.simTime !== state.completedSteps * RESISTANCE_TICK_HOURS ||
+    ![state.sensitiveBacteria, state.fullyResistant].every(resistanceCount) ||
+    [state.partialResistant, state.infectedByPhage, state.phageCounts].some(values =>
+      !Array.isArray(values) || values.length !== state.cocktailSize || !Array.from(values).every(resistanceCount))) {
+    throw new Error('Resistance checkpoint is incompatible or invalid; reset after changing cocktail size.');
+  }
+  if (resistanceComplete(state)) return { ...state, running: false };
+  if (dt === 0) return state;
+  const source = suppliedRng ?? Math.random;
+  const rng = () => {
+    const value = source();
+    if (!Number.isFinite(value) || value < 0 || value >= 1) throw new Error('Resistance RNG must return a finite value in [0,1).');
+    return value;
+  };
+  const accumulated = state.pendingSteps + dt;
+  const nearest = Math.round(accumulated);
+  const snapped = nearest >= 1 && Math.abs(accumulated - nearest) <= 8 * Number.EPSILON * Math.max(1, accumulated) ? nearest : accumulated;
+  const ticks = Math.floor(snapped);
+  let current = state;
+  for (let tick = 0; tick < ticks; tick++) {
+    let elapsed = 0;
+    let substeps = 0;
+    while (elapsed < RESISTANCE_TICK_HOURS) {
+      if (substeps++ >= RESISTANCE_MAX_SUBSTEPS) throw new Error('Resistance tick exceeded its bounded substep budget; reduce populations or rates.');
+      const hazard = resistanceHazard(current);
+      const tau = Math.min(RESISTANCE_TICK_HOURS - elapsed, hazard > 0 ? 0.1 / hazard : RESISTANCE_TICK_HOURS);
+      if (!(tau > 0) || elapsed + tau === elapsed) throw new Error('Resistance substep is outside the supported numerical range.');
+      current = runResistanceStep(current, tau, rng);
+      elapsed += tau;
+    }
+    const completedSteps = current.completedSteps + 1;
+    current = { ...current, completedSteps, simTime: completedSteps * RESISTANCE_TICK_HOURS };
+    const complete = resistanceComplete(current);
+    if (completedSteps % 10 === 0 || complete) {
+      current = { ...current, history: [...current.history, {
+        t: current.simTime, sensitive: current.sensitiveBacteria,
+        partialResistant: current.partialResistant.reduce((a, b) => a + b, 0), fullyResistant: current.fullyResistant,
+        infected: current.infectedByPhage.reduce((a, b) => a + b, 0), totalPhage: current.phageCounts.reduce((a, b) => a + b, 0),
+      }].slice(-500) };
+    }
+    if (complete) return { ...current, running: false, pendingSteps: 0, time: completedSteps };
+  }
+  const pendingSteps = snapped - ticks;
+  return { ...current, pendingSteps, time: current.completedSteps + pendingSteps };
+};
 
 export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> {
   return {
     id: 'resistance-cocktail',
     name: 'Resistance Evolution',
-    description: 'Gillespie stochastic model: compare mono vs cocktail therapy resistance.',
+    description: 'Illustrative finite-pool resistance model with infected cells and exponential mean lysis time.',
     controls: STANDARD_CONTROLS,
     parameters: [
       { id: 'cocktailSize', label: 'Cocktail size', type: 'number', min: 1, max: 5, step: 1, defaultValue: 3 },
@@ -1103,7 +1153,7 @@ export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> 
       { id: 'growthRate', label: 'Growth rate (per hour)', type: 'number', min: 0.1, max: 2.0, step: 0.1, defaultValue: 0.5 },
       { id: 'infectionRate', label: 'Infection rate (mL/phage/hr)', type: 'number', min: 1e-10, max: 1e-7, step: 1e-10, defaultValue: 2e-9 },
       { id: 'burstSize', label: 'Burst size', type: 'number', min: 10, max: 500, step: 10, defaultValue: 100 },
-      { id: 'latentPeriod', label: 'Latent period (hours)', type: 'number', min: 0.1, max: 2.0, step: 0.1, defaultValue: 0.5 },
+      { id: 'latentPeriod', label: 'Mean lysis waiting time (hours)', type: 'number', min: 0.1, max: 2.0, step: 0.1, defaultValue: 0.5 },
       { id: 'mutationRate', label: 'Resistance mutation rate', type: 'number', min: 1e-9, max: 1e-5, step: 1e-9, defaultValue: 1e-7 },
       { id: 'multiResRate', label: 'Full resistance rate', type: 'number', min: 1e-10, max: 1e-6, step: 1e-10, defaultValue: 1e-8 },
       { id: 'phageDecay', label: 'Phage decay (per hour)', type: 'number', min: 0, max: 0.5, step: 0.01, defaultValue: 0.1 },
@@ -1124,6 +1174,7 @@ export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> 
       ]);
       const merged = { ...base, ...(params ?? {}) } as Record<string, number | boolean | string>;
 
+      validateResistanceParameters(merged);
       const cocktailSize = Number(merged.cocktailSize ?? 3);
       const initialBacteria = Number(merged.initialBacteria ?? 1e7);
       const initialPhage = Number(merged.initialPhage ?? 1e8);
@@ -1136,6 +1187,9 @@ export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> 
         params: merged,
         sensitiveBacteria: initialBacteria,
         partialResistant: new Array(cocktailSize).fill(0),
+        infectedByPhage: new Array(cocktailSize).fill(0),
+        completedSteps: 0,
+        pendingSteps: 0,
         fullyResistant: 0,
         phageCounts: new Array(cocktailSize).fill(initialPhage),
         cocktailSize,
@@ -1146,57 +1200,27 @@ export function makeResistanceSimulation(): Simulation<ResistanceCocktailState> 
           t: 0,
           sensitive: initialBacteria,
           partialResistant: 0,
+          infected: 0,
           fullyResistant: 0,
           totalPhage: initialPhage * cocktailSize,
         }],
         events: [],
       };
     },
-    step: (state: ResistanceCocktailState, dt: number, rng?: () => number): ResistanceCocktailState => {
-      const random = rng ?? Math.random;
-
-      // Use tau-leaping with adaptive step size based on dt and speed
-      const tau = 0.01 * state.speed; // 0.01 hour steps (36 seconds)
-      const stepsPerFrame = Math.ceil(dt);
-
-      let currentState = state;
-      for (let s = 0; s < stepsPerFrame; s++) {
-        currentState = runResistanceStep(currentState, tau, random);
-
-        // Check for extinction or full resistance
-        const totalBac = currentState.sensitiveBacteria +
-          currentState.partialResistant.reduce((a, b) => a + b, 0) +
-          currentState.fullyResistant;
-        const totalPhage = currentState.phageCounts.reduce((a, b) => a + b, 0);
-
-        if (totalBac < 1 && totalPhage > 0) {
-          // Bacteria extinct - phage won
-          break;
-        }
-        if (totalPhage < 1 && totalBac > 0) {
-          // Phage extinct - bacteria survived/resistant
-          break;
-        }
-      }
-
-      return { ...currentState, time: state.time + dt };
-    },
-    isComplete: (state) => {
-      const totalBac = state.sensitiveBacteria +
-        state.partialResistant.reduce((a, b) => a + b, 0) +
-        state.fullyResistant;
-      const totalPhage = state.phageCounts.reduce((a, b) => a + b, 0);
-      return totalBac < 1 || totalPhage < 1 || state.simTime > 48; // 48 hour max
-    },
+    step: advanceResistance,
+    isComplete: resistanceComplete,
     getSummary: (state) => {
       const totalResistant = state.partialResistant.reduce((a, b) => a + b, 0) + state.fullyResistant;
       const totalPhage = state.phageCounts.reduce((a, b) => a + b, 0);
-      const status = state.resistanceEmerged
-        ? `RESIST@${state.resistanceTime?.toFixed(1)}h`
-        : state.sensitiveBacteria < 1
-          ? 'CLEARED'
-          : 'active';
-      return `t=${state.simTime.toFixed(1)}h S=${state.sensitiveBacteria.toExponential(1)} R=${totalResistant.toExponential(1)} P=${totalPhage.toExponential(1)} · ${status}`;
+      const infected = state.infectedByPhage.reduce((a, b) => a + b, 0);
+      const status = state.sensitiveBacteria + totalResistant + infected === 0
+        ? 'CLEARED'
+        : state.resistanceEmerged
+          ? `RESIST@${state.resistanceTime?.toFixed(1)}h`
+          : totalPhage + infected === 0
+            ? 'PHAGE EXTINCT'
+            : state.completedSteps >= RESISTANCE_MAX_TICKS ? 'TIME LIMIT' : 'active';
+      return `t=${state.simTime.toFixed(1)}h S=${state.sensitiveBacteria.toExponential(1)} R=${totalResistant.toExponential(1)} I=${infected.toExponential(1)} P=${totalPhage.toExponential(1)} · ${status}`;
     },
   };
 }

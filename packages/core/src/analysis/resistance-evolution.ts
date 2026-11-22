@@ -8,8 +8,8 @@ import type { ResistanceCocktailState } from '../simulation';
 
 export const RESISTANCE_EVOLUTION_METHOD = {
   id: 'resistance-cocktail-simulation',
-  version: '1',
-  implementation: 'seeded tau-leaping resistance-cocktail simulation using the core resistance-cocktail transition model',
+  version: '2',
+  implementation: 'seeded bounded Poisson tau-leap; infected pools; member-specific susceptibility; fixed ticks with active-hazard substeps',
 } as const;
 
 export interface ResistanceExperimentOptions {
@@ -33,7 +33,7 @@ export interface ResistanceExperimentResult {
   outcome: 'bacteria-cleared' | 'phage-extinct' | 'time-limit';
   resistanceEmerged: boolean;
   resistanceTime: number | null;
-  final: { sensitive: number; partialResistant: number[]; fullyResistant: number; phage: number[] };
+  final: { sensitive: number; partialResistant: number[]; fullyResistant: number; infectedByPhage: number[]; phage: number[] };
   trajectory: ResistanceCocktailState['history'];
   recentEvents: ResistanceCocktailState['events'];
   limitations: string[];
@@ -44,14 +44,15 @@ const DEFAULTS: ResistanceExperimentOptions = {
   mutationRate: 1e-7, multiResRate: 1e-8, phageDecay: .1, seed: 1,
 };
 const LIMITS = {
-  cocktailSize:[1,5], initialBacteria:[1e5,1e9], initialPhage:[1e4,1e10], carryingCap:[1e7,1e10],
-  growthRate:[.1,2], infectionRate:[1e-10,1e-7], burstSize:[10,500], latentPeriod:[.1,2],
-  mutationRate:[1e-9,1e-5], multiResRate:[1e-10,1e-6], phageDecay:[0,.5],
+  cocktailSize:[1,5], initialBacteria:[0,1e9], initialPhage:[0,1e10], carryingCap:[1,1e10],
+  growthRate:[0,2], infectionRate:[0,1e-7], burstSize:[1,500], latentPeriod:[.1,2],
+  mutationRate:[0,1e-5], multiResRate:[0,1e-6], phageDecay:[0,.5],
 } as const;
 const LIMITATIONS = [
   'This is an illustrative stochastic model with user-selected parameters, not a fit to the selected phage, bacterial strain, treatment or experiment.',
   'Resistance is represented by simplified partial/full classes and fixed mutation rates. Receptor biology, fitness costs, spatial structure, immunity, pharmacokinetics and ecological interactions are omitted.',
-  'The infection and lysis transitions are tau-leaping approximations. A simulated resistance time or clearance event is not a clinical or evolutionary prediction.',
+  'Capped Poisson tau-leaps use a normal approximation above mean 30, with 0.01-hour ticks subdivided using a 0.1 starting-state individual-hazard target. This is not an exact Gillespie SSA or a calibrated biological prediction.',
+  'The latent-period parameter is the exponential mean lysis waiting time, not a fixed delay. Infected cells occupy carrying capacity without dividing; adsorption consumes one free virion.',
   'Cocktail members are represented symmetrically except for their stochastic histories; sequence identity, receptor independence and cross-resistance are not supplied by this model.',
 ] as const;
 
@@ -63,7 +64,9 @@ export function resolveResistanceExperimentOptions(value: Partial<ResistanceExpe
     const v=options[key];
     if(typeof v!=='number'||!Number.isFinite(v)||v<bounds[0]||v>bounds[1]) throw new Error('Resistance simulation option '+key+' is outside its supported range.');
   }
-  if(!Number.isSafeInteger(options.cocktailSize)) throw new Error('cocktailSize must be an integer from 1 to 5.');
+  for (const key of ['cocktailSize','initialBacteria','initialPhage','burstSize'] as const) {
+    if(!Number.isSafeInteger(options[key])) throw new Error(key+' requires an integer count.');
+  }
   if(!Number.isSafeInteger(options.seed)||options.seed<0||options.seed>0xffffffff) throw new Error('seed must be a uint32.');
   return options;
 }
@@ -78,12 +81,13 @@ export function runResistanceExperiment(value: Partial<ResistanceExperimentOptio
     if(steps++>=5000) throw new Error('Resistance simulation exceeded its bounded 50-hour step budget.');
     state=simulation.step(state,1,rng);
   }
-  const totalBacteria=state.sensitiveBacteria+state.fullyResistant+state.partialResistant.reduce((a,b)=>a+b,0);
+  const infected=state.infectedByPhage.reduce((a,b)=>a+b,0);
+  const totalBacteria=state.sensitiveBacteria+state.fullyResistant+state.partialResistant.reduce((a,b)=>a+b,0)+infected;
   const totalPhage=state.phageCounts.reduce((a,b)=>a+b,0);
-  const outcome:ResistanceExperimentResult['outcome']=totalBacteria<1?'bacteria-cleared':totalPhage<1?'phage-extinct':'time-limit';
+  const outcome:ResistanceExperimentResult['outcome']=totalBacteria<1?'bacteria-cleared':totalPhage+infected<1?'phage-extinct':'time-limit';
   return {options,durationHours:state.simTime,steps,outcome,resistanceEmerged:state.resistanceEmerged,
     resistanceTime:state.resistanceTime,
-    final:{sensitive:state.sensitiveBacteria,partialResistant:[...state.partialResistant],fullyResistant:state.fullyResistant,phage:[...state.phageCounts]},
+    final:{sensitive:state.sensitiveBacteria,partialResistant:[...state.partialResistant],fullyResistant:state.fullyResistant,infectedByPhage:[...state.infectedByPhage],phage:[...state.phageCounts]},
     trajectory:structuredClone(state.history),recentEvents:structuredClone(state.events),limitations:[...LIMITATIONS]};
 }
 
@@ -95,11 +99,11 @@ export async function createResistanceExperimentRecord(value: Partial<Resistance
     method:RESISTANCE_EVOLUTION_METHOD,
     inputs:[{id:'model',accession:null,source:'demo',
       description:'Explicit illustrative resistance-cocktail stochastic model; no selected-phage or experimental calibration is implied.',
-      data:analysisJson({model:'resistance-cocktail',transitionModelVersion:1,timeStepHours:.01,maxHours:48,
+      data:analysisJson({model:'resistance-cocktail',transitionModelVersion:2,timeStepHours:.01,maxHours:48,individualHazardTarget:.1,maxSubstepsPerTick:10000,
         resistanceThresholdFraction:.1,limitations:LIMITATIONS})}],
     parameters:analysisJson(options) as AnalysisRecord['parameters'],seed:options.seed,
-    references:[{id:'resistance-cocktail-model',version:'1',
-      description:'Internal parameterized teaching model using Poisson tau-leaping transitions; not a fitted biological reference.'}],
+    references:[{id:'resistance-cocktail-model',version:'2',
+      description:'Internal finite-pool Poisson tau-leap teaching model with infected cells and mean-rate lysis; not a fitted biological reference.'}],
     fields:{trajectory:{kind:'simulation',label:'Seeded illustrative resistance and phage population trajectory',
       value:analysisJson(result),units:'records',coverage:{available:result.trajectory.length,total:result.trajectory.length,unit:'records'},
       limitations:[...result.limitations],assumptions:['All transition rates and initial populations are user-selected model assumptions.']}},
@@ -108,7 +112,9 @@ export async function createResistanceExperimentRecord(value: Partial<Resistance
 }
 
 export async function replayResistanceExperimentRecord(content:string):Promise<{result:ResistanceExperimentResult;record:AnalysisRecord}>{
-  const saved=await parseAnalysisRecord(content,{methodId:RESISTANCE_EVOLUTION_METHOD.id,methodVersion:RESISTANCE_EVOLUTION_METHOD.version});
+  const saved=await parseAnalysisRecord(content,{methodId:RESISTANCE_EVOLUTION_METHOD.id});
+  if(saved.method.version!==RESISTANCE_EVOLUTION_METHOD.version)
+    throw new Error('Saved resistance simulation uses an incompatible transition model; rerun its parameters to create a version 2 result.');
   if(saved.inputs.length!==1||saved.inputs[0].id!=='model'||saved.inputs[0].source!=='demo'||saved.seed===null)
     throw new Error('Resistance simulation replay contract differs.');
   const fresh=await createResistanceExperimentRecord(saved.parameters as Partial<ResistanceExperimentOptions>);
@@ -124,7 +130,7 @@ export function exportResistanceExperimentTsv(record:AnalysisRecord):string{
   return [
     '# method='+record.method.id+'; version='+record.method.version+'; result='+record.resultId+'; seed='+record.seed,
     '# Illustrative stochastic model only; not fitted to a selected phage, host or treatment.',
-    ['time_hours','sensitive','partial_resistant','fully_resistant','total_phage'].join('\t'),
-    ...result.trajectory.map(row=>[row.t,row.sensitive,row.partialResistant,row.fullyResistant,row.totalPhage].join('\t')),
+    ['time_hours','sensitive','partial_resistant','fully_resistant','infected','total_phage'].join('\t'),
+    ...result.trajectory.map(row=>[row.t,row.sensitive,row.partialResistant,row.fullyResistant,row.infected,row.totalPhage].join('\t')),
   ].join('\n')+'\n';
 }

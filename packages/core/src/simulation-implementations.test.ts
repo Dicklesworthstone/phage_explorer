@@ -3,6 +3,7 @@ import {
   derivePhageSimDefaults,
   makePackagingSimulation,
   makeEvolutionSimulation,
+  makeResistanceSimulation,
   packagingStateAt,
   debyeLengthNm,
 } from './simulation-implementations';
@@ -340,5 +341,175 @@ describe('packaging physics', () => {
     expect(Number.isFinite(s.forcePn)).toBe(true);
     expect(s.forcePn).toBe(0);
     expect(Number.isFinite(s.pressureAtm)).toBe(true);
+  });
+});
+
+describe('resistance transition conservation and elapsed time', () => {
+  const sim = makeResistanceSimulation();
+  const parameters = {
+    cocktailSize: 1, initialBacteria: 1000, initialPhage: 1e6, carryingCap: 1e9,
+    growthRate: 0, infectionRate: 1e-7, burstSize: 10, latentPeriod: 1,
+    mutationRate: 0, multiResRate: 0, phageDecay: 0,
+  };
+  const seeded = (seed: number) => {
+    let cursor = seed;
+    return () => {
+      cursor = (Math.imul(cursor, 1664525) + 1013904223) >>> 0;
+      return cursor / 2 ** 32;
+    };
+  };
+
+  it('moves one cell and one virion into an infected pool without an immediate burst', () => {
+    // lambda=k*S*P*tau=1; with draws 1/2, Knuth returns floor(1/ln(2))=1.
+    const initial = sim.init(null, parameters);
+    const snapshot = JSON.parse(JSON.stringify(initial));
+    const result = sim.step(initial, 1, () => 0.5);
+    expect(result.sensitiveBacteria).toBe(999);
+    expect(result.infectedByPhage).toEqual([1]);
+    expect(result.phageCounts).toEqual([999999]);
+    expect(result.sensitiveBacteria + result.infectedByPhage[0]).toBe(1000);
+    expect(result.phageCounts[0] + result.infectedByPhage[0]).toBe(1e6);
+    expect(initial).toEqual(snapshot);
+  });
+
+  it('protects R_i against i while retaining susceptibility to other members', () => {
+    const initial = sim.init(null, { ...parameters, cocktailSize: 2, initialBacteria: 0, initialPhage: 0 });
+    initial.partialResistant = [1000, 0];
+    const protectedResult = sim.step({ ...initial, phageCounts: [1e6, 0] }, 1, () => 0.5);
+    const exposedResult = sim.step({ ...initial, phageCounts: [0, 1e6] }, 1, () => 0.5);
+    expect(protectedResult.partialResistant).toEqual([1000, 0]);
+    expect(protectedResult.infectedByPhage).toEqual([0, 0]);
+    expect(exposedResult.partialResistant).toEqual([999, 0]);
+    expect(exposedResult.infectedByPhage).toEqual([0, 1]);
+    expect(exposedResult.phageCounts).toEqual([0, 999999]);
+  });
+
+  it('keeps fully resistant cells outside every adsorption channel', () => {
+    const initial = sim.init(null, { ...parameters, cocktailSize: 3, initialBacteria: 0 });
+    initial.fullyResistant = 1000;
+    const result = sim.step(initial, 1, () => 0.5);
+    expect(result.fullyResistant).toBe(1000);
+    expect(result.infectedByPhage).toEqual([0, 0, 0]);
+    expect(result.phageCounts).toEqual(initial.phageCounts);
+    expect(sim.getSummary(result)).not.toContain('CLEARED');
+  });
+
+  it('continues lysis after free phage reaches zero and releases burst-size progeny per lysed cell', () => {
+    const initial = sim.init(null, { ...parameters, initialBacteria: 0, initialPhage: 0 });
+    initial.infectedByPhage = [1000];
+    expect(sim.isComplete!(initial)).toBe(false);
+    const result = sim.step(initial, 1, () => 0.5);
+    // lambda=1000*0.01/1=10; floor(10/ln(2))=14 lysis events.
+    expect(result.infectedByPhage).toEqual([986]);
+    expect(result.phageCounts).toEqual([140]);
+    expect(result.phageCounts[0]).toBe((1000 - result.infectedByPhage[0]) * parameters.burstSize);
+  });
+
+  it('counts infected cells in carrying capacity and does not let them divide', () => {
+    const initial = sim.init(null, { ...parameters, initialBacteria: 1e6, initialPhage: 1,
+      carryingCap: 2e6, growthRate: 0.5, infectionRate: 0 });
+    initial.infectedByPhage = [1e6];
+    const result = sim.step(initial, 1, () => 0);
+    expect(result.sensitiveBacteria).toBe(1e6);
+    expect(result.infectedByPhage[0]).toBe(990000);
+    expect(result.phageCounts[0]).toBe(100001);
+  });
+
+  it('makes mono-phage resistance full resistance after a single mutation', () => {
+    const initial = sim.init(null, { ...parameters, initialBacteria: 1e8, initialPhage: 1,
+      infectionRate: 0, mutationRate: 1e-5 });
+    const result = sim.step(initial, 1, () => 0.5);
+    expect(result.partialResistant).toEqual([0]);
+    expect(result.fullyResistant).toBe(14);
+    expect(result.sensitiveBacteria + result.fullyResistant).toBe(initial.sensitiveBacteria);
+  });
+
+  it('retains the first resistance-threshold event after the resistant population decreases', () => {
+    const initial = sim.init(null, parameters);
+    initial.resistanceEmerged = true;
+    initial.resistanceTime = 0;
+    const result = sim.step(initial, 1, () => 0.5);
+    expect(result.resistanceEmerged).toBe(true);
+    expect(result.resistanceTime).toBe(0);
+  });
+
+  it('does not consume randomness or run reactions for incomplete discrete ticks', () => {
+    const initial = sim.init(null, parameters);
+    let draws = 0;
+    const rng = () => { draws++; return 0.5; };
+    expect(sim.step(initial, 0, rng)).toBe(initial);
+    const partial = sim.step(initial, 0.25, rng);
+    expect(draws).toBe(0);
+    expect(partial.pendingSteps).toBe(0.25);
+    expect(partial.simTime).toBe(0);
+    expect(partial.phageCounts).toEqual(initial.phageCounts);
+  });
+
+  it('reproduces identical full states for GUI and decimal step partitions', () => {
+    const initial = sim.init(null);
+    const whole = sim.step(initial, 8, seeded(42));
+    let gui = initial;
+    const guiRng = seeded(42);
+    for (const delta of [0.25, 0.5, 1, 2, 4, 0.25]) gui = sim.step(gui, delta, guiRng);
+    expect(gui).toEqual(whole);
+    let decimal = initial;
+    const decimalRng = seeded(42);
+    for (let index = 0; index < 80; index++) decimal = sim.step(decimal, 0.1, decimalRng);
+    expect(decimal).toEqual(whole);
+  });
+
+  it('applies caller speed through dt exactly once', () => {
+    const initial = sim.init(null);
+    const ordinary = sim.step(initial, 4, seeded(9));
+    const fast = sim.step({ ...initial, speed: 4 }, 4, seeded(9));
+    expect({ ...fast, speed: 1 }).toEqual(ordinary);
+    expect(fast.simTime).toBe(0.04);
+  });
+
+  it('terminates exactly at 48 hours even if a caller keeps stepping', () => {
+    const initial = sim.init(null, { ...parameters, infectionRate: 0 });
+    const last = { ...initial, completedSteps: 4799, time: 4799, simTime: 4799 * 0.01 };
+    const result = sim.step(last, 8, () => 0.5);
+    expect(result.completedSteps).toBe(4800);
+    expect(result.simTime).toBe(48);
+    expect(result.time).toBe(4800);
+    expect(result.running).toBe(false);
+    expect(result.history.at(-1)?.t).toBe(48);
+    expect(sim.step(result, 8, () => { throw new Error('Terminal run drew RNG'); })).toEqual(result);
+  });
+
+  it('handles zero-valued random draws and supported high competing hazards without invalid populations', () => {
+    const initial = sim.init(null, { cocktailSize: 5, initialBacteria: 1e9, initialPhage: 1e10,
+      carryingCap: 1e10, growthRate: 2, infectionRate: 1e-7, burstSize: 500, latentPeriod: 0.1 });
+    const result = sim.step(initial, 1, () => 0);
+    for (const count of [result.sensitiveBacteria, result.fullyResistant, ...result.partialResistant,
+      ...result.infectedByPhage, ...result.phageCounts]) {
+      expect(Number.isSafeInteger(count)).toBe(true);
+      expect(count).toBeGreaterThanOrEqual(0);
+    }
+    expect(result.simTime).toBe(0.01);
+  });
+
+  it('preserves particle accounting in the no-growth, no-infection lysis limit', () => {
+    const initial = sim.init(null, { ...parameters, initialBacteria: 0, initialPhage: 0, infectionRate: 0, burstSize: 1 });
+    initial.infectedByPhage = [1e6];
+    let state = initial;
+    for (let index = 0; index < 100; index++) state = sim.step(state, 1, () => 0);
+    expect(state.infectedByPhage[0] + state.phageCounts[0]).toBe(1e6);
+    // Zero Box-Muller draws select rounded means. Per-step rounding is <=0.5,
+    // while the independent Euler limit is I0*(1-tau/mean)^100.
+    expect(Math.abs(state.infectedByPhage[0] - 1e6 * 0.99 ** 100)).toBeLessThan(50);
+    expect(Math.abs(state.infectedByPhage[0] - 1e6 * Math.exp(-1))).toBeLessThan(2000);
+  });
+
+  it('rejects fractional particles, stale array shapes, invalid deltas and invalid RNG output', () => {
+    for (const params of [{ initialBacteria: 1000.5 }, { initialPhage: 1000.5 }, { burstSize: 10.5 }]) {
+      expect(() => sim.init(null, { ...parameters, ...params })).toThrow(/integer/);
+    }
+    const initial = sim.init(null, parameters);
+    expect(() => sim.step({ ...initial, infectedByPhage: [] }, 1)).toThrow(/checkpoint/);
+    expect(() => sim.step({ ...initial, params: { ...initial.params, cocktailSize: 2 } }, 1)).toThrow(/checkpoint/);
+    for (const delta of [-1, NaN, Infinity, 10001]) expect(() => sim.step(initial, delta)).toThrow(/delta/);
+    for (const draw of [-1, 1, NaN]) expect(() => sim.step(initial, 1, () => draw)).toThrow(/RNG/);
   });
 });

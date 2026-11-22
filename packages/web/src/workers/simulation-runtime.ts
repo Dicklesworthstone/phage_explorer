@@ -26,7 +26,13 @@ const RIBOSOME_EXPERIMENT = {
   references: [{ id: 'core-ribosome-traffic', version: '2',
     description: 'Exact transcript reconstruction and an uncalibrated codon-frequency rate model; finite-track completions are not measured protein yields.' }],
 };
-const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT : {
+const RESISTANCE_EXPERIMENT = {
+  version: '2',
+  implementation: 'finite-pool Poisson tau-leap-v2; infected pools; mean-rate lysis; accumulated 0.01-hour ticks; active-hazard substeps; lcg32-v1',
+  references: [{ id: 'core-resistance-cocktail', version: '2',
+    description: 'Uncalibrated teaching model with member-specific susceptibility and explicit infected cells; not an exact Gillespie SSA.' }],
+};
+const experimentMethod = (simId: SimulationId) => simId === 'ribosome-traffic' ? RIBOSOME_EXPERIMENT : simId === 'resistance-cocktail' ? RESISTANCE_EXPERIMENT : {
   version: EXPERIMENT_VERSION, implementation: EXPERIMENT_IMPLEMENTATION, references: EXPERIMENT_REFERENCES,
 };
 

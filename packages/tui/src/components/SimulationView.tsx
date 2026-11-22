@@ -74,6 +74,7 @@ function renderDetails(sim: Simulation, state: SimState): React.ReactElement {
           S {state.sensitiveBacteria.toExponential(2)} · 
           R_part {state.partialResistant.reduce((a, b) => a + b, 0).toExponential(2)} · 
           R_full {state.fullyResistant.toExponential(2)} · 
+          I {state.infectedByPhage.reduce((a, b) => a + b, 0).toExponential(2)} ·
           P {state.phageCounts.reduce((a, b) => a + b, 0).toExponential(2)}
         </Text>
       );
@@ -134,6 +135,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
         const next = simulation.step(current, speed);
         latestStateRef.current = next;
         updateState(next);
+        if (next.type === 'resistance-cocktail' && !next.running) setPaused(true);
       } catch (cause) {
         setPaused(true);
         setRuntimeError(cause instanceof Error ? cause.message : String(cause));
@@ -155,12 +157,11 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
     }
     if (input === 'r' || input === 'R') {
       if (initialRef.current && latestStateRef.current) {
-        // Preserve current parameters on reset
+        // Resistance counts and array dimensions derive from the current parameters.
         const currentParams = latestStateRef.current.params;
-        const resetState = {
-          ...initialRef.current,
-          params: currentParams,
-        };
+        const resetState = latestStateRef.current.type === 'resistance-cocktail' && simulation
+          ? simulation.init(null, currentParams)
+          : { ...initialRef.current, params: currentParams };
         latestStateRef.current = resetState;
         resetSimulation(resetState);
       } else if (initialRef.current) {
@@ -175,6 +176,7 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
         const next = simulation.step(latestStateRef.current, speed);
         latestStateRef.current = next;
         updateState(next);
+        if (next.type === 'resistance-cocktail' && !next.running) setPaused(true);
         setRuntimeError(null);
       } catch (cause) {
         setPaused(true);
@@ -207,6 +209,15 @@ export function SimulationView({ onClose }: SimulationViewProps): React.ReactEle
       const currentVal = Number(latestStateRef.current?.params[meta.id] ?? meta.defaultValue ?? 0);
       const nextVal = Math.min(max, Math.max(min, currentVal + (input === '-' ? -step : step)));
       if (latestStateRef.current) {
+        if (latestStateRef.current.type === 'resistance-cocktail' && simulation &&
+          ['cocktailSize', 'initialBacteria', 'initialPhage'].includes(meta.id)) {
+          const restarted = simulation.init(null, { ...latestStateRef.current.params, [meta.id]: nextVal });
+          initialRef.current = restarted;
+          latestStateRef.current = restarted;
+          resetSimulation(restarted);
+          setRuntimeError(null);
+          return;
+        }
         // A changed footprint must never be stamped on an already occupied
         // track. Rebuild the empty run while keeping its exact input snapshot.
         const restart = latestStateRef.current.type === 'ribosome-traffic' && initialRef.current?.type === 'ribosome-traffic';

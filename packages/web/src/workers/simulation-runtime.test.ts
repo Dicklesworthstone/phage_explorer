@@ -1,7 +1,10 @@
+import { makeResistanceSimulation } from '../../../core/src/simulation-implementations';
+import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import type { ResistanceCocktailState } from '../../../core/src/simulation';
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import type { Simulation, SimState, PlaqueAutomataState } from './types';
-import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_BATCH_STEPS, type SeededSimState } from './simulation-runtime';
+import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_BATCH_STEPS, createSimulationExperimentRecord, parseSimulationExperiment, type SeededSimState } from './simulation-runtime';
 
 // Deliberately mutating model: tests must protect checkpoints even when a core
 // implementation changes its arrays in place. Numeric draws are checked against
@@ -128,5 +131,36 @@ describe('worker-independent seeded simulations', () => {
     const metadata = getSimulationRandomState(state);
     metadata.cursor = 0;
     assert.notEqual(getSimulationRandomState(state).cursor, 0);
+  });
+});
+
+describe('resistance worker checkpoints and experiment version', () => {
+  const resistance = makeResistanceSimulation() as unknown as Simulation;
+  it('preserves the trajectory and random cursor across worker migration and fractional batches', async () => {
+    const initial = await createSimulationAPI([resistance]).init({ simId: 'resistance-cocktail', seed: 42 });
+    const whole = await createSimulationAPI([resistance]).step({ state: initial, dt: 8 });
+    const batch = await createSimulationAPI([resistance]).stepBatch(initial, 0.25, 32);
+    assert.deepEqual(batch.at(-1), whole);
+    assert.equal((whole as ResistanceCocktailState).simTime, 0.08);
+    assert.equal((initial as ResistanceCocktailState).completedSteps, 0);
+    assert.deepEqual((initial as ResistanceCocktailState).infectedByPhage, [0, 0, 0]);
+  });
+  it('binds the new model, infected pools and exact deltas to a replayable version 2 record', async () => {
+    const api = createSimulationAPI([resistance]);
+    const initial = await api.init({ simId: 'resistance-cocktail', seed: 7 });
+    const final = await api.step({ state: initial, dt: 8 });
+    const record = await createSimulationExperimentRecord({
+      simId: 'resistance-cocktail', phage: null, seed: 7, parameters: initial.params,
+      stepDeltas: [8], initialState: initial, finalState: final,
+    });
+    assert.equal(record.method.version, '2');
+    assert.equal(record.references[0].version, '2');
+    const parsed = await parseSimulationExperiment(serializeAnalysisRecord(record), 'resistance-cocktail', null);
+    const fresh = createSimulationAPI([resistance]);
+    let state = await fresh.init({ simId: 'resistance-cocktail', seed: parsed.seed, params: parsed.parameters });
+    for (const dt of parsed.stepDeltas) state = await fresh.step({ state, dt });
+    assert.deepEqual(state, final);
+    const earlier = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' } });
+    await assert.rejects(parseSimulationExperiment(serializeAnalysisRecord(earlier), 'resistance-cocktail', null), /version/i);
   });
 });

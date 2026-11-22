@@ -87,7 +87,7 @@ export function ResistanceVisualizer({
 
     // Find max values for scaling
     const maxPop = Math.max(
-      ...history.map((h) => Math.max(h.sensitive, h.partialResistant, h.fullyResistant, 1))
+      ...history.map((h) => Math.max(h.sensitive, h.partialResistant, h.fullyResistant, h.infected, 1))
     );
     const maxPhage = Math.max(...history.map((h) => h.totalPhage), 1);
     const maxT = Math.max(...history.map((h) => h.t), 1);
@@ -152,6 +152,9 @@ export function ResistanceVisualizer({
       colors.error,
       maxPop
     );
+
+    // Infected cells remain occupied until their lysis transition.
+    drawLine(history.map(h => ({ t: h.t, v: h.infected })), colors.primary, maxPop);
 
     // Phage (blue, dashed)
     ctx.setLineDash([4, 4]);
@@ -220,14 +223,24 @@ export function ResistanceVisualizer({
             {formatExp(state.phageCounts.reduce((a, b) => a + b, 0))}
           </div>
         </div>
+        <div style={{ padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
+          <div style={{ color: colors.primary, fontSize: '0.7rem' }}>Infected</div>
+          <div style={{ fontFamily: 'monospace', color: colors.text, fontSize: '0.9rem' }}>
+            {formatExp(state.infectedByPhage.reduce((a, b) => a + b, 0))}
+          </div>
+        </div>
       </div>
 
-      {/* Resistance Risk Bar */}
+      <div style={{ color: colors.textDim, fontSize: '0.75rem' }}>
+        Illustrative Poisson tau-leap model. Mean lysis time is not a fixed delay; infected cells remain occupied until lysis.
+      </div>
+
+      {/* Resistant population fraction */}
       <div style={{ padding: '0.5rem', backgroundColor: colors.backgroundAlt, borderRadius: '4px' }}>
         {progressBar(
           resistFraction,
           resistFraction > 0.1 ? colors.error : resistFraction > 0.01 ? colors.warning : colors.success,
-          'Resistance Risk'
+          'Resistant cells / carrying capacity'
         )}
       </div>
 
