@@ -1,5 +1,6 @@
 import { test, expect, type Locator } from '@playwright/test';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig, type UserConfig } from 'vite';
 
 declare global {
@@ -68,7 +69,7 @@ const fixtureSource = String.raw`
     constructor(url, options) {
       super(url, options);
       this.addEventListener('message', event => {
-        if (!fixture.holdReply || event.data?.ok !== true || !event.data.diff) return;
+        if (!fixture.holdReply || event.data?.ok !== true || !event.data.experiment?.result.sequenceDiff) return;
         fixture.holdReply = false; event.stopImmediatePropagation();
         const data = event.data;
         fixture.replyPending = true; fixture.replyReleased = false;
@@ -136,7 +137,7 @@ const fixtureSource = String.raw`
   );
 `;
 
-for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test(
+for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experiment'] as const) test(
   'comparison owns its ' + scenario, async ({ page }, info) => {
     const root = process.cwd(), fixtureId = resolve(root, 'src/comparison-identity-fixture.tsx');
     if (!fixtureConfig) {
@@ -203,7 +204,7 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test
         await page.evaluate(() => window.comparisonIdentityFixture.releaseRead());
         await expectGC(overlay, '50.00', '50.00');
         expect(await page.evaluate(() => window.comparisonIdentityFixture.reads.replaced)).toBe(2);
-      } else {
+      } else if (scenario === 'cancel-and-recover') {
         await page.evaluate(() => {
           window.comparisonIdentityFixture.holdReply = true;
           window.comparisonIdentityFixture.select('c');
@@ -252,6 +253,94 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover'] as const) test
         await expectGC(overlay, '0.00', '0.00');
         await overlay.getByRole('button', { name: 'Close', exact: true }).click();
         await expect(overlay).toHaveCount(0);
+      } else {
+        const evidence = overlay.locator('section[aria-label="Portable comparison experiment"]');
+        const initialId = await evidence.getAttribute('data-result-id');
+        const settings = overlay.locator('details[aria-label="Comparison settings"]');
+        await settings.locator('summary').click();
+        await settings.getByLabel('K-mer sizes (comma-separated)', { exact: true }).fill('2, 4');
+        await settings.getByLabel('Whole-sequence edit metric limit (bp)', { exact: true }).fill('0');
+        await settings.getByLabel('Sampled edit window size (bp)', { exact: true }).fill('30');
+        await settings.getByLabel('Sampled edit window count', { exact: true }).fill('2');
+        // Draft edits cannot relabel the accepted result before an explicit run.
+        await expect(evidence).toHaveAttribute('data-result-id', initialId!);
+        await overlay.getByRole('button', { name: 'Run', exact: true }).click();
+        await expect(evidence).not.toHaveAttribute('data-result-id', initialId!);
+        await expect(evidence).toContainText('Accepted settings: k = 2, 4');
+        for (const [tab, heading] of [['Summary', 'Overall Similarity'], ['K-mer', 'K-mer comparison'], ['Info', 'Information theory'],
+          ['Correlation', 'Rank correlation'], ['Biological', 'Biological metrics'], ['Genes', 'Gene content']]) {
+          await overlay.getByRole('button', { name: tab, exact: true }).click();
+          await expect(overlay.getByRole('heading', { name: heading, exact: true })).toBeVisible();
+        }
+        await overlay.getByRole('button', { name: 'Diff', exact: true }).click();
+        await expect(overlay.getByTestId('comparison-identical')).toBeVisible();
+        const downloading = page.waitForEvent('download');
+        await overlay.getByRole('button', { name: 'Export comparison JSON', exact: true }).click();
+        const download = await downloading, path = await download.path();
+        if (!path) throw new Error('Expected the complete comparison download.');
+        const content = await readFile(path, 'utf8'), original = JSON.parse(content);
+        expect(original.method).toMatchObject({ id: 'genome-comparison', version: '2' });
+        expect(original.parameters).toEqual({ kmerSizes: [2, 4], maxEditDistanceLength: 0, editDistanceWindowSize: 30, editDistanceWindowCount: 2 });
+        expect(original.inputs.map((input: { data: { sequence: string } }) => input.data.sequence)).toEqual(['A'.repeat(120), 'A'.repeat(120)]);
+        expect(original.fields.comparison.value.sequenceDiff.mask).toHaveLength(120);
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        // A failed first import leaves the live pair and its accepted result intact.
+        await overlay.getByLabel('Reopen comparison JSON', { exact: true }).setInputFiles({
+          name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{broken'),
+        });
+        await expect(overlay.getByRole('alert')).toBeVisible();
+        await expect(overlay.getByRole('combobox', { name: 'Phage A', exact: true })).toBeVisible();
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        let library = overlay.locator('details[aria-label="Saved genome comparison experiments"]');
+        await library.locator('summary').click();
+        await library.getByLabel('Snapshot name', { exact: true }).fill('Complete private comparison');
+        await library.getByRole('button', { name: 'Save snapshot locally', exact: true }).click();
+        await expect(library.getByRole('status')).toContainText('Saved an immutable local snapshot');
+        const snapshotId = await library.getByLabel('Saved snapshot', { exact: true }).inputValue();
+        expect(snapshotId).not.toBe('');
+        await page.evaluate(() => window.comparisonIdentityFixture.select('b'));
+        await expectGC(overlay, '100.00', '100.00');
+        await library.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+        await expectGC(overlay, '0.00', '0.00');
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await expect(overlay.getByRole('button', { name: 'Return to current genomes', exact: true })).toBeVisible();
+        await expect.poll(() => page.evaluate(() => window.comparisonIdentityFixture.snapshot().hasResult)).toBe(false);
+        await page.evaluate(() => window.comparisonIdentityFixture.select('none'));
+        await expectGC(overlay, '0.00', '0.00');
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        await page.reload();
+        await expectGC(overlay, '0.00', '0.00');
+        await page.evaluate(() => window.comparisonIdentityFixture.select('none'));
+        await expect(overlay.getByText('Database is still loading.', { exact: true })).toBeVisible();
+        library = overlay.locator('details[aria-label="Saved genome comparison experiments"]');
+        await library.locator('summary').click();
+        await library.getByLabel('Saved snapshot', { exact: true }).selectOption(snapshotId);
+        await library.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+        await expectGC(overlay, '0.00', '0.00');
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await expect(evidence).toContainText('Accepted settings: k = 2, 4');
+
+        const tampered = structuredClone(original);
+        tampered.fields.comparison.value.biological.gcContentA = 100;
+        await overlay.getByLabel('Reopen comparison JSON', { exact: true }).setInputFiles({
+          name: 'edited-result.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(tampered)),
+        });
+        await expect(overlay.getByRole('alert')).toContainText('checksum');
+        await expectGC(overlay, '0.00', '0.00');
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+
+        await page.evaluate(() => { window.comparisonIdentityFixture.holdReply = true; window.comparisonIdentityFixture.replyPending = false; });
+        await overlay.getByLabel('Reopen comparison JSON', { exact: true }).setInputFiles({
+          name: 'original-result.json', mimeType: 'application/json', buffer: Buffer.from(content),
+        });
+        await expect.poll(() => page.evaluate(() => window.comparisonIdentityFixture.replyPending)).toBe(true);
+        await overlay.getByRole('button', { name: 'Cancel comparison replay', exact: true }).click();
+        await page.evaluate(() => window.comparisonIdentityFixture.releaseReply());
+        await expect(evidence).toHaveAttribute('data-result-id', original.resultId);
+        await expectGC(overlay, '0.00', '0.00');
       }
       expect(errors).toEqual([]);
     } finally { await page.close(); await server.close(); }

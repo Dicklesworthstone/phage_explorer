@@ -2,8 +2,11 @@ import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
-import { analyzeInformationTheory, analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity } from '@phage-explorer/comparison';
-import { ComparisonDiffView, ComparisonInformationTheory, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus, runWebComparison } from './ComparisonOverlay';
+import { analyzeInformationTheory, analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity,
+  createGenomeComparisonExperiment, DEFAULT_GENOME_COMPARISON_OPTIONS } from '@phage-explorer/comparison';
+import { serializeAnalysisRecord } from '@phage-explorer/core';
+import { ComparisonDiffView, ComparisonInformationTheory, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus } from './ComparisonOverlay';
+import { runWebComparison } from '../../workers/ComparisonSession';
 
 describe('comparison information evidence rendering', () => {
   it('renders actual 5-mer MI in coherent units and NMI at 100%, not 500%', () => {
@@ -125,12 +128,14 @@ describe('comparison aligned indel rendering', () => {
 });
 
 const comparisonJob = {
+  kind: 'analyze',
   jobId: 'owned-comparison',
   phageA: { id: -1, name: 'Reference', accession: 'local-reference' },
   phageB: { id: -2, name: 'Query', accession: 'local-query' },
   sequenceA: 'AAACCCGGGTTT',
   sequenceB: 'AAACCCGAGTTT',
-  genesA: [], genesB: [],
+  sourceA: 'local', sourceB: 'local', genesA: [], genesB: [], codonUsageA: null, codonUsageB: null,
+  options: { ...DEFAULT_GENOME_COMPARISON_OPTIONS },
 } satisfies ComparisonJob & { jobId: string };
 
 class ControlledComparisonWorker {
@@ -149,11 +154,11 @@ class ControlledComparisonWorker {
   reply(message: ComparisonWorkerMessage) { this.onmessage?.({ data: message } as MessageEvent<ComparisonWorkerMessage>); }
 }
 const factory = (worker: ControlledComparisonWorker): (() => Worker) => () => worker as unknown as Worker;
-async function actualComparisonReply(): Promise<ComparisonWorkerMessage> {
-  const job = comparisonJob;
+async function actualComparisonReply(job = comparisonJob): Promise<ComparisonWorkerMessage> {
   return { jobId: job.jobId, ok: true,
-    result: await compareGenomes(job.phageA, job.phageB, job.sequenceA, job.sequenceB),
-    diff: computeSequenceDiff(job.sequenceA, job.sequenceB) };
+    experiment: await createGenomeComparisonExperiment(
+      { phage: job.phageA, source: job.sourceA, sequence: job.sequenceA, genes: job.genesA, codonUsage: job.codonUsageA },
+      { phage: job.phageB, source: job.sourceB, sequence: job.sequenceB, genes: job.genesB, codonUsage: job.codonUsageB }, job.options) };
 }
 
 describe('owned browser comparison worker', () => {
@@ -165,8 +170,9 @@ describe('owned browser comparison worker', () => {
     worker.reply(await actualComparisonReply());
     const payload = await pending;
     expect(payload.result.biological.lengthA).toBe(12);
-    expect(payload.diff.status).toBe('complete');
-    if (payload.diff.status === 'complete') expect(payload.diff.stats).toMatchObject({ distance: 1, substitutions: 1, matches: 11 });
+    const diff = payload.result.sequenceDiff;
+    expect(diff?.status).toBe('complete');
+    if (diff?.status === 'complete') expect(diff.stats).toMatchObject({ distance: 1, substitutions: 1, matches: 11 });
     expect(worker.terminated).toBe(1); expect(worker.onmessage).toBeNull();
   });
 
@@ -191,29 +197,54 @@ describe('owned browser comparison worker', () => {
 
   it('keeps other metrics when the exact diff explicitly reports unavailable', async () => {
     const worker = new ControlledComparisonWorker();
-    const pending = runWebComparison(comparisonJob, [], undefined, 1000, factory(worker));
-    const message = await actualComparisonReply();
-    message.diff = computeSequenceDiff(comparisonJob.sequenceA, comparisonJob.sequenceB, { maxStates: 0 });
+    const job = { ...comparisonJob, sequenceA: 'A'.repeat(3000), sequenceB: 'C'.repeat(3001) };
+    const pending = runWebComparison(job, [], undefined, 1000, factory(worker));
+    const message = await actualComparisonReply(job);
     worker.reply(message);
     const result = await pending;
-    expect(result.diff.status).toBe('unavailable');
+    expect(result.result.sequenceDiff?.status).toBe('unavailable');
     expect(result.result.phageA.accession).toBe('local-reference');
   });
 
   it('rejects replies for the wrong request, genome or sequence instead of accepting their numbers', async () => {
     for (const change of [
       (message: ComparisonWorkerMessage) => { message.jobId = 'obsolete'; },
-      (message: ComparisonWorkerMessage) => { message.result!.phageA.accession = 'different-source'; },
-      (message: ComparisonWorkerMessage) => { message.result!.biological.lengthB = 11; },
-      (message: ComparisonWorkerMessage) => { if (message.diff?.status === 'complete') message.diff.stats.lengthA = 11; },
-      (message: ComparisonWorkerMessage) => { if (message.diff?.status === 'complete') message.diff.mask = new Uint8Array(1); },
+      (message: ComparisonWorkerMessage) => { message.experiment!.result.phageA.accession = 'different-source'; },
+      (message: ComparisonWorkerMessage) => { message.experiment!.result.biological.lengthB = 11; },
+      (message: ComparisonWorkerMessage) => { const diff = message.experiment!.result.sequenceDiff; if (diff?.status === 'complete') diff.stats.lengthA = 11; },
+      (message: ComparisonWorkerMessage) => { const diff = message.experiment!.result.sequenceDiff; if (diff?.status === 'complete') diff.mask = new Uint8Array(1); },
     ]) {
       const worker = new ControlledComparisonWorker();
       const pending = runWebComparison(comparisonJob, [], undefined, 1000, factory(worker));
       const message = structuredClone(await actualComparisonReply());
       change(message); worker.reply(message);
-      await expect(pending).rejects.toThrow('different');
+      await expect(pending).rejects.toThrow();
       expect(worker.terminated).toBe(1);
+    }
+  });
+
+  it('settles malformed live and replay payloads immediately without losing worker ownership', async () => {
+    const original = (await actualComparisonReply()).experiment!;
+    const other = (await actualComparisonReply({ ...comparisonJob, sequenceB: 'G'.repeat(12) })).experiment!;
+    const malformed = [
+      { ...original, record: { ...original.record, inputs: null } },
+      { ...original, record: { ...original.record, fields: undefined } },
+      { ...original, genomeA: undefined },
+      { ...original, result: { ...original.result, informationTheory: {} } },
+      { ...original, result: { ...original.result, biological: { ...original.result.biological, kmerIdentity: null } } },
+      { ...original, result: { ...original.result, codonUsage: { ...original.result.codonUsage, caiA: undefined } } },
+      { ...original, result: { ...original.result, summary: { ...original.result.summary, insights: null } } },
+      { ...original, result: { ...original.result, rankCorrelation: { ...original.result.rankCorrelation, spearmanRho: NaN } } },
+      { ...original, result: { ...original.result, geneContent: { ...original.result.geneContent, topSharedGenes: [null] } } },
+      other,
+    ];
+    const jobs: ComparisonJob[] = [comparisonJob, { kind: 'replay', jobId: 'reopen', content: serializeAnalysisRecord(original.record) }];
+    for (const job of jobs) for (const experiment of malformed) {
+      const worker = new ControlledComparisonWorker();
+      const pending = runWebComparison(job, [], undefined, 1000, factory(worker));
+      expect(() => worker.reply({ jobId: job.jobId, ok: true, experiment } as ComparisonWorkerMessage)).not.toThrow();
+      expect(worker.terminated).toBe(1);
+      await expect(pending).rejects.toThrow();
     }
   });
 

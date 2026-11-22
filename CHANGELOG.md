@@ -69,6 +69,12 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ### Portable complete genome comparisons
 
+- The browser's seven comparison tabs now use the same portable producer as the
+  native command. Explicit k-mer/edit-metric settings, complete JSON export and
+  import, and named local save/reopen retain the exact accepted inputs and all
+  outputs. Saved comparisons reopen without their original catalog; failed or
+  cancelled replay preserves accepted evidence. Browser and native records can
+  be exchanged and freshly verified. [Workflow](docs/GENOME_COMPARISON_WORKFLOW.md).
 - A shared producer binds both complete genomes, original annotations, supplied
   codon counts and explicit comparison settings to every metric and the exact
   diff, including its unavailable state when the alignment budget is exceeded.

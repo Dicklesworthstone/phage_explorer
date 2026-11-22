@@ -72,7 +72,7 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
       return 'Saved an immutable local snapshot. Later edits are not included; saving again creates another snapshot.';
     })}>Save snapshot locally</button>
     <div style={{ marginTop: '.5rem', display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
-      <label>Saved snapshot <select value={selectedId} disabled={locked} onChange={event => { setSelectedId(event.target.value); setConfirmId(null); }}>
+      <label>Saved snapshot <select aria-label="Saved snapshot" value={selectedId} disabled={locked} onChange={event => { setSelectedId(event.target.value); setConfirmId(null); }}>
         <option value="">Choose a saved snapshot</option>
         {entries.map(entry => <option key={entry.id} value={entry.id}>{entry.name} · {new Date(entry.createdAt).toLocaleString()} · {Math.ceil(entry.bytes / 1024)} KiB</option>)}
       </select></label>

@@ -1,17 +1,22 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useOverlay } from './OverlayProvider';
 import { Overlay } from './Overlay';
 import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
-import type { PhageSummary } from '@phage-explorer/core';
+import { serializeAnalysisRecord, type PhageSummary } from '@phage-explorer/core';
 import type { ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantReport } from '@phage-explorer/comparison';
-import { formatSimilarity } from '@phage-explorer/comparison';
+import { DEFAULT_GENOME_COMPARISON_OPTIONS, GENOME_COMPARISON_LIMITS, formatSimilarity, resolveGenomeComparisonOptions,
+  type GenomeComparisonExperiment, type GenomeComparisonOptions } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
 import DiffHighlighter from '../DiffHighlighter';
 import { OverlayEmptyState, OverlayErrorState, OverlayLoadingState, OverlayStack } from './primitives';
 import { SharedSequencePool } from '../../workers/SharedSequencePool';
-import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
+import { ComparisonReplaySession, readComparisonPair, runWebComparison } from '../../workers/ComparisonSession';
+import { downloadString } from '../../utils/export';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
+import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 
 function formatBpRange(start: number, end: number): string {
   if (start === end) return start === 0 ? 'before base 1' : `after base ${start.toLocaleString()}`;
@@ -62,80 +67,12 @@ interface ComparisonOverlayProps {
   repository: PhageRepository | null;
 }
 
-type ComparisonWorkerPayload = {
-  result: GenomeComparisonResult;
-  diff: SequenceDiffResult;
-};
-
-/** One request owns one worker, including its deadline and cancellation. */
-export function runWebComparison(
-  job: ComparisonJob & { jobId: string },
-  transfer: Transferable[] = [],
-  signal?: AbortSignal,
-  timeoutMs = 300000,
-  createWorker: () => Worker = () => new Worker(new URL('../../workers/comparison.worker.ts', import.meta.url), { type: 'module' }),
-): Promise<ComparisonWorkerPayload> {
-  return new Promise((resolve, reject) => {
-    const cancelled = () => new DOMException('Comparison cancelled.', 'AbortError');
-    if (signal?.aborted) { reject(cancelled()); return; }
-    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-      reject(new Error('Comparison timeout must be a positive integer.')); return;
-    }
-    let worker: Worker;
-    try { worker = createWorker(); } catch (error) { reject(error); return; }
-    let settled = false;
-    const finish = (error?: Error, payload?: ComparisonWorkerPayload) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
-      worker.terminate();
-      if (error) reject(error); else resolve(payload!);
-    };
-    const onAbort = () => finish(cancelled());
-    const timer = setTimeout(() => finish(new Error('Comparison worker timed out. Select Run to retry.')), timeoutMs);
-    signal?.addEventListener('abort', onAbort, { once: true });
-    worker.onmessage = (event: MessageEvent<ComparisonWorkerMessage>) => {
-      if (settled) return;
-      const message = event.data;
-      if (!message || message.jobId !== job.jobId) {
-        finish(new Error('Comparison worker returned a result for a different request.')); return;
-      }
-      if (message.ok !== true || !message.result || !message.diff) {
-        finish(new Error(message.error ?? 'Comparison worker returned no complete response.')); return;
-      }
-      const { result, diff } = message;
-      const samePhage = (actual: GenomeComparisonResult['phageA'] | undefined, expected: ComparisonJob['phageA']) =>
-        actual?.id === expected.id && actual.name === expected.name && actual.accession === expected.accession;
-      const lengthA = 'sequenceA' in job ? job.sequenceA.length : job.sequenceARef.length;
-      const lengthB = 'sequenceB' in job ? job.sequenceB.length : job.sequenceBRef.length;
-      if (!samePhage(result.phageA, job.phageA) || !samePhage(result.phageB, job.phageB)
-        || result.biological?.lengthA !== lengthA || result.biological?.lengthB !== lengthB
-        || (diff.status !== 'complete' && diff.status !== 'unavailable')
-        || diff.status === 'complete' && (diff.stats?.lengthA !== lengthA || diff.stats?.lengthB !== lengthB
-          || !(diff.mask instanceof Uint8Array) || diff.mask.length !== lengthA
-          || !Array.isArray(diff.positions) || !Array.isArray(diff.runs))
-        || diff.status === 'unavailable' && (typeof diff.reason !== 'string' || !diff.reason)) {
-        finish(new Error('Comparison worker returned a result for different inputs.')); return;
-      }
-      finish(undefined, { result, diff });
-    };
-    worker.onerror = () => finish(new Error('The comparison worker failed. Select Run to retry.'));
-    worker.onmessageerror = () => finish(new Error('The comparison worker returned unreadable data. Select Run to retry.'));
-    try { if (signal?.aborted) onAbort(); else worker.postMessage(job, transfer); }
-    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
-  });
-}
-
 interface OwnedComparison {
   repository: PhageRepository;
   phageA: PhageSummary;
   phageB: PhageSummary;
   revision: number;
-  payload: ComparisonWorkerPayload | null;
-  sequenceA: string;
-  sequenceB: string;
+  payload: GenomeComparisonExperiment | null;
   error: string | null;
   loading: boolean;
 }
@@ -264,50 +201,100 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
 
   const [comparison, setComparison] = useState<OwnedComparison | null>(null);
   const [revision, setRevision] = useState(0);
+  const [options, setOptions] = useState<GenomeComparisonOptions>(() => resolveGenomeComparisonOptions());
+  const [draft, setDraft] = useState(() => ({ kmerSizes: DEFAULT_GENOME_COMPARISON_OPTIONS.kmerSizes.join(', '),
+    maxEditDistanceLength: String(DEFAULT_GENOME_COMPARISON_OPTIONS.maxEditDistanceLength),
+    editDistanceWindowSize: String(DEFAULT_GENOME_COMPARISON_OPTIONS.editDistanceWindowSize),
+    editDistanceWindowCount: String(DEFAULT_GENOME_COMPARISON_OPTIONS.editDistanceWindowCount) }));
+  const [mode, setMode] = useState<'live' | 'saved'>('live');
+  const [libraryBusy, setLibraryBusy] = useState(false), [fileError, setFileError] = useState<string | null>(null);
+  const replaySession = useMemo(() => new ComparisonReplaySession(), []);
+  const replayScope = useMemo(() => ({}), []);
+  const replay = useSyncExternalStore(replaySession.subscribe, replaySession.getSnapshot, replaySession.getSnapshot);
   const operation = useRef<AbortController | null>(null);
   const defaulted = useRef(false);
   const overlayOpen = isOpen('comparison');
   const phageA = phageAIndex !== null ? phages[phageAIndex] : null;
   const phageB = phageBIndex !== null ? phages[phageBIndex] : null;
   const canCompare = Boolean(repository && phageA && phageB && phageA.id !== phageB.id);
-  const source = useRef({ repository, phageA, phageB, revision, overlayOpen });
-  source.current = { repository, phageA, phageB, revision, overlayOpen };
+  const source = useRef({ repository, phageA, phageB, revision, overlayOpen, mode });
+  source.current = { repository, phageA, phageB, revision, overlayOpen, mode };
   // The store's result is also consumed outside this panel. Rendering additionally
   // requires the exact repository/pair that produced both metrics and diff bases.
   const owned = overlayOpen && comparison?.repository === repository && comparison.phageA === phageA
     && comparison.phageB === phageB && comparison.revision === revision ? comparison : null;
-  const comparisonResult = owned?.payload?.result ?? null;
-  const comparisonLoading = overlayOpen && canCompare && (!owned || owned.loading);
-  const error = owned?.error ?? null;
-  const diff = owned?.payload?.diff ?? null;
-  const sequenceA = owned?.sequenceA ?? '';
-  const sequenceB = owned?.sequenceB ?? '';
+  const accepted = mode === 'saved' ? replay.accepted : owned?.payload ?? null;
+  const comparisonResult = accepted?.result ?? null;
+  const comparisonLoading = mode === 'live' && overlayOpen && canCompare && (!owned || owned.loading);
+  const busy = comparisonLoading || replay.busy || libraryBusy;
+  const error = mode === 'live' ? owned?.error ?? null : null;
+  const diff = comparisonResult?.sequenceDiff ?? null;
+  const sequenceA = accepted?.genomeA.sequence ?? '';
+  const sequenceB = accepted?.genomeB.sequence ?? '';
+
+  useEffect(() => { replaySession.activate(); return replaySession.deactivate; }, [replaySession]);
+  useEffect(() => { if (!overlayOpen) replaySession.cancel(); }, [overlayOpen, replaySession]);
+  const restore = async (content: string, signal: AbortSignal): Promise<void> => {
+    setFileError(null);
+    await replaySavedResearch(signal, {
+      run: () => replaySession.run(replayScope, content), cancel: () => replaySession.cancel(replayScope),
+      error: () => replaySession.getSnapshot().error,
+    });
+    if (signal.aborted || !source.current.overlayOpen) throw new DOMException('Comparison restore cancelled.', 'AbortError');
+    setMode('saved');
+  };
+  const importExperiment = (file: File) => {
+    setFileError(null);
+    void replaySession.run(replayScope, async () => {
+      if (file.size > GENOME_COMPARISON_LIMITS.recordBytes) throw new Error('Saved comparison exceeds 10 MiB.');
+      return file.text();
+    }).then(ok => {
+      if (!source.current.overlayOpen) return;
+      if (ok) setMode('saved');
+      else if (replaySession.getSnapshot().error) setFileError(replaySession.getSnapshot().error);
+    });
+  };
+  const exportExperiment = () => {
+    if (!accepted || busy) return;
+    try {
+      downloadString(serializeAnalysisRecord(accepted.record), 'genome-comparison.json', 'application/json');
+      setFileError(null);
+    } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Could not export comparison evidence.'); }
+  };
 
   // Choose defaults once per opening; an explicit empty selection stays empty.
   useEffect(() => {
     if (!overlayOpen) { defaulted.current = false; return; }
-    if (defaulted.current || phages.length < 2) return;
+    if (mode !== 'live' || defaulted.current || phages.length < 2) return;
     defaulted.current = true;
     if (phageAIndex === null) setComparisonPhageA(phageBIndex === 0 ? 1 : 0);
     if (phageBIndex === null) setComparisonPhageB(phageAIndex === 1 ? 0 : 1);
-  }, [overlayOpen, phageAIndex, phageBIndex, phages.length, setComparisonPhageA, setComparisonPhageB]);
+  }, [overlayOpen, phageAIndex, phageBIndex, phages.length, mode, setComparisonPhageA, setComparisonPhageB]);
 
   const runComparison = useCallback(() => {
-    operation.current?.abort();
-    setRevision(value => value + 1);
-  }, []);
+    try {
+      const number = (text: string) => text.trim() ? Number(text) : NaN;
+      const next = resolveGenomeComparisonOptions({ kmerSizes: draft.kmerSizes.split(',').map(number),
+        maxEditDistanceLength: number(draft.maxEditDistanceLength), editDistanceWindowSize: number(draft.editDistanceWindowSize),
+        editDistanceWindowCount: number(draft.editDistanceWindowCount) });
+      operation.current?.abort(); setFileError(null); setOptions(next);
+      setRevision(value => value + 1);
+    } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Invalid comparison settings.'); }
+  }, [draft]);
 
   const handleClose = useCallback(() => {
     operation.current?.abort();
+    replaySession.cancel();
     setComparisonLoading(false);
     closeComparison();
     close('comparison');
-  }, [close, closeComparison, setComparisonLoading]);
+  }, [close, closeComparison, replaySession, setComparisonLoading]);
 
   // Reads, computation and publication share one owner. Invalid selections,
   // repository replacement, closure and retries all revoke the previous owner.
   useEffect(() => {
     setComparisonResult(null);
+    if (mode !== 'live') { setComparisonLoading(false); return; }
     if (!overlayOpen || !repository || !phageA || !phageB || phageA.id === phageB.id) {
       setComparison(null);
       setComparisonLoading(false);
@@ -319,58 +306,35 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     const current = () => {
       const state = usePhageStore.getState();
       return operation.current === controller && !controller.signal.aborted
-        && source.current.overlayOpen && source.current.repository === repository
+        && source.current.overlayOpen && source.current.mode === 'live' && source.current.repository === repository
         && source.current.phageA === phageA && source.current.phageB === phageB
         && source.current.revision === revision
         && state.phages[state.comparisonPhageAIndex ?? -1] === phageA
         && state.phages[state.comparisonPhageBIndex ?? -1] === phageB;
     };
-    setComparison({ ...owner, payload: null, sequenceA: '', sequenceB: '', error: null, loading: true });
+    setComparison({ ...owner, payload: null, error: null, loading: true });
     setComparisonLoading(true);
     void (async () => {
       try {
-        const [fullA, fullB] = await Promise.all([
-          repository.getPhageById(phageA.id),
-          repository.getPhageById(phageB.id),
-        ]);
-        // An abandoned metadata read must not start another whole-genome read.
+        const [genomeA, genomeB] = await readComparisonPair(repository, phageA, phageB, controller.signal);
         if (!current()) return;
-        if (!fullA || !fullB) {
-          throw new Error('A selected genome is no longer available. Select the genomes again.');
-        }
-        if (fullA.id !== phageA.id || fullB.id !== phageB.id
-          || fullA.accession !== phageA.accession || fullB.accession !== phageB.accession) {
-          throw new Error('The loaded genomes do not match the selected sources.');
-        }
-        const lengthA = fullA.genomeLength ?? 0, lengthB = fullB.genomeLength ?? 0;
-        if (!Number.isSafeInteger(lengthA) || !Number.isSafeInteger(lengthB) || lengthA <= 0 || lengthB <= 0) {
-          throw new Error('Both genomes need a known, nonzero sequence length.');
-        }
-        const [seqA, seqB] = await Promise.all([
-          repository.getSequenceWindow(phageA.id, 0, lengthA),
-          repository.getSequenceWindow(phageB.id, 0, lengthB),
-        ]);
-        if (!current()) return;
-        if (seqA.length !== lengthA || seqB.length !== lengthB) {
-          throw new Error('A complete sequence could not be loaded for both genomes.');
-        }
         const pool = SharedSequencePool.getInstance();
-        const { ref: sequenceARef, transfer: transferA } = pool.getOrCreateRef(phageA.id, seqA);
-        const { ref: sequenceBRef, transfer: transferB } = pool.getOrCreateRef(phageB.id, seqB);
+        const { ref: sequenceARef, transfer: transferA } = pool.getOrCreateRef(phageA.id, genomeA.sequence);
+        const { ref: sequenceBRef, transfer: transferB } = pool.getOrCreateRef(phageB.id, genomeB.sequence);
         const job = {
+          kind: 'analyze' as const,
           jobId: crypto.randomUUID(),
-          phageA: { id: phageA.id, name: phageA.name, accession: phageA.accession },
-          phageB: { id: phageB.id, name: phageB.name, accession: phageB.accession },
+          phageA: genomeA.phage, phageB: genomeB.phage, sourceA: genomeA.source, sourceB: genomeB.source,
           sequenceARef, sequenceBRef,
-          genesA: fullA.genes ?? [], genesB: fullB.genes ?? [],
-          codonUsageA: fullA.codonUsage ?? null, codonUsageB: fullB.codonUsage ?? null,
+          genesA: genomeA.genes, genesB: genomeB.genes,
+          codonUsageA: genomeA.codonUsage, codonUsageB: genomeB.codonUsage, options,
         };
         const payload = await runWebComparison(job, [...transferA, ...transferB], controller.signal);
         if (!current()) return;
-        setComparison({ ...owner, payload, sequenceA: seqA, sequenceB: seqB, error: null, loading: false });
+        setComparison({ ...owner, payload, error: null, loading: false });
         setComparisonResult(payload.result);
       } catch (cause) {
-        if (current()) setComparison({ ...owner, payload: null, sequenceA: '', sequenceB: '', loading: false,
+        if (current()) setComparison({ ...owner, payload: null, loading: false,
           error: cause instanceof Error ? cause.message : 'Comparison failed' });
       } finally {
         if (current()) setComparisonLoading(false);
@@ -384,14 +348,24 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         setComparisonResult(null);
       }
     };
-  }, [overlayOpen, phageA, phageB, repository, revision, setComparisonLoading, setComparisonResult]);
+  }, [overlayOpen, phageA, phageB, repository, revision, options, mode, setComparisonLoading, setComparisonResult]);
 
   const header = useMemo(() => {
+    if (mode === 'saved' && accepted) return <section className="panel" aria-label="Reopened comparison sources">
+      <h3>{accepted.genomeA.phage.name} ↔ {accepted.genomeB.phage.name}</h3>
+      <p>Showing a freshly verified saved experiment. Its embedded genomes and annotations are independent of the current explorer selection.</p>
+      <p>A: {accepted.genomeA.phage.accession} · {accepted.genomeA.source} · {accepted.genomeA.sequence.length.toLocaleString()} bp;
+        {' '}B: {accepted.genomeB.phage.accession} · {accepted.genomeB.source} · {accepted.genomeB.sequence.length.toLocaleString()} bp.</p>
+      <button type="button" className="btn" disabled={replay.busy || libraryBusy} onClick={() => { setMode('live'); setFileError(null); }}>
+        Return to current genomes
+      </button>
+    </section>;
     return (
       <div className="comparison-header" style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
         <select
           value={phageAIndex ?? ''}
           aria-label="Phage A"
+          disabled={replay.busy || libraryBusy}
           onChange={(e) => setComparisonPhageA(e.target.value === '' ? null : Number(e.target.value))}
           style={{ flex: 1, padding: '0.4rem' }}
         >
@@ -405,6 +379,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         <select
           value={phageBIndex ?? ''}
           aria-label="Phage B"
+          disabled={replay.busy || libraryBusy}
           onChange={(e) => setComparisonPhageB(e.target.value === '' ? null : Number(e.target.value))}
           style={{ flex: 1, padding: '0.4rem' }}
         >
@@ -415,12 +390,18 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
             </option>
           ))}
         </select>
-        <button className="btn" type="button" onClick={() => void runComparison()} disabled={comparisonLoading || !canCompare}>
+        <button className="btn" type="button" onClick={() => void runComparison()} disabled={busy || !canCompare}>
           {comparisonLoading ? 'Comparing…' : 'Run'}
         </button>
+        {comparisonLoading && <button type="button" className="btn" onClick={() => {
+          operation.current?.abort();
+          setComparison(previous => previous ? { ...previous, loading: false, error: 'Comparison cancelled. Select Run to retry.' } : null);
+          setComparisonLoading(false);
+        }}>Cancel comparison</button>}
       </div>
     );
-  }, [canCompare, comparisonLoading, phageAIndex, phageBIndex, phages, runComparison, setComparisonPhageA, setComparisonPhageB]);
+  }, [accepted, mode, replay.busy, libraryBusy, busy, canCompare, comparisonLoading, phageAIndex, phageBIndex, phages,
+    runComparison, setComparisonLoading, setComparisonPhageA, setComparisonPhageB]);
 
   const tabs = useMemo(
     () => [
@@ -436,7 +417,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
   );
 
   const content = useMemo(() => {
-    if (!repository) {
+    if (mode === 'live' && !repository) {
       return (
         <OverlayEmptyState
           message="Database is still loading."
@@ -462,7 +443,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       );
     }
 
-    if (!phageA || !phageB) {
+    if (mode === 'live' && (!phageA || !phageB)) {
       return (
         <OverlayEmptyState
           message="Select two phages to compare."
@@ -471,7 +452,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       );
     }
 
-    if (phageA.id === phageB.id) {
+    if (mode === 'live' && phageA?.id === phageB?.id) {
       return (
         <OverlayEmptyState
           message="Pick two different phages."
@@ -733,7 +714,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         Tab <strong>{comparisonTab}</strong> not yet implemented. Results available in summary above.
       </div>
     );
-  }, [comparisonLoading, comparisonResult, comparisonTab, diff, error, phageA, phageB, repository, runComparison, sequenceA, sequenceB]);
+  }, [comparisonLoading, comparisonResult, comparisonTab, diff, error, phageA, phageB, repository, mode, runComparison, sequenceA, sequenceB]);
 
   return (
     <Overlay
@@ -745,6 +726,45 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     >
       <OverlayStack gap="sm">
         {header}
+        {mode === 'live' && <details className="panel" aria-label="Comparison settings">
+          <summary>Comparison settings</summary>
+          <p>Draft changes apply when you select Run. A newly selected pair uses the last applied settings.</p>
+          <fieldset disabled={busy} style={{ display: 'grid', gap: '.5rem' }}>
+            <legend>Descriptive comparison parameters</legend>
+            <label>K-mer sizes (comma-separated)
+              <input value={draft.kmerSizes} onChange={event => setDraft(previous => ({ ...previous, kmerSizes: event.target.value }))} /></label>
+            <label>Whole-sequence edit metric limit (bp)
+              <input type="number" min="0" max="10000" step="1" value={draft.maxEditDistanceLength}
+                onChange={event => setDraft(previous => ({ ...previous, maxEditDistanceLength: event.target.value }))} /></label>
+            <label>Sampled edit window size (bp)
+              <input type="number" min="1" max="2000" step="1" value={draft.editDistanceWindowSize}
+                onChange={event => setDraft(previous => ({ ...previous, editDistanceWindowSize: event.target.value }))} /></label>
+            <label>Sampled edit window count
+              <input type="number" min="1" max="100" step="1" value={draft.editDistanceWindowCount}
+                onChange={event => setDraft(previous => ({ ...previous, editDistanceWindowCount: event.target.value }))} /></label>
+          </fieldset>
+          <p>The edit metric samples windows above its length limit; zero always selects sampling. The Diff and aligned-indel views use a separate bounded exact alignment.
+            A diff that exceeds its budget remains unavailable while other metrics are retained.</p>
+        </details>}
+        <section className="panel" aria-label="Portable comparison experiment" data-result-id={accepted?.record.resultId}>
+          <h3>Portable experiment</h3>
+          <p>Export both complete genomes, annotations, supplied codon counts, applied settings and every result, including all edit runs and mask positions.
+            Imports are recomputed locally before acceptance. Up to 1,000,000 bases and 20,000 annotations per genome; the complete record must fit within 10 MiB.</p>
+          <button type="button" className="btn" disabled={busy || !accepted} onClick={exportExperiment}>Export comparison JSON</button>{' '}
+          <label>Reopen comparison JSON <input type="file" accept=".json,application/json" disabled={busy}
+            onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) importExperiment(file); }} /></label>
+          {replay.busy && <><p role="status">Recomputing saved comparison…</p>
+            <button type="button" className="btn" onClick={() => replaySession.cancel(replayScope)}>Cancel comparison replay</button></>}
+          {fileError && <p role="alert">{fileError}</p>}
+          {replay.notice && <p role="status">{replay.notice}</p>}
+          {accepted && <p>Accepted settings: k = {accepted.options.kmerSizes.join(', ')}; whole-sequence edit metric limit {accepted.options.maxEditDistanceLength.toLocaleString()} bp;
+            {' '}{accepted.options.editDistanceWindowCount} sampled windows of {accepted.options.editDistanceWindowSize.toLocaleString()} bp.</p>}
+        </section>
+        <SavedResearchPanel kind="comparison" suggestedName={accepted
+          ? `${accepted.genomeA.phage.name} vs ${accepted.genomeB.phage.name}` : 'Genome comparison'}
+          disabled={comparisonLoading || replay.busy} onActivityChange={setLibraryBusy}
+          capture={accepted ? () => serializeAnalysisRecord(accepted.record) : null} restore={restore} />
+        {accepted && <AnalysisRecordDetails record={accepted.record} />}
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
           {tabs.map((t) => (
             <button
@@ -761,14 +781,14 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
           {content}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
-          <button
+          {mode === 'live' && <button
             className="btn"
             type="button"
             onClick={() => void runComparison()}
-            disabled={comparisonLoading || !canCompare}
+            disabled={busy || !canCompare}
           >
             {comparisonLoading ? 'Running…' : 'Re-run'}
-          </button>
+          </button>}
           <button className="btn-secondary" type="button" onClick={handleClose}>
             Close
           </button>

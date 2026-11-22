@@ -28,7 +28,7 @@ import type {
   PhageFull,
   AnalysisRecord,
 } from '@phage-explorer/core';
-import type { GenomeComparisonResult, SequenceDiffResult } from '@phage-explorer/comparison';
+import type { ComparisonGenomeInput, GenomeComparisonExperiment, GenomeComparisonOptions, SequenceDiffResult } from '@phage-explorer/comparison';
 
 // Re-export simulation types
 export type {
@@ -541,29 +541,29 @@ export interface DotPlotWorkerResponse {
   replayExactRecord?: boolean;
 }
 
-export type ComparisonJob =
+export type ComparisonAnalysisJob = {
+  kind: 'analyze';
+  jobId: string;
+  phageA: ComparisonGenomeInput['phage'];
+  phageB: ComparisonGenomeInput['phage'];
+  sourceA: ComparisonGenomeInput['source'];
+  sourceB: ComparisonGenomeInput['source'];
+  genesA: ComparisonGenomeInput['genes'];
+  genesB: ComparisonGenomeInput['genes'];
+  codonUsageA: ComparisonGenomeInput['codonUsage'];
+  codonUsageB: ComparisonGenomeInput['codonUsage'];
+  options: GenomeComparisonOptions;
+} & (
   | {
-      jobId?: string;
-      phageA: { id: number; name: string; accession: string };
-      phageB: { id: number; name: string; accession: string };
       sequenceA: string;
       sequenceB: string;
-      genesA: any[];
-      genesB: any[];
-      codonUsageA?: any | null;
-      codonUsageB?: any | null;
     }
   | {
-      jobId?: string;
-      phageA: { id: number; name: string; accession: string };
-      phageB: { id: number; name: string; accession: string };
       sequenceARef: SequenceBytesRef;
       sequenceBRef: SequenceBytesRef;
-      genesA: any[];
-      genesB: any[];
-      codonUsageA?: any | null;
-      codonUsageB?: any | null;
-    };
+    }
+);
+export type ComparisonJob = ComparisonAnalysisJob | { kind: 'replay'; jobId: string; content: string };
 
 /** Preserve the public worker name while sharing the exact alignment statistics contract. */
 export type ComparisonDiffStats = Extract<SequenceDiffResult, { status: 'complete' }>['stats'];
@@ -571,7 +571,6 @@ export type ComparisonDiffStats = Extract<SequenceDiffResult, { status: 'complet
 export interface ComparisonWorkerMessage {
   jobId?: string;
   ok: boolean;
-  result?: GenomeComparisonResult;
-  diff?: SequenceDiffResult;
+  experiment?: GenomeComparisonExperiment;
   error?: string;
 }
