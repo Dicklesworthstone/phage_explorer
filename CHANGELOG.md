@@ -6,6 +6,17 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Save and reopen sourced host-model experiments
+
+- Host metabolism now saves complete accepted flux-scenario and gene-knockout
+  experiments in the existing local research library. Snapshots retain the COBRA
+  model, source and medium, reaction or gene changes, flux ranges and numerical
+  evidence; unapplied draft edits are excluded.
+- Reopening recomputes and verifies the saved experiment in its worker without
+  downloading the source model again. Failed or cancelled restoration preserves
+  the accepted result, and competing model controls are locked during a local
+  storage operation. Saving and restoring remain explicit actions.
+
 ### Portable complete genome comparisons
 
 - A shared producer binds both complete genomes, original annotations, supplied

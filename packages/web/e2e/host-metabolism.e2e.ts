@@ -67,6 +67,11 @@ test('private COBRA models reach actual workers, simultaneous scenario ranges an
     await expect(panel.locator('b').filter({ hasText: 'literal route' })).toHaveCount(0);
     await panel.getByLabel('Allowed absolute objective loss', { exact: true }).fill('1');
     expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+    const library = panel.locator('details[aria-label="Saved host-model experiments"]');
+    await library.locator('summary').click();
+    await library.getByLabel('Snapshot name', { exact: true }).fill('Private host scenario');
+    await library.getByRole('button', { name: 'Save snapshot locally', exact: true }).click();
+    await expect(library.getByRole('status')).toContainText('Saved an immutable local snapshot');
     expect(referenceRequests).toEqual([]);
     await panel.getByText('Use a published E. coli reference model', { exact: true }).click();
     await page.route(ECOLI_CORE_REFERENCE.url, route => route.fulfill({ status: 503, body: '',
@@ -82,6 +87,16 @@ test('private COBRA models reach actual workers, simultaneous scenario ranges an
     await expect(result).toHaveAttribute('data-result-id', record.resultId);
     expect(referenceRequests).toHaveLength(1);
     await page.reload(); await expect(panel).toBeVisible();
+    await expect(result).toHaveCount(0); // Saving is explicit; startup never silently restores a model.
+    await library.locator('summary').click();
+    const savedOption = library.getByLabel('Saved snapshot', { exact: true }).locator('option').filter({ hasText: 'Private host scenario' });
+    await expect(savedOption).toHaveCount(1);
+    await library.getByLabel('Saved snapshot', { exact: true }).selectOption(await savedOption.getAttribute('value') as string);
+    await library.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+    await expect(library.getByRole('status')).toContainText('Saved experiment recomputed and verified');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    await expect(panel.getByLabel('Allowed absolute objective loss', { exact: true })).toHaveValue('0');
+    expect(referenceRequests).toHaveLength(1); // Complete saved model replay does not contact the publisher.
     const load = (text: string) => panel.getByLabel('Import host-model dataset or saved experiment JSON', { exact: true })
       .setInputFiles({ name: 'private-host-fixture.json', mimeType: 'application/json', buffer: Buffer.from(text) });
     await load(content); await expect(panel.getByTestId('host-model-status')).toContainText('Verified host-model replay');

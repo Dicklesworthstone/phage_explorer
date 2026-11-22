@@ -4,6 +4,7 @@ import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } fr
 import { type HostModelInput } from '../../../core/src/analysis/host-metabolism';
 import { ECOLI_CORE_REFERENCE } from '../../../core/src/analysis/host-metabolism-reference';
 import { executeHostMetabolismRequest, HostMetabolismSession, type HostMetabolismRequest, type HostMetabolismWorker, type HostMetabolismMessage } from './HostMetabolismSession';
+import { replaySavedResearch } from '../db/research-storage';
 
 // Two independent routes through a conserved pool. Maximum throughput is seven;
 // restricting the only outlet to two changes that maximum to two, not five or nine.
@@ -95,6 +96,61 @@ describe('host-model worker requests', () => {
 });
 
 describe('local host-model session lifecycle', () => {
+  it('reports accepted work separately from inactive, failed and cancelled operations', async () => {
+    const inactive = new HostMetabolismSession(() => new FakeWorker());
+    assert.equal(await inactive.run(load), false);
+    const f = fixture();
+    const loaded = f.session.run(load); await flush();
+    f.workers[0].send({ kind: 'result', value: await executeHostMetabolismRequest(load) });
+    assert.equal(await loaded, true);
+    const failed = f.session.run(load); await flush();
+    f.workers[1].send({ kind: 'error', message: 'Saved model is invalid' });
+    assert.equal(await failed, false);
+    const cancelled = f.session.run(load); await flush(); f.session.cancel();
+    assert.equal(await cancelled, false);
+    f.session.deactivate();
+  });
+  it('reopens saved evidence only after fresh successful replay and preserves it after a rejected restore', async () => {
+    const f = fixture();
+    const original = await accept(f, { kind: 'analyze', input, options: settings });
+    const restore = (content: string, signal = new AbortController().signal) => replaySavedResearch(signal, {
+      run: () => f.session.run({ kind: 'import', content }), cancel: f.session.cancel, error: () => f.session.getSnapshot().error,
+    });
+    const text = serializeAnalysisRecord(original.record!);
+    const replay = restore(text); await flush();
+    const computed = await executeHostMetabolismRequest(f.workers.at(-1)!.request!);
+    f.workers.at(-1)!.send({ kind: 'result', value: computed }); await replay;
+    assert.equal(f.session.getSnapshot().accepted!.record!.resultId, original.record!.resultId);
+    assert.equal(f.session.getSnapshot().accepted!.verified, true);
+
+    const forged = await parseAnalysisRecord(text);
+    (forged.fields.comparison.value as Record<string, unknown>).objectiveDelta = 500;
+    const signed = await createAnalysisRecord({ ...forged, inputs: forged.inputs.map(({ sha256: _sha, ...row }) => row) });
+    const rejected = restore(serializeAnalysisRecord(signed)); await flush();
+    const worker = f.workers.at(-1)!;
+    try { await executeHostMetabolismRequest(worker.request!); assert.fail('Forged results must be rejected'); }
+    catch (cause) { worker.send({ kind: 'error', message: (cause as Error).message }); }
+    await assert.rejects(rejected, /Fresh host-model results differ/);
+    assert.strictEqual(f.session.getSnapshot().accepted, computed);
+    f.session.deactivate();
+  });
+  it('cancels a saved reopen without accepting late results or cancelling subsequent work', async () => {
+    const f = fixture(); const original = await accept(f, { kind: 'analyze', input, options: settings });
+    const controller = new AbortController();
+    const restore = replaySavedResearch(controller.signal, {
+      run: () => f.session.run({ kind: 'import', content: serializeAnalysisRecord(original.record!) }),
+      cancel: f.session.cancel, error: () => f.session.getSnapshot().error,
+    });
+    await flush(); const worker = f.workers.at(-1)!; controller.abort();
+    await assert.rejects(restore, { name: 'AbortError' });
+    assert.equal(worker.terminated, true);
+    worker.send({ kind: 'result', value: { ...original, verified: true } });
+    assert.strictEqual(f.session.getSnapshot().accepted, original);
+    const fresh = f.session.run(load); await flush();
+    assert.equal(f.session.getSnapshot().busy, true);
+    f.workers.at(-1)!.send({ kind: 'result', value: await executeHostMetabolismRequest(load) });
+    assert.equal(await fresh, true); f.session.deactivate();
+  });
   it('owns reference downloads and preserves accepted results after cancellation or checksum failure', async () => {
     const f = fixture(); await accept(f, { kind: 'analyze', input, options: settings });
     const before = f.session.getSnapshot().accepted;

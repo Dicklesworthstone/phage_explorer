@@ -90,14 +90,15 @@ export class HostMetabolismSession {
     const old = this.owner; this.owner = null; old?.abort();
     this.publish({ busy: false, phase: '', ...(old ? { notice: 'Host-model work cancelled; accepted evidence was preserved.' } : {}) });
   };
-  run = async (input: HostMetabolismRequest | Promise<HostMetabolismRequest>): Promise<void> => {
-    if (!this.active) { if (input instanceof Promise) void input.catch(() => {}); return; }
+  /** True means this operation accepted its result; caught failures and cancellations are not successful replays. */
+  run = async (input: HostMetabolismRequest | Promise<HostMetabolismRequest>): Promise<boolean> => {
+    if (!this.active) { if (input instanceof Promise) void input.catch(() => {}); return false; }
     this.cancel(); const owner = new AbortController(); this.owner = owner;
     const current = () => this.active && this.owner === owner && !owner.signal.aborted;
     this.publish({ busy: true, error: null, notice: null, phase: 'Reading local model input' });
     try {
       const request = await readable(input instanceof Promise ? input.then(value => structuredClone(value)) : Promise.resolve(structuredClone(input)), owner.signal);
-      if (!current()) return;
+      if (!current()) return false;
       const value = await new Promise<HostMetabolismWork>((resolve, reject) => {
         const worker = this.factory(); let done = false;
         const finish = (value?: HostMetabolismWork, error?: Error) => {
@@ -118,13 +119,18 @@ export class HostMetabolismSession {
         try { if (owner.signal.aborted) cancel(); else worker.postMessage(request); }
         catch (cause) { finish(undefined, cause instanceof Error ? cause : new Error(String(cause))); }
       });
-      if (current()) this.publish({ accepted: value, notice: value.verified
+      if (!current()) return false;
+      this.publish({ accepted: value, notice: value.verified
         ? 'Verified host-model replay: fresh scenarios, flux ranges and complete evidence identity match.'
         : value.record ? 'Host-model scenarios computed. Inspect each solver status and the recorded assumptions.'
           : request.kind === 'reference' || request.kind === 'reference-file'
             ? 'Published host model loaded. Original file bytes match the pinned SHA-256. Review source and medium, then run the model.'
             : 'Host model loaded. Review source and medium, then run the model.' });
-    } catch (cause) { if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) }); }
+      return true;
+    } catch (cause) {
+      if (current()) this.publish({ error: cause instanceof Error ? cause.message : String(cause) });
+      return false;
+    }
     finally { if (current()) { this.owner = null; this.publish({ busy: false, phase: '' }); } }
   };
 }

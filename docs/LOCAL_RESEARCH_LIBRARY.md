@@ -20,6 +20,7 @@ room. Unsaved changes are not included in an earlier snapshot.
 | Measured mutant assays | Complete accepted assay dataset, protein background, observations, contrast settings and numerical evidence | Recompute the measured contrasts and verify the saved record before restoring the draft. |
 | Abundance network | Complete accepted local abundance dataset, missingness, analysis parameters and numerical evidence | Import through the abundance worker and freshly verify the result and identity. |
 | Environmental sample evidence | Complete accepted observations, source metadata, missingness and numerical evidence | Import through the environmental worker and independently recompute the result. |
+| Sourced host-model scenarios and gene knockouts | Complete accepted COBRA model, host/source/license, explicit medium, reaction edits or gene-deletion rules, flux-range settings and solver evidence | Recompute the original experiment in the host-model worker and verify its complete result identity before restoring it. Both experiment types share the host-model saved list. |
 
 For these experiment panels, **Save** captures the last accepted result, not
 unapplied draft edits. An import failure, numerical mismatch or cancellation

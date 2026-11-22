@@ -9,6 +9,8 @@ import { resolvePhylogenyOptions } from '../../../core/src/analysis/aligned-phyl
 import { executeAlignedPhylogenyRequest } from '../workers/AlignedPhylogenySession';
 import { executeTemporalRequest, temporalDatingRequest } from '../workers/TemporalSignalSession';
 import { executeAncestralRequest } from '../workers/AncestralSession';
+import { executeHostMetabolismRequest } from '../workers/HostMetabolismSession';
+import { hostGeneWorkflowFixture } from '../../../core/src/analysis/host-gene-knockout.fixture';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -175,6 +177,43 @@ describe('saved experiment replay ownership', () => {
 });
 
 describe('saved research client transaction ownership (event fixture)', () => {
+  it('reopens full host flux and gene-knockout experiments from the same local library without refetching models', () => fixture(async ({ store }) => {
+    const input = hostGeneWorkflowFixture();
+    const scenarios = await executeHostMetabolismRequest({ kind: 'analyze', input, options: {
+      changes: [{ reactionId: 'complex', lowerBound: 0, upperBound: 2,
+        evidence: { kind: 'assumption', reference: 'Independent parallel-route example', description: 'Bound one route to two units', gene: null } }],
+      variability: ['complex', 'alternative'], objectiveLoss: 0,
+    } });
+    const knockout = await executeHostMetabolismRequest({ kind: 'knockout', input, options: {
+      genes: ['c', 'd'], mode: 'joint', reference: 'Independent OR-rule example', variability: ['complex'], objectiveLoss: 0,
+    } });
+    assert.equal(scenarios.result!.baseline.objective, 9);
+    assert.equal(scenarios.result!.perturbed!.objective, 6); // 2 + 4, below the nine-unit supply.
+    assert.equal(knockout.geneResult!.runs[0].scenario.objective, 6); // Only the six-unit route remains.
+    const saved = await Promise.all([scenarios, knockout].map(work => store.save('host-metabolism', 'Host experiment', serializeAnalysisRecord(work.record!))));
+    assert.notEqual(saved[0].id, saved[1].id);
+    const reopened = new ResearchStorage('isolated-test');
+    assert.equal((await reopened.list('host-metabolism')).length, 2);
+    let requests = 0;
+    for (const [i, original] of [scenarios, knockout].entries()) {
+      const snapshot = await reopened.read(saved[i].id, 'host-metabolism');
+      const replay = await executeHostMetabolismRequest({ kind: 'import', content: snapshot.content }, undefined, {
+        fetcher: async () => { requests++; throw new Error('Saved models must be self-contained'); },
+      });
+      assert.equal(replay.verified, true); assert.equal(replay.record!.resultId, original.record!.resultId);
+      assert.deepEqual(replay.input, input); assert.deepEqual(replay.result, original.result);
+      assert.deepEqual(replay.geneResult, original.geneResult);
+      await assert.rejects(reopened.read(saved[i].id, 'pangenome'), /another panel/);
+    }
+    assert.equal(requests, 0);
+    // A storage checksum alone cannot make fabricated numerical output executable.
+    const forged = structuredClone(knockout.record!);
+    (forged.fields.experiment.value as { runs: Array<{ disabled: unknown[] }> }).runs[0].disabled = [];
+    const signed = await createAnalysisRecord({ ...forged, inputs: forged.inputs.map(({ sha256: _sha, ...row }) => row) });
+    const bad = await store.save('host-metabolism', 'Forged result', serializeAnalysisRecord(signed));
+    await assert.rejects(executeHostMetabolismRequest({ kind: 'import', content: (await reopened.read(bad.id, 'host-metabolism')).content }), /Fresh gene-knockout/);
+    await assert.rejects(store.save('host-metabolism', 'Uncomputed input', JSON.stringify(input)), /match/);
+  }));
   it('reopens the complete pangenome, root, temporal, clock and ancestral chain through fresh production replay', () => fixture(async ({ store }) => {
     const input: PangenomeInput = { format: 'phage-explorer-pangenome', version: 1, name: 'Private saved quartet', source: 'demo',
       sequences: ['A', 'B', 'C', 'D'].map((id, i) => ({ id, description: 'Synthetic sequence',

@@ -6,6 +6,8 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { downloadString } from '../../utils/export';
 import { HostGeneKnockoutPanel } from './HostGeneKnockoutPanel';
 import { ECOLI_CORE_REFERENCE } from '../../../../core/src/analysis/host-metabolism-reference';
+import { SavedResearchPanel } from './SavedResearchPanel';
+import { replaySavedResearch } from '../../db/research-storage';
 
 const SOURCE_LABELS: Record<Exclude<keyof HostModelSource, 'kind'>, string> = {
   name: 'Host model name', version: 'Host model version', organism: 'Host organism', strain: 'Host strain',
@@ -24,7 +26,9 @@ const boundsText = (value: HostFluxScenario | null, id: string): string => {
 export function HostMetabolismPanel(): React.ReactElement {
   const id = useId();
   const session = useMemo(() => new HostMetabolismSession(() => new Worker(new URL('../../workers/host-metabolism.worker.ts', import.meta.url), { type: 'module' })), []);
-  const { accepted, busy, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const { accepted, busy: modelBusy, phase, error, notice } = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const [storageBusy, setStorageBusy] = useState(false);
+  const busy = modelBusy || storageBusy;
   const [source, setSource] = useState<HostModelSource>(() => ({ kind: 'local', ...Object.fromEntries(sourceKeys.map(key => [key, ''])) } as HostModelSource));
   const [cobraFile, setCobraFile] = useState<File | null>(null), [cobraText, setCobraText] = useState('');
   const [mediumName, setMediumName] = useState(''), [mediumReference, setMediumReference] = useState(''), [mediumBounds, setMediumBounds] = useState('[]');
@@ -61,7 +65,12 @@ export function HostMetabolismPanel(): React.ReactElement {
   return <section aria-label="Sourced host metabolism" style={{ display: 'grid', gap: '1rem', overflowWrap: 'anywhere' }}>
     <h3>Sourced host-model scenarios</h3>
     <p>Load an explicit host model and medium, then compare simultaneous reaction-bound changes. No host, biomass objective or AMG capacity is guessed from the selected phage.
-      Inputs stay local. Model flux is not measured growth, fitness or burst yield. Export before leaving this workspace.</p>
+      Inputs stay local. Model flux is not measured growth, fitness or burst yield. Save an accepted experiment locally or export it before leaving this workspace.</p>
+    <SavedResearchPanel kind="host-metabolism" suggestedName={`${accepted?.input.source.name ?? 'Host model'} · ${accepted?.geneResult ? 'gene knockouts' : 'flux scenarios'}`}
+      capture={accepted?.record ? () => serializeAnalysisRecord(accepted.record!) : null}
+      disabled={modelBusy} onActivityChange={setStorageBusy}
+      restore={(content, signal) => replaySavedResearch(signal, { run: () => session.run({ kind: 'import', content }),
+        cancel: session.cancel, error: () => session.getSnapshot().error })} />
     <details open={!accepted}><summary>Use a published E. coli reference model</summary>
       <p>{ECOLI_CORE_REFERENCE.name}. Loading this reference retains its published aerobic glucose exchange bounds,
         source and license. It does not choose a host for the selected phage or infer an infected-cell medium.</p>
@@ -92,8 +101,8 @@ export function HostMetabolismPanel(): React.ReactElement {
       const file = event.currentTarget.files?.[0]; event.currentTarget.value = ''; if (!file) return;
       run(file.size > 10 * 1024 * 1024 ? Promise.reject(new Error('Saved host file exceeds 10 MiB.')) : file.text().then(content => ({ kind: 'import' as const, content })));
     }} />
-    <button type="button" disabled={!busy} onClick={session.cancel}>Cancel host-model work</button>
-    <p role="status" data-testid="host-model-status">{busy ? `${phase}. Accepted evidence remains unchanged.` : notice ?? 'No host model loaded.'}</p>
+    <button type="button" disabled={!modelBusy} onClick={session.cancel}>Cancel host-model work</button>
+    <p role="status" data-testid="host-model-status">{modelBusy ? `${phase}. Accepted evidence remains unchanged.` : notice ?? 'No host model loaded.'}</p>
     {(error || localError) && <p role="alert">{localError ?? error}</p>}
     <details open={!accepted}><summary>Prepare a sourced COBRA JSON model</summary>
       <form onSubmit={event => {
