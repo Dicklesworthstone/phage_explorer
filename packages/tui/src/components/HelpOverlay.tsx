@@ -268,7 +268,7 @@ export function HelpOverlay(): React.ReactElement {
       </Box>
       <Box justifyContent="center" marginTop={0}>
         <Text color={colors.textMuted}>
-          Features unlock as you explore: 5 min → intermediate, 60 min → power
+          Use : for private genomes, workflows, or Unlock advanced overlays.
         </Text>
       </Box>
     </Box>

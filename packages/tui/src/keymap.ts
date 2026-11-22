@@ -91,7 +91,7 @@ export const TUI_KEYMAP: readonly TuiBinding[] = [
   { keys: ['Y'], display: 'Shift+Y', action: 'Synteny alignment', category: 'Analysis', tier: 'intermediate', handler: 'SYNTENY_ID' },
   { keys: ['S'], display: 'Shift+S', action: 'Simulation hub', category: 'Analysis', tier: 'power', handler: 'SIMULATION_MENU_ID' },
   { keys: ['f', 'F'], display: 'Ctrl+F', action: 'Fold quickview', category: 'Analysis', tier: 'power', handler: "'foldQuickview'" },
-  { keys: ['p', 'P'], display: 'Ctrl+P', action: 'Command palette', category: 'System', tier: 'power', handler: "'commandPalette'" },
+  { keys: ['p', 'P'], display: 'Ctrl+P', action: 'Command palette', category: 'System', handler: "'commandPalette'" },
 
   // --- 3D fullscreen mode ---------------------------------------------------
   // Active only while the 3D model is fullscreen; the handler returns early in
@@ -106,7 +106,7 @@ export const TUI_KEYMAP: readonly TuiBinding[] = [
   { keys: ['k', 'K'], display: 'k', action: 'Amino-acid key', category: 'System', handler: "'aaKey'" },
   { keys: ['s', '/'], display: 's / /', action: 'Search', category: 'System', handler: "'search'" },
   { keys: ['w', 'W'], display: 'w', action: 'Comparison view', category: 'System', handler: 'openComparison' },
-  { keys: [':'], display: ':', action: 'Command palette', category: 'System', tier: 'power', handler: "'commandPalette'" },
+  { keys: [':'], display: ':', action: 'Command palette', category: 'System', handler: "'commandPalette'" },
 ];
 
 /**

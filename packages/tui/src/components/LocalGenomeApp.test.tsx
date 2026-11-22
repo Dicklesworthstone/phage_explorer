@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { usePhageStore } from '@phage-explorer/state';
 import { importLocalGenomes, exportLocalGenomeBundle, type GenomeImportResult } from '../../../core/src/genome-import';
 import { TerminalGenomeSession } from '../local-genome-session';
-import { currentTerminalResearchView, TerminalGenomeView } from './LocalGenomeApp';
+import { currentTerminalResearchView, LocalGenomeApp, TerminalGenomeView } from './LocalGenomeApp';
+import { initializeCommands } from '../commands/definitions';
+import { getCommands } from '../commands/registry';
 
 const waitFor = async (predicate: () => boolean) => {
   const end = Date.now() + 5000;
@@ -18,12 +20,12 @@ const waitFor = async (predicate: () => boolean) => {
     await new Promise(resolve => setTimeout(resolve, 10));
   }
 };
-function terminal(session: TerminalGenomeSession, onReturn: () => void) {
+function terminal(session: TerminalGenomeSession, onReturn: () => void, element?: React.ReactElement) {
   let output = '', inputReady = false;
   const stdout = Object.assign(new Writable({ write(chunk, _encoding, callback) { output += chunk.toString(); callback(); } }), { columns: 100, rows: 30 });
   const stdin = Object.assign(new PassThrough(), { isTTY: true,
     setRawMode: (_raw: boolean) => { inputReady = true; }, ref() {}, unref() {} });
-  const ui = render(<TerminalGenomeView session={session} onReturn={onReturn} />, {
+  const ui = render(element ?? <TerminalGenomeView session={session} onReturn={onReturn} />, {
     stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
     stderr: stdout as unknown as NodeJS.WriteStream, debug: true, patchConsole: false, exitOnCtrlC: false,
   });
@@ -99,5 +101,62 @@ describe('native Ink private-genome input and review', () => {
       assert.equal(returned, 0);
       test.input('\u001b'); await waitFor(() => returned === 1);
     } finally { test.ui.unmount(); await session.close(); usePhageStore.setState(prior); }
+  });
+});
+
+describe('immediate terminal research access', () => {
+  for (const [binding, key, query, title] of [
+    ['colon', ':', 'Local genomes', 'LOCAL GENOMES — PRIVATE SESSION'],
+    ['Ctrl+P', '\u0010', 'Research workflows', 'RESEARCH WORKFLOWS — AUTHOR AND REPLAY'],
+  ] as const) {
+    it('opens ' + query + ' through ' + binding + ' in a fresh novice session', async () => {
+      const prior = usePhageStore.getState();
+      const parsed = await importLocalGenomes({ name: 'private.fa', text: '>private\nATGAAACCCGGGTTTCAT' });
+      const session = new TerminalGenomeSession(null, parsed.genomes);
+      usePhageStore.setState({
+        phages: [], currentPhage: null, currentPhageIndex: 0, selectedGeneId: null,
+        experienceLevel: 'novice', overlays: [], overlayData: {}, error: null,
+        isLoadingPhage: false, quitConfirmPending: false, show3DModel: false,
+        model3DFullscreen: false, diffEnabled: false, viewMode: 'dna', readingFrame: 0, scrollPosition: 0,
+      });
+      const test = terminal(session, () => {}, <LocalGenomeApp session={session} />);
+      try {
+        await waitFor(() => test.ready() && usePhageStore.getState().currentPhage !== null
+          && !usePhageStore.getState().isLoadingPhage);
+        test.input(key);
+        await waitFor(() => usePhageStore.getState().overlays.includes('commandPalette')
+          && test.output().includes('COMMAND PALETTE'));
+        assert.equal(usePhageStore.getState().experienceLevel, 'novice', 'opening commands must not force an expertise change');
+        assert.equal(usePhageStore.getState().error, null);
+        test.input(query);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        test.input('\r');
+        await waitFor(() => test.output().includes(title));
+        assert.equal(usePhageStore.getState().experienceLevel, 'novice');
+        assert.equal(usePhageStore.getState().error, null);
+        assert.equal(session.getSnapshot().localCount, 1, 'opening a workspace preserves accepted private input');
+      } finally { test.ui.unmount(); await session.close(); usePhageStore.setState(prior); }
+    });
+  }
+
+  it('lets novice and intermediate users explicitly unlock all tools without an error or a timer downgrade', () => {
+    const prior = usePhageStore.getState();
+    initializeCommands();
+    const palette = getCommands().find(command => command.id === 'command-palette');
+    const unlock = getCommands().find(command => command.id === 'unlock-advanced');
+    assert(palette); assert(unlock);
+    try {
+      assert.equal(palette.minLevel, undefined);
+      assert.equal(unlock.maxLevel, 'intermediate', 'intermediate users still need a route to power tools');
+      for (const level of ['novice', 'intermediate'] as const) {
+        usePhageStore.setState({ experienceLevel: level, error: null, scrollPosition: 7 });
+        unlock.action();
+        assert.equal(usePhageStore.getState().experienceLevel, 'power');
+        assert.equal(usePhageStore.getState().error, null);
+        assert.equal(usePhageStore.getState().scrollPosition, 7);
+        usePhageStore.getState().promoteExperienceLevel('intermediate');
+        assert.equal(usePhageStore.getState().experienceLevel, 'power');
+      }
+    } finally { usePhageStore.setState(prior); }
   });
 });

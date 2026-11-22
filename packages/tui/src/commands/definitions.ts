@@ -347,7 +347,6 @@ export function initializeCommands(): void {
     keywords: ['palette', 'commands'],
     category: 'Menu',
     shortcut: 'Ctrl+P',
-    minLevel: 'power',
     action: () => usePhageStore.getState().openOverlay('commandPalette'),
   });
 
@@ -373,14 +372,14 @@ export function initializeCommands(): void {
     action: () => usePhageStore.getState().openOverlay('simulationHub'),
   });
 
-  // Novice Hints
+  // Explicit opt-in remains available before automatic promotion completes.
   registerCommand({
     id: 'unlock-advanced',
     label: 'Unlock advanced overlays',
-    description: 'Promote experience to access advanced tools',
+    description: 'Show all analysis and simulation commands immediately',
     keywords: ['unlock', 'advanced', 'promote'],
     minLevel: 'novice',
-    maxLevel: 'novice',
-    action: () => usePhageStore.getState().setError('Advanced overlays unlock automatically after time; ask to promote to power.'),
+    maxLevel: 'intermediate',
+    action: () => usePhageStore.getState().promoteExperienceLevel('power'),
   });
 }

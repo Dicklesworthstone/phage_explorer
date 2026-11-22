@@ -930,10 +930,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         ctrl: true,
         keys: ['p', 'P'],
         run: () => {
-          if (!isPower) {
-            setError('Command palette unlocks at power tier.');
-            return;
-          }
           openOverlay('commandPalette');
         },
       },
@@ -1093,10 +1089,6 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
     } else if (input === 'w' || input === 'W') {
       openComparison();
     } else if (input === ':') {
-      if (!isPower) {
-        setError('Command palette unlocks at power tier.');
-        return;
-      }
       openOverlay('commandPalette');
     }
   }, { isActive: !activeOverlay || Boolean(error) });

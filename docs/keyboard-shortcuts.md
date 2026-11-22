@@ -212,8 +212,8 @@ reached by use over time or by manual promotion.
 | Key | Action | Tier |
 |---|---|---|
 | `k` | Amino-acid key | — |
-| `Ctrl+P` | Command palette | power |
-| `:` | Command palette | power |
+| `Ctrl+P` | Command palette | — |
+| `:` | Command palette | — |
 | `w` | Comparison view | — |
 | `?` | Help overlay | — |
 | `q` | Quit (press twice to confirm) | — |
