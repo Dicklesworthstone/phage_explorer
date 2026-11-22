@@ -6,6 +6,18 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Inspect and export selected CDS features in the terminal
+
+- The command palette opens a complete CDS inspector for catalog and accepted
+  local genomes, including transcript-order DNA, annotation-aware protein,
+  original qualifiers and source/result identities. Joined, reverse and
+  origin-spanning features use the same extraction and export producer as the
+  browser; unsupported translations retain readable DNA and explicit reasons.
+- Keyboard navigation selects genes and pages through complete sequences.
+  DNA/protein FASTA and full JSON exports use explicit paths and refuse existing
+  files. Changed sources or annotations invalidate pending results and exports;
+  the selected CDS can be opened directly in the main sequence view.
+
 ### Save and reopen the complete phylogeny research chain
 
 - Explicit local snapshots now cover unrooted/rooted phylogenies, temporal
@@ -15,6 +27,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 - Reopening recomputes and verifies the full recorded chain. Failed or cancelled
   restoration preserves the last accepted analysis, and a newer root handoff
   supersedes an earlier pending saved open. Saving remains opt-in and local.
+  [Commit 44a7742](https://github.com/Dicklesworthstone/phage_explorer/commit/44a77427a966eabc2878b5d72fff737d0dea38a5).
 
 ### Complete resistance runs at every supported playback speed
 

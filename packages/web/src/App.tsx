@@ -21,7 +21,7 @@ import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotk
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
-import type { SelectedCdsSource } from './hooks/SelectedCdsSession';
+import type { SelectedCdsSource } from '@phage-explorer/core';
 import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
 import {

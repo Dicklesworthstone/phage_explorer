@@ -20,6 +20,7 @@ import { AALegend } from './AALegend';
 import { AnalysisMenuOverlay } from './MenuOverlays';
 import { GCOverlay } from './GCOverlay';
 import { CommandPalette } from './CommandPalette';
+import { SelectedCdsView } from './SelectedCdsView';
 import { SequenceComplexityOverlay } from './SequenceComplexityOverlay';
 import { BendabilityOverlay } from './BendabilityOverlay';
 import { PromoterOverlay } from './PromoterOverlay';
@@ -57,7 +58,7 @@ import { FoldQuickview } from './FoldQuickview';
 import { HGTOverlay } from './HGTOverlay';
 import { BiasDecompositionOverlay } from './BiasDecompositionOverlay';
 import { analyzeHGTProvenance, analyzeTailFiberTropism } from '@phage-explorer/comparison';
-import type { FoldEmbedding, StructuralConstraintReport, MosaicDataset, MosaicSequenceInput, PhageSummary, PhageFull } from '@phage-explorer/core';
+import type { FoldEmbedding, StructuralConstraintReport, MosaicDataset, MosaicSequenceInput, PhageSummary, PhageFull, SelectedCdsSource } from '@phage-explorer/core';
 import { analyzeStructuralConstraints, MOSAIC_LIMITS } from '@phage-explorer/core';
 import { reconstructCdsReference } from '../../../core/src/analysis/cds-consequences';
 import { initializeCommands } from '../commands/definitions';
@@ -317,6 +318,23 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
   const [sequence, setSequence] = useState<string>('');
   const [mosaicQuery, setMosaicQuery] = useState<{ repository: PhageRepository; phage: PhageFull; input: MosaicSequenceInput } | null>(null);
   const [analysisProgress, setAnalysisProgress] = useState<string>('');
+
+  // The inspector receives only the sequence/annotation pair accepted by the
+  // current loader. Its export guard also consults the live store, before React
+  // has had a chance to render a newly selected source.
+  const isCurrentCdsSource = React.useCallback((source: SelectedCdsSource): boolean => {
+    const accepted = acceptedSourceRef.current, state = usePhageStore.getState();
+    return !!accepted && currentRepositoryRef.current === repository && source.owner === repository
+      && accepted.repository === repository && accepted.phage === source.phage && accepted.sequence === source.sequence
+      && accepted.phages === state.phages && accepted.index === state.currentPhageIndex
+      && state.currentPhage === source.phage && state.phages[state.currentPhageIndex]?.id === source.phage.id;
+  }, [repository]);
+  const selectedCdsSource = React.useMemo<SelectedCdsSource | null>(() => {
+    const accepted = acceptedSourceRef.current;
+    if (!accepted || accepted.phage !== currentPhage || accepted.sequence !== sequence) return null;
+    const source = { owner: repository, phage: accepted.phage, sequence: accepted.sequence };
+    return isCurrentCdsSource(source) ? source : null;
+  }, [repository, phages, currentPhageIndex, currentPhage, sequence, isCurrentCdsSource]);
 
   const mosaicDataset = React.useMemo<MosaicDataset | null>(() => {
     const panel = mosaicReferencesRef.current;
@@ -1139,6 +1157,12 @@ export function App({ repository, foldEmbeddings = [] }: AppProps): React.ReactE
         <Text color="gray">Escape to return to the genome · Q to quit</Text>
       </Box>
     );
+  }
+
+  // The full-screen inspector owns input while remaining on this exact loader.
+  if (activeOverlay === 'selectedCds') {
+    return <SelectedCdsView source={selectedCdsSource} isCurrentSource={isCurrentCdsSource}
+      onClose={() => closeOverlay('selectedCds')} />;
   }
 
   // Loading display

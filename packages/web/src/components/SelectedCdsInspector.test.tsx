@@ -3,7 +3,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { importLocalGenomes } from '@phage-explorer/core';
-import { prepareSelectedCds, selectedCdsExport } from '../hooks/SelectedCdsSession';
+import { prepareSelectedCds, selectedCdsExport } from '@phage-explorer/core';
 import { SelectedCdsDetails } from './SelectedCdsInspector';
 
 async function result(sequence = 'ATGTGATAA', qualifiers = '                     /transl_table=4\n', location = `1..${sequence.length}`) {

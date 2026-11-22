@@ -136,7 +136,7 @@ export function HelpOverlay(): React.ReactElement {
             { key: 'A → Phase portraits / Shift+P', desc: 'AA property PCA / domain map' },
             { key: 'A → Bias', desc: 'Bias PCA (1=di, 2=codon)' },
             { key: 'Shift+S', desc: 'Simulation hub' },
-            { key: ': / Ctrl+P', desc: 'Command palette' },
+            { key: ': / Ctrl+P', desc: 'Commands: inspect CDS, import, export' },
           ],
         },
         {

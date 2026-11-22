@@ -6,8 +6,7 @@ import {
   useState,
   type ReactElement,
 } from 'react';
-import type { GeneInfo, PhageFull, ViewMode } from '@phage-explorer/core';
-import type { SelectedCdsSource } from '../../hooks/SelectedCdsSession';
+import type { GeneInfo, PhageFull, ViewMode, SelectedCdsSource } from '@phage-explorer/core';
 import { SelectedCdsInspector } from '../SelectedCdsInspector';
 import { usePhageStore, useSelectedGeneStore } from '../../store';
 import { copyToClipboard } from '../../utils/export';

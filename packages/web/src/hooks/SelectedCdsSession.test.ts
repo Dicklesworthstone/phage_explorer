@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { importLocalGenomes, type GeneInfo } from '@phage-explorer/core';
 import {
-  prepareSelectedCds, selectedCdsExport, selectedCdsLocation, SelectedCdsSession,
+  prepareSelectedCds, selectedCdsExport, selectedCdsLocation,
   type SelectedCdsSource,
-} from './SelectedCdsSession';
+} from '@phage-explorer/core';
+import { SelectedCdsSession } from './SelectedCdsSession';
 
 function source(sequence = 'ATGAAATAA', geneOptions: Partial<GeneInfo> = {}): SelectedCdsSource {
   const gene: GeneInfo = { id: 7, name: 'Capsid', locusTag: 'gp7', startPos: 0, endPos: sequence.length,

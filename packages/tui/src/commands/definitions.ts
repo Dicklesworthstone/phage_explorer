@@ -36,6 +36,15 @@ export function initializeCommands(): void {
 
   // View
   registerCommand({
+    id: 'selected-cds',
+    label: 'Inspect CDS: DNA, protein and exports',
+    description: 'Choose an annotated CDS, inspect exact joined/strand coordinates and save complete FASTA or JSON.',
+    keywords: ['gene', 'cds', 'protein', 'translation', 'fasta', 'json', 'export', 'qualifiers'],
+    category: 'Research',
+    action: () => usePhageStore.getState().openOverlay('selectedCds'),
+  });
+
+  registerCommand({
     id: 'view-toggle',
     label: 'Toggle DNA / AA view',
     description: 'Switch sequence mode',

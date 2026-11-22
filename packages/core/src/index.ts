@@ -149,3 +149,6 @@ export * from './analysis/host-range-evidence';
 
 // Source-backed protein/host/chain inputs; availability is separate from inference.
 export * from './protein-reference';
+
+// Exact annotated CDS inspection and source-bound sequence exports on both surfaces.
+export * from './selected-cds';

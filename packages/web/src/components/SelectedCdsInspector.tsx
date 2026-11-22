@@ -1,9 +1,10 @@
 import React, { useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import type { GeneInfo } from '@phage-explorer/core';
 import {
-  SelectedCdsSession, selectedCdsLocation,
+  selectedCdsLocation,
   type SelectedCdsExportKind, type SelectedCdsResult, type SelectedCdsSource,
-} from '../hooks/SelectedCdsSession';
+} from '@phage-explorer/core';
+import { SelectedCdsSession } from '../hooks/SelectedCdsSession';
 import { copyToClipboard, downloadString } from '../utils/export';
 
 function SequencePreview({ sequence, label, unit }: { sequence: string; label: string; unit: string }): React.ReactElement {

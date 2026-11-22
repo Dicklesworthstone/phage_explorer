@@ -58,6 +58,7 @@ export type OverlayId =
   | 'kmerAnomaly'
   | 'foldQuickview'
   | 'commandPalette'
+  | 'selectedCds'
   | 'phasePortrait'
   | 'biasDecomposition'
   | 'crispr'

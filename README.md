@@ -187,8 +187,21 @@ Use `--allow-accession-collisions` to explicitly retain different records with t
 same accession. In the TUI, `N` switches DNA/amino acids, `F` cycles the reading
 frame, and Ctrl+C exits and saves the requested bundle. Joined CDS segments retain
 their gaps in the terminal gene map. Local records without supplied structure or
-fold references show unavailable states. File import works at startup; an in-app
-paste/review workflow and full analysis replay remain open work.
+fold references show unavailable states. The command palette (`:` or Ctrl+P) also
+offers in-app local-file import/review/export and research workflow authoring;
+broader analysis and replay coverage remains tracked in the bridge plan.
+
+Choose **Inspect CDS: DNA, protein and exports** in that palette to inspect the
+current genome's annotated coding sequences. Left/Right chooses a CDS; Tab moves
+through its summary, complete paged DNA/protein, original qualifiers and source
+fingerprints. Up/Down or Page Up/Page Down scrolls long content. Joined, reverse
+and circular-origin segments use the same extraction as the browser, including
+`codon_start` and the annotated genetic code. Unsupported translation retains
+readable annotated DNA and explains why protein is unavailable. `D`, `P` and `J`
+save complete CDS FASTA, protein FASTA or the JSON record to a new private file;
+existing files are never overwritten. `G` returns to that gene in the sequence
+viewer, and Escape returns without changing the sequence view. These exports
+describe the annotated sequence; they do not establish expression or function.
 
 Deployment details:
 - Hosting: Vercel (prod alias: `phage-explorer.org`)
