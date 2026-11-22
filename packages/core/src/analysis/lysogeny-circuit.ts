@@ -152,7 +152,7 @@ function clamp(val: number, min: number, max: number): number {
 /** Bounds on computation, not caps on the simulated concentrations. */
 export const LYSOGENY_INTEGRATION_LIMITS = {
   elapsedTime: 10000,
-  attempts: 20000,
+  attempts: 50000,
   relativeTolerance: 1e-7,
   absoluteTolerance: 1e-10,
 } as const;

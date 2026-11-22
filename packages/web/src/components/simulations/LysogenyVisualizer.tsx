@@ -79,7 +79,10 @@ export function LysogenyVisualizer({
       // ==========================================
       // PHASE PORTRAIT: [CI] (x) vs [Cro] (y)
       // ==========================================
-      const maxScale = 3.2;
+      // The solver does not cap concentrations. Include the retained trajectory
+      // so both the current state and earlier high-concentration states stay visible.
+      const maxScale = Math.max(3.2, state.ci, state.cro,
+        ...state.history.flatMap(point => [point.ci, point.cro])) * 1.05;
 
       // Coordinate transforms
       const toScreenX = (ciVal: number) => padding.left + (Math.max(0, ciVal) / maxScale) * plotWidth;
@@ -88,7 +91,8 @@ export function LysogenyVisualizer({
       // Grid background lines
       ctx.strokeStyle = colors.borderLight ?? '#1f293d';
       ctx.lineWidth = 0.5;
-      for (let g = 0.5; g <= maxScale; g += 0.5) {
+      for (let tick = 1; tick <= 6; tick++) {
+        const g = maxScale * tick / 6;
         // Vertical lines (CI)
         const gx = toScreenX(g);
         ctx.beginPath();
@@ -271,7 +275,8 @@ export function LysogenyVisualizer({
       ctx.fillStyle = colors.textMuted ?? '#64748b';
       ctx.font = '9px monospace';
       ctx.textAlign = 'right';
-      for (let v = 0; v <= maxScale; v += 1.0) {
+      for (let tick = 0; tick <= 4; tick++) {
+        const v = maxScale * tick / 4;
         const yPos = toScreenY(v);
         ctx.fillText(v.toFixed(1), padding.left - 6, yPos + 3);
         const xPos = toScreenX(v);
@@ -296,6 +301,11 @@ export function LysogenyVisualizer({
       // ==========================================
       const history = state.history ?? [];
       if (history.length === 0) return;
+      const startTime = history[0].time;
+      const endTime = history[history.length - 1].time;
+      const timeSpan = endTime - startTime;
+      const toTimeX = (time: number) => padding.left +
+        (timeSpan > 0 ? (time - startTime) / timeSpan : 0) * plotWidth;
 
       const maxVal = Math.max(
         3.0,
@@ -323,14 +333,14 @@ export function LysogenyVisualizer({
 
       // X-axis label
       ctx.textAlign = 'center';
-      ctx.fillText(`Time (t = ${state.time.toFixed(1)} min)`, width / 2, height - 8);
+      ctx.fillText(`Time (${startTime.toFixed(1)}–${endTime.toFixed(1)} model units)`, width / 2, height - 8);
 
       // Draw CI Trace
       ctx.beginPath();
       ctx.strokeStyle = ciColor;
       ctx.lineWidth = 2.2;
       history.forEach((pt, i) => {
-        const x = padding.left + (i / Math.max(1, history.length - 1)) * plotWidth;
+        const x = toTimeX(pt.time);
         const y = height - padding.bottom - (pt.ci / maxVal) * plotHeight;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
@@ -342,7 +352,7 @@ export function LysogenyVisualizer({
       ctx.strokeStyle = croColor;
       ctx.lineWidth = 2.2;
       history.forEach((pt, i) => {
-        const x = padding.left + (i / Math.max(1, history.length - 1)) * plotWidth;
+        const x = toTimeX(pt.time);
         const y = height - padding.bottom - (pt.cro / maxVal) * plotHeight;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
@@ -357,7 +367,7 @@ export function LysogenyVisualizer({
         ctx.lineWidth = 1.8;
         ctx.setLineDash([3, 3]);
         history.forEach((pt, i) => {
-          const x = padding.left + (i / Math.max(1, history.length - 1)) * plotWidth;
+          const x = toTimeX(pt.time);
           const y = height - padding.bottom - ((pt.cII ?? 0) / maxVal) * plotHeight;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
