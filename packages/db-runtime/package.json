@@ -6,7 +6,8 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./local-genomes": "./src/local-genomes.ts"
+    "./local-genomes": "./src/local-genomes.ts",
+    "./sequence-window": "./src/sequence-window.ts"
   },
   "dependencies": {
     "@phage-explorer/db-schema": "workspace:*",

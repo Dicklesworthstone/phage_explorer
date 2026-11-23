@@ -2,7 +2,10 @@ import { describe, test } from 'bun:test';
 import { Database as BunDatabase } from 'bun:sqlite';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import initSqlJs from 'sql.js';
 import { publishProgressiveDataset, type DatasetSqlite } from '../../../../scripts/progressive-dataset';
 import { SqlJsRepository } from './SqlJsRepository';
@@ -160,3 +163,111 @@ describe('native publication to browser SQLite interoperability', () => {
     } finally { await offline.close(); }
   });
 });
+
+// These fixtures bypass the progressive publisher deliberately: legacy browser
+// datasets and native user databases must enforce the same exact-window contract.
+const windowSequence = 'A'.repeat(10000) + 'C'.repeat(10000) + 'G'.repeat(10000) + 'TRYSWKM';
+const windowChunks = Array.from({ length: 4 }, (_, chunkIndex) => ({
+  chunkIndex, sequence: windowSequence.slice(chunkIndex * 10000, (chunkIndex + 1) * 10000),
+}));
+async function withWindowRepository(
+  backend: 'native' | 'browser',
+  chunks: readonly { chunkIndex: number; sequence: string }[],
+  genomeLength: number,
+  verify: (repository: Pick<SqlJsRepository, 'getSequenceWindow'>) => Promise<void>,
+): Promise<void> {
+  const source = database();
+  let repository: SqlJsRepository | BunSqliteRepository | null = null;
+  try {
+    source.exec(schema);
+    source.query('INSERT INTO phages (id,slug,name,accession,genome_length,pdb_ids) VALUES (?,?,?,?,?,?)')
+      .run(1, 'window-fixture', 'Synthetic chunk fixture', 'SYNTHETIC_WINDOW', genomeLength, '[]');
+    for (const chunk of chunks) {
+      source.query('INSERT INTO sequences (phage_id,chunk_index,sequence) VALUES (?,?,?)')
+        .run(1, chunk.chunkIndex, chunk.sequence);
+    }
+    const bytes = new Uint8Array(source.serialize());
+    if (backend === 'browser') repository = (await sqlite())(bytes);
+    else {
+      const directory = await mkdtemp(join(tmpdir(), 'phage-sequence-window-'));
+      const path = join(directory, 'fixture.db');
+      await writeFile(path, bytes);
+      repository = new BunSqliteRepository(path, { readonly: true });
+    }
+    await verify(repository);
+  } finally {
+    await repository?.close();
+    source.close();
+  }
+}
+
+for (const backend of ['native', 'browser'] as const) {
+  describe(backend + ' SQLite exact sequence windows', () => {
+    test('preserves bases across all chunk boundaries and clips only at the genome end', async () => {
+      await withWindowRepository(backend, windowChunks, windowSequence.length, async repository => {
+        const offsets = [0, 1, 9998, 9999, 10000, 10001, 19999, 20000, 29999, 30000, 30006, 30007, 40000];
+        for (const start of offsets) {
+          for (const end of offsets.filter(value => value >= start)) {
+            assert.equal(await repository.getSequenceWindow(1, start, end), windowSequence.slice(start, end),
+              'exact interval [' + start + ', ' + end + ')');
+          }
+        }
+        assert.equal(await repository.getSequenceWindow(999, 0, 10), '');
+      });
+    });
+
+    test('rejects a missing interior chunk even when later bases could fill the requested length', async () => {
+      await withWindowRepository(backend, windowChunks.filter(chunk => chunk.chunkIndex !== 1), windowSequence.length, async repository => {
+        // The previous inclusive end-chunk query returned 10,000 Gs here:
+        // the length looked correct, but every base belonged to chunk 2.
+        await assert.rejects(repository.getSequenceWindow(1, 10000, 20000), /Incomplete genome sequence/);
+        await assert.rejects(repository.getSequenceWindow(1, 9998, 20004), /Incomplete genome sequence/);
+        await assert.rejects(repository.getSequenceWindow(1, 0, windowSequence.length), /Incomplete genome sequence/);
+        assert.equal(await repository.getSequenceWindow(1, 0, 10000), 'A'.repeat(10000));
+        assert.equal(await repository.getSequenceWindow(1, 20000, 20004), 'GGGG');
+      });
+    });
+
+    test('rejects short and long interior chunks instead of shifting neighboring bases', async () => {
+      for (const sequence of ['A'.repeat(9999), 'A'.repeat(10001)]) {
+        const chunks = [{ chunkIndex: 0, sequence }, ...windowChunks.slice(1)];
+        await withWindowRepository(backend, chunks, windowSequence.length, async repository => {
+          // With 9,999 As, the previous join/substr returned ACCCCC rather than AACCCC.
+          await assert.rejects(repository.getSequenceWindow(1, 9998, 10004), /Incomplete genome sequence/);
+          assert.equal(await repository.getSequenceWindow(1, 10000, 10004), 'CCCC');
+        });
+      }
+    });
+
+    test('requires the terminal chunk and its full declared length', async () => {
+      for (const terminal of ['', 'TRYSWK', 'TRYSWKMA']) {
+        const chunks = [...windowChunks.slice(0, 3), { chunkIndex: 3, sequence: terminal }];
+        await withWindowRepository(backend, chunks, windowSequence.length, async repository => {
+          await assert.rejects(repository.getSequenceWindow(1, 30000, 30001), /Incomplete genome sequence/);
+          await assert.rejects(repository.getSequenceWindow(1, 29999, 40000), /Incomplete genome sequence/);
+          // A half-open interval ending at this boundary does not depend on chunk 3.
+          assert.equal(await repository.getSequenceWindow(1, 29998, 30000), 'GG');
+        });
+      }
+      await withWindowRepository(backend, [], windowSequence.length, async repository => {
+        await assert.rejects(repository.getSequenceWindow(1, 0, 1), /Incomplete genome sequence/);
+      });
+    });
+
+    test('rejects invalid coordinates rather than truncating or reversing them', async () => {
+      await withWindowRepository(backend, windowChunks, windowSequence.length, async repository => {
+        for (const [start, end] of [[-1, 4], [4, 1], [0.5, 4], [0, 4.5], [NaN, 4], [0, NaN], [0, Infinity], [0, Number.MAX_SAFE_INTEGER + 1]]) {
+          await assert.rejects(repository.getSequenceWindow(1, start, end), /Invalid sequence window coordinates/);
+        }
+      });
+    });
+
+    test('rejects invalid declared lengths instead of returning unbound bases', async () => {
+      for (const length of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+        await withWindowRepository(backend, windowChunks, length, async repository => {
+          await assert.rejects(repository.getSequenceWindow(1, 0, 1), /Invalid genome length/);
+        });
+      }
+    });
+  });
+}

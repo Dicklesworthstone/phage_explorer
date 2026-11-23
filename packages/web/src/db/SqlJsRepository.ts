@@ -17,7 +17,8 @@ import type {
   HostTrnaPool,
   CodonAdaptation,
 } from './types';
-import { CHUNK_SIZE, CACHE_TTL } from './types';
+import { CACHE_TTL } from './types';
+import { readSequenceWindowFromChunks } from '@phage-explorer/db-runtime/sequence-window';
 import { LRUCache } from './lru-cache';
 
 /**
@@ -464,25 +465,18 @@ export class SqlJsRepository implements PhageRepository {
       throw new Error('Database not initialized');
     }
 
-    const startChunk = Math.floor(start / CHUNK_SIZE);
-    const endChunk = Math.floor(end / CHUNK_SIZE);
-
-    const results = this.execStatement<{ chunkIndex: number; sequence: string }>(
-      this.statements.getSequenceChunks,
-      [phageId, startChunk, endChunk]
+    return readSequenceWindowFromChunks(
+      start,
+      end,
+      () => this.getFullGenomeLength(phageId),
+      async (startChunk, endChunk) => {
+        if (!this.statements) throw new Error('Database not initialized');
+        return this.execStatement<{ chunkIndex: number; sequence: string }>(
+          this.statements.getSequenceChunks,
+          [phageId, startChunk, endChunk]
+        );
+      }
     );
-
-    if (results.length === 0) {
-      return '';
-    }
-
-    // Using join() for O(n) instead of O(n²) concatenation
-    const fullSeq = results.map(chunk => chunk.sequence).join('');
-
-    const windowStart = start - startChunk * CHUNK_SIZE;
-    const windowEnd = windowStart + (end - start);
-
-    return fullSeq.substring(windowStart, windowEnd);
   }
 
   async getFullGenomeLength(phageId: number): Promise<number> {

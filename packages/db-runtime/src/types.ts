@@ -14,7 +14,8 @@ export interface PhageRepository {
   // Get full phage data by slug
   getPhageBySlug(slug: string): Promise<PhageFull | null>;
 
-  // Get a window of sequence data
+  // Read a zero-based half-open window, clipped at the declared genome length.
+  // Invalid coordinates or incomplete stored chunks reject; no gaps are collapsed.
   getSequenceWindow(phageId: number, start: number, end: number): Promise<string>;
 
   // Get full genome length

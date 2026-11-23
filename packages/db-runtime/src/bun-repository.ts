@@ -15,7 +15,7 @@ import {
 } from '@phage-explorer/db-schema';
 import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding, type LatentSpacePoint } from '@phage-explorer/core';
 import type { PhageRepository, CacheEntry, TropismPrediction } from './types';
-import { CHUNK_SIZE } from './types';
+import { readSequenceWindowFromChunks } from './sequence-window';
 import { LRUCache } from './lru-cache';
 import { readFileSync, existsSync } from 'fs';
 
@@ -223,40 +223,25 @@ export class BunSqliteRepository implements PhageRepository {
   }
 
   async getSequenceWindow(phageId: number, start: number, end: number): Promise<string> {
-    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
-      return '';
-    }
-    // Calculate which chunks we need
-    const startChunk = Math.floor(start / CHUNK_SIZE);
-    const endChunk = Math.floor(end / CHUNK_SIZE);
-
-    const result = await this.db
-      .select({
-        chunkIndex: sequences.chunkIndex,
-        sequence: sequences.sequence,
-      })
-      .from(sequences)
-      .where(
-        and(
-          eq(sequences.phageId, phageId),
-          gte(sequences.chunkIndex, startChunk),
-          lte(sequences.chunkIndex, endChunk)
+    return readSequenceWindowFromChunks(
+      start,
+      end,
+      () => this.getFullGenomeLength(phageId),
+      async (startChunk, endChunk) => this.db
+        .select({
+          chunkIndex: sequences.chunkIndex,
+          sequence: sequences.sequence,
+        })
+        .from(sequences)
+        .where(
+          and(
+            eq(sequences.phageId, phageId),
+            gte(sequences.chunkIndex, startChunk),
+            lte(sequences.chunkIndex, endChunk)
+          )
         )
-      )
-      .orderBy(asc(sequences.chunkIndex));
-
-    if (result.length === 0) {
-      return '';
-    }
-
-    // Concatenate chunks - using join() for O(n) instead of O(n²) concatenation
-    const fullSeq = result.map(chunk => chunk.sequence).join('');
-
-    // Extract the requested window
-    const windowStart = start - startChunk * CHUNK_SIZE;
-    const windowEnd = windowStart + (end - start);
-
-    return fullSeq.substring(windowStart, windowEnd);
+        .orderBy(asc(sequences.chunkIndex))
+    );
   }
 
   async getFullGenomeLength(phageId: number): Promise<number> {
