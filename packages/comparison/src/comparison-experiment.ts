@@ -29,7 +29,7 @@ export interface GenomeComparisonExperiment {
   record: AnalysisRecord;
 }
 export const GENOME_COMPARISON_METHOD = {
-  id: 'genome-comparison', version: '2', implementation: 'typescript-comparison-engine',
+  id: 'genome-comparison', version: '3', implementation: 'typescript-comparison-engine',
 } as const;
 export const GENOME_COMPARISON_LIMITS = {
   sequenceBases: 1_000_000, genes: 20_000, recordBytes: 10 * 1024 * 1024,
@@ -136,7 +136,7 @@ export async function createGenomeComparisonExperiment(genomeA: ComparisonGenome
       }, limitations: [
         'This composite contains the declared metrics, their units and coverage; it is not a measured biological relationship or a species/host assignment.',
         'K-mer and composition resemblance do not establish homology. Position-paired information and sampled edit windows depend on the submitted strand and origin.',
-        'The sampled edit-distance operation breakdown is heuristic. The separate sequenceDiff and structuralVariants fields contain the bounded exact alignment or its explicit unavailable reason.',
+        'Within the configured exact edit limit, metrics reuse the bounded exact alignment when available; otherwise a rolling-row exact DP provides counts. Above that limit, sampled windows estimate total distance only and operation counts are unavailable. The separate sequenceDiff and structuralVariants fields contain the bounded exact alignment or its explicit unavailable reason.',
         'Supplied codon counts are used as recorded; null uses frame zero of the complete sequence, not an inferred set of coding genes. Ambiguous triplets are excluded from resolved codon tests, while the rank comparison retains supplied frequency bins. Gene-name overlap does not establish orthology.',
         'Runtime and wall-clock timestamps are operational metadata and are excluded from result identity. All numerical outputs, annotations, coordinates and display-mask bytes remain bound.',
       ] } },

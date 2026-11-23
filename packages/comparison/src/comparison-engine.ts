@@ -17,7 +17,7 @@ import type { GeneInfo, CodonUsageData } from '@phage-explorer/core';
 import { multiResolutionKmerAnalysis, minHashJaccard } from './kmer-analysis';
 import { analyzeInformationTheory } from './information-theory';
 import { compareFrequencyDistributions } from './rank-correlation';
-import { analyzeEditDistance } from './edit-distance';
+import { analyzeEditDistance, editDistanceFromAlignment } from './edit-distance';
 import {
   analyzeBiologicalMetrics,
   compareCodonUsage,
@@ -69,8 +69,15 @@ export async function compareGenomes(
   // Information theory metrics
   const informationTheory = analyzeInformationTheory(sequenceA, sequenceB, 5);
 
-  // Edit distance (may use approximation for long sequences)
-  const editDistance = analyzeEditDistance(sequenceA, sequenceB, {
+  // One bounded alignment owns both exact metrics and diff/indel evidence.
+  // Preserve the selected edit-distance length threshold: a caller requesting
+  // sampled windows still gets that estimator, with no invented operation mix.
+  const exactEditEligible = sequenceA.length <= config.maxEditDistanceLength
+    && sequenceB.length <= config.maxEditDistanceLength;
+  const alignment = config.includeStructuralVariants !== false || exactEditEligible
+    ? computeSequenceDiff(sequenceA, sequenceB) : null;
+  const editDistance = exactEditEligible && alignment?.status === 'complete'
+    ? editDistanceFromAlignment(alignment.stats) : analyzeEditDistance(sequenceA, sequenceB, {
     maxExactLength: config.maxEditDistanceLength,
     windowSize: config.editDistanceWindowSize,
     windowCount: config.editDistanceWindowCount,
@@ -102,8 +109,7 @@ export async function compareGenomes(
 
   // One bounded alignment owns both exact diff highlights and indel evidence.
   // Budget exhaustion leaves other metrics usable and indels explicitly unavailable.
-  const sequenceDiff = config.includeStructuralVariants !== false
-    ? computeSequenceDiff(sequenceA, sequenceB) : null;
+  const sequenceDiff = config.includeStructuralVariants !== false ? alignment : null;
   const structuralVariants = sequenceDiff
     ? structuralVariantsFromDiff(sequenceA, sequenceB, sequenceDiff, genesA, genesB) : null;
 

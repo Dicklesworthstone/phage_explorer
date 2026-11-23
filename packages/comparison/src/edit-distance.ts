@@ -13,6 +13,9 @@
  */
 
 import type { EditDistanceMetrics } from './types';
+import type { SequenceDiffStats } from './sequence-diff';
+
+const SAMPLED_OPERATIONS_UNAVAILABLE = 'Sampled edit windows estimate total distance only; whole-sequence insertion, deletion and substitution counts require an exact alignment.';
 
 // WASM function reference - loaded dynamically
 let wasmLevenshtein: ((a: string, b: string) => number) | null = null;
@@ -142,21 +145,27 @@ export function approximateLevenshtein(
   const lengthDiff = maxLen - minLen;
 
   // Calculate step size to cover the sequences
-  const effectiveWindows = Math.min(numWindows, Math.floor(minLen / windowSize));
-  if (effectiveWindows < 1) {
-    // Fallback to exact computation for short sequences
+  if (!Number.isSafeInteger(numWindows) || numWindows < 1) throw new Error('Edit-distance window count must be a positive integer.');
+  if (!Number.isSafeInteger(windowSize)) throw new Error('Edit-distance window size must be a positive integer.');
+  if (!minLen) return { distance: maxLen, isApproximate: false, windowSize, windowCount: 0 };
+  // A short query against a large genome must not bypass sampling and launch
+  // a full O(minLen * maxLen) comparison. Only compare complete inputs when
+  // BOTH fit in a single requested window.
+  if (maxLen < windowSize) {
     return { ...levenshteinDistance(a, b, Infinity), windowSize, windowCount: 1 };
   }
+  const sampledSize = Math.min(windowSize, minLen);
+  const effectiveWindows = Math.min(numWindows, Math.max(1, Math.floor(minLen / sampledSize)));
 
-  const step = Math.floor((minLen - windowSize) / (effectiveWindows - 1 || 1));
+  const step = Math.floor((minLen - sampledSize) / (effectiveWindows - 1 || 1));
 
   let totalDistance = 0;
   let windowCount = 0;
 
   for (let i = 0; i < effectiveWindows; i++) {
     const start = i * step;
-    const windowA = a.substring(start, start + windowSize);
-    const windowB = b.substring(start, start + windowSize);
+    const windowA = a.substring(start, start + sampledSize);
+    const windowB = b.substring(start, start + sampledSize);
 
     const result = levenshteinDistance(windowA, windowB, Infinity);
     totalDistance += result.distance;
@@ -165,115 +174,76 @@ export function approximateLevenshtein(
 
   // Average distance per window, scaled to full sequence
   const avgDistPerWindow = totalDistance / windowCount;
-  const scaleFactor = minLen / windowSize;
+  const scaleFactor = minLen / sampledSize;
   const estimatedDistance = Math.round(avgDistPerWindow * scaleFactor + lengthDiff);
 
   return {
     distance: estimatedDistance,
     isApproximate: true,
-    windowSize,
+    windowSize: sampledSize,
     windowCount,
   };
 }
 
 /**
- * Compute Levenshtein distance with traceback to get edit operations.
- * Returns the specific insertions, deletions, and substitutions.
+ * Compute an exact optimal edit-operation breakdown using rolling DP rows.
+ * Each cell carries the insertion count on its selected optimal path; the
+ * deletion count follows from insertions - deletions = query length - reference
+ * length. This preserves diagonal/insertion/deletion tie precedence without an
+ * O(m*n) traceback matrix. Above maxLength, the total is sampled and the
+ * whole-sequence operation breakdown is explicitly unavailable.
  */
 export function levenshteinWithOperations(
   a: string,
   b: string,
   maxLength: number = 5000
-): { distance: number; insertions: number; deletions: number; substitutions: number } {
+): { distance: number; insertions: number | null; deletions: number | null; substitutions: number | null;
+  isApproximate: boolean; operationsUnavailableReason: string | null } {
   // For very long sequences, use sampling
   if (a.length > maxLength || b.length > maxLength) {
     const approx = approximateLevenshtein(a, b, 1000, 20);
-    // Estimate operation breakdown (rough approximation)
-    const d = approx.distance;
-    const lenDiff = Math.abs(a.length - b.length);
-    const remaining = Math.max(0, d - lenDiff);
-
-    // Heuristic: Assign remaining distance primarily to substitutions (cost 1),
-    // as biologically aligned sequences tend to have more SNPs than indels.
-    // Mandatory length difference is attributed to insertions or deletions.
-    
-    const substitutions = remaining;
-    const insertions = a.length < b.length ? lenDiff : 0;
-    const deletions = a.length > b.length ? lenDiff : 0;
-
-    return {
-      distance: d,
-      insertions,
-      deletions,
-      substitutions,
-    };
+    return { distance: approx.distance, insertions: null, deletions: null, substitutions: null,
+      isApproximate: true, operationsUnavailableReason: SAMPLED_OPERATIONS_UNAVAILABLE };
   }
 
   const m = a.length;
   const n = b.length;
-  const stride = n + 1;
-
-  // Flat Int32Array for high-speed cache-coherent DP matrix
-  const dp = new Int32Array((m + 1) * stride);
-
-  // Initialize
-  for (let i = 0; i <= m; i++) dp[i * stride] = i;
-  for (let j = 0; j <= n; j++) dp[j] = j;
+  if (!m || !n) return { distance: m + n, insertions: n, deletions: m, substitutions: 0,
+    isApproximate: false, operationsUnavailableReason: null };
+  let previous = Uint32Array.from({ length: n + 1 }, (_, j) => j), next = new Uint32Array(n + 1);
+  let previousInsertions = previous.slice(), nextInsertions = new Uint32Array(n + 1);
 
   // Fill matrix
   for (let i = 1; i <= m; i++) {
-    const rowOffset = i * stride;
-    const prevRowOffset = (i - 1) * stride;
+    next[0] = i;
+    nextInsertions[0] = 0;
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      dp[rowOffset + j] = Math.min(
-        dp[prevRowOffset + j] + 1,       // deletion
-        dp[rowOffset + (j - 1)] + 1,     // insertion
-        dp[prevRowOffset + (j - 1)] + cost // substitution
-      );
+      const diagonal = previous[j - 1] + cost;
+      const insertion = next[j - 1] + 1, deletion = previous[j] + 1;
+      const best = Math.min(diagonal, insertion, deletion);
+      next[j] = best;
+      nextInsertions[j] = best === diagonal ? previousInsertions[j - 1]
+        : best === insertion ? nextInsertions[j - 1] + 1 : previousInsertions[j];
     }
+    [previous, next] = [next, previous];
+    [previousInsertions, nextInsertions] = [nextInsertions, previousInsertions];
   }
+  const distance = previous[n], insertions = previousInsertions[n], deletions = insertions + m - n;
+  return { distance, insertions, deletions, substitutions: distance - insertions - deletions,
+    isApproximate: false, operationsUnavailableReason: null };
+}
 
-  // Traceback to count operations
-  let insertions = 0;
-  let deletions = 0;
-  let substitutions = 0;
-
-  let i = m;
-  let j = n;
-
-  while (i > 0 || j > 0) {
-    const currentCost = dp[i * stride + j];
-    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
-      // Match - no operation
-      i--;
-      j--;
-    } else if (i > 0 && j > 0 && currentCost === dp[(i - 1) * stride + (j - 1)] + 1) {
-      // Substitution
-      substitutions++;
-      i--;
-      j--;
-    } else if (j > 0 && currentCost === dp[i * stride + (j - 1)] + 1) {
-      // Insertion
-      insertions++;
-      j--;
-    } else if (i > 0 && currentCost === dp[(i - 1) * stride + j] + 1) {
-      // Deletion
-      deletions++;
-      i--;
-    } else {
-      // Match (shouldn't reach here but safety)
-      i = Math.max(0, i - 1);
-      j = Math.max(0, j - 1);
-    }
-  }
-
-  return {
-    distance: dp[m * stride + n],
-    insertions,
-    deletions,
-    substitutions,
-  };
+/** The exact diff already owns an optimal alignment; reuse its operation counts
+ * rather than performing another quadratic DP or choosing a conflicting tie.
+ */
+export function editDistanceFromAlignment(stats: SequenceDiffStats): EditDistanceMetrics {
+  const maximum = Math.max(stats.lengthA, stats.lengthB);
+  const normalized = maximum ? stats.distance / maximum : 0;
+  return { levenshteinDistance: stats.distance, normalizedLevenshtein: normalized,
+    levenshteinSimilarity: 1 - normalized, insertions: stats.insertions,
+    deletions: stats.deletions, substitutions: stats.substitutions,
+    isApproximate: false, operationsUnavailableReason: null };
 }
 
 /**
@@ -435,9 +405,10 @@ export function analyzeEditDistance(
 
   let result: {
     distance: number;
-    insertions: number;
-    deletions: number;
-    substitutions: number;
+    insertions: number | null;
+    deletions: number | null;
+    substitutions: number | null;
+    operationsUnavailableReason: string | null;
     isApproximate: boolean;
     windowSize?: number;
     windowCount?: number;
@@ -446,17 +417,12 @@ export function analyzeEditDistance(
   if (isLong) {
     // Use approximate method
     const approx = approximateLevenshtein(sequenceA, sequenceB, windowSize, windowCount);
-    const lenDiff = Math.abs(sequenceA.length - sequenceB.length);
-
-    // Estimate operations
-    const estSubs = Math.max(0, Math.round((approx.distance - lenDiff) * 0.6));
-    const estIndels = approx.distance - estSubs;
-
     result = {
       distance: approx.distance,
-      insertions: sequenceA.length < sequenceB.length ? Math.round(estIndels * 0.6) : Math.round(estIndels * 0.4),
-      deletions: sequenceA.length > sequenceB.length ? Math.round(estIndels * 0.6) : Math.round(estIndels * 0.4),
-      substitutions: estSubs,
+      insertions: null,
+      deletions: null,
+      substitutions: null,
+      operationsUnavailableReason: SAMPLED_OPERATIONS_UNAVAILABLE,
       isApproximate: true,
       windowSize: approx.windowSize,
       windowCount: approx.windowCount,
@@ -480,6 +446,7 @@ export function analyzeEditDistance(
     insertions: result.insertions,
     deletions: result.deletions,
     substitutions: result.substitutions,
+    operationsUnavailableReason: result.operationsUnavailableReason,
     isApproximate: result.isApproximate,
     windowSize: result.windowSize,
     windowCount: result.windowCount,

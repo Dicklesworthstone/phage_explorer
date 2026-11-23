@@ -6,6 +6,19 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Exact comparison operations without a second alignment matrix
+
+- Whole-genome comparison metrics reuse the accepted exact diff within the
+  selected edit-length limit. When the bounded diff is unavailable, exact
+  operation counting uses rolling rows instead of retaining every DP cell.
+- Sampled edit distances retain their explicit sampling settings and report
+  operation counts as unavailable. They no longer invent insertion/deletion
+  mixtures that can contradict the source lengths. A short sequence paired
+  with a long genome also remains bounded by the requested sampling windows.
+- Version-3 comparison records bind the corrected evidence contract; terminal
+  displays and replay checks preserve the distinction between exact operation
+  counts and sampled totals. [Behavior and limits](docs/GENOME_COMPARISON_WORKFLOW.md).
+
 ### Exact aligned-DNA site compatibility
 
 - Mosaic radar now accepts a sourced homologous DNA alignment and exhaustively

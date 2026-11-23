@@ -1,7 +1,7 @@
 # Complete genome-comparison experiments
 
 The browser **Comparison** panel and native `comparison` command use the same
-`genome-comparison` method, version 2. A portable experiment retains both complete
+`genome-comparison` method, version 3. A portable experiment retains both complete
 accepted genomes, original annotation rows, supplied codon counts, effective
 settings, and all comparison outputs. Reopening recomputes the experiment before
 accepting the saved evidence.
@@ -31,6 +31,15 @@ The **Diff** tab and aligned indels in **Genes** use a separate bounded exact
 unit-edit alignment. These sampling settings do not turn an approximate edit
 metric into an exact alignment. When the exact alignment exceeds its budget,
 the experiment retains its explicit unavailable reason and the other metrics.
+
+Within the configured whole-sequence limit, edit metrics reuse the accepted exact
+alignment. If its budget is exhausted, exact operation counting uses rolling
+rows rather than a quadratic traceback matrix. Above the configured limit,
+sampled windows estimate total distance; insertion, deletion and substitution
+counts are `null` with an explicit reason because sampling cannot establish an
+operation breakdown. The terminal displays that reason instead of invented counts.
+Version 3 binds this corrected evidence contract. Earlier comparison records are
+rejected on replay; recompute their original inputs to create a current experiment.
 
 ### Navigate the accepted comparison
 

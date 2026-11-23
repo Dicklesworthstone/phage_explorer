@@ -181,11 +181,46 @@ describe('compareGenomes', () => {
       throw new Error('Expected complete exact alignment and indel evidence.');
     }
     expect(result.structuralVariants.alignment).toEqual(result.sequenceDiff.stats);
+    expect(result.editDistance).toMatchObject({ levenshteinDistance: 60,
+      insertions: 60, deletions: 0, substitutions: 0, isApproximate: false,
+      operationsUnavailableReason: null });
     expect(result.structuralVariants.calls).toHaveLength(1);
     expect(result.structuralVariants.calls[0]).toMatchObject({ type: 'insertion', startA: 2, endA: 2,
       startB: 2, endB: 62, referenceAllele: '', alternateAllele: inserted });
     expect(result.sequenceDiff.runs.find(run => run.operation === 'insertion'))
       .toEqual({ operation: 'insertion', startA: 2, endA: 2, startB: 2, endB: 62 });
+  });
+
+  test('reuses exact near-identical alignment at the 10kb threshold and preserves explicit sampling', async () => {
+    const a = 'ACGT'.repeat(2250), b = a.slice(0, 4500) + 'A'.repeat(1000) + a.slice(4500);
+    const phageA = { id: 1, name: 'Reference', accession: 'A' }, phageB = { id: 2, name: 'Query', accession: 'B' };
+    const exact = await compareGenomes(phageA, phageB, a, b, [], [], null, null,
+      { ...DEFAULT_COMPARISON_CONFIG, kmerSizes: [3], maxEditDistanceLength: 10000 });
+    expect(exact.sequenceDiff?.status).toBe('complete');
+    if (exact.sequenceDiff?.status !== 'complete') throw new Error('Expected exact near-identical alignment.');
+    expect(exact.editDistance).toMatchObject({ levenshteinDistance: 1000, normalizedLevenshtein: 0.1,
+      levenshteinSimilarity: 0.9, insertions: 1000, deletions: 0, substitutions: 0,
+      isApproximate: false, operationsUnavailableReason: null });
+    expect(exact.editDistance.insertions! - exact.editDistance.deletions!).toBe(b.length - a.length);
+    expect(exact.sequenceDiff.stats).toMatchObject({ distance: 1000, insertions: 1000, deletions: 0, substitutions: 0 });
+
+    const sampled = await compareGenomes(phageA, phageB, a, b, [], [], null, null,
+      { ...DEFAULT_COMPARISON_CONFIG, kmerSizes: [3], maxEditDistanceLength: 0,
+        editDistanceWindowSize: 100, editDistanceWindowCount: 2 });
+    expect(sampled.editDistance).toMatchObject({ isApproximate: true, insertions: null, deletions: null, substitutions: null });
+    expect(sampled.editDistance.levenshteinDistance).toBeGreaterThanOrEqual(1000);
+    expect(sampled.sequenceDiff).toEqual(exact.sequenceDiff);
+  });
+
+  test('retains exact metrics with bounded memory when the WFA budget cannot complete the diff', async () => {
+    const result = await compareGenomes({ id: 1, name: 'A', accession: 'A' }, { id: 2, name: 'B', accession: 'B' },
+      'A'.repeat(3000), 'C'.repeat(3001), [], [], null, null,
+      { ...DEFAULT_COMPARISON_CONFIG, kmerSizes: [3], maxEditDistanceLength: 4000 });
+    expect(result.sequenceDiff?.status).toBe('unavailable');
+    expect(result.editDistance).toMatchObject({ levenshteinDistance: 3001, insertions: 1, deletions: 0,
+      substitutions: 3000, isApproximate: false, operationsUnavailableReason: null });
+    expect(result.editDistance.insertions! + result.editDistance.deletions! + result.editDistance.substitutions!)
+      .toBe(result.editDistance.levenshteinDistance);
   });
 
   test('records compute time', async () => {

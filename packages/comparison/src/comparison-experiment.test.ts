@@ -28,6 +28,8 @@ describe('complete portable genome comparison', () => {
     expect(result.biological).toMatchObject({ lengthA: 8, lengthB: 9, gcContentA: 50, gcResolvedBasesA: 8, gcResolvedBasesB: 9 });
     expect(result.geneContent).toMatchObject({ genesA: 1, genesB: 1, sharedGeneNames: 0 });
     expect(result.editDistance.isApproximate).toBe(true);
+    expect(result.editDistance).toMatchObject({ insertions: null, deletions: null, substitutions: null });
+    expect(result.editDistance.operationsUnavailableReason).toContain('total distance only');
     expect(result.sequenceDiff?.status).toBe('complete');
     if (result.sequenceDiff?.status === 'complete') {
       expect(result.sequenceDiff.stats).toMatchObject({ distance: 1, insertions: 1, deletions: 0, substitutions: 0, matches: 8 });
@@ -103,7 +105,8 @@ describe('case-independent comparison evidence', () => {
       });
       expect(accepted.result.editDistance).toMatchObject({
         levenshteinDistance: 0, normalizedLevenshtein: 0, levenshteinSimilarity: 1,
-        substitutions: 0, insertions: 0, deletions: 0, isApproximate: exactLimit === 0,
+        substitutions: exactLimit ? 0 : null, insertions: exactLimit ? 0 : null,
+        deletions: exactLimit ? 0 : null, isApproximate: exactLimit === 0,
       });
       const diff = accepted.result.sequenceDiff;
       expect(diff?.status).toBe('complete');
@@ -114,7 +117,7 @@ describe('case-independent comparison evidence', () => {
       expect(accepted.genomeB.sequence).toBe(b.sequence);
       expect((accepted.record.inputs[1].data as unknown as ComparisonGenomeInput).sequence).toBe(b.sequence);
       expect(accepted.record.inputs[0].sha256).not.toBe(accepted.record.inputs[1].sha256);
-      expect(accepted.record.method.version).toBe('2');
+      expect(accepted.record.method.version).toBe('3');
       expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(accepted.record))).record).toEqual(accepted.record);
     });
   }
@@ -124,6 +127,19 @@ describe('case-independent comparison evidence', () => {
     const previous = structuredClone(current);
     previous.method.version = '1';
     await expect(replayGenomeComparisonExperiment(await rehash(previous))).rejects.toThrow('incompatible');
+  });
+
+  it('rejects former heuristic operation contracts and rehashed invented sampled counts', async () => {
+    const current = (await createGenomeComparisonExperiment(genome('AAAACCCC'), genome('AAAAGCCCC'), {
+      maxEditDistanceLength: 0, editDistanceWindowSize: 2, editDistanceWindowCount: 2,
+    })).record;
+    const previous = structuredClone(current);
+    previous.method.version = '2';
+    await expect(replayGenomeComparisonExperiment(await rehash(previous))).rejects.toThrow('incompatible');
+    const invented = structuredClone(current);
+    const comparison = invented.fields.comparison.value as Record<string, AnalysisJson>;
+    (comparison.editDistance as Record<string, AnalysisJson>).insertions = 1;
+    await expect(replayGenomeComparisonExperiment(await rehash(invented))).rejects.toThrow('fresh computation');
   });
 });
 

@@ -72,9 +72,10 @@ export interface EditDistanceMetrics {
   levenshteinDistance: number;        // Raw edit distance
   normalizedLevenshtein: number;      // Normalized to [0,1] where 0 = identical
   levenshteinSimilarity: number;      // 1 - normalized (1 = identical)
-  insertions: number;                 // Number of insertions needed
-  deletions: number;                  // Number of deletions needed
-  substitutions: number;              // Number of substitutions needed
+  insertions: number | null;          // Exact alignment operations; null for sampled estimates
+  deletions: number | null;
+  substitutions: number | null;
+  operationsUnavailableReason: string | null;
   // Approximate for very long sequences
   isApproximate: boolean;             // True if computed on sampled windows
   windowSize?: number;                // Window size if approximate

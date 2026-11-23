@@ -102,7 +102,7 @@ describe("levenshteinWithOperations", () => {
     // "kitten" -> "sitting": 3 operations (s->k, e->i, +g)
     const result = levenshteinWithOperations("kitten", "sitting");
     expect(result.distance).toBe(3);
-    expect(result.insertions + result.deletions + result.substitutions).toBe(3);
+    expect(result.insertions! + result.deletions! + result.substitutions!).toBe(3);
   });
 
   test("handles pure insertions", () => {
@@ -143,8 +143,51 @@ describe("levenshteinWithOperations", () => {
     const result = levenshteinWithOperations(a, b, 1000);
 
     expect(result.distance).toBeGreaterThan(0);
-    // Operations are estimated
-    expect(result.insertions + result.deletions + result.substitutions).toBeGreaterThanOrEqual(0);
+    // Window distances cannot establish a whole-sequence operation breakdown.
+    expect(result.insertions).toBeNull();
+    expect(result.deletions).toBeNull();
+    expect(result.substitutions).toBeNull();
+    expect(result.operationsUnavailableReason).toContain('exact alignment');
+  });
+
+  test("rolling operation counts agree with an independent full-matrix traceback", () => {
+    const strings = [''];
+    for (let length = 1; length <= 4; length++) {
+      for (let value = 0; value < 2 ** length; value++) {
+        strings.push(value.toString(2).padStart(length, '0').replaceAll('0', 'A').replaceAll('1', 'C'));
+      }
+    }
+    for (const a of strings) for (const b of strings) {
+      const matrix = Array.from({ length: a.length + 1 }, (_, i) =>
+        Array.from({ length: b.length + 1 }, (_, j) => i === 0 ? j : j === 0 ? i : 0));
+      for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+        matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1,
+          matrix[i - 1][j - 1] + Number(a[i - 1] !== b[j - 1]));
+      }
+      let i = a.length, j = b.length, insertions = 0, deletions = 0, substitutions = 0;
+      while (i || j) {
+        if (i && j && matrix[i][j] === matrix[i - 1][j - 1] + Number(a[i - 1] !== b[j - 1])) {
+          substitutions += Number(a[i - 1] !== b[j - 1]); i--; j--;
+        } else if (j && matrix[i][j] === matrix[i][j - 1] + 1) { insertions++; j--; }
+        else { deletions++; i--; }
+      }
+      const result = levenshteinWithOperations(a, b);
+      expect(result).toEqual({ distance: matrix[a.length][b.length], insertions, deletions, substitutions,
+        isApproximate: false, operationsUnavailableReason: null });
+      expect(result.insertions! - result.deletions!).toBe(b.length - a.length);
+      expect(result.insertions! + result.deletions! + result.substitutions!).toBe(result.distance);
+    }
+  });
+
+  test("preserves exact operation counts across repeated rolling-row reuse", () => {
+    // This uses the generic string path, independent of the DNA wavefront.
+    // The answer follows from a single trailing insertion; the rolling rows
+    // must still retain exact counts when repeatedly reusing their buffers.
+    const a = 'ab'.repeat(2500), b = a + 'z';
+    expect(levenshteinWithOperations(a, b, 6000)).toEqual({
+      distance: 1, insertions: 1, deletions: 0, substitutions: 0,
+      isApproximate: false, operationsUnavailableReason: null,
+    });
   });
 });
 
@@ -353,6 +396,37 @@ describe("analyzeEditDistance", () => {
     });
 
     expect(result.isApproximate).toBe(true);
+  });
+
+  test("never fabricates operation counts from sampled distance or violates its length lower bound", () => {
+    const a = 'A'.repeat(12000), b = 'A'.repeat(16000);
+    for (const [reference, query] of [[a, b], [b, a]]) {
+      const result = analyzeEditDistance(reference, query, { windowSize: 100, windowCount: 3 });
+      expect(result.levenshteinDistance).toBe(4000);
+      expect(result.levenshteinDistance).toBeGreaterThanOrEqual(Math.abs(reference.length - query.length));
+      expect(result).toMatchObject({ insertions: null, deletions: null, substitutions: null, isApproximate: true });
+      expect(result.operationsUnavailableReason).toContain('total distance only');
+    }
+  });
+
+  test("sampling a short query does not silently expand into an unbounded full comparison", () => {
+    const result = approximateLevenshtein('A'.repeat(900), 'A'.repeat(100000), 1000, 20);
+    expect(result).toEqual({ distance: 99100, isApproximate: true, windowSize: 900, windowCount: 1 });
+    expect(approximateLevenshtein('', 'A'.repeat(100000))).toMatchObject({ distance: 100000, windowCount: 0 });
+  });
+
+  test("changing the exact limit preserves explicit sampling and exposes counts only for exact work", () => {
+    for (const maxExactLength of [0, 4, 8, 9, 10]) {
+      const result = analyzeEditDistance('AAAACCCC', 'AAAAGCCCC', { maxExactLength, windowSize: 2, windowCount: 2 });
+      expect(result.isApproximate).toBe(maxExactLength < 9);
+      if (maxExactLength < 9) {
+        expect(result.insertions).toBeNull(); expect(result.deletions).toBeNull(); expect(result.substitutions).toBeNull();
+        expect(result.levenshteinDistance).toBeGreaterThanOrEqual(1);
+      } else {
+        expect(result).toMatchObject({ levenshteinDistance: 1, insertions: 1, deletions: 0, substitutions: 0,
+          operationsUnavailableReason: null });
+      }
+    }
   });
 });
 

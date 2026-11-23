@@ -531,7 +531,9 @@ function CorrelationTab({ result, colors }: TabProps): React.ReactElement {
         </Text>
         <MetricRow label="Similarity" value={editDistance.levenshteinSimilarity * 100} colors={colors} />
         <Text color={colors.textDim}>
-          Operations: +{editDistance.insertions} -{editDistance.deletions} ~{editDistance.substitutions}
+          {editDistance.insertions === null || editDistance.deletions === null || editDistance.substitutions === null
+            ? editDistance.operationsUnavailableReason ?? 'Operation counts are unavailable for this distance estimate.'
+            : `Operations: +${editDistance.insertions} -${editDistance.deletions} ~${editDistance.substitutions}`}
         </Text>
       </Box>
     </Box>
