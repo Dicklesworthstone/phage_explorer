@@ -8,6 +8,7 @@ import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
 import { createDotPlotExperiment, exportDotPlotExperimentTsv } from '../../core/src/analysis/dot-plot';
 import { createRestrictionDigestRecord, exportRestrictionDigestTsv } from '../../core/src/analysis/restriction-digest';
+import { createCompatibilityExperiment, exportCompatibilityPairsTsv, type CompatibilityInput, type CompatibilityResult } from '../../core/src/analysis/alignment-compatibility';
 import { createSpacerRecord, searchSpacerReferences, type SpacerGenome, type SpacerLibrary, type ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker,
@@ -50,6 +51,51 @@ class ReplyWorker extends EventEmitter {
 }
 
 describe('terminal portable experiment replay', () => {
+  it('replays browser alignment-compatibility evidence with exact original-column pairs and retained provenance', async () => {
+    const input: CompatibilityInput = {
+      format: 'phage-explorer-alignment-compatibility', version: 1, name: 'Independent four-haplotype control',
+      source: { kind: 'demo', reference: 'Hand-constructed four-taxon alignment', version: '1', license: 'CC0' },
+      alignment: { fasta: '>a\nAAA\n>b\nAAC\n>c\nACA\n>d\nACC\n', homologous: true,
+        method: 'Explicit synthetic columns', reference: 'Columns 2 and 3 contain AA, AC, CA and CC once each.' },
+    };
+    const experiment = await createCompatibilityExperiment(input, { start: 1, end: 3 });
+    assert.deepEqual(experiment.result.sites.map(site => site.column), [1, 2]);
+    assert.deepEqual(experiment.result.pairs, [[0, 1, 1, 1, 1, 1]]);
+    const content = serializeAnalysisRecord(experiment.record);
+    const result = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'json' }, signal());
+    assert(result.type === 'experiment-replayed');
+    assert.deepEqual(await parseAnalysisRecord(result.exportText!), experiment.record);
+    assert.equal(result.report.resultId, experiment.record.resultId);
+    assert.equal(result.report.verified, true);
+    assert(!JSON.stringify(result.report).includes(input.alignment.fasta));
+    const table = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'tsv' }, signal());
+    assert(table.type === 'experiment-replayed');
+    assert.equal(table.exportText, exportCompatibilityPairsTsv(experiment));
+    assert.equal(table.exportText!.trimEnd().split('\n').at(-1), '2\t3\tA\tC\tA\tC\t1\t1\t1\t1\tyes');
+
+    // A fresh checksum does not turn false counts or altered provenance into
+    // evidence. Recompute the embedded source before accepting any output.
+    for (const change of [
+      (r: AnalysisRecord) => { (r.fields.compatibility.value as unknown as CompatibilityResult).pairs[0][2] = 2; },
+      (r: AnalysisRecord) => { r.parameters.start = 0; },
+      (r: AnalysisRecord) => { (r.inputs[0].data as unknown as CompatibilityInput).alignment.fasta = '>a\nAAA\n>b\nAAA\n>c\nACC\n>d\nACC\n'; },
+      (r: AnalysisRecord) => { r.inputs[0].source = 'local'; },
+      (r: AnalysisRecord) => { r.method.version = '999'; },
+    ]) {
+      const altered = await resign(experiment.record, change);
+      await parseAnalysisRecord(altered);
+      await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: altered, outputFormat: 'tsv' }, signal()));
+    }
+
+    const dir = await workspace(), source = join(dir, 'alignment.json'), output = join(dir, 'pairs.tsv');
+    await writeFile(source, content);
+    const invoked = await invoke(['replay-experiment', '--input', source, '--output', output, '--format', 'tsv']);
+    assert.equal(invoked.code, 0, invoked.error);
+    assert.equal(await readFile(output, 'utf8'), exportCompatibilityPairsTsv(experiment));
+    assert.equal((await stat(output)).mode & 0o777, 0o600);
+    assert.equal((await invoke(['replay-experiment', '--input', source, '--output', output, '--format', 'tsv'])).code, 1);
+  });
+
   it('replays a standalone spacer experiment from embedded sources and exports all wrapped hit coordinates', async () => {
     const genome: SpacerGenome = { name: 'Synthetic circular native control', accession: null, source: 'local',
       topology: 'circular', sequence: 'ACCTAGTGCAAGGTTTTACGATTCGGT' };

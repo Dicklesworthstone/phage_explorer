@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { createCompatibilityExperiment, type CompatibilityInput } from '../../../core/src/analysis/alignment-compatibility';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { createCompatibilityExperiment, type CompatibilityInput, type CompatibilityResult } from '../../../core/src/analysis/alignment-compatibility';
 import {
   AlignmentCompatibilitySession, executeCompatibilityRequest, readCompatibilityFile,
   type AlignmentCompatibilityWorker, type AlignmentCompatibilityRequest, type AlignmentCompatibilityWork,
@@ -121,6 +121,40 @@ describe('owned aligned-site work', () => {
       expect(await pending).toBe(false); expect(session.getSnapshot().busy).toBe(false);
       expect(session.getSnapshot().error).toContain('worker response'); expect(session.getSnapshot().accepted).toBeNull();
       expect(workers[0].onmessage).toBeNull(); session.deactivate();
+    }
+  });
+  test('rehashing malformed worker evidence cannot replace the previous accepted experiment', async () => {
+    const good = await work();
+    const corruptions: Array<(result: CompatibilityResult) => void> = [
+      result => { result.pairs[0] = [0, 1, -1, 1, 1, 3]; },
+      result => { result.pairs[0] = [0, 1, 3, 1, 0, 0]; },
+      result => { result.taxa[0] = 'not_in_the_alignment'; },
+      result => { result.sites[0].assignments = '0101'; },
+      result => { result.coverage.incompatiblePairs = 0; },
+      result => { result.status = 'no-incompatibility-observed'; },
+      result => { result.pairs[0][0] = 1; result.pairs[0][1] = 0; },
+      result => { result.excluded.missing.push(0); },
+      result => {
+        result.sites = []; result.pairs = []; result.excluded.monomorphic = [0, 1];
+        result.coverage.eligibleColumns = 0; result.coverage.comparedPairs = 0; result.coverage.incompatiblePairs = 0;
+        result.status = 'insufficient-sites';
+      },
+    ];
+    for (const corrupt of corruptions) {
+      const fields = structuredClone(good.record.fields), result = fields.compatibility.value as unknown as CompatibilityResult;
+      corrupt(result);
+      const record = await createAnalysisRecord({ method: good.record.method,
+        inputs: good.record.inputs.map(({ id, accession, source, description, data }) => ({ id, accession, source, description, data })),
+        parameters: good.record.parameters, seed: good.record.seed, references: good.record.references, fields });
+      await parseAnalysisRecord(serializeAnalysisRecord(record));
+      const { session, workers } = manual();
+      const first = session.run({ kind: 'analyze', input: fixture() }); await tick(); workers[0].result(good);
+      expect(await first).toBe(true);
+      const pending = session.run({ kind: 'analyze', input: fixture() }); await tick();
+      workers[1].result({ ...good, result, record });
+      expect(await pending).toBe(false); expect(session.getSnapshot().busy).toBe(false);
+      expect(session.getSnapshot().error).toContain('worker response');
+      expect(session.getSnapshot().accepted).toBe(good); session.deactivate();
     }
   });
   test('file import enforces actual byte size and strict UTF-8 while preserving a source BOM', async () => {

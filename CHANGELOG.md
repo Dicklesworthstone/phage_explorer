@@ -6,6 +6,21 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Native aligned-DNA compatibility analysis and replay
+
+- `alignment-compatibility prepare`, `inspect`, `analyze` and `replay` now expose
+  the browser's exact method from local files or stdin without a catalog. Explicit
+  source and homology declarations accompany the aligned FASTA; interval analysis
+  preserves original columns and exports complete JSON or sites/pairs TSV.
+- Browser and native worker results share source-bound validation for eligible
+  sites, exclusions, taxon witnesses, pair coverage and conserved counts. Fresh
+  replay recomputes saved evidence, including through `workflow replay-experiment`.
+- Standalone compilation uses an explicit bundle root so embedded native workers
+  resolve correctly when the executable runs away from its build directory.
+  Bounded UTF-8 input,
+  cancellation and private, exclusive output files support batch use without
+  replacing existing files. [Command examples and limits](docs/ALIGNMENT_COMPATIBILITY_WORKFLOW.md#native-and-batch-workflow).
+
 ### Exact comparison operations without a second alignment matrix
 
 - Whole-genome comparison metrics reuse the accepted exact diff within the

@@ -131,6 +131,74 @@ saved record. Even an edited output with newly computed checksums is rejected.
 Cancelled or failed imports preserve the previous accepted experiment. Saving
 or restoring a local snapshot temporarily locks competing source controls.
 
+## Native and batch workflow
+
+The terminal command uses the same exact producer and portable record as the
+browser. It needs no catalog, running browser or network connection. From a
+source checkout, prefix the command with `bun run packages/tui/src/index.tsx`
+in place of `phage-explorer`.
+
+Prepare an input from your already aligned FASTA with explicit source and
+alignment declarations:
+
+```bash
+phage-explorer alignment-compatibility prepare alignment.fa \
+  --name "My alignment" \
+  --source-kind local \
+  --source-reference "Local alignment supplied by the researcher" \
+  --source-version "2026-11-22" \
+  --alignment-method "Describe the method and settings used" \
+  --alignment-reference "Describe the intended homology and its evidence" \
+  --homologous \
+  --output compatibility-input.json
+
+phage-explorer alignment-compatibility inspect compatibility-input.json
+phage-explorer alignment-compatibility analyze compatibility-input.json \
+  --output compatibility-experiment.json
+```
+
+`--source-kind` must be `local`, `external` or `demo`. The optional `--license`
+supplies a license or permission statement; omission records `null`. Source
+attribution and `--homologous` are explicit user declarations, not independently
+verified claims. An `external` source never causes a download. The native UTF-8
+reader removes an initial byte-order mark; preparation retains the remaining
+FASTA text, including its casing and line endings. Inspection validates
+equal-length aligned DNA and reports source metadata, sorted taxon IDs,
+alignment dimensions and input identity, without calculating pairs or printing
+raw sequences. It can inspect an alignment whose full range exceeds the
+eligible-site analysis budget.
+
+For a subset, provide **both** `--start` and `--end` in zero-based, half-open
+original alignment coordinates. This differs from the browser form's one-based
+inclusive entry but is identical to the recorded `start`/`end` contract. For
+example, columns 101–300 in the browser use `--start 100 --end 300`:
+
+```bash
+phage-explorer alignment-compatibility analyze compatibility-input.json \
+  --start 100 --end 300 --output selected-interval.json
+phage-explorer alignment-compatibility replay selected-interval.json \
+  --format sites --output selected-sites.tsv
+phage-explorer alignment-compatibility replay selected-interval.json \
+  --format pairs --output selected-pairs.tsv
+```
+
+Replay first recomputes the complete saved experiment and rejects differing
+results, provenance or method settings. It accepts no input or interval
+overrides. Browser JSON can be replayed by the native command, and native JSON
+can be reopened in the browser. Both TSV formats retain one-based **original**
+column coordinates, every selected site or compared pair and the accepted result
+identity. Tables are convenient exports; JSON retains the full replayable record.
+
+Use `-` as the input path for bounded UTF-8 stdin. Output goes to stdout unless
+`--output` names a new file; progress and errors go to stderr. Files are created
+with private permissions and existing files are never overwritten. Reads,
+calculations and stalled output are cancellable with Ctrl-C; computation runs in
+an isolated native worker, also embedded in the standalone executable. An
+interrupted file or pipe write can leave partial output, so consume it only after
+a successful exit. Exit codes are 0 for success, 2 for command-argument errors,
+1 for input/computation/output failures, 130 for Ctrl-C and 143 for SIGTERM.
+None of these operations uploads private alignments or metadata.
+
 ## Programmatic record contract
 
 The producer lives in `packages/core/src/analysis/alignment-compatibility.ts`.

@@ -172,6 +172,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runMosaicProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'alignment-compatibility') {
+    const { runCompatibilityProcess } = await import('./commands/alignment-compatibility');
+    await runCompatibilityProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'codon-selection') {
     const { runCodonSelectionProcess } = await import('./commands/codon-selection');
     await runCodonSelectionProcess(args.slice(1));
@@ -256,6 +261,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       'The destination must not exist. Input/view bundles are separate from command recordings.\n\n' +
       'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
       '  phage-explorer comparison run|replay ...\n' +
+      '  phage-explorer alignment-compatibility prepare|inspect|analyze|replay ...\n' +
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +
       '  phage-explorer host-range inspect|analyze|replay ...\n' +

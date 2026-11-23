@@ -18,6 +18,7 @@ export const EXECUTABLE_WORKERS = [
   { source: 'packages/tui/src/workers/protein-structure-worker.ts', bundle: 'protein-structure-worker.js', define: 'PHAGE_PROTEIN_STRUCTURE_WORKER' },
   { source: 'packages/tui/src/workers/ancestral-worker.ts', bundle: 'ancestral-worker.js', define: 'PHAGE_ANCESTRAL_WORKER' },
   { source: 'packages/tui/src/workers/mosaic-worker.ts', bundle: 'mosaic-worker.js', define: 'PHAGE_MOSAIC_WORKER' },
+  { source: 'packages/tui/src/workers/alignment-compatibility-worker.ts', bundle: 'alignment-compatibility-worker.js', define: 'PHAGE_ALIGNMENT_COMPATIBILITY_WORKER' },
   { source: 'packages/tui/src/workers/codon-selection-worker.ts', bundle: 'codon-selection-worker.js', define: 'PHAGE_CODON_SELECTION_WORKER' },
   { source: 'packages/tui/src/workers/cds-consequences-worker.ts', bundle: 'cds-consequences-worker.js', define: 'PHAGE_CDS_CONSEQUENCES_WORKER' },
   { source: 'packages/tui/src/workers/host-metabolism-worker.ts', bundle: 'host-metabolism-worker.js', define: 'PHAGE_HOST_METABOLISM_WORKER' },
@@ -46,8 +47,11 @@ export function executableBuildOptions(outdir = './dist'): Bun.BuildConfig {
 
 /** Second stage must embed every emitted worker, not merely leave it beside the binary. */
 export function executableCompileArgs(outdir: string, outfile: string, target?: string): string[] {
+  // The compiled entry's import.meta.url is at the embedded root even when its
+  // input is in a subdirectory. Keep worker entries at that same root so their
+  // relative runtime URLs work independently of the compiler's working directory.
   return ['bun', 'build', join(outdir, 'index.js'), ...EXECUTABLE_WORKERS.map(worker => join(outdir, worker.bundle)),
-    '--compile', '--outfile', outfile, ...(target ? ['--target', target] : [])];
+    '--compile', '--root', outdir, '--outfile', outfile, ...(target ? ['--target', target] : [])];
 }
 
 export async function buildExecutable(args: string[] = Bun.argv.slice(2)): Promise<void> {

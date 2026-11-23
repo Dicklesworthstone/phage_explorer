@@ -1,7 +1,7 @@
 /** Disposable-worker ownership for private aligned-site calculations and fresh replay. */
 import {
-  COMPATIBILITY_LIMITS, COMPATIBILITY_METHOD, createCompatibilityExperiment, replayCompatibilityExperiment,
-  validateCompatibilityInput, resolveCompatibilityOptions, isIncompatiblePair,
+  COMPATIBILITY_LIMITS, createCompatibilityExperiment, replayCompatibilityExperiment,
+  validateCompatibilityInput, resolveCompatibilityOptions, validateCompatibilityExperiment,
   type CompatibilityInput, type CompatibilityOptions, type CompatibilityExperiment,
 } from '../../../core/src/analysis/alignment-compatibility';
 import { analysisJson, serializeAnalysisRecord } from '../../../core/src/analysis-result';
@@ -55,48 +55,8 @@ export async function readCompatibilityFile(file: Pick<File, 'size' | 'arrayBuff
  * boundary checks render shape and source/result binding before publishing. */
 function checkedWork(value: AlignmentCompatibilityWork, request: AlignmentCompatibilityRequest): AlignmentCompatibilityWork {
   if (!value || typeof value.verified !== 'boolean') throw new Error('Missing compatibility result.');
-  const input = validateCompatibilityInput(value.input), result = value.result, record = value.record;
-  if (!result || !Number.isSafeInteger(result.alignmentColumns) || result.alignmentColumns < 1 || result.alignmentColumns > COMPATIBILITY_LIMITS.columns) throw new Error('Invalid alignment dimensions.');
-  const options = resolveCompatibilityOptions(value.options, result.alignmentColumns);
+  const { input, options, result, record } = validateCompatibilityExperiment(value);
   const same = (left: unknown, right: unknown) => JSON.stringify(analysisJson(left)) === JSON.stringify(analysisJson(right));
-  if (!same(options, result.options) || !Array.isArray(result.taxa) || result.taxa.length < 4 || result.taxa.length > COMPATIBILITY_LIMITS.taxa
-      || result.taxa.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_.-]{1,80}$/.test(id)) || new Set(result.taxa).size !== result.taxa.length
-      || !Array.isArray(result.sites) || result.sites.length > COMPATIBILITY_LIMITS.eligibleSites || !Array.isArray(result.pairs)
-      || !Array.isArray(result.warnings) || !result.warnings.length || result.warnings.some(warning => typeof warning !== 'string')) throw new Error('Invalid compatibility result shape.');
-  const seen = new Set<number>();
-  const column = (position: number) => {
-    if (!Number.isSafeInteger(position) || position < options.start || position >= options.end || seen.has(position)) throw new Error('Invalid or duplicated alignment coordinate.');
-    seen.add(position);
-  };
-  for (const [index, site] of result.sites.entries()) {
-    if (!site || !Array.isArray(site.alleles) || site.alleles.length !== 2 || site.alleles.some(allele => typeof allele !== 'string' || !/^[ACGT]$/.test(allele))
-      || site.alleles[0] >= site.alleles[1] || !Array.isArray(site.counts) || site.counts.length !== 2
-      || site.counts.some(count => !Number.isSafeInteger(count) || count < 2) || site.counts[0] + site.counts[1] !== result.taxa.length
-      || typeof site.assignments !== 'string' || site.assignments.length !== result.taxa.length || /[^01]/.test(site.assignments)
-      || [...site.assignments].filter(allele => allele === '0').length !== site.counts[0]
-      || index > 0 && result.sites[index - 1].column >= site.column) throw new Error('Invalid eligible-site evidence.');
-    column(site.column);
-  }
-  for (const reason of ['missing', 'monomorphic', 'multiallelic', 'singleton'] as const) {
-    if (!Array.isArray(result.excluded?.[reason])) throw new Error('Missing exclusion coverage.');
-    for (const position of result.excluded[reason]) column(position);
-  }
-  if (seen.size !== options.end - options.start || result.pairs.length !== result.sites.length * (result.sites.length - 1) / 2) throw new Error('Incomplete site or pair coverage.');
-  let pairIndex = 0, incompatible = 0;
-  for (let left = 0; left < result.sites.length; left++) for (let right = left + 1; right < result.sites.length; right++) {
-    const pair = result.pairs[pairIndex++];
-    if (!Array.isArray(pair) || pair.length !== 6 || pair[0] !== left || pair[1] !== right || pair.slice(2).some(count => !Number.isSafeInteger(count) || count < 0)
-      || pair.slice(2).reduce((sum, count) => sum + count, 0) !== result.taxa.length) throw new Error('Invalid pair haplotypes.');
-    if (isIncompatiblePair(pair)) incompatible++;
-  }
-  if (!same(result.coverage, { selectedColumns: seen.size, completeColumns: seen.size - result.excluded.missing.length,
-    eligibleColumns: result.sites.length, comparedPairs: result.pairs.length, incompatiblePairs: incompatible })
-    || result.status !== (result.sites.length < 2 ? 'insufficient-sites' : incompatible ? 'incompatibility-observed' : 'no-incompatibility-observed')) throw new Error('Inconsistent compatibility summary.');
-  serializeAnalysisRecord(record); // Includes every AnalysisRecordDetails render field.
-  if (!same(record.method, COMPATIBILITY_METHOD) || record.seed !== null || record.inputs.length !== 1 || record.inputs[0].id !== 'alignment'
-      || record.inputs[0].source !== input.source.kind || !same(record.inputs[0].data, input) || !same(record.parameters, options)
-      || Object.keys(record.fields).length !== 1 || !same(record.fields.compatibility?.value, result)
-      || record.fields.compatibility.kind !== (input.source.kind === 'demo' ? 'demo' : 'sequence-score')) throw new Error('Unbound compatibility result.');
   if (request.kind === 'analyze') {
     if (value.verified || !same(validateCompatibilityInput(request.input), input)
         || !same(resolveCompatibilityOptions(request.options, result.alignmentColumns), options)) throw new Error('Compatibility worker returned a different source or interval.');

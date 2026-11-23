@@ -294,9 +294,11 @@ export is the residue table. All analysis settings are resolved before dispatch.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, RNA maximum-pairing intervals,
-mosaic reference-similarity, sourced spacer-comparison, reference protein-structure,
+mosaic reference-similarity, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
 plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
+Aligned-site compatibility TSV contains every compared pair and original alignment
+coordinates; use the alignment-compatibility command's sites export for excluded columns.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
 inputs, sampled coordinates and independent coverage. It recomputes embedded inputs/settings with the same core
