@@ -34,8 +34,8 @@ function terminal(repository: PhageRepository, runSearch?: Execute, width = 84) 
   return { ui, frame: () => frame, ready: () => ready, input: (value: string) => stdin.write(value),
     repository: (value: PhageRepository) => ui.rerender(<SearchHost repository={value} runSearch={runSearch} width={width} />) };
 }
-async function fixture() {
-  const imported = await importLocalGenomes({ name: 'search.fa', text: '>alpha\nAAAACCCCGGGGTTTT\n>beta\nATGATGATG' });
+async function fixture(topology?: 'linear' | 'circular') {
+  const imported = await importLocalGenomes({ name: 'search.fa', text: `>alpha${topology ? ` [topology=${topology}]` : ''}\nAAAACCCCGGGGTTTT\n>beta\nATGATGATG` });
   imported.genomes[0].phage.genes = [
     { id: 101, startPos: 0, endPos: 4, strand: '+', name: 'AlphaBridgeCore', locusTag: 'ABC_1', product: 'small capsid', type: 'CDS' },
     { id: 102, startPos: 4, endPos: 12, strand: '-', name: 'tail_fiber', locusTag: 'TF_1', product: 'receptor binding protein', type: 'misc_feature' },
@@ -57,6 +57,42 @@ async function mode(test: ReturnType<typeof terminal>, tabs: number, name: strin
 }
 
 describe('native genomic search keyboard workflow', () => {
+  it('uses annotated circular topology, displays split intervals and navigates to their forward start', async () => {
+    const previous = usePhageStore.getState(), data = await fixture('circular');
+    const test = terminal(data.repository);
+    try {
+      await waitFor(test.ready); await mode(test, 1, 'Sequence');
+      await waitFor(() => test.frame().includes('circular (annotation)'));
+      test.input('\u0013'); await waitFor(() => test.frame().includes('Strand +'));
+      test.input('TTA'); await waitFor(() => test.frame().includes('1 match'));
+      assert(test.frame().includes('[14,16) + [0,1) wraps origin'));
+      test.input('\r'); await waitFor(() => !usePhageStore.getState().overlays.includes('search'));
+      assert.equal(usePhageStore.getState().scrollPosition, 14);
+    } finally { test.ui.unmount(); await data.repository.close(); usePhageStore.setState(previous); }
+  });
+
+  it('requires an explicit circular assumption for unknown inputs and discards it when the source changes', async () => {
+    const previous = usePhageStore.getState(), data = await fixture();
+    const test = terminal(data.repository);
+    try {
+      await waitFor(test.ready); await mode(test, 1, 'Sequence');
+      await waitFor(() => test.frame().includes('unknown (linear interval)'));
+      test.input('\u0013'); await waitFor(() => test.frame().includes('Strand +'));
+      test.input('TTA'); await waitFor(() => test.frame().includes('0 matches'));
+      test.input('\u000f'); await waitFor(() => test.frame().includes('1 match'));
+      assert(test.frame().includes('circular (user)'));
+      test.input('\u000f'); await waitFor(() => test.frame().includes('linear (user)'));
+      await waitFor(() => test.frame().includes('0 matches'));
+      test.input('\u000f'); await waitFor(() => test.frame().includes('unknown (linear interval)'));
+      test.input('\u000f'); await waitFor(() => test.frame().includes('1 match'));
+      // The same numeric ID and bases in a replacement repository still form a
+      // new source. An explicit assumption from the previous source cannot leak.
+      test.repository(new Proxy(data.repository, {}));
+      await waitFor(() => test.frame().includes('unknown (linear interval)'));
+      await waitFor(() => test.frame().includes('0 matches'));
+    } finally { test.ui.unmount(); await data.repository.close(); usePhageStore.setState(previous); }
+  });
+
   for (const example of [
     { name: 'Sequence', tabs: 1, query: 'CCC', count: 4, down: 2, position: 9, gene: null, aa: true },
     { name: 'Motif', tabs: 2, query: 'AR', count: 6, down: 0, position: 0, gene: null },
@@ -166,7 +202,7 @@ describe('native genomic search keyboard workflow', () => {
       test.input('\u0014'); await waitFor(() => test.frame().includes('case on'));
       await waitFor(() => requests.length > 0 && requests.at(-1)?.options?.caseSensitive === true);
       assert.equal(requests.at(-1)?.query, 'ACG');
-      assert.deepEqual(requests.at(-1)?.options, { strand: '+', mismatches: 1, caseSensitive: true, fuzzy: false, maxResults: 500 });
+      assert.deepEqual(requests.at(-1)?.options, { strand: '+', topology: 'linear', mismatches: 1, caseSensitive: true, fuzzy: false, maxResults: 500 });
       await waitFor(() => test.frame().includes('0 matches'));
       const beforeDelete = requests.length;
       test.input('\u001b[3~'); await new Promise(resolve => setTimeout(resolve, 200));

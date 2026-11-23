@@ -78,6 +78,8 @@ export interface SearchFeature {
 
 export interface SearchOptions {
   strand?: StrandOption;
+  /** Defaults to a linear interval. Circular search requires a complete molecule. */
+  topology?: 'linear' | 'circular';
   caseSensitive?: boolean;
   mismatches?: number;
   maxResults?: number;
@@ -94,8 +96,13 @@ export interface SearchRequest {
 }
 
 export interface SearchHit {
+  /** Zero-based coordinate on the submitted forward strand. */
   position: number;
+  /** Exclusive unwrapped end; can exceed genome length for a circular hit. */
   end?: number;
+  /** Forward-coordinate pieces of a match crossing the circular origin. */
+  segments?: Array<{ start: number; end: number }>;
+  wrapsOrigin?: boolean;
   strand: StrandOption;
   label: string;
   context?: string;
@@ -108,6 +115,40 @@ export interface SearchResponse {
   mode: SearchMode;
   query: string;
   hits: SearchHit[];
+}
+
+/** Shared browser/native boundary: no malformed worker coordinates reach
+ * navigation or rendering, including circular intervals and their split pieces.
+ */
+export function isSearchResponse(request: SearchRequest, response: unknown): response is SearchResponse {
+  const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+  const optionalText = (value: unknown) => value === undefined || value === null || typeof value === 'string';
+  const sequenceMode = request.mode === 'sequence' || request.mode === 'motif';
+  const length = request.sequence.length;
+  if (!object(response) || response.mode !== request.mode || response.query !== request.query || !Array.isArray(response.hits)
+    || response.hits.length > (request.options?.maxResults ?? 500)) return false;
+  // Array.from visits missing slots too; sparse replies are not valid hits.
+  return Array.from(response.hits).every(hit => {
+    if (!object(hit)) return false;
+    const { position, end, segments, feature } = hit;
+    if (typeof position !== 'number' || typeof end !== 'number' || !Number.isSafeInteger(position) || !Number.isSafeInteger(end)
+      || position < 0 || position >= length || end <= position || typeof hit.label !== 'string'
+      || typeof hit.strand !== 'string' || !['+', '-', 'both'].includes(hit.strand)
+      || hit.context !== undefined && typeof hit.context !== 'string'
+      || hit.matchType !== undefined && typeof hit.matchType !== 'string'
+      || hit.score !== undefined && (typeof hit.score !== 'number' || !Number.isFinite(hit.score))
+      || hit.wrapsOrigin !== undefined && typeof hit.wrapsOrigin !== 'boolean') return false;
+    if (sequenceMode && (end - position !== request.query.length || feature !== undefined || hit.strand === 'both'
+      || request.options?.strand !== undefined && request.options.strand !== 'both' && hit.strand !== request.options.strand)) return false;
+    if (feature !== undefined && (!object(feature) || feature.start !== position || feature.end !== end
+      || feature.id !== undefined && (typeof feature.id !== 'number' || !Number.isSafeInteger(feature.id))
+      || !optionalText(feature.name) || !optionalText(feature.product) || !optionalText(feature.type) || !optionalText(feature.strand))) return false;
+    if (end <= length) return !hit.wrapsOrigin && segments === undefined;
+    return sequenceMode && request.options?.topology === 'circular' && request.query.length <= length
+      && hit.wrapsOrigin === true && Array.isArray(segments) && segments.length === 2
+      && object(segments[0]) && segments[0].start === position && segments[0].end === length
+      && object(segments[1]) && segments[1].start === 0 && segments[1].end === end - length;
+  });
 }
 
 /**

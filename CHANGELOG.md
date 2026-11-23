@@ -6,6 +6,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Search across circular genome origins
+
+- Browser and terminal sequence/motif searches now include origin-crossing
+  matches on both strands, with optional sequence mismatches and overlapping
+  IUPAC motif hits. Circular searches visit every starting position once and
+  reject queries longer than the molecule instead of repeating it indefinitely.
+- Wrapped hits show both original coordinate segments and an origin marker in
+  their bounded context; navigation selects the original forward-strand start.
+  Topology comes from the freshly loaded source, with an explicit browser select
+  and terminal Ctrl+O control. Unknown topology stays linear until selected.
+- Source changes reset manual topology overrides. Shared browser/native result
+  validation rejects malformed spans, wrapped segments and rendering fields;
+  ASCII DNA validation preserves coordinate length during case normalization.
+
 ### Native aligned-DNA compatibility analysis and replay
 
 - `alignment-compatibility prepare`, `inspect`, `analyze` and `replay` now expose

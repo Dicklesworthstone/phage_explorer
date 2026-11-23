@@ -104,6 +104,11 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 - **Layer-1 Quick Overlays** — `G` GC skew, `X` complexity, `B` bendability, `P` promoter/RBS motifs, `R` repeats/palindromes
 - **Diff Mode** — Compare sequences between phages visually
 - **Search** — Fuzzy search by name, host, family, or accession
+- **Genome search** — Find exact sequences, bounded mismatches and IUPAC motifs on
+  either strand, including matches across a circular genome's origin. Wrapped
+  hits retain both original coordinate segments. Source topology is loaded from
+  the selected genome; use the browser topology selector or terminal Ctrl+O to
+  choose a complete circular molecule when its topology is unknown.
 - **24 Real Phages** — Lambda, T4, T7, PhiX174, MS2, M13, P22, Phi29, Mu, Phi6, SPbeta, T5, P1, P2, N4, Felix O1, D29, L5, PhiC31, PhiKZ, PRD1, PM2, Qβ, T1
 - **WASM-Accelerated** — Rust-compiled sequence routines for fast in-browser analysis
 - **Zero Dependencies at Runtime** — Single binary, no Bun/Node required

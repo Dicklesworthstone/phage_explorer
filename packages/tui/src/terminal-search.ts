@@ -3,12 +3,12 @@
  */
 import * as Comlink from 'comlink';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
-import type { SearchFeature, SearchRequest, SearchResponse, SearchWorkerAPI } from '../../web/src/workers/types';
+import { isSearchResponse, type SearchFeature, type SearchRequest, type SearchResponse, type SearchWorkerAPI } from '../../web/src/workers/types';
 
 declare const PHAGE_SEARCH_WORKER: string | undefined;
 
 export const TERMINAL_SEARCH_LIMITS = { bases: 5_000_000, query: 10_000, results: 500, timeoutMs: 15_000 } as const;
-export interface TerminalSearchSource { sequence: string; features: SearchFeature[] }
+export interface TerminalSearchSource { sequence: string; features: SearchFeature[]; topology: 'linear' | 'circular' | 'unknown' }
 
 function cancelled(): DOMException { return new DOMException('Search cancelled.', 'AbortError'); }
 function check(signal: AbortSignal): void { if (signal.aborted) throw cancelled(); }
@@ -43,12 +43,13 @@ export async function loadTerminalSearchSource(
     if (!Number.isSafeInteger(length) || length < 1 || length > TERMINAL_SEARCH_LIMITS.bases) {
       throw new Error('Search requires a complete genome of 1–5,000,000 bases.');
     }
-    const [sequence, genes] = await abortable(Promise.all([
-      repository.getSequenceWindow(phageId, 0, length), repository.getGenes(phageId),
+    const [sequence, genes, phage] = await abortable(Promise.all([
+      repository.getSequenceWindow(phageId, 0, length), repository.getGenes(phageId), repository.getPhageById(phageId),
     ]), operation.signal);
     check(operation.signal);
     if (sequence.length !== length) throw new Error('The complete genome could not be read. Retry before searching.');
-    return { sequence, features: genes.map(gene => ({ id: gene.id, start: gene.startPos, end: gene.endPos,
+    if (!phage || phage.id !== phageId) throw new Error('The selected genome is no longer available. Retry before searching.');
+    return { sequence, topology: phage.localGenome?.topology ?? 'unknown', features: genes.map(gene => ({ id: gene.id, start: gene.startPos, end: gene.endPos,
       strand: gene.strand === '+' || gene.strand === '-' ? gene.strand : 'both',
       name: gene.name && gene.locusTag && gene.name !== gene.locusTag ? `${gene.name} (${gene.locusTag})` : gene.name || gene.locusTag,
       product: gene.product, type: gene.type ?? 'CDS' })) };
@@ -109,11 +110,7 @@ export function runTerminalSearch(
     worker.addEventListener('messageerror', failure);
     if (signal.aborted) { abort(); return; }
     void Promise.resolve().then(() => api.runSearch(request)).then(result => {
-      if (!result || result.mode !== request.mode || result.query !== request.query || !Array.isArray(result.hits)
-        || result.hits.length > limit || result.hits.some(hit => !hit || !Number.isSafeInteger(hit.position)
-          || !Number.isSafeInteger(hit.end) || hit.position < 0 || hit.end! <= hit.position
-          || hit.end! > request.sequence.length || !['+', '-', 'both'].includes(hit.strand)
-          || typeof hit.label !== 'string')) {
+      if (!isSearchResponse(request, result) || result.hits.length > limit) {
         finish(new Error('The search worker returned mismatched or invalid results.')); return;
       }
       finish(null, result);

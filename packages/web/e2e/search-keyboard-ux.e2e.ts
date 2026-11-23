@@ -14,6 +14,7 @@ declare global {
       replyPending: boolean;
       replyReleased: boolean;
       releaseReply: () => void;
+      position: () => number;
     };
   }
 }
@@ -95,7 +96,7 @@ test.describe('SearchOverlay Keyboard UX', () => {
   });
 });
 
-test('search owns its input, annotations and late worker replies across repository replacement', async ({ page }, info) => {
+test('search owns its input, annotations, circular topology and late worker replies across repository replacement', async ({ page }, info) => {
   const root = process.cwd(), fixtureId = resolve(root, 'src/search-identity-fixture.tsx');
   const loaded = await loadConfigFromFile({ command: 'serve', mode: 'development' }, resolve(root, 'vite.config.ts'));
   if (!loaded) throw new Error('Could not load search fixture configuration');
@@ -112,6 +113,7 @@ test('search owns its input, annotations and late worker replies across reposito
           import { createRoot } from 'react-dom/client';
           import { flushSync } from 'react-dom';
           import { importLocalGenomes } from '@phage-explorer/core';
+          import { usePhageStore } from '@phage-explorer/state';
           import { createLocalGenomeRepository } from '@phage-explorer/db-runtime/local-genomes';
           import { SearchOverlay } from './components/overlays/SearchOverlay';
           import { OverlayProvider, useOverlay } from './components/overlays/OverlayProvider';
@@ -122,6 +124,7 @@ test('search owns its input, annotations and late worker replies across reposito
           const fixture = window.searchIdentityFixture = {
             select: name => select(name), holdRead: false, readPending: false, releaseRead: () => {},
             holdReply: false, replyPending: false, replyReleased: false, releaseReply: () => {},
+            position: () => usePhageStore.getState().scrollPosition,
           };
           const NativeWorker = window.Worker;
           window.Worker = class extends NativeWorker {
@@ -138,8 +141,9 @@ test('search owns its input, annotations and late worker replies across reposito
               });
             }
           };
-          async function entry(name, sequence, geneName) {
-            const imported = await importLocalGenomes({ name: name + '.fasta', text: '>input\\n' + sequence });
+          async function entry(name, sequence, geneName, topology = 'unknown') {
+            const imported = await importLocalGenomes({ name: name + '.fasta',
+              text: '>input' + (topology === 'unknown' ? '' : ' [topology=' + topology + ']') + '\\n' + sequence });
             const genome = imported.genomes[0];
             genome.phage = { ...genome.phage, id: -1, genes: [{ id: 1, startPos: 0, endPos: 3,
               name: geneName, locusTag: null, product: 'Example', type: 'CDS', strand: '+' }] };
@@ -156,7 +160,7 @@ test('search owns its input, annotations and late worker replies across reposito
           }
           const entries = {
             a: await entry('a', 'AAAAACCC', 'AlphaBridgeCore'),
-            b: await entry('b', 'CCCCCAAA', 'alphabridgecore'),
+            b: await entry('b', 'CCCCCAAA', 'alphabridgecore', 'circular'),
           };
           function Fixture() {
             const [name, setName] = useState('a');
@@ -214,6 +218,35 @@ test('search owns its input, annotations and late worker replies across reposito
     await overlay.getByLabel('Case sensitive').uncheck();
     await expect(hits).toHaveCount(1);
     await expect(hits.first()).toContainText('alphabridgecore');
+
+    // Topology belongs to the repository alongside its sequence/annotations,
+    // even though this fixture deliberately keeps the previous PhageFull prop.
+    await overlay.getByRole('button', { name: 'Sequence', exact: true }).click();
+    const topology = overlay.getByLabel('Sequence topology:');
+    await expect(topology).toHaveValue('annotation');
+    await expect(topology.locator('option:checked')).toHaveText('Annotated circular');
+    await query.fill('AAC');
+    await expect(hits).toHaveCount(1);
+    await expect(hits.first()).toContainText('6-8 + 0-1 (+) · crosses origin');
+    await expect(hits.first()).toContainText(' | ');
+    await topology.selectOption('linear');
+    await expect(hits).toHaveCount(0);
+    await expect(overlay.getByText('No matches found.', { exact: true })).toBeVisible();
+    await topology.selectOption('circular');
+    await expect(hits).toHaveCount(1);
+    await query.fill('CCA');
+    await expect(hits).toHaveCount(1);
+    await page.evaluate(() => window.searchIdentityFixture.select('a'));
+    await expect(topology).toHaveValue('annotation');
+    await expect(topology.locator('option:checked')).toHaveText('Unknown · linear interval');
+    await expect(hits).toHaveCount(0);
+    await expect(overlay.getByText('No matches found.', { exact: true })).toBeVisible();
+    await topology.selectOption('circular');
+    await expect(hits).toHaveCount(1);
+    await expect(hits.first()).toContainText('6-8 + 0-1 (+) · crosses origin');
+    await query.press('Enter');
+    await expect(overlay).toBeHidden();
+    expect(await page.evaluate(() => window.searchIdentityFixture.position())).toBe(6);
     expect(errors).toEqual([]);
   } finally { await server.close(); }
 });

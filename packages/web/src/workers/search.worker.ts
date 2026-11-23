@@ -40,6 +40,7 @@ const IUPAC_MAP: Record<string, string> = {
 };
 
 const DEFAULT_MAX_RESULTS = 500;
+const ASCII_IUPAC_DNA = /^[ACGTRYSWKMBDHVNacgtryswkmbdhvn]*$/;
 
 type FuzzyIndexEntry<TMeta = unknown> = FuzzySearchEntry<TMeta> & {
   textLower: string;
@@ -219,6 +220,20 @@ function extractContext(sequence: string, start: number, end: number, pad = 20):
   return sequence.slice(s, e) + (e < requestedEnd ? '…' : '');
 }
 
+/** A circular preview contains each base at most once. The origin marker is
+ * display text, not a nucleotide; coordinates always refer to the input bases.
+ */
+function extractCircularContext(sequence: string, position: number, length: number, pad = 20): string {
+  const requestedLength = Math.min(sequence.length, length + 2 * pad);
+  const displayLength = Math.min(requestedLength, 240);
+  const before = Math.min(pad, Math.max(0, Math.floor((displayLength - length) / 2)));
+  const start = (position - before + sequence.length) % sequence.length;
+  const end = start + displayLength;
+  const context = end <= sequence.length ? sequence.slice(start, end)
+    : `${sequence.slice(start)} | ${sequence.slice(0, end - sequence.length)}`;
+  return context + (displayLength < requestedLength ? '…' : '');
+}
+
 function normalizeStrand(strand?: StrandOption | string | null): StrandOption {
   if (strand === '+') return '+';
   if (strand === '-') return '-';
@@ -233,24 +248,28 @@ function createHit(
   sequence: string,
   feature?: SearchFeature,
   matchType?: string,
-  score?: number
+  score?: number,
+  circular = false
 ): SearchHit {
+  const end = position + length;
+  const wrapped = circular && end > sequence.length;
   return {
     position,
-    end: position + length,
+    end,
+    ...(wrapped ? { wrapsOrigin: true, segments: [{ start: position, end: sequence.length }, { start: 0, end: end - sequence.length }] } : {}),
     strand,
     label,
-    context: extractContext(sequence, position, position + length),
+    context: circular ? extractCircularContext(sequence, position, length) : extractContext(sequence, position, end),
     feature,
     matchType,
     score,
   };
 }
 
-function sequenceDistance(a: string, b: string): number {
+function sequenceDistance(sequence: string, start: number, query: string, limit: number): number {
   let mismatches = 0;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) mismatches++;
+  for (let i = 0; i < query.length; i++) {
+    if (sequence[start + i] !== query[i] && ++mismatches > limit) break;
   }
   return mismatches;
 }
@@ -265,33 +284,25 @@ function runSequenceSearch(req: SearchRequest): SearchHit[] {
   const needle = options?.caseSensitive ? query : query.toUpperCase();
   const len = needle.length;
   const seqLength = sequence.length;
+  const circular = options?.topology === 'circular';
   const hits: SearchHit[] = [];
 
-  const searchOneStrand = (seq: string, strand: StrandOption) => {
+  const searchOneStrand = (input: string, strand: StrandOption) => {
+    // Extending only the needed prefix visits each genomic start once and
+    // preserves the exact same matching rule on either side of the origin.
+    const seq = circular ? input + input.slice(0, len - 1) : input;
     for (let i = 0; i <= seq.length - len; i++) {
-      const window = seq.slice(i, i + len);
       if (maxMismatches === 0) {
-        if (window === needle) {
-          const position = strand === '-' ? seqLength - (i + len) : i;
-          hits.push(createHit(position, len, strand, `${strand} strand match`, sequence));
-        }
-      } else {
-        const dist = sequenceDistance(window, needle);
-        if (dist <= maxMismatches) {
-          const position = strand === '-' ? seqLength - (i + len) : i;
-          hits.push(
-            createHit(
-              position,
-              len,
-              strand,
-              `${strand} strand (${dist} mm)`,
-              sequence,
-              undefined,
-              undefined,
-              1 - dist / len
-            )
-          );
-        }
+        i = seq.indexOf(needle, i);
+        if (i < 0) break;
+      }
+      const dist = maxMismatches === 0 ? 0 : sequenceDistance(seq, i, needle, maxMismatches);
+      if (dist <= maxMismatches) {
+        const reverseStart = seqLength - (i + len);
+        const position = strand === '-' ? (reverseStart + seqLength) % seqLength : i;
+        hits.push(createHit(position, len, strand,
+          maxMismatches === 0 ? `${strand} strand match` : `${strand} strand (${dist} mm)`,
+          sequence, undefined, undefined, maxMismatches === 0 ? undefined : 1 - dist / len, circular));
       }
       if (hits.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
     }
@@ -315,13 +326,16 @@ function runMotifSearch(req: SearchRequest): SearchHit[] {
   const strandOpt = options?.strand ?? 'both';
   const hits: SearchHit[] = [];
   const seqLength = sequence.length;
+  const circular = options?.topology === 'circular';
 
-  const scan = (seq: string, strand: StrandOption) => {
+  const scan = (input: string, strand: StrandOption) => {
+    const seq = circular ? input + input.slice(0, query.length - 1) : input;
     regex.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = regex.exec(seq)) !== null) {
-      const position = strand === '-' ? seqLength - (match.index + match[0].length) : match.index;
-      hits.push(createHit(position, match[0].length, strand, `${strand} motif`, sequence, undefined, 'motif'));
+      const reverseStart = seqLength - (match.index + match[0].length);
+      const position = strand === '-' ? (reverseStart + seqLength) % seqLength : match.index;
+      hits.push(createHit(position, match[0].length, strand, `${strand} motif`, sequence, undefined, 'motif', undefined, circular));
       if (hits.length >= (options?.maxResults ?? DEFAULT_MAX_RESULTS)) break;
       // Global RegExp matching normally skips overlaps. Each starting base is a
       // distinct motif occurrence, including on the reverse-complement strand.
@@ -450,6 +464,21 @@ function runSearchInternal(request: SearchRequest): SearchResponse {
     throw new Error('Search mismatches must be a whole number from 0 to 3.');
   }
   if (options.strand !== undefined && !['+', '-', 'both'].includes(options.strand)) throw new Error('Unsupported search strand.');
+  if (options.topology !== undefined && options.topology !== 'linear' && options.topology !== 'circular') {
+    throw new Error('Search topology must be linear or circular.');
+  }
+  if (mode === 'sequence' || mode === 'motif') {
+    // Coordinate arithmetic requires length-preserving case normalization.
+    // Unicode such as ß uppercases to multiple symbols; it is not DNA input.
+    if (!ASCII_IUPAC_DNA.test(request.sequence)) throw new Error('Genome search requires ASCII IUPAC DNA sequence symbols.');
+    if (mode === 'sequence' && !ASCII_IUPAC_DNA.test(request.query)) {
+      throw new Error('Sequence queries accept ASCII IUPAC DNA symbols only, matched literally.');
+    }
+  }
+  if ((mode === 'sequence' || mode === 'motif') && options.topology === 'circular'
+    && request.query.length > request.sequence.length) {
+    throw new Error('Circular search queries cannot exceed the complete genome length; each match traverses the molecule at most once.');
+  }
 
   let hits: SearchHit[] = [];
   switch (mode) {

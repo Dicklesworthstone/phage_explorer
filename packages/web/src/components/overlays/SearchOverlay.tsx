@@ -7,6 +7,7 @@ import { useTheme } from '../../hooks/useTheme';
 import { SearchResultsSkeleton } from '../ui/Skeleton';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
+import { isSearchResponse } from '../../workers/types';
 import {
   OverlayEmptyState,
   OverlayErrorState,
@@ -37,6 +38,7 @@ interface SearchSource {
   loadKey: number;
   sequence: string;
   features: SearchFeature[];
+  topology: 'linear' | 'circular' | 'unknown';
 }
 const EMPTY_HITS: SearchHit[] = [];
 
@@ -106,10 +108,15 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   const source = currentLoad?.source ?? null;
   const sequence = source?.sequence ?? '';
   const loadError = currentLoad?.error ?? null;
+  const [topologyChoice, setTopologyChoice] = useState<{ source: SearchSource; value: 'linear' | 'circular' } | null>(null);
+  // A manual topology assumption belongs to these exact loaded bases. It must
+  // not silently become the default for the next selected genome/repository.
+  const topologyOverride = topologyChoice && topologyChoice.source === source ? topologyChoice.value : null;
+  const topology = topologyOverride ?? (source?.topology === 'circular' ? 'circular' : 'linear');
   const request = useMemo<SearchRequest | null>(() => source ? {
     mode, query: query.trim(), sequence: source.sequence, features: source.features,
-    options: { ...options, fuzzy: mode === 'gene' || mode === 'feature' },
-  } : null, [source, mode, query, options]);
+    options: { ...options, topology, fuzzy: mode === 'gene' || mode === 'feature' },
+  } : null, [source, mode, query, options, topology]);
   const [outcome, setOutcome] = useState<{
     request: SearchRequest; hits: SearchHit[]; summary: string; error: string | null;
   } | null>(null);
@@ -286,12 +293,14 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
         const length = await repository.getFullGenomeLength(currentPhage.id);
         if (cancelled) return;
         if (!Number.isSafeInteger(length) || length < 0 || length > 5_000_000) throw new Error('Search requires a complete genome of at most 5,000,000 bases.');
-        const [seq, genes] = await Promise.all([
+        const [seq, genes, phage] = await Promise.all([
           repository.getSequenceWindow(currentPhage.id, 0, length),
           repository.getGenes(currentPhage.id),
+          repository.getPhageById(currentPhage.id),
         ]);
         if (cancelled) return;
         if (seq.length !== length) throw new Error('The complete genome could not be read. Reload before searching.');
+        if (!phage || phage.id !== currentPhage.id) throw new Error('The selected genome is no longer available. Reload before searching.');
 
         // A repository replacement can precede the store's PhageFull refresh.
         // Load annotations with the bases, never from that previous UI object.
@@ -303,7 +312,8 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
           product: g.product ?? undefined,
           type: g.type ?? 'CDS',
         }));
-        const source: SearchSource = { repository, phage: currentPhage, loadKey: sequenceLoadKey, sequence: seq, features: mappedFeatures };
+        const source: SearchSource = { repository, phage: currentPhage, loadKey: sequenceLoadKey, sequence: seq,
+          features: mappedFeatures, topology: phage.localGenome?.topology ?? 'unknown' };
         setLoaded({ repository, phage: currentPhage, loadKey: sequenceLoadKey, source, error: null });
         setStatus('idle');
       } catch (e) {
@@ -328,7 +338,7 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
         setStatus('searching');
         const res = (await workerRef.current.runSearch(req)) as SearchResponse;
         if (searchSeqRef.current !== seq) return;
-        if (res.mode !== req.mode || res.query !== req.query || !Array.isArray(res.hits)) throw new Error('Search engine returned results for a different query.');
+        if (!isSearchResponse(req, res)) throw new Error('Search engine returned mismatched or invalid results.');
         const limit = req.options?.maxResults ?? DEFAULT_OPTIONS.maxResults ?? 500;
         setOutcome({ request: req, hits: res.hits, error: null,
           summary: `${res.hits.length}/${limit} results for "${res.query}" in ${res.mode} mode${res.hits.length === limit ? ' (result limit reached)' : ''}` });
@@ -422,6 +432,20 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
               <option value="both">both</option>
               <option value="+">+</option>
               <option value="-">-</option>
+            </select>
+          </label>
+        )}
+
+        {(mode === 'sequence' || mode === 'motif') && source && (
+          <label style={labelStyle}>
+            <span style={{ color: colors.textDim }}>Sequence topology:</span>
+            <select value={topologyOverride ?? 'annotation'} style={selectStyle} onChange={event => {
+              const value = event.target.value;
+              setTopologyChoice(value === 'annotation' ? null : { source, value: value as 'linear' | 'circular' });
+            }}>
+              <option value="annotation">{source.topology === 'unknown' ? 'Unknown · linear interval' : `Annotated ${source.topology}`}</option>
+              <option value="linear">Search linear interval</option>
+              <option value="circular">Complete circular molecule</option>
             </select>
           </label>
         )}
@@ -580,6 +604,13 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                 Positions are 0-based; range ends are exclusive. A single position selects one base.
                 {mode === 'motif' && ' Motifs include overlapping matches; ambiguity in the query matches resolved A/C/G/T bases.'}
               </p>
+              {(mode === 'sequence' || mode === 'motif') && <p style={{ color: colors.textDim, fontSize: '0.9rem', margin: 0 }}>
+                {topology === 'circular'
+                  ? `${topologyOverride ? 'User-selected' : 'Annotated'} circular topology: matches may cross the origin once. Split ranges show both pieces; | marks the origin in forward-strand context. Queries cannot exceed the complete genome length.`
+                  : source?.topology === 'unknown' && !topologyOverride
+                    ? 'Genome topology is unknown. Searches stop at sequence ends; select circular only for a complete circular molecule.'
+                    : 'Searching a linear interval: matches stop at sequence ends.'}
+              </p>}
             </div>
 
             {(summary || status === 'searching') && (
@@ -643,7 +674,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                           {hit.label} {hit.matchType ? `· ${hit.matchType}` : ''}
                         </div>
                         <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
-                          {hit.position.toLocaleString()}-{(hit.end ?? hit.position).toLocaleString()} ({hit.strand})
+                          {hit.wrapsOrigin && hit.segments
+                            ? `${hit.segments.map(segment => `${segment.start.toLocaleString()}-${segment.end.toLocaleString()}`).join(' + ')} (${hit.strand}) · crosses origin`
+                            : `${hit.position.toLocaleString()}-${(hit.end ?? hit.position).toLocaleString()} (${hit.strand})`}
                         </div>
                         {hit.feature?.product && (
                           <div style={{ color: colors.textDim, fontSize: '0.9rem' }}>{hit.feature.product}</div>

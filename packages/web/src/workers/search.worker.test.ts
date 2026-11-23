@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import * as Comlink from 'comlink';
-import type { SearchFeature, SearchOptions, SearchRequest, SearchWorkerAPI } from './types';
+import { isSearchResponse, type SearchFeature, type SearchOptions, type SearchRequest, type SearchWorkerAPI } from './types';
 
 let worker: Worker, api: Comlink.Remote<SearchWorkerAPI>;
 beforeAll(async () => {
@@ -14,6 +14,23 @@ const search = (mode: SearchRequest['mode'], sequence: string, query: string,
   options: SearchOptions = {}, features: SearchFeature[] = []) =>
   api.runSearch({ mode, sequence, query, features, options });
 const positions = (result: Awaited<ReturnType<typeof search>>) => result.hits.map(hit => [hit.position, hit.end, hit.strand]);
+
+// Bun's .rejects matcher can deadlock when invoked from a prior Worker reply
+// continuation (https://github.com/oven-sh/bun/issues/37189). Await the rejection normally, then make the
+// same assertions synchronously so the worker message loop remains available.
+async function expectSearchFailure(promise: PromiseLike<unknown>, message?: string): Promise<void> {
+  let rejected = false;
+  let failure: unknown;
+  try {
+    await promise;
+  } catch (error) {
+    rejected = true;
+    failure = error;
+  }
+  expect(rejected).toBe(true);
+  expect(failure).toBeInstanceOf(Error);
+  if (message !== undefined) expect((failure as Error).message).toContain(message);
+}
 
 describe('real search worker motif enumeration', () => {
   it('returns every overlapping occurrence on each requested strand, with forward coordinates', async () => {
@@ -46,13 +63,116 @@ describe('real search worker motif enumeration', () => {
   });
 
   it('propagates unsupported motifs and invalid limits instead of reporting a successful empty result', async () => {
-    await expect(search('motif', 'AAAA', 'A.*A')).rejects.toThrow('IUPAC DNA');
+    await expectSearchFailure(search('motif', 'AAAA', 'A.*A'), 'IUPAC DNA');
     for (const maxResults of [0, -1, 1.5, NaN, Infinity, 2001]) {
-      await expect(search('sequence', 'AAAA', 'A', { maxResults })).rejects.toThrow('Search result limit');
+      await expectSearchFailure(search('sequence', 'AAAA', 'A', { maxResults }), 'Search result limit');
     }
-    await expect(search('sequence', 'AAAA', 'A', { mismatches: 0.5 })).rejects.toThrow('Search mismatches');
+    await expectSearchFailure(search('sequence', 'AAAA', 'A', { mismatches: 0.5 }), 'Search mismatches');
     // A rejected request must not kill the worker or poison later valid work.
     expect((await search('sequence', 'ACGT', 'CG', { strand: '+' })).hits).toHaveLength(1);
+  });
+});
+
+describe('complete circular sequence and motif search', () => {
+  it('finds exact origin-spanning matches on both strands in forward coordinates', async () => {
+    const forward = await search('sequence', 'GAAATTC', 'TCG', { topology: 'circular', strand: '+' });
+    const reverse = await search('sequence', 'GAAATTC', 'CGA', { topology: 'circular', strand: '-' });
+    expect(positions(forward)).toEqual([[5, 8, '+']]);
+    expect(positions(reverse)).toEqual([[5, 8, '-']]);
+    for (const result of [forward, reverse]) {
+      expect(result.hits[0]).toMatchObject({ wrapsOrigin: true,
+        segments: [{ start: 5, end: 7 }, { start: 0, end: 1 }], context: 'ATTC | GAA' });
+    }
+    // The default and an explicit linear interval do not manufacture a junction.
+    expect((await search('sequence', 'GAAATTC', 'TCG', { strand: '+' })).hits).toEqual([]);
+    expect((await search('sequence', 'GAAATTC', 'CGA', { topology: 'linear', strand: '-' })).hits).toEqual([]);
+  });
+
+  it('applies IUPAC, case and bounded mismatches at the origin using the ordinary matching rules', async () => {
+    expect(positions(await search('motif', 'GAAATTC', 'YCG', { topology: 'circular', strand: '+' })))
+      .toEqual([[5, 8, '+']]);
+    expect(positions(await search('motif', 'GAAATTC', 'CGW', { topology: 'circular', strand: '-' })))
+      .toEqual([[5, 8, '-']]);
+    for (const mode of ['sequence', 'motif'] as const) {
+      expect(positions(await search(mode, 'gAAATtc', 'tcg', { topology: 'circular', strand: '+', caseSensitive: true })))
+        .toEqual([[5, 8, '+']]);
+      expect(positions(await search(mode, 'gAAATtc', 'cga', { topology: 'circular', strand: '-', caseSensitive: true })))
+        .toEqual([[5, 8, '-']]);
+      expect((await search(mode, 'gAAATtc', 'TCG', { topology: 'circular', strand: '+', caseSensitive: true })).hits).toEqual([]);
+    }
+    const mismatch = await search('sequence', 'GAAATTC', 'TCA', { topology: 'circular', strand: '+', mismatches: 1 });
+    expect(positions(mismatch)).toEqual([[5, 8, '+']]);
+    expect(mismatch.hits[0].score).toBeCloseTo(2 / 3, 12);
+    expect((await search('motif', 'AN', 'NN', { topology: 'circular', strand: '+' })).hits).toEqual([]);
+    expect(positions(await search('sequence', 'AN', 'NA', { topology: 'circular', strand: '+' })))
+      .toEqual([[1, 3, '+']]);
+  });
+
+  it('visits each start once, preserves result limits and permits a single complete traversal', async () => {
+    for (const mode of ['sequence', 'motif'] as const) {
+      expect(positions(await search(mode, 'AAAA', 'AAA', { topology: 'circular', strand: '+' })))
+        .toEqual([[0, 3, '+'], [1, 4, '+'], [2, 5, '+'], [3, 6, '+']]);
+      expect(positions(await search(mode, 'AAAA', 'AAAA', { topology: 'circular', strand: '+' })))
+        .toEqual([[0, 4, '+'], [1, 5, '+'], [2, 6, '+'], [3, 7, '+']]);
+      expect(positions(await search(mode, 'AAAA', 'AAA', { topology: 'circular', strand: 'both', maxResults: 2 })))
+        .toEqual([[0, 3, '+'], [1, 4, '+']]);
+      expect(positions(await search(mode, 'A', 'A', { topology: 'circular', strand: 'both' }))).toEqual([[0, 1, '+']]);
+      await expectSearchFailure(search(mode, 'AAAA', 'AAAAA', { topology: 'circular' }), 'at most once');
+    }
+    await expectSearchFailure(search('sequence', 'ACGT', 'A', { topology: 'unknown' as SearchOptions['topology'] }),
+      'Search topology');
+    // Case expansion cannot turn a two-symbol query into two full traversals.
+    for (const topology of ['linear', 'circular'] as const) {
+      await expectSearchFailure(search('sequence', 'SS', 'ßß', { topology, strand: '+' }), 'IUPAC DNA');
+      await expectSearchFailure(search('sequence', 'ß', 'S', { topology, strand: '+' }), 'IUPAC DNA');
+      await expectSearchFailure(search('motif', 'ß', 'S', { topology, strand: '+' }), 'IUPAC DNA');
+    }
+    const long = await search('sequence', 'A'.repeat(1000), 'A'.repeat(500), { topology: 'circular', strand: '+', maxResults: 1 });
+    expect(long.hits[0].context).toBe('A'.repeat(240) + '…');
+  });
+
+  it('agrees with an independent modular-coordinate oracle after every origin rotation', async () => {
+    const original = 'GAAATTC';
+    const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+    const order = (rows: unknown[][]) => rows.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    for (let rotation = 0; rotation < original.length; rotation++) {
+      const sequence = original.slice(rotation) + original.slice(0, rotation);
+      for (const query of ['TCG', 'CGA']) {
+        const expected: unknown[][] = [];
+        for (let start = 0; start < sequence.length; start++) {
+          const bases = Array.from({ length: query.length }, (_, j) => sequence[(start + j) % sequence.length]).join('');
+          if (bases === query) expected.push([start, start + query.length, '+']);
+          if ([...bases].reverse().map(base => complement[base]).join('') === query) expected.push([start, start + query.length, '-']);
+        }
+        for (const mode of ['sequence', 'motif'] as const) {
+          const actual = await search(mode, sequence, query, { topology: 'circular' });
+          expect(order(positions(actual))).toEqual(order(expected));
+          for (const hit of actual.hits) {
+            expect(Boolean(hit.wrapsOrigin)).toBe(hit.end! > sequence.length);
+            if (hit.segments) expect(hit.segments.map(segment => sequence.slice(segment.start, segment.end)).join(''))
+              .toBe(Array.from({ length: query.length }, (_, j) => sequence[(hit.position + j) % sequence.length]).join(''));
+          }
+        }
+      }
+    }
+  });
+
+  it('checks wrapped and ordinary intervals before either frontend can render or navigate them', async () => {
+    const request: SearchRequest = { mode: 'sequence', sequence: 'GAAATTC', query: 'TCG', features: [],
+      options: { topology: 'circular', strand: '+' } };
+    const result = await api.runSearch(request);
+    expect(isSearchResponse(request, result)).toBe(true);
+    expect(isSearchResponse(request, { ...result, hits: new Array(1) })).toBe(false);
+    for (const changes of [
+      { segments: 'bad' }, { segments: [{ start: 4, end: 7 }, { start: 0, end: 1 }] },
+      { position: -1 }, { position: 7 }, { end: 9 }, { wrapsOrigin: false }, { context: {} }, { score: NaN },
+      { strand: '-' }, { strand: 'both' },
+      // Correct-looking in-range coordinates still cannot shorten the query.
+      { position: 0, end: 1, wrapsOrigin: undefined, segments: undefined },
+    ]) expect(isSearchResponse(request, { ...result, hits: [{ ...result.hits[0], ...changes }] })).toBe(false);
+    expect(isSearchResponse({ ...request, options: { topology: 'linear' } }, result)).toBe(false);
+    const linear: SearchRequest = { ...request, query: 'GAA', options: { topology: 'linear', strand: '+' } };
+    expect(isSearchResponse(linear, await api.runSearch(linear))).toBe(true);
   });
 });
 
@@ -80,7 +200,7 @@ describe('real search worker position semantics', () => {
 
   it('rejects the entire malformed or out-of-genome query before returning partial evidence', async () => {
     for (const query of ['8', '1.2', '-1', '1-4-6', '0-9', '0-0', '1,', '0,999999999999999999999']) {
-      await expect(locate(query)).rejects.toThrow();
+      await expectSearchFailure(locate(query));
     }
   });
 });

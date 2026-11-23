@@ -38,6 +38,20 @@ describe('native transport for the existing genomic search producer', () => {
     await assert.rejects(runTerminalSearch(request({ mode: 'position', query: '8', features }), signal()), /within/);
   });
 
+  it('preserves circular-origin intervals through the real native transport', async () => {
+    const result = await runTerminalSearch(request({ sequence: 'GAAATTC', query: 'TCG',
+      options: { strand: '+', topology: 'circular' } }), signal());
+    assert.deepEqual(positions(result), [[5, 8, '+']]);
+    assert.deepEqual(result.hits[0].segments, [{ start: 5, end: 7 }, { start: 0, end: 1 }]);
+    assert.equal(result.hits[0].wrapsOrigin, true);
+    assert.equal(result.hits[0].context, 'ATTC | GAA');
+    const reverse = await runTerminalSearch(request({ mode: 'motif', sequence: 'GAAATTC', query: 'CGW',
+      options: { strand: '-', topology: 'circular' } }), signal());
+    assert.deepEqual(positions(reverse), [[5, 8, '-']]);
+    await assert.rejects(runTerminalSearch(request({ sequence: 'GAAATTC', query: 'GAAATTCG',
+      options: { topology: 'circular' } }), signal()), /at most once/);
+  });
+
   it('caps results and rejects oversized input before creating any worker', async () => {
     const result = await runTerminalSearch(request({ sequence: 'A'.repeat(1000), query: 'A', options: { strand: '+' } }), signal());
     assert.equal(result.hits.length, 500); assert.equal(result.hits[499].position, 499);
@@ -70,6 +84,19 @@ describe('native transport for the existing genomic search producer', () => {
     controller.abort();
     await assert.rejects(pending, { name: 'AbortError' }); assert.equal(terminated, 2);
   });
+
+  it('refuses invented wrapping coordinates even when the worker repeats the correct query', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-search-circular-'));
+    const malformed = join(directory, 'malformed.ts');
+    await writeFile(malformed, `import * as Comlink from ${JSON.stringify(import.meta.resolve('comlink'))};
+      Comlink.expose({ runSearch: async request => ({ mode: request.mode, query: request.query,
+        hits: [{ position: 5, end: 8, strand: '+', label: 'forged wrap', wrapsOrigin: true,
+          segments: [{ start: 4, end: 7 }, { start: 0, end: 1 }] }] }) });`, { flag: 'wx' });
+    for (const topology of ['linear', 'circular'] as const) {
+      await assert.rejects(runTerminalSearch(request({ sequence: 'GAAATTC', query: 'TCG', options: { topology } }), signal(), 2000,
+        () => new Worker(pathToFileURL(malformed), { type: 'module' })), /mismatched or invalid/);
+    }
+  });
 });
 
 describe('complete native search inputs', () => {
@@ -80,10 +107,11 @@ describe('complete native search inputs', () => {
       getSequenceWindow: async (...args: unknown[]) => { calls.push(['sequence', ...args]); return 'AAAAATTT'; },
       getGenes: async (id: number) => { calls.push(['genes', id]); return [{ id: 29, name: 'capsidA', locusTag: 'LOC_29',
         product: 'capsid', startPos: 3, endPos: 6, strand: '-', type: 'CDS' }]; },
+      getPhageById: async (id: number) => { calls.push(['phage', id]); return { id, localGenome: { topology: 'circular' } }; },
     } as unknown as PhageRepository;
     const source = await loadTerminalSearchSource(repository, -12, signal());
-    assert.deepEqual(calls, [['length', -12], ['sequence', -12, 0, 8], ['genes', -12]]);
-    assert.deepEqual(source, { sequence: 'AAAAATTT', features: [{ id: 29, name: 'capsidA (LOC_29)', product: 'capsid',
+    assert.deepEqual(calls, [['length', -12], ['sequence', -12, 0, 8], ['genes', -12], ['phage', -12]]);
+    assert.deepEqual(source, { sequence: 'AAAAATTT', topology: 'circular', features: [{ id: 29, name: 'capsidA (LOC_29)', product: 'capsid',
       start: 3, end: 6, strand: '-', type: 'CDS' }] });
     const byLocus = await runTerminalSearch(request({ ...source, mode: 'gene', query: 'LOC_29' }), signal());
     assert.deepEqual(byLocus.hits.map(hit => hit.feature?.id), [29]);
@@ -92,7 +120,8 @@ describe('complete native search inputs', () => {
   it('rejects missing, oversized and incomplete inputs without reporting successful empty search', async () => {
     let sequenceReads = 0;
     const repository = { getFullGenomeLength: async () => 0,
-      getSequenceWindow: async () => { sequenceReads++; return 'AAA'; }, getGenes: async () => [] } as unknown as PhageRepository;
+      getSequenceWindow: async () => { sequenceReads++; return 'AAA'; }, getGenes: async () => [],
+      getPhageById: async (id: number) => ({ id }) } as unknown as PhageRepository;
     for (const length of [0, -1, 5000001, 8.5]) {
       repository.getFullGenomeLength = async () => length;
       await assert.rejects(loadTerminalSearchSource(repository, 1, signal()), /complete genome/);

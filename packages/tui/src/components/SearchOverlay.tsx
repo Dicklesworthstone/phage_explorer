@@ -54,6 +54,9 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
   const genomeMode = mode !== 'catalog';
   const source = loaded?.owner === owner ? loaded.source : null;
   const sourceError = loaded?.owner === owner ? loaded.error : null;
+  const [topologyChoice, setTopologyChoice] = useState<{ source: TerminalSearchSource; value: 'linear' | 'circular' } | null>(null);
+  const topologyOverride = topologyChoice && topologyChoice.source === source ? topologyChoice.value : null;
+  const topology = topologyOverride ?? (source?.topology === 'circular' ? 'circular' : 'linear');
   const owns = (candidate: Owner): boolean => {
     const current = usePhageStore.getState();
     return repositoryRef.current === candidate.repository && current.phages === candidate.phages
@@ -76,9 +79,9 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
     if (mode !== 'catalog' && !source) return null;
     return { repository, phages, owner: mode === 'catalog' ? null : owner, query: query.trim(),
       scan: mode === 'catalog' ? null : { mode, query: query.trim(), sequence: source!.sequence, features: source!.features,
-        options: { strand, mismatches: mode === 'sequence' ? mismatches : 0, caseSensitive,
+        options: { strand, topology, mismatches: mode === 'sequence' ? mismatches : 0, caseSensitive,
           fuzzy: (mode === 'gene' || mode === 'feature') && fuzzy, maxResults: TERMINAL_SEARCH_LIMITS.results } } };
-  }, [repository, phages, owner, source, mode, query, strand, mismatches, caseSensitive, fuzzy, reload]);
+  }, [repository, phages, owner, source, mode, query, strand, topology, mismatches, caseSensitive, fuzzy, reload]);
   const currentOutcome = outcome?.request === request && outcome.generation === generation.current ? outcome : null;
   const catalog = currentOutcome?.catalog ?? [], hits = currentOutcome?.hits ?? [];
   const count = mode === 'catalog' ? catalog.length : hits.length;
@@ -174,6 +177,10 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
       else if (input === 'e') setCursor(characters.length);
       else if (input === 'r') { invalidate(); setReload(value => value + 1); }
       else if (input === 's' && (mode === 'sequence' || mode === 'motif')) { invalidate(); setStrand(value => value === 'both' ? '+' : value === '+' ? '-' : 'both'); }
+      else if (input === 'o' && source && (mode === 'sequence' || mode === 'motif')) {
+        invalidate();
+        setTopologyChoice(topologyOverride === 'linear' ? null : { source, value: topologyOverride === 'circular' ? 'linear' : 'circular' });
+      }
       else if (input === 'n' && mode === 'sequence') { invalidate(); setMismatches(value => (value + 1) % 4); }
       else if (input === 't' && genomeMode && mode !== 'position') { invalidate(); setCaseSensitive(value => !value); }
       else if (input === 'f' && (mode === 'gene' || mode === 'feature')) { invalidate(); setFuzzy(value => !value); }
@@ -194,7 +201,8 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
   });
 
   const modeInfo = MODES.find(item => item.id === mode)!;
-  const pageSize = Math.max(1, Math.min(8, height - 13)), offset = Math.max(0, selected - pageSize + 1);
+  const sequenceMode = mode === 'sequence' || mode === 'motif';
+  const pageSize = Math.max(1, Math.min(8, height - (sequenceMode ? 14 : 13))), offset = Math.max(0, selected - pageSize + 1);
   const chosen = hits[selected];
   const characters = Array.from(query), position = Math.min(cursor, characters.length);
   const inputWidth = Math.max(8, width - 13), start = Math.max(0, position - inputWidth + 2);
@@ -209,6 +217,9 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
       <Text color={colors.info} wrap="truncate-end">{genomeMode ? `Genome: ${phage ? label(phage.name) : 'unavailable'}${source ? ` · ${source.sequence.length.toLocaleString()} bp` : ''}` : 'Catalog: choose a phage to explore'}</Text>
       <Box height={1} overflow="hidden"><Text color={colors.info}>Query: </Text><Text wrap="truncate-end">{start > 0 ? '…' : ''}{label(characters.slice(start, position).join(''))}<Text inverse>{label(characters[position] ?? ' ')}</Text>{label(characters.slice(position + 1, start + inputWidth).join(''))}</Text></Box>
       <Text color={colors.textMuted} wrap="truncate-end">{modeInfo.hint}</Text>
+      {sequenceMode && <Text color={colors.textMuted} wrap="truncate-end">{source
+        ? `Topology: ${topologyOverride ? `${topology} (user)` : source.topology === 'unknown' ? 'unknown (linear interval)' : `${topology} (annotation)`} · ^O change · ${topology === 'circular' ? 'one traversal; | marks origin' : 'ends do not wrap'}`
+        : 'Topology unavailable until the complete genome is loaded.'}</Text>}
       <Text color={colors.textDim} wrap="truncate-end">{mode === 'sequence' || mode === 'motif' ? `Strand ${strand} (^S)${mode === 'sequence' ? ` · mismatches ${mismatches} (^N)` : ''} · case ${caseSensitive ? 'on' : 'off'} (^T)`
         : mode === 'gene' || mode === 'feature' ? `Fuzzy ${fuzzy ? 'on' : 'off'} (^F) · case ${caseSensitive ? 'on' : 'off'} (^T)` : 'Ctrl+U clear query · Ctrl+R reload and retry'}</Text>
       <Text color={unavailable || currentOutcome?.error ? colors.warning : colors.textDim} wrap="truncate-end">{label(status)}</Text>
@@ -216,7 +227,7 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
         {(mode === 'catalog' ? catalog : hits).slice(offset, offset + pageSize).map((item, relative) => {
           const active = offset + relative === selected;
           const text = 'accession' in item ? `${item.name} · ${item.accession}${item.host ? ` · ${item.host}` : ''}`
-            : `[${item.position},${item.end}) ${item.strand} · ${item.label}`;
+            : `${item.wrapsOrigin && item.segments ? item.segments.map(segment => `[${segment.start},${segment.end})`).join(' + ') + ' wraps origin' : `[${item.position},${item.end})`} ${item.strand} · ${item.label}`;
           return <Text key={offset + relative} color={active ? colors.accent : colors.textDim} bold={active} wrap="truncate-end">{active ? '▶ ' : '  '}{label(text)}</Text>;
         })}
       </Box>
