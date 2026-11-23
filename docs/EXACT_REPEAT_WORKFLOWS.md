@@ -24,6 +24,11 @@ use this for linear molecules or partial assemblies. Changing the selected genom
 resets the choice to linear, even when the imported annotation says circular;
 replay instead uses the topology explicitly stored in each command. Accepted
 results display their submitted topology, independently of current draft controls.
+Circular mode is rejected when the captured FASTA/GenBank source explicitly says
+linear, before repeat analysis starts or a draft step is accepted. This also applies
+to reopened plans and recorded workflow replay. Unknown topology can still carry
+an explicit complete-circle assumption. A no-wrap scan remains available for
+circular molecules and retains the existing version-1 result identity.
 
 Stop recording before exporting the workflow JSON or saving an on-device workflow
 snapshot. The last analysis can also be exported as its own AnalysisRecord JSON.

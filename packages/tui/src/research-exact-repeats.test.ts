@@ -9,12 +9,12 @@ import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/geno
 import { analysisJson, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../core/src/command-session';
 import { replayExactRepeatRecord, exportExactRepeatPairsTsv, type ExactRepeatPair } from '../../core/src/analysis/exact-repeat-pairs';
-import { inspectResearchTape, replayResearchTape } from './research-replay';
+import { inspectResearchTape, replayResearchTape, recordResearchPlan } from './research-replay';
 import { executeWorkflowCommand } from '../../../scripts/research-workflow';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation' };
-async function fixture(sequence = 'ACGTNNACGTACGT', maxPairs = 2000, topology?: 'circular') {
-  const { genomes } = await importLocalGenomes({ name: 'repeat.fa', text: `>repeat\n${sequence}\n` });
+async function fixture(sequence = 'ACGTNNACGTACGT', maxPairs = 2000, topology?: 'circular', sourceTopology?: 'linear' | 'circular') {
+  const { genomes } = await importLocalGenomes({ name: 'repeat.fa', text: `>repeat${sourceTopology ? ` [topology=${sourceTopology}]` : ''}\n${sequence}\n` });
   const env: ResearchEnvironment = {
     genomes: () => genomes, bundle: () => exportLocalGenomeBundle(genomes),
     parseBundle: content => importLocalGenomes({ name: 'workflow-genomes.json', text: content }),
@@ -120,6 +120,35 @@ describe('portable unsampled repeat recordings', () => {
 
 describe('circular repeat workflow topology and portable replay', () => {
   const sequence = 'GA' + 'N'.repeat(4) + 'ACGA' + 'N'.repeat(8) + 'AC';
+  it('rejects invented circular-origin pairs from a known-linear source before computation or publication', async () => {
+    const f = await fixture(sequence, 2000, undefined, 'linear');
+    assert.deepEqual(f.record.fields.pairs.value, [], 'the two literal ACGA arms only match if the ends are incorrectly joined');
+    const circular = { ...f.parameters, topology: 'circular' };
+    let calls = 0;
+    const producer = f.env.exactRepeats!;
+    f.env.exactRepeats = (...args) => { calls++; return producer(...args); };
+    await assert.rejects(f.workflow.commands.dispatch(ids.repeats, circular), /repeat topology conflicts/);
+    assert.equal(calls, 0);
+    assert.strictEqual(f.workflow.getSnapshot().result, f.record);
+    const tape = parseCommandTape(f.content);
+    tape.commands[0].parameters = circular;
+    f.workflow.load(serializeCommandTape(tape));
+    await assert.rejects(f.workflow.commands.replay(), /repeat topology conflicts/);
+    assert.equal(calls, 0);
+    assert.equal(f.workflow.getSnapshot().result, null, 'opening a tape clears the previous display and failed replay publishes no replacement');
+    await assert.rejects(recordResearchPlan(JSON.stringify({ format: 'phage-explorer-command-plan', version: 1,
+      name: 'Reject conflicting source topology', context: tape.context,
+      commands: [{ actionId: ids.repeats, parameters: circular }] })), /repeat topology conflicts/);
+  });
+  it('keeps explicit circular assumptions for unknown sources and no-wrap scans of circular molecules', async () => {
+    const known = await fixture(sequence, 2000, 'circular', 'circular');
+    assert.deepEqual(known.record.fields.pairs.value, [{ type: 'direct', leftStart: 18, leftEnd: 22, rightStart: 6, rightEnd: 10, gap: 4 }]);
+    assert.deepEqual((await replayResearchTape(known.content)).lastAnalysis, known.record);
+    const noWrap = await fixture(sequence, 2000, undefined, 'circular');
+    assert.deepEqual(noWrap.record.fields.pairs.value, []);
+    assert.equal(noWrap.record.method.version, '1');
+    assert.deepEqual((await replayResearchTape(noWrap.content)).lastAnalysis, noWrap.record);
+  });
   it('records explicit circular topology with wrapped arms and freshly replays the same v2 evidence', async () => {
     const f = await fixture(sequence, 2000, 'circular');
     assert.equal(f.record.method.version, '2');

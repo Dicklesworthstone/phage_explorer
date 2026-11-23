@@ -45,6 +45,16 @@ export function resolveExactRepeatOptions(options: ExactRepeatOptions = {}): Res
     ...(options.topology === 'circular' ? { topology: 'circular' as const } : {}),
   };
 }
+/** A no-wrap scan is valid for any source. Joining the ends is an explicit
+ * assumption for unknown topology, but must not contradict a linear annotation.
+ * Keep this guard at captured-input boundaries; raw sequence APIs lack metadata.
+ */
+export function validateExactRepeatSourceTopology(sourceTopology: 'linear' | 'circular' | 'unknown',
+  options: Pick<ExactRepeatOptions, 'topology'>): void {
+  if (sourceTopology === 'linear' && options.topology === 'circular') {
+    throw new Error('Exact repeat topology conflicts with the captured linear source annotation.');
+  }
+}
 /** Split a forward-traversed unrolled arm into original 0-based half-open spans.
  * Concatenate these spans in returned order; inverted matching does not change
  * either arm's genomic coordinate direction. Empty/repeated-circle arms fail.

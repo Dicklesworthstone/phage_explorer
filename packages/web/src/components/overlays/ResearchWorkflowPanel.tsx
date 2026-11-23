@@ -11,7 +11,7 @@ import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
 import { CODON_REFERENCE_METHOD, inspectCodonReferenceInput, referenceCodonMethod,
   type ReferenceCodonAnalysis, type ZeroCountReplacement } from '../../../../core/src/analysis/codon-reference';
-import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
+import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, validateExactRepeatSourceTopology, exactRepeatArmSegments, exportExactRepeatPairsTsv, type ExactRepeatScan } from '../../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, exportGCSkewTsv, type GCSkewWindow } from '../../../../core/src/analysis/gc-skew';
 import { RNA_PAIRING_METHOD, type RNAStructureAnalysis } from '../../../../core/src/analysis/rna-structure';
 import { parseRNAInterval, mapRNAInterval, exportRNAStructureTsv, type RNAIntervalSource } from '../../../../core/src/analysis/rna-structure-experiment';
@@ -220,6 +220,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const genomes = useLocalGenomes(s => s.genomes);
   const [name, setName] = useState('Private genome workflow');
   const [selected, setSelected] = useState('');
+  const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
   const [gene, setGene] = useState('all');
   const [position, setPosition] = useState('0');
   const [mode, setMode] = useState<ResearchView['viewMode']>('dna');
@@ -280,9 +281,11 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   const exactRepeatDraft = useMemo(() => {
     try {
       if (![minimum, gap, pairLimit].every(value => value.trim())) throw new Error('Enter an arm length, gap and pair limit.');
-      return { options: resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit), topology: repeatTopology }), error: null };
+      const options = resolveExactRepeatOptions({ armLength: Number(minimum), maxGap: Number(gap), maxPairs: Number(pairLimit), topology: repeatTopology });
+      if (genome) validateExactRepeatSourceTopology(genome.phage.localGenome!.topology, options);
+      return { options, error: null };
     } catch (cause) { return { options: null, error: cause instanceof Error ? cause.message : String(cause) }; }
-  }, [minimum, gap, pairLimit, repeatTopology]);
+  }, [minimum, gap, pairLimit, repeatTopology, genome]);
   const exactRepeatResult = acceptedAnalysis?.method.id === EXACT_REPEAT_METHOD.id && [EXACT_REPEAT_METHOD.version, CIRCULAR_EXACT_REPEAT_METHOD.version].includes(acceptedAnalysis.method.version)
     ? { record: acceptedAnalysis, pairs: acceptedAnalysis.fields.pairs.value as unknown as ExactRepeatScan['pairs'],
       search: acceptedAnalysis.fields.search.value as unknown as ExactRepeatScan['search'] } : null;
@@ -364,7 +367,6 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     ? { record: acceptedAnalysis, result: acceptedAnalysis.fields.phylogeny.value as unknown as AlignedPhylogenyResult,
       origin: acceptedAnalysis.fields.pangenome.value as unknown as Omit<PangenomePhylogenyOrigin, 'source'>,
       source: acceptedAnalysis.inputs[0].data as unknown as PangenomePhylogenySource } : null;
-  const genome = genomes.find(g => g.phage.localGenome?.contentId === selected);
   const rnaSource = useMemo(() => {
     try {
       if (!genome) throw new Error('Select an available workflow genome.');
@@ -596,6 +598,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         <option value="circular">I assert this input is a complete circular molecule</option>
       </select>
       <p>Circular mode joins the sequence ends and searches origin-crossing arms using the shorter spacer arc. Do not use it for a linear molecule or a partial assembly.
+        Known linear source annotations cannot be overridden. For unknown topology, circular mode is an explicit assumption.
         This choice applies only to exact pairs, is recorded explicitly, and resets when the selected genome changes.</p>
       <p>Exact pairs use the chosen arm length as a fixed length and visit every eligible direct/inverted partner. Arms cannot overlap; ambiguous bases can occur only in the spacer. Result limits return an explicitly marked prefix. Legacy repeat overview above remains sampled and browser-bound.</p>
       {exactRepeatDraft.error && <p>{exactRepeatDraft.error}</p>}

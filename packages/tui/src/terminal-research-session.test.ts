@@ -62,6 +62,47 @@ async function waitFor(predicate: () => boolean) {
 }
 
 describe('interactive terminal research sessions', () => {
+  it('rejects circular repeat drafts against known-linear source snapshots while preserving valid assumptions', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-repeat-topology-'));
+    const sequence = 'GA' + 'N'.repeat(4) + 'ACGA' + 'N'.repeat(8) + 'AC';
+    const known = await importLocalGenomes({ name: 'linear.fa', text: '>repeat [topology=linear]\n' + sequence });
+    const unknown = await importLocalGenomes({ name: 'unknown.fa', text: '>repeat\n' + sequence });
+    const session = new TerminalResearchSession();
+    try {
+      const bundle = exportLocalGenomeBundle(known.genomes);
+      const parameters = { contentId: known.genomes[0].phage.localGenome!.contentId,
+        method: 'exact-pairs', armLength: 4, maxGap: 20, maxPairs: 2000 };
+      assert(await session.createDraft('Known linear repeat scan', bundle));
+      session.setStep({ actionId: ActionIds.OverlayRepeats, parameters });
+      const original = session.getSnapshot().draft;
+      const circular = { ...parameters, topology: 'circular' };
+      assert.throws(() => session.setStep({ actionId: ActionIds.OverlayRepeats, parameters: circular }, 0), /repeat topology conflicts/);
+      assert.strictEqual(session.getSnapshot().draft, original);
+      const plan = { format: 'phage-explorer-command-plan' as const, version: 1 as const, name: 'Conflicting repeat topology',
+        context: { bundle }, commands: [{ actionId: ActionIds.OverlayRepeats, parameters: circular }] };
+      const conflicting = join(directory, 'conflicting-plan.json');
+      await writeFile(conflicting, serializeCommandPlan(plan), { flag: 'wx', mode: 0o600 });
+      assert.equal(await session.load(conflicting), false);
+      assert.match(session.getSnapshot().error ?? '', /repeat topology conflicts/);
+      assert.strictEqual(session.getSnapshot().draft, original);
+      assert.equal(session.getSnapshot().pendingDraft, null);
+      assert.equal(session.getSnapshot().document, null);
+      // Reopening a proposal must use that proposal's own captured metadata.
+      // The same accession with unknown topology may carry a circular assumption.
+      const assumed = join(directory, 'assumed-plan.json');
+      const assumption = { ...plan, context: { bundle: exportLocalGenomeBundle(unknown.genomes) },
+        commands: [{ actionId: ActionIds.OverlayRepeats,
+          parameters: { ...circular, contentId: unknown.genomes[0].phage.localGenome!.contentId } }] };
+      await writeFile(assumed, serializeCommandPlan(assumption), { flag: 'wx', mode: 0o600 });
+      assert(await session.load(assumed), session.getSnapshot().error ?? '');
+      assert.strictEqual(session.getSnapshot().draft, original);
+      assert(session.getSnapshot().pendingDraft);
+      session.acceptDraftReplacement();
+      assert.deepEqual(session.getSnapshot().draft!.plan, assumption);
+      assert.equal(session.getSnapshot().draft!.sources[0].topology, 'unknown');
+    } finally { session.cancel(); }
+  });
+
   it('validates sourced spacer drafts against their own captured genome and topology before accepting edits or replacements', async () => {
     const f = await fixture(), session = new TerminalResearchSession();
     const libraryText = JSON.stringify({ format: 'phage-explorer-spacer-library', version: 1, name: 'No supplied spacer control',

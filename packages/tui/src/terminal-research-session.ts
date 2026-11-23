@@ -10,6 +10,7 @@ import type { LocalGenome } from '../../core/src/genome-import';
 import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
 import { PHYLOGENY_LIMITS } from '../../core/src/analysis/aligned-phylogeny';
 import { MOSAIC_LIMITS } from '../../core/src/analysis/recombination-radar';
+import { validateExactRepeatSourceTopology } from '../../core/src/analysis/exact-repeat-pairs';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { validateResearchView, researchRNASource, researchRNARequest, researchSpacerGenome,
   type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
@@ -314,6 +315,9 @@ export class TerminalResearchSession {
     }
     if (step.actionId === ActionIds.OverlayGel && source.topology !== 'unknown' && source.topology !== parameters.topology) {
       throw new Error('Digest topology conflicts with the captured source annotation.');
+    }
+    if (step.actionId === ActionIds.OverlayRepeats && parameters.method === 'exact-pairs') {
+      validateExactRepeatSourceTopology(source.topology, parameters as { topology?: 'circular' });
     }
   }
   private updateDraft(draft: TerminalResearchDraft, steps: TerminalResearchStep[]): void {

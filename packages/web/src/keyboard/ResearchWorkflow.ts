@@ -4,7 +4,7 @@ import { analysisJson, parseAnalysisRecord, serializeAnalysisRecord } from '../.
 import { exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { inspectCodonReferenceInput, referenceCodonMethod, referenceGenomeFromPhage,
   type ReferenceCodonOptions, type ZeroCountReplacement } from '../../../core/src/analysis/codon-reference';
-import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
+import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOptions, validateExactRepeatSourceTopology, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { GC_SKEW_METHOD, resolveGCSkewOptions, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
 import { DOT_PLOT_METHOD, PAIRWISE_DOT_PLOT_METHOD, DOT_PLOT_EXPERIMENT_LIMITS } from '../../../core/src/analysis/dot-plot';
 import { parseRestrictionDigestRecord, resolveRestrictionDigestOptions, type RestrictionDigestOptions } from '../../../core/src/analysis/restriction-digest';
@@ -435,6 +435,7 @@ export class ResearchWorkflow {
           const genome = await this.genome(values.contentId, signal);
           const options = resolveExactRepeatOptions({ armLength: values.armLength, maxGap: values.maxGap, maxPairs: values.maxPairs,
             ...(values.topology ? { topology: values.topology } : {}) });
+          validateExactRepeatSourceTopology(genome.phage.localGenome!.topology, options);
           const record = await environment.exactRepeats!(structuredClone(genome), structuredClone(options), signal);
           abort(signal);
           const method = options.topology === 'circular' ? CIRCULAR_EXACT_REPEAT_METHOD : EXACT_REPEAT_METHOD;
