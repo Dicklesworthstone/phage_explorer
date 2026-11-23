@@ -110,6 +110,78 @@ describe('progressive SQLite publication', () => {
       assert.equal(all(source, 'SELECT * FROM extra_annotations').length, 3);
     } finally { source.close(); }
   });
+  test('rejects wrong-genome gene annotations before creating artifacts and preserves valid whole-genome rows', async () => {
+    for (const table of ['protein_domains', 'amg_annotations', 'defense_systems', 'fold_embeddings',
+      'codon_adaptation', 'tropism_predictions', 'future_annotations']) {
+      const source = fixture(), output = collector();
+      try {
+        source.exec('CREATE TABLE ' + table + ' (id INTEGER PRIMARY KEY, phage_id INTEGER REFERENCES phages(id), gene_id INTEGER REFERENCES genes(id))');
+        // Each foreign key exists, but gene 2 belongs to phage 2, not phage 1.
+        source.query('INSERT INTO ' + table + ' VALUES (?,?,?)').run(1, 1, 2);
+        const before = sha(source.serialize());
+        let copies = 0;
+        await assert.rejects(publishProgressiveDataset({ source,
+          createDatabase: () => { copies++; return database(); }, ...output }), /orphaned gene references/);
+        assert.equal(copies, 0, table + ' must fail before constructing a publication copy');
+        assert.equal(output.artifacts.size, 0);
+        assert.equal(sha(source.serialize()), before);
+        // A repaired reference and an intentional whole-genome row are valid.
+        source.query('UPDATE ' + table + ' SET gene_id=1 WHERE id=1').run();
+        source.query('INSERT INTO ' + table + ' VALUES (?,?,?)').run(2, 1, null);
+        const manifest = await publishProgressiveDataset({ source, createDatabase: database, ...output });
+        const shard = open(output.artifacts.get(manifest.genomes[0].artifact.path)!.bytes);
+        try {
+          assert.deepEqual(all(shard, 'SELECT * FROM ' + table + ' ORDER BY id'),
+            [{ id: 1, phage_id: 1, gene_id: 1 }, { id: 2, phage_id: 1, gene_id: null }]);
+        } finally { shard.close(); }
+      } finally { source.close(); }
+    }
+  });
+  test('rejects missing annotation genes even when the source schema has no foreign key', async () => {
+    const source = fixture(), output = collector();
+    try {
+      source.exec('CREATE TABLE future_annotations (id INTEGER PRIMARY KEY, phage_id INTEGER, gene_id INTEGER)');
+      source.query('INSERT INTO future_annotations VALUES (?,?,?)').run(1, 1, 999);
+      const before = sha(source.serialize());
+      await assert.rejects(publishProgressiveDataset({ source, createDatabase: database, ...output }), /orphaned gene references/);
+      assert.equal(output.artifacts.size, 0);
+      assert.equal(sha(source.serialize()), before);
+    } finally { source.close(); }
+  });
+  test('rejects unrelated broken foreign keys before partitioning and permits a repaired retry', async () => {
+    const source = fixture(), output = collector();
+    try {
+      source.exec('PRAGMA foreign_keys=OFF; CREATE TABLE reference_catalog (id INTEGER PRIMARY KEY);'
+        + ' CREATE TABLE reference_evidence (id INTEGER PRIMARY KEY, reference_id INTEGER REFERENCES reference_catalog(id));'
+        + ' INSERT INTO reference_evidence VALUES (1,42);');
+      const before = sha(source.serialize());
+      await assert.rejects(publishProgressiveDataset({ source, createDatabase: database, ...output }), /foreign key check failed/);
+      assert.equal(output.artifacts.size, 0);
+      assert.equal(sha(source.serialize()), before);
+      source.exec('INSERT INTO reference_catalog VALUES (42)');
+      const manifest = await publishProgressiveDataset({ source, createDatabase: database, ...output });
+      const catalog = open(output.artifacts.get(manifest.catalog.path)!.bytes);
+      try { assert.deepEqual(all(catalog, 'SELECT * FROM reference_evidence'), [{ id: 1, reference_id: 42 }]); }
+      finally { catalog.close(); }
+    } finally { source.close(); }
+  });
+  test('checks SQLite integrity before copying any rows and releases the snapshot after failure', async () => {
+    const source = fixture(), output = collector();
+    try {
+      source.exec('CREATE TABLE checked_evidence (id INTEGER PRIMARY KEY, value INTEGER CHECK (value > 0));'
+        + ' PRAGMA ignore_check_constraints=ON; INSERT INTO checked_evidence VALUES (1,-1); PRAGMA ignore_check_constraints=OFF;');
+      const before = sha(source.serialize());
+      let copies = 0;
+      await assert.rejects(publishProgressiveDataset({ source,
+        createDatabase: () => { copies++; return database(); }, ...output }), /integrity check failed/);
+      assert.equal(copies, 0);
+      assert.equal(output.artifacts.size, 0);
+      assert.equal(sha(source.serialize()), before);
+      source.exec('UPDATE checked_evidence SET value=1 WHERE id=1');
+      await publishProgressiveDataset({ source, createDatabase: database, ...output });
+      assert.ok(output.artifacts.size > 0);
+    } finally { source.close(); }
+  });
   test('rejects missing/truncated/misordered sequence chunks before publishing a usable manifest', async () => {
     for (const mutation of ['UPDATE sequences SET sequence=\'A\' WHERE id=2', 'UPDATE sequences SET chunk_index=5 WHERE id=2', 'UPDATE phages SET genome_length=20000 WHERE id=1']) {
       const source = fixture();

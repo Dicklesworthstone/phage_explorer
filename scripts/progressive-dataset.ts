@@ -53,6 +53,16 @@ export async function publishProgressiveDataset(options: PublishDatasetOptions):
   const { source, createDatabase, writeArtifact } = options;
   source.exec('BEGIN');
   try {
+    // Validate the same read snapshot that will be partitioned. Row conservation
+    // alone cannot detect corrupt indexes, broken FKs or misplaced annotations.
+    const integrity = rows(source, 'PRAGMA integrity_check');
+    if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
+      throw new Error('Source SQLite integrity check failed; no dataset artifacts were emitted.');
+    }
+    const foreignKey = source.query('PRAGMA foreign_key_check').get();
+    if (foreignKey) {
+      throw new Error('Source SQLite foreign key check failed; no dataset artifacts were emitted.');
+    }
     const definitions = rows(source, "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
     const tables: Table[] = definitions.map(row => {
       if (typeof row.name !== 'string' || typeof row.sql !== 'string' || /CREATE\s+VIRTUAL\s+TABLE/i.test(row.sql)) throw new Error('Progressive publication requires ordinary SQLite tables.');
@@ -75,6 +85,14 @@ export async function publishProgressiveDataset(options: PublishDatasetOptions):
     for (const table of tables.filter(table => table.scoped)) {
       const orphans = count(source, `SELECT COUNT(*) AS n FROM ${quote(table.name)} WHERE phage_id IS NULL OR phage_id NOT IN (SELECT id FROM phages)`);
       if (orphans) throw new Error(`${table.name} contains ${orphans} rows without a catalog genome.`);
+    }
+    // Gene and genome FKs are independent: both IDs may exist while referring
+    // to different phages. Preserve legitimate whole-genome (NULL gene) rows.
+    for (const table of tables.filter(table => table.columns.includes('gene_id'))) {
+      const orphans = count(source, `SELECT COUNT(*) AS n FROM ${quote(table.name)} AS annotation
+        LEFT JOIN genes AS gene ON gene.id = annotation.gene_id AND gene.phage_id = annotation.phage_id
+        WHERE annotation.gene_id IS NOT NULL AND gene.id IS NULL`);
+      if (orphans) throw new Error(`${table.name} contains ${orphans} orphaned gene references or references owned by a different genome.`);
     }
     const indexes = rows(source, "SELECT sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name");
     const views = rows(source, "SELECT sql FROM sqlite_master WHERE type='view' ORDER BY name");
