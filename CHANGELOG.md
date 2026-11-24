@@ -6,6 +6,27 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Private research during unavailable catalog startup
+
+- The browser loading and error screens now offer **Open local genomes**.
+  Private imports and saved research remain reachable while the catalog request
+  is pending or failed. Catalog status and retry remain available without
+  covering an explicitly chosen local workspace.
+- Later catalog recovery preserves the selected private genome. Existing
+  repository transitions may reset its viewport/CDS cursor. Analyses requiring
+  external reference assets still require those inputs.
+
+### Native RNA inspection and interval analysis
+
+- `workflow inspect-rna` lists records and captured CDS choices directly from
+  FASTA, GenBank or a private genome bundle. `workflow analyze-rna` accepts
+  explicit genomic or extracted-CDS coordinates, strand and bounded settings.
+- The native worker reuses the browser's numerical method and portable evidence
+  contract. JSON and complete-window TSV exports support existing experiment
+  replay; source ambiguity, changed intervals and cancellation fail explicitly.
+  [Commands, coordinates and limits](docs/RNA_STRUCTURE_WORKFLOW.md).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/f62ac31d637859295214bb19b63f3e3e4b1e69b4).
+
 ### Whole-genome aligned phylogeny bootstraps
 
 - Identical complete-deletion alignment columns now share exact site-pattern counts,

@@ -135,6 +135,7 @@ export default function App(): React.ReactElement {
     });
   }));
   const selectionSnapshot = useSyncExternalStore(selectionSession.subscribe, selectionSession.getSnapshot, selectionSession.getSnapshot);
+  const [localWorkspaceRequested, setLocalWorkspaceRequested] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogRetry, setCatalogRetry] = useState(0);
   const preferredSelectionId = useRef<number | undefined>(undefined);
@@ -193,6 +194,11 @@ export default function App(): React.ReactElement {
   const { open: openOverlayCtx, close: closeOverlayCtx, toggle: toggleOverlayCtx, hasBlockingOverlay } = useOverlay();
   const { mode } = useKeyboardMode();
   const pendingSequence = usePendingSequence();
+  const openLocalWorkspace = useCallback(() => {
+    setLocalWorkspaceRequested(true);
+    closeOverlayCtx('welcome');
+    openOverlayCtx('genomeImport');
+  }, [closeOverlayCtx, openOverlayCtx]);
 
   useLayoutEffect(() => {
     // Retire pending reads as soon as a new repository commits, before its
@@ -570,12 +576,12 @@ export default function App(): React.ReactElement {
   }, [highContrast]);
 
   useEffect(() => {
-    if (!webPrefsHydrated) return;
+    if (!webPrefsHydrated || localWorkspaceRequested) return;
     if (hasSeenWelcome) return;
     if (welcomeOpenedRef.current) return;
     welcomeOpenedRef.current = true;
     openOverlayCtx('welcome');
-  }, [hasSeenWelcome, openOverlayCtx, webPrefsHydrated]);
+  }, [hasSeenWelcome, localWorkspaceRequested, openOverlayCtx, webPrefsHydrated]);
 
   useEffect(() => {
     storeSetTheme(theme.id);
@@ -944,8 +950,9 @@ export default function App(): React.ReactElement {
     setActionDrawerOpen(false);
   }, []);
 
-  const loadingOverlayNeeded = isLoading || (!repository && progress);
-  const showErrorOverlay = !!error && !repository;
+  // Curated data must not gate an explicitly chosen private workspace. Once a
+  // local-only repository exists, catalog retries stay in the background too.
+  const showStartupOverlay = !repository && !localWorkspaceRequested && (isLoading || !!progress || !!error);
 
   const overlayHotkeyDefinitions = useMemo(() => {
     return getOverlayHotkeyActions()
@@ -1043,18 +1050,12 @@ export default function App(): React.ReactElement {
       <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
         {srAlertMessage}
       </div>
-      {loadingOverlayNeeded && (
-        <DataLoadingOverlay
-          progress={progress}
-          error={null}
-          onRetry={load}
-        />
-      )}
-      {showErrorOverlay && (
+      {showStartupOverlay && (
         <DataLoadingOverlay
           progress={progress}
           error={error}
-          onRetry={reload}
+          onRetry={error ? reload : load}
+          onOpenLocalGenomes={openLocalWorkspace}
         />
       )}
 
@@ -1138,15 +1139,15 @@ export default function App(): React.ReactElement {
               }}>Retry genome load</button>
           </section>
         )}
-        {(!repository || error) && (
+        {(!repository || error || (localWorkspaceRequested && isFetching)) && (
           <section className="panel panel-compact" aria-label="Repository status">
             <div className="panel-header">
-              <h2>Database</h2>
+              <h2>Catalog database</h2>
               {isCached && <span className="badge">Cached</span>}
             </div>
             {!repository && !error && (
               <p className="text-dim" role="status" aria-live="polite" aria-atomic="true">
-                Loading database...
+                Loading the catalog database...
               </p>
             )}
             {progress && (
@@ -1164,7 +1165,19 @@ export default function App(): React.ReactElement {
                 <span>{progress.percent}%</span>
               </div>
             )}
-            {error && <div className="text-error">Error: {error}</div>}
+            {error && <div className="text-error">Catalog unavailable: {error}</div>}
+            {localWorkspaceRequested && (
+              <>
+                <p>Local genomes and saved research remain available. Catalog recovery keeps private records in this session.</p>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '.5rem' }}>
+                  <button type="button" className="btn" onClick={openLocalWorkspace}>Open local genomes</button>
+                  <button type="button" className="btn" disabled={isFetching}
+                    onClick={() => { void reload().catch(() => {}); }}>
+                    {isFetching ? 'Catalog request in progress…' : 'Retry catalog download'}
+                  </button>
+                </div>
+              </>
+            )}
           </section>
         )}
 

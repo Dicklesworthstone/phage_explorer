@@ -58,6 +58,145 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test.describe('private research without a catalog', () => {
+  test.use({ serviceWorkers: 'block' });
+
+  test('opens saved local research after catalog startup failure and verifies it without catalog data', async ({ page }, info) => {
+    test.setTimeout(120000);
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    const requests: string[] = [];
+    let catalogRequests = 0;
+    page.on('request', request => requests.push(request.url() + ' ' + (request.postData() ?? '')));
+    await page.route(url => /\/phage\.db(?:\.gz|\.manifest\.json)?$/.test(url.pathname) || url.pathname.startsWith('/phage-data/'),
+      async route => { catalogRequests++; await route.fulfill({ status: 503, body: 'Catalog deliberately unavailable' }); });
+    const savedPanel = (overlay: Locator, label: string) => overlay.locator('details[aria-label="' + label + '"]');
+    const openAfterFailure = async () => {
+      await expect(page.getByRole('heading', { name: 'Database load failed', exact: true })).toBeVisible();
+      await expect(page.getByTestId('database-startup')).toHaveCount(1);
+      await page.getByTestId('database-startup').getByRole('button', { name: 'Open local genomes', exact: true }).click();
+      await expect(page.getByTestId('database-startup')).toHaveCount(0);
+      const overlay = page.getByTestId('overlay-genomeImport');
+      await expect(overlay).toBeVisible();
+      return overlay;
+    };
+    try {
+      await page.goto('/?model=0');
+      let overlay = await openAfterFailure();
+      await parseInput(overlay, GENBANK);
+      await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(1);
+      await expect(page.getByRole('figure', { name: 'Gene map visualization for Private α genome.' })).toBeVisible();
+
+      overlay = await importPanel(page);
+      let savedGenomes = savedPanel(overlay, 'Saved local genome workspaces');
+      await savedGenomes.locator('summary').click();
+      await savedGenomes.getByLabel('Snapshot name', { exact: true }).fill('Catalog-independent private genome');
+      await savedGenomes.getByRole('button', { name: 'Save snapshot locally', exact: true }).click();
+      await expect(savedGenomes.getByRole('status')).toContainText('Saved an immutable local snapshot');
+      await expect(savedGenomes.getByLabel('Saved snapshot', { exact: true })).not.toHaveValue('');
+      const genomeSnapshot = await savedGenomes.getByLabel('Saved snapshot', { exact: true }).inputValue();
+
+      const workflow = page.getByRole('region', { name: 'Saved research workflows', exact: true });
+      await workflow.getByLabel('Workflow name', { exact: true }).fill('Catalog-independent comparison');
+      await workflow.getByRole('button', { name: 'Start workflow recording', exact: true }).click();
+      const contentId = await workflow.getByLabel('Workflow genome', { exact: true }).inputValue();
+      expect(contentId).toMatch(/^[a-f0-9]{64}$/);
+      await workflow.getByLabel('Workflow comparison genome B', { exact: true }).selectOption(contentId);
+      await workflow.getByRole('button', { name: 'Run and record complete comparison', exact: true }).click();
+      await expect(workflow.getByTestId('workflow-status')).toContainText('1 recorded commands');
+      await expect(workflow.getByTestId('workflow-comparison-distance')).toHaveText('Exact edit distance: 0.');
+      const accepted = await parseAnalysisRecord(await downloadText(page, () =>
+        workflow.getByRole('button', { name: 'Export workflow analysis', exact: true }).click()));
+      expect(accepted.inputs).toHaveLength(2);
+      expect(accepted.inputs[0].data).toEqual(accepted.inputs[1].data);
+      expect((accepted.inputs[0].data as unknown as { sequence: string; genes: unknown[] }).sequence).toBe('ATGAAACCCGGGTTTAAACCCTAG');
+      expect((accepted.inputs[0].data as unknown as { genes: unknown[] }).genes).toHaveLength(2);
+      await workflow.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
+      await workflow.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+      await expect(workflow.getByTestId('workflow-complete-results')).toContainText('1 executions · 1 distinct analyses');
+      const archive = await downloadText(page, () =>
+        workflow.getByRole('button', { name: 'Export complete workflow results JSON', exact: true }).click());
+      let savedWorkflow = savedPanel(workflow, 'Saved command workflows');
+      await savedWorkflow.locator('summary').click();
+      await savedWorkflow.getByLabel('Snapshot name', { exact: true }).fill('Catalog-independent comparison');
+      await savedWorkflow.getByRole('button', { name: 'Save snapshot locally', exact: true }).click();
+      await expect(savedWorkflow.getByRole('status')).toContainText('Saved an immutable local snapshot');
+      await expect(savedWorkflow.getByLabel('Saved snapshot', { exact: true })).not.toHaveValue('');
+      const workflowSnapshot = await savedWorkflow.getByLabel('Saved snapshot', { exact: true }).inputValue();
+
+      // A fresh app has no local session and still cannot load a catalog. Saved
+      // private inputs remain reachable through the same explicit startup action.
+      await page.reload();
+      overlay = await openAfterFailure();
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+      savedGenomes = savedPanel(overlay, 'Saved local genome workspaces');
+      await savedGenomes.locator('summary').click();
+      await savedGenomes.getByLabel('Saved snapshot', { exact: true }).selectOption(genomeSnapshot);
+      await savedGenomes.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+      await expect(overlay.getByRole('button', { name: 'Add records to explorer', exact: true })).toBeVisible();
+      await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
+      overlay = await importPanel(page);
+      savedWorkflow = savedPanel(workflow, 'Saved command workflows');
+      await savedWorkflow.locator('summary').click();
+      await savedWorkflow.getByLabel('Saved snapshot', { exact: true }).selectOption(workflowSnapshot);
+      await savedWorkflow.getByRole('button', { name: 'Open saved snapshot', exact: true }).click();
+      await expect(savedWorkflow.getByRole('status')).toContainText('Saved workflow loaded for review');
+      await expect(workflow.getByTestId('workflow-result')).toHaveCount(0);
+      await workflow.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+      await expect(workflow.getByTestId('workflow-complete-results')).toContainText('1 executions · 1 distinct analyses');
+      const replayed = await downloadText(page, () =>
+        workflow.getByRole('button', { name: 'Export complete workflow results JSON', exact: true }).click());
+      expect(replayed).toBe(archive);
+
+      await page.keyboard.press('Escape');
+      const status = page.getByRole('region', { name: 'Repository status', exact: true });
+      await expect(status).toContainText('Catalog unavailable');
+      const beforeRetry = catalogRequests;
+      await status.getByRole('button', { name: 'Retry catalog download', exact: true }).click();
+      await expect.poll(() => catalogRequests).toBeGreaterThan(beforeRetry);
+      await expect(status.getByRole('button', { name: 'Retry catalog download', exact: true })).toBeEnabled();
+      await expect(page.getByTestId('database-startup')).toHaveCount(0);
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(1);
+      expect(requests.some(request => request.includes('ATGAAACCCGGGTTTAAACCCTAG') || request.includes('Private α genome'))).toBe(false);
+      expect(pageErrors).toEqual([]);
+    } finally { await finalize(); }
+  });
+
+  test('opens private input during a stalled catalog request and retains it when the catalog becomes available', async ({ page }, info) => {
+    const { pageErrors, finalize } = setupTestHarness(page, info);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let catalogRequests = 0;
+    await page.route(url => /\/phage\.db(?:\.gz|\.manifest\.json)?$/.test(url.pathname) || url.pathname.startsWith('/phage-data/'),
+      async route => { catalogRequests++; await held; await route.continue(); });
+    try {
+      await page.goto('/?model=0');
+      await expect.poll(() => catalogRequests).toBeGreaterThan(0);
+      const startup = page.getByTestId('database-startup');
+      await expect(startup).toContainText('Checking');
+      await startup.getByRole('button', { name: 'Open local genomes', exact: true }).click();
+      const overlay = page.getByTestId('overlay-genomeImport');
+      await expect(overlay).toBeVisible();
+      await parseInput(overlay, GENBANK);
+      await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(1);
+      await expect(startup).toHaveCount(0);
+      release();
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(25);
+      await expect(page.getByTestId('phage-list-item-selected')).toContainText('Private α genome.');
+      await expect(page.getByRole('figure', { name: 'Gene map visualization for Private α genome.' })).toBeVisible();
+      const fasta = await downloadText(page, () => palette(page, 'Export as FASTA'));
+      expect(fasta.replace(/^>.*\n/, '').replace(/\s/g, '')).toBe('ATGAAACCCGGGTTTAAACCCTAG');
+      await expect(startup).toHaveCount(0);
+      expect(pageErrors).toEqual([]);
+    } finally { release(); await finalize(); }
+  });
+});
+
 test.describe('catalog snapshots', () => {
   test.use({ serviceWorkers: 'block' });
 

@@ -15,6 +15,8 @@ interface DataLoadingOverlayProps {
   progress: DatabaseLoadProgress | null;
   error?: string | null;
   onRetry?: () => void;
+  /** Local inputs and saved research do not require the curated SQLite catalog. */
+  onOpenLocalGenomes?: () => void;
 }
 
 function deleteIndexedDatabase(name: string): Promise<void> {
@@ -55,6 +57,7 @@ export function DataLoadingOverlay({
   progress,
   error,
   onRetry,
+  onOpenLocalGenomes,
 }: DataLoadingOverlayProps): React.ReactElement {
   const { theme } = useTheme();
   const colors = theme.colors;
@@ -190,6 +193,18 @@ export function DataLoadingOverlay({
     setEstimatedRemainingSeconds(Math.min(30 * 60, remainingSeconds));
   }, [progress]);
 
+  const localWorkspaceAction = onOpenLocalGenomes ? (
+    <div style={{ marginTop: '1rem' }}>
+      <button type="button" className="btn btn-primary" onClick={onOpenLocalGenomes} disabled={isRepairing}>
+        Open local genomes
+      </button>
+      <p style={{ color: colors.textDim, fontSize: '0.85rem', lineHeight: 1.5, margin: '.75rem 0 0' }}>
+        Import your own sequences or reopen saved genomes and workflows while the catalog is unavailable.
+        Analyses that need external reference data still require those inputs.
+      </p>
+    </div>
+  ) : null;
+
   if (error) {
     const offline = !isOnline;
     const normalizedError = error.toLowerCase();
@@ -292,6 +307,7 @@ export function DataLoadingOverlay({
     return (
       <div
         role="alert"
+        data-testid="database-startup"
         aria-live="assertive"
         style={{
           position: 'fixed',
@@ -401,6 +417,8 @@ export function DataLoadingOverlay({
             )}
           </div>
 
+          {localWorkspaceAction}
+
           {!offline && !isWasmUnsupported && (
             <p style={{ color: colors.textMuted, fontSize: '0.75rem', lineHeight: 1.45, margin: '1rem 0 0' }}>
               Repair removes only this site’s downloaded database, service worker, and runtime caches. Saved display preferences remain intact.
@@ -420,6 +438,7 @@ export function DataLoadingOverlay({
   return (
     <div
       role="status"
+      data-testid="database-startup"
       aria-live="polite"
       aria-busy="true"
       style={{
@@ -520,6 +539,8 @@ export function DataLoadingOverlay({
             )}
           </div>
         )}
+
+        {localWorkspaceAction}
 
         <div className="sr-only">
           Loading database: {displayProgress.message},{' '}
