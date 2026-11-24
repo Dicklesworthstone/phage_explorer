@@ -18,6 +18,8 @@ export interface ArtifactStoreOptions {
   fetch?: FetchLike;
   openCache?: () => Promise<ArtifactCache | undefined>;
   onStorageUnavailable?: (error: unknown) => void;
+  /** Check the active startup generation under the write lock before replacing or releasing a reservation. */
+  assertSelectionWritable?: () => Promise<void>;
   forceDownload?: boolean;
   cacheBudget?: number;
 }
@@ -214,6 +216,7 @@ export class VerifiedArtifactStore {
     await withArtifactCacheLock(async () => {
       cancelled(combined);
       const cache = await this.requireCache();
+      await this.options.assertSelectionWritable?.();
       cancelled(combined);
       await cache.delete(selectionKey(this.options.manifestUrl));
     });
@@ -271,6 +274,8 @@ export class VerifiedArtifactStore {
     await withArtifactCacheLock(async () => {
       cancelled(signal);
       const cache = await this.requireCache();
+      await this.options.assertSelectionWritable?.();
+      cancelled(signal);
       const protectedItems = await this.protections(cache, selection);
       cancelled(signal);
       if ([...protectedItems.values()].reduce((sum, item) => sum + item.bytes, 0) > this.budget) {

@@ -564,15 +564,23 @@ describe('user-selectable offline datasets through the application repository', 
       assert.equal((await api.inspect(selection([1]))).ready, false);
     } finally { await loader.close(); }
   });
-  test('an old tab cannot overwrite a newer startup dataset during offline preparation', async () => {
+  test('an older tab cannot replace or release the offline files reserved by a newer tab', async () => {
     const h = await offlineFixture();
+    const next = h.create();
     try {
-      const newer = structuredClone(h.f.manifest); newer.genomes[0].genomeLength++; identity(newer);
-      await h.manifestCache.put(BASE, new Response(JSON.stringify(newer)));
+      addAtlas(h.f);
+      const repo = await next.load(), offline = repo.getOfflineDataset!()!;
+      await offline.prepare(selection([2]));
+      const before = await offline.saved(), requests = h.f.network.length;
       assert.equal((await h.offline.inspect(selection())).startupManifestAvailable, false);
       await assert.rejects(h.offline.prepare(selection([1])), /Another dataset version/);
-      assert.equal(JSON.parse(await (await h.manifestCache.match(BASE))!.text()).contentVersion, newer.contentVersion);
-    } finally { await h.loader.close(); }
+      assert.deepEqual(await offline.saved(), before);
+      await assert.rejects(h.offline.release(), /Another dataset version/);
+      assert.deepEqual(await offline.saved(), before);
+      assert.equal(h.f.network.length, requests);
+      assert.equal((await offline.inspect(selection([2]))).ready, true);
+      assert.equal(JSON.parse(await (await h.manifestCache.match(BASE))!.text()).contentVersion, h.f.manifest.contentVersion);
+    } finally { await Promise.all([next.close(), h.loader.close()]); }
   });
   test('unavailable browser storage stays distinct from missing or verified data', async () => {
     const h = loaderFixture(), loader = h.create({ openArtifactCache: async () => undefined });

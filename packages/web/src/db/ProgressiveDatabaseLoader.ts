@@ -181,8 +181,17 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     this.report({ stage: 'initializing', percent: 30, message: 'Opening the catalog. Genome data will load on demand.', cached: fromCache });
     const openRepository = await abortable((this.dependencies.sqlite ?? openSqlite)(), this.lifetime.signal);
     this.assertOpen();
+    const selectedManifest = manifest;
+    const assertSelectionWritable = async () => {
+      this.assertOpen();
+      if (!cache) throw new Error('Offline startup manifest storage is unavailable.');
+      const previous = await this.cached(cache, true);
+      if (previous && previous.manifest.contentVersion !== selectedManifest.contentVersion) {
+        throw new Error('Another dataset version is saved for startup. Reload this tab before changing an offline selection.');
+      }
+    };
     const store = new VerifiedArtifactStore({ manifestUrl: this.manifestUrl, fetch: this.fetcher,
-      openCache: this.dependencies.openArtifactCache, forceDownload,
+      openCache: this.dependencies.openArtifactCache, forceDownload, assertSelectionWritable,
       onStorageUnavailable: () => {
         if (this.repository && !this.legacy) this.report({ stage: 'ready', percent: 100, cacheStatus: 'unavailable',
           message: 'Dataset remains usable, but newly requested data could not be saved for offline use.' });
@@ -190,7 +199,6 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     });
     if (cached) store.pin(cached.manifest.catalog);
     this.store = store;
-    const selectedManifest = manifest;
     const manifestResponse = () => {
       const headers = new Headers({ 'content-type': 'application/json' });
       if (etag) headers.set('etag', etag);
@@ -200,14 +208,9 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       available: async () => (await this.cached(cache))?.manifest.contentVersion === selectedManifest.contentVersion,
       // The store calls this under withArtifactCacheLock, after checking all files.
       publish: async () => {
+        await assertSelectionWritable();
         this.assertOpen();
-        if (!cache) throw new Error('Offline startup manifest storage is unavailable.');
-        const previous = await this.cached(cache, true);
-        if (previous && previous.manifest.contentVersion !== selectedManifest.contentVersion) {
-          throw new Error('Another dataset version is saved for startup. Reload this tab before preparing an offline selection.');
-        }
-        this.assertOpen();
-        await cache.put(this.manifestUrl, manifestResponse());
+        await cache!.put(this.manifestUrl, manifestResponse());
         if (!(await offlineManifest.available())) throw new Error('Offline startup manifest could not be verified after saving.');
       },
     };
