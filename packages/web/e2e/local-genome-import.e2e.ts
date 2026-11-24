@@ -349,6 +349,11 @@ test('private GenBank reaches sequence, gene map, analysis and a portable reimpo
     await expect(fold).toContainText('Nearest neighbors');
     await page.keyboard.press('Escape');
     let overlay = await importPanel(page);
+    await overlay.getByLabel('Choose genome file').setInputFiles({ name: 'invalid-encoding.fa', mimeType: 'text/plain',
+      buffer: Buffer.concat([Buffer.from('>PRIVATE_'), Buffer.from([0xff]), Buffer.from('\nACGT\n')]) });
+    await expect(overlay.getByRole('alert')).toContainText('invalid UTF-8');
+    await expect(overlay.getByRole('button', { name: 'Add records to explorer' })).toHaveCount(0);
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(24);
     await overlay.getByLabel('Choose genome file').setInputFiles({ name: 'private.gb', mimeType: 'text/plain', buffer: Buffer.from(GENBANK) });
     await expect(overlay.getByRole('status')).toContainText('File loaded locally');
     await overlay.getByRole('button', { name: 'Parse records', exact: true }).click();

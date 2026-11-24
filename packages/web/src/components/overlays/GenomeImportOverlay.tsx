@@ -5,6 +5,7 @@ import { usePhageStore } from '@phage-explorer/state';
 import { prepareCatalogGenomeSnapshot, useLocalGenomes } from '../../db/local-genomes';
 import type { PhageRepository } from '../../db';
 import { useFileSystem } from '../../hooks/useFileSystem';
+import { readLocalTextFile } from '../../utils/fileSystem';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { ResearchWorkflowPanel, runResearchWorker } from './ResearchWorkflowPanel';
@@ -146,15 +147,20 @@ export function GenomeImportOverlay({ repository = null, onSelectPhage }: {
     cancel();
     setError(null);
     if (file.size > GENOME_IMPORT_LIMITS.bytes) { setError('Input exceeds the 10 MiB limit.'); return; }
-    const current = ++generation.current;
+    const controller = new AbortController(), current = ++generation.current;
+    savedImport.current = controller;
     setBusy(true);
     setStatus('Reading local file…');
     try {
-      const content = await file.text();
-      if (generation.current !== current) return;
+      const content = await readLocalTextFile(file, GENOME_IMPORT_LIMITS.bytes, controller.signal);
+      if (generation.current !== current || controller.signal.aborted) return;
       setText(content); setFilePreview(content.length > 2000); setName(file.name); setStatus('File loaded locally. Select Parse records to continue.');
-    } catch (reason) { if (generation.current === current) setError(reason instanceof Error ? reason.message : 'Could not read the file.'); }
-    finally { if (generation.current === current) setBusy(false); }
+    } catch (reason) {
+      if (generation.current === current && !controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Could not read the file.');
+    } finally {
+      if (savedImport.current === controller) savedImport.current = null;
+      if (generation.current === current) setBusy(false);
+    }
   };
   const commit = () => {
     if (!result) return;

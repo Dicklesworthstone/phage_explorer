@@ -31,6 +31,7 @@ import { interruptsResearchNavigation, type ResearchNavigationTarget } from '../
 import { getOrchestrator } from '../../workers/ComputeOrchestrator';
 import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/research-workflow.worker';
 import { downloadString } from '../../utils/export';
+import { readLocalTextFile } from '../../utils/fileSystem';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { SavedResearchPanel } from './SavedResearchPanel';
 import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, DEFAULT_GENOME_COMPARISON_OPTIONS, type ComparisonGenomeInput } from '../../../../comparison/src/comparison-experiment';
@@ -508,8 +509,8 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     inputOperation.current?.abort(); const controller = new AbortController(); inputOperation.current = controller;
     setInputBusy(true); setError(null); setReview(null);
     try {
-      if (file.size > 10 * 1024 * 1024) throw new Error('Workflow exceeds the 10 MiB limit.');
-      const content = await file.text(); if (controller.signal.aborted) return;
+      const content = await readLocalTextFile(file, 10 * 1024 * 1024, controller.signal);
+      if (controller.signal.aborted) return;
       const parsed = await workflow.loadAndReview(content, controller.signal); if (controller.signal.aborted) return;
       setName(workflow.commands.getSnapshot().tape.name);
       setReview(parsed); setArchiveReview(null);
@@ -558,8 +559,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     const controller = new AbortController(); inputOperation.current = controller;
     setInputBusy(true); setError(null);
     try {
-      if (file.size > 10 * 1024 * 1024) throw new Error('Reference input exceeds 10 MiB.');
-      const text = await file.text();
+      const text = await readLocalTextFile(file, 10 * 1024 * 1024, controller.signal);
       if (inputOperation.current !== controller || controller.signal.aborted) return;
       // Reuse the canonical command validator for the draft envelope. Source
       // counts are not trusted here; the numerical worker recounts before use.
@@ -576,8 +576,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     const controller = new AbortController(); inputOperation.current = controller;
     setInputBusy(true); setError(null);
     try {
-      if (file.size > SPACER_LIMITS.libraryBytes) throw new Error('Spacer library exceeds the 2 MiB limit.');
-      const text = await file.text();
+      const text = await readLocalTextFile(file, SPACER_LIMITS.libraryBytes, controller.signal);
       if (inputOperation.current !== controller || controller.signal.aborted) return;
       const library = parseSpacerLibrary(text);
       setSpacerLibrary({ text, name: file.name, library }); setSpacerHost(''); setSpacerMismatches('0');
