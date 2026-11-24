@@ -6,6 +6,7 @@ import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchPhylogenyParameters, researchReferenceCodonParameters, validateResearchDotPlot,
   researchMosaicParameters, researchMosaicDataset, researchSpacerParameters, researchSpacerGenome,
   researchRNAParameters, researchRNARequest, researchRNASource,
+  researchComparisonParameters,
   readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
@@ -32,6 +33,8 @@ import type { ResearchWorkerRequest, ResearchWorkerResult } from '../../workers/
 import { downloadString } from '../../utils/export';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { SavedResearchPanel } from './SavedResearchPanel';
+import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, DEFAULT_GENOME_COMPARISON_OPTIONS, type ComparisonGenomeInput } from '../../../../comparison/src/comparison-experiment';
+import type { GenomeComparisonResult } from '../../../../comparison/src/types';
 
 const SPACER_STATUS: Record<SpacerSearchResult['status'], string> = {
   'no-spacer-data': 'No spacer records for this host scope. Nothing was searched.',
@@ -75,7 +78,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   let unsubscribe: (() => void) | null = null;
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
     pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
-    dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
+    dotPlot: ActionIds.OverlayDotPlot, comparison: ActionIds.OverlayComparison, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
     spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
@@ -137,6 +140,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
     dotPlot: async (row, column, options, signal) => {
       const response = await runResearchWorker({ type: 'dot-plot', genome: row, comparison: column, options }, signal);
       if (response.type !== 'analysis') throw new Error('Expected portable dot-plot evidence.');
+      return response.record;
+    },
+    comparison: async (genomeA, genomeB, options, signal) => {
+      const response = await runResearchWorker({ type: 'comparison', genomeA, genomeB, options }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected complete genome comparison evidence.');
       return response.record;
     },
     digest: async (genome, options, signal) => {
@@ -234,6 +242,33 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   } | null>(null);
   const [dotComparison, setDotComparison] = useState('');
   const [dotBins, setDotBins] = useState('80'), [dotWindow, setDotWindow] = useState('20');
+  const [comparisonId, setComparisonId] = useState('');
+  const [comparisonKmers, setComparisonKmers] = useState(DEFAULT_GENOME_COMPARISON_OPTIONS.kmerSizes.join(','));
+  const [comparisonExact, setComparisonExact] = useState(String(DEFAULT_GENOME_COMPARISON_OPTIONS.maxEditDistanceLength));
+  const [comparisonWindow, setComparisonWindow] = useState(String(DEFAULT_GENOME_COMPARISON_OPTIONS.editDistanceWindowSize));
+  const [comparisonCount, setComparisonCount] = useState(String(DEFAULT_GENOME_COMPARISON_OPTIONS.editDistanceWindowCount));
+  const comparisonDraft = useMemo(() => {
+    try {
+      const second = genomes.find(item => item.phage.localGenome?.contentId === comparisonId);
+      if (!genome || !second) throw new Error('Choose both captured genomes for the ordered comparison.');
+      if ([genome, second].some(input => input.sequence.length > GENOME_COMPARISON_LIMITS.sequenceBases
+        || input.phage.genes.length > GENOME_COMPARISON_LIMITS.genes)) {
+        throw new Error('Choose captured genomes with at most 1,000,000 bases and 20,000 annotations each.');
+      }
+      if (![comparisonKmers, comparisonExact, comparisonWindow, comparisonCount].every(value => value.trim())) {
+        throw new Error('Enter every comparison setting explicitly.');
+      }
+      const parameters = researchComparisonParameters(selected, comparisonId, {
+        kmerSizes: comparisonKmers.split(',').map(value => value.trim() ? Number(value) : NaN),
+        maxEditDistanceLength: Number(comparisonExact), editDistanceWindowSize: Number(comparisonWindow), editDistanceWindowCount: Number(comparisonCount),
+      });
+      return { parameters, error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [selected, genome, genomes, comparisonId, comparisonKmers, comparisonExact, comparisonWindow, comparisonCount]);
+  const comparisonResult = acceptedAnalysis?.method.id === GENOME_COMPARISON_METHOD.id
+    && acceptedAnalysis.method.version === GENOME_COMPARISON_METHOD.version
+    ? { record: acceptedAnalysis, inputs: acceptedAnalysis.inputs.map(input => input.data as unknown as ComparisonGenomeInput),
+      result: acceptedAnalysis.fields.comparison.value as unknown as Pick<GenomeComparisonResult, 'editDistance' | 'biological' | 'kmerAnalysis' | 'geneContent'> } : null;
   const [digestNames, setDigestNames] = useState('EcoRI');
   const [digestTopology, setDigestTopology] = useState<'' | 'linear' | 'circular'>('');
   const [mosaicIds, setMosaicIds] = useState<string[]>([]);
@@ -567,7 +602,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, multi-genome pangenomes and their linked phylogenies below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, complete genome comparisons, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, multi-genome pangenomes and their linked phylogenies below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -629,6 +664,26 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         const task = workflow.commands.dispatch(ActionIds.OverlayDotPlot, analysisJson(dotDraft.parameters));
         invoke(() => task);
       }}>Run and record dot plot</button>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record complete genome comparisons</legend>
+      <p>Genome A: {genome?.phage.name ?? 'select a workflow genome above'}. Choose genome B explicitly. Input order, complete bases and captured annotations are retained; the same genome in both roles is a self-comparison control.</p>
+      <label htmlFor="workflow-comparison-genome">Workflow comparison genome B</label>
+      <select id="workflow-comparison-genome" value={comparisonId} onChange={event => setComparisonId(event.target.value)}>
+        <option value="">Choose captured genome B</option>
+        {comparisonId && !genomes.some(item => item.phage.localGenome?.contentId === comparisonId) && <option value={comparisonId}>Unavailable genome B — choose an input</option>}
+        {genomes.map(item => <option key={item.phage.localGenome!.contentId} value={item.phage.localGenome!.contentId}>{item.phage.name} · {item.phage.localGenome!.contentId.slice(0, 12)}</option>)}
+      </select>
+      <label>Workflow comparison k-mer sizes <input value={comparisonKmers} onChange={event => setComparisonKmers(event.target.value)} /></label>
+      <label>Workflow exact edit-distance limit (bp) <input type="number" min={0} max={10000} value={comparisonExact} onChange={event => setComparisonExact(event.target.value)} /></label>
+      <label>Workflow sampled edit window (bp) <input type="number" min={1} max={2000} value={comparisonWindow} onChange={event => setComparisonWindow(event.target.value)} /></label>
+      <label>Workflow sampled edit window count <input type="number" min={1} max={100} value={comparisonCount} onChange={event => setComparisonCount(event.target.value)} /></label>
+      <p>Use 1–8 distinct comma-separated k-mer sizes from 1 to 31. Edit distance above the explicit limit is estimated from sampled windows, with operation counts unavailable. The separate bounded exact alignment reports its own availability. Null codon counts use sequence frame zero; this does not infer coding genes. Genome resemblance and shared gene names do not establish homology.</p>
+      {comparisonDraft.error && <p>{comparisonDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !comparisonDraft.parameters} onClick={() => {
+        if (busy || !active || !comparisonDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlayComparison, analysisJson(comparisonDraft.parameters));
+        invoke(() => task);
+      }}>Run and record complete comparison</button>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record restriction digests</legend>
       <p>Input: {genome?.phage.name ?? 'select a workflow genome above'}. Ideal complete digestion only, not measured gel mobility, partial digestion or methylation sensitivity.</p>
@@ -896,6 +951,25 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
       <p>Analysis inputs: {acceptedAnalysis.inputs.map(input => input.accession ?? input.id).join(', ')}.</p>
       <p>Workflow and analysis JSON contain complete private source genomes. Review before sharing. RNA window TSV also contains the analyzed window sequences.</p>
       <button type="button" disabled={busy} onClick={() => invoke(() => downloadString(serializeAnalysisRecord(acceptedAnalysis), 'workflow-analysis.json', 'application/json'))}>Export workflow analysis</button>
+      {comparisonResult && <section aria-label="Recorded genome comparison results">
+        <h4>Accepted complete comparison: {comparisonResult.inputs[0].phage.name} → {comparisonResult.inputs[1].phage.name}</h4>
+        <p>Genome A: {comparisonResult.result.biological.lengthA} bp; genome B: {comparisonResult.result.biological.lengthB} bp.
+          {' '}Resolved GC bases: {comparisonResult.result.biological.gcResolvedBasesA} / {comparisonResult.result.biological.gcResolvedBasesB}.
+          {' '}Captured annotations: {comparisonResult.inputs[0].genes.length} / {comparisonResult.inputs[1].genes.length}.</p>
+        <p data-testid="workflow-comparison-distance">{comparisonResult.result.editDistance.isApproximate ? 'Sampled edit-distance estimate' : 'Exact edit distance'}: {comparisonResult.result.editDistance.levenshteinDistance}.</p>
+        {comparisonResult.result.editDistance.operationsUnavailableReason
+          ? <p>{comparisonResult.result.editDistance.operationsUnavailableReason}</p>
+          : <p>Ordered A → B edits: {comparisonResult.result.editDistance.substitutions} substitutions,
+            {' '}{comparisonResult.result.editDistance.insertions} insertions, {comparisonResult.result.editDistance.deletions} deletions.</p>}
+        <div style={{ overflowX: 'auto' }}><table aria-label="Recorded comparison k-mer metrics"><thead><tr>
+          <th>k</th><th>Distinct in A</th><th>Distinct in B</th><th>Shared</th><th>Jaccard</th>
+        </tr></thead><tbody>{comparisonResult.result.kmerAnalysis.map(row => <tr key={row.k}>
+          <td>{row.k}</td><td>{row.uniqueKmersA}</td><td>{row.uniqueKmersB}</td><td>{row.sharedKmers}</td><td>{row.jaccardIndex.toFixed(6)}</td>
+        </tr>)}</tbody></table></div>
+        <p>Draft inputs and settings never relabel this accepted result. Analysis JSON and complete workflow archives retain every metric,
+          unavailable reason, exact alignment operation and display-mask value. The analysis JSON also reopens in the comparison workspace.</p>
+        <details><summary>Comparison coverage and interpretation</summary><ul>{comparisonResult.record.fields.comparison.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul></details>
+      </section>}
       {treeResult && <section aria-label="Recorded phylogeny results">
         <h4>{treeResult.source.name}: accepted unrooted phylogeny</h4>
         <p>Homology provenance: {treeResult.source.reference}</p>

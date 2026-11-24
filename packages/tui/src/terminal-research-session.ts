@@ -10,6 +10,7 @@ import type { LocalGenome } from '../../core/src/genome-import';
 import { ALIGNMENT_GRAPH_LIMITS } from '../../core/src/analysis/alignment-pangenome';
 import { PHYLOGENY_LIMITS } from '../../core/src/analysis/aligned-phylogeny';
 import { MOSAIC_LIMITS } from '../../core/src/analysis/recombination-radar';
+import { GENOME_COMPARISON_LIMITS } from '../../comparison/src/comparison-experiment';
 import { validateExactRepeatSourceTopology } from '../../core/src/analysis/exact-repeat-pairs';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { validateResearchView, researchRNASource, researchRNARequest, researchSpacerGenome,
@@ -229,8 +230,8 @@ export class TerminalResearchSession {
   private validateStep(draft: TerminalResearchDraft, step: TerminalResearchStep, genomes = this.draftGenomes): void {
     const supported: readonly string[] = [ActionIds.NavGoto, ActionIds.OverlayGCSkew, ActionIds.OverlayRepeats,
       ActionIds.OverlayCodonAdaptation, ActionIds.OverlayGel, ActionIds.OverlayDotPlot, ActionIds.OverlayPangenomeGraph,
-      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar, ActionIds.OverlayCRISPR, ActionIds.OverlayPhylodynamics];
-    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, pangenome, phylogeny, RNA, mosaic and sourced spacer commands.');
+      ActionIds.OverlayRNAStructure, ActionIds.OverlayMosaicRadar, ActionIds.OverlayCRISPR, ActionIds.OverlayPhylodynamics, ActionIds.OverlayComparison];
+    if (!supported.includes(step.actionId)) throw new Error('This draft editor supports view, GC-skew, exact repeats, codons, digest, dot-plot, complete comparison, pangenome, phylogeny, RNA, mosaic and sourced spacer commands.');
     validateResearchPlan(serializeCommandPlan({ ...draft.plan, commands: [step] }));
     if (step.actionId === ActionIds.OverlayMosaicRadar) {
       const parameters = step.parameters as unknown as ResearchMosaicParameters;
@@ -312,6 +313,13 @@ export class TerminalResearchSession {
         : draft.sources.find(item => item.contentId === parameters.comparisonContentId);
       if (!comparison) throw new Error('Select the comparison genome from the captured input bundle.');
       if (Number(parameters.window) > Math.min(source.bases, comparison.bases)) throw new Error('The dot-plot window must fit both captured sequences.');
+    }
+    if (step.actionId === ActionIds.OverlayComparison) {
+      const comparison = draft.sources.find(item => item.contentId === parameters.comparisonContentId);
+      if (!comparison) throw new Error('Select comparison genome B from the captured input bundle.');
+      if ([source, comparison].some(item => item.bases > GENOME_COMPARISON_LIMITS.sequenceBases || item.genes.length > GENOME_COMPARISON_LIMITS.genes)) {
+        throw new Error('Complete workflow comparisons allow at most 1,000,000 bases and 20,000 annotations per captured genome.');
+      }
     }
     if (step.actionId === ActionIds.OverlayGel && source.topology !== 'unknown' && source.topology !== parameters.topology) {
       throw new Error('Digest topology conflicts with the captured source annotation.');

@@ -2,6 +2,7 @@
 import { importLocalGenomes, type GenomeInput, type LocalGenome, type GenomeImportResult } from '../../../core/src/genome-import';
 import { createReferenceCodonExperiment, referenceGenomeFromPhage, type ReferenceCodonOptions } from '../../../core/src/analysis/codon-reference';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
+import type { ComparisonGenomeInput, GenomeComparisonOptions } from '../../../comparison/src/comparison-experiment';
 
 import { createExactRepeatRecord, type ResolvedExactRepeatOptions } from '../../../core/src/analysis/exact-repeat-pairs';
 import { createGCSkewRecord, replayGCSkewRecord, type ResolvedGCSkewOptions } from '../../../core/src/analysis/gc-skew';
@@ -19,6 +20,7 @@ export type ResearchWorkerRequest = { type: 'parse'; input: GenomeInput } |
   { type: 'spacers'; genome: SpacerGenome; library: SpacerLibrary; options: SpacerSearchOptions } |
   { type: 'mosaic'; dataset: MosaicDataset; options: Required<MosaicRadarConfig> } |
   { type: 'dot-plot'; genome: LocalGenome; comparison: LocalGenome | null; options: { bins: number; window: number } } |
+  { type: 'comparison'; genomeA: ComparisonGenomeInput; genomeB: ComparisonGenomeInput; options: GenomeComparisonOptions } |
   { type: 'codons'; genome: LocalGenome; geneId: number | null } |
   { type: 'reference-codons'; genome: LocalGenome; referenceText: string; options: ReferenceCodonOptions } |
   { type: 'gc-skew'; genome: LocalGenome; options: ResolvedGCSkewOptions } |
@@ -30,6 +32,10 @@ export type ResearchWorkerResult = { type: 'parsed'; result: GenomeImportResult 
 
 export async function executeResearchRequest(request: ResearchWorkerRequest): Promise<ResearchWorkerResult> {
   if (request.type === 'parse') return { type: 'parsed', result: await importLocalGenomes(request.input) };
+  if (request.type === 'comparison') {
+    const { createGenomeComparisonExperiment } = await import('../../../comparison/src/comparison-experiment');
+    return { type: 'analysis', record: (await createGenomeComparisonExperiment(request.genomeA, request.genomeB, request.options)).record };
+  }
   if (request.type === 'phylogeny') {
     const { createPangenomePhylogenyExperiment } = await import('../../../core/src/analysis/aligned-phylogeny');
     return { type: 'analysis', record: (await createPangenomePhylogenyExperiment(request.source, request.options)).record };

@@ -22,9 +22,11 @@ import { resolveAlignmentGraphOptions, validatePangenomeInput, type AlignmentGra
 import { PANGENOME_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, resolvePhylogenyOptions,
   type PhylogenyOptions, type PangenomePhylogenySource } from '../../../core/src/analysis/aligned-phylogeny';
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
+import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, resolveGenomeComparisonOptions,
+  type ComparisonGenomeInput, type GenomeComparisonOptions } from '../../../comparison/src/comparison-experiment';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; phylogeny?: string; gcSkew?: string; dotPlot?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; phylogeny?: string; gcSkew?: string; dotPlot?: string; comparison?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -55,6 +57,7 @@ export interface ResearchEnvironment {
   phylogeny?: (source: PangenomePhylogenySource, options: PhylogenyOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
+  comparison?: (genomeA: ComparisonGenomeInput, genomeB: ComparisonGenomeInput, options: GenomeComparisonOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   mosaic?: (dataset: MosaicDataset, options: Required<MosaicRadarConfig>, signal: AbortSignal) => Promise<AnalysisRecord>;
   spacers?: (genome: SpacerGenome, library: SpacerLibrary, options: SpacerSearchOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
@@ -210,6 +213,31 @@ export function validateResearchDotPlot(value: CommandValue): void {
   if (value.comparisonContentId !== null) contentId(value.comparisonContentId);
   integer(value.bins, 1, DOT_PLOT_EXPERIMENT_LIMITS.bins);
   integer(value.window, 1, DOT_PLOT_EXPERIMENT_LIMITS.bases);
+}
+/** Ordered complete inputs, including their captured annotation/codon evidence.
+ * A self comparison is an explicit two-input control, never an implicit default.
+ */
+export interface ResearchComparisonParameters {
+  contentId: string; comparisonContentId: string; options: GenomeComparisonOptions;
+}
+export function validateResearchComparison(value: CommandValue): void {
+  fields(value, ['contentId', 'comparisonContentId', 'options']);
+  contentId(value.contentId); contentId(value.comparisonContentId);
+  const options = resolveGenomeComparisonOptions(value.options);
+  if (!commandValuesEqual(value.options, options)) throw new Error('Record every effective genome comparison setting explicitly.');
+}
+export function researchComparisonParameters(id: string, comparisonId: string,
+  options: Partial<GenomeComparisonOptions> = {}): ResearchComparisonParameters {
+  const value = { contentId: id, comparisonContentId: comparisonId, options: resolveGenomeComparisonOptions(options) };
+  validateResearchComparison(analysisJson(value));
+  return value;
+}
+export function researchComparisonGenome(genome: LocalGenome): ComparisonGenomeInput {
+  if (genome.sequence.length > GENOME_COMPARISON_LIMITS.sequenceBases || genome.phage.genes.length > GENOME_COMPARISON_LIMITS.genes) {
+    throw new Error('Complete workflow comparisons allow at most 1,000,000 bases and 20,000 annotations per captured genome.');
+  }
+  return structuredClone({ phage: { id: genome.phage.id, name: genome.phage.name, accession: genome.phage.accession },
+    source: 'local' as const, sequence: genome.sequence, genes: genome.phage.genes, codonUsage: genome.phage.codonUsage });
 }
 export interface ResearchDigestParameters extends RestrictionDigestOptions { contentId: string }
 export function researchDigestParameters(id: string, options: RestrictionDigestOptions): ResearchDigestParameters {
@@ -572,6 +600,28 @@ export class ResearchWorkflow {
         return this.result(record, genomes, signal);
       },
     });
+    if ((ids.comparison === undefined) !== (environment.comparison === undefined)) throw new Error('Comparison action and executor must be supplied together.');
+    if (ids.comparison !== undefined) adapters.set(ids.comparison, {
+      validate: validateResearchComparison,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchComparisonParameters;
+        const genomes = await this.selectedGenomes([values.contentId, values.comparisonContentId], signal);
+        const inputs = genomes.map(researchComparisonGenome), options = resolveGenomeComparisonOptions(values.options);
+        const result = await environment.comparison!(structuredClone(inputs[0]), structuredClone(inputs[1]), structuredClone(options), signal);
+        abort(signal);
+        const record = await parseAnalysisRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        if (!commandValuesEqual(record.method, GENOME_COMPARISON_METHOD) || record.inputs.length !== 2
+          || record.inputs.some((input, index) => input.id !== (index === 0 ? 'genomeA' : 'genomeB')
+            || input.source !== 'local' || input.accession !== inputs[index].phage.accession
+            || !commandValuesEqual(input.data, analysisJson(inputs[index])))
+          || !commandValuesEqual(record.parameters, options) || record.seed !== null || record.references.length !== 0
+          || record.fields.comparison?.kind !== 'sequence-score' || record.fields.comparison.units !== 'score') {
+          throw new Error('Comparison evidence does not match the ordered captured genomes, annotations, method or settings.');
+        }
+        return this.result(record, genomes, signal);
+      },
+    });
     if ((ids.digest === undefined) !== (environment.digest === undefined)) throw new Error('Digest action and executor must be supplied together.');
     if (ids.digest !== undefined) adapters.set(ids.digest, {
       validate: validateResearchDigest,
@@ -663,7 +713,7 @@ export class ResearchWorkflow {
       },
     });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
-      + Number(ids.dotPlot !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
+      + Number(ids.dotPlot !== undefined) + Number(ids.comparison !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
       + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined) + Number(ids.phylogeny !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {

@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { ResearchWorkflow, researchDigestParameters, researchSpacerParameters, researchRNAParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
+import { ResearchWorkflow, researchDigestParameters, researchSpacerParameters, researchRNAParameters, researchComparisonParameters, readWorkflowResultsFile, type ResearchEnvironment, type ResearchView } from './ResearchWorkflow';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../../core/src/genome-import';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../../core/src/analysis-result';
 import { parseCommandTape, serializeCommandTape } from '../../../core/src/command-session';
@@ -12,10 +12,131 @@ import { BunSqliteRepository } from '@phage-explorer/db-runtime';
 import { mergeLocalGenomes } from '../../../db-runtime/src/local-genomes';
 import { fileURLToPath } from 'node:url';
 import type { RNAStructureAnalysis } from '../../../core/src/analysis/rna-structure';
+import type { GenomeComparisonResult } from '../../../comparison/src/types';
 
 const ids = { view: 'nav.goto', repeats: 'overlay.repeats', codons: 'overlay.codonAdaptation', dotPlot: 'overlay.dotPlot', digest: 'overlay.gel' };
 function latch() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 const flush = async () => { for (let i = 0; i < 24; i++) await Promise.resolve(); };
+
+describe('production browser complete comparison workflow adapter', () => {
+  it('requires explicit settings and rejects results for swapped sources or unrecorded annotations', async () => {
+    const { createGenomeComparisonExperiment } = await import('../../../comparison/src/comparison-experiment');
+    const f = await fixture(), comparison = 'overlay.comparison';
+    let mode: 'correct' | 'swapped' | 'annotation' = 'correct', calls = 0;
+    const environment: ResearchEnvironment = { ...f.environment, comparison: async (a, b, options) => {
+      calls++;
+      if (mode === 'swapped') [a, b] = [b, a];
+      if (mode === 'annotation') a.genes = [{ id: 1, startPos: 0, endPos: 3, strand: '+', type: 'CDS',
+        name: 'Unrecorded annotation', locusTag: null, product: null }];
+      return (await createGenomeComparisonExperiment(a, b, options)).record;
+    } };
+    const workflow = new ResearchWorkflow({ ...ids, comparison }, environment);
+    const parameters = researchComparisonParameters(f.pair.contentId, f.pair.comparisonContentId, {
+      kmerSizes: [1, 2], maxEditDistanceLength: 100, editDistanceWindowSize: 4, editDistanceWindowCount: 1,
+    });
+    workflow.start('Complete comparison source boundary');
+    for (const invalid of [{ ...parameters, comparisonContentId: null }, { ...parameters, options: {} },
+      { ...parameters, options: { ...parameters.options, kmerSizes: [2, 2] } }]) {
+      await assert.rejects(workflow.commands.dispatch(comparison, analysisJson(invalid)));
+    }
+    assert.equal(calls, 0);
+    const self = { ...parameters, comparisonContentId: parameters.contentId };
+    await workflow.commands.dispatch(comparison, analysisJson(self));
+    const accepted = workflow.getSnapshot().lastAnalysis!;
+    assert.deepEqual(accepted.inputs.map(input => input.id), ['genomeA', 'genomeB']);
+    assert.deepEqual(accepted.inputs[0].data, accepted.inputs[1].data);
+    assert.equal((accepted.fields.comparison.value as unknown as GenomeComparisonResult).editDistance.levenshteinDistance, 0);
+    for (const wrong of ['swapped', 'annotation'] as const) {
+      mode = wrong;
+      await assert.rejects(workflow.commands.dispatch(comparison, analysisJson(parameters)), /ordered captured genomes/);
+      assert.deepEqual(workflow.getSnapshot().lastAnalysis, accepted);
+      assert.equal(workflow.commands.getSnapshot().tape.commands.length, 1);
+    }
+  });
+
+  it('cancels a late comparison provider without replacing the accepted complete archive', async () => {
+    const { createGenomeComparisonExperiment } = await import('../../../comparison/src/comparison-experiment');
+    const f = await fixture(), comparison = 'overlay.comparison', started = latch(), release = latch();
+    const provider: NonNullable<ResearchEnvironment['comparison']> = async (a, b, options) =>
+      (await createGenomeComparisonExperiment(a, b, options)).record;
+    const environment: ResearchEnvironment = { ...f.environment, comparison: provider };
+    const workflow = new ResearchWorkflow({ ...ids, comparison }, environment);
+    workflow.start('Cancellation retains accepted comparison');
+    await workflow.commands.dispatch(comparison, analysisJson(researchComparisonParameters(f.pair.contentId, f.pair.comparisonContentId)));
+    workflow.commands.stop();
+    const original = await workflow.replayWithResults();
+    environment.comparison = async (...args) => { started.release(); await release.promise; return provider(...args); };
+    const controller = new AbortController(), task = workflow.replayWithResults(2, controller.signal);
+    const rejected = assert.rejects(task, { name: 'AbortError' });
+    try {
+      await started.promise; controller.abort(); await rejected;
+      assert.equal(workflow.exportCompleteResults(), original);
+      environment.comparison = provider;
+      const fresh = await workflow.replayWithResults();
+      release.release(); await flush();
+      assert.equal(workflow.exportCompleteResults(), fresh);
+    } finally { controller.abort(); release.release(); }
+  });
+
+  it('records ordered annotated inputs in real workers and replays identical native archives', async () => {
+    const { createBrowserResearchWorkflow } = await import('../components/overlays/ResearchWorkflowPanel');
+    const { useLocalGenomes } = await import('../db/local-genomes');
+    const { ActionIds } = await import('./actionRegistry');
+    const { replayResearchTape } = await import('../../../tui/src/research-replay');
+    const a = await importLocalGenomes({ name: 'first.gb', text:
+      'LOCUS       first                      8 bp    DNA     linear\nACCESSION   shared\n'
+      + 'FEATURES             Location/Qualifiers\n     CDS             1..6\n                     /gene="captured"\n'
+      + 'ORIGIN\n        1 aaaacccc\n//\n' });
+    const b = await importLocalGenomes({ name: 'second.fa', text: '>shared second genome\nAAAATCCCC\n' });
+    const genomes = [...a.genomes, ...b.genomes], before = useLocalGenomes.getState();
+    assert.equal(genomes[0].phage.accession, genomes[1].phage.accession);
+    const contentIds = genomes.map(genome => genome.phage.localGenome!.contentId);
+    assert.notEqual(contentIds[0], contentIds[1]);
+    useLocalGenomes.setState({ genomes, requestedId: null });
+    const binding = createBrowserResearchWorkflow(async () => assert.fail('Comparison must not change explorer navigation'));
+    const workflow = binding.workflow;
+    const metrics = (record: AnalysisRecord) => record.fields.comparison.value as unknown as GenomeComparisonResult;
+    const options = { kmerSizes: [1, 2], maxEditDistanceLength: 100, editDistanceWindowSize: 8, editDistanceWindowCount: 1 };
+    try {
+      workflow.start('Ordered annotated comparison controls');
+      await workflow.commands.dispatch(ActionIds.OverlayComparison, analysisJson(researchComparisonParameters(contentIds[0], contentIds[1], options)));
+      const first = workflow.getSnapshot().lastAnalysis!, result = metrics(first);
+      assert.equal(result.editDistance.levenshteinDistance, 1);
+      assert.deepEqual([result.editDistance.insertions, result.editDistance.deletions, result.editDistance.substitutions], [1, 0, 0]);
+      // Canonical reverse-complement sets: k=1 {A,C}/{A,C}; k=2 {AA,AC,CC}/{AA,AT,GA,CC}.
+      assert.deepEqual(result.kmerAnalysis.map(row => [row.uniqueKmersA, row.uniqueKmersB, row.sharedKmers, row.jaccardIndex]),
+        [[2, 2, 2, 1], [3, 4, 2, 2 / 5]]);
+      assert.deepEqual((first.inputs[0].data as unknown as { genes: unknown }).genes, genomes[0].phage.genes);
+      assert.equal(genomes[0].phage.genes.length, 1);
+      await workflow.commands.dispatch(ActionIds.OverlayComparison, analysisJson(researchComparisonParameters(contentIds[1], contentIds[0], options)));
+      const reverse = metrics(workflow.getSnapshot().lastAnalysis!);
+      assert.deepEqual([reverse.editDistance.insertions, reverse.editDistance.deletions], [0, 1]);
+      workflow.commands.stop();
+      const tape = workflow.commands.export(), archive = await workflow.replayWithResults(2);
+      const native = await replayResearchTape(tape, { repetitions: 2, captureResults: true });
+      assert.equal(native.report.completed, 4); assert.equal(native.allResultsJson, archive);
+      assert.equal((await parseWorkflowResults(archive)).records.length, 2);
+
+      const changed = structuredClone(genomes); changed[0].phage.genes[0].product = 'Different captured annotation';
+      useLocalGenomes.setState({ genomes: changed });
+      await assert.rejects(workflow.commands.replay(), /changed sequence or annotations/);
+      assert.equal(workflow.exportCompleteResults(), archive);
+      useLocalGenomes.setState({ genomes });
+
+      // Rehashed false output must fail fresh computation, even if the tape agrees.
+      const forged = await parseWorkflowResults(archive);
+      metrics(forged.records[0]).editDistance.levenshteinDistance = 0;
+      forged.records[0] = await createAnalysisRecord(forged.records[0]);
+      const alteredTape = parseCommandTape(forged.tapeJson), replacement = forged.records[0];
+      alteredTape.commands[0].expected = analysisJson({ method: replacement.method, cacheKey: replacement.cacheKey, resultId: replacement.resultId });
+      forged.tapeJson = serializeCommandTape(alteredTape);
+      const altered = serializeWorkflowResults(forged);
+      await workflow.loadResultsAndReview(altered, new AbortController().signal);
+      await assert.rejects(workflow.verifyCompleteResults(altered), /differs/);
+      assert.equal(workflow.exportCompleteResults(), archive);
+    } finally { binding.dispose(); useLocalGenomes.setState(before); }
+  });
+});
 
 describe('production browser RNA workflow adapter', () => {
   it('runs the real worker and replays the same complete RNA evidence in browser and native hosts', async () => {

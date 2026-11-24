@@ -106,6 +106,57 @@ reopened in the browser. Replay uses saved parameters and does not accept
 overrides. Runtime timestamps and elapsed durations are operational metadata
 excluded from the result identity; complete scientific outputs remain bound.
 
+## Include complete comparisons in recorded research workflows
+
+In the browser, import both local genomes, or capture the required catalog
+genomes into **Local genomes**. Open **Research workflow**, start recording,
+choose genome A with the shared source selector, and use **Record complete
+genome comparisons** to select genome B and the four settings above. Choose
+**Run and record complete comparison**. The accepted result shows the ordered
+pair, exact or sampled edit distance, available operation counts and canonical
+k-mer overlap. Stop recording to export the workflow or replay and export its
+complete results alongside other recorded analyses.
+
+In the terminal research workspace (**W**), create or open a draft, press **I**
+and choose **Complete ordered genome comparison with captured annotations**.
+Select A and B, enter all four settings, then record with **C** and verify with
+**R**. **E** reopens the selected step with its source order and settings intact.
+Selecting A again is an explicit two-input control. The editor saves a plan
+without computing it; the recording and verification steps run in an isolated
+worker.
+
+A declarative plan uses the canonical `overlay.comparison` action. Both IDs
+below must identify genomes present in the plan's captured input bundle:
+
+```json
+{
+  "actionId": "overlay.comparison",
+  "parameters": {
+    "contentId": "<genome-A-content-id>",
+    "comparisonContentId": "<genome-B-content-id>",
+    "options": {
+      "kmerSizes": [3, 5, 7, 11],
+      "maxEditDistanceLength": 10000,
+      "editDistanceWindowSize": 1000,
+      "editDistanceWindowCount": 20
+    }
+  }
+}
+```
+
+```bash
+phage-explorer workflow record --input comparison-plan.json --output comparison-workflow.json
+phage-explorer workflow replay --input comparison-workflow.json --repetitions 2 --results --output comparison-results.json
+phage-explorer workflow replay-results --input comparison-results.json --output verified-comparison-results.json
+```
+
+Workflows retain the complete ordered inputs, including captured annotations,
+and every effective setting; matching accession labels do not identify the same
+genome. Browser and terminal replay recompute the same method and bind all
+comparison outputs to their recorded steps. Changed loaded annotations, swapped
+input roles and altered numerical evidence fail validation. Cancelling a run or
+failing verification preserves the preceding accepted complete results.
+
 ## Evidence and limits
 
 Each genome is bounded to 1,000,000 ungapped IUPAC DNA bases and 20,000 annotation

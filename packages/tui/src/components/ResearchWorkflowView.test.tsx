@@ -15,12 +15,13 @@ import type { GCSkewWindow } from '../../../core/src/analysis/gc-skew';
 import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-pangenome';
 import { replayAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
 import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
+import { replayGenomeComparisonExperiment } from '../../../comparison/src/comparison-experiment';
 import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
 import type { ReferenceSpacerHit } from '../../../core/src/analysis/spacer-reference';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
 import { researchReferenceCodonParameters,
   type ResearchView, type ResearchPangenomeParameters, type ResearchRNAParameters, type ResearchMosaicParameters,
-  type ResearchReferenceCodonParameters, type ResearchSpacerParameters, type ResearchPhylogenyParameters } from '../../../web/src/keyboard/ResearchWorkflow';
+  type ResearchReferenceCodonParameters, type ResearchSpacerParameters, type ResearchPhylogenyParameters, type ResearchComparisonParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { recordResearchPlan, inspectResearchTape } from '../research-replay';
 import { runTerminalResearchWorker } from '../../../../scripts/research-workflow';
 import { TerminalGenomeSession, loadTerminalGenomeBundle } from '../local-genome-session';
@@ -68,6 +69,62 @@ function terminal(session: TerminalResearchSession, genomes: TerminalGenomeSessi
     resize: (rows: number) => { stdout.rows = rows; stdout.emit('resize'); } };
 }
 describe('Ink research workflow workspace', () => {
+  it('authors and edits a complete ordered genome comparison, then records and verifies the same evidence', async () => {
+    const imported = await importLocalGenomes({ name: 'ordered.fa', text: '>A\nAAAACCCC\n>B\nAAAATCCCC\n' });
+    const genomes = new TerminalGenomeSession(null, imported.genomes), session = new TerminalResearchSession();
+    assert(await session.createDraft('Ordered comparison keyboard journey', genomes.exportBundle()));
+    const test = terminal(session, genomes, () => assert.fail('owned editors cannot leave the workspace'), () => assert.fail('drafting does not install inputs'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key);
+      try { await waitFor(() => test.output().slice(start).includes(expected)); }
+      catch (cause) { throw new Error(`Expected terminal stage: ${expected}. Last rendering: ${test.output().slice(-1600)}`, { cause }); }
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    const replace = async (before: string, after: string) => {
+      for (const _character of before) { test.input('\u007f'); await new Promise(resolve => setTimeout(resolve, 10)); }
+      test.input(after); await new Promise(resolve => setTimeout(resolve, 20));
+    };
+    try {
+      await waitFor(test.ready); await press('i', 'Choose a workflow action');
+      for (let position = 0; position < 12; position++) await down();
+      await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose the ordered comparison genome');
+      assert(test.output().includes('explicit two-input control'));
+      await down(); await down(); await press('\r', 'Distinct k-mer sizes');
+      await replace('3,5,7,11', '1,2'); await press('\r', 'Exact edit-distance limit');
+      await replace('10000', '100'); await press('\r', 'Sampled edit window (');
+      await replace('1000', '8'); await press('\r', 'Sampled edit window count');
+      await replace('20', '1'); await press('\r', '[I] Add');
+      const step = structuredClone(session.getSnapshot().draft!.plan.commands[0]);
+      assert.equal(step.actionId, ActionIds.OverlayComparison);
+      assert.deepEqual(step.parameters as unknown as ResearchComparisonParameters, {
+        contentId: imported.genomes[0].phage.localGenome!.contentId,
+        comparisonContentId: imported.genomes[1].phage.localGenome!.contentId,
+        options: { kmerSizes: [1, 2], maxEditDistanceLength: 100, editDistanceWindowSize: 8, editDistanceWindowCount: 1 },
+      });
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      // Reopening a saved step preserves both ordered sources and all settings.
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose the ordered comparison genome'); await press('\r', 'Distinct k-mer sizes');
+      await press('\r', 'Exact edit-distance limit'); await press('\r', 'Sampled edit window (');
+      await press('\r', 'Sampled edit window count'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step]);
+      test.input('c'); await waitFor(() => !session.getSnapshot().busy && !!(session.getSnapshot().document || session.getSnapshot().error));
+      assert.equal(session.getSnapshot().error, null);
+      const experiment = await replayGenomeComparisonExperiment(JSON.stringify(session.analysis(1)));
+      assert.equal(experiment.genomeA.sequence, 'AAAACCCC'); assert.equal(experiment.genomeB.sequence, 'AAAATCCCC');
+      assert.equal(experiment.result.editDistance.levenshteinDistance, 1);
+      assert.deepEqual([experiment.result.editDistance.insertions, experiment.result.editDistance.deletions, experiment.result.editDistance.substitutions], [1, 0, 0]);
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      const archive = session.availableResults()!.json;
+      test.input('r'); await waitFor(() => !session.getSnapshot().busy && !!(session.getSnapshot().completedRun || session.getSnapshot().error));
+      assert.equal(session.getSnapshot().error, null); assert.equal(session.availableResults()?.provenance, 'verified');
+      assert.equal(session.availableResults()!.json, archive);
+      assert.equal(genomes.getSnapshot().localCount, 2); assert.equal(genomes.getSnapshot().review, null);
+      assert(!test.output().includes(imported.genomes[1].sequence), 'forms and accepted-run summaries do not print private genomes');
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
   it('saves unfinished work, reopens and edits it without installing inputs, then records, verifies and explicitly forks a recording', async () => {
     const f = await fixture(), author = new TerminalResearchSession();
     const originalGenomes = new TerminalGenomeSession(null, f.imported.genomes);

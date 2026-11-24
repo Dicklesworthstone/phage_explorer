@@ -14,9 +14,9 @@ import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/wo
 
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
   codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
-  dotPlot: ActionIds.OverlayDotPlot, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
+  dotPlot: ActionIds.OverlayDotPlot, comparison: ActionIds.OverlayComparison, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
   spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.phylogeny, IDS.gcSkew, IDS.dotPlot, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.phylogeny, IDS.gcSkew, IDS.dotPlot, IDS.comparison, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -107,6 +107,13 @@ function host(bundle: string) {
       const result = comparison === null ? await createDotPlotExperiment(input(genome), options)
         : await createPairwiseDotPlotExperiment(input(genome), input(comparison), options);
       abort(signal); return result.record;
+    },
+    comparison: async (genomeA, genomeB, options, signal) => {
+      abort(signal);
+      const { createGenomeComparisonExperiment } = await import('../../comparison/src/comparison-experiment');
+      abort(signal);
+      const { record } = await createGenomeComparisonExperiment(genomeA, genomeB, options);
+      abort(signal); return record;
     },
     digest: async (genome, options, signal) => {
       abort(signal);

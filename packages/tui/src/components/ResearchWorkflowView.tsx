@@ -9,12 +9,13 @@ import { DEFAULT_AFFINE_PENALTIES, type AlignmentGraphOptions } from '../../../c
 import type { PhylogenyOptions } from '../../../core/src/analysis/aligned-phylogeny';
 import { parseRNAInterval } from '../../../core/src/analysis/rna-structure-experiment';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters, researchPhylogenyParameters, researchRNAParameters, researchMosaicParameters,
+import { researchPangenomeParameters, researchPhylogenyParameters, researchRNAParameters, researchMosaicParameters, researchComparisonParameters,
   type ResearchView, type ResearchPangenomeParameters, type ResearchPhylogenyParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
 import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep, TerminalResearchRNASource } from '../terminal-research-session';
 import { readTerminalSize } from './terminal-size';
 import { ReferenceStepEditor } from './ReferenceStepEditor';
+import { DEFAULT_GENOME_COMPARISON_OPTIONS } from '../../../comparison/src/comparison-experiment';
 
 const editorActions = [
   { kind: 'view', id: ActionIds.NavGoto, label: 'Saved genome / CDS view' },
@@ -29,6 +30,7 @@ const editorActions = [
   { kind: 'reference-codons', id: ActionIds.OverlayCodonAdaptation, label: 'CDS statistics + captured reference CAI' },
   { kind: 'spacers', id: ActionIds.OverlayCRISPR, label: 'Sourced CRISPR spacer matches with explicit PAM and seed rules' },
   { kind: 'phylogeny', id: ActionIds.OverlayPhylodynamics, label: 'Pangenome-backed phylogeny with explicit homology provenance' },
+  { kind: 'comparison', id: ActionIds.OverlayComparison, label: 'Complete ordered genome comparison with captured annotations' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
@@ -50,6 +52,15 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
     case 'dot-plot': return [field('bins', 'Display bins (1–256)', 64), field('window', 'Comparison window (bases; must fit both inputs)', Math.min(20, source.bases))];
+    case 'comparison': {
+      const options = initial.options as Record<string, unknown> | undefined;
+      const defaults = DEFAULT_GENOME_COMPARISON_OPTIONS;
+      return [{ key: 'kmerSizes', label: 'Distinct k-mer sizes (comma-separated, 1–31)',
+        initial: Array.isArray(options?.kmerSizes) ? options.kmerSizes.join(',') : defaults.kmerSizes.join(',') },
+      { key: 'maxEditDistanceLength', label: 'Exact edit-distance limit (0–10000 bases)', initial: String(options?.maxEditDistanceLength ?? defaults.maxEditDistanceLength) },
+      { key: 'editDistanceWindowSize', label: 'Sampled edit window (1–2000 bases)', initial: String(options?.editDistanceWindowSize ?? defaults.editDistanceWindowSize) },
+      { key: 'editDistanceWindowCount', label: 'Sampled edit window count (1–100)', initial: String(options?.editDistanceWindowCount ?? defaults.editDistanceWindowCount) }];
+    }
     case 'pangenome': case 'phylogeny': case 'mosaic': case 'reference-codons': case 'spacers': return []; // Dedicated editors own these settings.
     case 'rna': {
       if (!rna) throw new Error('Choose a supported RNA source first.');
@@ -399,6 +410,13 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
     }
     else if (action.kind === 'digest') value = { contentId, ...resolveRestrictionDigestOptions({ topology: entered.topology,
       enzymes: entered.enzymes === 'none' ? [] : entered.enzymes.split(',').map(name => name.trim()) }) };
+    else if (action.kind === 'comparison') value = researchComparisonParameters(contentId,
+      comparisonIndex ? draft.sources[comparisonIndex - 1].contentId : contentId, {
+        kmerSizes: entered.kmerSizes.split(',').map(value => integer(value.trim(), 'K-mer size')),
+        maxEditDistanceLength: integer(entered.maxEditDistanceLength, 'Exact edit-distance limit'),
+        editDistanceWindowSize: integer(entered.editDistanceWindowSize, 'Sampled edit window'),
+        editDistanceWindowCount: integer(entered.editDistanceWindowCount, 'Sampled edit window count'),
+      });
     else value = { contentId, comparisonContentId: comparisonIndex ? draft.sources[comparisonIndex - 1].contentId : null,
       bins: integer(entered.bins, 'Display bins'), window: integer(entered.window, 'Comparison window') };
     onSave({ actionId: action.id, parameters: analysisJson(value) });
@@ -418,7 +436,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
   };
   const choices = stage === 'method' ? editorActions.map(item => item.label)
     : stage === 'source' ? draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession) + ' · ' + item.bases + ' bp · ' + item.topology)
-      : stage === 'comparison' ? ['Self comparison (one input)', ...draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession))]
+      : stage === 'comparison' ? [action.kind === 'comparison' ? 'Use genome A again (explicit two-input control)' : 'Self comparison (one input)',
+        ...draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession))]
         : [action.kind === 'codons' ? 'All captured CDS' : action.kind === 'rna' ? 'Forward genome coordinates (choose an interval and strand)' : 'No selected feature', ...genes.map(gene =>
           terminalGenomeLabel((gene.name || gene.locusTag || gene.type) + ' · feature ' + gene.id) + ' · ' + (gene.startPos + 1) + '–' + gene.endPos)];
   const cursor = stage === 'method' ? methodIndex : stage === 'source' ? sourceIndex : stage === 'comparison' ? comparisonIndex : geneIndex;
@@ -435,7 +454,7 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
         setError(null);
         if (stage === 'method') setStage('source');
         else if (stage === 'source') {
-          if (action.kind === 'dot-plot') setStage('comparison');
+          if (action.kind === 'dot-plot' || action.kind === 'comparison') setStage('comparison');
           else if (action.kind === 'view' || action.kind === 'codons' || action.kind === 'rna') {
             if (action.kind === 'codons' && !genes.length) throw new Error('This captured genome has no CDS annotations. Choose another source or analysis.');
             const selected = initial?.actionId === action.id && parameters.contentId === source.contentId ? parameters.geneId
@@ -474,6 +493,11 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
     {stage === 'settings' && field ? <>
       <Text bold>{action.label} settings — {settingIndex + 1}/{settings.length}</Text>
       <Text wrap="truncate-end">Captured source: {terminalGenomeLabel(source.name)} · {source.bases} bp</Text>
+      {action.kind === 'comparison' && <>
+        <Text wrap="truncate-end">Genome B: {terminalGenomeLabel((comparisonIndex ? draft.sources[comparisonIndex - 1] : source).name)}</Text>
+        <Text color={colors.textDim}>Above the exact limit, edit distance is sampled; operation counts are unavailable.</Text>
+        <Text color={colors.textDim}>Complete bases, annotations and all comparison metrics travel with the result.</Text>
+      </>}
       {action.kind === 'rna' && rnaSource && <>
         <Text>RNA source: {rnaSource.bases} bases · {geneId === null ? 'forward genome coordinates' : 'extracted CDS transcript coordinates'}</Text>
         {geneId !== null && <Text color={colors.textDim}>Joined/complement CDS and codon_start are respected. Start at transcript position 1, 4, 7, ...</Text>}
