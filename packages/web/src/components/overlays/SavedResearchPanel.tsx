@@ -83,6 +83,7 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
         if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
         return kind === 'genomes' ? 'Saved genomes parsed. Review and explicitly add them to the explorer.'
           : kind === 'workflow' ? 'Saved workflow loaded for review. No recorded commands were run.'
+          : kind === 'views' ? 'Named views loaded. Restore a view to verify its original genome and annotations.'
           : 'Saved experiment recomputed and verified by its analysis pipeline.';
       })}>Open saved snapshot</button>
       <button type="button" className="btn" disabled={locked || !selected} onClick={() => perform(async signal => {

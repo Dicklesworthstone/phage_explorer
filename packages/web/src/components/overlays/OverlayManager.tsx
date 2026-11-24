@@ -15,6 +15,7 @@ import { useOverlay, type OverlayId } from './OverlayProvider';
 import { ActionRegistryList } from '../../keyboard/actionRegistry';
 import { Overlay } from './Overlay';
 import ErrorBoundary from '../layout/ErrorBoundary';
+import type { BrowserNavigationSession } from '../../hooks/BrowserNavigationSession';
 
 let overlayTitleById: Map<string, string> | null = null;
 function getOverlayTitleMap(): Map<string, string> {
@@ -56,6 +57,7 @@ const SimulationHub = lazy(() => import('./SimulationHub').then(m => ({ default:
 const SimulationView = lazy(() => import('../SimulationView'));
 const ComparisonOverlay = lazy(() => import('./ComparisonOverlay').then(m => ({ default: m.ComparisonOverlay })));
 const GenomeImportOverlay = lazy(() => import('./GenomeImportOverlay').then(m => ({ default: m.GenomeImportOverlay })));
+const SavedViewsOverlay = lazy(() => import('./SavedViewsOverlay').then(m => ({ default: m.SavedViewsOverlay })));
 const CollaborationOverlay = lazy(() => import('./CollaborationOverlay').then(m => ({ default: m.CollaborationOverlay })));
 const ResistanceEvolutionOverlay = lazy(() => import('./ResistanceEvolutionOverlay').then(m => ({ default: m.ResistanceEvolutionOverlay })));
 
@@ -132,6 +134,7 @@ const EnvironmentalProvenanceOverlay = lazy(() => import('./EnvironmentalProvena
 const PangenomeGraphOverlay = lazy(() => import('./PangenomeGraphOverlay').then(m => ({ default: m.PangenomeGraphOverlay })));
 
 interface OverlayManagerProps {
+  navigationSession: BrowserNavigationSession;
   onSelectPhage: (index: number) => Promise<void>;
   reloadDatabase: () => Promise<void>;
   databaseFetching: boolean;
@@ -309,7 +312,7 @@ function LazyOverlayBoundary({
   );
 }
 
-export function OverlayManager({ repository, currentPhage, reloadDatabase, databaseFetching, onSelectPhage }: OverlayManagerProps): React.ReactElement | null {
+export function OverlayManager({ repository, currentPhage, reloadDatabase, databaseFetching, onSelectPhage, navigationSession }: OverlayManagerProps): React.ReactElement | null {
   const { stack } = useOverlay();
 
   const lazyOverlays = stack
@@ -317,7 +320,7 @@ export function OverlayManager({ repository, currentPhage, reloadDatabase, datab
     .map((id) => {
       return {
         id,
-        element: renderLazyOverlay(id, repository, currentPhage, onSelectPhage),
+        element: renderLazyOverlay(id, repository, currentPhage, onSelectPhage, navigationSession),
       };
     })
     .filter((entry): entry is { id: OverlayId; element: React.ReactElement } => Boolean(entry.element));
@@ -335,7 +338,7 @@ export function OverlayManager({ repository, currentPhage, reloadDatabase, datab
       <EagerOverlayBoundary id="aaKey"><AAKeyOverlay /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="aaLegend"><AALegend /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="settings"><SettingsOverlay repository={repository} reloadDatabase={reloadDatabase} databaseFetching={databaseFetching} /></EagerOverlayBoundary>
-      <EagerOverlayBoundary id="commandPalette"><CommandPalette repository={repository} onSelectPhage={onSelectPhage} /></EagerOverlayBoundary>
+      <EagerOverlayBoundary id="commandPalette"><CommandPalette repository={repository} onSelectPhage={onSelectPhage} navigationSession={navigationSession} /></EagerOverlayBoundary>
       <EagerOverlayBoundary id="tour"><FeatureTour /></EagerOverlayBoundary>
 
       {/* LAZY: Analysis overlays loaded only when open */}
@@ -354,13 +357,16 @@ function renderLazyOverlay(
   id: OverlayId,
   repository: PhageRepository | null,
   currentPhage: PhageFull | null,
-  onSelectPhage: (index: number) => Promise<void>
+  onSelectPhage: (index: number) => Promise<void>,
+  navigationSession: BrowserNavigationSession
 ): React.ReactElement | null {
   // Environmental observations belong to their supplied query, independently of
   // the selected genome. Public reference lookup is explicit inside its workspace.
   switch (id) {
     case 'genomeImport':
       return <GenomeImportOverlay repository={repository} onSelectPhage={onSelectPhage} />;
+    case 'savedViews':
+      return <SavedViewsOverlay session={navigationSession} />;
     // Simulation & comparison
     case 'simulationHub':
       return <SimulationHub />;

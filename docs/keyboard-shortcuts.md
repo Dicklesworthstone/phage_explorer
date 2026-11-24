@@ -26,11 +26,14 @@ command palette or a menu.
 
 | Shortcut | Action | Provenance | Description |
 |---|---|---|---|
+| `—` | Back through explorer history |  | Restore the previous verified genome, position, frame and selected gene |
+| `—` | Forward through explorer history |  | Restore the next verified explorer view after going back |
 | `Ctrl+g` | Go to position... |  | Jump to a specific genome coordinate |
 | `End / Shift+G` | Jump to end |  | Scroll to the end of the sequence |
 | `Home / gg` | Jump to start |  | Scroll to the beginning of the sequence |
 | `j / ↓` | Next phage |  | Move to the next phage in the list |
 | `k / ↑` | Previous phage |  | Move to the previous phage in the list |
+| `—` | Saved views and navigation history |  | Name, restore, import and export exact explorer views |
 
 ### View
 
@@ -54,7 +57,7 @@ command palette or a menu.
 | Shortcut | Action | Provenance | Description |
 |---|---|---|---|
 | `c` | Compare genomes |  | Open genome comparison overlay |
-| `Alt+m` | Mosaic radar |  | Open mosaic radar overlay |
+| `Alt+m` | Mosaic radar | heuristic | Compare aligned DNA four-gamete evidence or local k-mer reference similarity |
 | `]` | Next diff |  | Jump to the next diff segment |
 | `[` | Previous diff |  | Jump to the previous diff segment |
 | `d` | Toggle diff mode |  | Toggle diff highlighting against reference |
@@ -90,7 +93,7 @@ command palette or a menu.
 | `Alt+Shift+p` | Phase portrait |  | Open phase portrait overlay |
 | `Ctrl+Shift+y` | Phylodynamics | external → demo | Open phylodynamic trajectory overlay |
 | `p` | Promoter & RBS sites |  | Open promoter and RBS analysis |
-| `Alt+x` | Prophage excision |  | Open prophage excision overlay |
+| `Alt+x` | Prophage excision | simulated | Reconstruct supplied host/phage attachment junctions and export a verifiable experiment |
 | `Alt+d` | Protein domains |  | Open protein domain overlay |
 | `Alt+l` | Recenter PCA selection |  | Recenter PCA on current phage |
 | `r` | Repeats & palindromes |  | Open repeats and palindromes analysis |
@@ -99,7 +102,7 @@ command palette or a menu.
 | `x` | Sequence complexity |  | Open sequence complexity analysis |
 | `o` | Sequence logo |  | Open sequence logo overlay |
 | `Alt+Shift+r` | Structure constraints |  | Open structure constraints overlay |
-| `Alt+s` | Synteny analysis |  | Open synteny analysis |
+| `Alt+s` | Synteny analysis | heuristic | Compare annotation order and save or replay a complete synteny experiment |
 | `y` | Transcription flow |  | Open the transcription flow overlay |
 | `0` | Tropism atlas | heuristic | Open the tropism overlay |
 | `Alt+v` | Virion stability | input | Fit measured virion inactivation from exact plaque counts |

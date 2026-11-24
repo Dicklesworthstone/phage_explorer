@@ -8,6 +8,7 @@
 export const RESEARCH_SNAPSHOT_TYPES = {
   genomes: { title: 'local genome workspaces', format: 'phage-explorer-local-genomes', methods: [] },
   workflow: { title: 'command workflows', format: 'phage-explorer-commands', methods: [] },
+  views: { title: 'named explorer views', format: 'phage-explorer-saved-views', methods: [] },
   'codon-reference': { title: 'reference experiments', format: 'phage-explorer-analysis', methods: ['reference-codon-adaptation'] },
   pangenome: { title: 'pangenome experiments', format: 'phage-explorer-analysis', methods: ['alignment-pangenome'] },
   synteny: { title: 'synteny experiments', format: 'phage-explorer-analysis', methods: ['annotation-order-synteny'] },

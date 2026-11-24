@@ -21,6 +21,7 @@ import { useHotkeys, useKeyboardMode, usePendingSequence } from './hooks/useHotk
 import { useExperienceLevelSync, useBlockedHotkeyNotification } from './hooks/useExperienceLevelSync';
 import { useDiffReferenceSequence } from './hooks/useDiffReferenceSequence';
 import { PhageSelectionSession } from './hooks/PhageSelectionSession';
+import { BrowserNavigationSession } from './hooks/BrowserNavigationSession';
 import type { SelectedCdsSource } from '@phage-explorer/core';
 import { SelectedGeneDock } from './components/mobile/SelectedGeneDock';
 import { ActionIds, getOverlayHotkeyActions } from './keyboard/actionRegistry';
@@ -136,6 +137,8 @@ export default function App(): React.ReactElement {
     });
   }));
   const selectionSnapshot = useSyncExternalStore(selectionSession.subscribe, selectionSession.getSnapshot, selectionSession.getSnapshot);
+  const [navigationSession] = useState(() => new BrowserNavigationSession(selectionSession));
+  useEffect(() => navigationSession.connect(), [navigationSession]);
   const [localWorkspaceRequested, setLocalWorkspaceRequested] = useState(false);
   const [catalogError, setCatalogError] = useState<string | null>(null);
   const [catalogRetry, setCatalogRetry] = useState(0);
@@ -1390,7 +1393,7 @@ export default function App(): React.ReactElement {
         </>
       )}
       <TourEngine />
-      <OverlayManager repository={repository} currentPhage={currentPhage} reloadDatabase={reload} databaseFetching={isFetching} onSelectPhage={handleSelectPhage} />
+      <OverlayManager repository={repository} currentPhage={currentPhage} reloadDatabase={reload} databaseFetching={isFetching} onSelectPhage={handleSelectPhage} navigationSession={navigationSession} />
       {/* All toasts (beginner mode, fx safe mode, blocked hotkey) rendered via ToastProvider */}
       <BlockedHotkeyToast info={blockedHotkey} onDismiss={dismissBlockedHotkey} showToast={showToast} />
       <ControlDeck onPrevPhage={handlePrevPhage} onNextPhage={handleNextPhage} />

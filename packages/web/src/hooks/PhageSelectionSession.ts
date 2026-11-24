@@ -12,6 +12,11 @@ export interface PhageSelectionSnapshot {
   pendingIndex: number | null;
   error: { index: number; message: string } | null;
 }
+export interface PhageSelectionOptions {
+  signal?: AbortSignal;
+  /** Verify a complete owned candidate before it can replace the visible selection. */
+  verify?: (selection: PhageSelection) => Promise<void>;
+}
 interface Operation {
   repository: PhageRepository;
   index: number;
@@ -73,12 +78,14 @@ export class PhageSelectionSession {
     return this.operation === operation && this.snapshot.repository === operation.repository && !operation.controller.signal.aborted;
   }
 
-  select = async (index: number, expectedPhageId?: number): Promise<boolean> => {
+  select = async (index: number, expectedPhageId?: number, options: PhageSelectionOptions = {}): Promise<boolean> => {
     const repository = this.snapshot.repository;
-    if (!repository || !Number.isSafeInteger(index) || index < 0) return false;
+    if (!repository || !Number.isSafeInteger(index) || index < 0 || options.signal?.aborted) return false;
     this.stop();
     const operation: Operation = { repository, index, controller: new AbortController() };
     this.operation = operation;
+    const abort = () => { if (this.operation === operation) this.cancel(); };
+    options.signal?.addEventListener('abort', abort, { once: true });
     this.publish({ ...this.snapshot, pendingIndex: index, error: null });
     const signal = operation.controller.signal;
     try {
@@ -105,8 +112,10 @@ export class PhageSelectionSession {
       if (typeof sequence !== 'string' || sequence.length !== length || !/^[ACGTRYSWKMBDHVN]+$/i.test(sequence)) {
         throw new Error('The complete genome sequence could not be read. Retry when its data are available.');
       }
-      this.operation = null;
       const selection = { index, phage, sequence };
+      if (options.verify) await wait(options.verify(selection), signal);
+      if (!this.owns(operation)) return false;
+      this.operation = null;
       this.publish({ repository, selection, pendingIndex: null, error: null });
       // Neighbor loading is optional; an offline neighbor must never invalidate
       // the selected genome or create an unhandled rejection.
@@ -120,6 +129,6 @@ export class PhageSelectionSession {
       this.publish({ ...this.snapshot, pendingIndex: null,
         error: { index, message: cause instanceof Error ? cause.message : 'Could not load this genome. Retry the selection.' } });
       return false;
-    }
+    } finally { options.signal?.removeEventListener('abort', abort); }
   };
 }

@@ -15,6 +15,7 @@ import * as Comlink from 'comlink';
 import { useTheme } from '../../hooks/useTheme';
 import { useFileSystem } from '../../hooks/useFileSystem';
 import type { PhageRepository } from '../../db';
+import type { BrowserNavigationSession } from '../../hooks/BrowserNavigationSession';
 import {
   ActionIds,
   ActionRegistryList,
@@ -247,6 +248,7 @@ function matchesContext(cmd: Command, ctx: AppContext): boolean {
 }
 
 interface CommandPaletteProps {
+  navigationSession?: BrowserNavigationSession;
   repository: PhageRepository | null;
   onSelectPhage: (index: number) => Promise<void>;
   commands?: Command[];
@@ -254,7 +256,7 @@ interface CommandPaletteProps {
   context?: Partial<AppContext>;
 }
 
-export function CommandPalette({ repository, onSelectPhage, commands: customCommands, context: propContext }: CommandPaletteProps): React.ReactElement | null {
+export function CommandPalette({ repository, onSelectPhage, navigationSession, commands: customCommands, context: propContext }: CommandPaletteProps): React.ReactElement | null {
   const { theme, setTheme, availableThemes } = useTheme();
   const colors = theme.colors;
   const { isOpen, toggle, open, close, isMobile } = useOverlay();
@@ -389,6 +391,12 @@ export function CommandPalette({ repository, onSelectPhage, commands: customComm
 
   // Implementations for non-overlay actions
   const commandImpls = useMemo<Record<string, () => void>>(() => ({
+    [ActionIds.NavBack]: () => { void navigationSession?.moveHistory(-1).then(ok => {
+      if (!ok) showToast({ variant: 'error', message: navigationSession.getSnapshot().error ?? 'Previous view restoration was cancelled.' });
+    }); },
+    [ActionIds.NavForward]: () => { void navigationSession?.moveHistory(1).then(ok => {
+      if (!ok) showToast({ variant: 'error', message: navigationSession.getSnapshot().error ?? 'Next view restoration was cancelled.' });
+    }); },
     [ActionIds.NavNextPhage]: () => {
       if (phageSummaries.length > 0) {
         const nextIndex = (currentPhageIndex + 1) % phageSummaries.length;
@@ -509,7 +517,7 @@ export function CommandPalette({ repository, onSelectPhage, commands: customComm
       open('tour');
     },
   }), [
-    availableThemes, beginnerModeEnabled, currentPhage, currentPhageIndex,
+    availableThemes, beginnerModeEnabled, currentPhage, currentPhageIndex, navigationSession,
     open, openGlossary, phageSummaries, readingFrame, setBeginnerModeEnabled, onSelectPhage,
     setReadingFrame, setScrollPosition, setTheme, showToast, startTour, theme.id,
     toggle3DModel, toggleBeginnerMode, toggleSequenceViewMode, readSelectedSequence

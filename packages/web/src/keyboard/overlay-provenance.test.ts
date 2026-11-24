@@ -33,6 +33,7 @@ const CHROME_OVERLAYS = new Set([
   'help',
   'search',
   'goto',
+  'savedViews',
   'settings',
   'commandPalette',
   'analysisMenu',

@@ -7,20 +7,24 @@ import type { PhageFull, PhageSummary } from '../../core/src/types';
 import type { PhageRepository } from '../../db-runtime/src/types';
 import { analysisJson } from '../../core/src/analysis-result';
 import { CommandSession, commandValuesEqual } from '../../core/src/command-session';
-import { GENOME_IMPORT_LIMITS } from '../../core/src/genome-import';
+import {
+  SAVED_VIEW_LIMITS as TERMINAL_VIEW_LIMITS,
+  parseSavedViews as parseTerminalViews, serializeSavedViews as serializeTerminalViews,
+  validateNamedSavedView as validateEntry, validateSavedViewName as title,
+  savedViewIdentity, savedViewSource,
+  type SavedViewSource as TerminalViewSource, type SavedView as TerminalView, type NamedSavedView as NamedTerminalView,
+} from '../../core/src/saved-views';
+export {
+  SAVED_VIEW_LIMITS as TERMINAL_VIEW_LIMITS,
+  parseSavedViews as parseTerminalViews, serializeSavedViews as serializeTerminalViews,
+  type SavedViewSource as TerminalViewSource, type SavedView as TerminalView,
+  type NamedSavedView as NamedTerminalView, type SavedViewCollection as TerminalViewCollection,
+} from '../../core/src/saved-views';
 import { ActionIds } from '../../web/src/keyboard/actionRegistry';
 import { validateResearchView, type ResearchView } from '../../web/src/keyboard/ResearchWorkflow';
 import { readInput, writeNewOutput } from '../../../scripts/research-workflow';
 import { terminalGenomeLabel, terminalGenomePath } from './local-genome-session';
 
-export const TERMINAL_VIEW_LIMITS = { history: 64, saved: 64, bytes: 1024 * 1024, timeoutMs: 15000, scrollBurstMs: 300 } as const;
-export interface TerminalViewSource {
-  kind: 'catalog' | 'local'; contentId: string; name: string; accession: string; slug: string | null;
-  bases: number; sequenceSha256: string; fingerprint: string;
-}
-export interface TerminalView { source: TerminalViewSource; view: ResearchView }
-export interface NamedTerminalView extends TerminalView { name: string }
-export interface TerminalViewCollection { format: 'phage-explorer-saved-views'; version: 1; views: NamedTerminalView[] }
 export interface TerminalNavigationSource {
   repository: PhageRepository; phages: PhageSummary[]; index: number; phage: PhageFull; sequence: string;
 }
@@ -38,16 +42,6 @@ export interface TerminalNavigationRuntime {
   read?: typeof readInput; write?: typeof writeNewOutput; now?: () => number; timeoutMs?: number;
 }
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-const digest = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
-function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value); }
-function keys(value: Record<string, unknown>, expected: string[]): void {
-  if (Object.keys(value).sort().join('|') !== expected.sort().join('|')) throw new Error('Unsupported saved-view fields.');
-}
-function title(value: unknown): asserts value is string {
-  if (typeof value !== 'string' || !value.trim() || value.length > 120 || /[\u0000-\u001f\u007f-\u009f]/.test(value)) {
-    throw new Error('Name a view with 1–120 printable characters.');
-  }
-}
 function check(signal: AbortSignal): void {
   if (signal.aborted) throw new DOMException('Saved-view operation cancelled.', 'AbortError');
 }
@@ -64,58 +58,9 @@ function cancellable<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
  * A catalog rebuild may renumber genomes, but changed bases/features must reject.
  */
 export function terminalViewSource(phage: PhageFull, sequence: string): TerminalViewSource {
-  if (!sequence.length || sequence.length > GENOME_IMPORT_LIMITS.bases || sequence.length !== phage.genomeLength
-    || !Array.isArray(phage.genes) || phage.genes.length > GENOME_IMPORT_LIMITS.features) {
-    throw new Error('Navigation requires a complete genome of at most 5,000,000 bases and 50,000 features.');
-  }
-  const kind = phage.localGenome ? 'local' : 'catalog', sequenceSha256 = hash(sequence);
-  if (phage.localGenome && (!digest(phage.localGenome.contentId) || sequenceSha256 !== phage.localGenome.sequenceSha256)) {
-    throw new Error('The local genome bases no longer match the accepted input. Reimport the original file or bundle.');
-  }
-  const content = JSON.stringify(analysisJson({ kind, localContentId: phage.localGenome?.contentId ?? null,
-    name: phage.name, accession: phage.accession, slug: phage.slug, bases: sequence.length,
-    sequenceSha256, genes: phage.genes }));
-  if (new TextEncoder().encode(content).length > GENOME_IMPORT_LIMITS.bytes) throw new Error('Genome annotations exceed the saved-view identity limit.');
-  const fingerprint = hash(content);
-  return { kind, contentId: phage.localGenome?.contentId ?? fingerprint, name: phage.name, accession: phage.accession,
-    slug: phage.slug, bases: sequence.length, sequenceSha256, fingerprint };
-}
-function validateEntry(value: unknown): asserts value is NamedTerminalView {
-  if (!object(value)) throw new Error('Invalid saved view.');
-  keys(value, ['name', 'source', 'view']); title(value.name);
-  const source = value.source;
-  if (!object(source)) throw new Error('Saved view has no source identity.');
-  keys(source, ['kind', 'contentId', 'name', 'accession', 'slug', 'bases', 'sequenceSha256', 'fingerprint']);
-  if (!['catalog', 'local'].includes(source.kind as string) || !digest(source.contentId) || !digest(source.sequenceSha256)
-    || !digest(source.fingerprint) || source.kind === 'catalog' && source.contentId !== source.fingerprint
-    || ['name', 'accession'].some(key => typeof source[key] !== 'string' || !(source[key] as string).length || (source[key] as string).length > 2000)
-    || !(source.slug === null || typeof source.slug === 'string' && source.slug.length <= 2000)
-    || !Number.isSafeInteger(source.bases) || Number(source.bases) < 1 || Number(source.bases) > GENOME_IMPORT_LIMITS.bases) {
-    throw new Error('Invalid saved-view source identity.');
-  }
-  const view = analysisJson(value.view);
-  validateResearchView(view);
-  // The shared validator also serves old command transports. This file schema is strict.
-  if (!object(view) || typeof view.viewMode !== 'string' || view.contentId !== source.contentId
-    || view.scrollPosition >= (view.viewMode === 'aa' ? Math.ceil(Number(source.bases) / 3) : Number(source.bases))) {
-    throw new Error('Saved view lies outside its exact genome or residue coordinates.');
-  }
-}
-export function parseTerminalViews(content: string): TerminalViewCollection {
-  if (typeof content !== 'string' || content.length > TERMINAL_VIEW_LIMITS.bytes
-    || new TextEncoder().encode(content).length > TERMINAL_VIEW_LIMITS.bytes) throw new Error('Saved views exceed the 1 MiB limit.');
-  const value: unknown = JSON.parse(content);
-  if (!object(value)) throw new Error('Invalid saved-view collection.');
-  keys(value, ['format', 'version', 'views']);
-  if (value.format !== 'phage-explorer-saved-views' || value.version !== 1 || !Array.isArray(value.views)
-    || value.views.length > TERMINAL_VIEW_LIMITS.saved) throw new Error('Expected a version 1 collection of at most 64 saved views.');
-  value.views.forEach(validateEntry);
-  if (new Set(value.views.map(view => view.name)).size !== value.views.length) throw new Error('Saved-view names must be distinct.');
-  return value as unknown as TerminalViewCollection;
-}
-export function serializeTerminalViews(views: readonly NamedTerminalView[]): string {
-  const content = JSON.stringify({ format: 'phage-explorer-saved-views', version: 1, views });
-  parseTerminalViews(content); return content;
+  const sequenceSha256 = hash(sequence);
+  const fingerprint = hash(savedViewIdentity(phage, sequence.length, sequenceSha256));
+  return savedViewSource(phage, sequence.length, sequenceSha256, fingerprint);
 }
 function samePosition(a: PhageExplorerState, b: PhageExplorerState): boolean {
   return a.phages === b.phages && a.currentPhageIndex === b.currentPhageIndex && a.currentPhage === b.currentPhage

@@ -69,6 +69,7 @@ export type OverlayId =
   | 'goto'
   | 'settings'
   | 'genomeImport'
+  | 'savedViews'
   | 'aaKey'
   | 'aaLegend'
   | 'comparison'

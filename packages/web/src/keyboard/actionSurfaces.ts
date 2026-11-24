@@ -274,6 +274,7 @@ export const ACTION_DRAWER_SECTIONS: ActionDrawerSectionConfig[] = [
     id: 'tools',
     label: 'Tools',
     items: [
+      { actionId: ActionIds.NavSavedViews },
       { actionId: ActionIds.OverlaySearch },
       { actionId: ActionIds.OverlayCommandPalette },
       { actionId: ActionIds.OverlaySettings },
