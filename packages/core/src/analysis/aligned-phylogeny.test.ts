@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisField } from '../analysis-result';
 import { parseAlignedDNA, neighborJoining, inferAlignedPhylogeny, resolvePhylogenyOptions,
   createAlignedPhylogenyExperiment, replayAlignedPhylogenyExperiment, PHYLOGENY_LIMITS,
-  type NeighborJoiningTree, type PhylogenySource } from './aligned-phylogeny';
+  type NeighborJoiningTree, type PhylogenyOptions, type PhylogenySource } from './aligned-phylogeny';
 const fasta = (records: Record<string, string>): string => Object.entries(records).map(([id, sequence]) => `>${id}\n${sequence}`).join('\n');
 const alignment = fasta({ A: 'A'.repeat(80), B: 'A'.repeat(80), C: 'C'.repeat(40) + 'A'.repeat(40), D: 'C'.repeat(40) + 'A'.repeat(40) });
 const source: PhylogenySource = { name: 'Synthetic quartet', fasta: alignment, kind: 'demo', reference: 'Hand-constructed independent quartet fixture, not collected phage sequences.' };
@@ -50,8 +50,149 @@ describe('aligned DNA import and independent counts', () => {
     assert.throws(() => parseAlignedDNA('x'.repeat(PHYLOGENY_LIMITS.bytes + 1)), /limit/);
     assert.throws(() => parseAlignedDNA(Array.from({ length: 65 }, (_, i) => `>t${i}\nA`).join('\n')), /taxa/);
     assert.throws(() => parseAlignedDNA(`>A\n${'A'.repeat(100001)}`), /sites/);
-    const costly = fasta(Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`t${i}`, 'A'.repeat(20000)])));
+    // Each column has a distinct binary taxon pattern, so exact compression
+    // cannot remove any pairwise work. Constant columns are no longer costly.
+    const costly = fasta(Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`t${i}`,
+      Array.from({ length: 20000 }, (_, column) => (column >>> (i % 15)) & 1 ? 'G' : 'A').join('')])));
     assert.throws(() => inferAlignedPhylogeny(costly, { bootstrap: 200 }), /budget/);
+  });
+});
+
+/** Scalar reference: scan actual original/resampled columns, without grouping
+ * them or maintaining pattern weights. NJ itself has independent tree oracles
+ * above; edge removal below finds unrooted splits without a serialization root.
+ */
+function originalColumnOracle(records: Record<string, string>, options: PhylogenyOptions) {
+  const ids = Object.keys(records).sort(), length = records[ids[0]].length;
+  const retained = Array.from({ length }, (_, column) => column)
+    .filter(column => ids.every(id => /^[ACGT]$/.test(records[id][column])));
+  const changes = new Set(['AG', 'GA', 'CT', 'TC']);
+  const distancesFor = (columns: number[]): number[][] | null => {
+    const matrix = ids.map(() => ids.map(() => 0));
+    for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
+      let transition = 0, transversion = 0;
+      for (const column of columns) {
+        const left = records[ids[a]][column], right = records[ids[b]][column];
+        if (left === right) continue;
+        if (changes.has(left + right)) transition++; else transversion++;
+      }
+      const p = (transition + transversion) / columns.length;
+      if (options.distance === 'jc69' && p >= 0.75 || options.distance === 'k80'
+        && (2 * transition + transversion >= columns.length || 2 * transversion >= columns.length)) return null;
+      const distance = options.distance === 'p-distance' ? p : options.distance === 'jc69' ? -0.75 * Math.log1p(-4 * p / 3)
+        : -0.5 * Math.log1p(-(2 * transition + transversion) / columns.length) - 0.25 * Math.log1p(-2 * transversion / columns.length);
+      matrix[a][b] = matrix[b][a] = distance;
+    }
+    return matrix;
+  };
+  const splitKeys = (tree: NeighborJoiningTree, matrix: number[][]): Set<string> => {
+    const keys = new Set<string>(), epsilon = Number.EPSILON * 256 * Math.max(...matrix.flat());
+    for (const cut of tree.edges) {
+      if (cut.length <= epsilon) continue;
+      const seen = new Set<number>([cut.a]), todo = [cut.a];
+      while (todo.length) {
+        const node = todo.pop()!;
+        for (const edge of tree.edges) {
+          if (edge === cut) continue;
+          const next = edge.a === node ? edge.b : edge.b === node ? edge.a : -1;
+          if (next >= 0 && !seen.has(next)) { seen.add(next); todo.push(next); }
+        }
+      }
+      const side = tree.nodes.filter(node => seen.has(node.id) && node.label !== null).map(node => node.label!).sort();
+      const other = ids.filter(id => !side.includes(id));
+      if (side.length < 2 || other.length < 2) continue;
+      keys.add(JSON.stringify(side.length < other.length || side.length === other.length
+        && JSON.stringify(side) < JSON.stringify(other) ? side : other));
+    }
+    return keys;
+  };
+  const distances = distancesFor(retained)!;
+  const tree = neighborJoining(ids, distances), counts = new Map([...splitKeys(tree, distances)].map(key => [key, 0]));
+  let saturated = 0;
+  for (let replicate = 0; replicate < options.bootstrap; replicate++) {
+    // Address Mulberry32 by absolute draw number, independently of the
+    // production stateful PRNG and without a pattern-based sampling population.
+    const columns = retained.map((_, draw) => {
+      const state = (options.seed + Math.imul(replicate * retained.length + draw + 1, 0x6d2b79f5)) >>> 0;
+      const mixed = Math.imul(state ^ state >>> 15, 1 | state);
+      const value = mixed ^ mixed + Math.imul(mixed ^ mixed >>> 7, 61 | mixed);
+      const uniform = ((value ^ value >>> 14) >>> 0) / 4294967296;
+      return retained[Math.floor(uniform * retained.length)];
+    });
+    const matrix = distancesFor(columns);
+    if (matrix === null) { saturated++; continue; }
+    for (const key of splitKeys(neighborJoining(ids, matrix), matrix)) {
+      if (counts.has(key)) counts.set(key, counts.get(key)! + 1);
+    }
+  }
+  return { distances, tree, counts, saturated, usedSites: retained.length };
+}
+
+describe('exact pattern compression and whole-genome bootstrap capacity', () => {
+  // Unequal multiplicities and conflicting rare site patterns make bootstrap
+  // support sensitive to drawing columns instead of uniformly drawing patterns.
+  const columns = ['AAAAAA', 'CCCCCC', 'GGGGGG', 'TTTTTT', 'AAGGGG', 'AGAGAG', 'AACCAA', 'CCTTTC', 'ANAAAA', 'CC-CCC', 'GGGG?G'];
+  const copies = [19, 7, 11, 23, 2, 1, 3, 2, 4, 2, 3];
+  const records = Object.fromEntries(['A', 'B', 'C', 'D', 'E', 'F'].map((id, row) =>
+    [id, columns.map((pattern, i) => pattern[row].repeat(copies[i])).join('')]));
+  for (const distance of ['p-distance', 'jc69', 'k80'] as const) for (const seed of [0, 1, 0xffffffff]) {
+    test(`${distance}, seed ${seed}: agrees with literal original-column resampling`, () => {
+      const options: PhylogenyOptions = { distance, deletion: 'complete', bootstrap: 40, seed };
+      const oracle = originalColumnOracle(records, options), result = inferAlignedPhylogeny(fasta(records), options);
+      assert.deepEqual(result.distances, oracle.distances); assert.deepEqual(result.tree, oracle.tree);
+      assert.equal(result.usedSites, 68); assert.equal(result.variableSites, 8);
+      assert.deepEqual(result.excludedColumns, Array.from({ length: 9 }, (_, i) => 68 + i));
+      assert.equal(result.bootstrap.saturated, oracle.saturated); assert.equal(oracle.saturated, 0);
+      assert.equal(result.splits.length, oracle.counts.size);
+      for (const split of result.splits) {
+        const count = oracle.counts.get(JSON.stringify(split.side))!;
+        assert.equal(split.bootstrapCount, count); assert.equal(split.support, count / options.bootstrap);
+      }
+      assert.ok(result.splits.some(split => split.support! > 0 && split.support! < 1));
+      assert.deepEqual(inferAlignedPhylogeny(fasta(Object.fromEntries(Object.entries(records).reverse())), options), result);
+    });
+  }
+  for (const distance of ['jc69', 'k80'] as const) {
+    test(`${distance}: preserves the exact saturated replicate count`, () => {
+      const input = { A: 'AAAA', B: 'AAAA', C: 'GAAA', D: 'GAAA' };
+      const options: PhylogenyOptions = { distance, deletion: 'complete', bootstrap: 200, seed: 0 };
+      const expected = originalColumnOracle(input, options), result = inferAlignedPhylogeny(fasta(input), options);
+      assert.equal(result.bootstrap.saturated, expected.saturated); assert.ok(expected.saturated > 0);
+      assert.equal(result.bootstrap.completed, 200 - expected.saturated);
+      assert.equal(result.bootstrap.supportAvailable, false);
+      assert.ok(result.splits.every(split => split.support === null && split.bootstrapCount === null));
+    });
+  }
+  test('admits the previously rejected constant panel without fabricating support', () => {
+    const input = fasta(Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`t${i}`, 'A'.repeat(20000)])));
+    const result = inferAlignedPhylogeny(input, { bootstrap: 200, seed: 0 });
+    assert.equal(result.usedSites, 20000); assert.equal(result.variableSites, 0);
+    assert.equal(result.bootstrap.completed, 200); assert.deepEqual(result.splits, []);
+    assert.ok(result.distances.every(row => row.every(value => value === 0)));
+  });
+  test('runs 100 site bootstraps over a full 24-taxon, 80000-column cohort', () => {
+    // Synthetic dimension/correctness fixture, not a biological validation set.
+    // Four six-taxon groups have disjoint 120-base shared changes and each tip
+    // has 30 disjoint private changes. Pair counts follow directly from this.
+    const background = 'ACGT'.repeat(20000);
+    const sequences = Object.fromEntries(Array.from({ length: 24 }, (_, taxon) => {
+      const sequence = background.split(''), groupStart = Math.floor(taxon / 6) * 120;
+      for (let p = groupStart; p < groupStart + 120; p++) sequence[p] = sequence[p] === 'A' ? 'G' : sequence[p] === 'G' ? 'A' : sequence[p] === 'C' ? 'T' : 'C';
+      for (let p = 1000 + taxon * 30; p < 1000 + (taxon + 1) * 30; p++) sequence[p] = sequence[p] === 'A' ? 'G' : sequence[p] === 'G' ? 'A' : sequence[p] === 'C' ? 'T' : 'C';
+      return [`t${taxon.toString().padStart(2, '0')}`, sequence.join('')];
+    }));
+    const result = inferAlignedPhylogeny(fasta(sequences), { bootstrap: 100, seed: 0 });
+    assert.equal(result.usedSites, 80000); assert.equal(result.variableSites, 1200);
+    assert.equal(result.taxa.length, 24); assert.deepEqual(result.excludedColumns, []);
+    assert.deepEqual(result.bootstrap, { requested: 100, completed: 100, saturated: 0, supportAvailable: true });
+    for (let a = 0; a < 24; a++) for (let b = a + 1; b < 24; b++) {
+      assert.equal(result.distances[a][b], (Math.floor(a / 6) === Math.floor(b / 6) ? 60 : 300) / 80000);
+    }
+    for (let group = 0; group < 4; group++) {
+      const members = Array.from({ length: 6 }, (_, i) => `t${(group * 6 + i).toString().padStart(2, '0')}`);
+      const split = result.splits.find(item => JSON.stringify(item.side) === JSON.stringify(members));
+      assert.ok(split); assert.equal(split.bootstrapCount, 100);
+    }
   });
 });
 

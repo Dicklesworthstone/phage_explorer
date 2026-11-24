@@ -170,15 +170,52 @@ function randomFor(seed: number): () => number {
     value ^= value + Math.imul(value ^ value >>> 7, 61 | value); return ((value ^ value >>> 14) >>> 0) / 4294967296; };
 }
 class SaturatedDistance extends Error {}
-function distanceMatrix(taxa: AlignedTaxon[], sites: number[], options: PhylogenyOptions, weights?: Uint32Array,
+interface AlignmentPatterns {
+  patterns: string[];
+  multiplicities: Uint32Array;
+  /** Retained columns in their original order, including every repeated site. */
+  siteToPattern: Uint32Array;
+  excludedColumns: number[];
+  variableSites: number;
+}
+/** Exact column equivalence, not a sketch or a subsample of variable sites. */
+function compressAlignment(taxa: AlignedTaxon[], signal?: AbortSignal): AlignmentPatterns {
+  const length = taxa[0].sequence.length;
+  const patterns: string[] = [], counts: number[] = [], excludedColumns: number[] = [];
+  const patternIds = new Map<string, number>(), siteToPattern = new Uint32Array(length);
+  let retained = 0, variableSites = 0;
+  for (let column = 0; column < length; column++) {
+    if (column % 1024 === 0) abort(signal);
+    let pattern = '', variable = false;
+    const first = taxa[0].sequence[column];
+    for (const taxon of taxa) {
+      const base = taxon.sequence[column];
+      if (!'ACGT'.includes(base)) break;
+      pattern += base;
+      if (base !== first) variable = true;
+    }
+    if (pattern.length !== taxa.length) { excludedColumns.push(column); continue; }
+    if (variable) variableSites++;
+    let id = patternIds.get(pattern);
+    if (id === undefined) {
+      id = patterns.length;
+      patternIds.set(pattern, id); patterns.push(pattern); counts.push(0);
+    }
+    counts[id]++;
+    siteToPattern[retained++] = id;
+  }
+  return { patterns, multiplicities: Uint32Array.from(counts), siteToPattern: siteToPattern.subarray(0, retained),
+    excludedColumns, variableSites };
+}
+function distanceMatrix(taxa: AlignedTaxon[], patterns: string[], sites: number, options: PhylogenyOptions, weights: Uint32Array,
   k80Comparisons?: K80PairComparison[]): number[][] {
   const matrix = taxa.map(() => taxa.map(() => 0));
   for (let a = 0; a < taxa.length; a++) for (let b = a + 1; b < taxa.length; b++) {
     let differences = 0, transitions = 0;
-    for (let i = 0; i < sites.length; i++) {
-      const left = taxa[a].sequence[sites[i]], right = taxa[b].sequence[sites[i]];
+    for (let i = 0; i < patterns.length; i++) {
+      const left = patterns[i][a], right = patterns[i][b];
       if (left === right) continue;
-      const count = weights ? weights[i] : 1;
+      const count = weights[i];
       differences += count;
       // A/G are purines and C/T are pyrimidines. Only retained A/C/G/T columns reach this loop.
       if (options.distance === 'k80' && (left === 'A' || left === 'G') === (right === 'A' || right === 'G')) transitions += count;
@@ -186,16 +223,16 @@ function distanceMatrix(taxa: AlignedTaxon[], sites: number[], options: Phylogen
     if (options.distance === 'k80') {
       const transversions = differences - transitions;
       // Integer comparisons preserve both exact saturation boundaries before division.
-      if (2 * transitions + transversions >= sites.length || 2 * transversions >= sites.length) {
-        throw new SaturatedDistance(`K80 is undefined when 2P + Q >= 1 or 2Q >= 1 (${taxa[a].id}, ${taxa[b].id}; ${transitions} transitions, ${transversions} transversions, ${sites.length} sites). No finite branch estimate is available.`);
+      if (2 * transitions + transversions >= sites || 2 * transversions >= sites) {
+        throw new SaturatedDistance(`K80 is undefined when 2P + Q >= 1 or 2Q >= 1 (${taxa[a].id}, ${taxa[b].id}; ${transitions} transitions, ${transversions} transversions, ${sites} sites). No finite branch estimate is available.`);
       }
       // Kimura Eq. 10: P is the transition fraction, Q the transversion fraction.
-      matrix[a][b] = matrix[b][a] = -0.5 * Math.log1p(-(2 * transitions + transversions) / sites.length)
-        - 0.25 * Math.log1p(-2 * transversions / sites.length);
-      k80Comparisons?.push({ taxonA: taxa[a].id, taxonB: taxa[b].id, comparedSites: sites.length, transitions, transversions });
+      matrix[a][b] = matrix[b][a] = -0.5 * Math.log1p(-(2 * transitions + transversions) / sites)
+        - 0.25 * Math.log1p(-2 * transversions / sites);
+      k80Comparisons?.push({ taxonA: taxa[a].id, taxonB: taxa[b].id, comparedSites: sites, transitions, transversions });
       continue;
     }
-    const p = differences / sites.length;
+    const p = differences / sites;
     if (options.distance === 'jc69' && p >= 0.75) throw new SaturatedDistance(`JC69 is undefined at divergence >= 0.75 (${taxa[a].id}, ${taxa[b].id}). No finite branch estimate is available.`);
     matrix[a][b] = matrix[b][a] = options.distance === 'jc69' ? -0.75 * Math.log1p(-4 * p / 3) : p;
   }
@@ -215,27 +252,30 @@ function treeResidual(tree: NeighborJoiningTree, distances: number[][]): number 
 export function inferAlignedPhylogeny(fasta: string, supplied: Partial<PhylogenyOptions> = {}, signal?: AbortSignal): AlignedPhylogenyResult {
   abort(signal);
   const taxa = parseAlignedDNA(fasta), options = resolvePhylogenyOptions(supplied), length = taxa[0].sequence.length;
-  const sites: number[] = [], excludedColumns: number[] = []; let variableSites = 0;
-  for (let column = 0; column < length; column++) {
-    if (taxa.some(taxon => !'ACGT'.includes(taxon.sequence[column]))) { excludedColumns.push(column); continue; }
-    sites.push(column);
-    if (taxa.some(taxon => taxon.sequence[column] !== taxa[0].sequence[column])) variableSites++;
-  }
-  if (!sites.length) throw new Error('No complete A/C/G/T alignment columns remain. Missing or ambiguous bases are not matches.');
+  const { patterns, multiplicities, siteToPattern, excludedColumns, variableSites } = compressAlignment(taxa, signal);
+  const usedSites = siteToPattern.length;
+  if (!usedSites) throw new Error('No complete A/C/G/T alignment columns remain. Missing or ambiguous bases are not matches.');
   const pairs = taxa.length * (taxa.length - 1) / 2;
-  const work = (options.bootstrap + 1) * (sites.length * pairs + taxa.length ** 3);
+  // Charge column construction/hash lookup, all original-site bootstrap draws,
+  // weight clearing, every pair/pattern evaluation and every NJ reduction.
+  // The work cap is unchanged; only identical site evaluations are shared.
+  const work = 2 * length * taxa.length
+    + options.bootstrap * (usedSites + patterns.length)
+    + (options.bootstrap + 1) * (patterns.length * pairs + taxa.length ** 3);
   if (work > PHYLOGENY_LIMITS.work) throw new Error('Requested alignment/bootstrap exceeds the computation budget; reduce taxa, sites or bootstrap count explicitly.');
   const k80Comparisons = options.distance === 'k80' ? [] as K80PairComparison[] : undefined;
-  const ids = taxa.map(taxon => taxon.id), distances = distanceMatrix(taxa, sites, options, undefined, k80Comparisons), tree = neighborJoining(ids, distances);
+  const ids = taxa.map(taxon => taxon.id), distances = distanceMatrix(taxa, patterns, usedSites, options, multiplicities, k80Comparisons), tree = neighborJoining(ids, distances);
   const epsilonFor = (matrix: number[][]) => Number.EPSILON * 256 * Math.max(...matrix.flat());
   const epsilon = epsilonFor(distances), splits = treeSplits(tree, epsilon), counts = new Map(splits.map(split => [JSON.stringify(split.side), 0]));
-  const random = randomFor(options.seed); let completed = 0, saturated = 0;
+  const random = randomFor(options.seed), weights = new Uint32Array(patterns.length); let completed = 0, saturated = 0;
   for (let replicate = 0; replicate < options.bootstrap; replicate++) {
     abort(signal);
-    const weights = new Uint32Array(sites.length);
-    for (let draw = 0; draw < sites.length; draw++) weights[Math.floor(random() * sites.length)]++;
+    weights.fill(0);
+    // Draw from the original retained columns, NOT uniformly from patterns.
+    // This preserves the exact seed stream and each old bootstrap replicate.
+    for (let draw = 0; draw < usedSites; draw++) weights[siteToPattern[Math.floor(random() * usedSites)]]++;
     try {
-      const bootDistances = distanceMatrix(taxa, sites, options, weights);
+      const bootDistances = distanceMatrix(taxa, patterns, usedSites, options, weights);
       const found = treeSplits(neighborJoining(ids, bootDistances), epsilonFor(bootDistances));
       for (const split of found) { const key = JSON.stringify(split.side); if (counts.has(key)) counts.set(key, counts.get(key)! + 1); }
       completed++;
@@ -261,7 +301,7 @@ export function inferAlignedPhylogeny(fasta: string, supplied: Partial<Phylogeny
   if (negativeEdges) warnings.push('Negative NJ branch lengths are preserved and reported, not clipped. This tree is not suitable for tools requiring nonnegative branch lengths.');
   if (saturated) warnings.push(`${saturated} bootstrap samples had saturated ${options.distance === 'k80' ? 'K80' : 'JC69'} distances. All split supports are withheld rather than conditioning on successful samples.`);
   abort(signal);
-  return { taxa: ids, alignmentSites: length, usedSites: sites.length, excludedColumns, variableSites, distances, tree, splits, newick: newickFor(tree),
+  return { taxa: ids, alignmentSites: length, usedSites, excludedColumns, variableSites, distances, tree, splits, newick: newickFor(tree),
     bootstrap: { requested: options.bootstrap, completed, saturated, supportAvailable }, negativeEdges, zeroEdges, distanceResidualRMSE: treeResidual(tree, distances), warnings,
     ...(k80Comparisons ? { k80Comparisons } : {}) };
 }

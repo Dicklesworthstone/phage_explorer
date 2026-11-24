@@ -6,6 +6,17 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Whole-genome aligned phylogeny bootstraps
+
+- Identical complete-deletion alignment columns now share exact site-pattern counts,
+  enabling larger repeated-pattern panels under the unchanged computation budget.
+  Original-column resampling preserves seeded p-distance, JC69 and K80 bootstrap
+  results, saturation handling and existing portable result identities.
+- The focused regression suite includes a complete 24-taxon, 80,000-column panel
+  with 100 bootstraps and scalar original-column oracles. Work accounting includes
+  preprocessing and every sampling draw; uncompressible inputs still fail explicitly.
+  [Method and bounds](docs/ALIGNED_PHYLOGENY_WORKFLOW.md).
+
 ### Sequence-grounded lysogeny evidence and replay
 
 - Browser and terminal lysogeny simulations now load the complete selected genome

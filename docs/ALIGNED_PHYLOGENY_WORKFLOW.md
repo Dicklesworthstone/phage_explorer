@@ -20,7 +20,15 @@ Choose p-distance, JC69 or K80, 0 or 20–200 bootstrap replicates, and an unsig
 32-bit seed (including zero). Common complete deletion excludes any column with
 a gap, missing or ambiguous base in any taxon from every pair. Work is bounded
 by the core method's declared operation budget; exceeding it is an explicit error,
-not silent subsampling. Computation runs in a worker. Cancel, editing an input,
+not silent subsampling. Identical retained alignment columns share exact site-pattern
+counts. Bootstrap draws still sample the original retained columns in their original
+order, preserving the seeded replicates, distance values and saved result identities.
+This admits repeated-pattern whole-genome panels that previously exceeded the budget,
+including the synthetic 24-taxon, 80,000-column, 100-replicate regression fixture.
+The unchanged 100-million-operation cap now also charges preprocessing and sampling;
+high-diversity panels can still exceed it, and some uncompressible inputs near the old
+limit may now be rejected. The input limits remain 2 MiB, 64 taxa and 100,000 columns.
+Computation runs in a worker. Cancel, editing an input,
 closing the workbench, and closing the overlay terminate obsolete computation.
 A delayed file read cannot replace a newer draft. File decoding rejects malformed
 UTF-8 instead of substituting characters into an alignment.
