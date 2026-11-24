@@ -18,6 +18,60 @@ import { parseProteinReferenceBundle, type ProteinReferenceBundle } from '../../
 import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
   type ProteinStructureOptions, type ResolvedProteinStructureOptions } from '../../core/src/analysis/tail-fiber-structure';
 import { SPACER_METHOD } from '../../core/src/analysis/spacer-reference';
+import { parseRNAInterval, type RNAStructureRequest } from '../../core/src/analysis/rna-structure-experiment';
+import { resolveRNAStructureOptions, type RNAStructureOptions } from '../../core/src/analysis/rna-structure';
+
+export interface TerminalRNAInspection {
+  format: 'phage-explorer-rna-inspection'; version: 1; headless: true;
+  inputFileSha256: string; genomes: Array<TerminalGenomeSummary & { name: string }>; genome: TerminalGenomeSummary | null;
+  source: { coordinateSystem: 'genome-forward' | 'cds-transcript'; sourceLength: number;
+    geneId: number | null; gene: string | null; synonymousSupported: boolean } | null;
+  cds: Array<Pick<LocalGenome['phage']['genes'][number], 'id' | 'name' | 'locusTag' | 'startPos' | 'endPos' | 'strand'>>;
+  interpretation: string;
+}
+
+/** Reparse the same captured input in parent and worker. Labels and numerical
+ * coordinates never substitute for the exact selected content/annotation.
+ */
+export async function prepareTerminalRNA(request: Extract<TerminalResearchRequest, { type: 'inspect-rna' | 'analyze-rna' }>,
+  signal?: AbortSignal): Promise<{ inspection: TerminalRNAInspection; analysisRequest: RNAStructureRequest | null }> {
+  signal?.throwIfAborted();
+  const { importLocalGenomes } = await import('../../core/src/genome-import');
+  const { researchRNASource, researchRNARequest } = await import('../../web/src/keyboard/ResearchWorkflow');
+  signal?.throwIfAborted();
+  const { genomes } = await importLocalGenomes({ name: 'workflow-input', text: request.content });
+  signal?.throwIfAborted();
+  const inventory = genomes.map(genome => ({ ...genomeSummary(genome), name: genome.phage.name }));
+  if (request.contentId === null && genomes.length > 1 && request.type === 'inspect-rna' && request.geneId === null) {
+    return { inspection: { format: 'phage-explorer-rna-inspection', version: 1, headless: true,
+      inputFileSha256: hashText(request.content), genomes: inventory, genome: null, source: null, cds: [],
+      interpretation: 'Multiple captured genomes are available. Choose --record CONTENT_ID from this inventory before inspecting CDS or analyzing an interval; record order never chooses the source.' },
+      analysisRequest: null };
+  }
+  const matches = request.contentId === null ? genomes : genomes.filter(genome => genome.phage.localGenome!.contentId === request.contentId);
+  if (matches.length !== 1) throw new Error('Select exactly one genome with --record CONTENT_ID from inspect-rna; missing, stale or ambiguous RNA sources are not analyzed.');
+  const genome = matches[0], source = researchRNASource(genome, request.geneId);
+  const inspection: TerminalRNAInspection = {
+    format: 'phage-explorer-rna-inspection', version: 1, headless: true,
+    inputFileSha256: hashText(request.content), genomes: inventory, genome: genomeSummary(genome),
+    source: { coordinateSystem: request.geneId === null ? 'genome-forward' : 'cds-transcript',
+      sourceLength: source.sequence.length, geneId: request.geneId, gene: source.gene, synonymousSupported: source.synonymousSupported },
+    cds: genome.phage.genes.filter(gene => gene.type === 'CDS').map(({ id, name, locusTag, startPos, endPos, strand }) =>
+      ({ id, name, locusTag, startPos, endPos, strand })),
+    interpretation: 'Captured CDS rows use zero-based, half-open forward-genome bounds. Select a CDS ID to inspect its extracted transcript length and synonymous-analysis availability. Inspection computes no RNA structures and does not authenticate source annotations.',
+  };
+  const analysisRequest = request.type === 'analyze-rna' ? researchRNARequest(genome, {
+    contentId: genome.phage.localGenome!.contentId, geneId: request.geneId,
+    start: request.start, end: request.end, strand: request.strand, options: request.options,
+  }) : null;
+  signal?.throwIfAborted();
+  return { inspection, analysisRequest };
+}
+
+export function terminalRNARequestSha256(request: Extract<TerminalResearchRequest, { type: 'analyze-rna' }>): string {
+  return hashText(JSON.stringify(analysisJson({ inputFileSha256: hashText(request.content), contentId: request.contentId,
+    geneId: request.geneId, start: request.start, end: request.end, strand: request.strand, options: request.options })));
+}
 
 export interface TerminalProteinReferenceInspection {
   format: 'phage-explorer-protein-reference-inspection'; version: 1; headless: true;
@@ -266,6 +320,9 @@ export function terminalResultExtraction(archive: WorkflowResults, inputArchiveS
 }
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
+  { type: 'inspect-rna'; content: string; contentId: string | null; geneId: number | null } |
+  { type: 'analyze-rna'; content: string; contentId: string | null; geneId: number | null;
+    start: number; end: number; strand: '+' | '-'; options: Required<RNAStructureOptions> } |
   { type: 'fit-pfu-growth'; content: string } |
   { type: 'fit-stability'; content: string } |
   { type: 'inspect-protein-reference'; content: string } |
@@ -282,6 +339,8 @@ export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
   { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'rna-inspected'; report: TerminalRNAInspection } |
+  { type: 'rna-analyzed'; inputFileSha256: string; requestSha256: string; genome: TerminalGenomeSummary; recordJson: string } |
   { type: 'stability-fitted'; inputFileSha256: string; recordJson: string } |
   { type: 'protein-reference-inspected'; report: TerminalProteinReferenceInspection } |
   { type: 'protein-structure-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
@@ -302,6 +361,8 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid terminal research request.');
   const request = value as Record<string, unknown>;
   const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'inspect-protein-reference' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' || request.type === 'fit-stability' ? ['type', 'content']
+    : request.type === 'inspect-rna' ? ['type', 'content', 'contentId', 'geneId']
+    : request.type === 'analyze-rna' ? ['type', 'content', 'contentId', 'geneId', 'start', 'end', 'strand', 'options']
     : request.type === 'analyze-mosaic' || request.type === 'analyze-protein-structure' ? ['type', 'content', 'options']
     : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
@@ -314,13 +375,36 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
   }
   const limit = ['inspect-protein-reference', 'analyze-protein-structure'].includes(String(request.type)) ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
     : ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
-  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth', 'fit-stability'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth', 'fit-stability', 'inspect-rna', 'analyze-rna'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
     throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-stability' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Inactivation input exceeds 1,000,000 UTF-8 bytes.');
+  if (request.type === 'inspect-rna' || request.type === 'analyze-rna') {
+    if (request.contentId !== null && (typeof request.contentId !== 'string' || !/^[a-f0-9]{64}$/.test(request.contentId))) {
+      throw new Error('Select a complete genome content ID from inspect-genomes, or null for a single-record input.');
+    }
+    if (request.geneId !== null && (!Number.isSafeInteger(request.geneId) || Number(request.geneId) < 1)) {
+      throw new Error('Choose a positive captured CDS ID from inspect-rna, or null for genomic coordinates.');
+    }
+    if (request.type === 'analyze-rna') {
+      if (!Number.isSafeInteger(request.start) || !Number.isSafeInteger(request.end)) throw new Error('RNA interval coordinates must be integers.');
+      parseRNAInterval(String(Number(request.start) + 1), String(request.end), GENOME_IMPORT_LIMITS.bases, request.geneId !== null);
+      if (request.strand !== '+' && request.strand !== '-' || request.geneId !== null && request.strand !== '+') {
+        throw new Error('Choose an explicit genomic strand; CDS intervals use forward transcript order (+).');
+      }
+      if (!request.options || typeof request.options !== 'object' || Array.isArray(request.options)
+        || Object.keys(request.options).sort().join('|') !== 'allowWobble|frame|includeSynonymousStress|minLoopSize|stepSize|windowSize') {
+        throw new Error('Record every effective RNA pairing setting explicitly.');
+      }
+      const options = resolveRNAStructureOptions(request.options as RNAStructureOptions);
+      if (!sameJson(request.options, options) || options.frame !== 0 || options.includeSynonymousStress && request.geneId === null) {
+        throw new Error('RNA settings must be explicit; synonymous analysis requires an annotation-defined CDS frame.');
+      }
+    }
+  }
   if (request.type === 'analyze-mosaic') {
     if (!sameJson(request.options, resolveMosaicRadarConfig(request.options as MosaicRadarConfig))) {
       throw new Error('Mosaic analysis requires all effective settings explicitly.');
@@ -355,6 +439,14 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'inspect-rna' || request.type === 'analyze-rna') {
+    const prepared = await prepareTerminalRNA(request);
+    if (request.type === 'inspect-rna') return { type: 'rna-inspected', report: prepared.inspection };
+    const { executeRNAStructureRequest } = await import('../../core/src/analysis/rna-structure-experiment');
+    const { record } = await executeRNAStructureRequest(prepared.analysisRequest!);
+    return { type: 'rna-analyzed', inputFileSha256: hashText(request.content), requestSha256: terminalRNARequestSha256(request),
+      genome: prepared.inspection.genome!, recordJson: serializeAnalysisRecord(record) };
+  }
   if (request.type === 'inspect-protein-reference' || request.type === 'analyze-protein-structure') {
     const reference = await parseProteinReferenceBundle(JSON.parse(request.content));
     const inputFileSha256 = hashText(request.content);

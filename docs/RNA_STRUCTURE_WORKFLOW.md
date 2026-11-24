@@ -12,6 +12,69 @@ In **Single Gene** mode, select an annotated CDS. Extraction follows joined segm
 
 The RNA Signals view also accepts explicit genomic intervals and a strand choice. Its result coordinates project back onto the original forward genomic coordinates, including reverse-strand results.
 
+## Analyze private inputs from the terminal
+
+The native workflow commands can create a fresh RNA experiment directly from
+local FASTA, GenBank or a private genome bundle:
+
+```bash
+phage-explorer workflow inspect-rna --input genomes.fa
+phage-explorer workflow inspect-rna --input genomes.fa --record CONTENT_ID
+phage-explorer workflow inspect-rna --input annotated.gb --gene CDS_ID
+phage-explorer workflow analyze-rna --input genome.fa --start 3 --end 11 --strand - \
+  --window 9 --step 9 --wobble false --output rna.json
+phage-explorer workflow replay-experiment --input rna.json --output verified-rna.json
+phage-explorer workflow replay-experiment --input rna.json --format tsv --output rna-windows.tsv
+```
+
+Replace `CONTENT_ID` and `CDS_ID` with identifiers shown by inspection. For a
+multi-record input, the initial inspection lists every record name and complete
+content ID, leaving the selected source empty. Select `--record CONTENT_ID` to
+inspect that genome's CDS rows or analyze an interval; accession labels and file
+order never choose between multiple records. Single-record input needs no
+`--record`. Adding `--gene CDS_ID` inspects that annotation's extracted transcript
+length and whether synonymous analysis is available. Inspection does not compute
+structures or print nucleotide sequences.
+
+`analyze-rna` requires `--start`, `--end` and `--strand`. Coordinates are one-based
+and inclusive at the command line. Without `--gene`, they address the original
+forward genome and either `+` or `-` is accepted. With `--gene`, they address
+the extracted transcript after joined/complemented segments and `codon_start`;
+use `--strand +` and start at a codon boundary (1, 4, 7, ...). The interval must
+fit that actual source and contain at most 6,000 bases. The command never trims
+an out-of-range interval or silently selects another CDS.
+
+| Option | Default | Accepted values |
+|---|---|---|
+| `--window` | 120 bases for genomes; 60 for CDS | 1–240 bases |
+| `--step` | 30 bases for genomes; 15 for CDS | 1–6,000 bases |
+| `--min-loop` | 3 | 0–30 intervening bases |
+| `--wobble` | `true` | `true` or `false` |
+| `--synonymous` | `false` | `true` only for supported selected CDS |
+
+Default window and step sizes are reduced to the selected interval's length
+when it is shorter. Explicit values are retained as requested; only complete
+windows are folded. Every resolved setting is saved in the result. Synonymous
+analysis requires an annotation-defined table 1 or 11 CDS without exceptional
+or pseudogene annotations. Other supported CDS can still receive pairing-only
+analysis.
+
+Use `--output NEW_FILE` for the complete AnalysisRecord JSON, or add
+`--format tsv` for every returned window and its original source coordinates.
+The JSON opens in the browser RNA explorer and replays through the existing
+`replay-experiment` command without the original input file or catalog. Both
+exports contain private sequence data. Standard output reports the selected
+content ID, coordinate source, parameters and result identity without printing
+the sequence.
+
+Input reads are bounded, outputs are created exclusively, and an existing file
+is never replaced. `--timeout-ms` and cancellation terminate the owned analysis
+worker; invalid selections and failed calculations create no partial analysis
+output. These commands use the same bounded maximum-pairing method and
+interpretation limits described below. From a source checkout, replace
+`phage-explorer workflow` with `bun run workflow`; an older installed executable
+must be rebuilt to acquire the new commands.
+
 ## Inspect actual structures
 
 Each full window receives an exact maximum-pairing solution under the following declared objective:

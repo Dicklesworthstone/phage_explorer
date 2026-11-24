@@ -8,9 +8,11 @@ import { importLocalGenomes } from '../../core/src/genome-import';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { GC_SKEW_METHOD, createGCSkewRecord, exportGCSkewTsv, type GCSkewWindow } from '../../core/src/analysis/gc-skew';
 import { createExactRepeatRecord, exportExactRepeatPairsTsv, type ExactRepeatPair } from '../../core/src/analysis/exact-repeat-pairs';
+import { parseRNAStructureRecord } from '../../core/src/analysis/rna-structure-experiment';
+import type { RNAStructureAnalysis } from '../../core/src/analysis/rna-structure';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest, terminalAnalysisRequestSha256,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalAnalysisReport } from './research-replay.worker';
-import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker } from '../../../scripts/research-workflow';
+import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker, executeWorkflowCommand } from '../../../scripts/research-workflow';
 
 const gc: TerminalAnalysis = { method: 'gc-skew', windowSize: 4, stepSize: 4 };
 const repeat = (topology: 'linear' | 'circular' = 'linear', maxPairs = 2000): TerminalAnalysis =>
@@ -51,6 +53,157 @@ function repeatOracle(sequence: string, circular: boolean): ExactRepeatPair[] {
   }
   return pairs.sort((a, b) => a.rightStart - b.rightStart || (a.type === b.type ? b.gap - a.gap : a.type === 'direct' ? -1 : 1));
 }
+
+
+describe('standalone native RNA workflow', () => {
+  it('requires an explicit interval and strand, resolves bounded defaults, and rejects conflicting or unsupported settings', () => {
+    const parsed = parseWorkflowCommand(['analyze-rna', '--input', 'private.fa', '--start', '3', '--end', '11', '--strand', '-']);
+    assert(parsed.type === 'analyze-rna');
+    assert.deepEqual({ contentId: parsed.contentId, geneId: parsed.geneId, start: parsed.start, end: parsed.end, strand: parsed.strand },
+      { contentId: null, geneId: null, start: 2, end: 11, strand: '-' });
+    assert.deepEqual(parsed.options, { minLoopSize: 3, allowWobble: true, windowSize: 9, stepSize: 9, frame: 0, includeSynonymousStress: false });
+    const base = ['analyze-rna', '--input', 'private.fa', '--start', '1', '--end', '9', '--strand', '+'];
+    for (const suffix of [['--gene', '0'], ['--gene', '1.5'], ['--record', 'short'], ['--window', '0'],
+      ['--window', '241'], ['--step', '6001'], ['--min-loop', '-1'], ['--min-loop', '31'], ['--min-loop', '1.5'],
+      ['--wobble', 'yes'], ['--synonymous', 'true'], ['--format', 'tsv'], ['--topology', 'circular']]) {
+      assert.throws(() => parseWorkflowCommand([...base, ...suffix]));
+    }
+    for (const options of [
+      ['--start', '1', '--end', '9'], ['--start', '1', '--strand', '+'],
+      ['--start', '1', '--end', '6001', '--strand', '+'],
+      ['--start', '2', '--end', '9', '--strand', '+', '--gene', '1'],
+      ['--start', '1', '--end', '9', '--strand', '-', '--gene', '1'],
+    ]) assert.throws(() => parseWorkflowCommand(['analyze-rna', '--input', 'private.fa', ...options]));
+    assert.throws(() => parseWorkflowCommand(['inspect-rna', '--input', 'private.fa', '--window', '9']));
+    const request = { type: 'analyze-rna', content: '>RNA\nTTGGGTTTCCCAA\n', contentId: null, geneId: null,
+      start: 2, end: 11, strand: '-', options: parsed.options };
+    for (const changed of [{ ...request, start: 2.5 }, { ...request, geneId: 0 }, { ...request, sourceName: 'forged' },
+      { ...request, options: { ...request.options, frame: 1 } }, { ...request, options: { ...request.options, unknown: true } }]) {
+      assert.throws(() => validateTerminalResearchRequest(changed));
+    }
+  });
+
+  it('analyzes reverse genomic coordinates in a real worker, exports every window, and replays byte-identical JSON and TSV', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-rna-')), input = join(directory, 'private source.fa');
+    const output = join(directory, 'rna.json'), verified = join(directory, 'verified.json');
+    const direct = join(directory, 'direct.tsv'), replayed = join(directory, 'replayed.tsv');
+    await writeFile(input, '>RNA\nTTGGGTTTCCCAA\n');
+    const options = ['--start', '3', '--end', '11', '--strand', '-', '--window', '9', '--step', '9', '--wobble', 'false'];
+    const inspected = await cli(['inspect-rna', '--input', input]); assert.equal(inspected.code, 0, inspected.error);
+    const metadata = JSON.parse(inspected.output);
+    assert.equal(metadata.source.coordinateSystem, 'genome-forward'); assert.equal(metadata.source.sourceLength, 13);
+    assert.equal(metadata.source.synonymousSupported, false); assert.deepEqual(metadata.cds, []);
+    assert(!inspected.output.includes('TTGGGTTTCCCAA'));
+    const made = await cli(['analyze-rna', '--input', input, ...options, '--output', output]);
+    assert.equal(made.code, 0, made.error); assert(!made.output.includes('GGGTTTCCC')); assert(!('verified' in JSON.parse(made.output)));
+    const saved = await readFile(output, 'utf8'), experiment = await parseRNAStructureRecord(saved);
+    assert.equal(experiment.request.sequence, 'GGGTTTCCC');
+    assert.deepEqual([experiment.request.source.coordinateSystem, experiment.request.source.start, experiment.request.source.end,
+      experiment.request.source.strand, experiment.request.source.sourceLength], ['genome-forward', 2, 11, '-', 13]);
+    const analysis = experiment.record.fields.analysis.value as unknown as RNAStructureAnalysis;
+    assert.equal(analysis.windows.length, 1);
+    assert.deepEqual([analysis.windows[0].sequence, analysis.windows[0].pairCount, analysis.windows[0].structure],
+      ['GGGAAACCC', 3, '(((...)))']);
+    assert.deepEqual(analysis.windows[0].pairs, [[0, 8], [1, 7], [2, 6]]);
+    assert.equal((await cli(['replay-experiment', '--input', output, '--output', verified])).code, 0);
+    assert.equal(await readFile(verified, 'utf8'), saved);
+    assert.equal((await cli(['analyze-rna', '--input', input, ...options, '--output', direct, '--format', 'tsv'])).code, 0);
+    assert.equal((await cli(['replay-experiment', '--input', output, '--output', replayed, '--format', 'tsv'])).code, 0);
+    assert.equal(await readFile(direct, 'utf8'), await readFile(replayed, 'utf8'));
+    const row = (await readFile(direct, 'utf8')).trimEnd().split('\n')[1].split('\t');
+    assert.deepEqual(row.slice(1, 10), ['genome-forward', '-', '0', '9', '2', '11', '3', '-3', '(((...)))']);
+    const duplicate = await cli(['analyze-rna', '--input', input, ...options, '--output', output]);
+    assert.equal(duplicate.code, 1); assert.equal(duplicate.output, ''); assert.equal(await readFile(output, 'utf8'), saved);
+    if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600);
+    const forged = await resigned(experiment.record, record => {
+      (record.fields.analysis.value as unknown as RNAStructureAnalysis).windows[0].pairCount = 0;
+    });
+    await assert.rejects(run({ type: 'replay-experiment', content: forged, outputFormat: 'json' }), /differ/);
+  });
+
+  it('discovers captured CDS IDs and preserves joined/complement extraction, codon_start and synonymous availability', async () => {
+    const source = (code: number) => 'LOCUS       JOINED 18 bp DNA linear\nACCESSION   shared\nFEATURES             Location/Qualifiers\n'
+      + '     CDS             complement(join(1..6,13..18))\n                     /locus_tag="joined"\n'
+      + '                     /codon_start=2\n                     /transl_table=' + code + '\nORIGIN\n        1 atgaaacccgggtttcat\n//\n';
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-rna-cds-'));
+    for (const code of [11, 4]) {
+      const input = join(directory, 'table-' + code + '.gb'); await writeFile(input, source(code));
+      const initial = await cli(['inspect-rna', '--input', input]); assert.equal(initial.code, 0, initial.error);
+      const genes = JSON.parse(initial.output).cds;
+      assert.equal(genes.length, 1); assert.equal(genes[0].locusTag, 'joined');
+      const selected = await cli(['inspect-rna', '--input', input, '--gene', String(genes[0].id)]);
+      assert.equal(selected.code, 0, selected.error);
+      const inspection = JSON.parse(selected.output);
+      assert.equal(inspection.source.coordinateSystem, 'cds-transcript'); assert.equal(inspection.source.sourceLength, 11);
+      assert.equal(inspection.source.synonymousSupported, code === 11);
+      const output = join(directory, 'table-' + code + '.json');
+      const options = ['--gene', String(genes[0].id), '--start', '1', '--end', '9', '--strand', '+', '--wobble', 'false'];
+      const made = await cli(['analyze-rna', '--input', input, ...options, '--output', output]); assert.equal(made.code, 0, made.error);
+      const experiment = await parseRNAStructureRecord(await readFile(output, 'utf8'));
+      // Reverse-complemented joined segments give ATGAAATTTCAT; codon_start=2 removes the first A.
+      assert.equal(experiment.request.sequence, 'TGAAATTTC');
+      assert.equal(experiment.request.source.sourceLength, 11); assert.equal(experiment.request.source.coordinateSystem, 'cds-transcript');
+      assert.equal(experiment.request.source.gene, genes[0].id + ':joined');
+      const synonyms = await cli(['analyze-rna', '--input', input, ...options, '--synonymous', 'true']);
+      assert.equal(synonyms.code, code === 11 ? 0 : 1, synonyms.error);
+      if (code === 4) assert.match(synonyms.error, /table 1 or 11/);
+    }
+  });
+
+  it('requires explicit selection among same-accession records and rejects stale records and out-of-range transcripts before output', async () => {
+    const text = '>shared first\nTTGGGTTTCCCAA\n>shared second\nGGGAAACCC\n';
+    const { genomes } = await importLocalGenomes({ name: 'input.fa', text });
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-rna-selection-')), input = join(directory, 'source.fa'), output = join(directory, 'not-created.json');
+    await writeFile(input, text);
+    const inventory = await cli(['inspect-rna', '--input', input]); assert.equal(inventory.code, 0, inventory.error);
+    const available = JSON.parse(inventory.output);
+    assert.equal(available.genome, null); assert.equal(available.source, null); assert.deepEqual(available.cds, []);
+    assert.deepEqual(available.genomes.map((item: { contentId: string; name: string }) => [item.contentId, item.name]),
+      genomes.map(genome => [genome.phage.localGenome!.contentId, genome.phage.name]));
+    const ambiguous = await cli(['analyze-rna', '--input', input, '--start', '1', '--end', '9', '--strand', '+', '--output', output]);
+    assert.equal(ambiguous.code, 1); await assert.rejects(stat(output), { code: 'ENOENT' });
+    const contentId = genomes[1].phage.localGenome!.contentId;
+    const inspected = await cli(['inspect-rna', '--input', input, '--record', contentId]); assert.equal(inspected.code, 0, inspected.error);
+    assert.equal(JSON.parse(inspected.output).genome.contentId, contentId); assert.equal(JSON.parse(inspected.output).source.sourceLength, 9);
+    for (const suffix of [['--record', 'a'.repeat(64)], ['--record', contentId, '--gene', '999'], ['--record', contentId]]) {
+      const failed = await cli(['analyze-rna', '--input', input, '--start', '1', '--end', '13', '--strand', '+', ...suffix, '--output', output]);
+      assert.equal(failed.code, 1); assert.equal(failed.output, '');
+      await assert.rejects(stat(output), { code: 'ENOENT' });
+    }
+  });
+
+  it('rejects a validly rehashed worker result for a different interval and terminates cancelled owned work without creating output', async () => {
+    const request: Extract<TerminalResearchRequest, { type: 'analyze-rna' }> = {
+      type: 'analyze-rna', content: '>RNA\nTTGGGTTTCCCAA\n', contentId: null, geneId: null, start: 2, end: 11, strand: '-',
+      options: { windowSize: 9, stepSize: 9, minLoopSize: 3, allowWobble: false, frame: 0, includeSynonymousStress: false },
+    };
+    const valid = await executeTerminalResearchRequest(request); assert(valid.type === 'rna-analyzed');
+    const wrong = structuredClone(valid);
+    wrong.recordJson = await resigned(await parseAnalysisRecord(valid.recordJson), record => {
+      const input = record.inputs[0].data as { source: { start: number; end: number } };
+      input.source.start = 1; input.source.end = 10;
+    });
+    await assert.rejects(runTerminalResearchWorker(request, new AbortController().signal, undefined,
+      () => new Worker("require('node:worker_threads').parentPort.once('message',()=>require('node:worker_threads').parentPort.postMessage(" + JSON.stringify(wrong) + "))", { eval: true })),
+      /RNA output differs/);
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-rna-cancel-')), input = join(directory, 'source.fa'), output = join(directory, 'not-created.json');
+    await writeFile(input, request.content);
+    const command = parseWorkflowCommand(['analyze-rna', '--input', input, '--start', '3', '--end', '11', '--strand', '-', '--output', output]);
+    assert(command.type === 'analyze-rna');
+    const controller = new AbortController(); let allocated = 0, exited: Promise<number> | null = null;
+    await assert.rejects(executeWorkflowCommand(command, { signal: controller.signal, createWorker: () => {
+      allocated++;
+      const worker = new Worker(new URL('./research-replay.worker.ts', import.meta.url));
+      exited = new Promise(resolve => worker.once('exit', resolve));
+      const send = worker.postMessage.bind(worker);
+      worker.postMessage = value => { send(value); controller.abort(); };
+      return worker;
+    } }), { name: 'AbortError' });
+    assert.equal(allocated, 1); await exited;
+    await assert.rejects(stat(output), { code: 'ENOENT' });
+    const fresh = await run(request); assert(fresh.type === 'rna-analyzed'); assert.equal(fresh.recordJson, valid.recordJson);
+  });
+});
 
 describe('native portable GC-skew and exact-repeat workflows', () => {
   it('resolves core defaults and accepts zero gaps without widening unrelated command grammars', () => {

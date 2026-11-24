@@ -33,6 +33,24 @@ function json(result: Output): Record<string, unknown> {
 const fixture = () => mkdtemp(join(tmpdir(), 'phage-scientific-entrypoint-'));
 
 describe('main executable research commands', () => {
+  it('runs the standalone native RNA inspect/analyze/replay journey without a catalog or terminal', async () => {
+    const cwd = await fixture(), input = join(cwd, 'private RNA.fa'), output = join(cwd, 'rna.json'), verified = join(cwd, 'verified.json');
+    await writeFile(input, '>RNA\nTTGGGTTTCCCAA\n');
+    const inspection = json(await run(cwd, ['workflow', 'inspect-rna', '--input', input]));
+    assert.equal((inspection.source as { sourceLength: number }).sourceLength, 13);
+    const made = json(await run(cwd, ['workflow', 'analyze-rna', '--input', input, '--start', '3', '--end', '11',
+      '--strand', '-', '--window', '9', '--step', '9', '--wobble', 'false', '--output', output]));
+    assert.equal(made.format, 'phage-explorer-rna-analysis');
+    assert.deepEqual(made.summary, { windows: 1, pairedWindows: 1, analyzedBases: 9 });
+    const record = JSON.parse(await readFile(output, 'utf8'));
+    assert.equal(record.fields.analysis.value.windows[0].structure, '(((...)))');
+    assert.deepEqual(record.fields.analysis.value.windows[0].pairs, [[0, 8], [1, 7], [2, 6]]);
+    const replayed = json(await run(cwd, ['workflow', 'replay-experiment', '--input', output, '--output', verified]));
+    assert.equal(replayed.verified, true); assert.equal(replayed.resultId, made.resultId);
+    assert.equal(await readFile(output, 'utf8'), await readFile(verified, 'utf8'));
+    assert(!(await readdir(cwd)).some(name => name.endsWith('.db')));
+  });
+
   it('serves version and command-specific help without a catalog or terminal', async () => {
     const cwd = await fixture();
     const version = await run(cwd, ['--version']);

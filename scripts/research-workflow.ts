@@ -9,6 +9,9 @@ import { analysisJson, parseAnalysisRecord } from '../packages/core/src/analysis
 import { WORKFLOW_RESULTS_LIMITS, parseWorkflowResults, workflowResultIndex, type WorkflowResults } from '../packages/core/src/workflow-results';
 import { resolveGCSkewOptions } from '../packages/core/src/analysis/gc-skew';
 import { resolveExactRepeatOptions } from '../packages/core/src/analysis/exact-repeat-pairs';
+import { GENOME_IMPORT_LIMITS } from '../packages/core/src/genome-import';
+import { parseRNAInterval, parseRNAStructureRecord, exportRNAStructureTsv } from '../packages/core/src/analysis/rna-structure-experiment';
+import { resolveRNAStructureOptions, RNA_STRUCTURE_LIMITS, type RNAStructureOptions, type RNAStructureAnalysis } from '../packages/core/src/analysis/rna-structure';
 import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig, exportMosaicTsv,
   type MosaicDataset, type MosaicRadarConfig, type MosaicRadarResult } from '../packages/core/src/analysis/recombination-radar';
 import { parseProteinReferenceBundle } from '../packages/core/src/protein-reference';
@@ -20,7 +23,7 @@ import { INACTIVATION_METHOD, INACTIVATION_LIMITS, parseInactivationInput, creat
   exportInactivationTsv, type InactivationFit } from '../packages/core/src/analysis/virion-stability';
 import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
   terminalResultsInspection, terminalResultExtraction, terminalMosaicInspection, terminalMosaicRequestSha256,
-  terminalProteinReferenceInspection, terminalProteinStructureRequestSha256,
+  terminalProteinReferenceInspection, terminalProteinStructureRequestSha256, prepareTerminalRNA, terminalRNARequestSha256,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -50,6 +53,12 @@ bun run workflow extract-result --input complete-results.json --execution 2
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect-genomes --input genomes.fa
+bun run workflow inspect-rna --input genome.gb [--record CONTENT_ID] [--gene CDS_ID]
+  [--timeout-ms 300000]
+bun run workflow analyze-rna --input genome.gb --start POSITION --end POSITION --strand +|-
+  [--record CONTENT_ID] [--gene CDS_ID] [--window BP] [--step BP] [--min-loop 3]
+  [--wobble true|false] [--synonymous true|false] [--output NEW_FILE]
+  [--format json|tsv] [--timeout-ms 300000]
 bun run workflow inspect-protein-reference --input reference.json
 bun run workflow analyze-protein-structure --input reference.json [--protein ID]
   [--chain LABEL_CHAIN_ID|none] [--cutoff 8] [--min-separation 3]
@@ -226,6 +235,27 @@ reconstructs the parent before computing the unrooted tree. Reference-gap
 columns are excluded and complete deletion removes gaps/ambiguity. These steps
 support record/replay and complete-results archives with the full parent.
 
+inspect-rna lists record names/content IDs for multi-record inputs without choosing
+one implicitly. Select --record CONTENT_ID to inspect captured CDS IDs and the
+chosen genome/CDS source length, without folding or printing sequences.
+--gene CDS_ID switches to the exact
+annotation-derived transcript, honoring joined/complemented segments and codon_start.
+inspect-rna --gene reports whether that transcript supports synonymous analysis.
+
+analyze-rna starts from local FASTA, GenBank or a private genome bundle; no browser
+export is needed. --start/--end are required 1-based inclusive coordinates in the
+selected genome or extracted CDS transcript, with at most 6000 supplied bases.
+--strand is required; a CDS uses + transcript order and starts at 1,4,7,...
+Defaults are 120-base windows/30-base steps for genomes and 60/15 for CDS, reduced
+to the interval length when shorter, min-loop 3, wobble true and synonymous false.
+Explicit windows are 1..240, steps 1..6000 and min-loop 0..30. Synonymous analysis
+requires supported table 1/11 CDS without exceptional/pseudogene annotations.
+JSON retains a complete ordinary RNA AnalysisRecord accepted by replay-experiment
+and the browser RNA explorer; TSV retains every window and its source coordinates.
+Both formats include private bases; stdout reports metadata without sequences.
+The owned worker enforces the existing numerical budget and is terminated on
+timeout/cancellation. No partial or overwriting output is created.
+
 Recorded RNA pairing uses actionId overlay.rnaStructure and parameters
 {contentId, geneId, start, end, strand, options}. A null geneId selects forward
 genome coordinates; a CDS ID selects its extracted, annotation-defined transcript.
@@ -333,6 +363,10 @@ to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTER
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
 export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'mosaic-template' } | { type: 'stability-template' } | { type: 'growth-template'; version: 1 | 2 } |
+  { type: 'inspect-rna'; input: string; contentId: string | null; geneId: number | null; timeoutMs: number } |
+  { type: 'analyze-rna'; input: string; contentId: string | null; geneId: number | null;
+    start: number; end: number; strand: '+' | '-'; options: Required<RNAStructureOptions>;
+    output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'inspect-protein-reference'; input: string; timeoutMs: number } |
   { type: 'analyze-protein-structure'; input: string; options: ProteinStructureOptions; output?: string;
     outputFormat: 'json' | 'tsv'; section: 'residues' | 'contacts'; timeoutMs: number } |
@@ -365,10 +399,12 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Use growth-template with no options or exactly --version 1|2.');
   }
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'inspect-protein-reference' && type !== 'analyze-protein-structure' && type !== 'fit-growth' && type !== 'fit-pfu-growth' && type !== 'fit-stability') {
-    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, inspect-protein-reference, analyze-protein-structure, fit-growth, fit-pfu-growth or fit-stability; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'inspect-protein-reference' && type !== 'analyze-protein-structure' && type !== 'fit-growth' && type !== 'fit-pfu-growth' && type !== 'fit-stability' && type !== 'inspect-rna' && type !== 'analyze-rna') {
+    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, inspect-protein-reference, analyze-protein-structure, fit-growth, fit-pfu-growth, fit-stability, inspect-rna or analyze-rna; see --help.');
   }
   const allowed = type === 'extract-result' ? ['--input', '--output', '--execution', '--timeout-ms']
+    : type === 'inspect-rna' ? ['--input', '--record', '--gene', '--timeout-ms']
+    : type === 'analyze-rna' ? ['--input', '--record', '--gene', '--start', '--end', '--strand', '--window', '--step', '--min-loop', '--wobble', '--synonymous', '--output', '--format', '--timeout-ms']
     : type === 'analyze-protein-structure' ? ['--input', '--output', '--format', '--section', '--protein', '--chain', '--cutoff', '--min-separation', '--contact-scope', '--timeout-ms']
     : type === 'analyze-mosaic' ? ['--input', '--output', '--format', '--section', '--k', '--window', '--step', '--min-similarity', '--max-references', '--top-n', '--timeout-ms']
     : type === 'record' || type === 'replay-results' ? ['--input', '--timeout-ms', '--output'] : type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' || type === 'inspect-protein-reference' ? ['--input', '--timeout-ms'] : type === 'analyze-experiment'
@@ -409,6 +445,39 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return { type, input, output, timeoutMs, progress, ...(allResults ? { allResults: true } : {}) };
   }
   if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' || type === 'inspect-protein-reference') return { type, input, timeoutMs };
+  if (type === 'inspect-rna' || type === 'analyze-rna') {
+    const contentId = values.get('--record') ?? null;
+    if (contentId !== null && !/^[a-f0-9]{64}$/.test(contentId)) throw new Error('--record requires a complete content ID from inspect-rna.');
+    const geneId = values.has('--gene') ? integer('--gene', 1, Number.MAX_SAFE_INTEGER) : null;
+    if (type === 'inspect-rna') return { type, input, timeoutMs, contentId, geneId };
+    if (!values.has('--start') || !values.has('--end')) throw new Error('analyze-rna requires --start and --end as 1-based inclusive positions.');
+    const strand = values.get('--strand');
+    if (strand !== '+' && strand !== '-') throw new Error('analyze-rna requires --strand +|-; CDS intervals use + transcript order.');
+    const startText = values.get('--start')!, endText = values.get('--end')!;
+    const interval = parseRNAInterval(startText, endText, GENOME_IMPORT_LIMITS.bases, geneId !== null);
+    const boolean = (key: string, fallback: boolean) => {
+      const value = values.get(key);
+      if (value === undefined) return fallback;
+      if (value !== 'true' && value !== 'false') throw new Error(key + ' must be true or false.');
+      return value === 'true';
+    };
+    const minLoop = values.get('--min-loop');
+    if (minLoop !== undefined && !/^(?:0|[1-9]\d*)$/.test(minLoop)) throw new Error('--min-loop must be an integer from 0 to 30.');
+    const length = interval.end - interval.start;
+    const options = resolveRNAStructureOptions({
+      windowSize: integer('--window', Math.min(geneId === null ? 120 : 60, length), RNA_STRUCTURE_LIMITS.foldBases),
+      stepSize: integer('--step', Math.min(geneId === null ? 30 : 15, length), RNA_STRUCTURE_LIMITS.sequenceBases),
+      minLoopSize: minLoop === undefined ? 3 : Number(minLoop), allowWobble: boolean('--wobble', true),
+      includeSynonymousStress: boolean('--synonymous', false), frame: 0,
+    });
+    const outputFormat = values.get('--format') ?? 'json';
+    if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
+    if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
+    const request = { type, content: '', contentId, geneId, ...interval, strand, options };
+    validateTerminalResearchRequest(request);
+    return { type, input, timeoutMs, contentId, geneId, ...interval, strand, options, outputFormat,
+      ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  }
   if (type === 'analyze-protein-structure') {
     const outputFormat = values.get('--format') ?? 'json', section = values.get('--section') ?? 'residues';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
@@ -610,6 +679,7 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   const submitted = structuredClone(request);
   const plan = submitted.type === 'record' ? parseCommandPlan(submitted.content) : null;
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
+  const rnaPrepared = submitted.type === 'inspect-rna' || submitted.type === 'analyze-rna' ? await prepareTerminalRNA(submitted, signal) : null;
   const stabilityInput = submitted.type === 'fit-stability' ? parseInactivationInput(submitted.content) : null;
   const mosaicDataset = submitted.type === 'inspect-mosaic' || submitted.type === 'analyze-mosaic'
     ? parseMosaicDataset(submitted.content) : null;
@@ -674,7 +744,22 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           onProgress({ phase: p.phase, completed, total, actionId: p.actionId }); abort(signal); return;
         }
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
-        if (value?.type === 'growth-fitted' && (submitted.type === 'fit-growth' || submitted.type === 'fit-pfu-growth') && value.inputFileSha256 === tapeSha256
+        if (value?.type === 'rna-inspected' && submitted.type === 'inspect-rna' && rnaPrepared
+          && commandValuesEqual(value.report, rnaPrepared.inspection)) finish(value);
+        else if (value?.type === 'rna-analyzed' && submitted.type === 'analyze-rna' && rnaPrepared?.analysisRequest
+          && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalRNARequestSha256(submitted)
+          && commandValuesEqual(value.genome, rnaPrepared.inspection.genome)
+          && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) {
+          validating = true;
+          void parseRNAStructureRecord(value.recordJson, signal).then(({ request }) => {
+            abort(signal);
+            if (!commandValuesEqual(request, rnaPrepared.analysisRequest!)) {
+              throw new Error('RNA output differs from the selected genome/CDS interval, annotation, strand or settings.');
+            }
+            finish(value);
+          }).catch(cause => finish(undefined, cause));
+        }
+        else if (value?.type === 'growth-fitted' && (submitted.type === 'fit-growth' || submitted.type === 'fit-pfu-growth') && value.inputFileSha256 === tapeSha256
           && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) finish(value);
         else if (value?.type === 'stability-fitted' && submitted.type === 'fit-stability' && stabilityInput
           && value.inputFileSha256 === tapeSha256 && typeof value.recordJson === 'string'
@@ -865,6 +950,9 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
     const content = await readInput(command.input, signal, command.type === 'fit-stability' ? INACTIVATION_LIMITS.bytes : proteinInput ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
       : archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
     const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'inspect-mosaic' || command.type === 'inspect-protein-reference' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' || command.type === 'fit-stability' ? { type: command.type, content }
+      : command.type === 'inspect-rna' ? { type: 'inspect-rna', content, contentId: command.contentId, geneId: command.geneId }
+      : command.type === 'analyze-rna' ? { type: 'analyze-rna', content, contentId: command.contentId, geneId: command.geneId,
+        start: command.start, end: command.end, strand: command.strand, options: command.options }
       : command.type === 'analyze-protein-structure' ? { type: 'analyze-protein-structure', content, options: command.options }
       : command.type === 'analyze-mosaic' ? { type: 'analyze-mosaic', content, options: command.options }
       : command.type === 'extract-result' ? { type: 'extract-result', content, execution: command.execution }
@@ -876,6 +964,21 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
         ...(command.allResults ? { captureResults: true } : {}) };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
+    if (result.type === 'rna-inspected') return result.report;
+    if (result.type === 'rna-analyzed') {
+      if (command.type !== 'analyze-rna') throw new Error('Unexpected RNA interval result.');
+      const { request, record } = await parseRNAStructureRecord(result.recordJson, signal);
+      const analysis = record.fields.analysis.value as unknown as RNAStructureAnalysis;
+      if (command.output !== undefined) {
+        await writeNewOutput(command.output, command.outputFormat === 'json' ? result.recordJson : exportRNAStructureTsv(record), signal);
+      }
+      return { format: 'phage-explorer-rna-analysis', version: 1, headless: true,
+        inputFileSha256: result.inputFileSha256, requestSha256: result.requestSha256, genome: result.genome,
+        source: request.source, method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
+        summary: { windows: analysis.windows.length, pairedWindows: analysis.windows.filter(window => window.pairCount > 0).length,
+          analyzedBases: request.sequence.length },
+        interpretation: 'Fresh bounded maximum noncrossing pairing from the exact selected interval; no replay-verification claim. Unit-weight pair counts and synonymous score changes are descriptive, not folding energies, probabilities or biological validation. JSON and TSV exports contain private sequences.' };
+    }
     if (result.type === 'mosaic-inspected') return result.report;
     if (result.type === 'protein-reference-inspected') return result.report;
     if (result.type === 'stability-fitted') {
