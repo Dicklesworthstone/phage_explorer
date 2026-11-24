@@ -130,7 +130,7 @@ describe('MinHash estimates track the exact values', () => {
       const seq = biasedSequence(length, 0.5, length);
       const sketch = buildSketch(String(length), seq);
       expect(sketch).not.toBeNull();
-      const exact = kmerSet(seq).size;
+      const exact = kmerSet(seq, MINHASH_DEFAULT_K, true).size;
       const estimated = estimateCardinality(sketch!.signature);
       // Derived, not picked. Each slot holds the minimum of n uniform draws
       // with E[min] = M/(n+1); averaging 128 of them gives a relative standard
@@ -149,7 +149,7 @@ describe('MinHash estimates track the exact values', () => {
 
     const sa = buildSketch('a', a)!;
     const sb = buildSketch('b', b)!;
-    const exact = exactJaccard(kmerSet(a), kmerSet(b));
+    const exact = exactJaccard(kmerSet(a, MINHASH_DEFAULT_K, true), kmerSet(b, MINHASH_DEFAULT_K, true));
     const estimated = estimateJaccard(sa.signature, sb.signature);
 
     expect(exact).toBeGreaterThan(0.2); // the case is meaningful, not degenerate
@@ -176,7 +176,7 @@ describe('MinHash estimates track the exact values', () => {
     const small = buildSketch('small', smallSeq)!;
     const large = buildSketch('large', largeSeq)!;
 
-    const exact = exactContainment(kmerSet(smallSeq), kmerSet(largeSeq));
+    const exact = exactContainment(kmerSet(smallSeq, MINHASH_DEFAULT_K, true), kmerSet(largeSeq, MINHASH_DEFAULT_K, true));
     const estimated = estimateContainment(small, large);
     const sigma = containmentUncertainty(small, large);
 
@@ -341,7 +341,7 @@ realDescribe('against the shipped catalogue', () => {
   it('estimates lambda k-mer cardinality within MinHash error of the exact count', async () => {
     await initMinHashWasm();
     const lambda = sequenceOf(phages.find(p => p.slug === 'lambda')!.id);
-    const exact = kmerSet(lambda).size;
+    const exact = kmerSet(lambda, MINHASH_DEFAULT_K, true).size;
     const estimated = estimateCardinality(buildSketch('lambda', lambda)!.signature);
     expect(exact).toBeGreaterThan(40000); // ~48.5 kb genome, mostly distinct
     expect(Math.abs(estimated - exact) / exact).toBeLessThan(0.3);
@@ -398,7 +398,7 @@ describe('containment is counted, not estimated, at catalogue scale', () => {
   it('retains the real k-mers for a catalogue-sized genome', () => {
     const sketch = buildSketch('small', smallSeq)!;
     expect(sketch.codes).not.toBeNull();
-    expect(sketch.codes!.length).toBe(kmerSet(smallSeq).size);
+    expect(sketch.codes!.length).toBe(kmerSet(smallSeq, MINHASH_DEFAULT_K, true).size);
     expect(sketch.cardinality).toBe(sketch.codes!.length);
   });
 
@@ -410,7 +410,7 @@ describe('containment is counted, not estimated, at catalogue scale', () => {
     expect(result.method).toBe('exact');
     expect(result.uncertainty).toBe(0);
     // Not toBeCloseTo. A counted value has no tolerance to spend.
-    expect(result.containment).toBe(exactContainment(kmerSet(smallSeq), kmerSet(largeSeq)));
+    expect(result.containment).toBe(exactContainment(kmerSet(smallSeq, MINHASH_DEFAULT_K, true), kmerSet(largeSeq, MINHASH_DEFAULT_K, true)));
   });
 
   it('is decisively better here than the estimate it replaced', () => {
@@ -491,7 +491,7 @@ describe('the reported uncertainty describes the estimator honestly', () => {
         biasedSequence(15000, 0.5, 300 + t) + insert + biasedSequence(15000, 0.5, 400 + t);
       const a = buildSketch('i', insert)!;
       const b = buildSketch('h', host)!;
-      const exact = exactContainment(kmerSet(insert), kmerSet(host));
+      const exact = exactContainment(kmerSet(insert, MINHASH_DEFAULT_K, true), kmerSet(host, MINHASH_DEFAULT_K, true));
       const err = Math.abs(estimateContainment(a, b) - exact);
       if (err <= 2 * containmentUncertainty(a, b)) covered++;
     }
@@ -523,5 +523,111 @@ describe('packed k-mer codes agree with the readable set', () => {
     );
     expect(kmerCodes('NNNN', 4).length).toBe(0);
     expect(kmerCodes('ACG', 4).length).toBe(0);
+  });
+});
+
+describe('canonical genome sketches preserve strand and input identity', () => {
+  it('counts independent canonical words, including palindromes and unsigned 16-mers', () => {
+    // AAACCC and GGGTTT both represent AAA, AAC, ACC, CCC. Their base-4
+    // codes are 0, 1, 5, 21; these expectations do not use the implementation.
+    for (const sequence of ['AAACCC', 'GGGTTT', 'aaaccc', 'ggguuu']) {
+      expect(Array.from(kmerCodes(sequence, 3, true))).toEqual([0, 1, 5, 21]);
+      expect([...kmerSet(sequence, 3, true)].sort((a, b) => a - b)).toEqual([0, 1, 5, 21]);
+    }
+    // CGTA/TACG collapse, while the two palindromes ACGT and GTAC remain.
+    expect(Array.from(kmerCodes('ACGTACGT', 4, true))).toEqual([27, 108, 177]);
+    expect(Array.from(kmerCodes('T'.repeat(16), 16, true))).toEqual([0]);
+    expect(Array.from(kmerCodes('G'.repeat(16), 16, true))).toEqual([1431655765]);
+    expect(Array.from(kmerCodes('G'.repeat(16), 16))).toEqual([2863311530]);
+    expect(Array.from(kmerCodes('AAANCCC', 3, true))).toEqual([0, 21]);
+  });
+
+  it('agrees with an independent string-set oracle across all supported exact word sizes', () => {
+    const sequence = 'aaacccgggtttNACTGCTAGTACGGATCAGTACGTACGTUUUGGGCCCTTT';
+    const complement: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A' };
+    const digits: Record<string, string> = { A: '0', C: '1', G: '2', T: '3' };
+    const normalized = sequence.toUpperCase().replace(/U/g, 'T');
+    for (let k = 1; k <= 16; k++) {
+      const words = new Set<string>();
+      for (let i = 0; i + k <= normalized.length; i++) {
+        const word = normalized.slice(i, i + k);
+        if (!/^[ACGT]+$/.test(word)) continue;
+        const reverse = [...word].reverse().map(base => complement[base]).join('');
+        words.add(word < reverse ? word : reverse);
+      }
+      const expected = [...words].map(word => Number.parseInt([...word].map(base => digits[base]).join(''), 4)).sort((a, b) => a - b);
+      expect(Array.from(kmerCodes(sequence, k, true))).toEqual(expected);
+      expect([...kmerSet(sequence, k, true)].sort((a, b) => a - b)).toEqual(expected);
+    }
+  });
+
+  it('recognizes a reverse-complemented insert and preserves asymmetric containment', () => {
+    // Query words: AAA, AAC. Reference words: AAA, AAC, ACC, CCC. The
+    // submitted reference is reverse complemented, so directional sets miss it.
+    const query = buildSketch('query', 'AAAC', 3)!;
+    const reference = buildSketch('reference', 'GGGTTT', 3)!;
+    expect(query.cardinality).toBe(2);
+    expect(reference.cardinality).toBe(4);
+    expect(containmentOf(query, reference)).toEqual({ containment: 1, method: 'exact', uncertainty: 0 });
+    expect(containmentOf(reference, query)).toEqual({ containment: 0.5, method: 'exact', uncertainty: 0 });
+    const reverse = buildSketch('reverse', 'GTTT', 3)!;
+    expect(estimateJaccard(query.signature, reverse.signature)).toBe(1);
+    expect(containmentOf(query, reverse).containment).toBe(1);
+  });
+
+  it('uses the same strand convention above and below the exact retention boundary', () => {
+    for (const length of [400_000, 400_001]) {
+      const forward = buildSketch('forward', 'A'.repeat(length), 3, 16)!;
+      const reverse = buildSketch('reverse', 'T'.repeat(length), 3, 16)!;
+      const result = containmentOf(forward, reverse);
+      expect(result.containment).toBe(1);
+      expect(result.method).toBe(length === 400_000 ? 'exact' : 'estimated');
+      expect(estimateJaccard(forward.signature, reverse.signature)).toBe(1);
+    }
+  });
+
+  it('uses estimates beyond the packed-code range instead of reporting empty exact evidence', () => {
+    for (const k of [17, 32]) {
+      const forward = buildSketch('forward', 'A'.repeat(64), k)!;
+      const reverse = buildSketch('reverse', 'T'.repeat(64), k)!;
+      expect(forward.codes).toBeNull();
+      expect(forward.cardinality).toBeGreaterThan(0);
+      expect(containmentOf(forward, reverse).method).toBe('estimated');
+      expect(containmentOf(forward, reverse).containment).toBe(1);
+    }
+  });
+
+  it('rejects missing word evidence and incompatible sketch parameters', () => {
+    expect(buildSketch('unknown', 'NNNNNN', 3)).toBeNull();
+    expect(buildSketch('broken', 'AANCCA', 3)).not.toBeNull();
+    expect(buildSketch('fragmented', 'AANCCN', 3)).toBeNull();
+    for (const k of [0, -1, 1.5, 33, NaN, Infinity]) expect(buildSketch('bad', 'A'.repeat(40), k)).toBeNull();
+    for (const count of [0, -1, 1.5, NaN, Infinity]) expect(buildSketch('bad', 'AAAA', 3, count)).toBeNull();
+    const a = buildSketch('a', 'AAAAAA', 3)!;
+    const b = buildSketch('b', 'AAAAAA', 4)!;
+    expect(() => containmentOf(a, b)).toThrow('same k-mer size');
+    expect(() => estimateContainment(a, b)).toThrow('same k-mer size');
+    expect(() => containmentUncertainty(a, b)).toThrow('same k-mer size');
+  });
+
+  it('replaces same-label, same-length content and evicts invalid replacements', () => {
+    const cache = new SketchCache(3, 64);
+    const first = cache.getOrBuild('query', 'AAAAAA');
+    cache.getOrBuild('reference', 'TTTTTT');
+    expect(cache.containment('query', 'reference')?.containment).toBe(1);
+    expect(cache.getOrBuild('query', 'aaaaaa')).toBe(first);
+    expect(cache.computations).toBe(2);
+    const replacement = cache.getOrBuild('query', 'CCCCCC');
+    expect(replacement).not.toBe(first);
+    expect(cache.get('query')).toBe(replacement);
+    expect(cache.containment('query', 'reference')?.containment).toBe(0);
+    expect(cache.computations).toBe(3);
+    expect(cache.size).toBe(2);
+    expect(cache.getOrBuild('query', 'NNNNNN')).toBeNull();
+    expect(cache.get('query')).toBeNull();
+    expect(cache.has('query')).toBe(false);
+    expect(cache.containment('query', 'reference')).toBeNull();
+    expect(cache.maxContainment('query')).toBeNull();
+    expect(cache.nearest('reference')).toEqual([]);
   });
 });

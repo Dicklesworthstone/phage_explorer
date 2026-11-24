@@ -113,19 +113,19 @@ import { computeSignature, MINHASH_DEFAULT_K, MINHASH_DEFAULT_HASHES } from './h
 
 /** Sketch of one genome: its MinHash signature plus its distinct k-mer count. */
 export interface GenomeSketch {
-  /** Stable identity for cache keying, e.g. a phage id or a label. */
+  /** Lookup label. Reuse also requires identical sequence content. */
   id: string;
   /** MinHash signature, one slot per hash function. */
   signature: Uint32Array;
   /**
-   * Number of DISTINCT k-mers, which is what containment divides by. Estimated
+   * Number of DISTINCT canonical k-mers, which is what containment divides by. Estimated
    * from the signature when the sequence is large, exact when it is small.
    */
   cardinality: number;
   k: number;
   /**
-   * The distinct k-mers themselves, sorted ascending, retained for sequences at
-   * or below EXACT_KMER_MAX_BASES and null above it.
+   * The distinct canonical k-mers themselves, sorted ascending, retained for
+   * k <= 16 and sequences at or below EXACT_KMER_MAX_BASES; otherwise null.
    *
    * This is what makes exact containment possible, and it is the reason the
    * representation is a packed Uint32Array rather than a Set: the whole 24-genome
@@ -144,8 +144,10 @@ const HASH_SPACE = 4294967296;
  * Returns null for any window containing an ambiguous base, matching the
  * kernel's documented rule of resetting rolling state rather than guessing.
  */
-function encodeKmer(seq: string, start: number, k: number): number | null {
+function encodeKmer(seq: string, start: number, k: number, canonical: boolean): number | null {
   let code = 0;
+  let reverse = 0;
+  let place = 1;
   for (let i = 0; i < k; i++) {
     const c = seq.charCodeAt(start + i);
     let base: number;
@@ -156,8 +158,12 @@ function encodeKmer(seq: string, start: number, k: number): number | null {
     else if (c === 84 || c === 116 || c === 85 || c === 117) base = 3;
     else return null;
     code = (code * 4 + base) >>> 0;
+    if (canonical) {
+      reverse += (3 - base) * place;
+      place *= 4;
+    }
   }
-  return code;
+  return canonical ? Math.min(code, reverse) : code;
 }
 
 /**
@@ -165,14 +171,16 @@ function encodeKmer(seq: string, start: number, k: number): number | null {
  *
  * Practical for this project's genomes: the largest, phiKZ at 280 kb, yields
  * at most 280k entries. Not appropriate for metagenome-scale input, which is
- * what the estimated path is for.
+ * what the estimated path is for. Set canonical=true to merge each word with
+ * its reverse complement, as genome sketches do; the default counts strands
+ * separately for callers explicitly inspecting directional words.
  */
-export function kmerSet(sequence: string, k = MINHASH_DEFAULT_K): Set<number> {
+export function kmerSet(sequence: string, k = MINHASH_DEFAULT_K, canonical = false): Set<number> {
   const set = new Set<number>();
-  if (k <= 0 || k > 16 || sequence.length < k) return set;
+  if (!Number.isSafeInteger(k) || k <= 0 || k > 16 || sequence.length < k) return set;
   const seq = sequence.toUpperCase();
   for (let i = 0; i + k <= seq.length; i++) {
-    const code = encodeKmer(seq, i, k);
+    const code = encodeKmer(seq, i, k, canonical);
     if (code !== null) set.add(code);
   }
   return set;
@@ -204,15 +212,16 @@ export function exactContainment(a: Set<number>, b: Set<number>): number {
  *
  * `kmerSet` stays the readable ground truth used in tests; this is the storage
  * format the cache retains, because a Set of 2M numbers costs more than ten
- * times what the packed array does and cannot be merge-intersected.
+ * times what the packed array does and cannot be merge-intersected. The
+ * canonical option has the same meaning as in kmerSet.
  */
-export function kmerCodes(sequence: string, k = MINHASH_DEFAULT_K): Uint32Array {
-  if (k <= 0 || k > 16 || sequence.length < k) return new Uint32Array(0);
+export function kmerCodes(sequence: string, k = MINHASH_DEFAULT_K, canonical = false): Uint32Array {
+  if (!Number.isSafeInteger(k) || k <= 0 || k > 16 || sequence.length < k) return new Uint32Array(0);
   const seq = sequence.toUpperCase();
   const raw = new Uint32Array(seq.length - k + 1);
   let n = 0;
   for (let i = 0; i + k <= seq.length; i++) {
-    const code = encodeKmer(seq, i, k);
+    const code = encodeKmer(seq, i, k, canonical);
     if (code !== null) raw[n++] = code;
   }
   const filled = raw.subarray(0, n);
@@ -306,6 +315,7 @@ export function estimateJaccard(a: Uint32Array, b: Uint32Array): number {
  * rather than recomputed ad hoc.
  */
 export function estimateContainment(a: GenomeSketch, b: GenomeSketch): number {
+  if (a.k !== b.k) throw new RangeError('Containment requires sketches with the same k-mer size.');
   if (a.cardinality <= 0) return 0;
   const j = estimateJaccard(a.signature, b.signature);
   if (j <= 0) return 0;
@@ -350,6 +360,7 @@ export function estimateContainment(a: GenomeSketch, b: GenomeSketch): number {
  *   is the correct output.
  */
 export function containmentUncertainty(a: GenomeSketch, b: GenomeSketch): number {
+  if (a.k !== b.k) throw new RangeError('Containment requires sketches with the same k-mer size.');
   if (a.cardinality <= 0) return 1;
   const m = Math.min(a.signature.length, b.signature.length);
   if (m === 0) return 1;
@@ -385,6 +396,7 @@ export interface ContainmentResult {
  * enough here.
  */
 export function containmentOf(a: GenomeSketch, b: GenomeSketch): ContainmentResult {
+  if (a.k !== b.k) throw new RangeError('Containment requires sketches with the same k-mer size.');
   if (a.codes && b.codes) {
     if (a.codes.length === 0) return { containment: 0, method: 'exact', uncertainty: 0 };
     return {
@@ -425,12 +437,18 @@ export function buildSketch(
   k = MINHASH_DEFAULT_K,
   numHashes = MINHASH_DEFAULT_HASHES
 ): GenomeSketch | null {
-  const signature = computeSignature(sequence, k, numHashes);
-  if (!signature) return null;
+  // The WASM encoding has 64 bits; packed exact codes have only 32. Larger
+  // valid k values must use the estimate, never an empty "exact" set.
+  if (!Number.isSafeInteger(k) || k < 1 || k > 32 ||
+      !Number.isSafeInteger(numHashes) || numHashes < 1) return null;
+  const signature = computeSignature(sequence, k, numHashes, true);
+  if (!signature || !signature.some(value => value !== 0xffffffff)) return null;
 
   // One pass builds the k-mer set, and it serves both purposes: it IS the exact
   // cardinality, and it is what exact containment intersects against.
-  const codes = sequence.length <= EXACT_KMER_MAX_BASES ? kmerCodes(sequence, k) : null;
+  // Use the same strand convention as the signature. A genome and its reverse
+  // complement describe the same set, on both sides of the retention threshold.
+  const codes = k <= 16 && sequence.length <= EXACT_KMER_MAX_BASES ? kmerCodes(sequence, k, true) : null;
   const cardinality = codes ? codes.length : estimateCardinality(signature);
 
   return { id, signature, cardinality, k, codes };
@@ -445,6 +463,7 @@ export function buildSketch(
  */
 export class SketchCache {
   private sketches = new Map<string, GenomeSketch>();
+  private sequences = new Map<string, string>();
   private computeCount = 0;
 
   constructor(
@@ -452,14 +471,20 @@ export class SketchCache {
     private readonly numHashes = MINHASH_DEFAULT_HASHES
   ) {}
 
-  /** Compute a sketch once per id. Repeat calls return the cached one. */
+  /** Reuse only identical content, even when a replacement retains its label. */
   getOrBuild(id: string, sequence: string): GenomeSketch | null {
+    const normalized = sequence.toUpperCase();
     const existing = this.sketches.get(id);
-    if (existing) return existing;
-    const sketch = buildSketch(id, sequence, this.k, this.numHashes);
-    if (!sketch) return null;
+    if (existing && this.sequences.get(id) === normalized) return existing;
+    const sketch = buildSketch(id, normalized, this.k, this.numHashes);
+    if (!sketch) {
+      this.sketches.delete(id);
+      this.sequences.delete(id);
+      return null;
+    }
     this.computeCount++;
     this.sketches.set(id, sketch);
+    this.sequences.set(id, normalized);
     return sketch;
   }
 
@@ -482,6 +507,7 @@ export class SketchCache {
 
   clear(): void {
     this.sketches.clear();
+    this.sequences.clear();
     this.computeCount = 0;
   }
 
