@@ -288,8 +288,8 @@ describe('Lysogeny Decision Circuit - Phase Portrait & Attractors', () => {
   });
 });
 
-describe('Lysogeny Decision Circuit - Fate Probability Prediction', () => {
-  it('predicts high lysogeny probability under high MOI and starvation', () => {
+describe('Lysogeny Decision Circuit - Teaching Fate Score', () => {
+  it('assigns a high lysogeny teaching score under high MOI and starvation', () => {
     const pred = predictLysogenyFate({ moi: 5.0, nutrients: 0.2, uv: 0.0 });
     expect(pred.probability).toBeGreaterThan(0.7);
     expect(pred.fate).toBe('lysogenic');
@@ -303,7 +303,7 @@ describe('Lysogeny Decision Circuit - Fate Probability Prediction', () => {
     expect(pred.factors.some(f => f.includes('UV/SOS'))).toBe(true);
   });
 
-  it('predicts 0% lysogeny for obligately lytic phages', () => {
+  it('uses a zero teaching score for explicitly supplied virulent lifecycle metadata', () => {
     const circuit = reconstructLysogenyCircuit(mockPhage({ lifecycle: 'virulent', name: 'T4' }));
     const pred = predictLysogenyFate({}, circuit);
     expect(pred.probability).toBe(0.0);
@@ -313,14 +313,15 @@ describe('Lysogeny Decision Circuit - Fate Probability Prediction', () => {
 });
 
 describe('Lysogeny Decision Circuit - Sequence & Gene Reconstruction', () => {
-  it('scans sequence for consensus sigma70 promoters and palindromic operators', () => {
-    // Synthetic sequence with a -35 box, 17bp spacer, and -10 box: TTGACA ... TATAAT
-    // and an operator TATCACCGCCAGTGGT
-    const testDna =
-      'AAAAATTGACAGGGGGAAAAAGGGGGGTATAATCCCCCCTATCACCGCAGGTGGTCCCCCCGCGCGCGCGCGCGCGCGCGCGTTTTTT';
-    const found = findRegulatoryElements(testDna);
-    expect(found.promoters.length).toBeGreaterThanOrEqual(1);
-    expect(found.operators.length).toBeGreaterThanOrEqual(1);
+  it('returns observed promoter and exact reference operator sequences', () => {
+    const promoter = 'TTGACA' + 'A'.repeat(17) + 'TATAAT';
+    const operator = 'TATCACCGCCAGAGGTA'; // Published lambda OR1; PMID 2949139.
+    const found = findRegulatoryElements('NN' + promoter + 'NN' + operator);
+    expect(found.promoters).toHaveLength(1);
+    expect(found.promoters[0]).toMatchObject({ position: 2, direction: '+', sequence: promoter, strength: null });
+    expect(found.operators).toHaveLength(1);
+    expect(found.operators[0]).toMatchObject({ position: 33, direction: '+', sequence: operator,
+      bindingAffinityCi: null, bindingAffinityCro: null });
   });
 
   it('reconstructs Lambda-like circuit when CI and Cro are present', () => {
@@ -342,8 +343,11 @@ describe('Lysogeny Decision Circuit - Sequence & Gene Reconstruction', () => {
     expect(circuit.genes.cro?.name).toBe('cro');
     expect(circuit.genes.cII?.name).toBe('cII');
     expect(circuit.genes.integrase?.name).toBe('int');
-    expect(circuit.promoters.length).toBeGreaterThanOrEqual(2);
-    expect(circuit.operators.length).toBeGreaterThanOrEqual(3);
+    expect(circuit.sequenceStatus).toBe('not-supplied');
+    expect(circuit.promoters).toEqual([]);
+    expect(circuit.operators).toEqual([]);
+    expect(circuit.confidence).toBeNull();
+    expect(circuit.summary).toContain('hypothesis');
   });
 
   it('identifies virulent phages without repressor as obligately lytic', () => {
@@ -387,7 +391,10 @@ describe('Lysogeny Decision Circuit - Simulation Integration', () => {
         mockGene({ name: 'cro', product: 'Cro repressor' }),
       ],
     });
-    let state = sim.init(phage);
+    let state = sim.init(phage, {}, undefined, { genomeSequence: 'A'.repeat(phage.genomeLength!) });
+    expect(state.modelVersion).toBe(3);
+    expect(state.circuitInfo?.sequenceStatus).toBe('scanned');
+    expect(state.circuitInfo?.operators).toEqual([]);
     expect(state.occupancy).toBeDefined();
     expect(state.circuitInfo).toBeDefined();
     expect(state.phasePortrait?.length).toBeGreaterThan(10);

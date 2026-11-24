@@ -41,10 +41,13 @@ const RESISTANCE_EXPERIMENT = {
     description: 'Uncalibrated teaching model with member-specific susceptibility and explicit infected cells; not an exact Gillespie SSA.' }],
 };
 const LYSOGENY_EXPERIMENT = {
-  version: '2',
-  implementation: 'adaptive RK4-v1; quasi-steady CII/RecA portrait; bounded residual-checked equilibria and full-Jacobian stability-v1; lcg32-v1',
-  references: [{ id: 'core-lysogeny-circuit', version: '2',
-    description: 'Bundled illustrative CI/Cro/CII/RecA kinetics and numerical equilibria; no empirical calibration or computed basin boundaries.' }],
+  version: '3',
+  implementation: 'exact genome and explicit CDS annotations; conservative both-strand regulatory motifs-v1; adaptive RK4-v1; quasi-steady CII/RecA portrait; bounded residual-checked equilibria and full-Jacobian stability-v1; lcg32-v1',
+  references: [{ id: 'core-lysogeny-circuit', version: '3',
+    description: 'Source-bound annotation hypotheses and observed motif candidates, separate from illustrative CI/Cro/CII/RecA kinetics and fate scores. No empirical calibration or computed basin boundaries.' },
+  { id: 'sigma70-boxes', version: 'doi:10.1128/JB.05947-11', description: 'Sigma70 box/spacer context; the exact motif scan is a restricted candidate rule, not a calibrated promoter predictor.' },
+  { id: 'lambda-OR1-sequence', version: 'PMID:2949139', description: 'Exact 17-base lambda OR1 reference sequence. An occurrence in another input is sequence evidence, not measured binding.' },
+  { id: 'intrinsic-termination', version: 'doi:10.1016/j.cell.2008.01.027', description: 'Hairpin/U-tract context; the restricted complementary GC-stem rule does not estimate termination efficiency.' }],
 };
 const PACKAGING_EXPERIMENT = {
   version: '2',
@@ -170,11 +173,13 @@ function simulationInput(phage: PhageFull | null) {
 }
 
 function simulationInputs(simId: SimulationId, phage: PhageFull | null, context?: SimulationContext) {
-  if (simId !== 'ribosome-traffic') return [simulationInput(phage)];
-  if (phage && !context) throw new Error('Ribosome experiments require the exact genome sequence and CDS selection.');
-  if (!phage && context) throw new Error('A synthetic ribosome demonstration cannot carry a genome input.');
+  if (simId !== 'ribosome-traffic' && simId !== 'lysogeny-circuit') return [simulationInput(phage)];
+  if (phage && !context) throw new Error('Sequence-based simulation experiments require the exact genome sequence and annotation selection.');
+  if (!phage && context) throw new Error('A synthetic simulation demonstration cannot carry a genome input.');
   return [{ ...simulationInput(phage),
-    description: 'Exact phage metadata, canonical annotations, genome bases and requested CDS selection supplied to the model; null selects the explicit synthetic demonstration.',
+    description: simId === 'ribosome-traffic'
+      ? 'Exact phage metadata, canonical annotations, genome bases and requested CDS selection supplied to the model; null selects the explicit synthetic demonstration.'
+      : 'Exact phage metadata, canonical CDS annotations and complete genome bases scanned for regulatory candidates; null selects the generic teaching model.',
     data: analysisJson({ phage, context: context ?? null }),
   }];
 }

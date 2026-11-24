@@ -3,7 +3,7 @@ import React from 'react';
 import { render, renderToString } from 'ink';
 import { PassThrough, Writable } from 'node:stream';
 import { stripVTControlCharacters } from 'node:util';
-import { importLocalGenomes, makePackagingSimulation, packagingStateAt, ribosomeTrafficSimulation, type RibosomeTrafficState, type PackagingMotorState } from '@phage-explorer/core';
+import { importLocalGenomes, makeLysogenySimulation, makePackagingSimulation, packagingStateAt, ribosomeTrafficSimulation, type LysogenyCircuitState, type RibosomeTrafficState, type PackagingMotorState } from '@phage-explorer/core';
 import { usePhageStore } from '@phage-explorer/state';
 import { SimulationHubOverlay } from './SimulationHubOverlay';
 import { SimulationView } from './SimulationView';
@@ -43,6 +43,51 @@ function terminal(element: React.ReactElement) {
     debug: true, patchConsole: false, exitOnCtrlC: false });
   return { ui, ready: () => ready, output: () => output, press: (value: string) => stdin.write(value) };
 }
+
+describe('terminal lysogeny source evidence', () => {
+  it('launches with the complete selected genome and exposes observed candidates with the model caveat', async () => {
+    const previous = usePhageStore.getState(), genome = await fixture();
+    const sequence = 'NNNTATCACCGCCAGAGGTANNN';
+    const phage = { ...genome.phage, genomeLength: sequence.length, genes: [] };
+    usePhageStore.setState({ currentPhage: phage });
+    let closed = 0;
+    const test = terminal(<SimulationHubOverlay genomeSequence={sequence} onClose={() => { closed++; }} />);
+    try {
+      await waitFor(test.ready); test.press('\r');
+      await waitFor(() => usePhageStore.getState().activeSimulationId === 'lysogeny-circuit');
+      const state = usePhageStore.getState().simulationState as LysogenyCircuitState;
+      expect(closed).toBe(1);
+      expect(state.modelVersion).toBe(3);
+      expect(state.circuitInfo?.sequenceLength).toBe(sequence.length);
+      expect(state.circuitInfo?.operators[0]).toMatchObject({ position: 3, direction: '+', sequence: 'TATCACCGCCAGAGGTA' });
+      const output = stripVTControlCharacters(renderToString(<SimulationView onClose={() => {}} />, { columns: 120 }));
+      expect(output).toContain('1 OR1-reference');
+      expect(output).toContain('teaching score=');
+      expect(output).toContain('fate score are uncalibrated');
+      expect(output).not.toContain('P(lyso)');
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+
+  it('preserves an accepted run when selected genome loading fails and launches after the source arrives', async () => {
+    const previous = usePhageStore.getState(), genome = await fixture();
+    const accepted = makeLysogenySimulation().init(null);
+    usePhageStore.setState({ activeSimulationId: 'lysogeny-circuit', simulationState: accepted });
+    let closed = 0;
+    const test = terminal(<SimulationHubOverlay genomeSequence={null} onClose={() => { closed++; }} />);
+    try {
+      await waitFor(test.ready); test.press('\r');
+      await waitFor(() => test.output().includes('complete selected genome'));
+      expect(closed).toBe(0);
+      expect(usePhageStore.getState().simulationState).toBe(accepted);
+      test.ui.rerender(<SimulationHubOverlay genomeSequence={genome.sequence} onClose={() => { closed++; }} />);
+      await flush(); test.press('\r'); await waitFor(() => closed === 1);
+      const state = usePhageStore.getState().simulationState as LysogenyCircuitState;
+      expect(state.circuitInfo?.sequenceStatus).toBe('scanned');
+      expect(state.circuitInfo?.sequenceLength).toBe(genome.sequence.length);
+      expect(state.circuitInfo?.operators).toEqual([]);
+    } finally { test.ui.unmount(); usePhageStore.setState(previous); }
+  });
+});
 
 describe('terminal exact-CDS ribosome simulation', () => {
   it('launches the selected reverse joined CDS and displays the actual coding model', async () => {

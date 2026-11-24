@@ -1,7 +1,8 @@
-import { makePackagingSimulation, makeResistanceSimulation } from '../../../core/src/simulation-implementations';
+import { makeLysogenySimulation, makePackagingSimulation, makeResistanceSimulation } from '../../../core/src/simulation-implementations';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import type { PackagingMotorState, ResistanceCocktailState } from '../../../core/src/simulation';
+import type { LysogenyCircuitState, PackagingMotorState, ResistanceCocktailState } from '../../../core/src/simulation';
 import { describe, it } from 'bun:test';
+import type { PhageFull } from '../../../core/src/types';
 import assert from 'node:assert/strict';
 import type { Simulation, SimState, PlaqueAutomataState } from './types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_BATCH_STEPS, createSimulationExperimentRecord,
@@ -132,6 +133,58 @@ describe('worker-independent seeded simulations', () => {
     const metadata = getSimulationRandomState(state);
     metadata.cursor = 0;
     assert.notEqual(getSimulationRandomState(state).cursor, 0);
+  });
+});
+
+
+describe('lysogeny source-bound worker checkpoints', () => {
+  const simulation = makeLysogenySimulation() as unknown as Simulation;
+  const genomeSequence = 'TATCACCGCCAGAGGTA';
+  const phage: PhageFull = { id: 31, accession: 'LOCAL_REGULATION', slug: 'regulatory-fixture',
+    name: 'Regulatory fixture', family: null, host: null, genomeLength: genomeSequence.length,
+    gcContent: null, morphology: null, lifecycle: null, description: null, baltimoreGroup: null,
+    genomeType: 'dsDNA', pdbIds: [], hasModel: false, codonUsage: null, genes: [] };
+
+  it('rejects missing/mismatched source and obsolete checkpoints, with generic simulations still available', async () => {
+    const api = createSimulationAPI([simulation]);
+    await assert.rejects(api.init({ simId: simulation.id, phage, seed: 0 }), /complete selected genome/);
+    await assert.rejects(api.init({ simId: simulation.id, phage, seed: 0,
+      context: { genomeSequence: genomeSequence.slice(1) } }), /complete selected genome/);
+    await assert.rejects(api.init({ simId: simulation.id, seed: 0,
+      context: { genomeSequence } }), /matching phage/);
+    const generic = await api.init({ simId: simulation.id, seed: 0 }) as LysogenyCircuitState;
+    assert.equal(generic.circuitInfo?.sequenceStatus, 'not-supplied');
+    assert.deepEqual(generic.circuitInfo?.operators, []);
+    const observed = await api.init({ simId: simulation.id, phage, context: { genomeSequence }, seed: 0 }) as LysogenyCircuitState;
+    assert.equal(observed.modelVersion, 3);
+    assert.equal(observed.circuitInfo?.operators[0].sequence, genomeSequence);
+    for (const modelVersion of [undefined, 1, 2]) {
+      await assert.rejects(api.step({ state: { ...observed, modelVersion } as unknown as SimState, dt: 1 }), /checkpoint/);
+    }
+  });
+
+  it('preserves exact source evidence and unchanged model kinetics across worker migration', async () => {
+    const first = createSimulationAPI([simulation]), fresh = createSimulationAPI([simulation]);
+    const initial = await first.init({ simId: simulation.id, phage, context: { genomeSequence }, seed: 42 });
+    const whole = await first.step({ state: initial, dt: 1 });
+    const migrated = await fresh.step({ state: structuredClone(initial), dt: 1 });
+    assert.deepEqual(migrated, whole);
+    assert.deepEqual((whole as LysogenyCircuitState).circuitInfo, (initial as LysogenyCircuitState).circuitInfo);
+    const record = await createSimulationExperimentRecord({
+      simId: simulation.id, phage, context: { genomeSequence }, seed: 42, parameters: initial.params,
+      stepDeltas: [1], initialState: initial, finalState: whole,
+    });
+    assert.equal(record.method.version, '3');
+    assert.equal(record.references[0].version, '3');
+    assert.match(record.method.implementation, /exact genome/);
+    const content = serializeAnalysisRecord(record);
+    await parseSimulationExperiment(content, simulation.id, phage, { genomeSequence });
+    await assert.rejects(parseSimulationExperiment(content, simulation.id, phage,
+      { genomeSequence: 'A' + genomeSequence.slice(1) }), /input differs/);
+    await assert.rejects(parseSimulationExperiment(content, simulation.id, phage), /exact genome/);
+    const previous = await createAnalysisRecord({ ...record, method: { ...record.method, version: '2' } });
+    await assert.rejects(parseSimulationExperiment(serializeAnalysisRecord(previous), simulation.id, phage,
+      { genomeSequence }), /version/i);
   });
 });
 

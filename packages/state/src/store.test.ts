@@ -533,6 +533,7 @@ describe('PhageExplorerStore - Simulation Controls', () => {
   // Mock simulation state that satisfies LysogenyCircuitState
   const mockSimState = {
     type: 'lysogeny-circuit' as const,
+    modelVersion: 3 as const,
     time: 0,
     running: false,
     speed: 1,

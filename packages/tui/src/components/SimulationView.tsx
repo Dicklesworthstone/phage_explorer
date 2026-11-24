@@ -34,10 +34,16 @@ function renderDetails(sim: Simulation, state: SimState): React.ReactElement {
   switch (state.type) {
     case 'lysogeny-circuit':
       return (
-        <Text>
-          CI {state.ci.toFixed(2)} · Cro {state.cro.toFixed(2)} · Phase {state.phase}
-          {'  '}CI/Cro trend {spark(state.history.map(h => h.ci - h.cro))}
-        </Text>
+        <Box flexDirection="column">
+          <Text>CI {state.ci.toFixed(2)} · Cro {state.cro.toFixed(2)} · Model phase {state.phase}
+            {'  '}CI/Cro trend {spark(state.history.map(h => h.ci - h.cro))}</Text>
+          <Text>{state.circuitInfo?.summary}</Text>
+          <Text>Regulatory scan: {state.circuitInfo?.sequenceStatus === 'scanned'
+            ? `${state.circuitInfo.sequenceLength} bases; ${state.circuitInfo.promoters.length} promoter, ${state.circuitInfo.operators.length} OR1-reference, ${state.circuitInfo.terminators.length} hairpin/T-tail candidates`
+            : 'No genome supplied; generic teaching model.'}</Text>
+          <Text>Both strands, linear coordinates, restricted motif rules. No match does not exclude regulation.</Text>
+          <Text>Concentrations, model-site occupancy and fate score are uncalibrated assumptions.</Text>
+        </Box>
       );
     case 'ribosome-traffic':
       return <RibosomeTrafficView state={state} />;

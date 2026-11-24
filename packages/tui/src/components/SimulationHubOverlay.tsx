@@ -66,8 +66,8 @@ export function SimulationHubOverlay({ onClose, genomeSequence }: SimulationHubO
         }
         try {
           // Build from the owned input before replacing any accepted simulation.
-          const context = sim.id === 'ribosome-traffic' && genomeSequence !== null
-            ? { genomeSequence, ...(chosenGene ? { geneId: chosenGene.id } : {}) } : undefined;
+          const context = (sim.id === 'ribosome-traffic' || sim.id === 'lysogeny-circuit') && currentPhage && genomeSequence !== null
+            ? { genomeSequence, ...(sim.id === 'ribosome-traffic' && chosenGene ? { geneId: chosenGene.id } : {}) } : undefined;
           const initial = sim.init(currentPhage, undefined, undefined, context);
           if (activeSim) closeSimulation();
           launchSimulation(sim.id, initial);
@@ -125,6 +125,12 @@ export function SimulationHubOverlay({ onClose, genomeSequence }: SimulationHubO
                   <Text color="#e5e7eb">CDS: {chosenGene?.locusTag ?? chosenGene?.name ?? chosenGene?.product ?? 'unavailable'} · ←/→ choose</Text>
                   <Text color="#9ca3af">Exact coding order; codon-frequency teaching model, not measured translation rates.</Text>
                   {genomeSequence === null && <Text color="#f87171">Wait for this genome sequence to finish loading.</Text>}
+                </>
+              )}
+              {selectedMeta.id === 'lysogeny-circuit' && (
+                <>
+                  <Text color="#9ca3af">Scans the complete genome for regulatory candidates. The toggle and fate score remain teaching models.</Text>
+                  {currentPhage && genomeSequence === null && <Text color="#f87171">Wait for this genome sequence to finish loading.</Text>}
                 </>
               )}
               <Text color="#9ca3af" dimColor>

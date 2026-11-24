@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { LysogenyVisualizer } from './LysogenyVisualizer';
 import {
   makeLysogenySimulation,
   derivePhageSimDefaults,
@@ -74,7 +77,43 @@ function mockPhage(overrides: Partial<PhageFull> = {}): PhageFull {
 }
 
 describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
-  it('reconstructs the genetic decision circuit with Lambda architecture and operator sites', () => {
+  it('renders observed coordinates and DNA separately from the uncalibrated model score', () => {
+    const genomeSequence = 'NNNNTACCTCTGGCGGTGATA'; // Reverse-strand lambda OR1 reference.
+    const phage = mockPhage({ genomeLength: genomeSequence.length, genes: [], lifecycle: null });
+    const state = makeLysogenySimulation().init(phage, {}, undefined, { genomeSequence });
+    const markup = renderToStaticMarkup(createElement(LysogenyVisualizer, { state }));
+    expect(markup).toContain('Genome regulatory evidence');
+    expect(markup).toContain('21 bases scanned');
+    expect(markup).toContain('Observed regulatory motif candidates');
+    expect(markup).toContain('5–21');
+    expect(markup).toContain('<td>-</td>');
+    expect(markup).toContain('TATCACCGCCAGAGGTA');
+    expect(markup).toContain('lambda_OR1_sequence_match_4_-');
+    expect(markup).toContain('Teaching score:');
+    expect(markup).toContain('not a measured probability');
+    expect(markup).toContain('Illustrative Operator Model');
+    expect(markup).not.toContain('P(lysogeny)');
+    const unavailable = renderToStaticMarkup(createElement(LysogenyVisualizer, {
+      state: { ...state, predictedProbability: undefined },
+    }));
+    expect(unavailable).toContain('Unavailable');
+  });
+
+  it('makes a negative scan explicit and bounds only the visible table, not the exported evidence', () => {
+    const sim = makeLysogenySimulation();
+    const genomeSequence = Array(51).fill('TATCACCGCCAGAGGTA').join('N');
+    const phage = mockPhage({ genomeLength: genomeSequence.length, genes: [], lifecycle: null });
+    const state = sim.init(phage, {}, undefined, { genomeSequence });
+    const markup = renderToStaticMarkup(createElement(LysogenyVisualizer, { state }));
+    expect(state.circuitInfo?.operators).toHaveLength(51);
+    expect(markup.match(/<tr>/g)).toHaveLength(51); // Header plus the first 50 candidates.
+    expect(markup).toContain('The table shows the first 50');
+    const empty = sim.init(phage, {}, undefined, { genomeSequence: 'A'.repeat(genomeSequence.length) });
+    expect(renderToStaticMarkup(createElement(LysogenyVisualizer, { state: empty })))
+      .toContain('this does not establish an absence of regulation');
+  });
+
+  it('retains a Lambda annotation hypothesis without inventing genomic operator sites', () => {
     const phage = mockPhage();
     const circuit = reconstructLysogenyCircuit(phage);
 
@@ -85,18 +124,16 @@ describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
     expect(circuit.genes.cII?.name).toBe('cII');
     expect(circuit.genes.integrase?.name).toBe('int');
 
-    // Promoters & operators populated
-    expect(circuit.promoters.some((p) => p.name === 'PRM')).toBe(true);
-    expect(circuit.promoters.some((p) => p.name === 'PR')).toBe(true);
-    expect(circuit.operators.some((o) => o.name === 'OR1')).toBe(true);
-    expect(circuit.operators.some((o) => o.name === 'OR2')).toBe(true);
-    expect(circuit.operators.some((o) => o.name === 'OR3')).toBe(true);
+    expect(circuit.promoters).toEqual([]);
+    expect(circuit.operators).toEqual([]);
+    expect(circuit.sequenceStatus).toBe('not-supplied');
+    expect(circuit.confidence).toBeNull();
   });
 
   it('initializes simulation state with phase portrait vector field, nullclines, and attractors', () => {
     const sim = makeLysogenySimulation();
     const phage = mockPhage();
-    const state: LysogenyCircuitState = sim.init(phage);
+    const state: LysogenyCircuitState = sim.init(phage, {}, undefined, { genomeSequence: 'A'.repeat(phage.genomeLength!) });
 
     expect(state.type).toBe('lysogeny-circuit');
     expect(state.phase).toBe('undecided');
@@ -126,7 +163,7 @@ describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
 
   it('keeps the zero-decay simulation usable without invented equilibria or Cro nullclines', () => {
     const sim = makeLysogenySimulation();
-    const state = sim.init(mockPhage(), { decay: 0 });
+    const state = sim.init(mockPhage(), { decay: 0 }, undefined, { genomeSequence: 'A'.repeat(48502) });
     expect(state.attractors).toEqual([]);
     expect(state.nullclines!.croNullcline).toEqual([]);
     const next = sim.step(state, 1);
@@ -137,7 +174,7 @@ describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
   it('updates state dynamically through step simulation with trajectory history', () => {
     const sim = makeLysogenySimulation();
     const phage = mockPhage();
-    let state = sim.init(phage, { moi: 3.5, nutrients: 1.2 });
+    let state = sim.init(phage, { moi: 3.5, nutrients: 1.2 }, undefined, { genomeSequence: 'A'.repeat(phage.genomeLength!) });
 
     // Step forward 10 times
     for (let i = 0; i < 10; i++) {
@@ -152,7 +189,7 @@ describe('LysogenyVisualizer & Circuit Reconstructor (Roadmap #34)', () => {
     expect(state.predictedProbability).toBeGreaterThan(0.6);
   });
 
-  it('correctly predicts 0% lysogeny when presented with virulent obligate lytic phage T4', () => {
+  it('selects the declared virulent teaching preset without inferring it from a phage name', () => {
     const t4 = mockPhage({
       name: 'Enterobacteria phage T4',
       lifecycle: 'virulent',

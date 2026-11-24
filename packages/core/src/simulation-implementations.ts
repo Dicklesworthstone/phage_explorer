@@ -336,7 +336,7 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
   return {
     id: 'lysogeny-circuit',
     name: 'Lysogeny Decision Circuit',
-    description: 'Bistable CI/Cro toggle; MOI and UV tip the switch.',
+    description: 'Illustrative CI/Cro toggle with source-backed annotation and motif candidates; kinetic rates and fate scores are uncalibrated.',
     controls: STANDARD_CONTROLS,
     parameters: [
       { id: 'moi', label: 'Multiplicity of infection', type: 'number', min: 0.1, max: 5, step: 0.1, defaultValue: 1 },
@@ -347,8 +347,12 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
       { id: 'decay', label: 'Protein decay', type: 'number', min: 0.01, max: 0.3, step: 0.01, defaultValue: 0.05 },
       { id: 'hill', label: 'Hill cooperativity', type: 'number', min: 1, max: 4, step: 0.2, defaultValue: 2 },
     ],
-    init: (phage, params): LysogenyCircuitState => {
-      const circuit = reconstructLysogenyCircuit(phage);
+    init: (phage, params, _rng, context): LysogenyCircuitState => {
+      if (phage && (!context || typeof context.genomeSequence !== 'string' || !context.genomeSequence.length)) {
+        throw new Error('Load the complete selected genome sequence before starting the lysogeny circuit.');
+      }
+      if (!phage && context) throw new Error('A lysogeny genome input requires its matching phage metadata.');
+      const circuit = reconstructLysogenyCircuit(phage, context?.genomeSequence);
       const derived = deriveLysogenyCircuitParams(phage);
       const base = getDefaultParams([
         { id: 'moi', label: '', type: 'number', defaultValue: 1 },
@@ -377,6 +381,7 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
 
       return {
         type: 'lysogeny-circuit',
+        modelVersion: 3,
         time: 0,
         running: true,
         speed: 1,
@@ -398,6 +403,7 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
       };
     },
     step: (state: LysogenyCircuitState, dt: number): LysogenyCircuitState => {
+      if (state.modelVersion !== 3) throw new Error('Unsupported lysogeny checkpoint; reset with the current source evidence model.');
       const simResult = simulateSwitchStep(state, dt, state.params);
       if (dt === 0) return state;
       const predicted = predictLysogenyFate(state.params, state.circuitInfo);
@@ -430,7 +436,7 @@ export function makeLysogenySimulation(): Simulation<LysogenyCircuitState> {
     getSummary: (state) => {
       const pred =
         state.predictedProbability !== undefined
-          ? ` · P(lyso)=${(state.predictedProbability * 100).toFixed(0)}%`
+          ? ` · teaching score=${state.predictedProbability.toFixed(2)}`
           : '';
       return `t=${state.time.toFixed(0)} CI=${state.ci.toFixed(2)} Cro=${state.cro.toFixed(2)} · ${state.phase}${pred}`;
     },

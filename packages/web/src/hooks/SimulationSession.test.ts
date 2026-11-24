@@ -2,10 +2,10 @@ import { makePackagingSimulation, makeResistanceSimulation } from '../../../core
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, ribosomeTrafficSimulation, SPEED_OPTIONS, makeLysogenySimulation,
-  type PhageFull, type AnalysisRecord, type RibosomeTrafficState, type ResistanceCocktailState, type PackagingMotorState } from '@phage-explorer/core';
+  type PhageFull, type AnalysisRecord, type LysogenyCircuitState, type RibosomeTrafficState, type ResistanceCocktailState, type PackagingMotorState } from '@phage-explorer/core';
 import type { Simulation, SimState, PlaqueAutomataState, SimInitParams } from '../workers/types';
 import { createSimulationAPI, getSimulationRandomState, MAX_SIMULATION_EXPERIMENT_STEPS, simulationStateJson } from '../workers/simulation-runtime';
-import { SimulationSession, loadRibosomeSimulationInput, type SimulationInput } from './SimulationSession';
+import { SimulationSession, loadSequenceSimulationInput, type SimulationInput } from './SimulationSession';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -121,7 +121,7 @@ describe('lysogeny numerical-method replay', () => {
     const target = new SimulationSession('lysogeny-circuit', null, () => service, {}, 1);
     await source.activate(); await source.step();
     const content = await source.exportExperiment(), record = await parseAnalysisRecord(content);
-    assert.equal(record.method.version, '2');
+    assert.equal(record.method.version, '3');
     assert.match(record.method.implementation, /residual-checked/);
     await target.activate(); await target.replayExperiment(content);
     assert.equal(target.getSnapshot().error, null);
@@ -136,10 +136,141 @@ describe('lysogeny numerical-method replay', () => {
   });
 });
 
+describe('lysogeny source input and experiment replay', () => {
+  const genomeSequence = 'NNNTATCACCGCCAGAGGTANNNTTGACA' + 'A'.repeat(17) + 'TATAATNN';
+  const phage: PhageFull = { ...codingPhage, name: 'Regulatory source fixture', genomeLength: genomeSequence.length,
+    genes: [
+      { ...codingPhage.genes[0], id: 1, name: 'cI', locusTag: 'ci', product: 'CI repressor', startPos: 0, endPos: 9 },
+      { ...codingPhage.genes[0], id: 2, name: 'cro', locusTag: 'cro', product: 'Cro repressor', startPos: 9, endPos: 18 },
+      { ...codingPhage.genes[0], id: 3, name: 'cII', locusTag: 'cii', product: 'CII activator', startPos: 18, endPos: 27 },
+    ] };
+  const input = (): SimulationInput => ({ phage: structuredClone(phage), context: { genomeSequence } });
+  const service = () => {
+    const api = createSimulationAPI([makeLysogenySimulation() as unknown as Simulation<SimState>]);
+    return {
+      getSimulationMetadata: (id: Simulation['id']) => api.getMetadata(id),
+      initSimulation: (params: SimInitParams) => api.init(params),
+      stepSimulation: (state: SimState, dt: number) => api.step({ state, dt }),
+    };
+  };
+
+  it('loads exact source and chooses teaching defaults from canonical genes rather than stale summary genes', async () => {
+    const selected = { ...phage, genes: [] };
+    const session = new SimulationSession('lysogeny-circuit', selected, service, { ciProd: 0.8, hill: 2 }, 3,
+      signal => loadSequenceSimulationInput({
+        getFullGenomeLength: async () => genomeSequence.length,
+        getSequenceWindow: async () => genomeSequence,
+        getGenes: async () => phage.genes,
+      }, selected, undefined, signal));
+    try {
+      await session.activate();
+      assert.equal(session.getSnapshot().error, null);
+      const state = session.getSnapshot().state as LysogenyCircuitState;
+      assert.equal(state.modelVersion, 3);
+      assert.equal(state.params.ciProd, 0.9);
+      assert.equal(state.params.hill, 2.2);
+      assert.equal(state.circuitInfo?.sequenceLength, genomeSequence.length);
+      assert.equal(state.circuitInfo?.operators[0].position, 3);
+      assert.equal(state.circuitInfo?.operators[0].sequence, 'TATCACCGCCAGAGGTA');
+      assert.equal(state.circuitInfo?.promoters.length, 1);
+      assert.equal(state.circuitInfo?.operators[0].bindingAffinityCi, null);
+      const record = await parseAnalysisRecord(await session.exportExperiment());
+      assert.equal(record.method.version, '3');
+      assert.deepEqual(record.inputs[0].data, analysisJson({ phage, context: { genomeSequence } }));
+    } finally { session.deactivate(); }
+  });
+
+  it('keeps unavailable/cancelled sources out of the accepted run and snapshots source evidence for resets', async () => {
+    let attempts = 0;
+    const acceptedInput = input();
+    const session = new SimulationSession('lysogeny-circuit', phage, service, {}, 3, async () => {
+      if (++attempts === 1) throw new Error('Selected source unavailable');
+      return acceptedInput;
+    });
+    const missing = new SimulationSession('lysogeny-circuit', phage, service, {}, 4);
+    try {
+      await missing.activate();
+      assert.match(missing.getSnapshot().error!, /complete selected genome/);
+      assert.equal(missing.getSnapshot().state, null);
+      await session.activate();
+      assert.match(session.getSnapshot().error!, /Selected source unavailable/);
+      assert.equal(session.getSnapshot().state, null);
+      await session.init();
+      const circuit = (session.getSnapshot().state as LysogenyCircuitState).circuitInfo;
+      acceptedInput.context!.genomeSequence = 'A'.repeat(genomeSequence.length);
+      acceptedInput.phage!.genes.length = 0;
+      await session.setParam('uv', 0.4);
+      assert.deepEqual((session.getSnapshot().state as LysogenyCircuitState).circuitInfo, circuit);
+      await session.reset();
+      assert.deepEqual((session.getSnapshot().state as LysogenyCircuitState).circuitInfo, circuit);
+      assert.equal(attempts, 2);
+    } finally { session.deactivate(); missing.deactivate(); }
+
+    const pending = deferred<SimulationInput>();
+    let signal: AbortSignal | undefined;
+    const cancelled = new SimulationSession('lysogeny-circuit', phage, service, {}, 3, current => {
+      signal = current; return pending.promise;
+    });
+    try {
+      const activating = cancelled.activate(); await flush();
+      cancelled.cancel(); assert.equal(signal?.aborted, true);
+      pending.resolve(input()); await activating;
+      assert.equal(cancelled.getSnapshot().state, null);
+      assert.equal(cancelled.getSnapshot().isLoading, false);
+    } finally { cancelled.deactivate(); }
+  });
+
+  it('replays version 3 source evidence and rejects changed bases, changed annotations and old versions before compute', async () => {
+    const source = new SimulationSession('lysogeny-circuit', phage, service, {}, 7, async () => input());
+    const targetService = service();
+    const target = new SimulationSession('lysogeny-circuit', phage, () => targetService, {}, 42, async () => input());
+    try {
+      await source.activate();
+      for (const delta of [0.25, 0.5, 1]) { source.setSpeed(delta); await source.step(); }
+      const content = await source.exportExperiment();
+      await target.activate(); await target.replayExperiment(content);
+      assert.equal(target.getSnapshot().error, null);
+      assert.deepEqual(target.getSnapshot().state, source.getSnapshot().state);
+      assert.equal((await parseAnalysisRecord(await target.exportExperiment())).resultId,
+        (await parseAnalysisRecord(content)).resultId);
+      const accepted = target.getSnapshot().state;
+      let calls = 0;
+      const originalInit = targetService.initSimulation;
+      targetService.initSimulation = params => { calls++; return originalInit(params); };
+      for (const version of ['1', '2']) {
+        await target.replayExperiment(await rewriteRecord(content, old => { old.method.version = version; }));
+        assert.match(target.getSnapshot().error!, /incompatible/);
+        assert.strictEqual(target.getSnapshot().state, accepted);
+      }
+      assert.equal(calls, 0);
+
+      const changedBases = input();
+      changedBases.context!.genomeSequence = 'A' + genomeSequence.slice(1);
+      const changedAnnotations = input();
+      changedAnnotations.phage!.genes[2].product = 'unverified CII annotation';
+      for (const changedInput of [changedBases, changedAnnotations]) {
+        const changedService = service();
+        const changed = new SimulationSession('lysogeny-circuit', phage, () => changedService, {}, 7, async () => changedInput);
+        try {
+          await changed.activate();
+          const previous = changed.getSnapshot().state;
+          let initializations = 0;
+          const init = changedService.initSimulation;
+          changedService.initSimulation = params => { initializations++; return init(params); };
+          await changed.replayExperiment(content);
+          assert.match(changed.getSnapshot().error!, /input|genome|selection/i);
+          assert.strictEqual(changed.getSnapshot().state, previous);
+          assert.equal(initializations, 0);
+        } finally { changed.deactivate(); }
+      }
+    } finally { source.deactivate(); target.deactivate(); }
+  });
+});
+
 describe('sequence-grounded simulation input and replay', () => {
   it('loads exact bases and canonical genes together instead of stale summary annotations', async () => {
     const calls: unknown[] = [];
-    const input = await loadRibosomeSimulationInput({
+    const input = await loadSequenceSimulationInput({
       getFullGenomeLength: async id => { calls.push(['length', id]); return codingSequence.length; },
       getSequenceWindow: async (...args) => { calls.push(['sequence', ...args]); return codingSequence; },
       getGenes: async id => { calls.push(['genes', id]); return codingPhage.genes; },
@@ -161,13 +292,13 @@ describe('sequence-grounded simulation input and replay', () => {
       getSequenceWindow: async () => { downstream++; return codingSequence.slice(1); },
       getGenes: async () => { downstream++; return codingPhage.genes; },
     };
-    const reading = loadRibosomeSimulationInput(repository, codingPhage, 7, controller.signal);
+    const reading = loadSequenceSimulationInput(repository, codingPhage, 7, controller.signal);
     controller.abort(); pending.resolve(18);
     await assert.rejects(reading, /abort/i);
     assert.equal(downstream, 0);
-    await assert.rejects(loadRibosomeSimulationInput(repository, codingPhage, 7, new AbortController().signal), /incomplete/);
+    await assert.rejects(loadSequenceSimulationInput(repository, codingPhage, 7, new AbortController().signal), /incomplete/);
     for (const length of [0, NaN, 1.5, 5000001]) {
-      await assert.rejects(loadRibosomeSimulationInput({ ...repository, getFullGenomeLength: async () => length },
+      await assert.rejects(loadSequenceSimulationInput({ ...repository, getFullGenomeLength: async () => length },
         codingPhage, 7, new AbortController().signal), /genome of/);
     }
     assert.equal(downstream, 2);

@@ -5,7 +5,7 @@ import { derivePhageSimDefaults, nextSpeed, prevSpeed } from '@phage-explorer/co
 import { getOrchestrator } from '../workers';
 import type { SimulationId } from '../workers/types';
 import type { PhageRepository } from '../db';
-import { SimulationSession, loadRibosomeSimulationInput, type SimulationSnapshot } from './SimulationSession';
+import { SimulationSession, loadSequenceSimulationInput, type SimulationSnapshot } from './SimulationSession';
 
 export interface SimulationControls {
   init: (params?: Record<string, number | boolean | string>) => Promise<void>;
@@ -37,9 +37,9 @@ export function useSimulation(simId: SimulationId, enabled = true, repository: P
   const session = useMemo(() => new SimulationSession(
     simId, currentPhage, getOrchestrator, derivePhageSimDefaults(simId, currentPhage),
     undefined,
-    simId === 'ribosome-traffic' && currentPhage ? async signal => {
-      if (!repository) throw new Error('Load the selected genome repository before starting ribosome traffic.');
-      return loadRibosomeSimulationInput(repository, currentPhage, geneId, signal);
+    (simId === 'ribosome-traffic' || simId === 'lysogeny-circuit') && currentPhage ? async signal => {
+      if (!repository) throw new Error('Load the selected genome repository before starting this sequence-based simulation.');
+      return loadSequenceSimulationInput(repository, currentPhage, simId === 'ribosome-traffic' ? geneId : undefined, signal);
     } : undefined,
   ), [simId, currentPhage, repository, geneId]);
   const snapshot = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);

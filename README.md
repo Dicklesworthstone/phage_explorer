@@ -658,14 +658,36 @@ censored analyses use version 2.
 The Simulation Hub (`Shift+S`) provides interactive models of phage biology with adjustable parameters and real-time visualization.
 
 ### 1. Lysogeny Decision Circuit
-**Model:** ODE system of Lambda lysis-lysogeny bistable switch
-**State variables:** CI and Cro repressor concentrations
-**Parameters:**
-- Hill cooperativity (n=1-4) — controls switch steepness
-- MOI (multiplicity of infection) — tips balance toward lysogeny
-- UV damage — triggers lytic induction
 
-**Output:** Phase classification (lysogenic/lytic/undecided) with time-series history
+Open the Simulation Hub after selecting a genome. The browser and terminal
+load its complete sequence and CDS annotations before starting. A missing or
+incomplete selected source is reported; a generic demonstration is available
+when no genome is selected.
+
+**Genome evidence:** Explicit CDS labels provide candidate CI, Cro, CII, CIII,
+antiterminator and integration roles. The scanner searches both strands for
+restricted sigma70 box pairs with 15–19-base spacers, the exact published lambda
+OR1 sequence, and complementary GC stems followed by T tracts. The browser's
+**Genome regulatory evidence** section shows the observed DNA, strand and
+1-based interval. It displays the first 50 candidates; experiment exports retain
+all accepted candidates and exact source bases. Scans cover linear coordinates,
+up to 5 million bases and 10,000 candidates. They do not span circular origins,
+and no match does not establish an absence of regulation. Binding affinities,
+promoter strengths and termination efficiencies remain unknown.
+
+**Model:** An illustrative CI/Cro/CII/RecA* ODE switch with adjustable MOI,
+nutrients, UV damage, synthesis, decay and cooperativity. Phase portraits show
+the quasi-steady vector field, sampled nullcline zeros and verified equilibria;
+time-series trajectories use the full system. The three-site operator display
+is a generic model, separate from observed genomic sites. The displayed fate
+score is an uncalibrated teaching score, not an infection probability. Annotation
+labels select teaching presets without establishing circuit function or kinetic
+rates; phage names and missing genes do not prove obligate lysis.
+
+**Replay:** Browser experiment version 3 binds the full input sequence,
+annotations, parameters and accepted steps. Reopening requires the same source.
+Older lysogeny experiment/checkpoint versions must be restarted because they do
+not carry the current source evidence model.
 
 ### 2. Ribosome Traffic Simulator
 

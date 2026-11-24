@@ -70,6 +70,7 @@ export interface SimStateBase {
  */
 export interface LysogenyCircuitState extends SimStateBase {
   type: 'lysogeny-circuit';
+  modelVersion: 3;
   /** CI repressor concentration */
   ci: number;
   /** Cro repressor concentration */
@@ -84,7 +85,7 @@ export interface LysogenyCircuitState extends SimStateBase {
   phase: 'lysogenic' | 'lytic' | 'undecided';
   /** Operator occupancy state and promoter activities */
   occupancy?: OperatorOccupancy;
-  /** Predicted lysogeny fate probability */
+  /** Uncalibrated logistic teaching score in [0,1], not an infection probability. */
   predictedProbability?: number;
   /** Factors influencing fate decision */
   predictionFactors?: string[];

@@ -5,7 +5,7 @@
  * 1. 2D Phase Portrait (CI vs Cro) with vector field, nullclines, attractors, and live trajectory
  * 2. Time Series Dynamics of CI, Cro, CII, and RecA*
  * 3. Shea-Ackers Operator Occupancy model (OR1, OR2, OR3) and promoter activities (PRM, PR)
- * 4. Genomic switch architecture detection and lysogeny fate probability gauge
+ * 4. Source-bound regulatory candidates and an explicitly uncalibrated teaching score
  */
 
 import React, { useMemo, useRef, useEffect, useState } from 'react';
@@ -377,7 +377,7 @@ export function LysogenyVisualizer({
 
   const occupancy = state.occupancy;
   const circuit = state.circuitInfo;
-  const prob = state.predictedProbability ?? (state.phase === 'lysogenic' ? 0.85 : state.phase === 'lytic' ? 0.15 : 0.5);
+  const score = state.predictedProbability;
   const factors = state.predictionFactors ?? [];
 
   const phaseColors: Record<string, string> = {
@@ -388,7 +388,7 @@ export function LysogenyVisualizer({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-      {/* Top Header: Decision Fate, P(Lysogeny), and Architecture */}
+      {/* Model phase, uncalibrated score, and annotation hypothesis */}
       <div
         style={{
           display: 'flex',
@@ -422,7 +422,7 @@ export function LysogenyVisualizer({
               letterSpacing: '0.05em',
             }}
           >
-            FATE: {state.phase.toUpperCase()}
+            MODEL PHASE: {state.phase.toUpperCase()}
           </span>
 
           {circuit && (
@@ -432,20 +432,20 @@ export function LysogenyVisualizer({
               title={circuit.summary}
             >
               {circuit.architecture === 'lambda-like'
-                ? 'λ Classical Toggle'
+                ? 'CI/Cro annotation hypothesis'
                 : circuit.architecture === 'temperate'
-                  ? 'Temperate Switch'
+                  ? 'Temperate annotation hypothesis'
                   : circuit.architecture === 'obligately-lytic'
-                    ? 'Obligately Lytic'
-                    : 'Atypical Circuit'}
+                    ? 'Lytic lifecycle metadata'
+                    : 'Unresolved architecture'}
             </Badge>
           )}
         </div>
 
-        {/* Center: Lysogeny Probability Gauge */}
+        {/* Separate illustrative score; it is not an infection probability. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: '180px' }}>
           <span style={{ fontFamily: 'monospace', fontSize: '0.75rem', color: colors.textMuted }}>
-            P(lyso):
+            Teaching score:
           </span>
           <div
             style={{
@@ -456,11 +456,11 @@ export function LysogenyVisualizer({
               overflow: 'hidden',
               display: 'flex',
             }}
-            title={`Predicted Lysogeny Probability: ${(prob * 100).toFixed(1)}%`}
+            title="Uncalibrated logistic teaching score, not a measured probability of infection fate"
           >
             <div
               style={{
-                width: `${Math.round(prob * 100)}%`,
+                width: `${Math.round((score ?? 0) * 100)}%`,
                 height: '100%',
                 backgroundColor: ciColor,
                 transition: 'width 0.2s ease',
@@ -472,10 +472,10 @@ export function LysogenyVisualizer({
               fontFamily: 'monospace',
               fontSize: '0.78rem',
               fontWeight: 'bold',
-              color: prob > 0.5 ? ciColor : croColor,
+              color: score !== undefined && score > 0.5 ? ciColor : croColor,
             }}
           >
-            {(prob * 100).toFixed(0)}%
+            {score?.toFixed(2) ?? 'Unavailable'}
           </span>
         </div>
 
@@ -486,6 +486,40 @@ export function LysogenyVisualizer({
           {state.cII !== undefined && <span style={{ color: cIIColor }}>CII: {state.cII.toFixed(2)}</span>}
         </div>
       </div>
+
+      {circuit && (
+        <details style={{ color: colors.textMuted, fontSize: '0.8rem' }}>
+          <summary>Genome regulatory evidence — {circuit.sequenceStatus === 'scanned'
+            ? `${circuit.sequenceLength?.toLocaleString()} bases scanned` : 'no genome supplied'}</summary>
+          <p>{circuit.summary}</p>
+          <p>Gene roles are hypotheses from explicit CDS labels. Numerical concentrations, operator occupancy and the teaching score belong to the illustrative model.</p>
+          <ul aria-label="Annotated circuit candidates">
+            {Object.entries(circuit.genes).map(([role, gene]) => (
+              <li key={role}>{role}: {gene?.locusTag ?? gene?.name ?? 'unnamed CDS'} — {gene?.product ?? 'no product supplied'}</li>
+            ))}
+            {Object.keys(circuit.genes).length === 0 && <li>No supported circuit-role annotations.</li>}
+          </ul>
+          {circuit.sequenceStatus === 'scanned' && (
+            <div style={{ overflowX: 'auto' }}>
+              <table aria-label="Observed regulatory motif candidates">
+                <thead><tr><th>Candidate</th><th>Genome interval (1-based)</th><th>Strand</th><th>Observed oriented DNA</th></tr></thead>
+                <tbody>
+                  {[...circuit.promoters, ...circuit.operators, ...circuit.terminators].slice(0, 50).map(site => (
+                    <tr key={site.name}><td>{site.name}</td>
+                      <td>{site.position + 1}–{site.position + (site.sequence?.length ?? 0)}</td>
+                      <td>{site.direction ?? '?'}</td><td style={{ fontFamily: 'monospace', overflowWrap: 'anywhere' }}>{site.sequence}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+              {circuit.promoters.length + circuit.operators.length + circuit.terminators.length === 0
+                ? <p>No candidates under these restricted rules; this does not establish an absence of regulation.</p>
+                : <p>{circuit.promoters.length} promoter, {circuit.operators.length} exact lambda OR1-reference and {circuit.terminators.length} hairpin/T-tail candidates.
+                  The table shows the first 50; experiment export retains every accepted candidate and the exact source bases.</p>}
+            </div>
+          )}
+          <ul>{circuit.limitations.map(limit => <li key={limit}>{limit}</li>)}</ul>
+        </details>
+      )}
 
       {/* Tabs navigation */}
       <div style={{ display: 'flex', gap: '0.4rem', borderBottom: `1px solid ${colors.borderLight ?? '#334155'}` }}>
@@ -540,7 +574,7 @@ export function LysogenyVisualizer({
             fontWeight: activeTab === 'operators' ? 'bold' : 'normal',
           }}
         >
-          Shea-Ackers Operators ({occupancy ? 'Live' : 'Model'})
+          Illustrative Operator Model
         </button>
       </div>
 
@@ -579,7 +613,7 @@ export function LysogenyVisualizer({
           {/* Operator OR Region Diagram */}
           <div>
             <div style={{ color: colors.textMuted, fontSize: '0.75rem', marginBottom: '0.4rem' }}>
-              THREE-SITE OPERATOR OCCUPANCY (SHEA-ACKERS PARTITION MODEL):
+              ILLUSTRATIVE THREE-SITE OCCUPANCY MODEL — THESE ARE NOT GENOMIC ANNOTATIONS:
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.6rem' }}>

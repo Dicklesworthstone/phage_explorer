@@ -6,6 +6,40 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Sequence-grounded lysogeny evidence and replay
+
+- Browser and terminal lysogeny simulations now load the complete selected genome
+  and canonical CDS annotations. The browser evidence view reports observed DNA,
+  strands and genomic intervals; exports retain every accepted candidate.
+- Both-strand scanning uses explicit sigma70 spacer rules, the exact cited lambda
+  OR1 reference and complementary hairpin/T-tail candidates. Annotation matches
+  no longer manufacture regulatory positions, sequences, strengths or affinities,
+  and missing genes or phage names no longer establish obligate lysis.
+- Unresolved and conflicting evidence stays explicit. Generic occupancy and fate
+  scores are labeled as uncalibrated teaching models. Version-3 checkpoints and
+  experiments bind the exact source and reject incompatible prior records.
+  [Model, controls and limits](README.md#1-lysogeny-decision-circuit).
+
+### Record complete genome comparisons in reusable workflows
+
+- Browser and terminal workflow authors can select an ordered pair of captured
+  genomes, choose explicit k-mer and edit-distance settings, and retain the full
+  comparison alongside other analyses. An explicit self-comparison is supported.
+- Complete workflow archives preserve every comparison metric, both sequences,
+  annotations and codon inputs. Browser/native replay verifies the same evidence;
+  changed sources, swapped inputs, cancellation and altered results cannot replace
+  an accepted archive. Exact and sampled edit metrics retain their distinct limits.
+  [Controls and replay](docs/GENOME_COMPARISON_WORKFLOW.md#include-complete-comparisons-in-recorded-research-workflows).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/8b780402ad903432a145f181fab14ada05c94d9d).
+
+### Preserve exact genome coordinates across SQLite chunks
+
+- Native SQLite and browser sql.js reads now require every requested chunk, its
+  exact index and expected length. Missing or malformed chunks fail explicitly
+  instead of silently substituting neighboring bases. Half-open intervals fetch
+  only their touched chunks and clip only at the declared genome end.
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/3e353b8fa4b16a8d864f703df1742b1c6fb0f190).
+
 ### Search across circular genome origins
 
 - Browser and terminal sequence/motif searches now include origin-crossing

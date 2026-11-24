@@ -4,22 +4,21 @@
  * Implements the molecular biophysics and systems biology of the bacteriophage
  * lysis-lysogeny genetic switch (such as the classic Lambda CI/Cro bistable toggle):
  *
- * 1. Regulatory element & key gene reconstruction from genome sequences and annotations:
- *    - Promoters: PRM (repressor maintenance), PR (cro/lytic), PL (leftward/N), PRE (repressor establishment)
- *    - Operators: Three-site operator clusters (OR1, OR2, OR3, OL1, OL2, OL3)
- *    - Key proteins: CI repressor, Cro, CII decision factor, CIII stabilizer, N antiterminator, Q antiterminator, Integrase
+ * 1. Explicit CDS annotation hypotheses and conservative sequence motif candidates.
+ *    Generic model sites OR1/OR2/OR3 and PR/PRM are not genomic annotations.
  * 2. Shea-Ackers three-site operator occupancy partition function Z with cooperative binding
  * 3. Mutual repression ODE system with Hill kinetics, RecA* SOS-cleavage, and CII feedback
  * 4. Quasi-steady 2D vector fields, sampled nullcline zeros, and residual-checked equilibria
- * 5. Lysogeny fate probability prediction under environmental perturbations (MOI, UV damage, nutrients)
+ * 5. An uncalibrated teaching score under environmental perturbations (MOI, UV damage, nutrients)
  */
 
 import type { GeneInfo, PhageFull } from '../types';
+import { reverseComplement } from '../codons';
 
 export interface Promoter {
   name: string;
   position: number;
-  strength: number; // 0..1 relative activity
+  strength: number | null; // No calibrated promoter activity is inferred from a motif
   direction: '+' | '-';
   sigmaFactor?: string;
   sequence?: string;
@@ -29,15 +28,21 @@ export interface Operator {
   name: string;
   position: number;
   sequence: string;
-  bindingAffinityCi: number; // Kd in arbitrary units / nM
-  bindingAffinityCro: number; // Kd in arbitrary units / nM
-  boundBy: 'CI' | 'Cro' | 'both';
+  /** Strand of the observed sequence match; position is its lower genomic bound. */
+  direction?: '+' | '-';
+  bindingAffinityCi: number | null; // Unknown without a binding measurement/model
+  bindingAffinityCro: number | null; // Unknown without a binding measurement/model
+  /** Sequence identity alone does not establish binding in the selected genome. */
+  boundBy: 'CI' | 'Cro' | 'both' | 'unknown';
 }
 
 export interface Terminator {
   name: string;
   position: number;
-  efficiency: number; // 0..1
+  /** Oriented observed hairpin-and-tail sequence, in genomic coordinates. */
+  sequence?: string;
+  direction?: '+' | '-';
+  efficiency: number | null; // Unknown without a termination measurement/model
 }
 
 export interface CircuitKeyGenes {
@@ -61,12 +66,16 @@ export type CircuitArchitecture =
 export interface LysogenyCircuitReconstruction {
   architecture: CircuitArchitecture;
   isTemperate: boolean;
-  confidence: number; // 0..1
+  confidence: number | null; // No calibrated confidence is available for annotation hypotheses
   promoters: Promoter[];
   operators: Operator[];
   terminators: Terminator[];
   genes: CircuitKeyGenes;
   summary: string;
+  /** Distinguishes unsearched input from no candidates under the declared rules. */
+  sequenceStatus: 'not-supplied' | 'scanned';
+  sequenceLength: number | null;
+  limitations: string[];
   inferredParams: {
     ciProd: number;
     croProd: number;
@@ -115,7 +124,7 @@ export interface AttractorPoint {
 }
 
 export interface LysogenyPrediction {
-  probability: number; // 0..1
+  probability: number; // Uncalibrated logistic teaching score in [0,1], not measured probability
   fate: 'lysogenic' | 'lytic' | 'undecided';
   factors: string[];
 }
@@ -627,7 +636,7 @@ export function computeAttractors(
 }
 
 /**
- * Predict lysogeny fate probability and contributing factors
+ * Compute an uncalibrated teaching score and the model assumptions contributing to it
  */
 export function predictLysogenyFate(
   params: Partial<LysogenySwitchParameters> = {},
@@ -642,8 +651,8 @@ export function predictLysogenyFate(
       probability: 0.0,
       fate: 'lytic',
       factors: [
-        'Obligately lytic phage: lacks repressor/integrase cassette',
-        'Infection strictly commits to virulent lysis',
+        'Obligately lytic model preset selected from explicit lifecycle metadata',
+        'This teaching-model score is not an experimentally calibrated infection probability',
       ],
     };
   }
@@ -686,11 +695,11 @@ export function predictLysogenyFate(
   // Circuit genetic makeup factor
   if (circuit?.genes.cII) {
     logOdds += 0.4;
-    factors.push('Intact CII activator gene detected in genome');
+    factors.push('CII annotation contributes to this illustrative model score');
   }
   if (circuit?.genes.integrase) {
     logOdds += 0.3;
-    factors.push('Site-specific integrase cassette verified');
+    factors.push('Integrase annotation contributes to this illustrative model score; activity is unverified');
   }
 
   const probability = clamp(1 / (1 + Math.exp(-logOdds)), 0.0, 1.0);
@@ -704,7 +713,19 @@ export function predictLysogenyFate(
 }
 
 /**
- * Scan DNA sequence for promoters, operators, and terminators
+ * Conservative, linear-coordinate motif candidates on both strands.
+ * No sequence means no sites; annotations cannot synthesize binding sequences.
+ * A match is not measured activity, binding or regulation. Unmeasured strengths,
+ * affinities and efficiencies are null, separate from the illustrative ODE model.
+ *
+ * Sigma70 boxes/spacer: https://pmc.ncbi.nlm.nih.gov/articles/PMC3209215/
+ * Exact lambda OR1 17-mer: https://pubmed.ncbi.nlm.nih.gov/2949139/
+ * Hairpin/U-tract principle: https://pmc.ncbi.nlm.nih.gov/articles/PMC2295211/
+ * The deliberately restricted terminator rule below is not a calibrated
+ * predictor: 5–12 complementary GC pairs, a 3–8-base loop and 4–8 terminal Ts.
+ * Only the cited lambda OR1 sequence is searched; other operators, mismatches,
+ * circular-origin motifs, non-sigma70 promoters and noncanonical terminators
+ * remain outside this scanner's reference coverage.
  */
 export function findRegulatoryElements(
   sequence: string,
@@ -713,58 +734,88 @@ export function findRegulatoryElements(
   const promoters: Promoter[] = [];
   const operators: Operator[] = [];
   const terminators: Terminator[] = [];
-
-  if (!sequence || sequence.length < 50) {
-    return { promoters, operators, terminators };
+  if (typeof sequence !== 'string' || sequence.length > 5_000_000 || /[^ACGTRYSWKMBDHVN]/i.test(sequence)) {
+    throw new Error('Regulatory motif scanning requires at most 5,000,000 IUPAC DNA bases without gaps or changed coordinates.');
   }
-
+  if (!sequence.length) return { promoters, operators, terminators };
   const upper = sequence.toUpperCase();
+  const admit = () => {
+    if (promoters.length + operators.length + terminators.length >= 10_000) {
+      throw new Error('The genome exceeds the supported limit of 10,000 regulatory motif candidates; no partial result was returned.');
+    }
+  };
+  for (const direction of ['+', '-'] as const) {
+    const oriented = direction === '+' ? upper : reverseComplement(upper);
+    const genomicStart = (start: number, length: number) =>
+      direction === '+' ? start : upper.length - start - length;
 
-  // 1. Promoter motif scanning: -35 (TTGACA) and -10 (TATAAT) with 15-19 bp spacer
-  const minus35Regex = /TTGAC[AT]/g;
-  let m35;
-  while ((m35 = minus35Regex.exec(upper)) !== null && promoters.length < 12) {
-    const pos = m35.index;
-    const spacerRegion = upper.substring(pos + 6, Math.min(pos + 30, upper.length));
-    const minus10Match = spacerRegion.search(/TA[TA]AAT/);
-    if (minus10Match !== -1) {
-      const pPos = pos;
-      promoters.push({
-        name: `P_${pPos}`,
-        position: pPos,
-        strength: 0.85,
-        direction: '+',
-        sigmaFactor: 'sigma70',
-        sequence: upper.substring(pos, pos + 6 + minus10Match + 6),
+    // Enumerate every allowed spacer; an early invalid -10-like word must not
+    // hide a later valid box. lookahead preserves overlapping -35 occurrences.
+    const boxes = /(?=(TTGAC[AT]))/g;
+    let box: RegExpExecArray | null;
+    while ((box = boxes.exec(oriented)) !== null) {
+      const start = box.index;
+      boxes.lastIndex = start + 1;
+      for (let spacer = 15; spacer <= 19; spacer++) {
+        const minus10 = start + 6 + spacer;
+        if (!/^TA[TA]AAT$/.test(oriented.slice(minus10, minus10 + 6))) continue;
+        const motif = oriented.slice(start, minus10 + 6);
+        if (!/^[ACGT]+$/.test(motif)) continue;
+        const position = genomicStart(start, motif.length);
+        admit();
+        promoters.push({
+          name: `sigma70_candidate_${position}_${direction}`, position,
+          strength: null, direction, sigmaFactor: 'sigma70', sequence: motif,
+        });
+      }
+    }
+
+    // Exact reference length: never append arbitrary bases via a greedy flank.
+    const or1 = 'TATCACCGCCAGAGGTA';
+    for (let start = oriented.indexOf(or1); start !== -1; start = oriented.indexOf(or1, start + 1)) {
+      const position = genomicStart(start, or1.length);
+      admit();
+      operators.push({
+        name: `lambda_OR1_sequence_match_${position}_${direction}`, position,
+        sequence: or1, direction, bindingAffinityCi: null, bindingAffinityCro: null, boundBy: 'unknown',
       });
     }
-  }
 
-  // 2. Operator motif scanning: 16-17bp palindromic Lambdoid/P22 operator consensus (TATCAC[C]...GGT...)
-  const operatorRegex = /TATCACC[ACGT]{2,6}GGT[ACGT]{0,4}|TATCAC[ACGT]{3,6}GTG[ACGT]{0,4}/g;
-  let opMatch;
-  while ((opMatch = operatorRegex.exec(upper)) !== null && operators.length < 8) {
-    operators.push({
-      name: `O_${opMatch.index}`,
-      position: opMatch.index,
-      sequence: opMatch[0],
-      bindingAffinityCi: 0.5,
-      bindingAffinityCro: 0.6,
-      boundBy: 'both',
-    });
+    // Require actual antiparallel complementarity, not merely two GC-rich runs.
+    // The longest supported stem (then shortest loop) represents each T tract.
+    const tails = /T{4,}/g;
+    let tail: RegExpExecArray | null;
+    while ((tail = tails.exec(oriented)) !== null) {
+      const tailStart = tail.index;
+      let candidate: { start: number; sequence: string } | null = null;
+      for (let stem = 12; stem >= 5 && !candidate; stem--) {
+        const rightStart = tailStart - stem;
+        if (rightStart < 0) continue;
+        const right = oriented.slice(rightStart, tailStart);
+        if (!/^[GC]+$/.test(right)) continue;
+        for (let loop = 3; loop <= 8; loop++) {
+          const start = rightStart - loop - stem;
+          if (start < 0) continue;
+          const left = oriented.slice(start, start + stem);
+          if (left !== reverseComplement(right) ||
+            !/^[ACGT]+$/.test(oriented.slice(start + stem, rightStart))) continue;
+          candidate = { start, sequence: oriented.slice(start, tailStart + Math.min(8, tail[0].length)) };
+          break;
+        }
+      }
+      if (candidate) {
+        const position = genomicStart(candidate.start, candidate.sequence.length);
+        admit();
+        terminators.push({
+          name: `hairpin_tail_candidate_${position}_${direction}`,
+          position, sequence: candidate.sequence, direction, efficiency: null,
+        });
+      }
+    }
   }
-
-  // 3. Intrinsic terminator motif: GC stem-loop followed by 4+ Ts/Us
-  const polyTRegex = /[GC]{5,12}[ATGC]{3,8}[GC]{5,12}T{4,8}/g;
-  let termMatch;
-  while ((termMatch = polyTRegex.exec(upper)) !== null && terminators.length < 6) {
-    terminators.push({
-      name: `t_${termMatch.index}`,
-      position: termMatch.index,
-      efficiency: 0.9,
-    });
-  }
-
+  promoters.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  operators.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
+  terminators.sort((a, b) => a.position - b.position || a.name.localeCompare(b.name));
   return { promoters, operators, terminators };
 }
 
@@ -775,48 +826,40 @@ export function reconstructLysogenyCircuit(
   phage?: PhageFull | null,
   sequence?: string
 ): LysogenyCircuitReconstruction {
+  if (sequence !== undefined && phage?.genomeLength != null && sequence.length !== phage.genomeLength) {
+    throw new Error('Regulatory reconstruction requires the complete selected genome sequence, with unchanged coordinates.');
+  }
   const genes: CircuitKeyGenes = {};
   const geneList = phage?.genes ?? [];
 
   for (const gene of geneList) {
-    const name = (gene.name ?? '').toLowerCase();
-    const product = (gene.product ?? '').toLowerCase();
-    const domains = (gene.domains ?? []).map(d => d.toLowerCase()).join(' ');
+    // Gene features can duplicate their CDS, and generic HTH/peptidase domains
+    // do not establish a CI/Cro regulatory role. Keep only explicit CDS labels.
+    if (gene.type !== 'CDS') continue;
+    const name = (gene.name ?? '').trim().toLowerCase();
+    const product = (gene.product ?? '').trim().toLowerCase();
 
-    if (
-      name === 'ci' ||
-      name === 'c1' ||
-      name.includes('repressor') ||
-      product.includes('ci repressor') ||
-      product.includes('immunity repressor') ||
-      product.includes('phage repressor') ||
-      domains.includes('pf01381') ||
-      domains.includes('pf00717')
+    // Match specific tokens before broader roles. In particular, CIII is not
+    // CII, Cro/antirepressor is not CI, and "internal" is not an int gene.
+    if (name === 'cro' || /\bcro\b/.test(product)) {
+      if (!genes.cro) genes.cro = gene;
+    } else if (name === 'ciii' || /\bciii\b/.test(product)) {
+      if (!genes.cIII) genes.cIII = gene;
+    } else if (name === 'cii' || /\bcii\b/.test(product)) {
+      if (!genes.cII) genes.cII = gene;
+    } else if (
+      name === 'ci' || name === 'c1' ||
+      /\b(?:ci|c1)\b.*\brepressor\b|\brepressor\b.*\b(?:ci|c1)\b|\b(?:immunity|phage) repressor\b/.test(product)
     ) {
       if (!genes.ci) genes.ci = gene;
-    } else if (
-      name === 'cro' ||
-      product.includes('cro') ||
-      product.includes('antirepressor') ||
-      product.includes('transcriptional regulator cro')
-    ) {
-      if (!genes.cro) genes.cro = gene;
-    } else if (name === 'cii' || name === 'c2' || product.includes('cii') || product.includes('c2 protein')) {
-      if (!genes.cII) genes.cII = gene;
-    } else if (name === 'ciii' || name === 'c3' || product.includes('ciii') || product.includes('c3 protein')) {
-      if (!genes.cIII) genes.cIII = gene;
-    } else if (name === 'n' || product.includes('antiterminator n') || product.includes('antitermination protein n')) {
+    } else if (name === 'n' || /\bantiterminator n\b|\bantitermination protein n\b/.test(product)) {
       if (!genes.n) genes.n = gene;
-    } else if (name === 'q' || product.includes('antiterminator q') || product.includes('late control gene q')) {
+    } else if (name === 'q' || /\bantiterminator q\b|\blate control (?:gene|protein) q\b/.test(product)) {
       if (!genes.q) genes.q = gene;
-    } else if (
-      name.includes('int') ||
-      product.includes('integrase') ||
-      product.includes('site-specific recombinase') ||
-      domains.includes('pf00589')
-    ) {
+    } else if (name === 'int' || name === 'integrase' ||
+      /\bintegrase\b|\bsite[- ]specific recombinase\b/.test(product)) {
       if (!genes.integrase) genes.integrase = gene;
-    } else if (name.includes('xis') || product.includes('excisionase')) {
+    } else if (name === 'xis' || /\bexcisionase\b/.test(product)) {
       if (!genes.excisionase) genes.excisionase = gene;
     }
   }
@@ -828,62 +871,44 @@ export function reconstructLysogenyCircuit(
   const operators = [...elements.operators];
   const terminators = [...elements.terminators];
 
-  // If no sequence was provided or motifs were sparse, populate synteny-derived canonical sites
-  if (promoters.length === 0 && (genes.ci || genes.cro)) {
-    const ciPos = genes.ci ? (genes.ci.startPos + genes.ci.endPos) / 2 : 37900;
-    promoters.push(
-      { name: 'PRM', position: ciPos - 20, strength: 0.8, direction: '-', sigmaFactor: 'sigma70' },
-      { name: 'PR', position: ciPos + 50, strength: 1.0, direction: '+', sigmaFactor: 'sigma70' },
-      { name: 'PL', position: ciPos - 2000, strength: 0.9, direction: '-', sigmaFactor: 'sigma70' }
-    );
-  }
+  // Empty motif arrays are meaningful. A CI/Cro annotation cannot supply
+  // canonical PR/PRM/PL coordinates or lambda operator sequences for this genome.
 
-  if (operators.length === 0 && (genes.ci || genes.cro)) {
-    const ciPos = genes.ci ? (genes.ci.startPos + genes.ci.endPos) / 2 : 37900;
-    operators.push(
-      { name: 'OR1', position: ciPos + 30, sequence: 'TATCACCGCAGGTGGT', bindingAffinityCi: 0.4, bindingAffinityCro: 1.2, boundBy: 'both' },
-      { name: 'OR2', position: ciPos + 10, sequence: 'TAACACCGTGCGTGTT', bindingAffinityCi: 0.8, bindingAffinityCro: 0.9, boundBy: 'both' },
-      { name: 'OR3', position: ciPos - 10, sequence: 'TATCACCGCAGGTGGT', bindingAffinityCi: 1.6, bindingAffinityCro: 0.5, boundBy: 'both' }
-    );
-  }
-
-  // Lifecycle detection
-  const lifecycle = (phage?.lifecycle ?? '').toLowerCase();
-  const name = (phage?.name ?? '').toLowerCase();
-  const isKnownLytic =
-    lifecycle.includes('virulent') ||
-    lifecycle.includes('lytic') ||
-    name.includes('t4') ||
-    name.includes('t7') ||
-    name.includes('phikz');
+  // Only an explicit lifecycle declaration supports the lytic model preset.
+  // Names, an unspecified "lytic" phase, and unrecognized annotations do not.
+  const lifecycle = (phage?.lifecycle ?? '').trim().toLowerCase();
+  const declaredLytic = /^(?:virulent|strictly[ -]lytic|obligately[ -]lytic)$/.test(lifecycle);
+  const declaredTemperate = /^(?:temperate|lysogenic|lysogeny)$/.test(lifecycle);
+  const conflictingEvidence = declaredLytic && !!(genes.ci || genes.integrase);
 
   let architecture: CircuitArchitecture = 'unknown';
   let isTemperate = false;
-  let confidence = 0.5;
+  const confidence = null;
 
-  if (genes.ci && genes.cro) {
-    architecture = 'lambda-like';
-    isTemperate = true;
-    confidence = 0.95;
-  } else if (genes.ci || genes.integrase || lifecycle.includes('temperate') || lifecycle.includes('lysogen')) {
-    architecture = 'temperate';
-    isTemperate = true;
-    confidence = 0.8;
-  } else if (isKnownLytic || (!genes.ci && !genes.integrase && geneList.length > 10)) {
-    architecture = 'obligately-lytic';
-    isTemperate = false;
-    confidence = 0.9;
+  if (!conflictingEvidence) {
+    if (genes.ci && genes.cro) {
+      architecture = 'lambda-like';
+      isTemperate = true;
+    } else if (genes.ci || genes.integrase || declaredTemperate) {
+      architecture = 'temperate';
+      isTemperate = true;
+    } else if (declaredLytic) {
+      architecture = 'obligately-lytic';
+    }
   }
 
-  const summary =
-    architecture === 'lambda-like'
-      ? 'Classical Lambda-like bistable switch: CI repressor and Cro antirepressor with cooperative operator sites'
+  const summary = conflictingEvidence
+    ? 'Lytic lifecycle metadata conflicts with repressor/integrase annotations; the circuit is unresolved.'
+    : architecture === 'lambda-like'
+      ? 'CI and Cro annotations support a Lambda-like model hypothesis; operator binding and circuit function are unverified.'
       : architecture === 'temperate'
-        ? 'Temperate phage circuit: Integrase and/or CI-like repressor identified'
+        ? 'Temperate lifecycle metadata and/or specific repressor/integrase annotations; regulatory topology is unverified.'
         : architecture === 'obligately-lytic'
-          ? 'Obligately lytic architecture: Lacks CI repressor and integrase cassette; locked in lytic cycle'
-          : 'Atypical or uncharacterized regulatory circuit';
+          ? 'Supplied lifecycle metadata declares a lytic phage; missing annotations are not used to infer this.'
+          : 'No supported regulatory architecture was established from the supplied annotations or lifecycle metadata.';
 
+  // These are teaching-model presets, not kinetic quantities inferred from DNA.
+  // An unresolved genome retains the generic switch rather than a lytic preset.
   const inferredParams = isTemperate
     ? {
         ciProd: genes.cII ? 0.9 : 0.75,
@@ -892,13 +917,9 @@ export function reconstructLysogenyCircuit(
         decay: 0.05,
         omega: 10.0,
       }
-    : {
-        ciProd: 0.05,
-        croProd: 1.2,
-        hill: 1.5,
-        decay: 0.06,
-        omega: 1.0,
-      };
+    : architecture === 'obligately-lytic'
+      ? { ciProd: 0.05, croProd: 1.2, hill: 1.5, decay: 0.06, omega: 1.0 }
+      : { ciProd: 0.8, croProd: 0.6, hill: 2.0, decay: 0.05, omega: 10.0 };
 
   return {
     architecture,
@@ -909,6 +930,14 @@ export function reconstructLysogenyCircuit(
     terminators,
     genes,
     summary,
+    sequenceStatus: sequence === undefined ? 'not-supplied' : 'scanned',
+    sequenceLength: sequence === undefined ? null : sequence.length,
+    limitations: [
+      'Annotations identify candidate roles, not functional regulation, measured kinetic rates or binding affinities.',
+      'Sequence scanning covers both strands in linear coordinates. Circular-origin sites are not searched.',
+      'Only the exact cited lambda OR1 sequence, restricted sigma70 box/spacer motifs and complementary GC hairpin/T-tail motifs are searched. No match does not exclude regulatory sites.',
+      'The generic three-site occupancy model and teaching fate score are separate from these genomic candidates; neither is calibrated to this phage.',
+    ],
     inferredParams,
   };
 }
@@ -924,6 +953,7 @@ export function deriveLysogenyCircuitParams(
   }
 
   const circuit = reconstructLysogenyCircuit(phage);
+  if (circuit.architecture === 'unknown') return {};
   return {
     ciProd: circuit.inferredParams.ciProd,
     croProd: circuit.inferredParams.croProd,

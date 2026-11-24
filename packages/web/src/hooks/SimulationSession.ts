@@ -1,5 +1,5 @@
 /** One selected simulation's lifecycle, independent of React render timing. */
-import { serializeAnalysisRecord, RIBOSOME_TRAFFIC_LIMITS, SPEED_OPTIONS, type PhageFull, type SimulationContext } from '@phage-explorer/core';
+import { serializeAnalysisRecord, GENOME_IMPORT_LIMITS, SPEED_OPTIONS, derivePhageSimDefaults, type PhageFull, type SimulationContext } from '@phage-explorer/core';
 import type { PhageRepository } from '../db';
 import type { ComputeOrchestrator } from '../workers/ComputeOrchestrator';
 import type { SimParameter, SimState, SimulationId } from '../workers/types';
@@ -16,7 +16,7 @@ export interface SimulationInput {
 }
 
 /** Load bases and canonical annotations from one repository, never an ID-only cache. */
-export async function loadRibosomeSimulationInput(
+export async function loadSequenceSimulationInput(
   repository: Pick<PhageRepository, 'getFullGenomeLength' | 'getSequenceWindow' | 'getGenes'>,
   phage: PhageFull,
   geneId: number | undefined,
@@ -25,8 +25,8 @@ export async function loadRibosomeSimulationInput(
   signal.throwIfAborted();
   const length = await repository.getFullGenomeLength(phage.id);
   signal.throwIfAborted();
-  if (!Number.isSafeInteger(length) || length < 1 || length > RIBOSOME_TRAFFIC_LIMITS.genomeBases) {
-    throw new Error(`Ribosome traffic requires a genome of 1–${RIBOSOME_TRAFFIC_LIMITS.genomeBases.toLocaleString()} bases.`);
+  if (!Number.isSafeInteger(length) || length < 1 || length > GENOME_IMPORT_LIMITS.bases) {
+    throw new Error(`Sequence-based simulations require a genome of 1–${GENOME_IMPORT_LIMITS.bases.toLocaleString()} bases.`);
   }
   const [genomeSequence, genes] = await Promise.all([
     repository.getSequenceWindow(phage.id, 0, length), repository.getGenes(phage.id),
@@ -96,6 +96,12 @@ export class SimulationSession {
       metadata: null, isLoading: false, isStepping: false, error: null, seed, completedSteps: 0,
       replayProgress: null, replayMessage: null,
     };
+  }
+
+  private resolvedDefaults(input: SimulationInput): Parameters {
+    // Lysogeny annotation presets must use the freshly loaded canonical genes,
+    // not the possibly incomplete catalog summary supplied to the constructor.
+    return this.simId === 'lysogeny-circuit' ? derivePhageSimDefaults(this.simId, input.phage) : this.derivedDefaults;
   }
 
   getSnapshot = (): SimulationSnapshot => this.snapshot;
@@ -174,11 +180,11 @@ export class SimulationSession {
       }
       this.overrides = { ...this.overrides, ...submitted };
       const defaults = Object.fromEntries(this.snapshot.parameters.map(parameter => [parameter.id, parameter.defaultValue]));
-      const values = { ...defaults, ...this.derivedDefaults, ...this.overrides };
-      this.publish({ parameterValues: values });
-      if (!this.current(operation)) return;
       const input = await this.ensureInput(operation);
       if (!input) return;
+      const values = { ...defaults, ...this.resolvedDefaults(input), ...this.overrides };
+      this.publish({ parameterValues: values });
+      if (!this.current(operation)) return;
       const next = await backend.initSimulation({ simId: this.simId, params: values, seed, ...input }, operation.controller.signal);
       if (!this.current(operation)) return;
       if (next.type !== this.simId) throw new Error('Simulation returned a different state type.');
@@ -314,8 +320,9 @@ export class SimulationSession {
       for (const parameter of metadata.parameters) {
         if (!Object.hasOwn(saved.parameters, parameter.id)) throw new Error(`Missing simulation parameter: ${parameter.id}`);
       }
+      const derived = this.resolvedDefaults(input);
       for (const [id, value] of Object.entries(saved.parameters)) {
-        if (Object.hasOwn(this.derivedDefaults, id) && this.derivedDefaults[id] === value) continue;
+        if (Object.hasOwn(derived, id) && derived[id] === value) continue;
         validateSimulationParameter(metadata.parameters.find(parameter => parameter.id === id), value);
       }
       if (!this.current(operation)) return;
