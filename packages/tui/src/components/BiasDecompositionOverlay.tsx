@@ -9,6 +9,7 @@ import {
   DINUCLEOTIDES,
   CODONS,
   computeCodonFrequencies,
+  type PhageSummary,
 } from '@phage-explorer/core';
 
 interface BiasDecompositionOverlayProps {
@@ -16,12 +17,27 @@ interface BiasDecompositionOverlayProps {
 }
 
 interface LoadedVector {
+  id: number;
   name: string;
   vector: number[];
   genomeType: string | null;
   lifecycle: string | null;
-  codon?: number[];
+  codon: number[];
 }
+interface CachedVector { sequence: string; vector: number[]; codon: number[] }
+interface OwnedVectors {
+  repository: PhageRepository;
+  phages: PhageSummary[];
+  vectors: LoadedVector[];
+  loading: boolean;
+  error: string | null;
+}
+const validVector = (value: number[] | null | undefined, dimensions: number): value is number[] => {
+  if (!Array.isArray(value) || value.length !== dimensions
+    || !value.every(item => Number.isFinite(item) && item >= 0 && item <= 1)) return false;
+  const total = value.reduce((sum, item) => sum + item, 0);
+  return total === 0 || Math.abs(total - 1) <= 1e-10;
+};
 
 export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverlayProps): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
@@ -30,10 +46,14 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
   const current = usePhageStore(s => s.currentPhage);
   const closeOverlay = usePhageStore(s => s.closeOverlay);
 
-  const [loading, setLoading] = useState(false);
-  const [vectors, setVectors] = useState<LoadedVector[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const cacheRef = useRef<Map<number, LoadedVector & { length: number }>>(new Map());
+  const [loaded, setLoaded] = useState<OwnedVectors | null>(null);
+  const cacheRef = useRef<{ repository: PhageRepository; values: Map<number, CachedVector> } | null>(null);
+  const source = useRef({ repository, phages });
+  source.current = { repository, phages };
+  const owned = loaded?.repository === repository && loaded.phages === phages ? loaded : null;
+  const vectors = owned?.vectors ?? [];
+  const loading = !owned || owned.loading;
+  const error = owned?.error ?? null;
   const [mode, setMode] = useState<'di' | 'codon'>('di');
 
   useInput((input, key) => {
@@ -46,41 +66,48 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
     }
   });
 
-  // Fetch full sequences for all phages once
+  // Repository replacement and catalog changes own a complete new load. Length
+  // alone cannot establish that the bases or cached frequency vectors are equal.
   useEffect(() => {
     let cancelled = false;
+    const active = () => !cancelled && source.current.repository === repository && source.current.phages === phages;
+    if (cacheRef.current?.repository !== repository) cacheRef.current = { repository, values: new Map() };
+    const cache = cacheRef.current.values;
+    const catalog = phages.map(phage => ({ ...phage }));
+    const read = async <T,>(work: Promise<T>): Promise<T> => {
+      const value = await work;
+      if (!active()) throw new DOMException('Bias analysis superseded.', 'AbortError');
+      return value;
+    };
     const load = async () => {
       try {
-        setLoading(true);
+        setLoaded({ repository, phages, vectors: [], loading: true, error: null });
         const items: LoadedVector[] = [];
 
-        for (const p of phages) {
-          const cached = cacheRef.current.get(p.id);
-          const len = await repository.getFullGenomeLength(p.id);
-
-          // Try repo-level persisted caches first
-          const cachedBias = await repository.getBiasVector?.(p.id);
-          const cachedCodon = await repository.getCodonVector?.(p.id);
-
-          if (cached && cached.length === len) {
-            items.push(cached);
-            continue;
-          }
-
-          const seq = await repository.getSequenceWindow(p.id, 0, len);
+        for (const p of catalog) {
+          const len = await read(repository.getFullGenomeLength(p.id));
+          if (!Number.isSafeInteger(len) || len < 0) throw new Error('Invalid genome length for ' + p.name + '.');
+          const seq = await read(repository.getSequenceWindow(p.id, 0, len));
+          if (seq.length !== len) throw new Error('Incomplete genome sequence for ' + p.name + '; no bias result was produced.');
+          const cached = cache.get(p.id);
+          const sameBases = cached?.sequence === seq;
+          // Native sidecars verify complete sequence hashes. If this mounted
+          // source itself changed, recompute rather than trust its old ID cache.
+          const storedBias = cached && !sameBases ? null : await read(repository.getBiasVector?.(p.id) ?? Promise.resolve(null));
+          const storedCodon = cached && !sameBases ? null : await read(repository.getCodonVector?.(p.id) ?? Promise.resolve(null));
+          const cachedBias = sameBases ? cached.vector : validVector(storedBias, DINUCLEOTIDES.length) ? storedBias : null;
+          const cachedCodon = sameBases ? cached.codon : validVector(storedCodon, CODONS.length) ? storedCodon : null;
           const vector = cachedBias ?? computeDinucleotideFrequencies(seq);
           const codon = cachedCodon ?? computeCodonFrequencies(seq);
+          const meta = await read(repository.getPhageById(p.id));
 
-          // Try to fetch richer metadata if available
-          const meta = await repository.getPhageById?.(p.id);
-
-          const entry: LoadedVector & { length: number } = {
+          const entry: LoadedVector = {
+            id: p.id,
             name: p.name,
             vector,
-            genomeType: (meta?.genomeType ?? (p as any).genomeType) ?? null,
+            genomeType: meta?.genomeType ?? null,
             lifecycle: (meta?.lifecycle ?? p.lifecycle) ?? null,
             codon,
-            length: len,
           };
 
           // Persist caches if freshly computed
@@ -91,14 +118,13 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
             repository.setCodonVector(p.id, codon).catch(() => {});
           }
 
-          cacheRef.current.set(p.id, entry);
+          cache.set(p.id, { sequence: seq, vector, codon });
           items.push(entry);
         }
-        if (!cancelled) setVectors(items);
+        if (active()) setLoaded({ repository, phages, vectors: items, loading: false, error: null });
       } catch (e) {
-        if (!cancelled) setError(String(e));
-      } finally {
-        if (!cancelled) setLoading(false);
+        if (active()) setLoaded({ repository, phages, vectors: [], loading: false,
+          error: e instanceof Error ? e.message : String(e) });
       }
     };
     load();
@@ -112,13 +138,16 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
     const rows =
       mode === 'di'
         ? vectors.map(v => ({ name: v.name, vector: v.vector }))
-        : vectors.map(v => ({ name: v.name, vector: v.codon ?? v.vector }));
-    return decomposeBias(rows);
+        : vectors.map(v => ({ name: v.name, vector: v.codon }));
+    const result = decomposeBias(rows);
+    return result ? { ...result, projections: result.projections.map((projection, index) => ({
+      ...projection, id: vectors[index].id,
+    })) } : null;
   }, [vectors, mode]);
 
   const currentCoords = useMemo(() => {
     if (!decomposition || !current) return null;
-    return decomposition.projections.find(p => p.name === current.name)?.coords ?? null;
+    return decomposition.projections.find(p => p.id === current.id)?.coords ?? null;
   }, [decomposition, current]);
 
   const scatterLines = useMemo(() => {
@@ -140,8 +169,8 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
       Array.from({ length: width }, () => ({ ch: ' ', color: colors.textDim }))
     );
 
-    const typeColor = (name: string): string => {
-      const meta = vectors.find(v => v.name === name);
+    const typeColor = (id: number): string => {
+      const meta = vectors.find(v => v.id === id);
       const gt = meta?.genomeType?.toLowerCase() ?? 'unknown';
       if (gt.includes('ssdna')) return '#ff7f0e';
       if (gt.includes('dsrna') || gt.includes('rna')) return '#1f77b4';
@@ -153,13 +182,13 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
     decomposition.projections.forEach(p => {
       const x = Math.max(0, Math.min(width - 1, Math.floor(((p.coords[0] - minX) / spanX) * (width - 1))));
       const y = Math.max(0, Math.min(height - 1, Math.floor(((p.coords[1] - minY) / spanY) * (height - 1))));
-      const color = p.name === current?.name ? colors.accent : typeColor(p.name);
-      const ch = p.name === current?.name ? '◆' : '•';
+      const color = p.id === current?.id ? colors.accent : typeColor(p.id);
+      const ch = p.id === current?.id ? '◆' : '•';
       grid[height - 1 - y][x] = { ch, color };
     });
 
     return grid.map(row => row.map(cell => cell));
-  }, [decomposition, current?.name, vectors, colors.accent, colors.text, colors.textDim]);
+  }, [decomposition, current?.id, vectors, colors.accent, colors.text, colors.textDim]);
 
   const legend = [
     { label: 'dsDNA', color: colors.accent },
@@ -219,7 +248,7 @@ export function BiasDecompositionOverlay({ repository }: BiasDecompositionOverla
               .slice()
               .sort((a, b) => b.coords[0] - a.coords[0])
               .map((p, idx) => (
-                <Text key={p.name} color={p.name === current?.name ? colors.accent : colors.text}>
+                <Text key={p.id} color={p.id === current?.id ? colors.accent : colors.text}>
                   {String(idx + 1).padStart(2, ' ')} {p.name.padEnd(10, ' ')}  PC1 {p.coords[0].toFixed(3)}  PC2 {p.coords[1].toFixed(3)}
                 </Text>
               ))}

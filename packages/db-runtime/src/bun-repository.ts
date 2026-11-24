@@ -13,11 +13,28 @@ import {
   foldEmbeddingCoords,
   proteinDomains,
 } from '@phage-explorer/db-schema';
-import { decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding, type LatentSpacePoint } from '@phage-explorer/core';
+import { computeCodonFrequencies, computeDinucleotideFrequencies, decodeFloat32VectorLE, type PhageSummary, type PhageFull, type GeneInfo, type CodonUsageData, type FoldEmbedding, type LatentSpacePoint } from '@phage-explorer/core';
 import type { PhageRepository, CacheEntry, TropismPrediction } from './types';
+import { CHUNK_SIZE } from './types';
 import { readSequenceWindowFromChunks } from './sequence-window';
 import { LRUCache } from './lru-cache';
 import { readFileSync, existsSync } from 'fs';
+import { createHash } from 'node:crypto';
+
+interface VectorCacheEntry {
+  sequenceSha256: string;
+  vector: number[];
+}
+const VECTOR_CACHE_FORMAT = 'phage-explorer-sequence-vectors';
+const VECTOR_CACHE_VERSION = 1;
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+const isFrequencyVector = (value: unknown, dimensions: number): value is number[] => {
+  if (!Array.isArray(value) || value.length !== dimensions
+    || !value.every(item => typeof item === 'number' && Number.isFinite(item) && item >= 0 && item <= 1)) return false;
+  const total = value.reduce((sum, item) => sum + item, 0);
+  return total === 0 || Math.abs(total - 1) <= 1e-10;
+};
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string');
@@ -53,8 +70,8 @@ export class BunSqliteRepository implements PhageRepository {
   private cache = new LRUCache<string, CacheEntry<unknown>>(100);
   private phageList: PhageSummary[] | null = null;
   private cachePath: string;
-  private biasCache: Map<number, number[]> = new Map();
-  private codonCache: Map<number, number[]> = new Map();
+  private biasCache: Map<number, VectorCacheEntry> = new Map();
+  private codonCache: Map<number, VectorCacheEntry> = new Map();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(dbPath: string, options: { readonly?: boolean } = {}) {
@@ -79,31 +96,89 @@ export class BunSqliteRepository implements PhageRepository {
     if (!existsSync(this.cachePath)) return;
     try {
       const raw = readFileSync(this.cachePath, 'utf8');
-      const parsed = JSON.parse(raw) as { bias?: Record<string, number[]>; codon?: Record<string, number[]> };
-      if (parsed.bias) {
-        for (const [k, v] of Object.entries(parsed.bias)) {
-          this.biasCache.set(Number(k), v);
+      const parsed: unknown = JSON.parse(raw);
+      // Legacy numeric-ID-only entries cannot establish which bases were used.
+      if (!isObject(parsed) || parsed.format !== VECTOR_CACHE_FORMAT || parsed.version !== VECTOR_CACHE_VERSION) return;
+      const load = (value: unknown, cache: Map<number, VectorCacheEntry>, dimensions: number) => {
+        if (!isObject(value)) return;
+        for (const [key, entry] of Object.entries(value)) {
+          const id = Number(key);
+          if (!Number.isSafeInteger(id) || id < 1 || String(id) !== key || !isObject(entry)
+            || typeof entry.sequenceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sequenceSha256)
+            || !isFrequencyVector(entry.vector, dimensions)) continue;
+          cache.set(id, { sequenceSha256: entry.sequenceSha256, vector: entry.vector });
         }
-      }
-      if (parsed.codon) {
-        for (const [k, v] of Object.entries(parsed.codon)) {
-          this.codonCache.set(Number(k), v);
-        }
-      }
+      };
+      load(parsed.bias, this.biasCache, 16);
+      load(parsed.codon, this.codonCache, 64);
     } catch {
       // Ignore malformed cache
     }
   }
 
+  /** Hash exact, complete bases from one SQLite snapshot, including committed WAL
+   * pages. File path, byte size, mtime and numeric IDs do not identify a genome.
+   * Recheck on use so an external in-place data update cannot preserve old vectors.
+   */
+  private sequenceIdentity(phageId: number, expected?: { vector: number[]; dimensions: number }): string | null {
+    return this.sqlite.transaction(() => {
+      const phage = this.sqlite.query<{ genome_length: number | null }, [number]>(
+        'SELECT genome_length FROM phages WHERE id = ?').get(phageId);
+      const length = phage?.genome_length;
+      if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) return null;
+      const hash = createHash('sha256');
+      hash.update(JSON.stringify([phageId, length]) + '\n');
+      const parts: string[] = [];
+      let index = 0, bases = 0;
+      for (const chunk of this.sqlite.query<{ chunk_index: number; sequence: string }, [number]>(
+        'SELECT chunk_index, sequence FROM sequences WHERE phage_id = ? ORDER BY chunk_index').iterate(phageId)) {
+        if (chunk.chunk_index !== index || typeof chunk.sequence !== 'string'
+          || chunk.sequence.length !== Math.min(CHUNK_SIZE, length - bases) || bases >= length) return null;
+        hash.update(chunk.sequence);
+        if (expected) parts.push(chunk.sequence);
+        bases += chunk.sequence.length;
+        index++;
+      }
+      if (bases !== length) return null;
+      if (expected) {
+        // A caller may have computed before an external DB update. Do not stamp
+        // those old values with the identity of the newly committed sequence.
+        const actual = expected.dimensions === 16 ? computeDinucleotideFrequencies(parts.join(''))
+          : computeCodonFrequencies(parts.join(''));
+        if (actual.some((value, i) => Math.abs(value - expected.vector[i]) > 1e-10)) return null;
+      }
+      return hash.digest('hex');
+    })();
+  }
+
+  private getVector(cache: Map<number, VectorCacheEntry>, phageId: number): number[] | null {
+    const entry = cache.get(phageId);
+    if (!entry) return null;
+    if (entry.sequenceSha256 !== this.sequenceIdentity(phageId)) {
+      cache.delete(phageId);
+      return null;
+    }
+    // Callers must not mutate a later reader's cached result.
+    return entry.vector.slice();
+  }
+
+  private setVector(cache: Map<number, VectorCacheEntry>, phageId: number, vector: number[], dimensions: number): void {
+    if (!isFrequencyVector(vector, dimensions)) throw new Error(`Expected a normalized ${dimensions}-element frequency vector.`);
+    const sequenceSha256 = this.sequenceIdentity(phageId, { vector, dimensions });
+    if (!sequenceSha256) throw new Error('Cannot cache a vector that does not match the complete current genome sequence.');
+    cache.set(phageId, { sequenceSha256, vector: vector.slice() });
+    this.scheduleSave();
+  }
+
   private async saveVectorCache(): Promise<void> {
     if (this.readonly) return;
     try {
-      const bias: Record<string, number[]> = {};
-      const codon: Record<string, number[]> = {};
+      const bias: Record<string, VectorCacheEntry> = {};
+      const codon: Record<string, VectorCacheEntry> = {};
       for (const [k, v] of this.biasCache.entries()) bias[k.toString()] = v;
       for (const [k, v] of this.codonCache.entries()) codon[k.toString()] = v;
       
-      const data = JSON.stringify({ bias, codon });
+      const data = JSON.stringify({ format: VECTOR_CACHE_FORMAT, version: VECTOR_CACHE_VERSION, bias, codon });
       
       // Use Bun.write for performance if available
       if (typeof Bun !== 'undefined') {
@@ -616,22 +691,20 @@ export class BunSqliteRepository implements PhageRepository {
     this.phageList = null;
   }
 
-  // Optional bias/codon caches: stored in in-memory cache only (no schema support)
+  // Optional bias/codon caches: exact-sequence-owned, with a versioned sidecar.
   async getBiasVector(phageId: number): Promise<number[] | null> {
-    return this.biasCache.get(phageId) ?? null;
+    return this.getVector(this.biasCache, phageId);
   }
 
   async setBiasVector(phageId: number, vector: number[]): Promise<void> {
-    this.biasCache.set(phageId, vector);
-    this.scheduleSave();
+    this.setVector(this.biasCache, phageId, vector, 16);
   }
 
   async getCodonVector(phageId: number): Promise<number[] | null> {
-    return this.codonCache.get(phageId) ?? null;
+    return this.getVector(this.codonCache, phageId);
   }
 
   async setCodonVector(phageId: number, vector: number[]): Promise<void> {
-    this.codonCache.set(phageId, vector);
-    this.scheduleSave();
+    this.setVector(this.codonCache, phageId, vector, 64);
   }
 }
