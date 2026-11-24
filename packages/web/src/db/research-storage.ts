@@ -38,6 +38,19 @@ export interface ResearchSnapshotInfo {
   sha256: string;
 }
 export interface ResearchSnapshot extends ResearchSnapshotInfo { content: string }
+export interface ResearchSnapshotProblem {
+  /** The actual IndexedDB primary key, never an ID taken from damaged metadata. */
+  key: IDBValidKey;
+  keyLabel: string;
+  name: string | null;
+  removable: boolean;
+  reason: 'Invalid snapshot metadata' | 'Saved contents are missing' | 'Saved contents have no metadata' | 'Unsupported snapshot format';
+}
+export interface ResearchSnapshotInventory {
+  entries: ResearchSnapshotInfo[];
+  /** Global problems also matter to panels of another kind: quotas are shared. */
+  problems: ResearchSnapshotProblem[];
+}
 export const RESEARCH_STORAGE_LIMITS = { snapshotBytes: 10 * 1024 * 1024, totalBytes: 64 * 1024 * 1024, snapshots: 64 } as const;
 export const RESEARCH_STORAGE_NAME = 'phage-explorer-private-research';
 const kinds = Object.keys(RESEARCH_SNAPSHOT_TYPES) as ResearchSnapshotKind[];
@@ -103,7 +116,7 @@ export function replaySavedResearch(signal: AbortSignal, operation: {
   });
 }
 function metadata(value: unknown): ResearchSnapshotInfo {
-  if (!object(value)) throw new Error('Saved research metadata is damaged. Export your other snapshots before clearing browser data.');
+  if (!object(value)) throw new Error('Saved research metadata is damaged. Use the saved library recovery controls to inspect this record.');
   validId(value.id);
   if (value.version !== 1 || !kinds.includes(value.kind as ResearchSnapshotKind) || typeof value.name !== 'string'
       || researchSnapshotName(value.name) !== value.name || !Number.isSafeInteger(value.createdAt) || Number(value.createdAt) < 0
@@ -111,6 +124,53 @@ function metadata(value: unknown): ResearchSnapshotInfo {
       || typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)) throw new Error('Saved research metadata is invalid.');
   return { id: value.id, version: 1, kind: value.kind as ResearchSnapshotKind, name: value.name,
     createdAt: Number(value.createdAt), bytes: Number(value.bytes), sha256: value.sha256 };
+}
+/** An older tab must not mistake a newer format for a corrupt record it can discard. */
+function unsupportedMetadata(value: unknown): boolean {
+  if (!object(value)) return false;
+  return (typeof value.version === 'number' && Number.isSafeInteger(value.version) && value.version > 1)
+    || (typeof value.kind === 'string' && value.kind.length > 0 && !kinds.includes(value.kind as ResearchSnapshotKind));
+}
+function metadataAtKey(key: IDBValidKey, value: unknown): ResearchSnapshotInfo | null {
+  try {
+    const info = metadata(value);
+    return info.id === key ? info : null;
+  } catch { return null; }
+}
+function storageKeyLabel(key: IDBValidKey, depth = 0): string {
+  if (typeof key === 'string') return JSON.stringify(key.length > 120 ? `${key.slice(0, 120)}…` : key);
+  if (typeof key === 'number') return String(key);
+  if (key instanceof Date) return `Date(${key.toISOString()})`;
+  if (Array.isArray(key)) return depth >= 3 ? '[…]' : `[${key.slice(0, 8).map(part => storageKeyLabel(part, depth + 1)).join(', ')}${key.length > 8 ? ', …' : ''}]`;
+  const bytes = ArrayBuffer.isView(key) ? new Uint8Array(key.buffer, key.byteOffset, key.byteLength) : new Uint8Array(key);
+  return `Binary(${Array.from(bytes.subarray(0, 16), byte => byte.toString(16).padStart(2, '0')).join('')}${bytes.length > 16 ? '…' : ''}; ${bytes.length} bytes)`;
+}
+/** Only metadata and primary keys are read here; opening still verifies the original contents. */
+function readInventory(tx: IDBTransaction, result: (inventory: ResearchSnapshotInventory) => void, fail: (cause: unknown) => void): void {
+  const index = tx.objectStore('metadata');
+  const values = index.getAll(), keys = index.getAllKeys(), payloadKeys = tx.objectStore('contents').getAllKeys();
+  let complete = 0;
+  const ready = () => {
+    if (++complete !== 3) return;
+    try {
+      const entries: ResearchSnapshotInfo[] = [], problems: ResearchSnapshotProblem[] = [];
+      const hasKey = (list: IDBValidKey[], key: IDBValidKey) => list.some(candidate => indexedDB.cmp(candidate, key) === 0);
+      for (const [i, key] of keys.result.entries()) {
+        const info = metadataAtKey(key, values.result[i]);
+        const unsupported = unsupportedMetadata(values.result[i]);
+        const present = hasKey(payloadKeys.result, key);
+        if (info && present) entries.push(info);
+        else problems.push({ key, keyLabel: storageKeyLabel(key), name: info?.name ?? null, removable: !unsupported,
+          reason: unsupported ? 'Unsupported snapshot format' : info ? 'Saved contents are missing' : 'Invalid snapshot metadata' });
+      }
+      for (const key of payloadKeys.result) {
+        if (!hasKey(keys.result, key)) problems.push({ key, keyLabel: storageKeyLabel(key), name: null, removable: true, reason: 'Saved contents have no metadata' });
+      }
+      entries.sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+      result({ entries, problems });
+    } catch (cause) { fail(cause); }
+  };
+  values.onsuccess = ready; keys.onsuccess = ready; payloadKeys.onsuccess = ready;
 }
 async function digest(kind: ResearchSnapshotKind, content: string): Promise<string> {
   // Bind the routing kind as well as every byte of the existing export format.
@@ -208,15 +268,13 @@ export class ResearchStorage {
     } finally { db.close(); }
   }
   async list(kind?: ResearchSnapshotKind, signal?: AbortSignal): Promise<ResearchSnapshotInfo[]> {
+    return (await this.inspect(kind, signal)).entries;
+  }
+  async inspect(kind?: ResearchSnapshotKind, signal?: AbortSignal): Promise<ResearchSnapshotInventory> {
     if (kind !== undefined && !kinds.includes(kind)) throw new Error('Unsupported snapshot kind.');
     return this.transaction('readonly', (tx, result, fail) => {
-      const request = tx.objectStore('metadata').getAll();
-      request.onsuccess = () => {
-        try {
-          const rows = request.result.map(metadata);
-          result(rows.filter(row => kind === undefined || row.kind === kind).sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id)));
-        } catch (cause) { fail(cause); }
-      };
+      readInventory(tx, inventory => result({ ...inventory,
+        entries: inventory.entries.filter(row => kind === undefined || row.kind === kind) }), fail);
     }, signal);
   }
   async save(kind: ResearchSnapshotKind, name: string, content: string, signal?: AbortSignal): Promise<ResearchSnapshotInfo> {
@@ -228,10 +286,10 @@ export class ResearchStorage {
     // Every save is immutable and has its own ID. Concurrent tabs cannot overwrite a saved revision.
     const saved = await this.transaction<ResearchSnapshotInfo>('readwrite', (tx, result, fail) => {
       const index = tx.objectStore('metadata'), payloads = tx.objectStore('contents');
-      const request = index.getAll();
-      request.onsuccess = () => {
+      readInventory(tx, ({ entries: rows, problems }) => {
         try {
-          const rows = request.result.map(metadata);
+          // Never omit damaged or unaccounted records to manufacture free space.
+          if (problems.length) throw new Error('The local library has damaged, incomplete or unsupported records. Review the saved library recovery controls before saving again.');
           if (rows.length >= RESEARCH_STORAGE_LIMITS.snapshots || rows.reduce((sum, row) => sum + row.bytes, 0) + bytes > RESEARCH_STORAGE_LIMITS.totalBytes) {
             throw new Error('Local research library is full (64 snapshots / 64 MiB). Export and explicitly remove old snapshots; nothing was evicted.');
           }
@@ -239,7 +297,7 @@ export class ResearchStorage {
           payloads.add({ id: entry.id, content });
           result(entry);
         } catch (cause) { fail(cause); }
-      };
+      }, fail);
     }, signal);
     this.changed();
     return saved;
@@ -276,6 +334,27 @@ export class ResearchStorage {
           index.delete(id); tx.objectStore('contents').delete(id); result(undefined);
         } catch (cause) { fail(cause); }
       };
+    }, signal);
+    this.changed();
+  }
+  /** A separate explicit recovery action, rechecked atomically before deleting this primary key only. */
+  async removeDamaged(key: IDBValidKey, signal?: AbortSignal): Promise<void> {
+    await this.transaction<void>('readwrite', (tx, result, fail) => {
+      const index = tx.objectStore('metadata'), payloads = tx.objectStore('contents');
+      const info = index.get(key), bodyKey = payloads.getKey(key);
+      let complete = 0;
+      const ready = () => {
+        if (++complete !== 2) return;
+        try {
+          if (info.result === undefined && bodyKey.result === undefined) throw new Error('This saved record is already absent. Refresh the saved list.');
+          if (unsupportedMetadata(info.result)) throw new Error('This record uses an unsupported snapshot format. Open the explorer version that saved it; recovery will not remove it.');
+          if (metadataAtKey(key, info.result) && bodyKey.result !== undefined) {
+            throw new Error('This record no longer has an index problem. Refresh the saved list and use its own panel to remove it.');
+          }
+          index.delete(key); payloads.delete(key); result(undefined);
+        } catch (cause) { fail(cause); }
+      };
+      info.onsuccess = ready; bodyKey.onsuccess = ready;
     }, signal);
     this.changed();
   }

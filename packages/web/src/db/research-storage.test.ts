@@ -19,7 +19,7 @@ const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version
  * Native transactions, reloads and cross-tab behavior are covered separately in browser tests.
  */
 function transactionFixture() {
-  type Data = Record<string, Map<string, unknown>>;
+  type Data = Record<string, Map<IDBValidKey, unknown>>;
   const data: Data = { metadata: new Map(), contents: new Map() };
   let queue = Promise.resolve();
   let failStore: string | null = null;
@@ -49,13 +49,18 @@ function transactionFixture() {
         };
         return {
           getAll: () => request(() => structuredClone([...local[name].values()])),
-          get: (id: string) => request(() => structuredClone(local[name].get(id))),
+          getAllKeys: () => request(() => structuredClone([...local[name].keys()])),
+          getKey: (id: IDBValidKey) => request(() => local[name].has(id) ? id : undefined),
+          get: (id: IDBValidKey) => request(() => structuredClone(local[name].get(id))),
           add: (value: { id: string }) => request(() => {
             if (failStore === name) { failStore = null; throw new DOMException('Disk quota failure', 'QuotaExceededError'); }
             if (local[name].has(value.id)) throw new Error('Duplicate key');
             local[name].set(value.id, structuredClone(value)); return value.id;
           }),
-          delete: (id: string) => request(() => local[name].delete(id)),
+          delete: (id: IDBValidKey) => request(() => {
+            if (failStore === name) { failStore = null; throw new DOMException('Injected delete failure', 'UnknownError'); }
+            return local[name].delete(id);
+          }),
         };
       },
     };
@@ -79,6 +84,8 @@ function transactionFixture() {
   }
   const prior = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB');
   Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: {
+    // String/number equality is all this event fixture needs. Native key semantics have browser tests.
+    cmp: (a: IDBValidKey, b: IDBValidKey) => a === b ? 0 : 1,
     open() {
       opens++;
       const request = { onsuccess: null as (() => void) | null, result: { onversionchange: null, close: () => { closed++; }, transaction } };
@@ -334,6 +341,93 @@ describe('saved research client transaction ownership (event fixture)', () => {
     assert.deepEqual(listed, entry); assert(!Object.hasOwn(listed, 'content'));
     assert.equal(counts().opens, counts().closed);
   }));
+  it('keeps healthy snapshots accessible when another panel has damaged metadata', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Intact', content);
+    const damaged = await store.save('workflow', 'Damaged workflow', JSON.stringify({ format: 'phage-explorer-commands', version: 1 }));
+    data.metadata.set(damaged.id, { ...damaged, bytes: -1 });
+    assert.deepEqual(await store.list('genomes'), [intact]);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+  }));
+  it('reports global index problems without payloads and refuses unaccounted saves until explicit cleanup', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Intact', content);
+    const damaged = await store.save('workflow', 'Damaged', JSON.stringify({ format: 'phage-explorer-commands', version: 1 }));
+    data.metadata.set(damaged.id, { ...damaged, bytes: 0 });
+    const inventory = await store.inspect('genomes');
+    assert.deepEqual(inventory.entries, [intact]);
+    assert.deepEqual(inventory.problems, [{ key: damaged.id, keyLabel: JSON.stringify(damaged.id), name: null, removable: true, reason: 'Invalid snapshot metadata' }]);
+    assert(!JSON.stringify(inventory).includes('private.fa'));
+    await assert.rejects(store.save('genomes', 'Unsafe accounting', content), /damaged, incomplete or unsupported/);
+    assert.equal(data.metadata.size, 2); assert.equal(data.contents.size, 2);
+    await store.removeDamaged(inventory.problems[0].key);
+    assert.deepEqual([...data.metadata.keys()], [intact.id]); assert.deepEqual([...data.contents.keys()], [intact.id]);
+    await store.save('genomes', 'After explicit cleanup', content);
+    assert.equal((await store.list()).length, 2);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+  }));
+  it('uses the actual primary key when corrupt metadata has a misleading ID or a non-UUID key', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Intact', content);
+    data.metadata.set('legacy-key', { ...intact });
+    data.contents.set('legacy-key', { id: 'legacy-key', content });
+    data.metadata.set(17, { id: 17, name: 'Old record' });
+    data.contents.set(17, { id: 17, content });
+    const { entries, problems } = await store.inspect();
+    assert.deepEqual(entries, [intact]); assert.deepEqual(problems.map(problem => problem.key), ['legacy-key', 17]);
+    for (const problem of problems) await store.removeDamaged(problem.key);
+    assert.deepEqual([...data.metadata.keys()], [intact.id]); assert.deepEqual([...data.contents.keys()], [intact.id]);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+  }));
+  it('exposes missing payloads and orphan contents without losing intact snapshots', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Intact', content);
+    const missing = await store.save('genomes', 'Missing payload', content);
+    const orphan = await store.save('genomes', 'Missing metadata', content);
+    data.contents.delete(missing.id); data.metadata.delete(orphan.id);
+    const inventory = await store.inspect();
+    assert.deepEqual(inventory.entries, [intact]);
+    assert.deepEqual(inventory.problems.map(problem => [problem.key, problem.reason]), [
+      [missing.id, 'Saved contents are missing'], [orphan.id, 'Saved contents have no metadata'],
+    ]);
+    await assert.rejects(store.save('genomes', 'Unknown usage', content), /damaged, incomplete or unsupported/);
+    for (const problem of inventory.problems) await store.removeDamaged(problem.key);
+    assert.deepEqual(await store.inspect(), { entries: [intact], problems: [] });
+    assert.deepEqual([...data.metadata.keys()], [intact.id]); assert.deepEqual([...data.contents.keys()], [intact.id]);
+  }));
+  it('refuses stale recovery removal after a record becomes healthy and rejects absent keys', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Restored metadata', content);
+    data.metadata.set(intact.id, { ...intact, sha256: 'invalid' });
+    const [problem] = (await store.inspect()).problems;
+    data.metadata.set(intact.id, intact);
+    await assert.rejects(store.removeDamaged(problem.key), /no longer has an index problem/);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+    await assert.rejects(store.removeDamaged('already-removed'), /already absent/);
+  }));
+  it('preserves newer snapshot versions and unknown kinds while keeping supported records accessible', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Supported', content);
+    const futureKind = await store.save('genomes', 'Future kind', content);
+    const futureVersion = await store.save('genomes', 'Future version', content);
+    data.metadata.set(futureKind.id, { ...futureKind, kind: 'future-kind' });
+    data.metadata.set(futureVersion.id, { ...futureVersion, version: 2 });
+    const inventory = await store.inspect();
+    assert.deepEqual(inventory.entries, [intact]); assert.equal(inventory.problems.length, 2);
+    for (const problem of inventory.problems) {
+      assert.equal(problem.reason, 'Unsupported snapshot format'); assert.equal(problem.removable, false);
+      await assert.rejects(store.removeDamaged(problem.key), /unsupported snapshot format/);
+    }
+    await assert.rejects(store.save('genomes', 'Unknown accounting', content), /unsupported/);
+    assert.equal(data.metadata.size, 3); assert.equal(data.contents.size, 3);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+  }));
+  it('rolls back both stores when damaged-record removal fails or is cancelled', () => fixture(async ({ store, data, before, failNext }) => {
+    const damaged = await store.save('genomes', 'Damaged', content);
+    const broken = { ...damaged, bytes: -1 }; data.metadata.set(damaged.id, broken);
+    let changes = 0; const unsubscribe = store.subscribe(() => { changes++; });
+    failNext('contents');
+    await assert.rejects(store.removeDamaged(damaged.id), { name: 'UnknownError' });
+    assert.deepEqual(data.metadata.get(damaged.id), broken); assert(data.contents.has(damaged.id));
+    const controller = new AbortController(); before(() => controller.abort());
+    await assert.rejects(store.removeDamaged(damaged.id, controller.signal), { name: 'AbortError' });
+    assert.deepEqual(data.metadata.get(damaged.id), broken); assert(data.contents.has(damaged.id));
+    assert.equal(changes, 0); unsubscribe();
+  }));
   it('keeps two independent same-name saves rather than last-writer-wins', () => fixture(async ({ store }) => {
     const entries = await Promise.all([store.save('genomes', 'Same', content), store.save('genomes', 'Same', content)]);
     assert.notEqual(entries[0].id, entries[1].id);
@@ -373,10 +467,11 @@ describe('saved research client transaction ownership (event fixture)', () => {
     data.metadata.set(original.id, { ...original, bytes: RESEARCH_STORAGE_LIMITS.snapshotBytes });
     for (let i = 0; i < 5; i++) {
       const id = crypto.randomUUID(); data.metadata.set(id, { ...original, id, bytes: RESEARCH_STORAGE_LIMITS.snapshotBytes });
+      data.contents.set(id, { id, content });
     }
     const fiveMiB = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, padding: 'A'.repeat(5 * 1024 * 1024) });
     await assert.rejects(store.save('genomes', 'Over budget', fiveMiB), /library is full/);
-    assert.equal(data.metadata.size, 6); assert.equal(data.contents.size, 1);
+    assert.equal(data.metadata.size, 6); assert.equal(data.contents.size, 6);
   }));
   it('refuses wrong-panel, missing and same-length damaged contents without removing them', () => fixture(async ({ store, data }) => {
     const entry = await store.save('genomes', 'Original', content);

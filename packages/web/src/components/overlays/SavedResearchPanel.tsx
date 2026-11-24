@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { researchStorage, requestResearchPersistence, RESEARCH_SNAPSHOT_TYPES, type ResearchSnapshotInfo, type ResearchSnapshotKind } from '../../db/research-storage';
+import { researchStorage, requestResearchPersistence, RESEARCH_SNAPSHOT_TYPES, type ResearchSnapshotInfo, type ResearchSnapshotKind, type ResearchSnapshotProblem } from '../../db/research-storage';
 import { downloadString } from '../../utils/export';
 
 interface SavedResearchPanelProps {
@@ -13,12 +13,14 @@ interface SavedResearchPanelProps {
 /** Saving is explicit and append-only. Reopening delegates to the existing parser/replay boundary. */
 export function SavedResearchPanel({ kind, suggestedName, capture, restore, disabled = false, onActivityChange }: SavedResearchPanelProps): React.ReactElement {
   const [entries, setEntries] = useState<ResearchSnapshotInfo[]>([]);
+  const [problems, setProblems] = useState<ResearchSnapshotProblem[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  const [confirmProblem, setConfirmProblem] = useState<ResearchSnapshotProblem | null>(null);
   const operation = useRef<AbortController | null>(null);
   const listing = useRef<AbortController | null>(null);
   const activity = useRef(onActivityChange);
@@ -26,9 +28,10 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
   const selected = entries.find(entry => entry.id === selectedId);
   const refresh = useCallback(() => {
     listing.current?.abort(); const controller = new AbortController(); listing.current = controller;
-    void researchStorage.list(kind, controller.signal).then(rows => {
+    void researchStorage.inspect(kind, controller.signal).then(({ entries: rows, problems: damaged }) => {
       if (controller.signal.aborted) return;
       setEntries(rows); setSelectedId(id => rows.some(row => row.id === id) ? id : '');
+      setProblems(damaged); setConfirmProblem(null);
     }).catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not list saved research.'); });
   }, [kind]);
   useEffect(() => {
@@ -64,7 +67,7 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
       Closing a panel does not save it. Browser data clearing or eviction can remove them; export JSON for a separate backup.</p>
     <label>Snapshot name <input value={name} placeholder={suggestedName.slice(0, 120)} maxLength={120} disabled={locked}
       onChange={event => setName(event.target.value)} /></label>{' '}
-    <button type="button" className="btn" disabled={locked || !capture} onClick={() => perform(async signal => {
+    <button type="button" className="btn" disabled={locked || !capture || problems.length > 0} onClick={() => perform(async signal => {
       if (!capture) throw new Error('No completed input or result is available to save.');
       const content = capture(); // Capture before any asynchronous storage work.
       const saved = await researchStorage.save(kind, name || suggestedName.slice(0, 120), content, signal);
@@ -102,6 +105,30 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
       })}>Confirm removal</button>{' '}
       <button type="button" disabled={locked} onClick={() => setConfirmId(null)}>Keep snapshot</button>
     </div>}
+    {problems.length > 0 && <section aria-label="Saved library recovery">
+      <h4>Saved records needing attention ({problems.length})</h4>
+      <p>These records may belong to any research panel. Intact snapshots remain available above.
+        New saves are paused while their storage usage cannot be safely accounted for.</p>
+      <ul>
+        {problems.map((problem, index) => <li key={index}>
+          <p>{problem.name ? `“${problem.name}”: ` : ''}{problem.reason}.
+            {' '}Storage key: <code style={{ overflowWrap: 'anywhere' }}>{problem.keyLabel}</code></p>
+          {problem.removable
+            ? <button type="button" className="btn" disabled={locked} onClick={() => { setConfirmProblem(problem); setConfirmId(null); }}>Remove damaged record</button>
+            : <p>This record uses a snapshot kind or version this explorer does not support. Reopen it in the explorer version that saved it. The record has been preserved.</p>}
+        </li>)}
+      </ul>
+      {confirmProblem && <div role="group" aria-label="Confirm damaged record removal">
+        <p>Permanently remove the record at storage key <code style={{ overflowWrap: 'anywhere' }}>{confirmProblem.keyLabel}</code>?
+          This deletes its metadata and any remaining contents. Keep any exported backup before confirming.
+          Current explorer inputs and other saved records are unchanged.</p>
+        <button type="button" disabled={locked} onClick={() => perform(async signal => {
+          await researchStorage.removeDamaged(confirmProblem.key, signal); setConfirmProblem(null);
+          return 'Removed the selected damaged record. Other saved snapshots and current inputs are unchanged.';
+        })}>Confirm damaged record removal</button>{' '}
+        <button type="button" disabled={locked} onClick={() => setConfirmProblem(null)}>Keep damaged record</button>
+      </div>}
+    </section>}
     {busy && <button type="button" className="btn" onClick={() => {
       operation.current?.abort(); setStatus('Cancellation requested. A save already committed may remain in the saved list.');
     }}>Cancel local operation</button>}
