@@ -6,13 +6,15 @@ import {
 
 export type SqlValue = string | number | bigint | Uint8Array | null;
 export type SqlRow = Record<string, SqlValue>;
+interface DatasetStatement {
+  safeIntegers(enabled: boolean): this;
+  iterate(...bindings: SqlValue[]): Iterable<SqlRow>;
+  get(...bindings: SqlValue[]): unknown;
+  run(...bindings: SqlValue[]): unknown;
+}
 /** Small adapter surface so the publication algorithm is independently testable. */
 export interface DatasetSqlite {
-  query(sql: string): {
-    iterate(...bindings: SqlValue[]): Iterable<SqlRow>;
-    get(...bindings: SqlValue[]): unknown;
-    run(...bindings: SqlValue[]): unknown;
-  };
+  query(sql: string): DatasetStatement;
   exec(sql: string): unknown;
   serialize(): Uint8Array;
   close(): void;
@@ -120,10 +122,18 @@ export async function publishProgressiveDataset(options: PublishDatasetOptions):
           if (!include) continue;
           const where = catalog ? '' : table.name === 'phages' ? ' WHERE id = ?' : ' WHERE phage_id = ?';
           const bindings = catalog ? [] : [phageId];
-          const statement = db.query(`INSERT INTO ${quote(table.name)} (${table.columns.map(quote).join(',')}) VALUES (${table.columns.map(() => '?').join(',')})`);
+          const columns = table.columns.map(quote).join(',');
+          const insert = `INSERT INTO ${quote(table.name)} (${columns}) VALUES`;
+          // Bun normally returns SQLite int64 as JS numbers. Low bits can be
+          // lost before the row reaches its shard, even if all row counts match.
+          const select = source.query(`SELECT ${columns} FROM ${quote(table.name)}${where} ORDER BY ${table.order.map(quote).join(',')}`).safeIntegers(true);
           let n = 0;
-          for (const row of source.query(`SELECT ${table.columns.map(quote).join(',')} FROM ${quote(table.name)}${where} ORDER BY ${table.order.map(quote).join(',')}`).iterate(...bindings)) {
-            statement.run(...table.columns.map(column => row[column]));
+          for (const row of select.iterate(...bindings)) {
+            const values = table.columns.map(column => row[column]);
+            // Integers are bigint here. Bind REALs explicitly, since Bun binds
+            // whole-valued numbers like 1.0 as INTEGER in no-affinity columns.
+            const placeholders = values.map(value => typeof value === 'number' ? 'CAST(? AS REAL)' : '?').join(',');
+            db.query(`${insert} (${placeholders})`).run(...values);
             n++;
             if (n % 256 === 0) checkSize(db, budget, label);
           }

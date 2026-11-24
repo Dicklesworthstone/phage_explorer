@@ -47,6 +47,26 @@ function open(bytes: Uint8Array): DatasetSqlite { return Database.deserialize(by
 function all(db: DatasetSqlite, sql: string) { return Array.from(db.query(sql).iterate()); }
 
 describe('progressive SQLite publication', () => {
+  test('preserves exact SQLite integers and REAL storage classes in both catalog and genome rows', async () => {
+    const source = fixture(), output = collector();
+    try {
+      // Untyped columns can mix integer, real, blob, text, and NULL in a single table.
+      for (const [table, scope] of [['reference_values', ''], ['local_values', 'phage_id INTEGER DEFAULT 1,']]) {
+        source.exec(`CREATE TABLE ${table} (id INTEGER PRIMARY KEY, ${scope} value);
+          INSERT INTO ${table}(value) VALUES (9007199254740992), (9007199254740993),
+            (9223372036854775807), (-9223372036854775808), (1.0), (1), (1.5), ('1'), (NULL), (X'00FF');`);
+      }
+      const manifest = await publishProgressiveDataset({ source, createDatabase: database, ...output });
+      for (const [table, artifact] of [['reference_values', manifest.catalog], ['local_values', manifest.genomes[0].artifact]] as const) {
+        const copy = open(output.artifacts.get(artifact.path)!.bytes);
+        try {
+          // Compare inside SQLite. Reading both sides as JS numbers would mask the lost low bits.
+          const sql = `SELECT typeof(value) AS kind, quote(value) AS literal FROM ${table} ORDER BY id`;
+          assert.deepEqual(all(copy, sql), all(source, sql));
+        } finally { copy.close(); }
+      }
+    } finally { source.close(); }
+  });
   test('preserves every table row, annotations, blobs, and global references without changing the source', async () => {
     const source = fixture(); const output = collector(); const before = sha(source.serialize());
     try {
