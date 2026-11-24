@@ -33,6 +33,27 @@ function json(result: Output): Record<string, unknown> {
 const fixture = () => mkdtemp(join(tmpdir(), 'phage-scientific-entrypoint-'));
 
 describe('main executable research commands', () => {
+  it('authors supplied attachment and excision products without a database, terminal or browser', async () => {
+    const cwd = await fixture();
+    for (const [kind, expected] of [['attachment', ['TTACAACCACGG']], ['excision', ['GACGTT', 'CCGATTAA']]] as const) {
+      const template = json(await run(cwd, ['workflow', `${kind}-template`]));
+      const input = join(cwd, kind + '-source.json'), output = join(cwd, kind + '-fresh.json');
+      const fasta = join(cwd, kind + '-products.fasta'), replayed = join(cwd, kind + '-verified.json');
+      await writeFile(input, JSON.stringify(template));
+      const made = json(await run(cwd, ['workflow', `analyze-${kind}`, '--input', input, '--flank', '2', '--output', output]));
+      assert.equal(made.format, 'phage-explorer-attachment-analysis'); assert.equal(made.verified, undefined);
+      const verified = json(await run(cwd, ['workflow', 'replay-experiment', '--input', output, '--output', replayed]));
+      assert.equal(verified.verified, true); assert.equal(verified.resultId, made.resultId);
+      assert.equal(await readFile(output, 'utf8'), await readFile(replayed, 'utf8'));
+      json(await run(cwd, ['workflow', `analyze-${kind}`, '--input', input, '--flank', '2', '--output', fasta, '--format', 'fasta']));
+      const products = (await readFile(fasta, 'utf8')).trimEnd().split(/^>/m).filter(Boolean)
+        .map(record => record.split('\n').slice(1).join(''));
+      assert.deepEqual(products, expected);
+      for (const sequence of expected) assert(!JSON.stringify(made).includes(sequence));
+    }
+    assert(!(await readdir(cwd)).some(name => name.endsWith('.db')));
+  });
+
   it('runs native attachment and excision replay through the source executable without a catalog or terminal', async () => {
     const { reconstructAttachment, createAttachmentExperimentRecord, reconstructProphageExcision, createProphageExcisionRecord } =
       await import('../../../core/src/analysis/prophage-excision');

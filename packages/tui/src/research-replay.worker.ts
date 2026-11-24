@@ -20,6 +20,60 @@ import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStruc
 import { SPACER_METHOD } from '../../core/src/analysis/spacer-reference';
 import { parseRNAInterval, type RNAStructureRequest } from '../../core/src/analysis/rna-structure-experiment';
 import { resolveRNAStructureOptions, type RNAStructureOptions } from '../../core/src/analysis/rna-structure';
+import { ATTACHMENT_LIMITS, ATTACHMENT_RECONSTRUCTION_METHOD, PROPHAGE_EXCISION_METHOD,
+  validateAttachmentInput, validateProphageExcisionInput, resolveAttachmentOptions,
+  type AttachmentOptions, type AttachmentReconstructionInput, type ProphageExcisionInput,
+  type AttachmentReconstructionResult, type ProphageExcisionResult } from '../../core/src/analysis/prophage-excision';
+
+export type TerminalAttachmentInput = AttachmentReconstructionInput | ProphageExcisionInput;
+export function parseTerminalAttachmentInput(request: { type: 'analyze-attachment' | 'analyze-excision'; content: string }): TerminalAttachmentInput {
+  if (new TextEncoder().encode(request.content).length > ATTACHMENT_LIMITS.inputBytes) {
+    throw new Error('Attachment/excision input exceeds 4 MiB.');
+  }
+  let value: unknown;
+  try { value = JSON.parse(request.content.replace(/^\uFEFF/, '')); }
+  catch { throw new Error('Supply attachment/excision source JSON; use attachment-template or excision-template for its schema.'); }
+  return request.type === 'analyze-attachment' ? validateAttachmentInput(value) : validateProphageExcisionInput(value);
+}
+export function terminalAttachmentRequestSha256(request: { type: 'analyze-attachment' | 'analyze-excision'; content: string; options: AttachmentOptions }): string {
+  return hashText(JSON.stringify(analysisJson({ type: request.type, inputFileSha256: hashText(request.content), options: request.options })));
+}
+/** Transport binding only: numerical reconstruction remains in the owned worker. */
+export function terminalAttachmentRecordMatches(record: AnalysisRecord, input: TerminalAttachmentInput, options: AttachmentOptions): boolean {
+  const integration = input.format === 'phage-explorer-attachment-reconstruction';
+  const method = integration ? ATTACHMENT_RECONSTRUCTION_METHOD : PROPHAGE_EXCISION_METHOD;
+  const inputs = integration ? [
+    { id: 'hostLocus', accession: input.host.accession, source: input.host.source.kind, data: input.host },
+    { id: 'phageGenome', accession: input.phage.accession, source: input.phage.source.kind, data: input.phage },
+    { id: 'attachmentSites', accession: null, source: 'local', data: { format: input.format, version: input.version,
+      attB: input.attB, attP: input.attP, circularization: input.circularization } },
+  ] : [
+    { id: 'integratedLocus', accession: input.locus.accession, source: input.locus.source.kind, data: input.locus },
+    { id: 'excisionSites', accession: null, source: 'local', data: { format: input.format, version: input.version, attL: input.attL, attR: input.attR } },
+  ];
+  const bases = integration ? input.host.sequence.length + input.phage.sequence.length : input.locus.sequence.length;
+  return sameJson(record.method, method) && record.seed === null && sameJson(record.parameters, options)
+    && sameJson(record.inputs.map(({ id, accession, source, data }) => ({ id, accession, source, data })), inputs)
+    && record.fields.reconstruction?.kind === 'simulation' && record.fields.reconstruction.units === 'records'
+    && sameJson(record.fields.reconstruction.coverage, { available: bases, total: bases, unit: 'bases' });
+}
+/** Metadata-only report; full bases and junction strings stay in explicit files. */
+export function terminalAttachmentSummary(record: AnalysisRecord) {
+  if (record.method.id === ATTACHMENT_RECONSTRUCTION_METHOD.id) {
+    const result = record.fields.reconstruction.value as unknown as AttachmentReconstructionResult;
+    return { kind: 'integration', conservation: result.conservation, insertionStrand: result.insertionStrand,
+      sharedCoreBases: result.sharedCore.length, hostCut: result.hostCut, phageCut: result.phageCut,
+      products: [{ id: 'integrated_product', topology: result.integratedTopology, bases: result.integratedSequence.length,
+        sha256: hashText(result.integratedSequence), segments: result.segments }] };
+  }
+  const result = record.fields.reconstruction.value as unknown as ProphageExcisionResult;
+  return { kind: 'excision', conservation: result.conservation, attachmentStrand: result.attachmentStrand,
+    sharedCoreBases: result.sharedCore.length, sourceCuts: result.sourceCuts,
+    products: [
+      { id: 'excised_phage', ...result.excisedPhage }, { id: 'restored_host', ...result.restoredHost },
+    ].map(({ id, sequence, topology, sourceOrigin, segments }) => ({ id, topology, sourceOrigin, segments,
+      bases: sequence.length, sha256: hashText(sequence) })) };
+}
 
 export interface TerminalRNAInspection {
   format: 'phage-explorer-rna-inspection'; version: 1; headless: true;
@@ -320,6 +374,8 @@ export function terminalResultExtraction(archive: WorkflowResults, inputArchiveS
 }
 
 export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
+  { type: 'analyze-attachment'; content: string; options: AttachmentOptions } |
+  { type: 'analyze-excision'; content: string; options: AttachmentOptions } |
   { type: 'inspect-rna'; content: string; contentId: string | null; geneId: number | null } |
   { type: 'analyze-rna'; content: string; contentId: string | null; geneId: number | null;
     start: number; end: number; strand: '+' | '-'; options: Required<RNAStructureOptions> } |
@@ -337,8 +393,9 @@ export type TerminalResearchRequest = { type: 'fit-growth'; content: string } |
   { type: 'inspect-genomes'; content: string } |
   { type: 'analyze-experiment'; content: string; contentId: string | null; analysis: TerminalAnalysis; outputFormat: 'none' | 'json' | 'tsv' } |
   { type: 'replay'; content: string; repetitions: number; exportAnalysis: boolean; captureResults?: boolean } |
-  { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' };
+  { type: 'replay-experiment'; content: string; outputFormat: 'none' | 'json' | 'tsv' | 'fasta' };
 export type TerminalResearchResult = { type: 'growth-fitted'; inputFileSha256: string; recordJson: string } |
+  { type: 'attachment-analyzed'; inputFileSha256: string; requestSha256: string; recordJson: string } |
   { type: 'rna-inspected'; report: TerminalRNAInspection } |
   { type: 'rna-analyzed'; inputFileSha256: string; requestSha256: string; genome: TerminalGenomeSummary; recordJson: string } |
   { type: 'stability-fitted'; inputFileSha256: string; recordJson: string } |
@@ -363,7 +420,7 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
   const allowed = request.type === 'inspect' || request.type === 'inspect-genomes' || request.type === 'inspect-mosaic' || request.type === 'inspect-protein-reference' || request.type === 'record' || request.type === 'replay-results' || request.type === 'inspect-results' || request.type === 'fit-growth' || request.type === 'fit-pfu-growth' || request.type === 'fit-stability' ? ['type', 'content']
     : request.type === 'inspect-rna' ? ['type', 'content', 'contentId', 'geneId']
     : request.type === 'analyze-rna' ? ['type', 'content', 'contentId', 'geneId', 'start', 'end', 'strand', 'options']
-    : request.type === 'analyze-mosaic' || request.type === 'analyze-protein-structure' ? ['type', 'content', 'options']
+    : request.type === 'analyze-mosaic' || request.type === 'analyze-protein-structure' || request.type === 'analyze-attachment' || request.type === 'analyze-excision' ? ['type', 'content', 'options']
     : request.type === 'extract-result' ? ['type', 'content', 'execution'] : request.type === 'analyze-experiment'
     ? ['type', 'content', 'contentId', 'analysis', 'outputFormat'] : request.type === 'replay-experiment'
     ? ['type', 'content', 'outputFormat'] : ['type', 'content', 'repetitions', 'exportAnalysis'];
@@ -373,15 +430,21 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
       throw new Error('Choose complete workflow results or a last analysis, not both.');
     }
   }
-  const limit = ['inspect-protein-reference', 'analyze-protein-structure'].includes(String(request.type)) ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
+  const limit = ['analyze-attachment', 'analyze-excision'].includes(String(request.type)) ? ATTACHMENT_LIMITS.inputBytes
+    : ['inspect-protein-reference', 'analyze-protein-structure'].includes(String(request.type)) ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
     : ['replay-results', 'inspect-results', 'extract-result'].includes(String(request.type)) ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes;
-  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth', 'fit-stability', 'inspect-rna', 'analyze-rna'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
+  if (!['inspect', 'record', 'replay', 'replay-results', 'inspect-results', 'extract-result', 'replay-experiment', 'inspect-genomes', 'analyze-experiment', 'inspect-mosaic', 'analyze-mosaic', 'inspect-protein-reference', 'analyze-protein-structure', 'fit-growth', 'fit-pfu-growth', 'fit-stability', 'inspect-rna', 'analyze-rna', 'analyze-attachment', 'analyze-excision'].includes(String(request.type)) || Object.keys(request).sort().join('|') !== allowed.sort().join('|') ||
     typeof request.content !== 'string' || request.content.length > limit || new TextEncoder().encode(request.content).length > limit) {
     throw new Error(`Expected a supported terminal operation and UTF-8 input of at most ${limit / 1024 / 1024} MiB.`);
   }
   if (request.type === 'fit-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Plaque input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-pfu-growth' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Corrected-PFU input exceeds 1,000,000 UTF-8 bytes.');
   if (request.type === 'fit-stability' && new TextEncoder().encode(request.content as string).length > 1_000_000) throw new Error('Inactivation input exceeds 1,000,000 UTF-8 bytes.');
+  if (request.type === 'analyze-attachment' || request.type === 'analyze-excision') {
+    if (!sameJson(request.options, resolveAttachmentOptions(request.options))) {
+      throw new Error('Attachment/excision requests require an explicit flankLength.');
+    }
+  }
   if (request.type === 'inspect-rna' || request.type === 'analyze-rna') {
     if (request.contentId !== null && (typeof request.contentId !== 'string' || !/^[a-f0-9]{64}$/.test(request.contentId))) {
       throw new Error('Select a complete genome content ID from inspect-genomes, or null for a single-record input.');
@@ -422,8 +485,9 @@ export function validateTerminalResearchRequest(value: unknown): asserts value i
     Number(request.repetitions) < 1 || Number(request.repetitions) > COMMAND_LIMITS.repetitions)) throw new Error('Invalid replay export/repetition options.');
   if (request.type === 'extract-result' && (!Number.isSafeInteger(request.execution) || Number(request.execution) < 1
     || Number(request.execution) > COMMAND_LIMITS.executions)) throw new Error('Choose a 1-based execution from inspect-results.');
-  if ((request.type === 'replay-experiment' || request.type === 'analyze-experiment') && !['none', 'json', 'tsv'].includes(String(request.outputFormat))) {
-    throw new Error('Experiment output must be none, json or tsv.');
+  if ((request.type === 'replay-experiment' || request.type === 'analyze-experiment')
+    && !['none', 'json', 'tsv', ...(request.type === 'replay-experiment' ? ['fasta'] : [])].includes(String(request.outputFormat))) {
+    throw new Error('Experiment output must be none, json or tsv; attachment/excision replay also supports fasta.');
   }
   if (request.type === 'analyze-experiment') {
     if (request.contentId !== null && (typeof request.contentId !== 'string' || !/^[a-f0-9]{64}$/.test(request.contentId))) {
@@ -439,6 +503,16 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   progress: (value: ReplayProgress) => void = () => {}): Promise<TerminalResearchResult> {
   validateTerminalResearchRequest(request);
   request = structuredClone(request);
+  if (request.type === 'analyze-attachment' || request.type === 'analyze-excision') {
+    const input = parseTerminalAttachmentInput(request);
+    const { reconstructAttachment, createAttachmentExperimentRecord, reconstructProphageExcision, createProphageExcisionRecord } =
+      await import('../../core/src/analysis/prophage-excision');
+    const record = input.format === 'phage-explorer-attachment-reconstruction'
+      ? await createAttachmentExperimentRecord(input, reconstructAttachment(input, request.options))
+      : await createProphageExcisionRecord(input, reconstructProphageExcision(input, request.options));
+    return { type: 'attachment-analyzed', inputFileSha256: hashText(request.content),
+      requestSha256: terminalAttachmentRequestSha256(request), recordJson: serializeAnalysisRecord(record) };
+  }
   if (request.type === 'inspect-rna' || request.type === 'analyze-rna') {
     const prepared = await prepareTerminalRNA(request);
     if (request.type === 'inspect-rna') return { type: 'rna-inspected', report: prepared.inspection };
@@ -577,6 +651,9 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
     let table = (_record: AnalysisRecord): string => {
       throw new Error('TSV export is not defined for ' + saved.method.id + '; use --format json to retain the complete verified experiment.');
     };
+    let fasta = (_record: AnalysisRecord): string => {
+      throw new Error('FASTA output is defined only for attachment integration and prophage excision; use --format json for the complete experiment.');
+    };
     if (saved.method.id === 'sequence-dot-plot') {
       const { replayDotPlotExperiment, exportDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
       const source = saved.inputs[0];
@@ -601,11 +678,13 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { sequence: column.data, accession: column.accession, source: column.source })).record;
       table = exportPairwiseDotPlotExperimentTsv;
     } else if (saved.method.id === 'attachment-reconstruction') {
-      const { replayAttachmentExperiment } = await import('../../core/src/analysis/prophage-excision');
+      const { replayAttachmentExperiment, exportAttachmentProductsFasta } = await import('../../core/src/analysis/prophage-excision');
       fresh = (await replayAttachmentExperiment(request.content)).record;
+      fasta = exportAttachmentProductsFasta;
     } else if (saved.method.id === 'prophage-excision-reconstruction') {
-      const { replayProphageExcisionRecord } = await import('../../core/src/analysis/prophage-excision');
+      const { replayProphageExcisionRecord, exportAttachmentProductsFasta } = await import('../../core/src/analysis/prophage-excision');
       fresh = (await replayProphageExcisionRecord(request.content)).record;
+      fasta = exportAttachmentProductsFasta;
     } else if (saved.method.id === 'rna-maximum-pairing') {
       const { replayRNAStructureRecord, exportRNAStructureTsv } = await import('../../core/src/analysis/rna-structure-experiment');
       fresh = (await replayRNAStructureRecord(request.content)).record;
@@ -667,7 +746,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       inputs: fresh.inputs.map(({ id, accession, source, sha256 }) => ({ id, accession, source, sha256 })),
       interpretation: 'Fresh numerical replay of the embedded inputs, parameters and reference definitions; not independent source authentication or biological validation.',
     }, exportText: request.outputFormat === 'json' ? serializeAnalysisRecord(fresh)
-      : request.outputFormat === 'tsv' ? table(fresh) : null };
+      : request.outputFormat === 'tsv' ? table(fresh) : request.outputFormat === 'fasta' ? fasta(fresh) : null };
   }
   // A standalone sequence experiment does not initialize command adapters,
   // genome imports or unrelated scientific methods.

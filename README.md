@@ -624,6 +624,26 @@ verified by reconstructing the products again from the embedded source and
 declarations. Excision accepts up to **1,500,000 integrated bases**; integration
 retains its **1,000,000 bases per source** and **1,500,000 combined bases** limits.
 
+The native workflow also creates these experiments directly from supplied JSON,
+without a catalog or browser. Templates print explicitly synthetic inputs for
+review; replace them with your sourced sequences and declared sites before use.
+
+```bash
+phage-explorer workflow attachment-template
+phage-explorer workflow excision-template
+phage-explorer workflow analyze-attachment --input attachment.json --output integration.json
+phage-explorer workflow analyze-excision --input integrated-locus.json --output excision.json
+phage-explorer workflow replay-experiment --input excision.json --output products.fasta --format fasta
+```
+
+Both analysis commands accept `--flank 0..1000` for junction previews and
+`--format fasta` for complete products. Integration exports one molecule;
+excision exports the circular phage and restored host. FASTA is a sequence
+projection; retain the complete JSON for source maps, provenance and verified
+replay. Output files are created exclusively, and the ordinary terminal report
+contains lengths, hashes and coordinate maps rather than raw sequences. In a
+source checkout, substitute `bun run workflow` for `phage-explorer workflow`.
+
 These are conditional sequence reconstructions. Matching crossover cores do
 not establish full-site recognition, compatible recombination machinery,
 excision efficiency, infectivity or clinical risk. Unsupported orientation,

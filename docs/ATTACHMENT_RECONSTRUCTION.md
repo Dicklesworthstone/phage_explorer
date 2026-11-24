@@ -67,6 +67,42 @@ checks its recorded identity. The saved sources are self-contained; they do not
 depend on the currently selected catalog genome. A mismatched result is refused.
 No sequence is uploaded; replay uses the embedded sources.
 
+## Create reconstructions from the terminal
+
+The native workflow can also start from supplied sources without a browser or
+catalog. Print a schema example, replace its explicitly synthetic sequences and
+source declarations with your own inputs, then run the corresponding analysis:
+
+```bash
+phage-explorer workflow attachment-template
+phage-explorer workflow excision-template
+phage-explorer workflow analyze-attachment --input attachment.json --flank 50 --output integration.json
+phage-explorer workflow analyze-excision --input integrated-locus.json --flank 50 --output excision.json
+```
+
+Integration accepts version-1 `phage-explorer-attachment-reconstruction` JSON
+containing complete host and phage inputs, source metadata, topology, declared
+attB/attP cores and an explicit circularization choice. Excision accepts
+version-1 `phage-explorer-prophage-excision` JSON containing the complete
+integrated locus and declared attL/attR cores. Both use **zero-based, half-open**
+coordinates in the supplied forward sequence and an explicit strand for each
+site. Cores cannot wrap; the excised arc can cross a circular locus's origin.
+
+Input JSON is limited to 4 MiB and the same sequence bounds as the browser:
+1,000,000 bases per integration substrate, 1,500,000 combined, or 1,500,000 bases
+for an integrated excision locus. `--flank` accepts 0–1,000 bases and changes
+junction previews only. The worker validates complete inputs, computes the
+conditional products, and returns a record bound to the submitted sources and
+settings. Invalid inputs, worker errors and cancellation during computation
+produce no output file.
+
+JSON is the complete replayable experiment. Add `--format fasta` to export the
+integrated molecule or **both** excision products instead. FASTA headers retain
+product topology, result identity and, for excision, each product's source origin;
+the complete JSON retains the detailed coordinate maps and source provenance.
+Both explicit formats contain private sequences. Ordinary stdout reports
+lengths, hashes, topology and coordinate maps without printing the bases.
+
 ## Replay complete reconstructions from the terminal
 
 A newly built native executable can verify an exported attachment integration or
@@ -77,6 +113,7 @@ source file:
 phage-explorer workflow replay-experiment --input attachment-experiment.json
 phage-explorer workflow replay-experiment --input attachment-experiment.json --output verified-attachment.json
 phage-explorer workflow replay-experiment --input excision-experiment.json --output verified-excision.json
+phage-explorer workflow replay-experiment --input excision-experiment.json --output verified-products.fasta --format fasta
 ```
 
 From a source checkout, replace `phage-explorer workflow` with `bun run workflow`.
@@ -88,9 +125,11 @@ junctions, topology, source origins and complete coordinate maps. Changed output
 are refused even when their file checksums have been recomputed.
 
 Standard output is a verification report with result and input identities; it
-does not print the sequences. `--output NEW_FILE` exclusively creates the complete
-verified AnalysisRecord JSON and never overwrites an existing file. These two
-methods have no TSV representation; `--format tsv` fails before creating a file.
+does not print the sequences. `--output NEW_FILE` exclusively creates a new file
+and never overwrites an existing file or follows an existing output symlink.
+The default format is complete verified AnalysisRecord JSON; `--format fasta`
+projects all reconstructed products after verification. These two methods have
+no TSV representation; `--format tsv` fails before creating a file.
 The JSON contains private source and product sequences. `--timeout-ms` and
 cancellation terminate the owned replay worker. Verification establishes
 reproducibility of the declared sequence operation, not source authentication or

@@ -6,6 +6,20 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Native creation of supplied integration and excision experiments
+
+- `workflow analyze-attachment` and `workflow analyze-excision` create complete
+  reconstructions directly from bounded, sourced JSON through cancellable native
+  workers. Both use the same explicit-site core methods as the browser and bind
+  returned evidence to the submitted bases, site declarations and settings.
+- `attachment-template` and `excision-template` print explicitly synthetic
+  input examples. JSON preserves the complete replayable experiment; FASTA
+  exports the integrated product or both excision products, including topology
+  and result identity. Verified replay can also export those FASTA products.
+- Native reports retain coordinate maps and sequence hashes without printing
+  the raw product sequences. Existing output files are never overwritten.
+  [Commands and limits](docs/ATTACHMENT_RECONSTRUCTION.md).
+
 ### Native replay of supplied integration and excision experiments
 
 - `workflow replay-experiment` accepts complete attachment and prophage excision

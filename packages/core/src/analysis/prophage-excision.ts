@@ -729,6 +729,10 @@ export const ATTACHMENT_LIMITS = {
   sequenceBases: 1_000_000, totalBases: 1_500_000, coreBases: 256,
   flankBases: 1000, inputBytes: 4 * 1024 * 1024,
 } as const;
+export const ATTACHMENT_RECONSTRUCTION_METHOD = {
+  id: 'attachment-reconstruction', version: '1',
+  implementation: 'explicit oriented identical cores; circular-substrate conservative composition; coordinate-map-v1',
+} as const;
 export interface AttachmentSequenceInput {
   name: string; accession: string | null; sequence: string;
   topology: 'linear' | 'circular' | 'unknown';
@@ -925,7 +929,7 @@ export async function createAttachmentExperimentRecord(raw: AttachmentReconstruc
   if (JSON.stringify(analysisJson(result)) !== JSON.stringify(analysisJson(supplied))) throw new Error('Attachment result does not match its exact input and options.');
   const { host, phage, attB, attP, circularization } = input;
   return createAnalysisRecord({
-    method: { id: 'attachment-reconstruction', version: '1', implementation: 'explicit oriented identical cores; circular-substrate conservative composition; coordinate-map-v1' },
+    method: { ...ATTACHMENT_RECONSTRUCTION_METHOD },
     inputs: [
       { id: 'hostLocus', accession: host.accession, source: host.source.kind, description: 'Exact supplied host locus bases, declared topology and source metadata.', data: analysisJson(host) },
       { id: 'phageGenome', accession: phage.accession, source: phage.source.kind, description: 'Exact supplied phage bases, input topology and source metadata.', data: analysisJson(phage) },
@@ -1133,4 +1137,35 @@ export async function replayProphageExcisionRecord(content: string, expectedLocu
     throw new Error('Fresh excision reconstruction differs from the saved result or reference contract.');
   }
   return { input, options, result, record };
+}
+
+/** Products from a freshly computed or replayed record. FASTA is a sequence
+ * projection, not a replacement for the complete source/coordinate-map JSON.
+ * Fixed identifiers avoid putting untrusted source labels in FASTA headers.
+ */
+export function exportAttachmentProductsFasta(record: AnalysisRecord): string {
+  const value = record.fields.reconstruction?.value;
+  if (!attachmentObject(value) || !/^[a-f0-9]{64}$/.test(record.resultId)) {
+    throw new Error('Expected an accepted attachment or excision reconstruction record.');
+  }
+  const fasta = (id: string, sequence: unknown, topology: unknown, origin?: unknown): string => {
+    if (typeof sequence !== 'string' || !sequence.length || sequence.length > ATTACHMENT_LIMITS.totalBases
+      || /[^ACGT]/.test(sequence) || (topology !== 'linear' && topology !== 'circular')
+      || origin !== undefined && (!Number.isSafeInteger(origin) || Number(origin) < 0)) {
+      throw new Error('Attachment product bases, topology or source origin are invalid.');
+    }
+    const lines = [`>${id} topology=${topology} conditional_reconstruction=true result_id=${record.resultId}`
+      + (origin === undefined ? '' : ` source_origin_start0=${origin}`)];
+    for (let offset = 0; offset < sequence.length; offset += 80) lines.push(sequence.slice(offset, offset + 80));
+    return lines.join('\n') + '\n';
+  };
+  if (record.method.id === ATTACHMENT_RECONSTRUCTION_METHOD.id && record.method.version === ATTACHMENT_RECONSTRUCTION_METHOD.version) {
+    return fasta('integrated_product', value.integratedSequence, value.integratedTopology);
+  }
+  if (record.method.id === PROPHAGE_EXCISION_METHOD.id && record.method.version === PROPHAGE_EXCISION_METHOD.version
+    && attachmentObject(value.excisedPhage) && attachmentObject(value.restoredHost)) {
+    return fasta('excised_phage', value.excisedPhage.sequence, value.excisedPhage.topology, value.excisedPhage.sourceOrigin)
+      + fasta('restored_host', value.restoredHost.sequence, value.restoredHost.topology, value.restoredHost.sourceOrigin);
+  }
+  throw new Error('FASTA products require a supported attachment or excision reconstruction record.');
 }

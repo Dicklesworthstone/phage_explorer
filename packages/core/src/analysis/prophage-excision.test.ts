@@ -641,7 +641,7 @@ describe('exact declared prophage excision sequence reconstruction', () => {
     expect(result.excisedPhage.sequence).toBe(control.phage);
     expect(result.restoredHost.sequence).toBe(control.host);
     expect(result.excisedPhage.topology).toBe('circular');
-    expect(result.restoredHost.topology).toBe(control.input.locus.topology);
+    expect(control.input.locus.topology).toBe(result.restoredHost.topology);
     expect(result.excisedPhage.sourceOrigin).toBe(control.cuts[0]);
     expect(result.restoredHost.sourceOrigin).toBe(control.hostOrigin);
     expect(result.sourceCuts).toEqual({ start: control.cuts[0], end: control.cuts[1], wrapsOrigin: control.wraps });

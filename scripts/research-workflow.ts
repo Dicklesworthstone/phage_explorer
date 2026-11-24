@@ -21,9 +21,12 @@ import type { PlaqueGrowthResult } from '../packages/core/src/analysis/plaque-gr
 import type { GrowthCurveFit } from '../packages/core/src/analysis/one-step-growth';
 import { INACTIVATION_METHOD, INACTIVATION_LIMITS, parseInactivationInput, createInactivationTemplate,
   exportInactivationTsv, type InactivationFit } from '../packages/core/src/analysis/virion-stability';
+import { ATTACHMENT_LIMITS, resolveAttachmentOptions, exportAttachmentProductsFasta,
+  type AttachmentOptions, type AttachmentReconstructionInput, type ProphageExcisionInput } from '../packages/core/src/analysis/prophage-excision';
 import { validateTerminalResearchRequest, validateTerminalAnalysis, isTerminalGenomeSummary, terminalAnalysisRequestSha256, terminalAnalysisParametersMatch, terminalSequenceSummary,
   terminalResultsInspection, terminalResultExtraction, terminalMosaicInspection, terminalMosaicRequestSha256,
   terminalProteinReferenceInspection, terminalProteinStructureRequestSha256, prepareTerminalRNA, terminalRNARequestSha256,
+  parseTerminalAttachmentInput, terminalAttachmentRequestSha256, terminalAttachmentRecordMatches, terminalAttachmentSummary,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalResearchResult,
   type TerminalResearchMessage } from '../packages/tui/src/research-replay.worker';
 import type { ReplayProgress } from '../packages/tui/src/research-replay';
@@ -40,6 +43,12 @@ bun run workflow fit-pfu-growth --input corrected-pfu.json [--output NEW_FILE]
 bun run workflow stability-template
 bun run workflow fit-stability --input inactivation.json [--output NEW_FILE]
   [--format json|tsv] [--timeout-ms 300000]
+bun run workflow attachment-template
+bun run workflow excision-template
+bun run workflow analyze-attachment --input attachment.json [--flank 50]
+  [--output NEW_FILE] [--format json|fasta] [--timeout-ms 300000]
+bun run workflow analyze-excision --input integrated-locus.json [--flank 50]
+  [--output NEW_FILE] [--format json|fasta] [--timeout-ms 300000]
 bun run workflow inspect --input workflow.json [--timeout-ms 300000]
 bun run workflow record --input plan.json --output NEW_WORKFLOW.json
   [--results] [--timeout-ms 300000] [--progress]
@@ -51,7 +60,7 @@ bun run workflow inspect-results --input complete-results.json [--timeout-ms 300
 bun run workflow extract-result --input complete-results.json --execution 2
   --output NEW_ANALYSIS.json [--timeout-ms 300000]
 bun run workflow replay-experiment --input experiment.json [--output NEW_FILE]
-  [--format json|tsv] [--timeout-ms 300000]
+  [--format json|tsv|fasta] [--timeout-ms 300000]
 bun run workflow inspect-genomes --input genomes.fa
 bun run workflow inspect-rna --input genome.gb [--record CONTENT_ID] [--gene CDS_ID]
   [--timeout-ms 300000]
@@ -106,6 +115,26 @@ execution's AnalysisRecord JSON; navigation steps have no analysis to extract.
 Both check complete-archive integrity, but neither claims numerical replay or
 method availability. Extracted records retain their original private inputs and
 can be used with the existing compatible analysis viewers/replay-experiment.
+
+analyze-attachment accepts version-1 phage-explorer-attachment-reconstruction JSON
+with complete host/phage sequences, explicit topology and source declarations,
+attB/attP core coordinates/strands/evidence, and an explicit circularization choice.
+analyze-excision accepts version-1 phage-explorer-prophage-excision JSON with the
+complete integrated locus and declared attL/attR sites. Coordinates are zero-based,
+half-open and non-wrapping; the excised arc may cross a circular locus's origin.
+Both require unambiguous DNA and exactly matching oriented cores. No site discovery,
+sequence repair, recombinase activity or integration/excision probability is inferred.
+The matching template command prints an explicitly SYNTHETIC schema example.
+Inputs are bounded to 4 MiB and 1,500,000 total bases; each integration source is
+at most 1,000,000 bases. --flank controls junction previews only (0..1000 bases).
+JSON retains every source declaration, full product, junction and coordinate map
+and can be restored in the browser or numerically checked with replay-experiment.
+FASTA writes the integrated product or BOTH excised-phage/restored-host products,
+with declared topology and result identity; it is not a replayable experiment.
+Product sequences preserve the core method's orientation and stored-origin rules.
+Neither explicit export anonymizes bases; stdout reports lengths, hashes and maps.
+Computation uses the owned worker; cancellation/timeout during computation rejects
+late results.
 
 fit-stability accepts version-1 phage-explorer-inactivation-input JSON with exact
 infectious-plaque-counts CSV, source attribution, a single preparation/batch,
@@ -338,8 +367,9 @@ methods/versions and changed outputs are rejected. This is numerical reproducibi
 not source authentication or biological validation. --format requires --output;
 json (default) retains full source sequences. Attachment integration and prophage
 excision replay preserve every product, junction and source-coordinate map from
-the embedded source declarations. They accept JSON output only; --format tsv is
-rejected before file creation. They reconstruct conditional sequence composition,
+the embedded source declarations. They accept JSON or product FASTA output;
+--format tsv is rejected before file creation. FASTA is supported only for these
+two reconstruction methods. They reconstruct conditional sequence composition,
 not recombinase activity or an integration/excision probability.
 For other supported methods, TSV retains the method's complete evidence table;
 spacer hits include protospacer/PAM bases, original attribution,
@@ -368,6 +398,11 @@ to stderr. Exit codes: 0 success, 1 failure, 124 timeout, 130 SIGINT, 143 SIGTER
 Exported analysis JSON contains private sequences. No network or shell commands.
 `;
 export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { type: 'mosaic-template' } | { type: 'stability-template' } | { type: 'growth-template'; version: 1 | 2 } |
+  { type: 'attachment-template' } | { type: 'excision-template' } |
+  { type: 'analyze-attachment'; input: string; options: AttachmentOptions; output?: string;
+    outputFormat: 'json' | 'fasta'; timeoutMs: number } |
+  { type: 'analyze-excision'; input: string; options: AttachmentOptions; output?: string;
+    outputFormat: 'json' | 'fasta'; timeoutMs: number } |
   { type: 'inspect-rna'; input: string; contentId: string | null; geneId: number | null; timeoutMs: number } |
   { type: 'analyze-rna'; input: string; contentId: string | null; geneId: number | null;
     start: number; end: number; strand: '+' | '-'; options: Required<RNAStructureOptions>;
@@ -390,12 +425,13 @@ export type WorkflowCommand = { type: 'help' } | { type: 'list-enzymes' } | { ty
   { type: 'analyze-experiment'; input: string; contentId: string | null; analysis: TerminalAnalysis;
     output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number } |
   { type: 'replay'; input: string; repetitions: number; output?: string; timeoutMs: number; progress: boolean; allResults?: boolean } |
-  { type: 'replay-experiment'; input: string; output?: string; outputFormat: 'json' | 'tsv'; timeoutMs: number };
+  { type: 'replay-experiment'; input: string; output?: string; outputFormat: 'json' | 'tsv' | 'fasta'; timeoutMs: number };
 export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
   if (args.length === 1 && ['help', '--help', '-h'].includes(args[0])) return { type: 'help' };
   if (args.length === 1 && args[0] === 'list-enzymes') return { type: 'list-enzymes' };
   if (args.length === 1 && args[0] === 'mosaic-template') return { type: 'mosaic-template' };
   if (args.length === 1 && args[0] === 'stability-template') return { type: 'stability-template' };
+  if (args.length === 1 && (args[0] === 'attachment-template' || args[0] === 'excision-template')) return { type: args[0] };
   if (args[0] === 'growth-template') {
     if (args.length === 1) return { type: 'growth-template', version: 1 };
     if (args.length === 3 && args[1] === '--version' && (args[2] === '1' || args[2] === '2')) {
@@ -404,10 +440,11 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     throw new Error('Use growth-template with no options or exactly --version 1|2.');
   }
   const [type, ...rest] = args;
-  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'inspect-protein-reference' && type !== 'analyze-protein-structure' && type !== 'fit-growth' && type !== 'fit-pfu-growth' && type !== 'fit-stability' && type !== 'inspect-rna' && type !== 'analyze-rna') {
-    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, inspect-protein-reference, analyze-protein-structure, fit-growth, fit-pfu-growth, fit-stability, inspect-rna or analyze-rna; see --help.');
+  if (type !== 'inspect' && type !== 'record' && type !== 'replay' && type !== 'replay-results' && type !== 'inspect-results' && type !== 'extract-result' && type !== 'replay-experiment' && type !== 'inspect-genomes' && type !== 'analyze-experiment' && type !== 'inspect-mosaic' && type !== 'analyze-mosaic' && type !== 'inspect-protein-reference' && type !== 'analyze-protein-structure' && type !== 'fit-growth' && type !== 'fit-pfu-growth' && type !== 'fit-stability' && type !== 'inspect-rna' && type !== 'analyze-rna' && type !== 'analyze-attachment' && type !== 'analyze-excision') {
+    throw new Error('Choose record, inspect, replay, replay-results, inspect-results, extract-result, replay-experiment, inspect-genomes, analyze-experiment, inspect-mosaic, analyze-mosaic, inspect-protein-reference, analyze-protein-structure, fit-growth, fit-pfu-growth, fit-stability, inspect-rna, analyze-rna, analyze-attachment or analyze-excision; see --help.');
   }
   const allowed = type === 'extract-result' ? ['--input', '--output', '--execution', '--timeout-ms']
+    : type === 'analyze-attachment' || type === 'analyze-excision' ? ['--input', '--flank', '--output', '--format', '--timeout-ms']
     : type === 'inspect-rna' ? ['--input', '--record', '--gene', '--timeout-ms']
     : type === 'analyze-rna' ? ['--input', '--record', '--gene', '--start', '--end', '--strand', '--window', '--step', '--min-loop', '--wobble', '--synonymous', '--output', '--format', '--timeout-ms']
     : type === 'analyze-protein-structure' ? ['--input', '--output', '--format', '--section', '--protein', '--chain', '--cutoff', '--min-separation', '--contact-scope', '--timeout-ms']
@@ -450,6 +487,15 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return { type, input, output, timeoutMs, progress, ...(allResults ? { allResults: true } : {}) };
   }
   if (type === 'inspect' || type === 'inspect-genomes' || type === 'inspect-results' || type === 'inspect-mosaic' || type === 'inspect-protein-reference') return { type, input, timeoutMs };
+  if (type === 'analyze-attachment' || type === 'analyze-excision') {
+    const outputFormat = values.get('--format') ?? 'json', flank = values.get('--flank');
+    if (outputFormat !== 'json' && outputFormat !== 'fasta') throw new Error('Attachment/excision --format must be json or fasta.');
+    if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
+    if (flank !== undefined && !/^(?:0|[1-9]\d*)$/.test(flank)) throw new Error('--flank must be an integer from 0 to 1000.');
+    const options = resolveAttachmentOptions(flank === undefined ? {} : { flankLength: Number(flank) });
+    return { type, input, timeoutMs, options, outputFormat,
+      ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  }
   if (type === 'inspect-rna' || type === 'analyze-rna') {
     const contentId = values.get('--record') ?? null;
     if (contentId !== null && !/^[a-f0-9]{64}$/.test(contentId)) throw new Error('--record requires a complete content ID from inspect-rna.');
@@ -525,7 +571,13 @@ export function parseWorkflowCommand(args: readonly string[]): WorkflowCommand {
     return { type, input, timeoutMs, options, outputFormat, section: section as 'windows' | 'segments' | 'switches',
       ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
   }
-  if (type === 'replay-experiment' || type === 'analyze-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth' || type === 'fit-stability') {
+  if (type === 'replay-experiment') {
+    const outputFormat = values.get('--format') ?? 'json';
+    if (outputFormat !== 'json' && outputFormat !== 'tsv' && outputFormat !== 'fasta') throw new Error('--format must be json, tsv or fasta.');
+    if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
+    return { type, input, timeoutMs, outputFormat, ...(values.has('--output') ? { output: values.get('--output')! } : {}) };
+  }
+  if (type === 'analyze-experiment' || type === 'fit-growth' || type === 'fit-pfu-growth' || type === 'fit-stability') {
     const outputFormat = values.get('--format') ?? 'json';
     if (outputFormat !== 'json' && outputFormat !== 'tsv') throw new Error('--format must be json or tsv.');
     if (values.has('--format') && !values.has('--output')) throw new Error('--format requires --output NEW_FILE.');
@@ -686,6 +738,8 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
   const saved = submitted.type === 'replay-experiment' ? await parseAnalysisRecord(submitted.content) : null;
   const rnaPrepared = submitted.type === 'inspect-rna' || submitted.type === 'analyze-rna' ? await prepareTerminalRNA(submitted, signal) : null;
   const stabilityInput = submitted.type === 'fit-stability' ? parseInactivationInput(submitted.content) : null;
+  const attachmentInput = submitted.type === 'analyze-attachment' || submitted.type === 'analyze-excision'
+    ? parseTerminalAttachmentInput(submitted) : null;
   const mosaicDataset = submitted.type === 'inspect-mosaic' || submitted.type === 'analyze-mosaic'
     ? parseMosaicDataset(submitted.content) : null;
   const proteinReference = submitted.type === 'inspect-protein-reference' || submitted.type === 'analyze-protein-structure'
@@ -751,6 +805,18 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
         if (value?.type === 'error' && typeof value.message === 'string') { finish(undefined, new Error(value.message)); return; }
         if (value?.type === 'rna-inspected' && submitted.type === 'inspect-rna' && rnaPrepared
           && commandValuesEqual(value.report, rnaPrepared.inspection)) finish(value);
+        else if (value?.type === 'attachment-analyzed' && (submitted.type === 'analyze-attachment' || submitted.type === 'analyze-excision')
+          && attachmentInput && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalAttachmentRequestSha256(submitted)
+          && typeof value.recordJson === 'string' && new TextEncoder().encode(value.recordJson).length <= COMMAND_LIMITS.bytes) {
+          validating = true;
+          void parseAnalysisRecord(value.recordJson).then(record => {
+            abort(signal);
+            if (!terminalAttachmentRecordMatches(record, attachmentInput, submitted.options)) {
+              throw new Error('Attachment/excision output differs from the submitted bases, sites, provenance or settings.');
+            }
+            finish(value);
+          }).catch(cause => finish(undefined, cause));
+        }
         else if (value?.type === 'rna-analyzed' && submitted.type === 'analyze-rna' && rnaPrepared?.analysisRequest
           && value.inputFileSha256 === tapeSha256 && value.requestSha256 === terminalRNARequestSha256(submitted)
           && commandValuesEqual(value.genome, rnaPrepared.inspection.genome)
@@ -855,7 +921,12 @@ export async function runTerminalResearchWorker(request: TerminalResearchRequest
           && JSON.stringify(analysisJson(value.report.inputs)) === JSON.stringify(analysisJson(saved.inputs.map(
             ({ id, accession, source, sha256 }) => ({ id, accession, source, sha256 }))))
           && (submitted.outputFormat === 'none' ? value.exportText === null
-            : typeof value.exportText === 'string' && new TextEncoder().encode(value.exportText).length <= COMMAND_LIMITS.bytes)) finish(value);
+            : typeof value.exportText === 'string' && new TextEncoder().encode(value.exportText).length <= COMMAND_LIMITS.bytes)) {
+          if (submitted.outputFormat === 'fasta' && value.exportText !== exportAttachmentProductsFasta(saved)) {
+            throw new Error('FASTA output differs from the verified experiment products.');
+          }
+          finish(value);
+        }
         else if (value?.type === 'inspection' && submitted.type === 'inspect' && tape && value.inspection?.format === 'phage-explorer-workflow-inspection'
           && value.inspection.tapeSha256 === tapeSha256 && value.inspection.name === tape.name) finish(value);
         else if (value?.type === 'replayed' && submitted.type === 'replay' && tape && value.report?.format === 'phage-explorer-workflow-replay'
@@ -906,6 +977,25 @@ export async function writeNewOutput(path: string, content: string, signal: Abor
   abort(signal);
 }
 export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, { type: 'help' }>, runtime: WorkflowRuntime = {}): Promise<object> {
+  if (command.type === 'attachment-template' || command.type === 'excision-template') {
+    if (runtime.signal) abort(runtime.signal);
+    const source = { kind: 'local' as const, reference: 'SYNTHETIC format example; hand-written sequence arithmetic, not observed genomes or recombinase activity.',
+      version: 'example-1', license: null };
+    if (command.type === 'attachment-template') return {
+      format: 'phage-explorer-attachment-reconstruction', version: 1,
+      host: { name: 'Synthetic host locus', accession: null, sequence: 'TTACGG', topology: 'linear', source },
+      phage: { name: 'Synthetic circular phage', accession: null, sequence: 'CCACAA', topology: 'circular', source },
+      attB: { start: 2, end: 4, strand: '+', evidence: 'Assumed AC core in a synthetic host; not a validated attachment site.' },
+      attP: { start: 2, end: 4, strand: '+', evidence: 'Assumed AC core in a synthetic phage; not a validated attachment site.' },
+      circularization: 'already-circular',
+    } satisfies AttachmentReconstructionInput;
+    return {
+      format: 'phage-explorer-prophage-excision', version: 1,
+      locus: { name: 'Synthetic integrated locus', accession: null, sequence: 'CCGACGTTGATTAA', topology: 'linear', source },
+      attL: { start: 2, end: 4, strand: '+', evidence: 'Assumed left GA core; not a validated attachment site.' },
+      attR: { start: 8, end: 10, strand: '+', evidence: 'Assumed right GA core; not a validated attachment site.' },
+    } satisfies ProphageExcisionInput;
+  }
   if (command.type === 'stability-template') {
     if (runtime.signal) abort(runtime.signal);
     return createInactivationTemplate();
@@ -952,9 +1042,11 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
   try {
     const archiveInput = command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'extract-result';
     const proteinInput = command.type === 'inspect-protein-reference' || command.type === 'analyze-protein-structure';
-    const content = await readInput(command.input, signal, command.type === 'fit-stability' ? INACTIVATION_LIMITS.bytes : proteinInput ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
+    const attachmentInput = command.type === 'analyze-attachment' || command.type === 'analyze-excision';
+    const content = await readInput(command.input, signal, attachmentInput ? ATTACHMENT_LIMITS.inputBytes : command.type === 'fit-stability' ? INACTIVATION_LIMITS.bytes : proteinInput ? PROTEIN_STRUCTURE_LIMITS.referenceBytes
       : archiveInput ? WORKFLOW_RESULTS_LIMITS.bytes : COMMAND_LIMITS.bytes);
     const request: TerminalResearchRequest = command.type === 'inspect' || command.type === 'inspect-genomes' || command.type === 'inspect-mosaic' || command.type === 'inspect-protein-reference' || command.type === 'replay-results' || command.type === 'inspect-results' || command.type === 'fit-growth' || command.type === 'fit-pfu-growth' || command.type === 'fit-stability' ? { type: command.type, content }
+      : command.type === 'analyze-attachment' || command.type === 'analyze-excision' ? { type: command.type, content, options: command.options }
       : command.type === 'inspect-rna' ? { type: 'inspect-rna', content, contentId: command.contentId, geneId: command.geneId }
       : command.type === 'analyze-rna' ? { type: 'analyze-rna', content, contentId: command.contentId, geneId: command.geneId,
         start: command.start, end: command.end, strand: command.strand, options: command.options }
@@ -969,6 +1061,21 @@ export async function executeWorkflowCommand(command: Exclude<WorkflowCommand, {
         ...(command.allResults ? { captureResults: true } : {}) };
     const result = await runTerminalResearchWorker(request, signal, runtime.onProgress, runtime.createWorker);
     abort(signal);
+    if (result.type === 'attachment-analyzed') {
+      if (command.type !== 'analyze-attachment' && command.type !== 'analyze-excision') throw new Error('Unexpected attachment/excision result.');
+      const record = await parseAnalysisRecord(result.recordJson);
+      abort(signal);
+      const summary = terminalAttachmentSummary(record);
+      if (command.output !== undefined) {
+        await writeNewOutput(command.output, command.outputFormat === 'json' ? result.recordJson : exportAttachmentProductsFasta(record), signal);
+      }
+      return { format: 'phage-explorer-attachment-analysis', version: 1, headless: true,
+        inputFileSha256: result.inputFileSha256, requestSha256: result.requestSha256,
+        method: record.method, parameters: record.parameters, cacheKey: record.cacheKey, resultId: record.resultId,
+        inputs: record.inputs.map(({ id, accession, source, sha256 }) => ({ id, accession, source, sha256 })),
+        summary,
+        interpretation: 'Fresh conditional sequence reconstruction from supplied cores, strands, topology and source declarations. This is not site discovery, an activity prediction or replay verification. JSON and FASTA exports contain private product sequences; only JSON retains the complete replayable experiment.' };
+    }
     if (result.type === 'rna-inspected') return result.report;
     if (result.type === 'rna-analyzed') {
       if (command.type !== 'analyze-rna') throw new Error('Unexpected RNA interval result.');

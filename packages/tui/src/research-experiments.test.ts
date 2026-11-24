@@ -10,6 +10,8 @@ import { createDotPlotExperiment, exportDotPlotExperimentTsv } from '../../core/
 import { createRestrictionDigestRecord, exportRestrictionDigestTsv } from '../../core/src/analysis/restriction-digest';
 import { createCompatibilityExperiment, exportCompatibilityPairsTsv, type CompatibilityInput, type CompatibilityResult } from '../../core/src/analysis/alignment-compatibility';
 import { createSpacerRecord, searchSpacerReferences, type SpacerGenome, type SpacerLibrary, type ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
+import { exportAttachmentProductsFasta, replayAttachmentExperiment, replayProphageExcisionRecord,
+  type AttachmentReconstructionInput, type ProphageExcisionInput } from '../../core/src/analysis/prophage-excision';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker,
   type TerminalWorker, type WorkflowRuntime } from '../../../scripts/research-workflow';
@@ -339,5 +341,223 @@ describe('terminal portable experiment replay', () => {
     assert.match(help.output, /Recorded spacer comparisons use actionId overlay\.crispr/);
     assert.match(help.output, /spacer hits include protospacer\/PAM bases/);
     assert.equal(help.error, '');
+  });
+});
+
+function attachmentInputs(): { integration: AttachmentReconstructionInput; excision: ProphageExcisionInput } {
+  const source = { kind: 'local' as const, reference: 'Private source declaration sentinel; synthetic arithmetic control', version: '1', license: null };
+  return {
+    integration: { format: 'phage-explorer-attachment-reconstruction', version: 1,
+      host: { name: 'Independent host control', accession: null, sequence: 'TTACGG', topology: 'linear', source },
+      phage: { name: 'Independent phage control', accession: null, sequence: 'CCACAA', topology: 'circular', source },
+      attB: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic AC core' },
+      attP: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic AC core' }, circularization: 'already-circular' },
+    excision: { format: 'phage-explorer-prophage-excision', version: 1,
+      locus: { name: 'Independent integrated control', accession: null, sequence: 'CCGACGTTGATTAA', topology: 'linear', source },
+      attL: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic GA core' },
+      attR: { start: 8, end: 10, strand: '+', evidence: 'Declared synthetic GA core' } },
+  };
+}
+function fastaProducts(text: string): string[] {
+  return text.trimEnd().split(/^>/m).filter(Boolean).map(record => record.split('\n').slice(1).join(''));
+}
+
+describe('native fresh attachment and excision authoring', () => {
+  it('exposes explicit synthetic source templates and strictly validates command options', async () => {
+    for (const kind of ['attachment', 'excision'] as const) {
+      const result = await invoke([`${kind}-template`]);
+      assert.equal(result.code, 0, result.error); assert.match(result.output, /SYNTHETIC/);
+      const computed = await executeTerminalResearchRequest({ type: `analyze-${kind}`, content: result.output, options: { flankLength: 2 } });
+      assert.equal(computed.type, 'attachment-analyzed');
+      assert.deepEqual(parseWorkflowCommand([`analyze-${kind}`, '--input', 'sources.json', '--flank', '0']), {
+        type: `analyze-${kind}`, input: 'sources.json', timeoutMs: 300000, options: { flankLength: 0 }, outputFormat: 'json',
+      });
+      for (const flags of [['--flank', '-1'], ['--flank', '1001'], ['--flank', '1.5'], ['--flank', 'NaN'],
+        ['--flank', '2', '--flank', '3'], ['--format', 'fasta'], ['--output', 'x', '--format', 'tsv'], ['--topology', 'linear']]) {
+        assert.throws(() => parseWorkflowCommand([`analyze-${kind}`, '--input', 'x', ...flags]));
+      }
+    }
+    const help = await invoke(['--help']);
+    assert.match(help.output, /phage-explorer workflow analyze-attachment/);
+    assert.match(help.output, /phage-explorer workflow analyze-excision/);
+    assert.match(help.output, /zero-based/);
+  });
+
+  it('authors exact independent products, preserves their maps and source declarations, and replays both export formats', async () => {
+    const { integration, excision } = attachmentInputs(), dir = await workspace();
+    for (const [kind, input, expected] of [
+      ['attachment', integration, ['TTACAACCACGG']], ['excision', excision, ['GACGTT', 'CCGATTAA']],
+    ] as const) {
+      const path = join(dir, kind + '-sources.json'), output = join(dir, kind + '-record.json');
+      const verified = join(dir, kind + '-verified.json'), fasta = join(dir, kind + '.fasta'), replayFasta = join(dir, kind + '-verified.fasta');
+      const content = JSON.stringify(input); await writeFile(path, content);
+      const result = await invoke([`analyze-${kind}`, '--input', path, '--flank', '2', '--output', output]);
+      assert.equal(result.code, 0, result.error);
+      const report = JSON.parse(result.output), record = await parseAnalysisRecord(await readFile(output, 'utf8'));
+      assert.equal(report.headless, true); assert.equal(report.verified, undefined);
+      assert.equal(report.inputFileSha256, createHash('sha256').update(content).digest('hex'));
+      assert.equal(report.resultId, record.resultId); assert.equal(report.summary.conservation.conserved, true);
+      assert.deepEqual(report.summary.products.map((p: { bases: number; sha256: string }) => [p.bases, p.sha256]),
+        expected.map(sequence => [sequence.length, createHash('sha256').update(sequence).digest('hex')]));
+      assert(!result.output.includes('Private source declaration sentinel'));
+      for (const sequence of [...expected, integration.host.sequence, excision.locus.sequence]) assert(!result.output.includes(sequence));
+      if (kind === 'attachment') {
+        const replay = await replayAttachmentExperiment(await readFile(output, 'utf8'));
+        assert.deepEqual(replay.input, input); assert.equal(replay.result.integratedSequence, expected[0]);
+        assert.deepEqual(replay.result.segments, [
+          { source: 'host', sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 0, productEnd: 2 },
+          { source: 'phage', sourceStart: 2, sourceEnd: 6, strand: '+', productStart: 2, productEnd: 6 },
+          { source: 'phage', sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 6, productEnd: 8 },
+          { source: 'host', sourceStart: 2, sourceEnd: 6, strand: '+', productStart: 8, productEnd: 12 },
+        ]);
+      } else {
+        const replay = await replayProphageExcisionRecord(await readFile(output, 'utf8'));
+        assert.deepEqual(replay.input, input);
+        assert.deepEqual([replay.result.excisedPhage.sequence, replay.result.restoredHost.sequence], expected);
+        assert.deepEqual(replay.result.sourceCuts, { start: 2, end: 8, wrapsOrigin: false });
+      }
+      for (const args of [
+        ['replay-experiment', '--input', output, '--output', verified],
+        [`analyze-${kind}`, '--input', path, '--flank', '2', '--output', fasta, '--format', 'fasta'],
+        ['replay-experiment', '--input', output, '--output', replayFasta, '--format', 'fasta'],
+      ]) { const checked = await invoke(args); assert.equal(checked.code, 0, checked.error); }
+      assert.equal(await readFile(output, 'utf8'), await readFile(verified, 'utf8'));
+      const productText = await readFile(fasta, 'utf8');
+      assert.equal(productText, await readFile(replayFasta, 'utf8'));
+      assert.deepEqual(fastaProducts(productText), expected);
+      assert.match(productText, /conditional_reconstruction=true/); assert(productText.includes(record.resultId));
+      if (kind === 'excision') { assert.match(productText, />excised_phage topology=circular/); assert.match(productText, />restored_host topology=linear/); }
+      if (process.platform !== 'win32') {
+        assert.equal((await stat(output)).mode & 0o777, 0o600); assert.equal((await stat(fasta)).mode & 0o777, 0o600);
+      }
+      const failure = await invoke([`analyze-${kind}`, '--input', path, '--output', output]);
+      assert.equal(failure.code, 1); assert.equal(failure.output, ''); assert.equal(await readFile(output, 'utf8'), await readFile(verified, 'utf8'));
+    }
+  });
+
+  it('preserves reverse insertion and circular origin-crossing product coordinates through actual workers', async () => {
+    const { integration, excision } = attachmentInputs();
+    integration.phage.sequence = 'CCGTAA'; integration.attP.strand = '-';
+    const reverse = await runTerminalResearchWorker({ type: 'analyze-attachment', content: JSON.stringify(integration), options: { flankLength: 0 } }, signal());
+    assert(reverse.type === 'attachment-analyzed');
+    const integrationRecord = await parseAnalysisRecord(reverse.recordJson);
+    assert.deepEqual(fastaProducts(exportAttachmentProductsFasta(integrationRecord)), ['TTACGGTTACGG']);
+    assert.equal((integrationRecord.fields.reconstruction.value as { insertionStrand: string }).insertionStrand, '-');
+    excision.locus.sequence = 'TTGATTAACCGACG'; excision.locus.topology = 'circular';
+    excision.attL.start = 10; excision.attL.end = 12; excision.attR.start = 2; excision.attR.end = 4;
+    const circular = await runTerminalResearchWorker({ type: 'analyze-excision', content: JSON.stringify(excision), options: { flankLength: 2 } }, signal());
+    assert(circular.type === 'attachment-analyzed');
+    const parsed = await replayProphageExcisionRecord(circular.recordJson);
+    assert.deepEqual([parsed.result.excisedPhage.sequence, parsed.result.restoredHost.sequence], ['GACGTT', 'GATTAACC']);
+    assert.deepEqual(parsed.result.sourceCuts, { start: 10, end: 2, wrapsOrigin: true });
+    assert.deepEqual(parsed.result.excisedPhage.segments, [
+      { sourceStart: 10, sourceEnd: 14, strand: '+', productStart: 0, productEnd: 4 },
+      { sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 4, productEnd: 6 },
+    ]);
+    assert.equal(parsed.result.restoredHost.sourceOrigin, 2);
+    const fasta = exportAttachmentProductsFasta(parsed.record);
+    assert.match(fasta, />restored_host topology=circular.*source_origin_start0=2/);
+  });
+
+  it('rejects invalid, oversized, mismatched or ambiguous declarations before allocating a worker or creating outputs', async () => {
+    const { integration, excision } = attachmentInputs();
+    const invalid = [
+      JSON.stringify({ ...integration, host: { ...integration.host, sequence: 'TTANGG' } }),
+      JSON.stringify({ ...integration, phage: { ...integration.phage, sequence: 'CCGTAA' } }),
+      JSON.stringify({ ...integration, host: { ...integration.host, topology: 'unknown' } }),
+      JSON.stringify({ ...integration, phage: { ...integration.phage, topology: 'linear' } }),
+      JSON.stringify({ ...integration, attB: { ...integration.attB, start: -1 } }),
+      JSON.stringify({ ...integration, filename: '/private/genome.fa' }), JSON.stringify(excision),
+      '{"private raw content":', ' '.repeat(4 * 1024 * 1024 + 1),
+    ];
+    for (const content of invalid) {
+      let created = false;
+      await assert.rejects(runTerminalResearchWorker({ type: 'analyze-attachment', content, options: { flankLength: 2 } }, signal(), undefined,
+        () => { created = true; throw new Error('Unexpected allocation'); }));
+      assert.equal(created, false);
+    }
+    for (const bad of [
+      { ...excision, attR: { ...excision.attR, strand: '-' } },
+      { ...excision, attR: { ...excision.attR, start: 2, end: 4 } },
+    ]) await assert.rejects(executeTerminalResearchRequest({ type: 'analyze-excision', content: JSON.stringify(bad), options: { flankLength: 2 } }));
+    for (const options of [{}, { flankLength: 2, invented: true }, { flankLength: Infinity }, { flankLength: -1 }]) {
+      assert.throws(() => validateTerminalResearchRequest({ type: 'analyze-attachment', content: '{}', options }));
+    }
+    const dir = await workspace(), input = join(dir, 'bad.json'), output = join(dir, 'must-not-exist.json');
+    await writeFile(input, invalid[0]);
+    const result = await invoke(['analyze-attachment', '--input', input, '--output', output]);
+    assert.equal(result.code, 1); assert.equal(result.output, ''); await absent(output);
+  });
+
+  it('binds worker replies to exact original source metadata, sites, settings and operation', async () => {
+    const request = { type: 'analyze-attachment' as const, content: JSON.stringify(attachmentInputs().integration), options: { flankLength: 2 } };
+    const actual = await executeTerminalResearchRequest(request); assert(actual.type === 'attachment-analyzed');
+    const record = await parseAnalysisRecord(actual.recordJson);
+    for (const change of [
+      (copy: AnalysisRecord) => { (copy.inputs[0].data as { name: string }).name = 'A different captured source'; },
+      (copy: AnalysisRecord) => { (copy.inputs[2].data as { attB: { evidence: string } }).attB.evidence = 'Different supplied evidence'; },
+      (copy: AnalysisRecord) => { copy.parameters = { flankLength: 3 }; },
+      (copy: AnalysisRecord) => { copy.method.version = '999'; },
+    ]) {
+      const recordJson = await resign(record, change);
+      const changed: ReplyWorker = new ReplyWorker((): TerminalResearchResult => ({ ...actual, recordJson }));
+      await assert.rejects(runTerminalResearchWorker(request, signal(), undefined, () => changed as unknown as TerminalWorker), /differs/);
+      assert.equal(changed.terminations, 1);
+    }
+    for (const reply of [{ ...actual, inputFileSha256: '0'.repeat(64) }, { ...actual, requestSha256: '0'.repeat(64) }]) {
+      const worker = new ReplyWorker(() => reply);
+      await assert.rejects(runTerminalResearchWorker(request, signal(), undefined, () => worker as unknown as TerminalWorker), /Unexpected/);
+    }
+  });
+
+  it('fails forged numerical replay and refuses FASTA for methods without reconstructed products', async () => {
+    const result = await executeTerminalResearchRequest({ type: 'analyze-attachment', content: JSON.stringify(attachmentInputs().integration), options: { flankLength: 2 } });
+    assert(result.type === 'attachment-analyzed');
+    const record = await parseAnalysisRecord(result.recordJson);
+    const forged = await resign(record, copy => { (copy.fields.reconstruction.value as { integratedSequence: string }).integratedSequence = 'A'.repeat(12); });
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: forged, outputFormat: 'fasta' }, signal()), /differs/);
+    const [dot] = await fixtures();
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: serializeAnalysisRecord(dot), outputFormat: 'fasta' }, signal()), /FASTA.*only/);
+  });
+
+  it('rejects substituted FASTA even when the worker reports the correct verified experiment', async () => {
+    const { integration, excision } = attachmentInputs();
+    const requests: TerminalResearchRequest[] = [
+      { type: 'analyze-attachment', content: JSON.stringify(integration), options: { flankLength: 2 } },
+      { type: 'analyze-excision', content: JSON.stringify(excision), options: { flankLength: 2 } },
+    ];
+    const dir = await workspace();
+    for (const request of requests) {
+      const fresh = await executeTerminalResearchRequest(request); assert(fresh.type === 'attachment-analyzed');
+      const verified = await executeTerminalResearchRequest({ type: 'replay-experiment', content: fresh.recordJson, outputFormat: 'fasta' });
+      assert(verified.type === 'experiment-replayed');
+      const input = join(dir, request.type + '.json'), output = join(dir, request.type + '.fasta');
+      await writeFile(input, fresh.recordJson);
+      const worker: ReplyWorker = new ReplyWorker((): TerminalResearchResult => ({ ...verified, exportText: '>wrong\nAAAA\n' }));
+      const result = await invoke(['replay-experiment', '--input', input, '--output', output, '--format', 'fasta'], {
+        createWorker: () => worker as unknown as TerminalWorker,
+      });
+      assert.equal(result.code, 1); assert.equal(result.output, '');
+      assert.match(result.error, /FASTA output differs/); assert.equal(worker.terminations, 1);
+      await absent(output);
+    }
+  });
+
+  it('cancels an allocated native reconstruction worker without publishing a result and can run again', async () => {
+    const dir = await workspace(), input = join(dir, 'sources.json'), output = join(dir, 'cancelled.json');
+    await writeFile(input, JSON.stringify(attachmentInputs().integration));
+    const controller = new AbortController(); let exited: Promise<number> | null = null;
+    const result = await invoke(['analyze-attachment', '--input', input, '--output', output], {
+      signal: controller.signal, createWorker: () => {
+        const worker = new Worker(new URL('./research-replay.worker.ts', import.meta.url));
+        exited = new Promise(resolve => worker.once('exit', resolve));
+        const post = worker.postMessage.bind(worker);
+        worker.postMessage = message => { post(message); controller.abort(new DOMException('Stop reconstruction', 'AbortError')); };
+        return worker;
+      },
+    });
+    assert.equal(result.code, 130); assert.equal(result.output, ''); await absent(output); assert(exited); await exited;
+    const successful = await invoke(['analyze-attachment', '--input', input]);
+    assert.equal(successful.code, 0, successful.error);
   });
 });
