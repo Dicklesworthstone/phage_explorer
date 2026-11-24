@@ -8,8 +8,9 @@ import {
 } from '../../../../core/src/analysis/prophage-excision';
 import {
   AttachmentExperimentResults, attachmentSiteFromDraft, attachmentFlankFromDraft,
-  readAttachmentPhage, readAttachmentFile, attachmentDownload,
+  readAttachmentPhage, readAttachmentFile, attachmentDownload, excisionInputFromAttachment,
 } from './AttachmentExperimentPanel';
+import { executeAttachmentRequest, isProphageExcisionWork } from '../../workers/ProphageAttachmentSession';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -198,5 +199,108 @@ describe('accepted attachment result and portable downloads', () => {
     expect(markup).toContain('on a reverse-strand attB, attL is the spatially right-hand junction');
     expect(markup).toContain('Host: Private host locus');
     expect(markup).toContain('Phage: Private phage');
+  });
+});
+
+
+describe('accepted prophage excision results and complete downloads', () => {
+  it('carries accepted integration coordinates into excision for both site orientations', async () => {
+    for (const strand of ['+', '-'] as const) {
+      const original = fixture();
+      if (strand === '-') { original.host.sequence = 'CCTCAA'; original.attB.strand = '-'; }
+      const integrated = await experiment(original), before = structuredClone(integrated);
+      const input = excisionInputFromAttachment(integrated);
+      expect(input.locus.sequence).toBe(integrated.result.integratedSequence);
+      expect(input.locus.source.version).toBe(integrated.record.resultId);
+      expect(input.locus.source.reference).toContain(integrated.record.resultId);
+      expect(input.attL).toMatchObject({ start: strand === '+' ? 2 : 8, end: strand === '+' ? 4 : 10, strand });
+      expect(input.attR).toMatchObject({ start: strand === '+' ? 8 : 2, end: strand === '+' ? 10 : 4, strand });
+      const excised = await executeAttachmentRequest({ kind: 'excise', input, options: integrated.options });
+      expect(excised.result.restoredHost.sequence).toBe(original.host.sequence);
+      expect(excised.result.excisedPhage.sequence).toBe(strand === '+' ? 'GACGTT' : 'TCAACG');
+      expect(excised.result.conservation.recoveredBases).toBe(integrated.result.integratedSequence.length);
+      expect(integrated).toEqual(before);
+    }
+  });
+
+  it('renders both source-mapped products, exact declared cores and escaped provenance', async () => {
+    const input = excisionInputFromAttachment(await experiment());
+    input.locus.name = '<img src=x onerror=alert(1)>';
+    input.attL.evidence = '<b>declared left core</b>';
+    const accepted = await executeAttachmentRequest({ kind: 'excise', input, options: { flankLength: 2 } });
+    const markup = renderToStaticMarkup(<AttachmentExperimentResults experiment={accepted} />);
+    expect(markup).toContain('data-testid="excision-result"');
+    expect(markup).toContain('data-result-id="' + accepted.record.resultId + '"');
+    expect(markup).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(markup).not.toContain('<img');
+    expect(markup).toContain('&lt;b&gt;declared left core&lt;/b&gt;');
+    expect(markup).toContain('Excised phage: 6 bases');
+    expect(markup).toContain('Restored host: 8 bases');
+    expect(markup).toContain('>3–4</td>');
+    expect(markup).toContain('>9–10</td>');
+    expect(markup).toContain('<mark>GA</mark>');
+    expect(markup).toContain('6 excised phage + ');
+    expect(markup).toContain('8 restored host = 14 recovered');
+    expect(markup).toContain('from 14 input bases');
+    expect(markup).toContain('does not establish biological excision');
+    expect(markup).toContain('Excised phage source-coordinate map');
+    expect(markup).toContain('Restored host source-coordinate map');
+  });
+
+  it('exports every phage and host base, oriented junctions and a self-contained recomputable experiment', async () => {
+    const input = excisionInputFromAttachment(await experiment());
+    const accepted = await executeAttachmentRequest({ kind: 'excise', input, options: { flankLength: 2 } });
+    const phageFile = attachmentDownload(accepted, 'excised-fasta');
+    expect(phageFile.filename).toBe('excised-phage.fasta');
+    expect(bases(phageFile.content)).toBe('GACGTT');
+    expect(phageFile.content).toContain('topology=circular input-origin=3');
+    expect(phageFile.content).toContain('result=' + accepted.record.resultId);
+    const hostFile = attachmentDownload(accepted, 'restored-fasta');
+    expect(hostFile.filename).toBe('restored-host.fasta');
+    expect(bases(hostFile.content)).toBe('CCGATTAA');
+    expect(hostFile.content).toContain('topology=linear input-origin=1');
+    const junctions = attachmentDownload(accepted, 'junction-fasta');
+    expect(junctions.filename).toBe('excision-junctions.fasta');
+    expect(junctions.content).toContain('>attP-preview result=' + accepted.record.resultId + ' strand=+\nTTGACG\n');
+    expect(junctions.content).toContain('>attB-preview result=' + accepted.record.resultId + ' strand=+\nCCGATT\n');
+    const portable = attachmentDownload(accepted, 'experiment');
+    expect(portable.filename).toBe('prophage-excision.json');
+    expect((await parseAnalysisRecord(portable.content)).inputs).toEqual(accepted.record.inputs);
+    const replay = await executeAttachmentRequest({ kind: 'replay', content: portable.content });
+    expect(isProphageExcisionWork(replay)).toBe(true);
+    expect(replay.result).toEqual(accepted.result);
+    expect(replay.record.resultId).toBe(accepted.record.resultId);
+    const markup = renderToStaticMarkup(<AttachmentExperimentResults experiment={replay} />);
+    expect(markup).toContain('Verified replay of the integrated source');
+    expect(() => attachmentDownload(accepted, 'integrated-fasta')).toThrow(/separate phage and host/);
+    const integration = await experiment();
+    expect(() => attachmentDownload(integration, 'excised-fasta')).toThrow(/Reconstruct excision/);
+  });
+
+  it('explains a circular origin change and preserves the complete wrapped phage in FASTA', async () => {
+    const input = excisionInputFromAttachment(await experiment());
+    input.locus.sequence = 'TTGATTAACCGACG'; input.locus.topology = 'circular';
+    input.attL.start = 10; input.attL.end = 12; input.attR.start = 2; input.attR.end = 4;
+    const accepted = await executeAttachmentRequest({ kind: 'excise', input, options: { flankLength: 2 } });
+    const markup = renderToStaticMarkup(<AttachmentExperimentResults experiment={accepted} />);
+    expect(markup).toContain('crossing the circular source origin');
+    expect(markup).toContain('>11–14</td>');
+    expect(markup).toContain('>1–2</td>');
+    expect(markup).toContain('First output base: original input base 3 (1-based)');
+    expect(bases(attachmentDownload(accepted, 'excised-fasta').content)).toBe('GACGTT');
+    const restored = attachmentDownload(accepted, 'restored-fasta');
+    expect(bases(restored.content)).toBe('GATTAACC');
+    expect(restored.content).toContain('topology=circular input-origin=3');
+  });
+
+  it('keeps long molecule exports complete when the displayed sequence preview is bounded', async () => {
+    const input = excisionInputFromAttachment(await experiment());
+    input.locus.sequence = 'CCGA' + 'C'.repeat(800) + 'GATTAA';
+    input.attR.start = 804; input.attR.end = 806;
+    const accepted = await executeAttachmentRequest({ kind: 'excise', input, options: { flankLength: 2 } });
+    const markup = renderToStaticMarkup(<AttachmentExperimentResults experiment={accepted} />);
+    expect(markup).toContain('first and last 240 bases');
+    expect(bases(attachmentDownload(accepted, 'excised-fasta').content)).toBe('GA' + 'C'.repeat(800));
+    expect(bases(attachmentDownload(accepted, 'restored-fasta').content)).toBe('CCGATTAA');
   });
 });

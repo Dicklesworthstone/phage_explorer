@@ -6,6 +6,23 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Exact supplied prophage excision
+
+- Reconstruct the complete circular phage and restored host from a sourced
+  integrated locus and explicitly declared, compatible attL/attR crossover
+  cores. Both products retain exact source-coordinate maps, topology, origins
+  and junction previews; every input base belongs to exactly one product.
+- Forward and reverse sites, linear and circular hosts, and origin-crossing
+  circular excision are supported. Accepted integration results can seed the
+  inverse experiment with their exact sequence and declared cores.
+- Browser controls, both full FASTA exports, saved snapshots and self-contained
+  recomputation work without a selected catalog genome. The command palette
+  exposes the supplied-locus workflow in an empty local workspace.
+- This is conditional sequence reconstruction; compatible cores do not establish
+  biological recognition or excision efficiency. Unsupported or ambiguous
+  declarations fail explicitly.
+  [Coordinates, examples and limits](README.md#supplied-integration-and-prophage-excision).
+
 ### Private research during unavailable catalog startup
 
 - The browser loading and error screens now offer **Open local genomes**.
@@ -15,6 +32,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 - Later catalog recovery preserves the selected private genome. Existing
   repository transitions may reset its viewport/CDS cursor. Analyses requiring
   external reference assets still require those inputs.
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/3121ea073b2a8d9167424ee220d467d51595670e).
 
 ### Native RNA inspection and interval analysis
 

@@ -586,6 +586,49 @@ Partial starts, unsupported initiators and split noncontiguous initiation codons
 are excluded. Custom alignments accept IUPAC DNA and are bounded to 2 MiB,
 1,000 sequences and 1,000 columns.
 
+### Supplied Integration and Prophage Excision
+
+Open **Prophage excision** from the command palette or press **Alt+X**. The
+**Reconstruction operation** selector supports two explicit sequence experiments:
+
+- **Integrate supplied host and phage sites:** provide a sourced host locus and
+  declared attB/attP crossover cores. The selected phage supplies its complete
+  sequence. Declare its circular topology or an explicit circularization
+  assumption.
+- **Excise a declared prophage from a supplied locus:** supply one complete
+  integrated DNA sequence, its linear/circular topology and source metadata,
+  and declared attL/attR cores. This operation does not need a selected phage.
+  It returns the complete circular phage and restored host, their attP/attB
+  junctions and exact source-to-product coordinate maps.
+
+The form uses **1-based inclusive** core positions; exported records use
+**0-based half-open** coordinates. Both excision cores must be non-overlapping,
+non-wrapping intervals with the same declared orientation and an identical
+oriented A/C/G/T sequence. On a forward site pair the removed forward arc runs
+from attL to attR; on a reverse pair it runs from attR to attL. Only a circular
+locus can support an arc crossing its stored origin. Both output sequences
+retain the original input's forward orientation. Their coordinate maps account
+for every input base exactly once and report any change of stored origin.
+
+For a small synthetic sequence check, use the linear locus
+`CCGACGTTGATTAA`, attL bases **3–4 (+)** and attR bases **9–10 (+)**.
+The exact outputs are circular phage `GACGTT` and restored host
+`CCGATTAA`. These declarations illustrate sequence composition and do not
+identify experimentally functional attachment sites. An accepted integration
+also offers **Excise this reconstructed prophage** to carry its exact sequence
+and core coordinates into the inverse experiment.
+
+Export both full FASTA molecules, oriented junction previews, or the complete
+excision JSON experiment. Saved attachment snapshots and imported JSON are
+verified by reconstructing the products again from the embedded source and
+declarations. Excision accepts up to **1,500,000 integrated bases**; integration
+retains its **1,000,000 bases per source** and **1,500,000 combined bases** limits.
+
+These are conditional sequence reconstructions. Matching crossover cores do
+not establish full-site recognition, compatible recombination machinery,
+excision efficiency, infectivity or clinical risk. Unsupported orientation,
+unknown topology, ambiguous DNA or an incompatible crossover is rejected.
+
 ### Codon & Translation Analysis
 
 | Algorithm | Description |
@@ -610,7 +653,7 @@ are excluded. Custom alignments accept IUPAC DNA and are bounded to 2 MiB,
 | **CRISPR Pressure** | Spacer matching against mock host CRISPR arrays; rates evolutionary pressure 0-10 scale |
 | **Anti-CRISPR (ACR)** | Heuristic scoring for defense-suppressing genes; flags known families (e.g., AcrIIA4). Ocr-like proteins are classified as anti-RM. |
 | **Tail Fiber Tropism** | Precomputed trigram receptor candidates from `data/tropism-embeddings.json`, with deposited GenBank protein translations and sequence hydropathy available in the panel and JSON export |
-| **Prophage Excision** | Detects integrase genes; searches for attL/attR direct repeats; models excision products |
+| **Prophage Excision** | Reconstructs exact excised phage and restored host molecules from declared attL/attR; preserves source maps, both FASTA products and portable replay; optional integrase/repeat clues |
 
 Tropism candidates are annotation or similarity cues; they do not establish host range or binding affinity. Structural affinity and mutation illustrations, host interaction models, and synthetic pangenome or growth examples require explicit demonstration mode, with their inputs and assumptions shown beside the output. Phylodynamics preserves its NCBI sequence path but requires an identified coding alignment before reporting selection statistics; failed retrieval shows unavailable data and offers an explicit synthetic illustration.
 

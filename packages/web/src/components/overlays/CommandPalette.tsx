@@ -535,7 +535,9 @@ export function CommandPalette({ repository, onSelectPhage, commands: customComm
       if (!action) continue;
 
       let contexts: CommandContext[] | undefined = undefined;
-      if (['Analysis', 'Simulation', 'Comparison', 'Advanced'].includes(def.category)) {
+      // Supplied-locus excision and saved attachment replay are self-contained.
+      if (def.id !== ActionIds.OverlayProphageExcision &&
+          ['Analysis', 'Simulation', 'Comparison', 'Advanced'].includes(def.category)) {
         contexts = ['has-phage'];
       }
       if (def.id === ActionIds.ExportFasta || def.id === ActionIds.ExportCopy || def.id === ActionIds.ExportJson) {

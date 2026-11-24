@@ -11,6 +11,9 @@ import {
   ATTACHMENT_LIMITS, parseAttachmentDna, validateAttachmentInput, resolveAttachmentOptions,
   reconstructAttachment, createAttachmentExperimentRecord, replayAttachmentExperiment,
   type AttachmentReconstructionInput, type AttachmentReconstructionResult,
+  PROPHAGE_EXCISION_METHOD, parseProphageExcisionDna, validateProphageExcisionInput,
+  reconstructProphageExcision, createProphageExcisionRecord, replayProphageExcisionRecord,
+  type ProphageExcisionInput, type ProphageExcisionResult,
 } from './prophage-excision';
 import type { GeneInfo } from '../types';
 import { analysisJson, createAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../analysis-result';
@@ -579,5 +582,267 @@ describe('complete source-bound attachment experiment records', () => {
       await expect(replayAttachmentExperiment(serializeAnalysisRecord(rehashed))).rejects.toThrow();
     }
     await expect(replayAttachmentExperiment(' '.repeat(10 * 1024 * 1024 + 1))).rejects.toThrow(/10 MiB/);
+  });
+});
+
+
+// Declared tiny sequence controls, not inferred or experimentally functional sites.
+function excisionFixture(sequence = 'CCGACGTTGATTAA', attL = 2, attR = 8,
+  strand: '+' | '-' = '+', topology: 'linear' | 'circular' = 'linear'): ProphageExcisionInput {
+  return { format: 'phage-explorer-prophage-excision', version: 1,
+    locus: { name: 'Integrated synthetic locus', accession: null, sequence, topology,
+      source: { kind: 'local', reference: 'Hand-derived sequence composition; no biological activity claim',
+        version: '1', license: 'CC0-1.0' } },
+    attL: { start: attL, end: attL + 2, strand, evidence: 'Explicit synthetic attL declaration' },
+    attR: { start: attR, end: attR + 2, strand, evidence: 'Explicit synthetic attR declaration' } };
+}
+function expectExactExcisionMap(input: ProphageExcisionInput, result: ProphageExcisionResult): void {
+  const used = Array(input.locus.sequence.length).fill(0);
+  for (const [product, junction] of [[result.excisedPhage, result.attP], [result.restoredHost, result.attB]] as const) {
+    let position = 0, rebuilt = '';
+    expect(product.sourceOrigin).toBe(product.segments[0].sourceStart);
+    for (const segment of product.segments) {
+      expect(segment.productStart).toBe(position);
+      expect(segment.sourceStart).toBeGreaterThanOrEqual(0);
+      expect(segment.sourceEnd).toBeLessThanOrEqual(input.locus.sequence.length);
+      expect(segment.sourceEnd).toBeGreaterThan(segment.sourceStart);
+      expect(segment.strand).toBe('+');
+      rebuilt += input.locus.sequence.slice(segment.sourceStart, segment.sourceEnd);
+      for (let index = segment.sourceStart; index < segment.sourceEnd; index++) used[index]++;
+      position += segment.sourceEnd - segment.sourceStart;
+      expect(segment.productEnd).toBe(position);
+    }
+    expect(rebuilt).toBe(product.sequence);
+    expect(position).toBe(product.sequence.length);
+    const covered: number[] = [];
+    const forward = junction.productSegments.map(part => {
+      for (let index = part.start; index < part.end; index++) covered.push(index);
+      return product.sequence.slice(part.start, part.end);
+    }).join('');
+    expect(new Set(covered).size).toBe(covered.length);
+    expect(junction.sequence).toBe(junction.strand === '+' ? forward : independentReverse(forward));
+    expect(junction.sequence.slice(junction.core.start, junction.core.end)).toBe(result.sharedCore);
+  }
+  expect(used).toEqual(Array(input.locus.sequence.length).fill(1));
+  expect(result.excisedPhage.sequence.length + result.restoredHost.sequence.length).toBe(input.locus.sequence.length);
+}
+
+describe('exact declared prophage excision sequence reconstruction', () => {
+  const controls = [
+    { name: 'linear forward sites', input: excisionFixture(), phage: 'GACGTT', host: 'CCGATTAA', cuts: [2, 8], wraps: false, hostOrigin: 0 },
+    { name: 'linear reverse sites', input: excisionFixture('CCTCAACGTCAA', 8, 2, '-'), phage: 'TCAACG', host: 'CCTCAA', cuts: [2, 8], wraps: false, hostOrigin: 0 },
+    { name: 'circular forward arc crossing the stored origin', input: excisionFixture('TTGATTAACCGACG', 10, 2, '+', 'circular'),
+      phage: 'GACGTT', host: 'GATTAACC', cuts: [10, 2], wraps: true, hostOrigin: 2 },
+    { name: 'circular reverse arc crossing the stored origin', input: excisionFixture('CGTCAACCTCAA', 2, 8, '-', 'circular'),
+      phage: 'TCAACG', host: 'TCAACC', cuts: [8, 2], wraps: true, hostOrigin: 2 },
+  ];
+  for (const control of controls) it('recovers independently written products for ' + control.name, () => {
+    const before = structuredClone(control.input), result = reconstructProphageExcision(control.input, { flankLength: 2 });
+    expect(result.excisedPhage.sequence).toBe(control.phage);
+    expect(result.restoredHost.sequence).toBe(control.host);
+    expect(result.excisedPhage.topology).toBe('circular');
+    expect(result.restoredHost.topology).toBe(control.input.locus.topology);
+    expect(result.excisedPhage.sourceOrigin).toBe(control.cuts[0]);
+    expect(result.restoredHost.sourceOrigin).toBe(control.hostOrigin);
+    expect(result.sourceCuts).toEqual({ start: control.cuts[0], end: control.cuts[1], wrapsOrigin: control.wraps });
+    expect(result.sharedCore).toBe('GA');
+    expect(result.attachmentStrand).toBe(control.input.attL.strand);
+    expect(result.conservation).toEqual({ inputBases: control.input.locus.sequence.length, excisedBases: control.phage.length,
+      restoredBases: control.host.length, recoveredBases: control.input.locus.sequence.length, conserved: true });
+    expectExactExcisionMap(control.input, result);
+    expect(control.input).toEqual(before);
+  });
+
+  it('reports exact forward source intervals and independent junction previews', () => {
+    const result = reconstructProphageExcision(excisionFixture(), { flankLength: 2 });
+    expect(result.excisedPhage.segments).toEqual([
+      { sourceStart: 2, sourceEnd: 8, strand: '+', productStart: 0, productEnd: 6 },
+    ]);
+    expect(result.restoredHost.segments).toEqual([
+      { sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 0, productEnd: 2 },
+      { sourceStart: 8, sourceEnd: 14, strand: '+', productStart: 2, productEnd: 8 },
+    ]);
+    expect(result.attP.sequence).toBe('TTGACG');
+    expect(result.attB.sequence).toBe('CCGATT');
+    expect(result.attP.core).toEqual({ start: 2, end: 4 });
+    expect(result.attB.core).toEqual({ start: 2, end: 4 });
+    const circular = reconstructProphageExcision(controls[2].input, { flankLength: 1000 });
+    expect(circular.excisedPhage.segments).toEqual([
+      { sourceStart: 10, sourceEnd: 14, strand: '+', productStart: 0, productEnd: 4 },
+      { sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 4, productEnd: 6 },
+    ]);
+    expect(circular.restoredHost.segments).toEqual([
+      { sourceStart: 2, sourceEnd: 10, strand: '+', productStart: 0, productEnd: 8 },
+    ]);
+    expect(circular.attP.sequence.length).toBe(6);
+    expect(circular.attB.sequence.length).toBe(8);
+    expectExactExcisionMap(controls[2].input, circular);
+  });
+
+  it('supports adjacent boundary cores, core-only products and a removed source origin without zero-length segments', () => {
+    const input = excisionFixture('GAGA', 0, 2), result = reconstructProphageExcision(input, { flankLength: 1000 });
+    expect(result.excisedPhage.sequence).toBe('GA');
+    expect(result.restoredHost.sequence).toBe('GA');
+    expect(result.restoredHost.sourceOrigin).toBe(2);
+    expect(result.attP.sequence).toBe('GA'); expect(result.attB.sequence).toBe('GA');
+    expect(result.attP.leftFlankBases).toBe(0); expect(result.attP.rightFlankBases).toBe(0);
+    expectExactExcisionMap(input, result);
+    expect(result.warnings.some(warning => warning.includes('original stored origin'))).toBe(true);
+    const noFlanks = reconstructProphageExcision(excisionFixture(), { flankLength: 0 });
+    expect(noFlanks.attP.sequence).toBe('GA'); expect(noFlanks.attB.sequence).toBe('GA');
+  });
+
+  it('retains source base zero when a circular excision ends exactly at that boundary', () => {
+    const input = excisionFixture('GAACGA', 4, 0, '+', 'circular');
+    const result = reconstructProphageExcision(input, { flankLength: 1000 });
+    expect(result.excisedPhage.sequence).toBe('GA');
+    expect(result.restoredHost.sequence).toBe('GAAC');
+    expect(result.restoredHost.sourceOrigin).toBe(0);
+    expect(result.warnings.some(warning => warning.includes('original stored origin'))).toBe(false);
+    expectExactExcisionMap(input, result);
+  });
+
+  for (const hostStrand of ['+', '-'] as const) for (const phageStrand of ['+', '-'] as const) {
+    for (const topology of ['linear', 'circular'] as const) {
+      it('inverts integration while conserving both sources for ' + hostStrand + '/' + phageStrand + ' on a ' + topology + ' host', () => {
+        const original = attachmentFixture(hostStrand, phageStrand);
+        original.host.topology = topology;
+        const integrated = reconstructAttachment(original, { flankLength: 2 });
+        const low = { start: 2, end: 4, strand: hostStrand, evidence: 'Declared integration core in synthetic control' };
+        const high = { ...low, start: 8, end: 10 };
+        const input: ProphageExcisionInput = { format: 'phage-explorer-prophage-excision', version: 1,
+          locus: { ...original.host, name: 'Integrated control', sequence: integrated.integratedSequence },
+          attL: hostStrand === '+' ? low : high, attR: hostStrand === '+' ? high : low };
+        const result = reconstructProphageExcision(input, { flankLength: 2 });
+        expect(result.restoredHost.sequence).toBe(original.host.sequence);
+        expect(result.excisedPhage.sequence).toBe(hostStrand === '+' ? 'AGTGCA' : 'CTTGCA');
+        const orientedPhage = hostStrand === phageStrand ? original.phage.sequence : independentReverse(original.phage.sequence);
+        expect((orientedPhage + orientedPhage).includes(result.excisedPhage.sequence)).toBe(true);
+        expectExactExcisionMap(input, result);
+      });
+    }
+  }
+
+  it('rejects opposite orientation, mismatching cores, overlapping declarations and invalid linear order', () => {
+    const opposite = excisionFixture(); opposite.attR.strand = '-';
+    expect(() => reconstructProphageExcision(opposite)).toThrow(/same orientation/);
+    const mismatched = excisionFixture('CCGACGTTGCTTAA');
+    expect(() => reconstructProphageExcision(mismatched)).toThrow(/match exactly/);
+    const unequal = excisionFixture(); unequal.attR.end++;
+    expect(() => reconstructProphageExcision(unequal)).toThrow(/match exactly/);
+    const overlapping = excisionFixture('AAAAAA', 1, 2);
+    expect(() => reconstructProphageExcision(overlapping)).toThrow(/non-overlapping/);
+    const identical = excisionFixture('AAAAAA', 1, 1);
+    expect(() => reconstructProphageExcision(identical)).toThrow(/non-overlapping/);
+    expect(() => reconstructProphageExcision(excisionFixture('TTGATTAACCGACG', 10, 2))).toThrow(/linear locus/);
+    expect(() => reconstructProphageExcision(excisionFixture('CCGACGTTGATTAA', 2, 8, '-'))).toThrow(/linear locus/);
+  });
+
+  it('requires exact complete input, topology, provenance and valid non-wrapping coordinates', () => {
+    const input = excisionFixture();
+    for (const locus of [
+      { ...input.locus, sequence: 'CCGNCGTTGATTAA' }, { ...input.locus, topology: 'unknown' },
+      { ...input.locus, source: { ...input.locus.source, reference: '' } },
+      { ...input.locus, source: { ...input.locus.source, version: '' } },
+    ]) expect(() => validateProphageExcisionInput({ ...input, locus })).toThrow();
+    for (const changes of [{ start: -1 }, { start: 2.1 }, { end: 99 }, { start: 8, end: 2 },
+      { strand: ['+'] }, { evidence: '' }, { extra: true }]) {
+      expect(() => validateProphageExcisionInput({ ...input, attL: { ...input.attL, ...changes } })).toThrow();
+    }
+    expect(() => validateProphageExcisionInput({ ...input, version: 2 })).toThrow(/format\/version/);
+    expect(() => validateProphageExcisionInput({ ...input, unsupported: true })).toThrow(/fields/);
+    expect(() => reconstructProphageExcision(input, { flankLength: 1001 })).toThrow();
+  });
+
+  it('allows complete bounded integration products without widening the integration input limit', () => {
+    const bases = 'A'.repeat(ATTACHMENT_LIMITS.totalBases);
+    expect(parseProphageExcisionDna('>integrated locus\n' + bases).length).toBe(ATTACHMENT_LIMITS.totalBases);
+    expect(() => parseAttachmentDna(bases)).toThrow(/1,000,000/);
+    expect(() => parseProphageExcisionDna(bases + 'A')).toThrow(/1,500,000/);
+    const input = excisionFixture(bases, 0, 2);
+    expect(validateProphageExcisionInput(input).locus.sequence.length).toBe(ATTACHMENT_LIMITS.totalBases);
+    expect(() => validateProphageExcisionInput({ ...input, locus: { ...input.locus, sequence: bases + 'A' } })).toThrow(/1,500,000/);
+    expect(parseProphageExcisionDna('\uFEFF>one\n ccga cgtt \n gattaa\n')).toBe('CCGACGTTGATTAA');
+    for (const bad of ['', '>one\nGA\n>two\nGA', 'CCGNCGTTGATTAA', 'CCGA12']) expect(() => parseProphageExcisionDna(bad)).toThrow();
+  });
+
+  it('describes composition assumptions without reporting measured recombination activity', () => {
+    const result = reconstructProphageExcision(excisionFixture());
+    expect(result.warnings.join(' ')).toContain('not discovery of a prophage');
+    expect(result.warnings.join(' ')).toContain('not establish full-site recognition');
+    expect(result.warnings.join(' ')).toContain('biochemical cleavage position');
+    expect(result).not.toHaveProperty('efficiency');
+    expect(result).not.toHaveProperty('probability');
+  });
+});
+
+describe('portable source-bound excision experiments', () => {
+  it('preserves both complete molecules and coordinate maps and recomputes a saved circular experiment', async () => {
+    const input = excisionFixture('TTGATTAACCGACG', 10, 2, '+', 'circular');
+    const result = reconstructProphageExcision(input, { flankLength: 2 });
+    const record = await createProphageExcisionRecord(input, result);
+    expect(record.method).toEqual(PROPHAGE_EXCISION_METHOD);
+    expect(record.inputs.map(item => item.id)).toEqual(['integratedLocus', 'excisionSites']);
+    expect(record.fields.reconstruction.kind).toBe('simulation');
+    expect(record.fields.reconstruction.coverage).toEqual({ available: 14, total: 14, unit: 'bases' });
+    expect(record.fields.reconstruction.value).toEqual(analysisJson(result));
+    const replay = await replayProphageExcisionRecord('\uFEFF' + serializeAnalysisRecord(record));
+    expect(replay.input).toEqual(input);
+    expect(replay.result).toEqual(result);
+    expect(replay.options).toEqual({ flankLength: 2 });
+    expect(replay.record.resultId).toBe(record.resultId);
+  });
+
+  it('binds optional replay context to exact integrated bases, topology and source provenance', async () => {
+    const input = excisionFixture(), record = await createProphageExcisionRecord(input, reconstructProphageExcision(input));
+    const content = serializeAnalysisRecord(record);
+    expect((await replayProphageExcisionRecord(content, input.locus)).input.locus).toEqual(input.locus);
+    for (const alter of [
+      (changed: ProphageExcisionInput) => { changed.locus.sequence = 'TCGACGTTGATTAA'; },
+      (changed: ProphageExcisionInput) => { changed.locus.source.version = 'different'; },
+      (changed: ProphageExcisionInput) => { changed.locus.topology = 'circular'; },
+    ]) {
+      const changed = structuredClone(input); alter(changed);
+      await expect(replayProphageExcisionRecord(content, changed.locus)).rejects.toThrow(/Selected integrated bases or provenance/);
+    }
+  });
+
+  it('rejects newly checksummed fabricated products, maps or biological claims', async () => {
+    const input = excisionFixture(), result = reconstructProphageExcision(input);
+    const record = await createProphageExcisionRecord(input, result);
+    const altered = structuredClone(result); altered.excisedPhage.sequence = 'GACGTA';
+    await expect(createProphageExcisionRecord(input, altered)).rejects.toThrow(/do not match/);
+    const mapped = structuredClone(result); mapped.restoredHost.segments[1].sourceStart--;
+    await expect(createProphageExcisionRecord(input, mapped)).rejects.toThrow(/do not match/);
+    for (const alter of [
+      (changed: AnalysisRecord) => { changed.fields.reconstruction.value = analysisJson(altered); },
+      (changed: AnalysisRecord) => { changed.fields.reconstruction.value = analysisJson(mapped); },
+      (changed: AnalysisRecord) => { changed.fields.reconstruction.label = 'Confirmed highly efficient biological excision'; },
+    ]) {
+      const changed = structuredClone(record); alter(changed);
+      await expect(replayProphageExcisionRecord(serializeAnalysisRecord(await rehashAttachmentRecord(changed))))
+        .rejects.toThrow(/Fresh excision reconstruction differs/);
+    }
+  });
+
+  it('rejects changed method, source roles, declarations, options and unsupported seeds', async () => {
+    const input = excisionFixture(), record = await createProphageExcisionRecord(input, reconstructProphageExcision(input, { flankLength: 2 }));
+    for (const alter of [
+      (changed: AnalysisRecord) => { changed.method.version = '999'; },
+      (changed: AnalysisRecord) => { changed.method.implementation = 'different'; },
+      (changed: AnalysisRecord) => { changed.references[0].version = 'different'; },
+      (changed: AnalysisRecord) => { changed.inputs[0].id = 'differentSource'; },
+      (changed: AnalysisRecord) => { changed.inputs[1].data = analysisJson({ format: input.format, version: input.version,
+        attL: { ...input.attL, end: input.attL.end + 1 }, attR: input.attR }); },
+      (changed: AnalysisRecord) => { changed.parameters.flankLength = 0; },
+      (changed: AnalysisRecord) => { changed.parameters.extra = true; },
+      (changed: AnalysisRecord) => { changed.seed = 17; },
+    ]) {
+      const changed = structuredClone(record); alter(changed);
+      await expect(replayProphageExcisionRecord(serializeAnalysisRecord(await rehashAttachmentRecord(changed)))).rejects.toThrow();
+    }
+    await expect(replayProphageExcisionRecord(' '.repeat(10 * 1024 * 1024 + 1))).rejects.toThrow(/10 MiB/);
+    const old = await createAttachmentExperimentRecord(attachmentFixture(), reconstructAttachment(attachmentFixture()));
+    await expect(replayProphageExcisionRecord(serializeAnalysisRecord(old))).rejects.toThrow();
   });
 });

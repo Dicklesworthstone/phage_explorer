@@ -12,6 +12,7 @@ import { executeAncestralRequest } from '../workers/AncestralSession';
 import { executeHostMetabolismRequest } from '../workers/HostMetabolismSession';
 import { hostGeneWorkflowFixture } from '../../../core/src/analysis/host-gene-knockout.fixture';
 import { createCompatibilityExperiment, replayCompatibilityExperiment } from '../../../core/src/analysis/alignment-compatibility';
+import { executeAttachmentRequest, isProphageExcisionWork } from '../workers/ProphageAttachmentSession';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -97,6 +98,28 @@ async function fixture(test: (value: ReturnType<typeof transactionFixture>) => P
 }
 
 describe('saved research format routing', () => {
+  it('stores and freshly replays both exact excision molecules in the attachment library', () => fixture(async ({ store }) => {
+    const work = await executeAttachmentRequest({ kind: 'excise', input: { format: 'phage-explorer-prophage-excision', version: 1,
+      locus: { name: 'Private integrated locus', accession: null, sequence: 'CCGACGTTGATTAA', topology: 'linear',
+        source: { kind: 'local', reference: 'Hand-derived sequence composition control', version: '1', license: 'CC0' } },
+      attL: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic left core' },
+      attR: { start: 8, end: 10, strand: '+', evidence: 'Declared synthetic right core' },
+    }, options: { flankLength: 2 } });
+    const content = serializeAnalysisRecord(work.record);
+    assert(validateResearchSnapshotContent('attachment', content) > 0);
+    assert.throws(() => validateResearchSnapshotContent('epistasis', content), /match/);
+    const saved = await store.save('attachment', 'Exact two-molecule excision', content);
+    const reopened = await new ResearchStorage('isolated-test').read(saved.id, 'attachment');
+    assert.equal(reopened.content, content);
+    const replay = await executeAttachmentRequest({ kind: 'replay', content: reopened.content });
+    assert(isProphageExcisionWork(replay));
+    assert.equal(replay.verified, true);
+    assert.equal(replay.result.excisedPhage.sequence, 'GACGTT');
+    assert.equal(replay.result.restoredHost.sequence, 'CCGATTAA');
+    assert.equal(replay.record.resultId, work.record.resultId);
+    assert.deepEqual(replay.input, work.input);
+    assert.deepEqual(replay.result, work.result);
+  }));
   it('routes complete aligned-site experiments and reopens their exact sources through fresh calculation', async () => {
     const experiment = await createCompatibilityExperiment({ format: 'phage-explorer-alignment-compatibility', version: 1,
       name: 'Explicit synthetic compatibility fixture', source: { kind: 'demo', reference: 'Hand-counted fixture', version: '1', license: 'CC0' },

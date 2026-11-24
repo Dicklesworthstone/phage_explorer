@@ -782,29 +782,37 @@ function attachmentText(value: unknown, context: string): string {
   }
   return value.trim();
 }
-function attachmentDna(value: unknown): string {
+function attachmentDna(value: unknown, maximumBases: number = ATTACHMENT_LIMITS.sequenceBases): string {
   if (typeof value !== 'string' || value.length > ATTACHMENT_LIMITS.inputBytes) throw new Error('Attachment DNA input is absent or too large.');
   const sequence = value.replace(/[ \t\r\n]/g, '').toUpperCase();
-  if (!sequence || sequence.length > ATTACHMENT_LIMITS.sequenceBases || /[^ACGT]/.test(sequence)) {
-    throw new Error('Each attachment sequence requires 1–1,000,000 unambiguous A/C/G/T bases; ambiguous bases cannot be resolved by reconstruction.');
+  if (!sequence || sequence.length > maximumBases || /[^ACGT]/.test(sequence)) {
+    throw new Error('Each attachment sequence requires 1–' + maximumBases.toLocaleString('en-US') + ' unambiguous A/C/G/T bases; ambiguous bases cannot be resolved by reconstruction.');
   }
   return sequence;
 }
 /** Single-record FASTA or raw DNA; multiple records are never silently concatenated. */
-export function parseAttachmentDna(content: string): string {
+function parseAttachmentSequenceFile(content: string, maximumBases: number): string {
   if (typeof content !== 'string' || new TextEncoder().encode(content).length > ATTACHMENT_LIMITS.inputBytes) {
     throw new Error('Attachment sequence file exceeds the 4 MiB limit.');
   }
   const lines = content.replace(/^\uFEFF/, '').split(/\r\n?|\n/).map(line => line.trim()).filter(Boolean);
   if (lines[0]?.startsWith('>')) {
     if (!lines[0].slice(1).trim() || lines.slice(1).some(line => line.startsWith('>'))) {
-      throw new Error('Supply exactly one named FASTA record for the host locus.');
+      throw new Error('Supply exactly one named FASTA record for the supplied locus.');
     }
-    return attachmentDna(lines.slice(1).join(''));
+    return attachmentDna(lines.slice(1).join(''), maximumBases);
   }
-  return attachmentDna(lines.join(''));
+  return attachmentDna(lines.join(''), maximumBases);
 }
-function validateAttachmentSequence(value: unknown, context: string): AttachmentSequenceInput {
+export function parseAttachmentDna(content: string): string {
+  return parseAttachmentSequenceFile(content, ATTACHMENT_LIMITS.sequenceBases);
+}
+/** Excision accepts the complete output of the bounded two-source integration method. */
+export function parseProphageExcisionDna(content: string): string {
+  return parseAttachmentSequenceFile(content, ATTACHMENT_LIMITS.totalBases);
+}
+function validateAttachmentSequence(value: unknown, context: string,
+  maximumBases: number = ATTACHMENT_LIMITS.sequenceBases): AttachmentSequenceInput {
   if (!attachmentObject(value) || !attachmentObject(value.source)) throw new Error(context + ' sequence and source are required.');
   attachmentKeys(value, ['name', 'accession', 'sequence', 'topology', 'source'], context);
   attachmentKeys(value.source, ['kind', 'reference', 'version', 'license'], context + ' source');
@@ -812,7 +820,7 @@ function validateAttachmentSequence(value: unknown, context: string): Attachment
     !['local', 'catalog', 'external'].includes(value.source.kind as string)) throw new Error('Explicit attachment source kind and topology are required.');
   return { name: attachmentText(value.name, context + ' name'),
     accession: value.accession === null ? null : attachmentText(value.accession, context + ' accession'),
-    sequence: attachmentDna(value.sequence), topology: value.topology as AttachmentSequenceInput['topology'],
+    sequence: attachmentDna(value.sequence, maximumBases), topology: value.topology as AttachmentSequenceInput['topology'],
     source: { kind: value.source.kind as AttachmentSequenceInput['source']['kind'],
       reference: attachmentText(value.source.reference, context + ' reference'),
       version: attachmentText(value.source.version, context + ' source version'),
@@ -948,5 +956,181 @@ export async function replayAttachmentExperiment(content: string, expectedPhage?
   const options = resolveAttachmentOptions(saved.parameters), result = reconstructAttachment(input, options);
   const record = await createAttachmentExperimentRecord(input, result);
   if (record.resultId !== saved.resultId || record.cacheKey !== saved.cacheKey) throw new Error('Fresh attachment reconstruction differs from the saved result or reference contract.');
+  return { input, options, result, record };
+}
+
+
+/** Exact conditional excision from declared direct attachment cores.
+ * Bxb1 attL/attR excision produces attP and attB, with biological activity
+ * requiring the cognate machinery and directionality factor; see Figure 1A:
+ * https://doi.org/10.1371/journal.pgen.1003490 .
+ * Only the conservative sequence operation is implemented here.
+ */
+export const PROPHAGE_EXCISION_METHOD = {
+  id: 'prophage-excision-reconstruction', version: '1',
+  implementation: 'declared oriented identical direct cores; conservative linear/circular arc excision; complete product and source-coordinate maps-v1',
+} as const;
+export interface ProphageExcisionInput {
+  format: 'phage-explorer-prophage-excision'; version: 1;
+  locus: AttachmentSequenceInput;
+  attL: AttachmentCoreSite; attR: AttachmentCoreSite;
+}
+export interface ExcisionSequenceProduct {
+  sequence: string; topology: 'linear' | 'circular';
+  /** Forward coordinate of the first output base in the integrated input. */
+  sourceOrigin: number;
+  /** Ordered exact input slices; every product follows the input's forward strand. */
+  segments: Array<{ sourceStart: number; sourceEnd: number; strand: '+';
+    productStart: number; productEnd: number }>;
+}
+export interface ExcisionJunction extends Omit<AttachmentJunction, 'integratedSegments'> {
+  /** Intervals in the named output molecule, not in the original input. */
+  productSegments: Array<{ start: number; end: number }>;
+}
+export interface ProphageExcisionResult {
+  options: AttachmentOptions; sharedCore: string; attachmentStrand: '+' | '-';
+  /** Half-open forward arc removed from the original input; start > end wraps. */
+  sourceCuts: { start: number; end: number; wrapsOrigin: boolean };
+  excisedPhage: ExcisionSequenceProduct; restoredHost: ExcisionSequenceProduct;
+  attP: ExcisionJunction; attB: ExcisionJunction;
+  conservation: { inputBases: number; excisedBases: number; restoredBases: number;
+    recoveredBases: number; conserved: true };
+  warnings: string[];
+}
+export function validateProphageExcisionInput(value: unknown): ProphageExcisionInput {
+  if (!attachmentObject(value) || value.format !== 'phage-explorer-prophage-excision' || value.version !== 1) {
+    throw new Error('Unsupported prophage excision input format/version.');
+  }
+  attachmentKeys(value, ['format', 'version', 'locus', 'attL', 'attR'], 'prophage excision input');
+  const locus = validateAttachmentSequence(value.locus, 'Integrated locus', ATTACHMENT_LIMITS.totalBases);
+  if (locus.topology === 'unknown') throw new Error('Declare whether the integrated locus is linear or circular before reconstructing excision.');
+  const attL = validateAttachmentSite(value.attL, locus.sequence.length, 'attL');
+  const attR = validateAttachmentSite(value.attR, locus.sequence.length, 'attR');
+  if (attL.strand !== attR.strand) {
+    throw new Error('Excision requires the two declared sites to have the same orientation. Opposite orientations describe inversion, which this operation does not reconstruct.');
+  }
+  if (!(attL.end <= attR.start || attR.end <= attL.start)) {
+    throw new Error('The declared attL and attR cores must be distinct and non-overlapping.');
+  }
+  const oriented = (site: AttachmentCoreSite) => site.strand === '+'
+    ? locus.sequence.slice(site.start, site.end) : reverseComplement(locus.sequence.slice(site.start, site.end));
+  if (oriented(attL) !== oriented(attR)) {
+    throw new Error('The declared attL and attR crossover cores must match exactly in their supplied orientations. An ambiguous crossover is not reconstructed.');
+  }
+  const start = attL.strand === '+' ? attL.start : attR.start;
+  const end = attL.strand === '+' ? attR.start : attL.start;
+  if (locus.topology === 'linear' && start >= end) {
+    throw new Error('A linear locus requires attL before attR on the forward strand, or attR before attL on the reverse strand. Origin-crossing excision requires circular input.');
+  }
+  return { format: 'phage-explorer-prophage-excision', version: 1, locus, attL, attR };
+}
+/** Compose each product from its retained input slices, preserving an exact map. */
+function excisionMolecule(source: string, intervals: Array<{ start: number; end: number }>,
+  topology: 'linear' | 'circular'): ExcisionSequenceProduct {
+  const segments: ExcisionSequenceProduct['segments'] = [];
+  const pieces: string[] = [];
+  let productStart = 0;
+  for (const interval of intervals) {
+    if (interval.start === interval.end) continue;
+    pieces.push(source.slice(interval.start, interval.end));
+    segments.push({ sourceStart: interval.start, sourceEnd: interval.end, strand: '+',
+      productStart, productEnd: productStart + interval.end - interval.start });
+    productStart += interval.end - interval.start;
+  }
+  if (!segments.length) throw new Error('Excision cannot produce an empty host or phage molecule.');
+  return { sequence: pieces.join(''), topology, sourceOrigin: segments[0].sourceStart, segments };
+}
+export function reconstructProphageExcision(raw: ProphageExcisionInput,
+  settings: Partial<AttachmentOptions> = {}): ProphageExcisionResult {
+  const input = validateProphageExcisionInput(raw), options = resolveAttachmentOptions(settings);
+  const { locus, attL, attR } = input, n = locus.sequence.length;
+  const start = attL.strand === '+' ? attL.start : attR.start;
+  const end = attL.strand === '+' ? attR.start : attL.start;
+  const wrapsOrigin = start > end;
+  const phageParts = wrapsOrigin ? [{ start, end: n }, { start: 0, end }] : [{ start, end }];
+  // Keep the stored host origin if retained. If it was excised, the restored
+  // circular host starts at the first retained base, at the second cut.
+  const hostParts = wrapsOrigin ? [{ start: end, end: start }] : [{ start: 0, end: start }, { start: end, end: n }];
+  const excisedPhage = excisionMolecule(locus.sequence, phageParts, 'circular');
+  const restoredHost = excisionMolecule(locus.sequence, hostParts, locus.topology as 'linear' | 'circular');
+  const allParts = [...excisedPhage.segments, ...restoredHost.segments].sort((a, b) => a.sourceStart - b.sourceStart);
+  let covered = 0;
+  for (const part of allParts) {
+    if (part.sourceStart !== covered) throw new Error('Excision failed its source-coordinate conservation invariant.');
+    covered = part.sourceEnd;
+  }
+  if (covered !== n || excisedPhage.sequence.length + restoredHost.sequence.length !== n) {
+    throw new Error('Excision failed its whole-source base conservation invariant.');
+  }
+  const coreLength = attL.end - attL.start;
+  const preview = (product: ExcisionSequenceProduct, coreStart: number): ExcisionJunction => {
+    const { integratedSegments, ...junction } = attachmentPreview(product.sequence, coreStart, coreLength,
+      options.flankLength, product.topology === 'circular', attL.strand);
+    return { ...junction, productSegments: integratedSegments };
+  };
+  const sharedCore = attL.strand === '+' ? locus.sequence.slice(attL.start, attL.end)
+    : reverseComplement(locus.sequence.slice(attL.start, attL.end));
+  const warnings = [
+    'This is conditional sequence reconstruction from supplied attL/attR coordinates, not discovery of a prophage or a prediction of excision efficiency, infectivity or clinical risk.',
+    'Matching crossover cores do not establish full-site recognition, integrase compatibility, accessory factors or recombination directionality. Site identities and evidence are supplied declarations.',
+    'The forward-coordinate starts of the identical cores define the splice convention. A biochemical cleavage position inside the shared core is not inferred.',
+    'Both output sequences retain the original input forward orientation. The phage product is circular; its stored origin is the first cut. Junction previews follow the declared attachment-site strand.',
+    'Every input base occurs in exactly one output molecule. No bases are added, removed, corrected or assigned from ambiguous input.',
+  ];
+  if (restoredHost.sourceOrigin !== 0) warnings.push('The original stored origin lies in the excised arc; the restored host is stored from its first retained source base.');
+  if (locus.source.license === null) warnings.push('No source license was supplied. Usage permission is not inferred.');
+  return { options, sharedCore, attachmentStrand: attL.strand, sourceCuts: { start, end, wrapsOrigin },
+    excisedPhage, restoredHost, attP: preview(excisedPhage, 0), attB: preview(restoredHost, wrapsOrigin ? 0 : start),
+    conservation: { inputBases: n, excisedBases: excisedPhage.sequence.length, restoredBases: restoredHost.sequence.length,
+      recoveredBases: excisedPhage.sequence.length + restoredHost.sequence.length, conserved: true }, warnings };
+}
+export async function createProphageExcisionRecord(raw: ProphageExcisionInput,
+  supplied: ProphageExcisionResult): Promise<AnalysisRecord> {
+  const input = validateProphageExcisionInput(raw), result = reconstructProphageExcision(input, supplied.options);
+  if (JSON.stringify(analysisJson(result)) !== JSON.stringify(analysisJson(supplied))) {
+    throw new Error('Excision products do not match the exact integrated source and declared sites.');
+  }
+  return createAnalysisRecord({
+    method: { ...PROPHAGE_EXCISION_METHOD },
+    inputs: [
+      { id: 'integratedLocus', accession: input.locus.accession, source: input.locus.source.kind,
+        description: 'Exact integrated locus bases, topology and supplied source metadata.', data: analysisJson(input.locus) },
+      { id: 'excisionSites', accession: null, source: 'local',
+        description: 'Declared oriented attL/attR crossover cores and supporting evidence or assumptions.',
+        data: analysisJson({ format: input.format, version: input.version, attL: input.attL, attR: input.attR }) },
+    ],
+    parameters: { flankLength: result.options.flankLength }, seed: null,
+    references: [{ id: 'doi:10.1371/journal.pgen.1003490', version: '2013',
+      description: 'Singh, Ghosh and Hatfull, Figure 1A: attL/attR excision produces attP/attB with appropriate recombination machinery; sequence composition here does not predict that activity.' }],
+    fields: { reconstruction: { label: 'Conditional excised phage, restored host, junctions and source-coordinate maps',
+      kind: 'simulation', units: 'records', value: analysisJson(result),
+      coverage: { available: input.locus.sequence.length, total: input.locus.sequence.length, unit: 'bases' },
+      assumptions: ['The supplied attL and attR are the intended compatible, directly oriented sites.',
+        'A conservative sequence exchange occurs within their identical, explicitly declared crossover cores.'],
+      limitations: result.warnings } },
+  });
+}
+export async function replayProphageExcisionRecord(content: string, expectedLocus?: AttachmentSequenceInput): Promise<{
+  input: ProphageExcisionInput; options: AttachmentOptions; result: ProphageExcisionResult; record: AnalysisRecord;
+}> {
+  if (typeof content !== 'string' || new TextEncoder().encode(content).length > 10 * 1024 * 1024) {
+    throw new Error('Saved excision experiment exceeds the 10 MiB limit.');
+  }
+  const saved = await parseAnalysisRecord(content.replace(/^\uFEFF/, ''),
+    { methodId: PROPHAGE_EXCISION_METHOD.id, methodVersion: PROPHAGE_EXCISION_METHOD.version });
+  if (saved.inputs.length !== 2 || saved.seed !== null) throw new Error('Excision record has unsupported inputs or seed.');
+  const get = (id: string) => saved.inputs.find(item => item.id === id)?.data;
+  const sites = get('excisionSites');
+  if (!attachmentObject(sites)) throw new Error('Saved excision coordinates are absent.');
+  const input = validateProphageExcisionInput({ ...sites, locus: get('integratedLocus') });
+  if (expectedLocus && JSON.stringify(analysisJson(validateAttachmentSequence(expectedLocus, 'Selected integrated locus',
+    ATTACHMENT_LIMITS.totalBases))) !== JSON.stringify(analysisJson(input.locus))) {
+    throw new Error('Selected integrated bases or provenance differ from the saved excision experiment.');
+  }
+  const options = resolveAttachmentOptions(saved.parameters), result = reconstructProphageExcision(input, options);
+  const record = await createProphageExcisionRecord(input, result);
+  if (record.resultId !== saved.resultId || record.cacheKey !== saved.cacheKey) {
+    throw new Error('Fresh excision reconstruction differs from the saved result or reference contract.');
+  }
   return { input, options, result, record };
 }

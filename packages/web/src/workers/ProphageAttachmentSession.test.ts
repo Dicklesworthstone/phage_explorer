@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import type { AttachmentReconstructionInput } from '../../../core/src/analysis/prophage-excision';
+import type { AttachmentReconstructionInput, ProphageExcisionInput } from '../../../core/src/analysis/prophage-excision';
 import {
-  executeAttachmentRequest, ProphageAttachmentSession,
+  executeAttachmentRequest, ProphageAttachmentSession, isProphageExcisionWork,
   type ProphageAttachmentRequest, type ProphageAttachmentWorker,
-  type ProphageAttachmentMessage, type ProphageAttachmentWork,
+  type ProphageAttachmentMessage, type ProphageAttachmentWork, type ProphageExcisionWork, type ProphageAttachmentResult,
 } from './ProphageAttachmentSession';
 
 function fixture(): AttachmentReconstructionInput {
@@ -16,6 +16,10 @@ function fixture(): AttachmentReconstructionInput {
     attB: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic shared AG core' },
     attP: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic shared AG core' },
     circularization: 'already-circular' };
+}
+function integrationResult(value: ProphageAttachmentResult | null): ProphageAttachmentWork {
+  if (!value || isProphageExcisionWork(value)) throw new Error('Expected an integration fixture result');
+  return value;
 }
 function request(): ProphageAttachmentRequest { return { kind: 'analyze', input: fixture(), options: { flankLength: 2 } }; }
 function deferred<T>() {
@@ -56,7 +60,7 @@ async function accept(job: { worker: ManualWorker; completion: Promise<boolean> 
   const value = await executeAttachmentRequest(job.worker.posted!);
   job.worker.emit({ kind: 'result', value });
   expect(await job.completion).toBe(true);
-  return value;
+  return integrationResult(value);
 }
 
 describe('attachment worker dispatcher', () => {
@@ -78,7 +82,7 @@ describe('attachment worker dispatcher', () => {
     const replay = await executeAttachmentRequest({ kind: 'replay', content: serializeAnalysisRecord(value.record) });
     expect(replay.verified).toBe(true);
     expect(replay.record.resultId).toBe(value.record.resultId);
-    expect(replay.input.phage.source).toEqual(input.phage.source);
+    expect(integrationResult(replay).input.phage.source).toEqual(input.phage.source);
   });
 
   it('rejects multiple FASTA records, altered cores, oversized input and unsupported operations', async () => {
@@ -101,7 +105,7 @@ describe('attachment worker dispatcher', () => {
     session.activate(); session.setScope('native-worker');
     try {
       expect(await session.run(request(), 'native-worker')).toBe(true);
-      const accepted = session.getSnapshot().accepted!;
+      const accepted = integrationResult(session.getSnapshot().accepted);
       expect(accepted.result.integratedSequence).toBe('TTAGTGCAAGCC');
       expect(await session.run({ kind: 'replay', content: serializeAnalysisRecord(accepted.record) }, 'native-worker')).toBe(true);
       expect(session.getSnapshot().accepted?.record.resultId).toBe(accepted.record.resultId);
@@ -180,7 +184,7 @@ describe('owned attachment experiment lifecycle', () => {
     const different = structuredClone(accepted); different.input.phage.name = 'Stale phage';
     late({ data: { kind: 'result', value: different } } as MessageEvent<ProphageAttachmentMessage>);
     expect(h.session.getSnapshot().accepted).toBe(accepted);
-    expect(h.session.getSnapshot().accepted?.input.phage.name).toBe('Control phage');
+    expect(integrationResult(h.session.getSnapshot().accepted).input.phage.name).toBe('Control phage');
     const imported = await h.start({ kind: 'replay', content: serializeAnalysisRecord(accepted.record) }, 'B');
     await accept(imported);
     expect(h.session.getSnapshot().accepted?.verified).toBe(true);
@@ -259,5 +263,137 @@ describe('owned attachment experiment lifecycle', () => {
     expect(await pending.completion).toBe(false);
     expect(h.session.getSnapshot()).toMatchObject({ accepted, busy: false });
     expect(await h.session.run(request(), 'A')).toBe(false);
+  });
+});
+
+
+function excisionFixture(): ProphageExcisionInput {
+  return { format: 'phage-explorer-prophage-excision', version: 1,
+    locus: { name: 'Integrated source', accession: null, sequence: 'CCGACGTTGATTAA', topology: 'linear',
+      source: { kind: 'local', reference: 'Hand-derived composition control, not a biological observation', version: '1', license: 'CC0' } },
+    attL: { start: 2, end: 4, strand: '+', evidence: 'Declared synthetic left core' },
+    attR: { start: 8, end: 10, strand: '+', evidence: 'Declared synthetic right core' } };
+}
+async function acceptExcision(job: { worker: ManualWorker; completion: Promise<boolean> }): Promise<ProphageExcisionWork> {
+  const value = await executeAttachmentRequest(job.worker.posted!);
+  if (!isProphageExcisionWork(value)) throw new Error('Expected an excision fixture result');
+  job.worker.emit({ kind: 'result', value });
+  expect(await job.completion).toBe(true);
+  return value;
+}
+
+describe('complete source-owned excision worker flow', () => {
+  it('prepares a supplied integrated FASTA without a separate phage and replays both molecules', async () => {
+    const input = excisionFixture(), { sequence: _sequence, ...locus } = input.locus, phases: string[] = [];
+    const prepared = { kind: 'prepare-excision' as const, locus, locusContent: '>integrated\nccgacgttgattaa\n',
+      attL: input.attL, attR: input.attR, options: { flankLength: 2 } };
+    const before = structuredClone(prepared);
+    const value = await executeAttachmentRequest(prepared, phase => phases.push(phase));
+    expect(value.input).toEqual(input);
+    expect(value.result.excisedPhage.sequence).toBe('GACGTT');
+    expect(value.result.restoredHost.sequence).toBe('CCGATTAA');
+    expect(value.result.attP.sequence).toBe('TTGACG');
+    expect(value.result.attB.sequence).toBe('CCGATT');
+    expect(value.verified).toBe(false);
+    expect(phases.length).toBeGreaterThan(1);
+    expect(prepared).toEqual(before);
+    const replay = await executeAttachmentRequest({ kind: 'replay', content: serializeAnalysisRecord(value.record), expectedLocus: input.locus });
+    expect(isProphageExcisionWork(replay)).toBe(true);
+    expect(replay.result).toEqual(value.result);
+    expect(replay.record.resultId).toBe(value.record.resultId);
+    expect(replay.verified).toBe(true);
+    await expect(executeAttachmentRequest({ kind: 'replay', content: serializeAnalysisRecord(value.record),
+      expectedPhage: fixture().phage })).rejects.toThrow(/integrated locus/);
+    const original = await executeAttachmentRequest({ kind: 'analyze', input: fixture() });
+    await expect(executeAttachmentRequest({ kind: 'replay', content: serializeAnalysisRecord(original.record),
+      expectedLocus: input.locus })).rejects.toThrow(/separate sources/);
+  });
+
+  it('rejects incomplete, ambiguous and incompatible integrated sources before accepting a product', async () => {
+    const input = excisionFixture(), { sequence: _sequence, ...locus } = input.locus;
+    const base = { kind: 'prepare-excision' as const, locus, attL: input.attL, attR: input.attR };
+    await expect(executeAttachmentRequest({ ...base, locusContent: '>one\nCCGACG\n>two\nTTGATTAA' })).rejects.toThrow(/one named FASTA/);
+    await expect(executeAttachmentRequest({ ...base, locusContent: 'CCGNCGTTGATTAA' })).rejects.toThrow(/unambiguous/);
+    await expect(executeAttachmentRequest({ ...base, locusContent: 'CCGACGTTGCTTAA' })).rejects.toThrow(/match exactly/);
+    await expect(executeAttachmentRequest({ ...base, locusContent: input.locus.sequence,
+      attR: { ...input.attR, strand: '-' } })).rejects.toThrow(/same orientation/);
+    await expect(executeAttachmentRequest({ ...base, locusContent: ' '.repeat(4 * 1024 * 1024 + 1) })).rejects.toThrow(/4 MiB/);
+  });
+
+  it('runs real excision and portable replay in the owned worker', async () => {
+    let created = 0;
+    const session = new ProphageAttachmentSession(() => {
+      created++;
+      return new Worker(new URL('./prophage-attachment.worker.ts', import.meta.url), { type: 'module' }) as unknown as ProphageAttachmentWorker;
+    });
+    session.activate(); session.setScope('excision-worker');
+    try {
+      expect(await session.run({ kind: 'excise', input: excisionFixture(), options: { flankLength: 2 } }, 'excision-worker')).toBe(true);
+      const accepted = session.getSnapshot().accepted;
+      if (!isProphageExcisionWork(accepted)) throw new Error('No accepted excision result');
+      expect(accepted.result.excisedPhage.sequence).toBe('GACGTT');
+      expect(accepted.result.restoredHost.sequence).toBe('CCGATTAA');
+      expect(await session.run({ kind: 'replay', content: serializeAnalysisRecord(accepted.record) }, 'excision-worker')).toBe(true);
+      expect(session.getSnapshot().accepted?.record.resultId).toBe(accepted.record.resultId);
+      expect(session.getSnapshot().accepted?.verified).toBe(true);
+      expect(created).toBe(2);
+    } finally { session.deactivate(); }
+  }, 15000);
+
+  it('moves between integration and excision while retaining accepted excision across cancellation and source navigation', async () => {
+    const h = harness();
+    const integration = await accept(await h.start());
+    const job = await h.start({ kind: 'excise', input: excisionFixture() });
+    expect(h.session.getSnapshot().accepted).toBe(integration);
+    const accepted = await acceptExcision(job);
+    expect(h.session.getSnapshot().accepted).toBe(accepted);
+    const pending = await h.start({ kind: 'excise', input: excisionFixture() }), late = pending.worker.onmessage!;
+    h.session.setScope('B', true);
+    expect(await pending.completion).toBe(false);
+    late({ data: { kind: 'result', value: integration } } as MessageEvent<ProphageAttachmentMessage>);
+    expect(h.session.getSnapshot()).toMatchObject({ scope: 'B', accepted, busy: false });
+    const replay = await acceptExcision(await h.start({ kind: 'replay', content: serializeAnalysisRecord(accepted.record) }, 'B'));
+    expect(replay.verified).toBe(true);
+    expect(replay.result).toEqual(accepted.result);
+    const canceled = await h.start({ kind: 'excise', input: excisionFixture() }, 'B');
+    h.session.cancel();
+    expect(await canceled.completion).toBe(false);
+    expect(h.session.getSnapshot().accepted).toBe(replay);
+    expect(await h.session.run(() => Promise.reject(new Error('Integrated source read failed')), 'B')).toBe(false);
+    expect(h.session.getSnapshot().accepted).toBe(replay);
+    h.session.deactivate();
+  });
+
+  it('captures the integrated source and both declarations before subscribers can edit the draft', async () => {
+    const h = harness(), input = excisionFixture();
+    const unsubscribe = h.session.subscribe(() => { input.locus.sequence = 'TCGACGTTGATTAA'; input.attL.evidence = 'Edited later'; });
+    const job = await h.start({ kind: 'excise', input });
+    unsubscribe();
+    const accepted = await acceptExcision(job);
+    expect(accepted.input.locus.sequence).toBe('CCGACGTTGATTAA');
+    expect(accepted.input.attL.evidence).toBe('Declared synthetic left core');
+    expect(accepted.result.restoredHost.sequence).toBe('CCGATTAA');
+    h.session.deactivate();
+  });
+
+  it('rejects malformed excision payloads without losing the previous accepted molecules', async () => {
+    const h = harness(), accepted = await acceptExcision(await h.start({ kind: 'excise', input: excisionFixture() }));
+    for (const alter of [
+      (value: ProphageExcisionWork) => { value.result.excisedPhage = null as unknown as ProphageExcisionWork['result']['excisedPhage']; },
+      (value: ProphageExcisionWork) => { value.result.restoredHost.segments = null as unknown as ProphageExcisionWork['result']['restoredHost']['segments']; },
+      (value: ProphageExcisionWork) => { value.result.attB.productSegments = null as unknown as ProphageExcisionWork['result']['attB']['productSegments']; },
+      (value: ProphageExcisionWork) => { value.result.conservation.recoveredBases++; },
+      (value: ProphageExcisionWork) => { value.input.attR.strand = '-'; },
+      (value: ProphageExcisionWork) => { value.options.flankLength = -1; },
+      (value: ProphageExcisionWork) => { value.record.method.version = '999'; },
+    ]) {
+      const job = await h.start({ kind: 'excise', input: excisionFixture() }), malformed = structuredClone(accepted);
+      alter(malformed); job.worker.emit({ kind: 'result', value: malformed });
+      expect(await job.completion).toBe(false);
+      expect(h.session.getSnapshot().accepted).toBe(accepted);
+      expect(h.session.getSnapshot().error).toContain('Unexpected attachment worker response');
+      expect(job.worker.terminated).toBe(1);
+    }
+    h.session.deactivate();
   });
 });

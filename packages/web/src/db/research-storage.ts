@@ -24,7 +24,7 @@ export const RESEARCH_SNAPSHOT_TYPES = {
   'pfu-growth': { title: 'corrected PFU growth experiments', format: 'phage-explorer-analysis', methods: ['extracellular-pfu-growth'] },
   inactivation: { title: 'measured inactivation experiments', format: 'phage-explorer-analysis', methods: ['plaque-count-inactivation'] },
   'host-metabolism': { title: 'host-model experiments', format: 'phage-explorer-analysis', methods: ['sourced-host-flux', 'host-gene-knockout'] },
-  attachment: { title: 'attachment experiments', format: 'phage-explorer-analysis', methods: ['attachment-reconstruction'] },
+  attachment: { title: 'attachment experiments', format: 'phage-explorer-analysis', methods: ['attachment-reconstruction', 'prophage-excision-reconstruction'] },
 } as const;
 export type ResearchSnapshotKind = keyof typeof RESEARCH_SNAPSHOT_TYPES;
 export interface ResearchSnapshotInfo {

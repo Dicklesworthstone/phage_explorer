@@ -2,34 +2,73 @@
 import {
   ATTACHMENT_LIMITS, parseAttachmentDna, validateAttachmentInput, resolveAttachmentOptions,
   reconstructAttachment, createAttachmentExperimentRecord, replayAttachmentExperiment,
+  PROPHAGE_EXCISION_METHOD, parseProphageExcisionDna, validateProphageExcisionInput,
+  reconstructProphageExcision, createProphageExcisionRecord, replayProphageExcisionRecord,
+  type ProphageExcisionInput, type ProphageExcisionResult,
   type AttachmentSequenceInput, type AttachmentCoreSite, type AttachmentOptions,
   type AttachmentReconstructionInput, type AttachmentReconstructionResult,
 } from '../../../core/src/analysis/prophage-excision';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
-export type ProphageAttachmentRequest =
+export type ProphageIntegrationRequest =
   | { kind: 'analyze'; input: AttachmentReconstructionInput; options?: Partial<AttachmentOptions> }
   | { kind: 'prepare'; hostContent: string; host: Omit<AttachmentSequenceInput, 'sequence'>;
       phage: AttachmentSequenceInput; attB: AttachmentCoreSite; attP: AttachmentCoreSite;
-      circularization: AttachmentReconstructionInput['circularization']; options?: Partial<AttachmentOptions> }
-  | { kind: 'replay'; content: string; expectedPhage?: AttachmentSequenceInput };
+      circularization: AttachmentReconstructionInput['circularization']; options?: Partial<AttachmentOptions> };
+export type ProphageExcisionRequest =
+  | { kind: 'excise'; input: ProphageExcisionInput; options?: Partial<AttachmentOptions> }
+  | { kind: 'prepare-excision'; locusContent: string; locus: Omit<AttachmentSequenceInput, 'sequence'>;
+      attL: AttachmentCoreSite; attR: AttachmentCoreSite; options?: Partial<AttachmentOptions> };
+export type ProphageAttachmentRequest = ProphageIntegrationRequest | ProphageExcisionRequest
+  | { kind: 'replay'; content: string; expectedPhage?: AttachmentSequenceInput; expectedLocus?: AttachmentSequenceInput };
 export interface ProphageAttachmentWork {
   input: AttachmentReconstructionInput; options: AttachmentOptions;
   result: AttachmentReconstructionResult; record: AnalysisRecord; verified: boolean;
 }
+export interface ProphageExcisionWork {
+  input: ProphageExcisionInput; options: AttachmentOptions;
+  result: ProphageExcisionResult; record: AnalysisRecord; verified: boolean;
+}
+export type ProphageAttachmentResult = ProphageAttachmentWork | ProphageExcisionWork;
+export function isProphageExcisionWork(value: unknown): value is ProphageExcisionWork {
+  return !!value && typeof value === 'object' &&
+    (value as Partial<ProphageExcisionWork>).input?.format === 'phage-explorer-prophage-excision';
+}
 export type ProphageAttachmentMessage = { kind: 'progress'; phase: string }
-  | { kind: 'result'; value: ProphageAttachmentWork } | { kind: 'error'; message: string };
+  | { kind: 'result'; value: ProphageAttachmentResult } | { kind: 'error'; message: string };
 
+export function executeAttachmentRequest(request: ProphageIntegrationRequest, progress?: (phase: string) => void): Promise<ProphageAttachmentWork>;
+export function executeAttachmentRequest(request: ProphageExcisionRequest, progress?: (phase: string) => void): Promise<ProphageExcisionWork>;
+export function executeAttachmentRequest(request: ProphageAttachmentRequest, progress?: (phase: string) => void): Promise<ProphageAttachmentResult>;
 export async function executeAttachmentRequest(
   request: ProphageAttachmentRequest, progress: (phase: string) => void = () => {},
-): Promise<ProphageAttachmentWork> {
+): Promise<ProphageAttachmentResult> {
   if (!request || typeof request !== 'object') throw new Error('Unsupported attachment request.');
   if (request.kind === 'replay') {
     if (typeof request.content !== 'string' || new TextEncoder().encode(request.content).length > 10 * 1024 * 1024) {
       throw new Error('Saved attachment experiment exceeds the 10 MiB limit.');
     }
     progress('Verifying saved identities and recomputing exact attachment products');
+    const method = JSON.parse(request.content.replace(/^\uFEFF/, ''))?.method?.id;
+    if (method === PROPHAGE_EXCISION_METHOD.id) {
+      if (request.expectedPhage) throw new Error('Excision replay expects an integrated locus, not a separate phage source.');
+      return { ...await replayProphageExcisionRecord(request.content, request.expectedLocus), verified: true };
+    }
+    if (request.expectedLocus) throw new Error('Integration replay expects its separate sources, not an integrated locus.');
     return { ...await replayAttachmentExperiment(request.content, request.expectedPhage), verified: true };
+  }
+  if (request.kind === 'excise' || request.kind === 'prepare-excision') {
+    progress('Checking the integrated source and declared attL/attR crossover cores');
+    const raw: ProphageExcisionInput = request.kind === 'excise' ? request.input : {
+      format: 'phage-explorer-prophage-excision', version: 1,
+      locus: { ...request.locus, sequence: parseProphageExcisionDna(request.locusContent) },
+      attL: request.attL, attR: request.attR,
+    };
+    const input = validateProphageExcisionInput(raw), options = resolveAttachmentOptions(request.options);
+    progress('Reconstructing the excised phage, restored host and complete source-coordinate maps');
+    const result = reconstructProphageExcision(input, options);
+    progress('Binding both molecules and the declared sites to the excision experiment');
+    return { input, options, result, record: await createProphageExcisionRecord(input, result), verified: false };
   }
   if (request.kind !== 'prepare' && request.kind !== 'analyze') throw new Error('Unsupported attachment operation.');
   progress('Checking supplied sources, core coordinates and orientations');
@@ -57,7 +96,8 @@ export interface ProphageAttachmentWorker {
 /** Transport checks prevent an unexpected worker payload from reaching view rendering.
  * The owned worker remains responsible for full input, source and result verification.
  */
-function attachmentWorkShape(value: ProphageAttachmentWork | undefined): boolean {
+function attachmentWorkShape(value: ProphageAttachmentResult | undefined): boolean {
+  if (isProphageExcisionWork(value)) return excisionWorkShape(value);
   const result = value?.result, input = value?.input, record = value?.record;
   const strings = (items: unknown): items is string[] => Array.isArray(items) && items.every(item => typeof item === 'string');
   const plain = (item: unknown): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item);
@@ -120,8 +160,59 @@ function attachmentWorkShape(value: ProphageAttachmentWork | undefined): boolean
     result.conservation.conserved === true &&
     Array.isArray(result.warnings) && result.warnings.every(warning => typeof warning === 'string');
 }
+function excisionWorkShape(value: ProphageExcisionWork): boolean {
+  // The worker computes/validates the products. The main thread checks bounded
+  // sources and the exact structures it renders; it never installs saved output.
+  const input = validateProphageExcisionInput(value.input), options = resolveAttachmentOptions(value.options);
+  const result = value.result, record = value.record, n = input.locus.sequence.length;
+  const plain = (item: unknown): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item);
+  const strings = (items: unknown): items is string[] => Array.isArray(items) && items.every(item => typeof item === 'string');
+  const interval = (start: number, end: number, maximum: number) =>
+    Number.isSafeInteger(start) && Number.isSafeInteger(end) && start >= 0 && end >= start && end <= maximum;
+  const molecule = (item: ProphageExcisionResult['excisedPhage'] | undefined) => !!item &&
+    typeof item.sequence === 'string' && item.sequence.length > 0 && item.sequence.length < n &&
+    ['linear', 'circular'].includes(item.topology) && Number.isSafeInteger(item.sourceOrigin) &&
+    item.sourceOrigin >= 0 && item.sourceOrigin < n && Array.isArray(item.segments) && item.segments.length > 0 &&
+    item.segments.every(part => part && part.strand === '+' && interval(part.sourceStart, part.sourceEnd, n) &&
+      interval(part.productStart, part.productEnd, item.sequence.length));
+  const junction = (item: ProphageExcisionResult['attP'] | undefined, maximum: number) => !!item &&
+    typeof item.sequence === 'string' && ['+', '-'].includes(item.strand) &&
+    !!item.core && interval(item.core.start, item.core.end, item.sequence.length) &&
+    Array.isArray(item.productSegments) && item.productSegments.every(part => part && interval(part.start, part.end, maximum)) &&
+    Number.isSafeInteger(item.leftFlankBases) && item.leftFlankBases >= 0 &&
+    Number.isSafeInteger(item.rightFlankBases) && item.rightFlankBases >= 0;
+  return typeof value.verified === 'boolean' && value.input.locus.sequence === input.locus.sequence &&
+    !!result && result.options?.flankLength === options.flankLength &&
+    molecule(result.excisedPhage) && molecule(result.restoredHost) &&
+    result.excisedPhage.topology === 'circular' && result.restoredHost.topology === input.locus.topology &&
+    typeof result.sharedCore === 'string' && ['+', '-'].includes(result.attachmentStrand) &&
+    !!result.sourceCuts && interval(result.sourceCuts.start, result.sourceCuts.start, n) &&
+    interval(result.sourceCuts.end, result.sourceCuts.end, n) && typeof result.sourceCuts.wrapsOrigin === 'boolean' &&
+    junction(result.attP, result.excisedPhage.sequence.length) && junction(result.attB, result.restoredHost.sequence.length) &&
+    result.conservation?.inputBases === n && result.conservation.recoveredBases === n &&
+    result.conservation.excisedBases === result.excisedPhage.sequence.length &&
+    result.conservation.restoredBases === result.restoredHost.sequence.length &&
+    result.excisedPhage.sequence.length + result.restoredHost.sequence.length === n && result.conservation.conserved === true &&
+    strings(result.warnings) && record?.format === 'phage-explorer-analysis' && record.version === 1 &&
+    record.method?.id === PROPHAGE_EXCISION_METHOD.id && record.method.version === PROPHAGE_EXCISION_METHOD.version &&
+    typeof record.method.implementation === 'string' && record.seed === null &&
+    /^[a-f0-9]{64}$/.test(record.resultId) && /^[a-f0-9]{64}$/.test(record.cacheKey) &&
+    plain(record.parameters) && record.parameters.flankLength === options.flankLength &&
+    Array.isArray(record.inputs) && record.inputs.length === 2 && record.inputs.every((item, index) => item &&
+      item.id === ['integratedLocus', 'excisionSites'][index] && ['local', 'catalog', 'external'].includes(item.source) &&
+      typeof item.description === 'string' && (item.accession === null || typeof item.accession === 'string') &&
+      /^[a-f0-9]{64}$/.test(item.sha256) && plain(item.data)) &&
+    Array.isArray(record.references) && record.references.length === 1 && record.references.every(item => item &&
+      typeof item.id === 'string' && typeof item.version === 'string' && typeof item.description === 'string') &&
+    plain(record.fields) && Object.keys(record.fields).length === 1 &&
+    record.fields.reconstruction?.kind === 'simulation' && record.fields.reconstruction.units === 'records' &&
+    typeof record.fields.reconstruction.label === 'string' && plain(record.fields.reconstruction.value) &&
+    strings(record.fields.reconstruction.assumptions) && strings(record.fields.reconstruction.limitations) &&
+    record.fields.reconstruction.coverage?.available === n && record.fields.reconstruction.coverage.total === n &&
+    record.fields.reconstruction.coverage.unit === 'bases';
+}
 export interface ProphageAttachmentSnapshot {
-  scope: string | null; accepted: ProphageAttachmentWork | null; busy: boolean;
+  scope: string | null; accepted: ProphageAttachmentResult | null; busy: boolean;
   phase: string; error: string | null; notice: string | null;
 }
 const attachmentAbort = () => new DOMException('Attachment reconstruction cancelled', 'AbortError');
@@ -179,9 +270,9 @@ export class ProphageAttachmentSession {
       this.publish({ busy: true, phase: 'Reading exact local inputs', error: null, notice: null });
       const request = await reading;
       if (!current()) return false;
-      const value = await new Promise<ProphageAttachmentWork>((resolve, reject) => {
+      const value = await new Promise<ProphageAttachmentResult>((resolve, reject) => {
         const worker = this.factory(); let done = false;
-        const finish = (result?: ProphageAttachmentWork, error?: Error) => {
+        const finish = (result?: ProphageAttachmentResult, error?: Error) => {
           if (done) return; done = true; owner.signal.removeEventListener('abort', cancel);
           worker.onmessage = null; worker.onerror = null; worker.onmessageerror = null;
           try { worker.terminate(); } catch { /* Ownership is already released; cancellation must still settle. */ }
