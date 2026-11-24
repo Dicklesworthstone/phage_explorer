@@ -11,7 +11,7 @@ export interface RepositoryLoader {
 }
 export interface ProgressiveLoaderDependencies {
   fetch?: FetchLike;
-  openManifestCache?: () => Promise<Pick<ArtifactCache, 'match' | 'put'> | undefined>;
+  openManifestCache?: () => Promise<Pick<ArtifactCache, 'match' | 'put' | 'keys'> | undefined>;
   openArtifactCache?: () => Promise<ArtifactCache | undefined>;
   sqlite?: () => Promise<(bytes: Uint8Array) => PhageRepository>;
   legacy?: (config: DatabaseLoaderConfig) => Promise<RepositoryLoader>;
@@ -76,10 +76,10 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
   private report(progress: DatabaseLoadProgress): void {
     if (!this.lifetime.signal.aborted) this.config.onProgress?.(progress);
   }
-  private async cached(cache: Pick<ArtifactCache, 'match' | 'put'> | undefined, strict = false): Promise<CachedManifest | null> {
+  private async cached(cache: Pick<ArtifactCache, 'match' | 'put'> | undefined, strict = false, url = this.manifestUrl): Promise<CachedManifest | null> {
     if (!cache) return null;
     let response: Response | undefined;
-    try { response = await abortable(cache.match(this.manifestUrl), this.lifetime.signal); }
+    try { response = await abortable(cache.match(url), this.lifetime.signal); }
     catch (error) { this.assertOpen(); if (strict) throw error; return null; }
     if (!response) return null;
     try {
@@ -131,7 +131,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
   }
   private async loadOnce(forceDownload: boolean): Promise<PhageRepository> {
     this.report({ stage: 'checking', percent: 0, message: 'Checking the published dataset layout...', cached: false });
-    let cache: Pick<ArtifactCache, 'match' | 'put'> | undefined;
+    let cache: Pick<ArtifactCache, 'match' | 'put' | 'keys'> | undefined;
     try {
       cache = await abortable((this.dependencies.openManifestCache ?? (async () =>
         typeof caches === 'undefined' ? undefined : caches.open(PROGRESSIVE_MANIFEST_CACHE)))(), this.lifetime.signal);
@@ -192,6 +192,17 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     };
     const store = new VerifiedArtifactStore({ manifestUrl: this.manifestUrl, fetch: this.fetcher,
       openCache: this.dependencies.openArtifactCache, forceDownload, assertSelectionWritable,
+      startupCatalogs: async () => {
+        if (!cache) throw new Error('Offline startup catalog storage is unavailable.');
+        // A live old tab or a different dataset address may share this artifact
+        // cache. Its local pins do not identify the current offline startup files.
+        const catalogs = [];
+        for (const key of await abortable(cache.keys(), this.lifetime.signal)) {
+          const saved = await this.cached(cache, true, key.url);
+          if (saved) catalogs.push({ manifestUrl: key.url, catalog: saved.manifest.catalog });
+        }
+        return catalogs;
+      },
       onStorageUnavailable: () => {
         if (this.repository && !this.legacy) this.report({ stage: 'ready', percent: 100, cacheStatus: 'unavailable',
           message: 'Dataset remains usable, but newly requested data could not be saved for offline use.' });

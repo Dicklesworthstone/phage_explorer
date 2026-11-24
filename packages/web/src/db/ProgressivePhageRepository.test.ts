@@ -381,6 +381,57 @@ describe('published-layout browser startup', () => {
     assert.ok(await h.f.cache.match(dataArtifactUrl(BASE, old)));
     assert.equal(await (await h.manifestCache.match(BASE))!.text(), before); await loader.close();
   });
+  test('an old tab cannot evict the accepted startup catalog while downloading a genome', async () => {
+    const h = loaderFixture(), original = h.create();
+    const oldRepository = await original.load();
+    const text = 'catalog-next'.padEnd(512, ' ');
+    h.f.manifest.catalog = descriptor(text); identity(h.f.manifest);
+    h.f.responses.set(dataArtifactUrl(BASE, h.f.manifest.catalog), text);
+    const current = h.create(); await current.load();
+    try {
+      // Fill the eviction ledger after both catalogs were stored. The current
+      // catalog is the oldest unpinned file from the original tab's perspective.
+      for (const id of ['a', 'b']) await h.f.cache.put(`https://example.test/old-${id}`,
+        new Response('old', { headers: { 'x-phage-bytes': String(64 * 1024 * 1024) } }));
+      assert.equal((await oldRepository.getGenes(1))[0].id, 10);
+      assert.ok(await h.f.cache.match(dataArtifactUrl(BASE, h.f.manifest.catalog)), 'saved startup catalog survives old-tab eviction');
+      await current.close();
+      h.service.respond = async () => { throw new Error('offline'); };
+      h.f.responses.clear();
+      const reopened = h.create();
+      try { assert.equal((await (await reopened.load()).listPhages()).length, 3); }
+      finally { await reopened.close(); }
+    } finally { await Promise.all([original.close(), current.close()]); }
+  });
+  test('ordinary eviction also preserves accepted catalogs at other dataset addresses', async () => {
+    const h = loaderFixture(), loader = h.create(), repo = await loader.load();
+    const otherBase = 'https://example.test/another/phage.db.manifest.json';
+    const other = new ProgressiveDatabaseLoader({ databaseUrl: otherBase.replace('.manifest.json', '') }, {
+      ...h.dependencies,
+      fetch: async (input, init) => String(input) === otherBase ? h.service.respond()
+        : h.f.fetcher(String(input).replace('/another/', '/data/'), init),
+    });
+    await other.load();
+    try {
+      for (const id of ['a', 'b']) await h.f.cache.put(`https://example.test/old-${id}`,
+        new Response('old', { headers: { 'x-phage-bytes': String(64 * 1024 * 1024) } }));
+      await repo.getGenes(1);
+      assert.ok(await h.f.cache.match(dataArtifactUrl(otherBase, h.f.manifest.catalog)), 'other accepted dataset retains its startup file');
+      assert.equal((await (await h.manifestCache.match(otherBase))!.json()).contentVersion, h.f.manifest.contentVersion);
+    } finally { await Promise.all([loader.close(), other.close()]); }
+  });
+  test('an unreadable manifest inventory preserves saved files and allows foreground reads without caching', async () => {
+    for (const failure of ['keys', 'match'] as const) {
+      const h = loaderFixture(), loader = h.create(), repo = await loader.load();
+      try {
+        const saved = [...h.f.cache.entries.keys()];
+        h.manifestCache[failure] = async () => { throw new Error('manifest storage denied'); };
+        assert.equal((await repo.getGenes(1))[0].id, 10);
+        assert.deepEqual([...h.f.cache.entries.keys()], saved, 'unknown startup catalogs cannot be evicted');
+        assert.equal(h.progress.at(-1)?.cacheStatus, 'unavailable');
+      } finally { await loader.close(); }
+    }
+  });
   test('cancelled manifest fetches settle even when the provider ignores abort', async () => {
     const h = loaderFixture(); let resolve!: (response: Response) => void;
     h.service.respond = () => new Promise(done => { resolve = done; });

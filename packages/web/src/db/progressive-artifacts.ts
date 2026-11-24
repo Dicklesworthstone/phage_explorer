@@ -20,6 +20,8 @@ export interface ArtifactStoreOptions {
   onStorageUnavailable?: (error: unknown) => void;
   /** Check the active startup generation under the write lock before replacing or releasing a reservation. */
   assertSelectionWritable?: () => Promise<void>;
+  /** Accepted startup catalogs, reread under the write lock before any eviction. */
+  startupCatalogs?: () => Promise<Array<{ manifestUrl: string; catalog: DataArtifact }>>;
   forceDownload?: boolean;
   cacheBudget?: number;
 }
@@ -226,11 +228,15 @@ export class VerifiedArtifactStore {
     const protectedItems = new Map(this.pinned);
     const add = (base: string, items: DataArtifact[]) => {
       for (const item of items) {
-        const url = dataArtifactUrl(base, item), previous = protectedItems.get(url);
+        const checked = descriptor(base, item);
+        const url = dataArtifactUrl(base, checked), previous = protectedItems.get(url);
         if (previous && previous.bytes !== item.bytes) throw new Error('Conflicting offline reservations.');
-        protectedItems.set(url, item);
+        protectedItems.set(url, checked);
       }
     };
+    for (const { manifestUrl, catalog } of await this.options.startupCatalogs?.() ?? []) {
+      add(manifestUrl, [catalog]);
+    }
     for (const key of await cache.keys()) {
       if (!isSelectionKey(key.url) || (replacement && key.url === selectionKey(replacement.manifestUrl))) continue;
       const response = await cache.match(key.url);
