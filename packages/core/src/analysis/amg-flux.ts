@@ -598,7 +598,9 @@ export class FBASimplexSolver {
             leave = i;
           }
         }
-        if (leave < 0) return 'unbounded';
+        // A positive coefficient below the pivot cutoff can still impose a
+        // finite limit. Its scale prevents a reliable pivot, not that limit.
+        if (leave < 0) return table.slice(1).some(row => row[enter] > 0) ? 'numerical_error' : 'unbounded';
         pivot(leave, enter);
       }
     };
@@ -639,6 +641,24 @@ export class FBASimplexSolver {
     const tableauObjective = table[0][rhs] * objectiveScale + lb.reduce((sum, value, j) => sum + c[j] * value, 0);
     if (!balanceOK || !boundsOK || !Number.isFinite(objective) || !Number.isFinite(tableauObjective) ||
         Math.abs(objective - tableauObjective) > tolerance * Math.max(1, Math.abs(objective))) return fail('numerical_error');
+    // A small reduced cost can still conceal a material gain over a large
+    // permitted flux range. In the canonical objective, each nonbasic column
+    // contributes -table[0][j] * x[j]. Both a shifted reaction and its upper
+    // bound slack lie in [0, ub-lb], so ignoring correlations gives a
+    // conservative bound on the remaining gain in the original objective units.
+    // Keep established pivots, but refuse an optimum this bound cannot certify.
+    const basicColumns = new Set(basis);
+    let possibleGain = 0;
+    for (let j = 0; j < artificialStart; j++) {
+      if (basicColumns.has(j) || table[0][j] >= 0) continue;
+      const reaction = j < n ? j : bounded[j - n];
+      const width = ub[reaction] - lb[reaction];
+      if (width === 0) continue;
+      possibleGain += -table[0][j] * width * objectiveScale;
+    }
+    if (!Number.isFinite(possibleGain) || possibleGain > tolerance * Math.max(1, Math.abs(objective))) {
+      return fail('numerical_error');
+    }
     return { optimal: true, status: 'optimal', objective, fluxes: Object.fromEntries(ids.map((id, j) => [id, v[j]])) };
   }
 }

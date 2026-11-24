@@ -121,12 +121,33 @@ describe('conditional host scenarios and alternative optima',()=>{
     const result=analyzeHostMetabolism(data,{changes:[change('EX',-5,0)]});close(result.objectiveDelta,5);assert.equal(result.percentChange,null);
   });
   it('allows source-defined prototype-looking IDs without mutating prototypes or losing constraints',()=>{
-    const data=hostFixture();raw(data).reactions[3].id='__proto__';const result=analyzeHostMetabolism(data,{variability:['__proto__']});
-    close(result.baseline.fluxes.__proto__,10);close(result.baseline.ranges[0].minimum.value,10);assert.equal(({} as any).polluted,undefined);
+    const data=hostFixture();raw(data).reactions[3].id='__proto__';const result=analyzeHostMetabolism(data,{variability:['__proto__']}); // ubs:ignore[js.security.prototype-pollution] Adversarial fixture assigns an ordinary string ID, not a prototype.
+    assert(Object.hasOwn(result.baseline.fluxes,'__proto__'));
+    close(result.baseline.fluxes.__proto__,10);close(result.baseline.ranges[0].minimum.value,10);assert.equal(({} as any).polluted,undefined); // ubs:ignore[js.security.prototype-pollution] Read the verified own data property; assert unrelated prototypes stay unchanged.
   });
 });
 
 describe('portable sourced metabolic experiments',()=>{
+  it('retains numerical failure through imported models, perturbations, flux ranges and replay',async()=>{
+    const input=hostFixture();
+    input.cobra={id:'low-yield',compartments:{c:'cytosol'},metabolites:[{id:'precursor',compartment:'c'}],reactions:[
+      {id:'source',metabolites:{precursor:1e-10},lower_bound:0,upper_bound:1e6},
+      {id:'biomass',metabolites:{precursor:-1},lower_bound:0,upper_bound:1e6,objective_coefficient:1},
+    ]};
+    // Conservation gives biomass=1e-10*source: the old coefficient cutoff
+    // falsely reported zero as optimal for both supported model conditions.
+    const result=analyzeHostMetabolism(input,{changes:[change('source',0,5e5)],variability:['biomass']});
+    assert.equal(result.objectiveDelta,null);assert.equal(result.percentChange,null);
+    for(const scenario of [result.baseline,result.perturbed!]){
+      assert.equal(scenario.status,'numerical_error');assert.equal(scenario.objective,null);
+      assert.deepEqual(scenario.fluxes,{});assert.deepEqual(scenario.ranges,[]);
+      assert.equal(scenario.certificate,null);assert.equal(scenario.objectiveFloor,null);
+    }
+    assert.equal(result.rangeChanges[0].interpretation,'unavailable');
+    assert.equal(result.rangeChanges[0].lower,null);assert.equal(result.rangeChanges[0].upper,null);
+    const record=await createHostFluxRecord(input,result),replay=await replayHostFluxRecord(serializeAnalysisRecord(record));
+    assert.deepEqual(replay.result,result);assert.equal(replay.record.resultId,record.resultId);
+  });
   it('snapshots exact source, medium, annotations, mappings and flux ranges for replay',async()=>{
     const input=hostFixture(),result=analyzeHostMetabolism(input,{changes:[change('A',0,2)],variability:['A','B']}),promise=createHostFluxRecord(input,result);
     input.medium.name='Edited while hashing';result.options.changes[0].upperBound=99;

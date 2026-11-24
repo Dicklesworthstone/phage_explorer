@@ -91,6 +91,72 @@ describe('FBA numerical contract', () => {
     expect(new FBASimplexSolver([], [-1e308], [1e308], [1], ['r']).solve().status).toBe('numerical_error');
   });
 
+  it('does not certify a false optimum when small pathway coefficients conceal a material gain', () => {
+    // Independent conservation: biomass = yield * uptake. Scaling the first
+    // reaction's flux units changes its bound and coefficient reciprocally;
+    // it cannot change the physical optimum or remove the pathway.
+    for (const uptakeScale of [1, 1e3, 1e6, 1e9, 1e12]) {
+      const yieldPerUnit = 1e-4 / uptakeScale;
+      const result = new FBASimplexSolver([[yieldPerUnit, -1]], [0, 0], [uptakeScale, 1e6],
+        [0, 1], ['uptake', 'biomass']).solve();
+      if (uptakeScale <= 1e3) {
+        expect(result.status).toBe('optimal');
+        expect(result.objective).not.toBeNull();
+        expect(Math.abs(result.objective! / 1e-4 - 1)).toBeLessThan(1e-8);
+        expect(Math.abs(result.fluxes.uptake / uptakeScale - 1)).toBeLessThan(1e-8);
+        expect(Math.abs(result.fluxes.biomass / 1e-4 - 1)).toBeLessThan(1e-8);
+      } else {
+        expect(result.status).toBe('numerical_error');
+        expect(result.optimal).toBe(false);
+        expect(result.objective).toBeNull();
+        expect(result.fluxes).toEqual({});
+      }
+    }
+  });
+
+  it('refuses an unbounded claim when a skipped positive coefficient still limits the path', () => {
+    // uptake = 1e-10 * biomass, uptake <= 1: biomass <= 1e10.
+    const bounded = new FBASimplexSolver([[1, -1e-10]], [0, 0], [1, Infinity],
+      [0, 1], ['uptake', 'biomass']).solve();
+    expect(bounded.status).toBe('numerical_error');
+    expect(bounded.optimal).toBe(false);
+    expect(bounded.objective).toBeNull();
+    expect(bounded.fluxes).toEqual({});
+    const unbounded = new FBASimplexSolver([[1, -1e-10]], [0, 0], [Infinity, Infinity],
+      [0, 1], ['uptake', 'biomass']).solve();
+    expect(unbounded.status).toBe('unbounded');
+    expect(unbounded.objective).toBeNull();
+    expect(unbounded.fluxes).toEqual({});
+  });
+
+  it('refuses material gains hidden in small objective weights and shifted bounds', () => {
+    // blocked=0, so increasing free by 1e6 improves the objective by 1e-4.
+    // Shifting a reversible reaction must preserve that possible improvement.
+    for (const lowerBound of [0, -1e6]) {
+      const answer = new FBASimplexSolver([[0, 1]], [lowerBound, 0], [lowerBound + 1e6, 1e6],
+        [1e-10, 1], ['free', 'blocked']).solve();
+      expect(answer.status).toBe('numerical_error');
+      expect(answer.optimal).toBe(false);
+      expect(answer.objective).toBeNull();
+      expect(answer.fluxes).toEqual({});
+    }
+  });
+
+  it('combines residual gains across columns while retaining the existing objective tolerance', () => {
+    // Each free reaction could add 6e-8: individually below 1e-7, but their
+    // combined 1.2e-7 gain exceeds the certificate's objective tolerance.
+    const combined = new FBASimplexSolver([[0, 0, 1]], [0, 0, 0], [100, 100, 1],
+      [6e-10, 6e-10, 1], ['first', 'second', 'blocked']).solve();
+    expect(combined.status).toBe('numerical_error');
+    expect(combined.objective).toBeNull();
+    expect(combined.fluxes).toEqual({});
+    const withinTolerance = new FBASimplexSolver([[0, 1]], [0, 0], [1, 1],
+      [1e-10, 1], ['free', 'blocked']).solve();
+    expect(withinTolerance.status).toBe('optimal');
+    expect(withinTolerance.objective).toBe(0);
+    expect(withinTolerance.fluxes).toEqual({ free: 0, blocked: 0 });
+  });
+
   it('rejects missing objective and undeclared metabolites', () => {
     const model = createStandardHostMetabolicModel();
     expect(solveFBA({ ...model, objectiveReaction: 'missing' }).status).toBe('invalid_input');
