@@ -26,7 +26,7 @@ import { useSpringValue, animated, config } from '@react-spring/web';
 import { useDrag } from '@use-gesture/react';
 import { haptics } from '../../utils/haptics';
 import { useReducedMotion } from '../../hooks/useReducedMotion';
-import { isUserTyping } from '../../keyboard';
+import { useModalScrollLock } from '../../hooks/useModalScrollLock';
 
 // =============================================================================
 // Types
@@ -45,6 +45,8 @@ interface BottomSheetProps {
   showHandle?: boolean;
   /** Whether to close on backdrop tap (default: true) */
   closeOnBackdropTap?: boolean;
+  /** Disable when an overlay stack already owns Escape for this sheet. */
+  closeOnEscape?: boolean;
   /** Whether to enable swipe-to-dismiss (default: true) */
   swipeToDismiss?: boolean;
   /** Initial snap point (default: 'half') */
@@ -102,6 +104,7 @@ export function BottomSheet({
   footer,
   showHandle = true,
   closeOnBackdropTap = true,
+  closeOnEscape = true,
   swipeToDismiss = true,
   initialSnapPoint = 'half',
   minHeight = 30,
@@ -450,106 +453,25 @@ export function BottomSheet({
     };
   }, [animateToSnapPoint, shouldRender]);
 
-  // Lock body scroll when open
+  useModalScrollLock(shouldRender, isLikelyTouchDevice());
+
   useEffect(() => {
-    if (!shouldRender) return;
+    if (!isOpen || !closeOnEscape) return;
 
-    const body = document.body;
-    const originalOverflow = body.style.overflow;
-    const originalPosition = body.style.position;
-    const originalTop = body.style.top;
-    const originalLeft = body.style.left;
-    const originalRight = body.style.right;
-    const originalWidth = body.style.width;
-    const originalPaddingRight = body.style.paddingRight;
-    const shouldFixBody = isLikelyTouchDevice();
-    const scrollY = window.scrollY;
-
-    body.style.overflow = 'hidden';
-    if (shouldFixBody) {
-      body.style.position = 'fixed';
-      body.style.top = `-${scrollY}px`;
-      body.style.left = '0';
-      body.style.right = '0';
-      body.style.width = '100%';
-      body.style.paddingRight = '0';
-    }
-    const appBody = document.querySelector<HTMLElement>('.app-body');
-    const originalAppBodyOverflow = appBody?.style.overflow ?? null;
-    const originalAppBodyOverscroll = appBody?.style.overscrollBehaviorY ?? null;
-    if (appBody) {
-      appBody.style.overflow = 'hidden';
-      appBody.style.overscrollBehaviorY = 'none';
-    }
-    return () => {
-      if (originalOverflow) {
-        body.style.overflow = originalOverflow;
-      } else {
-        body.style.removeProperty('overflow');
-      }
-      if (originalPosition) {
-        body.style.position = originalPosition;
-      } else {
-        body.style.removeProperty('position');
-      }
-      if (originalTop) {
-        body.style.top = originalTop;
-      } else {
-        body.style.removeProperty('top');
-      }
-      if (originalLeft) {
-        body.style.left = originalLeft;
-      } else {
-        body.style.removeProperty('left');
-      }
-      if (originalRight) {
-        body.style.right = originalRight;
-      } else {
-        body.style.removeProperty('right');
-      }
-      if (originalWidth) {
-        body.style.width = originalWidth;
-      } else {
-        body.style.removeProperty('width');
-      }
-      if (originalPaddingRight) {
-        body.style.paddingRight = originalPaddingRight;
-      } else {
-        body.style.removeProperty('padding-right');
-      }
-      if (shouldFixBody) {
-        window.scrollTo(0, scrollY);
-      }
-      if (appBody) {
-        if (originalAppBodyOverflow === null) {
-          appBody.style.removeProperty('overflow');
-        } else {
-          appBody.style.overflow = originalAppBodyOverflow;
-        }
-        if (originalAppBodyOverscroll === null) {
-          appBody.style.removeProperty('overscroll-behavior-y');
-        } else {
-          appBody.style.overscrollBehaviorY = originalAppBodyOverscroll;
-        }
-      }
-    };
-  }, [shouldRender]);
-
-  // Handle escape key
-  useEffect(() => {
-    if (!isOpen) return;
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (isUserTyping(e)) return;
-      if (e.key === 'Escape') {
-        haptics.light();
-        animateToSnapPoint('closed');
-      }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+      // Standalone sheets share a stacking level. Only the last painted portal
+      // handles Escape, after focused controls have had a chance to consume it.
+      const sheets = document.querySelectorAll('.bottom-sheet.is-open');
+      if (!sheets[sheets.length - 1]?.contains(containerRef.current)) return;
+      event.preventDefault();
+      haptics.light();
+      animateToSnapPoint('closed');
     };
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, animateToSnapPoint]);
+  }, [isOpen, closeOnEscape, animateToSnapPoint]);
 
   // Handle backdrop click
   const handleBackdropClick = useCallback(

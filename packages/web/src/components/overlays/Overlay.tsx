@@ -425,6 +425,7 @@ export function Overlay({
         footer={footer}
         showHandle={true}
         closeOnBackdropTap={closeOnBackdrop}
+        closeOnEscape={false}
         swipeToDismiss={true}
         initialSnapPoint="full"
         minHeight={size === 'sm' ? 40 : 60}

@@ -321,3 +321,54 @@ test.describe('Hotkeys and Overlay Stack', () => {
     await finalize();
   });
 });
+
+test('mobile sheets release scroll locks after eviction and dismiss one layer per Escape', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' }));
+  });
+  await page.goto('/?phage=lambda&model=0');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Enterobacteria phage lambda');
+  const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+  await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+  await expect(page.locator('.bottom-sheet')).toHaveCount(0);
+
+  // Use non-default inline values so clearing the lock is distinguishable
+  // from restoring the page's preexisting scroll policy.
+  const appBody = page.locator('.app-body');
+  await appBody.evaluate(element => { element.style.overflowY = 'scroll'; });
+  const positionBefore = await page.locator('body').evaluate(element => element.style.position);
+  const open = async (shortcut: string, id: string) => {
+    await page.keyboard.press(shortcut);
+    await expect(page.locator('.bottom-sheet').getByTestId(`overlay-${id}`)).toBeVisible();
+  };
+  await open('?', 'help');
+  await open('Control+,', 'settings');
+  await open('Shift+K', 'aaKey');
+  await open('Control+k', 'commandPalette');
+  await expect(page.getByTestId('overlay-help')).toHaveCount(0);
+  await expect(page.locator('.bottom-sheet')).toHaveCount(3);
+  await expect(appBody).toHaveCSS('overflow-y', 'hidden');
+
+  // A text field consumes the first Escape. Nothing underneath it may close.
+  const input = page.getByTestId('command-palette-input');
+  await input.fill('settings');
+  await input.press('Escape');
+  await expect(input).toHaveValue('');
+  await expect(page.locator('.bottom-sheet')).toHaveCount(3);
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('overlay-commandPalette')).toHaveCount(0);
+  await expect(page.locator('.bottom-sheet')).toHaveCount(2);
+  await page.getByRole('dialog').filter({ has: page.getByTestId('overlay-aaKey') }).getByRole('button', { name: 'Close', exact: true }).focus();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('overlay-aaKey')).toHaveCount(0);
+  await expect(page.getByTestId('overlay-settings')).toBeVisible();
+  await expect(appBody).toHaveCSS('overflow-y', 'hidden');
+
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.bottom-sheet')).toHaveCount(0);
+  await expect(appBody).toHaveCSS('overflow-y', 'scroll');
+  expect(await page.locator('body').evaluate(element => element.style.position)).toBe(positionBefore);
+});
