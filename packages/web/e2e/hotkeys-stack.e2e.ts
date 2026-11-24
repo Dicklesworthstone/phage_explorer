@@ -371,4 +371,17 @@ test('mobile sheets release scroll locks after eviction and dismiss one layer pe
   await expect(page.locator('.bottom-sheet')).toHaveCount(0);
   await expect(appBody).toHaveCSS('overflow-y', 'scroll');
   expect(await page.locator('body').evaluate(element => element.style.position)).toBe(positionBefore);
+
+  // The phone picker and tablet actions drawer live outside OverlayProvider.
+  // A keyboard user must also be able to dismiss them from a non-text control.
+  await page.locator('button.phage-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Explore phages' });
+  await picker.getByRole('button', { name: 'Close', exact: true }).press('Escape');
+  await expect(picker).toHaveCount(0);
+
+  await page.setViewportSize({ width: 820, height: 1024 });
+  await page.getByRole('button', { name: 'Open control menu' }).click();
+  const actions = page.getByRole('dialog', { name: 'Quick actions' });
+  await actions.getByRole('button', { name: 'Close', exact: true }).press('Escape');
+  await expect(actions).toHaveCount(0);
 });

@@ -192,7 +192,7 @@ export default function App(): React.ReactElement {
   const show3DModel = usePhageStore((s) => s.show3DModel);
   const toggle3DModel = usePhageStore((s) => s.toggle3DModel);
   const viewerDisabledDescription = useMemo(() => get3DViewerDisabledDescription(), []);
-  const { open: openOverlayCtx, close: closeOverlayCtx, toggle: toggleOverlayCtx, hasBlockingOverlay } = useOverlay();
+  const { open: openOverlayCtx, close: closeOverlayCtx, toggle: toggleOverlayCtx, hasBlockingOverlay, topOverlay } = useOverlay();
   const { mode } = useKeyboardMode();
   const pendingSequence = usePendingSequence();
   const openLocalWorkspace = useCallback(() => {
@@ -897,12 +897,13 @@ export default function App(): React.ReactElement {
     },
     {
       actionId: ActionIds.OverlayCloseAll,
+      // OverlayProvider handles its stack and each dialog's closeOnEscape policy.
+      enabled: topOverlay === null,
       action: () => {
-        if (isGlossaryOpen && !hasBlockingOverlay) {
+        if (isGlossaryOpen) {
           closeGlossary();
           return;
         }
-        closeOverlayCtx();
         storeCloseOverlay();
       },
       modes: ['NORMAL'] as const,
@@ -910,11 +911,10 @@ export default function App(): React.ReactElement {
     },
   ]), [
     closeGlossary,
-    closeOverlayCtx,
     handleNextPhage,
     handlePrevPhage,
     handleToggleBeginnerMode,
-    hasBlockingOverlay,
+    topOverlay,
     isGlossaryOpen,
     nextTheme,
     storeCloseOverlay,

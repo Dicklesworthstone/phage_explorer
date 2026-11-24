@@ -110,7 +110,16 @@ export class KeyboardManager {
   private state: KeyboardState;
   private hotkeys: Map<string, HotkeyDefinition[]>;
   private listeners: Set<KeyboardEventListener>;
-  private boundHandler: (e: globalThis.KeyboardEvent) => void;
+  // Let dialogs and editors consume Escape at the target or document first.
+  // Other shortcuts retain capture priority over native page controls.
+  private captureKeyDown = (event: globalThis.KeyboardEvent): void => {
+    if (event.key !== 'Escape') this.handleKeyDown(event);
+  };
+  private bubbleEscape = (event: globalThis.KeyboardEvent): void => {
+    if (event.key === 'Escape' && !event.defaultPrevented && !event.isComposing) {
+      this.handleKeyDown(event);
+    }
+  };
   private sequenceTimeoutId: number | null = null;
   private experienceLevel: ExperienceLevel = 'novice';
 
@@ -123,7 +132,6 @@ export class KeyboardManager {
     };
     this.hotkeys = new Map();
     this.listeners = new Set();
-    this.boundHandler = this.handleKeyDown.bind(this);
   }
 
   /**
@@ -144,14 +152,16 @@ export class KeyboardManager {
    * Initialize the keyboard manager
    */
   init(): void {
-    window.addEventListener('keydown', this.boundHandler, { capture: true });
+    window.addEventListener('keydown', this.captureKeyDown, { capture: true });
+    window.addEventListener('keydown', this.bubbleEscape);
   }
 
   /**
    * Clean up the keyboard manager
    */
   destroy(): void {
-    window.removeEventListener('keydown', this.boundHandler, { capture: true });
+    window.removeEventListener('keydown', this.captureKeyDown, { capture: true });
+    window.removeEventListener('keydown', this.bubbleEscape);
     if (this.sequenceTimeoutId) {
       window.clearTimeout(this.sequenceTimeoutId);
     }
