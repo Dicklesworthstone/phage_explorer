@@ -23,6 +23,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -213,7 +214,7 @@ const installedDb = (run: Run) => readFileSync(join(run.home, '.phage-explorer',
 const leftovers = (run: Run) => [
   ...(existsSync(run.dest) ? readdirSync(run.dest) : []),
   ...(existsSync(join(run.home, '.phage-explorer')) ? readdirSync(join(run.home, '.phage-explorer')) : []),
-].filter((name) => name.includes('.download.'));
+].filter((name) => name.includes('.download.') || name.includes('.rollback.'));
 
 function expectUnchanged(run: Run) {
   expect(Buffer.compare(installedBinary(run), Buffer.from(OLD_BINARY))).toBe(0);
@@ -248,6 +249,56 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     expect(run.stderr).toContain('Checksum mismatch for phage.db');
     expectUnchanged(run);
   });
+
+  for (const destination of ['binary', 'database'] as const) {
+    test(`refuses a directory at the ${destination} path before replacing either artifact`, () => {
+      const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true });
+      const path = destination === 'binary'
+        ? join(prepared.dest, 'phage-explorer')
+        : join(prepared.home, '.phage-explorer', 'phage.db');
+      renameSync(path, path + '.old');
+      mkdirSync(path);
+      const run = runPrepared(prepared);
+      expect(run.code).not.toBe(0);
+      expect(run.stderr).toContain(path);
+      expect(readdirSync(path)).toEqual([]);
+      const unaffected = destination === 'binary' ? installedDb(run) : installedBinary(run);
+      expect(unaffected).toEqual(Buffer.from(destination === 'binary' ? OLD_DB : OLD_BINARY));
+      expect(leftovers(run)).toEqual([]);
+    });
+  }
+
+  for (const previous of [false, true]) {
+    for (const failure of ['rename-error', 'term-between-renames'] as const) {
+      test(`${failure} rolls back the ${previous ? 'upgrade' : 'new installation'}`, () => {
+        const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { previous });
+        const wrapper = join(prepared.tmp, 'inject-failure');
+        mkdirSync(wrapper);
+        writeFileSync(join(wrapper, 'mv'), `#!${SHELL}
+case "$2" in
+  */.phage-explorer.download.*|*/.phage.db.download.*)
+    if [ -e "$TMPDIR/first-rename" ]; then
+      exit 1
+    fi ;;
+  *) exec "${Bun.which('mv')}" "$@" ;;
+esac
+"${Bun.which('mv')}" "$@" || exit 1
+: >"$TMPDIR/first-rename"
+if [ "${failure}" = term-between-renames ]; then kill -TERM "$PPID"; fi
+`, { mode: 0o755 });
+        prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
+        const run = runPrepared(prepared);
+        expect(run.code).toBe(failure === 'rename-error' ? 1 : 143);
+        if (previous) {
+          expectUnchanged(run);
+        } else {
+          expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+          expect(existsSync(join(run.home, '.phage-explorer', 'phage.db'))).toBe(false);
+          expect(leftovers(run)).toEqual([]);
+        }
+      });
+    }
+  }
 
   test('refuses a release whose sha256.txt has no phage.db entry', () => {
     const run = runInstaller(

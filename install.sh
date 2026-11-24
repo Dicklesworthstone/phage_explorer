@@ -203,6 +203,8 @@ TMP_DIR=""          # source checkout (source builds only)
 CHECKSUMS_FILE=""   # downloaded sha256.txt
 STAGED_BIN=""       # verified binary, renamed into place only at commit
 STAGED_DB=""        # verified database, renamed into place only at commit
+DB_BACKUP=""        # original database during the two-file commit
+COMMITTING_PAIR=0
 DB_DOWNLOAD=""      # compressed database download
 LOCK_KIND=""
 LOCK_DIR=""
@@ -211,8 +213,22 @@ LOCK_DIR=""
 # the installer's own exit status.
 cleanup() {
   local path
-  for path in "$CHECKSUMS_FILE" "$STAGED_BIN" "$STAGED_DB" "$DB_DOWNLOAD"; do
-    if [[ -n "$path" && -f "$path" ]]; then rm -f "$path" || true; fi
+  trap '' HUP INT TERM
+  # A signal can run immediately after mv, before any shell assignment.
+  # Same-directory rename consumes its staged file, so the paths tell us
+  # whether just the database or both artifacts made it into place.
+  if [[ $COMMITTING_PAIR -eq 1 && ! -e "$STAGED_DB" && -e "$STAGED_BIN" ]]; then
+    if [[ -n "$DB_BACKUP" ]]; then
+      if ! mv -f "$DB_BACKUP" "$DB_PATH"; then
+        log_error "Cannot restore the previous database. Its backup is at $DB_BACKUP"
+        DB_BACKUP=""  # retain it for recovery
+      fi
+    else
+      rm -f "$DB_PATH" || log_error "Cannot roll back the new database at $DB_PATH"
+    fi
+  fi
+  for path in "$CHECKSUMS_FILE" "$STAGED_BIN" "$STAGED_DB" "$DB_DOWNLOAD" "$DB_BACKUP"; do
+    if [[ -n "$path" && ( -f "$path" || -L "$path" ) ]]; then rm -f "$path" || true; fi
   done
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then rm -rf "$TMP_DIR" || true; fi
   if [[ "$LOCK_KIND" == "mkdir" && -n "$LOCK_DIR" ]]; then
@@ -591,16 +607,30 @@ else
   log "You can install it later by re-running with --with-database."
 fi
 
-# Commit: every requested artifact is verified; rename each into place.
-mv -f "$STAGED_BIN" "$INSTALL_PATH" || die "Could not install $INSTALL_PATH; $NOT_CHANGED"
-STAGED_BIN=""
-log_success "Binary installed: $INSTALL_PATH"
+# Reject directories (including symlinks to directories): portable mv would
+# otherwise move the staged file *inside* the destination and report success.
+check_install_target() {
+  if [[ -d "$1" || ( -e "$1" && ! -f "$1" ) ]]; then
+    die "Expected a file destination at $1; $NOT_CHANGED"
+  fi
+}
+check_install_target "$INSTALL_PATH"
 if [[ -n "$STAGED_DB" ]]; then
-  mv -f "$STAGED_DB" "$DB_PATH" \
-    || die "The binary was installed, but the database could not be moved into place at $DB_PATH"
-  STAGED_DB=""
-  log_success "Database installed: $DB_PATH"
+  check_install_target "$DB_PATH"
+  if [[ "${INSTALL_PATH##*/}" == phage.db && "$DEST" -ef "$DATA_DIR" ]]; then
+    die "The binary and database share a destination at $DB_PATH; $NOT_CHANGED"
+  fi
+  if [[ -e "$DB_PATH" || -L "$DB_PATH" ]]; then
+    DB_BACKUP="$(mktemp "$DATA_DIR/.phage.db.rollback.XXXXXX")" || die "Cannot stage a database backup; $NOT_CHANGED"
+    cp -a "$DB_PATH" "$DB_BACKUP" || die "Cannot back up $DB_PATH; $NOT_CHANGED"
+  fi
+  COMMITTING_PAIR=1
+  mv -f "$STAGED_DB" "$DB_PATH" || die "Could not install $DB_PATH"
 fi
+mv -f "$STAGED_BIN" "$INSTALL_PATH" || die "Could not install $INSTALL_PATH"
+COMMITTING_PAIR=0
+log_success "Binary installed: $INSTALL_PATH"
+if [[ -n "$STAGED_DB" ]]; then log_success "Database installed: $DB_PATH"; fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 6: Update PATH (optional)
