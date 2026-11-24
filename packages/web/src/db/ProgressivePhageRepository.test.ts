@@ -292,9 +292,36 @@ describe('published-layout browser startup', () => {
   test('a conditional 304 reuses the verified manifest and cached catalog', async () => {
     const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
     h.service.respond = async () => new Response(null, { status: 304 });
+    h.manifestCache.put = async () => { throw new Error('cache is now read-only'); };
     const loader = h.create(); await loader.load();
     assert.equal(new Headers(h.manifestRequests.at(-1)?.headers).get('if-none-match'), '"snapshot"');
-    assert.equal(h.f.network.length, 1); assert.equal(h.progress.at(-1)?.cached, true); await loader.close();
+    assert.equal(h.f.network.length, 1); assert.equal(h.progress.at(-1)?.cached, true);
+    assert.equal(h.progress.at(-1)?.cacheStatus, 'saved'); await loader.close();
+  });
+  test('a delayed startup cannot roll back a manifest saved by a second loader', async () => {
+    for (const forceDownload of [false, true]) {
+      const h = loaderFixture();
+      const oldBody = JSON.stringify(h.f.manifest);
+      let finishOldRequest!: () => void;
+      h.service.respond = () => new Promise(resolve => { finishOldRequest = () => resolve(new Response(oldBody)); });
+      const old = h.create(), oldLoad = old.load({ forceDownload });
+      while (!finishOldRequest) await tick();
+
+      addAtlas(h.f);
+      h.service.respond = async () => new Response(JSON.stringify(h.f.manifest));
+      const next = h.create();
+      try {
+        await next.load();
+        finishOldRequest();
+        if (forceDownload) await assert.rejects(oldLoad, /Another tab/);
+        else {
+          assert.equal((await (await oldLoad).listPhages()).length, 3);
+          assert.equal(h.progress.at(-1)?.cacheStatus, 'unavailable');
+        }
+        const saved = await (await h.manifestCache.match(BASE))!.json();
+        assert.equal(saved.contentVersion, h.f.manifest.contentVersion);
+      } finally { finishOldRequest(); await Promise.all([next.close(), old.close()]); }
+    }
   });
   test('offline reload uses the accepted manifest and visited shards, not invented empty data', async () => {
     const h = loaderFixture(), initial = h.create(), first = await initial.load(); await first.getGenes(2); await initial.close();

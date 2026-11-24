@@ -76,11 +76,13 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
   private report(progress: DatabaseLoadProgress): void {
     if (!this.lifetime.signal.aborted) this.config.onProgress?.(progress);
   }
-  private async cached(cache: Pick<ArtifactCache, 'match' | 'put'> | undefined): Promise<CachedManifest | null> {
+  private async cached(cache: Pick<ArtifactCache, 'match' | 'put'> | undefined, strict = false): Promise<CachedManifest | null> {
     if (!cache) return null;
+    let response: Response | undefined;
+    try { response = await abortable(cache.match(this.manifestUrl), this.lifetime.signal); }
+    catch (error) { this.assertOpen(); if (strict) throw error; return null; }
+    if (!response) return null;
     try {
-      const response = await abortable(cache.match(this.manifestUrl), this.lifetime.signal);
-      if (!response) return null;
       const bytes = await abortable(readBoundedResponse(response, PROGRESSIVE_LIMITS.manifestBytes), this.lifetime.signal);
       const manifest = parseProgressiveManifest(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
       await abortable(verifyProgressiveManifest(manifest), this.lifetime.signal);
@@ -200,12 +202,12 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       publish: async () => {
         this.assertOpen();
         if (!cache) throw new Error('Offline startup manifest storage is unavailable.');
-        const previous = await this.cached(cache);
+        const previous = await this.cached(cache, true);
         if (previous && previous.manifest.contentVersion !== selectedManifest.contentVersion) {
           throw new Error('Another dataset version is saved for startup. Reload this tab before preparing an offline selection.');
         }
         this.assertOpen();
-        await abortable(cache.put(this.manifestUrl, manifestResponse()), this.lifetime.signal);
+        await cache.put(this.manifestUrl, manifestResponse());
         if (!(await offlineManifest.available())) throw new Error('Offline startup manifest could not be verified after saving.');
       },
     };
@@ -214,16 +216,33 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       this.assertOpen();
       // Artifact persistence precedes the manifest pointer: a failed catalog never replaces the old snapshot.
       let persisted = false;
+      let superseded = false;
       if (cache && store.getTransferLedger().storageAvailable) {
         try {
-          await withArtifactCacheLock(async () => {
+          await abortable(withArtifactCacheLock(async () => {
             this.assertOpen();
-            await abortable(cache!.put(this.manifestUrl, manifestResponse()), this.lifetime.signal);
+            // A second tab may have finished loading a different generation while
+            // we were fetching or opening this catalog. Compare under the write lock.
+            const current = await this.cached(cache, true);
+            if (current?.manifest.contentVersion !== cached?.manifest.contentVersion) {
+              persisted = current?.manifest.contentVersion === selectedManifest.contentVersion;
+              superseded = !persisted;
+              return;
+            }
+            if (current?.manifest.contentVersion === selectedManifest.contentVersion && current.etag === etag) {
+              persisted = true;
+              return;
+            }
+            this.assertOpen();
+            // Cache.put cannot be cancelled. Keep the lock until the write settles
+            // even if closing this tab has already released the loader's caller.
+            await cache!.put(this.manifestUrl, manifestResponse());
             persisted = await offlineManifest.available();
-          });
+          }), this.lifetime.signal);
         } catch { /* Verified in-memory data remain usable; offline availability is reported separately. */ }
       }
       this.assertOpen();
+      if (forceDownload && superseded) throw new Error('Another tab changed the saved dataset during refresh. Reload to use the saved version.');
       if (forceDownload && !persisted) throw new Error('The refreshed catalog could not be saved for offline use; the previous manifest was preserved.');
       if (this.dependencies.acceptVersion) {
         await abortable(Promise.resolve(this.dependencies.acceptVersion(manifest.contentVersion)), this.lifetime.signal);
@@ -235,7 +254,9 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       this.repository = repository;
       if (persisted && cached && cached.manifest.catalog.path !== manifest.catalog.path) store.unpin(cached.manifest.catalog);
       this.report({ stage: 'ready', percent: 100,
-        message: persisted ? 'Catalog ready. Only previously fetched genomes and projections are available offline.' : 'Catalog ready. Offline storage is unavailable.',
+        message: persisted ? 'Catalog ready. Only previously fetched genomes and projections are available offline.'
+          : superseded ? 'Catalog ready. Another tab changed the offline dataset. Reload to use the saved version.'
+            : 'Catalog ready. Offline storage is unavailable.',
         cached: store.getTransferLedger().networkBytes === 0, cacheStatus: persisted ? 'saved' : 'unavailable' });
       return repository;
     } catch (error) { await repository.close(); throw error; }
