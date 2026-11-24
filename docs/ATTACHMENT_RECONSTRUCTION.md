@@ -1,7 +1,10 @@
 # Reconstruct supplied attachment sites
 
-Open **Prophage excision** from the command palette or use **Alt+X**. The supplied
-attachment panel uses an explicitly selected phage and a host locus you provide.
+Switch to **Power** mode, then open **Prophage excision** from the command palette
+or use **Alt+X**. Integration uses an explicitly selected phage and a host locus
+you provide. The same panel also reconstructs excision from a supplied integrated
+locus without requiring a selected phage; see the
+[excision coordinates and example](../README.md#supplied-integration-and-prophage-excision).
 The separate, optional repeat-search view remains available for exploratory
 sequence hypotheses.
 
@@ -63,6 +66,35 @@ edits. Reopening a local snapshot or exported JSON recomputes the operation and
 checks its recorded identity. The saved sources are self-contained; they do not
 depend on the currently selected catalog genome. A mismatched result is refused.
 No sequence is uploaded; replay uses the embedded sources.
+
+## Replay complete reconstructions from the terminal
+
+A newly built native executable can verify an exported attachment integration or
+prophage excision experiment without a browser, current catalog or original
+source file:
+
+```bash
+phage-explorer workflow replay-experiment --input attachment-experiment.json
+phage-explorer workflow replay-experiment --input attachment-experiment.json --output verified-attachment.json
+phage-explorer workflow replay-experiment --input excision-experiment.json --output verified-excision.json
+```
+
+From a source checkout, replace `phage-explorer workflow` with `bun run workflow`.
+Replay reconstructs from the embedded sources, topology, declared sites and
+options, then checks the complete method, reference and result identities. An
+attachment record retains its integrated molecule, junctions and coordinate map.
+An excision record retains both the excised phage and restored host, their
+junctions, topology, source origins and complete coordinate maps. Changed outputs
+are refused even when their file checksums have been recomputed.
+
+Standard output is a verification report with result and input identities; it
+does not print the sequences. `--output NEW_FILE` exclusively creates the complete
+verified AnalysisRecord JSON and never overwrites an existing file. These two
+methods have no TSV representation; `--format tsv` fails before creating a file.
+The JSON contains private source and product sequences. `--timeout-ms` and
+cancellation terminate the owned replay worker. Verification establishes
+reproducibility of the declared sequence operation, not source authentication or
+biological activity.
 
 ## What the result means
 

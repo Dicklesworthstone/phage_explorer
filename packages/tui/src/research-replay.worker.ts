@@ -574,7 +574,9 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
   if (request.type === 'replay-experiment') {
     const saved = await parseAnalysisRecord(request.content);
     let fresh: AnalysisRecord;
-    let table: (record: AnalysisRecord) => string;
+    let table = (_record: AnalysisRecord): string => {
+      throw new Error('TSV export is not defined for ' + saved.method.id + '; use --format json to retain the complete verified experiment.');
+    };
     if (saved.method.id === 'sequence-dot-plot') {
       const { replayDotPlotExperiment, exportDotPlotExperimentTsv } = await import('../../core/src/analysis/dot-plot');
       const source = saved.inputs[0];
@@ -598,6 +600,12 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
         { sequence: row.data, accession: row.accession, source: row.source },
         { sequence: column.data, accession: column.accession, source: column.source })).record;
       table = exportPairwiseDotPlotExperimentTsv;
+    } else if (saved.method.id === 'attachment-reconstruction') {
+      const { replayAttachmentExperiment } = await import('../../core/src/analysis/prophage-excision');
+      fresh = (await replayAttachmentExperiment(request.content)).record;
+    } else if (saved.method.id === 'prophage-excision-reconstruction') {
+      const { replayProphageExcisionRecord } = await import('../../core/src/analysis/prophage-excision');
+      fresh = (await replayProphageExcisionRecord(request.content)).record;
     } else if (saved.method.id === 'rna-maximum-pairing') {
       const { replayRNAStructureRecord, exportRNAStructureTsv } = await import('../../core/src/analysis/rna-structure-experiment');
       fresh = (await replayRNAStructureRecord(request.content)).record;
@@ -645,7 +653,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = experiment.record;
       table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, mosaic reference similarity, aligned-DNA site compatibility, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, attachment integration, prophage excision, mosaic reference similarity, aligned-DNA site compatibility, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

@@ -6,6 +6,17 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Native replay of supplied integration and excision experiments
+
+- `workflow replay-experiment` accepts complete attachment and prophage excision
+  records produced by the browser. Native workers call the same core
+  reconstruction and verify the exact source, method, parameters and result.
+- JSON exports retain all products, junctions, source maps and provenance.
+  Report-only replay prints identity metadata; TSV is explicitly unsupported for
+  these methods. Cancellation and exclusive output creation retain their existing
+  ownership rules.
+  [Commands and limits](docs/ATTACHMENT_RECONSTRUCTION.md#replay-complete-reconstructions-from-the-terminal).
+
 ### Exact supplied prophage excision
 
 - Reconstruct the complete circular phage and restored host from a sourced
@@ -22,6 +33,7 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
   biological recognition or excision efficiency. Unsupported or ambiguous
   declarations fail explicitly.
   [Coordinates, examples and limits](README.md#supplied-integration-and-prophage-excision).
+  [Implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/7e479be9f6d176a49859d0b9686b760cede46496).
 
 ### Private research during unavailable catalog startup
 

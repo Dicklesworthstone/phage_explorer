@@ -324,7 +324,7 @@ export is the residue table. All analysis settings are resolved before dispatch.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, RNA maximum-pairing intervals,
-mosaic reference-similarity, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
+attachment integration, declared prophage excision, mosaic reference-similarity, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
 plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 Aligned-site compatibility TSV contains every compared pair and original alignment
@@ -336,8 +336,13 @@ methods and verifies all saved evidence, not just file checksums. No catalog,
 external source lookup or current browser selection is needed. Unsupported
 methods/versions and changed outputs are rejected. This is numerical reproducibility,
 not source authentication or biological validation. --format requires --output;
-json (default) retains full source sequences. TSV retains the method's complete
-evidence table; spacer hits include protospacer/PAM bases, original attribution,
+json (default) retains full source sequences. Attachment integration and prophage
+excision replay preserve every product, junction and source-coordinate map from
+the embedded source declarations. They accept JSON output only; --format tsv is
+rejected before file creation. They reconstruct conditional sequence composition,
+not recombinase activity or an integration/excision probability.
+For other supported methods, TSV retains the method's complete evidence table;
+spacer hits include protospacer/PAM bases, original attribution,
 guide-oriented mismatches and wrapped coordinate segments. Neither format
 anonymizes the evidence. The stdout report never includes raw sequences.
 

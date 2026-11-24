@@ -10,6 +10,8 @@ import { GC_SKEW_METHOD, createGCSkewRecord, exportGCSkewTsv, type GCSkewWindow 
 import { createExactRepeatRecord, exportExactRepeatPairsTsv, type ExactRepeatPair } from '../../core/src/analysis/exact-repeat-pairs';
 import { parseRNAStructureRecord } from '../../core/src/analysis/rna-structure-experiment';
 import type { RNAStructureAnalysis } from '../../core/src/analysis/rna-structure';
+import { reconstructAttachment, createAttachmentExperimentRecord, reconstructProphageExcision, createProphageExcisionRecord,
+  type AttachmentReconstructionInput, type AttachmentReconstructionResult, type ProphageExcisionInput, type ProphageExcisionResult } from '../../core/src/analysis/prophage-excision';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest, terminalAnalysisRequestSha256,
   type TerminalAnalysis, type TerminalResearchRequest, type TerminalAnalysisReport } from './research-replay.worker';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker, executeWorkflowCommand } from '../../../scripts/research-workflow';
@@ -54,6 +56,160 @@ function repeatOracle(sequence: string, circular: boolean): ExactRepeatPair[] {
   return pairs.sort((a, b) => a.rightStart - b.rightStart || (a.type === b.type ? b.gap - a.gap : a.type === 'direct' ? -1 : 1));
 }
 
+
+
+function nativeAttachmentFixtures(): { integration: AttachmentReconstructionInput; excision: ProphageExcisionInput } {
+  const source = { kind: 'local' as const, reference: 'Hand-written synthetic sequence arithmetic; no biological activity claim',
+    version: 'fixture-1', license: 'CC0-1.0' };
+  return {
+    integration: { format: 'phage-explorer-attachment-reconstruction', version: 1,
+      host: { name: 'Declared host', accession: 'host-control', sequence: 'TTACGG', topology: 'linear',
+        source: { ...source, kind: 'external' } },
+      phage: { name: 'Declared phage', accession: 'phage-control', sequence: 'CCACAA', topology: 'circular', source },
+      attB: { start: 2, end: 4, strand: '+', evidence: 'Synthetic AC crossover declaration' },
+      attP: { start: 2, end: 4, strand: '+', evidence: 'Synthetic AC crossover declaration' },
+      circularization: 'already-circular' },
+    excision: { format: 'phage-explorer-prophage-excision', version: 1,
+      locus: { name: 'Origin-wrapping integrated control', accession: null, sequence: 'TTGATTAACCGACG',
+        topology: 'circular', source: { ...source } },
+      attL: { start: 10, end: 12, strand: '+', evidence: 'Synthetic GA left crossover declaration' },
+      attR: { start: 2, end: 4, strand: '+', evidence: 'Synthetic GA right crossover declaration' } },
+  };
+}
+async function nativeAttachmentRecords(): Promise<AnalysisRecord[]> {
+  const { integration, excision } = nativeAttachmentFixtures();
+  return [
+    await createAttachmentExperimentRecord(integration, reconstructAttachment(integration, { flankLength: 2 })),
+    await createProphageExcisionRecord(excision, reconstructProphageExcision(excision, { flankLength: 2 })),
+  ];
+}
+
+describe('native attachment and excision replay', () => {
+  it('recomputes literal integrated and origin-wrapping excision products in real owned workers', async () => {
+    const [integration, excision] = await nativeAttachmentRecords();
+    for (const original of [integration, excision]) {
+      const content = serializeAnalysisRecord(original), replay = await run({ type: 'replay-experiment', content, outputFormat: 'json' });
+      assert(replay.type === 'experiment-replayed');
+      assert.equal(replay.exportText, content); assert.equal(replay.report.verified, true);
+      assert.deepEqual(replay.report.method, original.method);
+      assert.deepEqual(replay.report.inputs, original.inputs.map(({ id, accession, source, sha256 }) => ({ id, accession, source, sha256 })));
+      assert.equal(replay.report.cacheKey, original.cacheKey); assert.equal(replay.report.resultId, original.resultId);
+      assert(!JSON.stringify(replay.report).includes('TTGATTAACCGACG'));
+      assert(!JSON.stringify(replay.report).includes('TTACAACCACGG'));
+      const metadata = await run({ type: 'replay-experiment', content, outputFormat: 'none' });
+      assert(metadata.type === 'experiment-replayed'); assert.equal(metadata.exportText, null);
+      assert.equal(metadata.report.resultId, original.resultId);
+    }
+    // Independent literal splice: TT + ACAA + CC + ACGG.
+    const joined = integration.fields.reconstruction.value as unknown as AttachmentReconstructionResult;
+    assert.equal(joined.integratedSequence, 'TTACAACCACGG'); assert.equal(joined.integratedTopology, 'linear');
+    assert.deepEqual([joined.attL.sequence, joined.attR.sequence], ['TTACAA', 'CCACGG']);
+    assert.deepEqual(joined.segments, [
+      { source: 'host', sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 0, productEnd: 2 },
+      { source: 'phage', sourceStart: 2, sourceEnd: 6, strand: '+', productStart: 2, productEnd: 6 },
+      { source: 'phage', sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 6, productEnd: 8 },
+      { source: 'host', sourceStart: 2, sourceEnd: 6, strand: '+', productStart: 8, productEnd: 12 },
+    ]);
+    const cut = excision.fields.reconstruction.value as unknown as ProphageExcisionResult;
+    assert.deepEqual(cut.sourceCuts, { start: 10, end: 2, wrapsOrigin: true });
+    assert.deepEqual([cut.excisedPhage.sequence, cut.restoredHost.sequence], ['GACGTT', 'GATTAACC']);
+    assert.deepEqual([cut.excisedPhage.topology, cut.restoredHost.topology], ['circular', 'circular']);
+    assert.deepEqual([cut.excisedPhage.sourceOrigin, cut.restoredHost.sourceOrigin], [10, 2]);
+    assert.deepEqual(cut.excisedPhage.segments, [
+      { sourceStart: 10, sourceEnd: 14, strand: '+', productStart: 0, productEnd: 4 },
+      { sourceStart: 0, sourceEnd: 2, strand: '+', productStart: 4, productEnd: 6 },
+    ]);
+    assert.deepEqual(cut.restoredHost.segments, [
+      { sourceStart: 2, sourceEnd: 10, strand: '+', productStart: 0, productEnd: 8 },
+    ]);
+    assert.equal(cut.conservation.recoveredBases, 14); assert.equal(cut.conservation.conserved, true);
+  });
+
+  it('rejects validly rehashed false products, maps, source bases and unsupported method contracts', async () => {
+    for (const record of await nativeAttachmentRecords()) {
+      const integration = record.method.id === 'attachment-reconstruction';
+      for (const change of [
+        (copy: AnalysisRecord) => {
+          if (integration) (copy.fields.reconstruction.value as unknown as AttachmentReconstructionResult).integratedSequence = 'AAAAAAAAAAAA';
+          else (copy.fields.reconstruction.value as unknown as ProphageExcisionResult).excisedPhage.sequence = 'AAAAAA';
+        },
+        (copy: AnalysisRecord) => {
+          if (integration) (copy.fields.reconstruction.value as unknown as AttachmentReconstructionResult).segments[0].sourceStart++;
+          else (copy.fields.reconstruction.value as unknown as ProphageExcisionResult).restoredHost.segments[0].sourceStart++;
+        },
+        (copy: AnalysisRecord) => {
+          const source = copy.inputs[0].data as { sequence: string };
+          source.sequence = 'A' + source.sequence.slice(1);
+        },
+        (copy: AnalysisRecord) => { copy.method.version = '999'; },
+      ]) {
+        const content = await resigned(record, change);
+        await parseAnalysisRecord(content); // A valid envelope cannot substitute for the actual operation.
+        await assert.rejects(run({ type: 'replay-experiment', content, outputFormat: 'json' }));
+      }
+    }
+  });
+
+  it('exports complete verified JSON exclusively and refuses TSV without creating an output file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-attachment-'));
+    for (const record of await nativeAttachmentRecords()) {
+      const input = join(directory, record.method.id + '.json'), output = join(directory, record.method.id + '-verified.json');
+      const table = join(directory, record.method.id + '.tsv'), content = serializeAnalysisRecord(record);
+      await writeFile(input, content);
+      const replayed = await cli(['replay-experiment', '--input', input, '--output', output]);
+      assert.equal(replayed.code, 0, replayed.error); assert.equal(JSON.parse(replayed.output).verified, true);
+      assert.equal(JSON.parse(replayed.output).resultId, record.resultId); assert.equal(await readFile(output, 'utf8'), content);
+      if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600);
+      const unsupported = await cli(['replay-experiment', '--input', input, '--output', table, '--format', 'tsv']);
+      assert.equal(unsupported.code, 1); assert.equal(unsupported.output, ''); assert.match(unsupported.error, /TSV.*--format json/);
+      await assert.rejects(stat(table), { code: 'ENOENT' });
+      const duplicate = await cli(['replay-experiment', '--input', input, '--output', output]);
+      assert.equal(duplicate.code, 1); assert.equal(duplicate.output, ''); assert.equal(await readFile(output, 'utf8'), content);
+    }
+  });
+
+  it('rejects worker replies with changed method or captured-source identities before writing JSON', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-attachment-boundary-'));
+    for (const record of await nativeAttachmentRecords()) {
+      const input = join(directory, record.method.id + '.json'), output = join(directory, record.method.id + '-not-created.json');
+      const content = serializeAnalysisRecord(record); await writeFile(input, content);
+      const command = parseWorkflowCommand(['replay-experiment', '--input', input, '--output', output]);
+      assert(command.type === 'replay-experiment');
+      const request: Extract<TerminalResearchRequest, { type: 'replay-experiment' }> = { type: 'replay-experiment', content, outputFormat: 'json' };
+      const accepted = await executeTerminalResearchRequest(request); assert(accepted.type === 'experiment-replayed');
+      for (const change of [
+        (value: typeof accepted) => { value.report.method.implementation = 'invented producer'; },
+        (value: typeof accepted) => { value.report.inputs[0].sha256 = '0'.repeat(64); },
+      ]) {
+        const wrong = structuredClone(accepted); change(wrong);
+        await assert.rejects(executeWorkflowCommand(command, {
+          createWorker: () => new Worker("require('node:worker_threads').parentPort.once('message',()=>require('node:worker_threads').parentPort.postMessage(" + JSON.stringify(wrong) + "))", { eval: true }),
+        }), /Unexpected/);
+        await assert.rejects(stat(output), { code: 'ENOENT' });
+      }
+    }
+  });
+
+  it('terminates cancelled excision replay in its owned worker without output and permits a clean later replay', async () => {
+    const record = (await nativeAttachmentRecords())[1], content = serializeAnalysisRecord(record);
+    const directory = await mkdtemp(join(tmpdir(), 'phage-native-excision-cancel-')), input = join(directory, 'saved.json'), output = join(directory, 'not-created.json');
+    await writeFile(input, content);
+    const command = parseWorkflowCommand(['replay-experiment', '--input', input, '--output', output]);
+    assert(command.type === 'replay-experiment');
+    const controller = new AbortController(); let allocated = 0, exited: Promise<number> | null = null;
+    await assert.rejects(executeWorkflowCommand(command, { signal: controller.signal, createWorker: () => {
+      allocated++;
+      const worker = new Worker(new URL('./research-replay.worker.ts', import.meta.url));
+      exited = new Promise(resolve => worker.once('exit', resolve));
+      const send = worker.postMessage.bind(worker);
+      worker.postMessage = value => { send(value); controller.abort(); };
+      return worker;
+    } }), { name: 'AbortError' });
+    assert.equal(allocated, 1); await exited; await assert.rejects(stat(output), { code: 'ENOENT' });
+    const later = await run({ type: 'replay-experiment', content, outputFormat: 'json' });
+    assert(later.type === 'experiment-replayed'); assert.equal(later.exportText, content);
+  });
+});
 
 describe('standalone native RNA workflow', () => {
   it('requires an explicit interval and strand, resolves bounded defaults, and rejects conflicting or unsupported settings', () => {

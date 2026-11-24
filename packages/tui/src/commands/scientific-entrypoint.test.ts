@@ -33,6 +33,43 @@ function json(result: Output): Record<string, unknown> {
 const fixture = () => mkdtemp(join(tmpdir(), 'phage-scientific-entrypoint-'));
 
 describe('main executable research commands', () => {
+  it('runs native attachment and excision replay through the source executable without a catalog or terminal', async () => {
+    const { reconstructAttachment, createAttachmentExperimentRecord, reconstructProphageExcision, createProphageExcisionRecord } =
+      await import('../../../core/src/analysis/prophage-excision');
+    const { serializeAnalysisRecord } = await import('../../../core/src/analysis-result');
+    const source = { kind: 'local' as const, reference: 'Synthetic hand-written sequence arithmetic; no activity claim', version: '1', license: null };
+    const integration = { format: 'phage-explorer-attachment-reconstruction' as const, version: 1 as const,
+      host: { name: 'Host control', accession: null, sequence: 'TTACGG', topology: 'linear' as const, source },
+      phage: { name: 'Phage control', accession: null, sequence: 'CCACAA', topology: 'circular' as const, source },
+      attB: { start: 2, end: 4, strand: '+' as const, evidence: 'Declared synthetic AC core' },
+      attP: { start: 2, end: 4, strand: '+' as const, evidence: 'Declared synthetic AC core' },
+      circularization: 'already-circular' as const };
+    const excision = { format: 'phage-explorer-prophage-excision' as const, version: 1 as const,
+      locus: { name: 'Integrated control', accession: null, sequence: 'CCGACGTTGATTAA', topology: 'linear' as const, source },
+      attL: { start: 2, end: 4, strand: '+' as const, evidence: 'Declared synthetic left GA core' },
+      attR: { start: 8, end: 10, strand: '+' as const, evidence: 'Declared synthetic right GA core' } };
+    const records = [
+      await createAttachmentExperimentRecord(integration, reconstructAttachment(integration, { flankLength: 2 })),
+      await createProphageExcisionRecord(excision, reconstructProphageExcision(excision, { flankLength: 2 })),
+    ];
+    const cwd = await fixture();
+    for (const record of records) {
+      const input = join(cwd, record.method.id + ' saved.json'), output = join(cwd, record.method.id + ' verified.json');
+      const table = join(cwd, record.method.id + '.tsv'), content = serializeAnalysisRecord(record);
+      await writeFile(input, content);
+      const verified = json(await run(cwd, ['workflow', 'replay-experiment', '--input', input, '--output', output]));
+      assert.equal(verified.verified, true); assert.equal(verified.resultId, record.resultId);
+      assert.equal(await readFile(output, 'utf8'), content);
+      const recovered = JSON.parse(await readFile(output, 'utf8')).fields.reconstruction.value;
+      if (record.method.id === 'attachment-reconstruction') assert.equal(recovered.integratedSequence, 'TTACAACCACGG');
+      else assert.deepEqual([recovered.excisedPhage.sequence, recovered.restoredHost.sequence], ['GACGTT', 'CCGATTAA']);
+      const unsupported = await run(cwd, ['workflow', 'replay-experiment', '--input', input, '--output', table, '--format', 'tsv']);
+      assert.equal(unsupported.code, 1); assert.equal(unsupported.stdout, ''); assert.match(unsupported.stderr, /TSV.*--format json/);
+      assert(!(await readdir(cwd)).includes(record.method.id + '.tsv'));
+    }
+    assert(!(await readdir(cwd)).some(name => name.endsWith('.db')));
+  });
+
   it('runs the standalone native RNA inspect/analyze/replay journey without a catalog or terminal', async () => {
     const cwd = await fixture(), input = join(cwd, 'private RNA.fa'), output = join(cwd, 'rna.json'), verified = join(cwd, 'verified.json');
     await writeFile(input, '>RNA\nTTGGGTTTCCCAA\n');
