@@ -19,6 +19,8 @@ export interface CacheWriteResult {
   success: boolean;
   /** True if failed due to storage quota */
   quotaExceeded: boolean;
+  /** Another writer published a different dataset during this download. */
+  superseded?: boolean;
   /** Error message if failed */
   error?: string;
   /** Bytes written (if successful) */
@@ -116,6 +118,8 @@ export async function hasStorageSpace(requiredBytes: number): Promise<boolean> {
 // Safe Cache Operations
 // ============================================================================
 
+export interface SnapshotRevision { id: string; contentVersion: string | null }
+
 /**
  * Safely write to IndexedDB with quota error handling.
  *
@@ -125,13 +129,14 @@ export async function safeCacheWrite(
   db: IDBDatabase,
   storeName: string,
   key: string,
-  value: unknown
+  value: unknown,
+  revision?: { key: string; expectedId: string | null; next: SnapshotRevision },
 ): Promise<CacheWriteResult> {
   return new Promise((resolve) => {
     try {
       const transaction = db.transaction(storeName, 'readwrite');
       const store = transaction.objectStore(storeName);
-      const request = store.put(value, key);
+      let superseded = false;
 
       const bytesWritten =
         value instanceof Uint8Array
@@ -144,26 +149,30 @@ export async function safeCacheWrite(
               ? value.length * 2
               : JSON.stringify(value).length * 2;
 
-      request.onerror = () => {
-        const error = request.error;
-        const quotaExceeded = isQuotaError(error);
-        resolve({
-          success: false,
-          quotaExceeded,
-          error: error?.message ?? 'Unknown write error',
-        });
+      const write = () => {
+        store.put(value, key);
+        if (revision) store.put(revision.next, revision.key);
       };
+      if (revision) {
+        const check = store.get(revision.key);
+        check.onsuccess = () => {
+          const current = check.result as SnapshotRevision | undefined;
+          if ((current?.id ?? null) !== revision.expectedId && current?.contentVersion !== revision.next.contentVersion) {
+            superseded = true;
+            return;
+          }
+          try { write(); }
+          catch (error) {
+            transaction.abort();
+            resolve({ success: false, quotaExceeded: isQuotaError(error), error: error instanceof Error ? error.message : String(error) });
+          }
+        };
+      } else {
+        write();
+      }
 
-      transaction.onerror = () => {
-        const error = transaction.error;
-        const quotaExceeded = isQuotaError(error);
-        resolve({
-          success: false,
-          quotaExceeded,
-          error: error?.message ?? 'Transaction error',
-        });
-      };
-
+      // Request errors abort this transaction by default. Its final error is
+      // available on abort, including quota errors from either write.
       transaction.onabort = () => {
         const error = transaction.error;
         const quotaExceeded = isQuotaError(error);
@@ -175,7 +184,9 @@ export async function safeCacheWrite(
       };
 
       transaction.oncomplete = () => {
-        resolve({ success: true, quotaExceeded: false, bytesWritten });
+        resolve(superseded
+          ? { success: false, superseded: true, quotaExceeded: false, error: 'The saved dataset changed during download.' }
+          : { success: true, quotaExceeded: false, bytesWritten });
       };
     } catch (error) {
       const quotaExceeded = isQuotaError(error);

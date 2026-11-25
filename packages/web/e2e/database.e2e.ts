@@ -354,9 +354,10 @@ test('cold load rejects a mismatched descriptor instead of displaying unverified
   }
 });
 
-for (const mode of ['normal', 'interrupted write', 'two tabs'] as const) {
+for (const mode of ['normal', 'interrupted write', 'two tabs', 'late forced refresh'] as const) {
 test(`real data and schema update converges to a verified cache: ${mode}`, async ({ page, context }, testInfo) => {
   const { pageErrors, finalize } = setupTestHarness(page, testInfo);
+  let releaseOldDownload: (() => void) | undefined;
   let manifestServer: Awaited<ReturnType<typeof serveConditionalManifest>> | undefined;
   try {
     await page.goto('/?phage=lambda&model=0');
@@ -382,6 +383,28 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
     const manifest = JSON.parse(await readFile(resolve(artifacts, 'phage.db.manifest.json'), 'utf8'));
     const gz = await readFile(resolve(artifacts, 'phage.db.gz'));
     expect(manifest.contentVersion).not.toBe(original!.contentVersion);
+    const slowTab = mode === 'late forced refresh' ? await context.newPage() : null;
+    if (slowTab) {
+      await slowTab.goto('/?phage=lambda&model=0');
+      await expectCatalog(slowTab);
+      const welcome = slowTab.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      const gate = new Promise<void>(resolve => { releaseOldDownload = resolve; });
+      let held = false;
+      await slowTab.route(GZIP_ASSET, async route => {
+        const originalBytes = await route.fetch();
+        held = true;
+        await gate;
+        await route.fulfill({ response: originalBytes });
+      });
+      await slowTab.getByTestId('header-settings-btn').click();
+      const settings = slowTab.getByRole('dialog', { name: 'Settings', exact: true });
+      await settings.getByRole('button', { name: 'Reload database from server', exact: true }).click();
+      await expect.poll(() => held).toBe(true);
+      // This page is still downloading the previous edition while the other
+      // page receives and commits the new publication through its normal update.
+      expect(await cachedIdentity(slowTab)).toEqual(original);
+    }
     let downloads = 0;
     let notModified = 0;
     manifestServer = await serveConditionalManifest(manifest, '"real-update"', cached => {
@@ -425,7 +448,13 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
       await expectCatalog(page);
     }
     await expect.poll(() => cachedIdentity(page)).toEqual({ contentVersion: manifest.contentVersion, sha256: manifest.sha256, size: manifest.size, valid: true });
-    const expectedDownloads = mode === 'normal' ? 1 : 2;
+    if (slowTab) {
+      releaseOldDownload?.();
+      await expect(slowTab.getByRole('dialog', { name: 'Settings', exact: true })).toContainText('Failed to reload database');
+      expect((await cachedIdentity(slowTab))?.sha256).toBe(manifest.sha256);
+      await slowTab.close();
+    }
+    const expectedDownloads = mode === 'interrupted write' || mode === 'two tabs' ? 2 : 1;
     expect(downloads).toBe(expectedDownloads);
     if (second) expect(await cachedIdentity(second)).toEqual(await cachedIdentity(page));
     expect(notModified).toBeGreaterThan(0);
@@ -436,6 +465,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
     expect(pageErrors).toEqual([]);
     if (second) await second.close();
   } finally {
+    releaseOldDownload?.();
     try { await finalize(); } finally { await manifestServer?.close(); }
   }
 });
@@ -479,6 +509,25 @@ test('verified cached catalog remains usable when the database origin is unavail
     await expectCatalog(page);
     await expectOfflineCache(page);
     const original = await cachedIdentity(page);
+    // A prior observed manifest can outlive an interrupted update. While the
+    // origin is offline this record cannot authorize installing other bytes.
+    const descriptor = await (await page.request.get('/phage.db.manifest.json')).json();
+    await page.evaluate(async descriptor => {
+      const request = indexedDB.open('phage-explorer-db');
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('database', 'readwrite');
+          tx.objectStore('database').put({ etag: null, manifest: { ...descriptor, contentVersion: 'e'.repeat(64) } },
+            'manifest:' + new URL('/phage.db.manifest.json', location.href).href);
+          tx.oncomplete = () => resolve();
+          tx.onabort = () => reject(tx.error);
+        });
+      } finally { db.close(); }
+    }, descriptor);
     let transfers = 0;
     await page.route(url => DATABASE_ASSET.test(url.href) || url.pathname.endsWith('/phage.db.manifest.json'), route => {
       if (DATABASE_ASSET.test(route.request().url())) transfers++;
@@ -601,6 +650,7 @@ test('offline upgrade adopts an old snapshot only with a matching manifest for t
             if (!request.result) { transaction.abort(); return; }
             store.put(request.result, 'phage-db:snapshot');
             store.delete(key);
+            store.delete(key + ':revision');
             store.delete('manifest:' + address);
             store.delete('manifest:' + path);
             // The old release wrote the relative configured URL as its IDB key.

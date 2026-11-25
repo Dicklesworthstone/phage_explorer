@@ -19,6 +19,7 @@ import {
   safeCacheWrite,
   logCacheStats,
   type CacheWriteResult,
+  type SnapshotRevision,
 } from './db-cache';
 
 // Cached sql.js instance - use dynamic import because sql.js is CommonJS
@@ -232,6 +233,7 @@ async function accessLegacySnapshot(
       const store = transaction.objectStore(INDEXEDDB_STORE);
       const legacyKey = `${dbName}:snapshot`;
       const scoped = store.get(snapshotKey);
+      const revision = store.get(snapshotKey + ':revision');
       const absolute = store.get(`manifest:${manifestUrl}`);
       const address = new URL(manifestUrl);
       // A root-relative old key is unambiguous only on this origin. An old
@@ -241,8 +243,11 @@ async function accessLegacySnapshot(
       const last = rooted ?? absolute;
       let result: CachedDatabase | null = null;
       last.onsuccess = () => {
-        if (clear) store.delete(snapshotKey);
-        else if (scoped.result) { result = scoped.result; return; }
+        if (clear) {
+          store.delete(snapshotKey);
+          store.put({ id: crypto.randomUUID(), contentVersion: null } satisfies SnapshotRevision, snapshotKey + ':revision');
+        }
+        else if (scoped.result || revision.result) { result = scoped.result ?? null; return; }
         const manifests = [absolute.result?.manifest, rooted?.result?.manifest].filter(isDatabaseManifest);
         if (manifests.length === 0) return;
         const legacy = store.get(legacyKey);
@@ -254,6 +259,7 @@ async function accessLegacySnapshot(
           if (!clear) {
             result = entry;
             store.put(entry, snapshotKey);
+            store.put({ id: crypto.randomUUID(), contentVersion: entry.contentVersion } satisfies SnapshotRevision, snapshotKey + ':revision');
           }
           store.delete(legacyKey);
         };
@@ -275,7 +281,7 @@ async function accessLegacySnapshot(
  */
 async function fetchManifestWithETag(
   manifestUrl: string
-): Promise<{ manifest: DatabaseManifest | null; fromCache: boolean }> {
+): Promise<{ manifest: DatabaseManifest | null; confirmed: boolean }> {
   let cachedEtag: string | null = null;
   let cachedManifest: DatabaseManifest | null = null;
   const cacheKey = `manifest:${manifestUrl}`;
@@ -303,27 +309,27 @@ async function fetchManifestWithETag(
     }
     response = await fetchWith(headers);
   } catch {
-    return { manifest: cachedManifest, fromCache: !!cachedManifest };
+    return { manifest: cachedManifest, confirmed: false };
   }
 
   // 304 Not Modified - use cached manifest, but if the cache is missing fall back to a full fetch.
   if (response.status === 304) {
     if (cachedManifest) {
-      return { manifest: cachedManifest, fromCache: true };
+      return { manifest: cachedManifest, confirmed: true };
     }
     try {
       response = await fetchWith();
     } catch {
-      return { manifest: null, fromCache: false };
+      return { manifest: null, confirmed: false };
     }
   }
 
   if (!response.ok) {
     // Offline or error - try to use cached manifest
     if (cachedManifest) {
-      return { manifest: cachedManifest, fromCache: true };
+      return { manifest: cachedManifest, confirmed: false };
     }
-    return { manifest: null, fromCache: false };
+    return { manifest: null, confirmed: false };
   }
 
   let manifest: DatabaseManifest;
@@ -333,9 +339,9 @@ async function fetchManifestWithETag(
     manifest = value;
   } catch {
     if (cachedManifest) {
-      return { manifest: cachedManifest, fromCache: true };
+      return { manifest: cachedManifest, confirmed: false };
     }
-    return { manifest: null, fromCache: false };
+    return { manifest: null, confirmed: false };
   }
 
   // Cache writes are best-effort; a quota/IDB failure should not block the app.
@@ -345,7 +351,7 @@ async function fetchManifestWithETag(
     // Ignore caching failures.
   }
 
-  return { manifest, fromCache: false };
+  return { manifest, confirmed: true };
 }
 
 /**
@@ -432,8 +438,8 @@ export class DatabaseLoader {
       if (!entry) return { valid: false };
 
       // Try to fetch manifest with ETag support (much faster for unchanged manifests)
-      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
-      return { valid: true, entry, stale: !!manifest && manifest.contentVersion !== entry.contentVersion };
+      const { manifest, confirmed } = await fetchManifestWithETag(this.config.manifestUrl);
+      return { valid: true, entry, stale: confirmed && !!manifest && manifest.contentVersion !== entry.contentVersion };
     } catch {
       return { valid: false };
     }
@@ -726,7 +732,20 @@ export class DatabaseLoader {
    * @returns Result indicating success or quota error
    */
   async saveToCache(data: Uint8Array, manifest: DatabaseManifest): Promise<CacheWriteResult> {
+    return this.persistSnapshot(data, manifest, await this.readRevision());
+  }
+
+  /** Read only the compact generation marker; never keep a transaction open during a download. */
+  private async readRevision(): Promise<string | null | undefined> {
     try {
+      const current = await getFromIndexedDB<SnapshotRevision>(this.snapshotKey + ':revision');
+      return current?.id ?? null;
+    } catch { return undefined; }
+  }
+
+  private async persistSnapshot(data: Uint8Array, manifest: DatabaseManifest, expectedId: string | null | undefined): Promise<CacheWriteResult> {
+    try {
+      if (expectedId === undefined) return { success: false, quotaExceeded: false, error: 'Offline database storage is unavailable.' };
       await verifyDatabaseBytes(data, manifest);
       const idb = await openIndexedDB();
 
@@ -737,7 +756,8 @@ export class DatabaseLoader {
           idb,
           INDEXEDDB_STORE,
           this.snapshotKey,
-          { version: 2, data, contentVersion: manifest.contentVersion, sha256: manifest.sha256 } satisfies CachedDatabase
+          { version: 2, data, contentVersion: manifest.contentVersion, sha256: manifest.sha256 } satisfies CachedDatabase,
+          { key: this.snapshotKey + ':revision', expectedId, next: { id: crypto.randomUUID(), contentVersion: manifest.contentVersion } },
         );
 
         if (!dataResult.success) {
@@ -750,7 +770,7 @@ export class DatabaseLoader {
             if (import.meta.env?.DEV) {
               await logCacheStats();
             }
-          } else {
+          } else if (!dataResult.superseded) {
             console.error('[DatabaseLoader] Failed to cache database:', dataResult.error);
           }
           idb.close();
@@ -926,6 +946,7 @@ export class DatabaseLoader {
     }
 
     try {
+      const expectedId = await this.readRevision();
       // Check cache first
       this.timing.startStage('cacheCheck');
       const cacheStatus: Awaited<ReturnType<DatabaseLoader['checkCache']>> = options.forceDownload
@@ -983,8 +1004,8 @@ export class DatabaseLoader {
       // Cold load path
       this.timing.setCached(false);
 
-      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
-      if (!manifest) throw new Error('Database manifest unavailable or unsupported. Connect to the network and refresh the application.');
+      const { manifest, confirmed } = await fetchManifestWithETag(this.config.manifestUrl);
+      if (!manifest || (options.forceDownload && !confirmed)) throw new Error('Database manifest unavailable or unsupported. Connect to the network and refresh the application.');
 
       // Download fresh copy (timing is recorded inside downloadDatabase)
       const { db, data } = await this.downloadDatabase(manifest);
@@ -995,12 +1016,14 @@ export class DatabaseLoader {
       this.repository = repository;
       this.progress('ready', 100, 'Database ready. Saving the offline copy...', false, undefined, 'saving');
       this.timing.startStage('cacheWrite');
-      this.cacheWritePromise = this.saveToCache(data, manifest).then((saved) => {
+      this.cacheWritePromise = this.persistSnapshot(data, manifest, expectedId).then((saved) => {
         this.timing?.endStage('cacheWrite');
         // Timing still includes persistence; this is not a startup-speed claim.
         this.finalizeTiming();
         if (this.repository === repository) {
-          this.progress('ready', 100, saved.success ? 'Database ready' : 'Database ready. Offline storage is unavailable.', false, undefined, saved.success ? 'saved' : 'unavailable');
+          const message = saved.superseded ? 'The saved dataset changed during download. Reload to use the current copy.'
+            : saved.success ? 'Database ready' : 'Database ready. Offline storage is unavailable.';
+          this.progress('ready', 100, message, false, saved.superseded ? 'ready' : undefined, saved.success ? 'saved' : 'unavailable');
         }
         return saved;
       });
@@ -1010,6 +1033,7 @@ export class DatabaseLoader {
         if (!saved.success) {
           await repository.close();
           this.repository = null;
+          if (saved.superseded) throw new Error('The saved dataset changed during refresh. Reload to use the current copy.');
           throw new Error('The verified database could not be saved. The previous cache has been preserved.');
         }
       }
@@ -1053,10 +1077,11 @@ export class DatabaseLoader {
 
   private async refreshCache(): Promise<boolean> {
     try {
+      const expectedId = await this.readRevision();
       // Use ETag-based conditional request for efficient checking
-      const { manifest } = await fetchManifestWithETag(this.config.manifestUrl);
+      const { manifest, confirmed } = await fetchManifestWithETag(this.config.manifestUrl);
 
-      if (!manifest) {
+      if (!confirmed || !manifest) {
         return false;
       }
 
@@ -1069,11 +1094,15 @@ export class DatabaseLoader {
         const { db, data } = await this.downloadDatabase(manifest);
         let saved: CacheWriteResult;
         try {
-          saved = await this.saveToCache(data, manifest);
+          saved = await this.persistSnapshot(data, manifest, expectedId);
         } finally {
           db.close();
         }
         if (!saved.success) {
+          if (saved.superseded) {
+            this.progress('ready', 100, 'The saved dataset changed during update. Reload to use the current copy.', true, 'ready');
+            return false;
+          }
           this.progress('ready', 100, 'The database update could not be saved. Your verified cached database is still in use.', true, 'failed');
           return false;
         }
