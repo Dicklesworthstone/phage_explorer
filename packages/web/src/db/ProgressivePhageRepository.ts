@@ -29,6 +29,14 @@ interface Resident {
   reserved: boolean;
 }
 
+/** Transfer/integrity failure, distinct from an invalid catalog's SQL or ownership. */
+export class ProgressiveCatalogLoadError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'The dataset catalog could not be loaded.', { cause });
+    this.name = 'ProgressiveCatalogLoadError';
+  }
+}
+
 function assertActive(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('Dataset operation cancelled.', 'AbortError');
 }
@@ -89,7 +97,12 @@ export class ProgressivePhageRepository implements PhageRepository {
         throw new Error('A genome and catalog exceed the resident SQLite budget; repartition the dataset or explicitly raise the budget.');
       }
       options.store.pin(manifest.catalog);
-      const { data } = await abortable(options.store.read(manifest.catalog), options.signal);
+      let data: Uint8Array;
+      try { ({ data } = await abortable(options.store.read(manifest.catalog), options.signal)); }
+      catch (error) {
+        assertActive(options.signal);
+        throw new ProgressiveCatalogLoadError(error);
+      }
       assertActive(options.signal);
       catalog = options.openRepository(data);
       const phages = await abortable(catalog.listPhages(), options.signal);

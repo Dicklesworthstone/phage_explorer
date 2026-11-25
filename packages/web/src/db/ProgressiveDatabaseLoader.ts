@@ -1,6 +1,6 @@
 /** Auto-select the published layout; version 3 never falls back to a monolithic download. */
 import type { DatabaseLoaderConfig, DatabaseLoadProgress, PhageRepository } from './types';
-import { ProgressivePhageRepository } from './ProgressivePhageRepository';
+import { ProgressiveCatalogLoadError, ProgressivePhageRepository } from './ProgressivePhageRepository';
 import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache, type FetchLike } from './progressive-artifacts';
 import { PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './progressive-manifest';
 
@@ -19,6 +19,7 @@ export interface ProgressiveLoaderDependencies {
   manifestTimeoutMs?: number;
 }
 interface CachedManifest { manifest: ProgressiveManifest; etag: string | null }
+type ManifestCache = Pick<ArtifactCache, 'match' | 'put' | 'keys'>;
 let sqliteReady: Promise<(bytes: Uint8Array) => PhageRepository> | null = null;
 async function openSqlite(): Promise<(bytes: Uint8Array) => PhageRepository> {
   if (!sqliteReady) {
@@ -131,7 +132,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
   }
   private async loadOnce(forceDownload: boolean): Promise<PhageRepository> {
     this.report({ stage: 'checking', percent: 0, message: 'Checking the published dataset layout...', cached: false });
-    let cache: Pick<ArtifactCache, 'match' | 'put' | 'keys'> | undefined;
+    let cache: ManifestCache | undefined;
     try {
       cache = await abortable((this.dependencies.openManifestCache ?? (async () =>
         typeof caches === 'undefined' ? undefined : caches.open(PROGRESSIVE_MANIFEST_CACHE)))(), this.lifetime.signal);
@@ -145,6 +146,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     let manifest: ProgressiveManifest | null = null;
     let etag: string | null = null;
     let fromCache = false;
+    let recovery: string | undefined;
     try {
       this.assertOpen();
       let response: Response | undefined;
@@ -164,20 +166,49 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
         if (cached) { manifest = cached.manifest; etag = cached.etag; fromCache = true; }
         // No known v3 snapshot: let the existing v2 loader use its verified offline cache.
       } else {
-        const bytes = await abortable(readBoundedResponse(response, PROGRESSIVE_LIMITS.manifestBytes), request.signal);
-        const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid dataset manifest.');
-        if ('version' in value && value.version === 2) return await this.legacyLoad(forceDownload);
-        // An invalid/unsupported v3 deployment is an error, never a request for the old whole DB.
-        manifest = parseProgressiveManifest(value);
-        await abortable(verifyProgressiveManifest(manifest), this.lifetime.signal);
-        etag = response.headers.get('etag');
+        let value: unknown;
+        try {
+          // A response can fail after its successful headers. Carry the deadline
+          // into the reader so a stalled body is cancelled, not left consuming I/O.
+          const bytes = await readBoundedResponse(response, PROGRESSIVE_LIMITS.manifestBytes, request.signal);
+          value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+        } catch (error) {
+          this.assertOpen();
+          if (forceDownload || !cached) throw error;
+          manifest = cached.manifest; etag = cached.etag; fromCache = true;
+          recovery = error instanceof Error ? error.message : 'Dataset manifest transfer failed.';
+        }
+        if (!manifest) {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid dataset manifest.');
+          if ('version' in value && value.version === 2) return await this.legacyLoad(forceDownload);
+          // Invalid identities and unsupported layouts remain errors; they are
+          // not transport failures or permission to download the old whole DB.
+          manifest = parseProgressiveManifest(value);
+          await abortable(verifyProgressiveManifest(manifest), this.lifetime.signal);
+          etag = response.headers.get('etag');
+        }
       }
     } finally {
       clearTimeout(timer); this.lifetime.signal.removeEventListener('abort', cancel);
     }
     this.assertOpen();
     if (!manifest) return this.legacyLoad(forceDownload);
+    try {
+      return await this.openGeneration(manifest, etag, fromCache, cache, cached, forceDownload, recovery);
+    } catch (error) {
+      this.assertOpen();
+      // A partial deployment or corrupt transfer must not strand an already
+      // usable offline dataset. Reopen the entire previous generation: never
+      // combine its catalog with the candidate's genome or projection index.
+      if (forceDownload || !cached || manifest.contentVersion === cached.manifest.contentVersion ||
+          !(error instanceof ProgressiveCatalogLoadError)) throw error;
+      return this.openGeneration(cached.manifest, cached.etag, true, cache, cached, false, error.message);
+    }
+  }
+
+  private async openGeneration(manifest: ProgressiveManifest, etag: string | null, fromCache: boolean,
+    cache: ManifestCache | undefined, cached: CachedManifest | null, forceDownload: boolean,
+    recovery?: string): Promise<PhageRepository> {
     this.report({ stage: 'initializing', percent: 30, message: 'Opening the catalog. Genome data will load on demand.', cached: fromCache });
     const openRepository = await abortable((this.dependencies.sqlite ?? openSqlite)(), this.lifetime.signal);
     this.assertOpen();
@@ -267,10 +298,12 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       this.assertOpen();
       this.repository = repository;
       if (persisted && cached && cached.manifest.catalog.path !== manifest.catalog.path) store.unpin(cached.manifest.catalog);
+      const availability = persisted ? 'Catalog ready. Only previously fetched genomes and projections are available offline.'
+        : superseded ? 'Catalog ready. Another tab changed the offline dataset. Reload to use the saved version.'
+          : 'Catalog ready. Offline storage is unavailable.';
       this.report({ stage: 'ready', percent: 100,
-        message: persisted ? 'Catalog ready. Only previously fetched genomes and projections are available offline.'
-          : superseded ? 'Catalog ready. Another tab changed the offline dataset. Reload to use the saved version.'
-            : 'Catalog ready. Offline storage is unavailable.',
+        message: recovery ? `Reopened the previous verified dataset because the update could not be loaded: ${recovery} ${availability}` : availability,
+        ...(recovery ? { updateStatus: 'failed' as const } : {}),
         cached: store.getTransferLedger().networkBytes === 0, cacheStatus: persisted ? 'saved' : 'unavailable' });
       return repository;
     } catch (error) { await repository.close(); throw error; }

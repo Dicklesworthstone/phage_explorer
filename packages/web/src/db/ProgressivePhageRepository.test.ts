@@ -330,6 +330,138 @@ describe('published-layout browser startup', () => {
     assert.equal((await repo.getGenes(2))[0].id, 20); await assert.rejects(repo.getGenes(1), /offline/);
     assert.deepEqual(h.legacyOptions, []); await loader.close();
   });
+  test('a truncated, failed, or stalled manifest body retains the verified startup generation', async () => {
+    for (const failure of ['truncated', 'stream', 'timeout'] as const) {
+      const h = loaderFixture(), initial = h.create(), first = await initial.load();
+      await first.getGenes(2); await initial.close();
+      const before = await (await h.manifestCache.match(BASE))!.text();
+      const version = h.f.manifest.contentVersion;
+      let cancelled = false;
+      h.service.respond = async () => failure === 'truncated' ? new Response('{"version":3')
+        : new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"version":3'));
+            if (failure === 'stream') controller.error(new Error('connection dropped during manifest transfer'));
+          },
+          cancel() { cancelled = true; },
+        }));
+      h.f.responses.clear();
+      const loader = h.create({ manifestTimeoutMs: 25 });
+      try {
+        const repo = await loader.load();
+        assert.equal((await repo.getGenes(2))[0].id, 20);
+        assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, version);
+        assert.equal(h.versions.at(-1), version);
+        assert.equal(h.progress.at(-1)?.cached, true);
+        assert.equal(h.progress.at(-1)?.updateStatus, 'failed');
+        assert.match(h.progress.at(-1)?.message ?? '', /previous verified dataset/i);
+        assert.equal(await (await h.manifestCache.match(BASE))!.text(), before);
+        assert.deepEqual(h.legacyOptions, []);
+        await tick();
+        if (failure === 'timeout') assert.equal(cancelled, true, 'timed-out response stream is cancelled');
+      } finally { await loader.close(); }
+    }
+  });
+  test('a missing or corrupt new catalog falls back to one complete cached generation', async () => {
+    for (const failure of ['missing', 'corrupt'] as const) {
+      const h = loaderFixture(), initial = h.create(), first = await initial.load();
+      await first.getGenes(2); await initial.close();
+      const previous = structuredClone(h.f.manifest);
+      const before = await (await h.manifestCache.match(BASE))!.text();
+      h.f.manifest.catalog = descriptor('catalog-next'.padEnd(512, ' '));
+      h.f.manifest.genomes[1].artifact = descriptor('genome-next:2'.padEnd(512, ' '));
+      identity(h.f.manifest);
+      const candidate = dataArtifactUrl(BASE, h.f.manifest.catalog);
+      if (failure === 'corrupt') h.f.responses.set(candidate, 'wrong-catalog'.padEnd(512, ' '));
+      const loader = h.create();
+      try {
+        const repo = await loader.load();
+        assert.equal(await repo.getSequenceWindow(2, 0, 8), 'GGGGCCCC');
+        assert.equal(repo.getOfflineDataset!()!.describe().contentVersion, previous.contentVersion);
+        assert.equal(h.versions.at(-1), previous.contentVersion);
+        assert.equal(h.progress.at(-1)?.updateStatus, 'failed');
+        assert.equal(h.progress.at(-1)?.cached, true);
+        assert.equal(await (await h.manifestCache.match(BASE))!.text(), before);
+        assert.equal(await h.f.cache.match(candidate), undefined, 'unverified bytes are never cached');
+        assert.ok(!h.f.network.includes(dataArtifactUrl(BASE, h.f.manifest.genomes[1].artifact)), 'fallback reads only the old generation');
+        assert.deepEqual(h.legacyOptions, []);
+      } finally { await loader.close(); }
+    }
+  });
+  test('forced refresh rejects failed manifest bodies and new catalogs without replacing the saved generation', async () => {
+    for (const failure of ['truncated', 'stream', 'timeout', 'missing-catalog', 'corrupt-catalog'] as const) {
+      const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+      const before = await (await h.manifestCache.match(BASE))!.text();
+      const version = h.f.manifest.contentVersion;
+      let cancelled = false;
+      if (failure.endsWith('catalog')) {
+        h.f.manifest.catalog = descriptor('catalog-next'.padEnd(512, ' ')); identity(h.f.manifest);
+        if (failure === 'corrupt-catalog') h.f.responses.set(dataArtifactUrl(BASE, h.f.manifest.catalog), 'wrong'.padEnd(512, ' '));
+      } else {
+        h.service.respond = async () => failure === 'truncated' ? new Response('{"version":3')
+          : new Response(new ReadableStream<Uint8Array>({
+            start(controller) { if (failure === 'stream') controller.error(new Error('body transfer failed')); },
+            cancel() { cancelled = true; },
+          }));
+      }
+      const loader = h.create({ manifestTimeoutMs: 25 });
+      try {
+        await assert.rejects(loader.load({ forceDownload: true }), /JSON|transfer failed|cancelled|offline|integrity/i);
+        assert.equal(await (await h.manifestCache.match(BASE))!.text(), before);
+        assert.deepEqual(h.versions, [version]);
+        assert.equal(h.progress.at(-1)?.stage, 'error');
+        assert.deepEqual(h.legacyOptions, []);
+        await tick();
+        if (failure === 'timeout') assert.equal(cancelled, true);
+      } finally { await loader.close(); }
+    }
+  });
+  test('cancellation during a manifest body or replacement catalog never opens the cached fallback', async () => {
+    for (const phase of ['manifest', 'catalog'] as const) {
+      const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+      const before = await (await h.manifestCache.match(BASE))!.text();
+      const version = h.f.manifest.contentVersion;
+      let started = false, cancelled = false;
+      let finish: (() => void) | undefined;
+      if (phase === 'manifest') h.service.respond = async () => new Response(new ReadableStream<Uint8Array>({
+        start() { started = true; }, cancel() { cancelled = true; },
+      }));
+      else { h.f.manifest.catalog = descriptor('catalog-next'.padEnd(512, ' ')); identity(h.f.manifest); }
+      const loader = h.create(phase === 'catalog' ? { fetch: async (input, init) => {
+        if (String(input) !== dataArtifactUrl(BASE, h.f.manifest.catalog)) return h.dependencies.fetch!(input, init);
+        started = true;
+        return new Promise<Response>(resolve => { finish = () => resolve(new Response('late corrupt catalog')); });
+      } } : {});
+      const pending = Promise.allSettled([loader.load()]);
+      while (!started) await tick();
+      await loader.close();
+      const result = (await pending)[0];
+      assert.equal(result.status, 'rejected');
+      if (result.status === 'rejected') assert.equal(result.reason.name, 'AbortError');
+      finish?.(); await tick();
+      if (phase === 'manifest') assert.equal(cancelled, true);
+      assert.deepEqual(h.f.opened, [0], 'only the initial accepted catalog was opened');
+      assert.deepEqual(h.versions, [version]);
+      assert.equal(await (await h.manifestCache.match(BASE))!.text(), before);
+      assert.deepEqual(h.legacyOptions, []);
+    }
+  });
+  test('recovery still rejects a corrupt cached catalog when no verified replacement can be read', async () => {
+    const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+    const previous = structuredClone(h.f.manifest);
+    const before = await (await h.manifestCache.match(BASE))!.text();
+    await h.f.cache.put(dataArtifactUrl(BASE, previous.catalog), new Response('corrupt cached bytes'));
+    h.f.manifest.catalog = descriptor('catalog-next'.padEnd(512, ' ')); identity(h.f.manifest);
+    h.f.responses.clear();
+    const loader = h.create();
+    try {
+      await assert.rejects(loader.load(), /offline/);
+      assert.deepEqual(h.versions, [previous.contentVersion]);
+      assert.equal(h.progress.at(-1)?.stage, 'error');
+      assert.equal(await (await h.manifestCache.match(BASE))!.text(), before);
+      assert.deepEqual(h.legacyOptions, []);
+    } finally { await loader.close(); }
+  });
   test('forced refresh never succeeds by using a cached manifest or a 304', async () => {
     const h = loaderFixture(), first = h.create(); await first.load(); await first.close();
     for (const status of ['offline', '304']) {
