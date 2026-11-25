@@ -13,6 +13,8 @@ import { createSpacerRecord, searchSpacerReferences, type SpacerGenome, type Spa
 import { exportAttachmentProductsFasta, replayAttachmentExperiment, replayProphageExcisionRecord,
   type AttachmentReconstructionInput, type ProphageExcisionInput } from '../../core/src/analysis/prophage-excision';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
+import { analyzeCodonSelection, createCodonSelectionRecord, type CodonAlignmentInput, type CodonSelectionResult } from '../../core/src/analysis/codon-selection';
+import { analyzeAbundanceDataset, createAbundanceAnalysisRecord, type AbundanceDataset, type AbundanceAssociation } from '../../core/src/analysis/abundance';
 import { parseWorkflowCommand, researchWorkflowMain, runTerminalResearchWorker,
   type TerminalWorker, type WorkflowRuntime } from '../../../scripts/research-workflow';
 import { executeTerminalResearchRequest, validateTerminalResearchRequest,
@@ -41,6 +43,154 @@ async function workspace() { return mkdtemp(join(tmpdir(), 'phage-experiment-tes
 async function absent(path: string) {
   await assert.rejects(lstat(path), (cause: NodeJS.ErrnoException) => cause.code === 'ENOENT');
 }
+
+async function codonRecord(): Promise<AnalysisRecord> {
+  const input: CodonAlignmentInput = {
+    format: 'phage-explorer-codon-alignment', version: 1, name: 'Three aligned alanine codons',
+    source: { kind: 'demo', description: 'Hand-derived synonymous-change control', reference: 'Synthetic coding columns', license: 'CC0-1.0' },
+    alignment: { fasta: '>left\nGCTGCTGCT\n>right\nGCTGCCGCT\n', homologousCodons: true,
+      orientation: 'coding-5to3', frame: 0, geneticCode: 11, method: 'Explicitly aligned fixture', reference: 'Synthetic shared codon positions' },
+  };
+  return createCodonSelectionRecord(input, analyzeCodonSelection(input, { windowCodons: 2 }));
+}
+
+async function abundanceRecord(version: 1 | 2): Promise<AnalysisRecord> {
+  // Independent CLR coordinates are x, x, -2x. Of all 5! sample pairings,
+  // identity and reversal alone have |r| = 1, so each exact p-value is 1/60.
+  const x = [-2, -1, 0, 1, 2];
+  const counts: Array<Array<number | null>> = [x.map(Math.exp), x.map(Math.exp), x.map(value => Math.exp(-2 * value))];
+  if (version === 2) counts.forEach((row, index) => row.unshift(index === 0 ? null : 0));
+  const input: AbundanceDataset = {
+    format: 'phage-explorer-abundance', version, name: 'Hand-derived CLR control', units: 'counts',
+    source: { kind: 'local', description: 'Mathematical fixture, not an empirical community', reference: null,
+      ...(version === 2 ? { study: 'Complete-sample control', version: 'test-1', license: 'CC0-1.0' } : {}) },
+    table: { taxa: ['A', 'B', 'C'], samples: [...(version === 2 ? ['missing'] : []), 's1', 's2', 's3', 's4', 's5'], counts },
+    metadata: [{ sampleId: 's1', habitat: 'synthetic' }],
+  };
+  return createAbundanceAnalysisRecord(input, analyzeAbundanceDataset(input, { pseudocount: 0, permutations: 199, numNiches: 2, seed: 7 }));
+}
+
+describe('native aligned-codon and abundance evidence replay', () => {
+  it('recomputes aligned-codon counts, windows and JC69 estimates in the production worker', async () => {
+    const record = await codonRecord(), content = serializeAnalysisRecord(record);
+    const replay = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'json' }, signal());
+    assert(replay.type === 'experiment-replayed');
+    assert.equal(replay.exportText, content); assert.equal(replay.report.verified, true);
+    const restored = await parseAnalysisRecord(replay.exportText!);
+    const result = restored.fields.comparisons.value as unknown as CodonSelectionResult;
+    assert.equal(result.geneticCode, 11); assert.equal(result.pairs.length, 1);
+    const pair = result.pairs[0];
+    assert.equal(pair.overall.retained, 3); assert.equal(pair.overall.synonymousSites, 3);
+    assert.equal(pair.overall.nonsynonymousSites, 6); assert.equal(pair.overall.synonymousDifferences, 1);
+    assert.equal(pair.overall.nonsynonymousDifferences, 0); assert.equal(pair.overall.dN.value, 0);
+    assert(Math.abs(pair.overall.dS.value! - (-.75 * Math.log(5 / 9))) < 1e-12);
+    assert.equal(pair.overall.omega, 0);
+    assert.deepEqual(pair.windows.map(window => [window.startCodon, window.endCodon, window.retained]), [[0, 2, 2], [2, 3, 1]]);
+    assert.equal(pair.windows[1].omega, null); // No synonymous differences does not establish a finite ratio.
+    assert.deepEqual(restored.inputs, record.inputs); assert.deepEqual(restored.references, record.references);
+    assert(!JSON.stringify(replay.report).includes('GCTGCTGCT'));
+  });
+
+  it('replays both abundance method versions with exact permutation evidence and complete-sample missingness', async () => {
+    for (const version of [1, 2] as const) {
+      const record = await abundanceRecord(version), content = serializeAnalysisRecord(record);
+      const replay = await runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'json' }, signal());
+      assert(replay.type === 'experiment-replayed');
+      assert.equal(replay.exportText, content); assert.equal(replay.report.method.version, String(version));
+      const restored = await parseAnalysisRecord(replay.exportText!);
+      const associations = restored.fields.associations.value as unknown as AbundanceAssociation[];
+      assert.equal(associations.length, 3);
+      assert.deepEqual(associations.map(pair => [pair.source, pair.target]), [['A', 'B'], ['A', 'C'], ['B', 'C']]);
+      associations.forEach((pair, index) => {
+        assert(Math.abs(pair.correlation - (index === 0 ? 1 : -1)) < 1e-12);
+        assert(Math.abs(pair.pvalue - 1 / 60) < 1e-12); assert(Math.abs(pair.qvalue - 1 / 60) < 1e-12);
+      });
+      const coverage = restored.fields.coverage.value as unknown as {
+        samples: string[]; diagnostics: { permutationMode: string; permutationsUsed: number;
+          missingness?: { missingCells: number; incompleteSamples: string[] } };
+      };
+      assert.deepEqual(coverage.samples, ['s1', 's2', 's3', 's4', 's5']);
+      assert.equal(coverage.diagnostics.permutationMode, 'exact'); assert.equal(coverage.diagnostics.permutationsUsed, 120);
+      if (version === 1) assert.equal(coverage.diagnostics.missingness, undefined);
+      else {
+        assert.equal(coverage.diagnostics.missingness?.missingCells, 1);
+        assert.deepEqual(coverage.diagnostics.missingness?.incompleteSamples, ['missing']);
+        assert.equal((restored.inputs[0].data as unknown as AbundanceDataset).table.counts[0][0], null);
+      }
+      assert.deepEqual(restored.inputs, record.inputs); assert.equal(restored.seed, 7);
+    }
+  });
+
+  it('rejects rehashed codon/abundance outputs, incompatible versions, references and source labels', async () => {
+    for (const record of [await codonRecord(), await abundanceRecord(2)]) {
+      for (const change of [
+        (copy: AnalysisRecord) => {
+          if (copy.method.id === 'aligned-codon-dnds') (copy.fields.comparisons.value as unknown as CodonSelectionResult).pairs[0].overall.synonymousDifferences = 0;
+          else (copy.fields.associations.value as unknown as AbundanceAssociation[])[0].pvalue = 0;
+        },
+        (copy: AnalysisRecord) => { copy.method.version = '999'; },
+        (copy: AnalysisRecord) => { copy.references[0].version = 'changed'; },
+        (copy: AnalysisRecord) => { copy.inputs[0].source = copy.inputs[0].source === 'demo' ? 'local' : 'external'; },
+      ]) {
+        const content = await resign(record, change);
+        await parseAnalysisRecord(content);
+        await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content, outputFormat: 'json' }, signal()));
+      }
+    }
+  });
+
+  it('enforces original bounded-method limits inside the replay worker', async () => {
+    const codons = await resign(await codonRecord(), copy => {
+      const input = copy.inputs[0].data as unknown as CodonAlignmentInput;
+      input.alignment.fasta = Array.from({ length: 32 }, (_, index) => '>record' + index + '\nGCTGCTGCT').join('\n');
+      copy.parameters.comparison = 'all-pairs'; copy.parameters.referenceId = null;
+    });
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: codons, outputFormat: 'json' }, signal()), /128-pair/);
+    const abundance = await resign(await abundanceRecord(1), copy => {
+      const input = copy.inputs[0].data as unknown as AbundanceDataset;
+      input.table = { taxa: Array.from({ length: 100 }, (_, i) => 't' + i), samples: Array.from({ length: 500 }, (_, i) => 's' + i),
+        counts: Array.from({ length: 100 }, () => Array.from({ length: 500 }, (_, i) => i + 1)) };
+      input.metadata = []; copy.parameters.permutations = 999;
+    });
+    await assert.rejects(runTerminalResearchWorker({ type: 'replay-experiment', content: abundance, outputFormat: 'json' }, signal()), /workload exceeds/);
+  });
+
+  it('exclusively saves verified JSON and refuses unsupported tabular exports without partial files', async () => {
+    const dir = await workspace();
+    for (const record of [await codonRecord(), await abundanceRecord(2)]) {
+      const input = join(dir, record.method.id + '.json'), output = join(dir, record.method.id + '-verified.json');
+      const content = serializeAnalysisRecord(record); await writeFile(input, content);
+      const replay = await invoke(['replay-experiment', '--input', input, '--output', output]);
+      assert.equal(replay.code, 0, replay.error); assert.equal(JSON.parse(replay.output).verified, true);
+      assert.equal(await readFile(output, 'utf8'), content);
+      if (process.platform !== 'win32') assert.equal((await stat(output)).mode & 0o777, 0o600);
+      const duplicate = await invoke(['replay-experiment', '--input', input, '--output', output]);
+      assert.equal(duplicate.code, 1); assert.equal(duplicate.output, ''); assert.equal(await readFile(output, 'utf8'), content);
+      const table = join(dir, record.method.id + '.tsv');
+      const unsupported = await invoke(['replay-experiment', '--input', input, '--format', 'tsv', '--output', table]);
+      assert.equal(unsupported.code, 1); assert.equal(unsupported.output, ''); assert.match(unsupported.error, /TSV export is not defined/);
+      await absent(table); assert.equal(await readFile(input, 'utf8'), content);
+    }
+  });
+
+  it('cancels an allocated native abundance replay without publishing output and can retry', async () => {
+    const dir = await workspace(), input = join(dir, 'abundance.json'), output = join(dir, 'verified.json');
+    const content = serializeAnalysisRecord(await abundanceRecord(2)); await writeFile(input, content);
+    const controller = new AbortController(); let exited: Promise<number> | null = null;
+    const cancelled = await invoke(['replay-experiment', '--input', input, '--output', output], {
+      signal: controller.signal, createWorker: () => {
+        const worker = new Worker(new URL('./research-replay.worker.ts', import.meta.url));
+        exited = new Promise(resolve => worker.once('exit', resolve));
+        const post = worker.postMessage.bind(worker);
+        worker.postMessage = message => { post(message); controller.abort(new DOMException('Stop abundance replay', 'AbortError')); };
+        return worker;
+      },
+    });
+    assert.equal(cancelled.code, 130); assert.equal(cancelled.output, ''); await absent(output); assert(exited); await exited;
+    const replay = await invoke(['replay-experiment', '--input', input, '--output', output]);
+    assert.equal(replay.code, 0, replay.error); assert.equal(await readFile(output, 'utf8'), content);
+  });
+});
 
 /** Lifecycle-only transport fixture. Numerical tests below use the real worker. */
 class ReplyWorker extends EventEmitter {

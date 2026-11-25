@@ -6,10 +6,11 @@ import { mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { analysisJson, createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisRecord } from '../../core/src/analysis-result';
-import { parseProteinReferenceBundle, proteinReferenceContentHash } from '../../core/src/protein-reference';
+import { parseProteinAlignmentFasta, parseProteinReferenceBundle, proteinReferenceContentHash, type ProteinAlignmentInput } from '../../core/src/protein-reference';
 import {
   PROTEIN_STRUCTURE_LIMITS, PROTEIN_STRUCTURE_METHOD, createProteinStructureExperiment,
   exportProteinStructureTsv, proteinStructureResultFromRecord, resolveProteinStructureOptions,
+  createProteinAlignmentExperiment, exportProteinAlignmentTsv, type ProteinAlignmentResult,
   type ProteinStructureOptions, type ResolvedProteinStructureOptions, type ProteinStructureResult,
 } from '../../core/src/analysis/tail-fiber-structure';
 import { terminalProteinStructureRequestSha256, validateTerminalResearchRequest, type TerminalResearchRequest } from './research-replay.worker';
@@ -21,6 +22,12 @@ const hash = (text: string) => createHash('sha256').update(text, 'utf8').digest(
 const request = (options: ProteinStructureOptions = {}): Extract<TerminalResearchRequest, { type: 'analyze-protein-structure' }> =>
   ({ type: 'analyze-protein-structure', content: referenceText, options });
 const run = (job: TerminalResearchRequest) => runTerminalResearchWorker(job, new AbortController().signal);
+
+async function alignmentRecord() {
+  const input = parseProteinAlignmentFasta('>target\nACXG\n>second\nAD-G\n>third\nA-AG\n',
+    'Hand-counted alignment', { kind: 'local', description: 'Arithmetic fixture, not an empirical protein study', reference: 'Four supplied alignment columns' });
+  return (await createProteinAlignmentExperiment(input, { proteinId: 'target' })).record;
+}
 
 async function cli(args: string[], runtime: WorkflowRuntime = {}) {
   let output = '', error = '';
@@ -52,6 +59,45 @@ class ReplyWorker extends EventEmitter {
 }
 
 describe('terminal protein reference evidence workflow', () => {
+  it('replays supplied protein alignments in the real worker with exact diversity, missingness and provenance', async () => {
+    const record = await alignmentRecord(), content = serializeAnalysisRecord(record);
+    const replay = await run({ type: 'replay-experiment', content, outputFormat: 'json' });
+    assert(replay.type === 'experiment-replayed');
+    assert.equal(replay.exportText, content); assert.equal(replay.report.verified, true);
+    assert.equal(replay.report.inputRecordSha256, hash(content));
+    assert(!JSON.stringify(replay.report).includes('ACXG'));
+    const restored = await parseAnalysisRecord(replay.exportText!);
+    const result = restored.fields.diversity.value as unknown as ProteinAlignmentResult;
+    assert.deepEqual(result.residues.map(row => [row.position, row.column, row.observed, row.gaps, row.unknown, row.entropyBits]), [
+      [1, 1, 3, 0, 0, 0], [2, 2, 2, 1, 0, 1], [3, 3, 1, 1, 1, null], [4, 4, 3, 0, 0, 0],
+    ]);
+    assert.deepEqual(result.residues[1].counts, { C: 1, D: 1 });
+    assert.equal(restored.fields.geometry.kind, 'unavailable');
+    assert.deepEqual(restored.inputs, record.inputs);
+    const table = await run({ type: 'replay-experiment', content, outputFormat: 'tsv' });
+    assert(table.type === 'experiment-replayed');
+    assert.equal(table.exportText, exportProteinAlignmentTsv(record));
+    const lines = table.exportText!.trimEnd().split('\n').filter(line => !line.startsWith('#'));
+    assert.equal(lines.length, 5);
+    assert.equal(lines[3], 'target\t3\tX\t3\t1\t3\t1\t1\t"{""A"":1}"\t');
+  });
+
+  it('rejects rehashed protein-alignment outputs, altered sources, unsupported versions and oversized rows', async () => {
+    const record = await alignmentRecord();
+    for (const change of [
+      (r: AnalysisRecord) => { (r.fields.diversity.value as unknown as ProteinAlignmentResult).residues[1].entropyBits = 0; },
+      (r: AnalysisRecord) => { (r.inputs[0].data as unknown as ProteinAlignmentInput).rows[1].alignedSequence = 'AC-G'; },
+      (r: AnalysisRecord) => { r.inputs[0].source = 'demo'; },
+      (r: AnalysisRecord) => { r.references[0].version = 'changed'; },
+      (r: AnalysisRecord) => { r.method.version = '999'; },
+      (r: AnalysisRecord) => { (r.inputs[0].data as unknown as ProteinAlignmentInput).rows.forEach(row => { row.alignedSequence = 'A'.repeat(20_001); }); },
+    ]) {
+      const altered = await rehash(record, change);
+      await parseAnalysisRecord(altered); // A valid checksum is not numerical replay.
+      await assert.rejects(run({ type: 'replay-experiment', content: altered, outputFormat: 'json' }));
+    }
+  });
+
   it('keeps explicit source and geometry settings separate from other workflow commands', () => {
     const parsed = parseWorkflowCommand(['analyze-protein-structure', '--input', 'reference.json',
       '--protein', 'lambda-j', '--chain', 'D', '--cutoff', '15', '--min-separation', '4', '--contact-scope', 'chain',

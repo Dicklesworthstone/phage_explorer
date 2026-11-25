@@ -354,7 +354,12 @@ export is the residue table. All analysis settings are resolved before dispatch.
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, RNA maximum-pairing intervals,
 attachment integration, declared prophage excision, mosaic reference-similarity, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
-plaque-count-growth and corrected-PFU growth JSON. Legacy accelerated GC-skew
+supplied protein-alignment diversity, aligned-codon dN/dS, abundance CLR/NMF,
+plaque-count-growth, corrected-PFU growth and measured inactivation JSON. Supplied
+protein alignment TSV preserves every target residue, alignment column and missing
+observation; codon and abundance replay export complete JSON only. Abundance
+versions 1 and 2 retain their original complete-sample and missingness semantics.
+Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 Aligned-site compatibility TSV contains every compared pair and original alignment
 coordinates; use the alignment-compatibility command's sites export for excluded columns.

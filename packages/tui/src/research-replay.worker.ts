@@ -15,7 +15,7 @@ import { EXACT_REPEAT_METHOD, CIRCULAR_EXACT_REPEAT_METHOD, resolveExactRepeatOp
 import { MOSAIC_METHOD, parseMosaicDataset, resolveMosaicRadarConfig,
   type MosaicDataset, type MosaicRadarConfig } from '../../core/src/analysis/recombination-radar';
 import { parseProteinReferenceBundle, type ProteinReferenceBundle } from '../../core/src/protein-reference';
-import { PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
+import { PROTEIN_ALIGNMENT_METHOD, PROTEIN_STRUCTURE_METHOD, PROTEIN_STRUCTURE_LIMITS, resolveProteinStructureOptions,
   type ProteinStructureOptions, type ResolvedProteinStructureOptions } from '../../core/src/analysis/tail-fiber-structure';
 import { SPACER_METHOD } from '../../core/src/analysis/spacer-reference';
 import { parseRNAInterval, type RNAStructureRequest } from '../../core/src/analysis/rna-structure-experiment';
@@ -719,6 +719,16 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const experiment = await replayCompatibilityExperiment(request.content);
       fresh = experiment.record;
       table = () => exportCompatibilityPairsTsv(experiment);
+    } else if (saved.method.id === 'aligned-codon-dnds') {
+      const { replayCodonSelectionRecord } = await import('../../core/src/analysis/codon-selection');
+      fresh = (await replayCodonSelectionRecord(request.content)).record;
+    } else if (saved.method.id === 'abundance-clr-nmf') {
+      const { replayAbundanceAnalysis } = await import('../../core/src/analysis/abundance');
+      fresh = (await replayAbundanceAnalysis(request.content)).record;
+    } else if (saved.method.id === PROTEIN_ALIGNMENT_METHOD.id) {
+      const { replayProteinAlignmentExperiment, exportProteinAlignmentTsv } = await import('../../core/src/analysis/tail-fiber-structure');
+      fresh = (await replayProteinAlignmentExperiment(request.content)).record;
+      table = exportProteinAlignmentTsv;
     } else if (saved.method.id === PROTEIN_STRUCTURE_METHOD.id) {
       const { replayProteinStructureExperiment, exportProteinStructureTsv } = await import('../../core/src/analysis/tail-fiber-structure');
       fresh = (await replayProteinStructureExperiment(request.content)).record;
@@ -732,7 +742,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = experiment.record;
       table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, attachment integration, prophage excision, mosaic reference similarity, aligned-DNA site compatibility, sourced spacer comparisons, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, attachment integration, prophage excision, mosaic reference similarity, aligned-DNA site compatibility, aligned-codon dN/dS, abundance CLR/NMF, sourced spacer comparisons, supplied protein alignment diversity, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.
