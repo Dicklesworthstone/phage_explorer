@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createAnalysisRecord, serializeAnalysisRecord, type AnalysisJson, type AnalysisRecord } from '@phage-explorer/core';
+import { createAnalysisRecord, importLocalGenomes, serializeAnalysisRecord, type AnalysisJson, type AnalysisRecord } from '@phage-explorer/core';
 import {
   createGenomeComparisonExperiment, genomeComparisonResultData, replayGenomeComparisonExperiment,
   resolveGenomeComparisonOptions, type ComparisonGenomeInput,
@@ -92,6 +92,41 @@ describe('complete portable genome comparison', () => {
     expect(same.record.fields.comparison.coverage).toEqual({ available: 8, total: 14, unit: 'bases' });
     expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(same.record))).record.resultId).toBe(same.record.resultId);
   });
+
+  it('preserves imported circular and reverse joined-CDS lengths through comparison export and replay', async () => {
+    const genomes = await Promise.all(['join(49..60,1..6)', 'complement(join(49..60,1..6))'].map(async (location, i) => {
+      const imported = await importLocalGenomes({ name: `joined-${i}.gb`, text: [
+        `LOCUS       JOINED${i} 60 bp DNA circular`,
+        `ACCESSION   JOINED${i}`,
+        'FEATURES             Location/Qualifiers',
+        `     CDS             ${location}`,
+        '                     /gene="joined"',
+        'ORIGIN',
+        `        1 ${'acgt'.repeat(15)}`,
+        '//',
+      ].join('\n') });
+      const { phage, sequence } = imported.genomes[0];
+      return { phage: { id: phage.id, name: phage.name, accession: phage.accession },
+        source: 'local' as const, sequence, genes: phage.genes, codonUsage: null };
+    }));
+    const accepted = await createGenomeComparisonExperiment(genomes[0], genomes[1]);
+    // Twelve terminal bases plus six starting bases = 18, on either strand.
+    expect(accepted.result.geneContent).toMatchObject({ avgGeneLengthA: 18, avgGeneLengthB: 18,
+      genesA: 1, genesB: 1, geneDensityA: 1000 / 60, geneDensityB: 1000 / 60 });
+    expect(accepted.record.method.version).toBe('4');
+    const json = serializeAnalysisRecord(accepted.record);
+    const replayed = await replayGenomeComparisonExperiment(json);
+    expect(replayed.record).toEqual(accepted.record);
+    expect(replayed.genomeA.genes).toEqual(genomes[0].genes);
+    expect(replayed.genomeB.genes).toEqual(genomes[1].genes);
+    const fabricated = structuredClone(accepted.record);
+    const metrics = fabricated.fields.comparison.value as Record<string, AnalysisJson>;
+    (metrics.geneContent as Record<string, AnalysisJson>).avgGeneLengthA = 60;
+    await expect(replayGenomeComparisonExperiment(await rehash(fabricated))).rejects.toThrow('fresh computation');
+    const oldMethod = structuredClone(accepted.record);
+    oldMethod.method.version = '3';
+    await expect(replayGenomeComparisonExperiment(await rehash(oldMethod))).rejects.toThrow('incompatible');
+  });
 });
 
 
@@ -117,7 +152,7 @@ describe('case-independent comparison evidence', () => {
       expect(accepted.genomeB.sequence).toBe(b.sequence);
       expect((accepted.record.inputs[1].data as unknown as ComparisonGenomeInput).sequence).toBe(b.sequence);
       expect(accepted.record.inputs[0].sha256).not.toBe(accepted.record.inputs[1].sha256);
-      expect(accepted.record.method.version).toBe('3');
+      expect(accepted.record.method.version).toBe('4');
       expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(accepted.record))).record).toEqual(accepted.record);
     });
   }

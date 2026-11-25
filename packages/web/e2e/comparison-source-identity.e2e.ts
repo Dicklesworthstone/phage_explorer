@@ -287,7 +287,7 @@ for (const scenario of ['source-and-reads', 'cancel-and-recover', 'saved-experim
         const download = await downloading, path = await download.path();
         if (!path) throw new Error('Expected the complete comparison download.');
         const content = await readFile(path, 'utf8'), original = JSON.parse(content);
-        expect(original.method).toMatchObject({ id: 'genome-comparison', version: '3' });
+        expect(original.method).toMatchObject({ id: 'genome-comparison', version: '4' });
         expect(original.parameters).toEqual({ kmerSizes: [2, 4], maxEditDistanceLength: 0, editDistanceWindowSize: 30, editDistanceWindowCount: 2 });
         expect(original.inputs.map((input: { data: { sequence: string } }) => input.data.sequence)).toEqual(['A'.repeat(120), 'A'.repeat(120)]);
         expect(original.fields.comparison.value.sequenceDiff.mask).toHaveLength(120);

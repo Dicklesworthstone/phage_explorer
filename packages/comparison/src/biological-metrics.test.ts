@@ -16,7 +16,7 @@ import {
   compareGeneContent,
   compareDinucleotideBias,
 } from './biological-metrics';
-import { CODON_TABLE, type GeneInfo } from '@phage-explorer/core';
+import { CODON_TABLE, importLocalGenomes, type GeneInfo } from '@phage-explorer/core';
 
 describe('calculateGCContent', () => {
   test('calculates correct GC content for pure G/C sequence', () => {
@@ -422,6 +422,63 @@ describe('compareGeneContent', () => {
 
     // Average: (100 + 200) / 2 = 150
     expect(result.avgGeneLengthA).toBeCloseTo(150, 5);
+  });
+
+  test('measures imported joined CDS without counting skipped bases or the circular-origin gap', async () => {
+    for (const location of [
+      'join(10..18,43..51)',
+      'complement(join(10..18,43..51))',
+      'join(112..120,1..9)',
+      'complement(join(112..120,1..9))',
+    ]) {
+      const { genomes } = await importLocalGenomes({ name: 'joined.gb', text: [
+        'LOCUS       JOINED 120 bp DNA circular',
+        'ACCESSION   JOINED',
+        'FEATURES             Location/Qualifiers',
+        `     CDS             ${location}`,
+        '                     /gene="joined"',
+        '                     /codon_start=2',
+        'ORIGIN',
+        `        1 ${'acgt'.repeat(30)}`,
+        '//',
+      ].join('\n') });
+      const result = compareGeneContent(genomes[0].phage.genes, [makeGene('joined', 0, 18)], 120, 120);
+      // Each inclusive interval contains nine bases. Neither the internal gap
+      // nor the rest of the circle is part of the 18-base annotated transcript.
+      // codon_start affects translation, not the nucleotide annotation length.
+      expect(result.avgGeneLengthA).toBe(18);
+      expect(result.avgGeneLengthB).toBe(18);
+      expect(result.genesA).toBe(1);
+      expect(result.sharedGeneNames).toBe(1);
+      expect(result.geneDensityA).toBe(result.geneDensityB);
+    }
+  });
+
+  test('counts repeated transcript positions and overlapping genes independently', () => {
+    const joined: GeneInfo = { ...makeGene('joined', 0, 15), qualifiers: {
+      _segments: [{ start: 0, end: 9, strand: '+' }, { start: 6, end: 15, strand: '+' }],
+    } };
+    const reverse: GeneInfo = { ...makeGene('overlap', 3, 12), strand: '-' };
+    const result = compareGeneContent([joined, reverse], [reverse, joined], 120, 120);
+    // join(1..9,7..15) explicitly includes three positions twice (18 bases).
+    // The other gene independently covers 9 bases: average (18 + 9) / 2.
+    expect(result.avgGeneLengthA).toBe(13.5);
+    expect(result.avgGeneLengthB).toBe(13.5);
+    expect(result.genesA).toBe(2);
+    expect(result.geneNameJaccard).toBe(1);
+  });
+
+  test('refuses malformed split annotations rather than computing a partial or bounding length', () => {
+    for (const segments of [
+      'join(1..9,22..30)', [],
+      [{ start: 0, end: 9, strand: '+' }, { start: 21, end: 30, strand: '?' }],
+      [{ start: 0, end: 9, strand: '+' }, { start: 21, end: 31, strand: '+' }],
+      [{ start: 1, end: 9, strand: '+' }, { start: 21, end: 30, strand: '+' }],
+    ]) {
+      const invalid: GeneInfo = { ...makeGene('invalid', 0, 30), qualifiers: { _segments: segments } };
+      expect(() => compareGeneContent([invalid], [], 120, 120)).toThrow('segments');
+      expect(() => compareGeneContent([], [invalid], 120, 120)).toThrow('segments');
+    }
   });
 
   test('handles empty gene lists', () => {

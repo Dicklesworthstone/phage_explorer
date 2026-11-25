@@ -1,7 +1,7 @@
 # Complete genome-comparison experiments
 
 The browser **Comparison** panel and native `comparison` command use the same
-`genome-comparison` method, version 3. A portable experiment retains both complete
+`genome-comparison` method, version 4. A portable experiment retains both complete
 accepted genomes, original annotation rows, supplied codon counts, effective
 settings, and all comparison outputs. Reopening recomputes the experiment before
 accepting the saved evidence.

@@ -25,7 +25,7 @@ import type {
   GeneContentComparison,
 } from './types';
 import type { GeneInfo } from '@phage-explorer/core';
-import { CODON_TABLE, AMINO_ACIDS, countAminoAcidUsage, translateSequence } from '@phage-explorer/core';
+import { CODON_TABLE, AMINO_ACIDS, countAminoAcidUsage, translateSequence, getGeneMapSegments } from '@phage-explorer/core';
 import { extractCanonicalKmerFrequencies } from './kmer-analysis';
 
 /**
@@ -503,6 +503,31 @@ export function compareAminoAcidUsage(
   };
 }
 
+/** Length of the annotated transcript, not its outer genomic bounding interval.
+ * Joined segments can cross an origin or reuse positions; count each declared
+ * segment exactly once, without treating intervening bases as part of the gene.
+ */
+function annotatedGeneLength(gene: GeneInfo): number {
+  if (!gene.qualifiers || !Object.hasOwn(gene.qualifiers, '_segments')) return gene.endPos - gene.startPos;
+  const raw = gene.qualifiers._segments;
+  const segments = getGeneMapSegments(gene);
+  // The shared map decoder filters malformed entries for rendering. A numerical
+  // summary must not silently interpret that filtered subset as the whole gene.
+  if (!Array.isArray(raw) || !raw.length || segments.length !== raw.length) {
+    throw new RangeError('Gene segments must contain complete, valid source intervals.');
+  }
+  let length = 0, start = Infinity, end = -Infinity;
+  for (const segment of segments) {
+    length += segment.end - segment.start;
+    start = Math.min(start, segment.start);
+    end = Math.max(end, segment.end);
+  }
+  if (start !== gene.startPos || end !== gene.endPos) {
+    throw new RangeError('Gene segments must match their annotated bounding interval.');
+  }
+  return length;
+}
+
 /**
  * Compare gene content between two phages.
  */
@@ -536,12 +561,12 @@ export function compareGeneContent(
   const densityA = genomeLengthA > 0 ? genesA.length / (genomeLengthA / 1000) : 0;
   const densityB = genomeLengthB > 0 ? genesB.length / (genomeLengthB / 1000) : 0;
 
-  // Average gene lengths
+  // Average annotation lengths; separate overlapping genes remain independent.
   const avgLengthA = genesA.length > 0
-    ? genesA.reduce((sum, g) => sum + (g.endPos - g.startPos), 0) / genesA.length
+    ? genesA.reduce((sum, gene) => sum + annotatedGeneLength(gene), 0) / genesA.length
     : 0;
   const avgLengthB = genesB.length > 0
-    ? genesB.reduce((sum, g) => sum + (g.endPos - g.startPos), 0) / genesB.length
+    ? genesB.reduce((sum, gene) => sum + annotatedGeneLength(gene), 0) / genesB.length
     : 0;
 
   // Jaccard on gene names
