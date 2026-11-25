@@ -1,5 +1,5 @@
 import { test, expect, type Page, type TestInfo } from '@playwright/test';
-import { setupTestHarness } from './e2e-harness';
+import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 import { ActionRegistry, ActionIds } from '../src/keyboard/actionRegistry';
 import { formatPrimaryActionShortcut, type ShortcutPlatform } from '../src/keyboard/actionSurfaces';
 
@@ -25,6 +25,41 @@ async function captureErrorBoundaryDetails(page: Page, testInfo: TestInfo) {
 }
 
 test.describe('Command Palette Drift', () => {
+  test('Enter and Tab use the highlighted row across categories and recent commands', async ({ page }, testInfo) => {
+    const { finalize } = setupTestHarness(page, testInfo);
+    await page.addInitScript(() => localStorage.setItem('phage-explorer-recent-commands', '["overlay.help"]'));
+    try {
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, testInfo);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      const palette = page.getByTestId('overlay-commandPalette');
+      const input = page.getByTestId('command-palette-input');
+      // Registered late, but displayed near the top alongside the other navigation commands.
+      const title = ActionRegistry[ActionIds.NavSavedViews].title;
+      for (const key of ['Enter', 'Tab']) {
+        await page.getByRole('button', { name: /command palette/i }).first().click();
+        await expect(palette.getByRole('group', { name: 'Recent commands' })).toBeVisible();
+        const row = palette.getByRole('group', { name: 'Navigation commands' }).getByRole('option', { name: new RegExp(title) });
+        const index = Number(await row.getAttribute('data-cmd-index'));
+        expect(index).toBeGreaterThan(0);
+        for (let i = 0; i < index; i++) await input.press('ArrowDown');
+        await expect(row).toHaveAttribute('aria-selected', 'true');
+        await expect(input).toHaveAttribute('aria-activedescendant', `cmd-item-${index}`);
+        await input.press(key);
+        if (key === 'Enter') {
+          await expect(page.getByTestId('overlay-savedViews')).toBeVisible();
+          await page.keyboard.press('Escape');
+          await expect(page.getByTestId('overlay-savedViews')).toBeHidden();
+        } else {
+          await expect(input).toHaveValue(title);
+        }
+      }
+    } finally {
+      await finalize();
+    }
+  });
+
   test('should display shortcuts matching ActionRegistry', async ({ page }, testInfo) => {
     const { finalize } = setupTestHarness(page, testInfo);
 

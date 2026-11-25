@@ -805,20 +805,24 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
     }
   }, [paletteOpen]);
 
-  // Total navigable items (recent commands + filtered commands)
-  const showRecent = !query.trim() && recentCommands.length > 0;
-  const totalItems = (showRecent ? recentCommands.length : 0) + filteredCommands.length;
-
-  // Get command at a given flat index (accounting for recent commands)
-  const getCommandAtIndex = useCallback((index: number): Command | undefined => {
-    if (showRecent) {
-      if (index < recentCommands.length) {
-        return recentCommands[index];
-      }
-      return filteredCommands[index - recentCommands.length];
+  const groupedCommands = useMemo(() => {
+    const groups = new Map<string, Command[]>();
+    for (const cmd of filteredCommands) {
+      const group = groups.get(cmd.category);
+      if (group) group.push(cmd);
+      else groups.set(cmd.category, [cmd]);
     }
-    return filteredCommands[index];
-  }, [showRecent, recentCommands, filteredCommands]);
+    return Array.from(groups.entries());
+  }, [filteredCommands]);
+
+  // A command can appear twice (recent and by category). Keep the keyboard index
+  // in exactly the same section and row order as the rendered listbox.
+  const showRecent = !query.trim() && recentCommands.length > 0;
+  const visibleCommands = useMemo(() => [
+    ...(showRecent ? recentCommands : []),
+    ...groupedCommands.flatMap(([, group]) => group),
+  ], [groupedCommands, recentCommands, showRecent]);
+  const totalItems = visibleCommands.length;
 
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -843,7 +847,7 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
         break;
       case 'Enter':
         e.preventDefault();
-        const cmd = getCommandAtIndex(selectedIndex);
+        const cmd = visibleCommands[selectedIndex];
         if (cmd) {
           executeCommand(cmd);
         }
@@ -852,13 +856,13 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
         if (totalItems === 0) break;
         e.preventDefault();
         // Tab completion: fill in the selected command's label
-        const tabCmd = getCommandAtIndex(selectedIndex);
+        const tabCmd = visibleCommands[selectedIndex];
         if (tabCmd) {
           setQuery(tabCmd.label);
         }
         break;
     }
-  }, [executeCommand, getCommandAtIndex, query, selectedIndex, totalItems]);
+  }, [executeCommand, query, selectedIndex, totalItems, visibleCommands]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -876,15 +880,6 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
   if (!paletteOpen) {
     return null;
   }
-
-  // Group commands by category
-  const groupedCommands = filteredCommands.reduce((acc, cmd) => {
-    if (!acc[cmd.category]) {
-      acc[cmd.category] = [];
-    }
-    acc[cmd.category].push(cmd);
-    return acc;
-  }, {} as Record<string, Command[]>);
 
   let flatIndex = 0;
 
@@ -1036,7 +1031,7 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
             </div>
           )}
 
-          {Object.entries(groupedCommands).map(([category, cmds]) => (
+          {groupedCommands.map(([category, cmds]) => (
             <div key={category} role="group" aria-label={`${category} commands`}>
               <div className="text-muted text-xs uppercase tracking-wider p-2 border-b border-border-light flex items-center gap-2" aria-hidden="true">
                 <span className="command-palette-category-icon" aria-hidden="true">
