@@ -969,7 +969,17 @@ Core annotations are built by `bun run build:db`; run `bun run build:db:annotate
 3. **Intrinsic codon metrics** → Nc (effective number of codons), per-gene intrinsic CAI, and host-specific tAI for available host tRNA pools
 4. **Protein embeddings** → `bun run build:esm2` downloads the public 8M-parameter ESM2 checkpoint and stores mean-pooled 320-dimensional vectors
 5. **Pfam domains** → `bun run build:pfam` scans all proteins locally with PyHMMER and Pfam-A
-6. **SQLite build** → Indexed, compressed database (~10 MB with both embedding sets and domain hits)
+6. **Protein atlas** → `bun run build:atlas` recomputes UMAP coordinates and HDBSCAN clusters from the validated ESM2 vectors before the database is published
+7. **SQLite build** → Indexed, compressed database (~10 MB with both embedding sets and domain hits)
+
+Atlas generation writes only the database named by `--database` (default `phage.db`).
+It verifies current CDS and embedding identities, records model revision, vector
+digest, projection parameters and library versions, and replaces one model's
+coordinates atomically. Changed inputs, invalid vectors, failed fitting or failed
+publication preserve the previous atlas. At least four validated embeddings are
+required; legacy vectors without source provenance must be rebuilt with
+`build:esm2`. Projection proximity and density clusters do not establish protein
+function or structural similarity.
 
 InterPro/SMART and broader KEGG pipelines remain optional enhancements; the shipped database includes Pfam-A hits and conservative AMG-to-KEGG ortholog mappings without requiring credentials.
 

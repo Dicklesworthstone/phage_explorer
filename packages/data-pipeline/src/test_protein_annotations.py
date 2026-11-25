@@ -2,7 +2,9 @@
 not claims that a neural model or HMM search has been run in this test suite."""
 import importlib.util
 import gzip
+import hashlib
 import json
+import math
 from pathlib import Path
 import shutil
 import sqlite3
@@ -10,6 +12,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parent
 sys.path.insert(0, str(SOURCE))
@@ -25,6 +28,7 @@ def module(name):
 
 esm = module("generate-esm2-embeddings")
 pfam = module("generate-pfam-domains")
+atlas = module("generate-latent-space-atlas")
 MODEL = "fixture-model"
 HMM = {"release": "99.0", "hmmSha256": "a" * 64, "eValue": 1e-5,
     "thresholdPolicy": pfam.THRESHOLD_POLICY, "toolVersion": "literal-fixture"}
@@ -140,6 +144,16 @@ class AnnotationPublicationTests(unittest.TestCase):
         self.connection.commit()
         esm.publish_embeddings(self.connection, self.report, self.embedding_rows(), MODEL, 30)
         self.assertEqual(self.connection.execute("SELECT value FROM annotation_meta WHERE key = 'latent_space_atlas'").fetchone()[0], unrelated)
+
+    def test_embedding_updates_invalidate_only_matching_model_specific_atlas_metadata(self):
+        self.connection.executemany("INSERT INTO annotation_meta VALUES (?, ?, 1)", [
+            ("latent_space_atlas:" + MODEL, json.dumps({"model": MODEL, "count": 2})),
+            ("latent_space_atlas:other-model", json.dumps({"model": "other-model", "count": 7})),
+        ])
+        self.connection.commit()
+        esm.publish_embeddings(self.connection, self.report, self.embedding_rows(), MODEL, 20)
+        self.assertIsNone(self.connection.execute("SELECT value FROM annotation_meta WHERE key=?", ("latent_space_atlas:" + MODEL,)).fetchone())
+        self.assertEqual(json.loads(self.connection.execute("SELECT value FROM annotation_meta WHERE key='latent_space_atlas:other-model'").fetchone()[0])["count"], 7)
 
     def test_default_embeddings_invalidate_only_default_screening(self):
         model = "facebook/esm2_t6_8M_UR50D"
@@ -297,6 +311,189 @@ class AnnotationPublicationTests(unittest.TestCase):
         self.connection.commit()
         with self.assertRaisesRegex(RuntimeError, "incomplete sequence chunks"):
             load_protein_inputs(self.connection, log_exclusions=False)
+
+
+class AtlasPublicationTests(unittest.TestCase):
+    """Literal projections exercise publication, not UMAP's scientific validity."""
+    def setUp(self):
+        self.directory = Path(tempfile.mkdtemp(prefix="phage-atlas-publication-"))
+        self.path = self.directory / "fixture.db"
+        self.connection = sqlite3.connect(self.path)
+        self.addCleanup(self.connection.close)
+        self.connection.executescript("""
+            CREATE TABLE phages (id INTEGER PRIMARY KEY, genome_length INTEGER);
+            CREATE TABLE sequences (phage_id INTEGER, chunk_index INTEGER, sequence TEXT);
+            CREATE TABLE genes (id INTEGER PRIMARY KEY, phage_id INTEGER, name TEXT, locus_tag TEXT,
+                start_pos INTEGER, end_pos INTEGER, strand TEXT, product TEXT, type TEXT, qualifiers TEXT);
+            CREATE TABLE fold_embeddings (phage_id INTEGER, gene_id INTEGER, model TEXT, dims INTEGER,
+                vector BLOB, meta TEXT, created_at INTEGER, UNIQUE(gene_id, model));
+            CREATE TABLE annotation_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
+        """)
+        coding = ["ATGAAATAA", "ATGGCTTAA", "ATGGGTTAA", "ATGTTTTAA", "ATGACTTAA", "ATGTGTTAA"]
+        genome = "".join(coding)
+        self.connection.execute("INSERT INTO phages VALUES (1, ?)", (len(genome),))
+        self.connection.execute("INSERT INTO sequences VALUES (1, 0, ?)", (genome,))
+        self.connection.execute("INSERT INTO phages VALUES (2, 0)")
+        for i, protein in enumerate(["MK", "MA", "MG", "MF", "MT", "MC"]):
+            self.connection.execute("INSERT INTO genes VALUES (?, 1, ?, ?, ?, ?, '+', 'fixture', 'CDS', ?)",
+                (i + 1, f"gene{i + 1}", f"locus{i + 1}", i * 9, i * 9 + 9,
+                    json.dumps({"translation": protein, "transl_table": "11", "_sourceFeatureIndex": i,
+                        "_location": f"{i * 9 + 1}..{i * 9 + 9}"})))
+        self.connection.commit()
+        self.report = load_protein_inputs(self.connection, log_exclusions=False)
+        self.model = atlas.DEFAULT_MODEL
+        self.seed_embeddings(self.model)
+        self.coords = [[float(i), float(i * i)] for i in range(6)]
+        self.clusters = [0, 0, 0, 1, 1, -1]
+        self.scores = [0.1, 0.2, 0.3, 0.4, 0.5, 0.9]
+        self.method = {"id": "literal-publication-test", "parameters": {"purpose": "transaction tests only"}}
+
+    def seed_embeddings(self, model):
+        rows = []
+        for i, item in enumerate(self.report["proteins"]):
+            meta = {key: item[key] for key in
+                ["sourceGeneIds", "sequenceSha256", "cdsSha256", "geneticCode", "codonStart"]}
+            meta.update({"inputMethod": self.report["method"], "revision": "b" * 40,
+                "checkpoint": model, "pooling": atlas.POOLING, "normalized": True,
+                "source": "literal-unit-test", "sequenceLength": len(item["sequence"]), "truncated": False,
+                "encodedResidues": len(item["sequence"]),
+                "encodedSequenceSha256": hashlib.sha256(item["sequence"].encode()).hexdigest()})
+            rows.append((1, item["geneId"], model, 2,
+                struct.pack("<2f", math.cos(i / 3), math.sin(i / 3)), json.dumps(meta), 10))
+        self.connection.executemany("INSERT INTO fold_embeddings VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        self.connection.execute("INSERT OR REPLACE INTO annotation_meta VALUES ('esm2_embeddings', ?, 10)",
+            (json.dumps({"model": model, "count": len(rows), "atlasNeedsRebuild": True}),))
+        self.connection.commit()
+
+    def inputs(self, model=None):
+        return atlas.read_atlas_inputs(self.connection, model or self.model)
+
+    def publish(self, inputs=None):
+        return atlas.publish_atlas(self.connection, inputs or self.inputs(), self.coords,
+            self.clusters, self.scores, self.method, 20)
+
+    def snapshot(self):
+        names = self.connection.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()
+        return {name: self.connection.execute('SELECT * FROM "' + name + '" ORDER BY 1, 2').fetchall() for name, in names}
+
+    def test_atlas_replaces_stale_rows_and_preserves_other_model(self):
+        inputs = self.inputs()
+        result = self.publish(inputs)
+        self.assertEqual(result["inputSha256"], inputs.sha256)
+        self.assertEqual(result["coverage"], {"eligibleProteins": 6, "embeddedProteins": 6})
+        self.assertEqual((result["clusters"], result["outliers"]), (2, 1))
+        self.assertEqual(result["embeddingSpace"]["revision"], "b" * 40)
+        self.assertAlmostEqual(result["mean_outlier_score"], 0.4)
+        self.connection.execute("INSERT INTO fold_embedding_coords VALUES (NULL, 1, 999, ?, 9, 9, -1, 1, 1)", (self.model,))
+        self.connection.execute("INSERT INTO fold_embedding_coords VALUES (NULL, 1, 1, 'other-model', 7, 8, 2, 0.3, 1)")
+        self.connection.execute("INSERT INTO annotation_meta VALUES ('latent_space_atlas:other-model', 'preserved reference', 1)")
+        self.connection.commit()
+        self.publish(inputs)
+        rows = self.connection.execute("SELECT gene_id, x, y FROM fold_embedding_coords WHERE model = ? ORDER BY gene_id", (self.model,)).fetchall()
+        self.assertEqual(rows, [(i + 1, point[0], point[1]) for i, point in enumerate(self.coords)])
+        self.assertEqual(self.connection.execute("SELECT x, y FROM fold_embedding_coords WHERE model='other-model'").fetchall(), [(7, 8)])
+        self.assertEqual(self.connection.execute("SELECT value FROM annotation_meta WHERE key='latent_space_atlas:other-model'").fetchone()[0], "preserved reference")
+        meta = json.loads(self.connection.execute("SELECT value FROM annotation_meta WHERE key='esm2_embeddings'").fetchone()[0])
+        self.assertFalse(meta["atlasNeedsRebuild"])
+        self.assertEqual(meta["atlasInputSha256"], inputs.sha256)
+        self.assertEqual(json.loads(self.connection.execute("SELECT value FROM annotation_meta WHERE key='latent_space_atlas'").fetchone()[0]), result)
+
+    def test_other_model_publication_keeps_the_default_ui_metadata(self):
+        self.publish()
+        before = self.connection.execute("SELECT value FROM annotation_meta WHERE key='latent_space_atlas'").fetchone()[0]
+        self.seed_embeddings("other-model")
+        result = self.publish(self.inputs("other-model"))
+        self.assertEqual(result["model"], "other-model")
+        self.assertEqual(self.connection.execute("SELECT value FROM annotation_meta WHERE key='latent_space_atlas'").fetchone()[0], before)
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM fold_embedding_coords").fetchone()[0], 12)
+
+    def test_rollback_preserves_complete_previous_atlas_and_metadata(self):
+        self.publish()
+        self.connection.execute("CREATE TRIGGER fail_atlas BEFORE INSERT ON fold_embedding_coords WHEN NEW.gene_id=2 BEGIN SELECT RAISE(ABORT, 'literal insert failure'); END")
+        self.connection.commit()
+        before = self.snapshot()
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "literal insert failure"):
+            self.publish()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_changed_vectors_or_metadata_prevent_stale_publication(self):
+        self.publish()
+        for sql, values in [
+            ("UPDATE fold_embeddings SET vector=? WHERE gene_id=1", (struct.pack("<2f", 0, 1),)),
+            ("UPDATE fold_embeddings SET meta=json_set(meta, '$.extraReference', 'changed') WHERE gene_id=1", ()),
+        ]:
+            inputs = self.inputs()
+            self.connection.execute(sql, values)
+            self.connection.commit()
+            before = self.snapshot()
+            with self.assertRaisesRegex(RuntimeError, "Embedding inputs changed"):
+                self.publish(inputs)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_changed_cds_with_unchanged_vectors_cannot_publish(self):
+        inputs = self.inputs()
+        self.publish(inputs)
+        # A synonymous change retains the protein, but changes the actual CDS input.
+        self.connection.execute("UPDATE sequences SET sequence=replace(sequence, 'ATGAAATAA', 'ATGAAGTAA')")
+        self.connection.commit()
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "Genomic CDS inputs changed"):
+            self.publish(inputs)
+        with self.assertRaisesRegex(ValueError, "CDS provenance"):
+            self.inputs()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_invalid_vectors_and_ownership_fail_before_atlas_schema_is_created(self):
+        updates = [
+            ("phage_id=?", (2,), "owned"),
+            ("dims=?", (3,), "dimensions"),
+            ("vector=?", (struct.pack("<2f", float('nan'), 1),), "finite"),
+            ("vector=?", (struct.pack("<2f", 0, 0),), "normalized"),
+            ("meta=?", ("{}",), "CDS provenance"),
+            ("meta=json_set(meta, '$.revision', ?)", ("c" * 40,), "mix"),
+            ("meta=json_set(meta, '$.encodedSequenceSha256', ?)", ("d" * 64,), "encoded-residue"),
+        ]
+        for expression, values, error in updates:
+            with self.subTest(expression=expression, error=error):
+                self.connection.execute("BEGIN")
+                self.connection.execute("UPDATE fold_embeddings SET " + expression + " WHERE gene_id=1", values)
+                with self.assertRaisesRegex(ValueError, error):
+                    # Explicit report lets this read see our uncommitted vector fault.
+                    atlas.read_atlas_inputs(self.connection, self.model, self.report)
+                self.connection.rollback()
+        self.assertIsNone(self.connection.execute("SELECT name FROM sqlite_master WHERE name='fold_embedding_coords'").fetchone())
+
+    def test_invalid_or_incomplete_outputs_preserve_previous_generation(self):
+        self.publish()
+        inputs = self.inputs()
+        before = self.snapshot()
+        for coords, clusters, scores in [
+            (self.coords[:-1], self.clusters, self.scores),
+            ([[float('nan'), 0], *self.coords[1:]], self.clusters, self.scores),
+            (self.coords, [-2, *self.clusters[1:]], self.scores),
+            (self.coords, self.clusters, [1.1, *self.scores[1:]]),
+        ]:
+            with self.assertRaisesRegex(ValueError, "outputs"):
+                atlas.publish_atlas(self.connection, inputs, coords, clusters, scores, self.method, 30)
+            self.assertEqual(self.snapshot(), before)
+
+    def test_missing_input_and_small_fitting_corpus_fail_without_writes(self):
+        with self.assertRaises(sqlite3.OperationalError):
+            atlas.process_database(str(self.directory / "absent.db"))
+        self.assertFalse((self.directory / "absent.db").exists())
+        inputs = self.inputs()
+        before = self.snapshot()
+        with self.assertRaisesRegex(ValueError, "at least four"):
+            atlas.compute_projection(inputs._replace(rows=inputs.rows[:3]))
+        self.assertEqual(self.snapshot(), before)
+
+    def test_failed_fitting_leaves_source_byte_identical(self):
+        self.publish()
+        before = self.path.read_bytes()
+        with patch.object(atlas, "compute_projection", side_effect=RuntimeError("literal fit failure")):
+            with self.assertRaisesRegex(RuntimeError, "literal fit failure"):
+                atlas.process_database(str(self.path))
+        self.assertEqual(self.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

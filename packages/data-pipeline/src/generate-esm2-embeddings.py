@@ -161,6 +161,7 @@ def publish_embeddings(connection, report, rows, model, now, *, partial=False):
         connection.execute(
             "DELETE FROM annotation_meta WHERE key = 'latent_space_atlas' AND "
             "CASE WHEN json_valid(value) THEN json_extract(value, '$.model') END = ?", (model,))
+        connection.execute("DELETE FROM annotation_meta WHERE key = ?", ("latent_space_atlas:" + model,))
 
         # This screening metadata is derived specifically from the default model.
         if model == "facebook/esm2_t6_8M_UR50D":
