@@ -235,3 +235,32 @@ test('failed replacement keeps old SQL readable; simultaneous refresh callers ac
     expect(errors).toEqual([]);
   } finally { release(); database.gate = null; }
 });
+
+test('two v2 dataset URLs with the same dbName keep separate offline snapshots', async ({ page, database }) => {
+  await page.goto(database.url);
+  await page.route(url => url.searchParams.has('tenant'), route => route.abort('internetdisconnected'));
+  const observed = await page.evaluate(async () => {
+    const moduleUrl = '/src/db/DatabaseLoader.ts';
+    const { DatabaseLoader } = await import(moduleUrl) as typeof import('../src/db/DatabaseLoader');
+    const dataResponse = await fetch('/phage.db');
+    const manifestResponse = await fetch('/phage.db.manifest.json');
+    if (!dataResponse.ok || !manifestResponse.ok) throw new Error('Version-2 fixture is unavailable.');
+    const data = new Uint8Array(await dataResponse.arrayBuffer());
+    const manifest = await manifestResponse.json();
+    const first = new DatabaseLoader({ databaseUrl: '/phage.db?tenant=first' });
+    const second = new DatabaseLoader({ databaseUrl: '/phage.db?tenant=second' });
+    try {
+      const saved = await first.saveToCache(data, manifest);
+      const foreign = await second.checkCache();
+      const own = await first.checkCache();
+      await second.clearCache();
+      const retained = await first.checkCache();
+      return { saved: saved.success, foreign: foreign.valid, own: own.entry?.sha256,
+        retained: retained.entry?.sha256, expected: manifest.sha256 };
+    } finally { await Promise.all([first.close(), second.close()]); }
+  });
+  expect(observed.saved).toBe(true);
+  expect(observed.foreign).toBe(false);
+  expect(observed.own).toBe(observed.expected);
+  expect(observed.retained).toBe(observed.expected);
+});

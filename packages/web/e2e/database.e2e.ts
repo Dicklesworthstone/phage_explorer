@@ -21,7 +21,7 @@ async function cachedIdentity(page: Page) {
     });
     try {
       const entry = await new Promise<{ data: Uint8Array; contentVersion: string; sha256: string } | undefined>((resolve, reject) => {
-        const request = db.transaction('database').objectStore('database').get('phage-db:snapshot');
+        const request = db.transaction('database').objectStore('database').get(JSON.stringify(['phage-db', new URL('/phage.db.manifest.json', location.href).href, 'snapshot']));
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });
@@ -406,7 +406,7 @@ test(`real data and schema update converges to a verified cache: ${mode}`, async
         const put = IDBObjectStore.prototype.put;
         IDBObjectStore.prototype.put = function(value, key) {
           const request = put.call(this, value, key);
-          if (key === 'phage-db:snapshot' && !sessionStorage.getItem('aborted-update-write')) {
+          if (key === JSON.stringify(['phage-db', new URL('/phage.db.manifest.json', location.href).href, 'snapshot']) && !sessionStorage.getItem('aborted-update-write')) {
             sessionStorage.setItem('aborted-update-write', 'yes');
             request.addEventListener('success', () => this.transaction.abort(), { once: true });
           }
@@ -560,7 +560,7 @@ test('a failed first cache write keeps verified catalog data usable and reports 
       const put = IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put = function(value, key) {
         const request = put.call(this, value, key);
-        if (key === 'phage-db:snapshot') {
+        if (key === JSON.stringify(['phage-db', new URL('/phage.db.manifest.json', location.href).href, 'snapshot'])) {
           request.addEventListener('success', () => this.transaction.abort(), { once: true });
         }
         return request;
@@ -571,5 +571,61 @@ test('a failed first cache write keeps verified catalog data usable and reports 
     await expect(page.getByRole('status', { name: 'Offline database status', exact: true })).toHaveText('Database loaded. Offline storage is unavailable.');
     expect(await cachedIdentity(page)).toBeNull();
     expect(pageErrors).toEqual([]);
+  } finally { await finalize(); }
+});
+
+test('offline upgrade adopts an old snapshot only with a matching manifest for this dataset address', async ({ page }, testInfo) => {
+  const { finalize } = setupTestHarness(page, testInfo);
+  try {
+    const manifest = await (await page.request.get('/phage.db.manifest.json')).json();
+    await page.goto('/?model=0');
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    const original = await cachedIdentity(page);
+
+    const seedLegacy = (matchingAddress: boolean) => page.evaluate(async ({ manifest, matchingAddress }) => {
+      const path = '/phage.db.manifest.json';
+      const address = new URL(path, location.href).href;
+      const key = JSON.stringify(['phage-db', address, 'snapshot']);
+      const open = indexedDB.open('phage-explorer-db');
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        open.onsuccess = () => resolve(open.result);
+        open.onerror = () => reject(open.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const transaction = db.transaction('database', 'readwrite');
+          const store = transaction.objectStore('database');
+          const request = store.get(key);
+          request.onsuccess = () => {
+            if (!request.result) { transaction.abort(); return; }
+            store.put(request.result, 'phage-db:snapshot');
+            store.delete(key);
+            store.delete('manifest:' + address);
+            store.delete('manifest:' + path);
+            // The old release wrote the relative configured URL as its IDB key.
+            store.put({ manifest, etag: null }, 'manifest:' + (matchingAddress ? path : '/other' + path));
+          };
+          transaction.oncomplete = () => resolve();
+          transaction.onabort = () => reject(transaction.error ?? new Error('Failed to seed legacy snapshot'));
+        });
+      } finally { db.close(); }
+    }, { manifest, matchingAddress });
+
+    await page.route(url => DATABASE_ASSET.test(url.href) || url.pathname.endsWith('/phage.db.manifest.json'),
+      route => route.abort('internetdisconnected'));
+    await seedLegacy(true);
+    await page.reload();
+    await expectCatalog(page);
+    await expectOfflineCache(page);
+    expect(await cachedIdentity(page)).toEqual(original);
+
+    // Identical SQLite bytes and a valid descriptor for a different address
+    // still cannot establish that the requested dataset is available offline.
+    await seedLegacy(false);
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Database load failed' })).toBeVisible();
+    await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+    expect(await cachedIdentity(page)).toBeNull();
   } finally { await finalize(); }
 });

@@ -97,7 +97,7 @@ async function identity(page: Page) {
     });
     try {
       const snapshot = await new Promise<{ data: Uint8Array; contentVersion: string; sha256: string } | undefined>((resolve, reject) => {
-        const request = db.transaction('database').objectStore('database').get('phage-db:snapshot');
+        const request = db.transaction('database').objectStore('database').get(JSON.stringify(['phage-db', new URL('/phage.db.manifest.json', location.href).href, 'snapshot']));
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
       });

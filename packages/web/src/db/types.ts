@@ -152,6 +152,16 @@ export interface DatabaseLoaderConfig {
   onProgress?: (progress: DatabaseLoadProgress) => void;
 }
 
+/** Canonical publication identity, including query-based datasets. */
+export function databaseManifestUrl(config: DatabaseLoaderConfig): string {
+  const base = typeof location === 'undefined' ? undefined : location.href;
+  const url = new URL(config.manifestUrl ?? config.databaseUrl, base);
+  if (!config.manifestUrl) url.pathname += '.manifest.json';
+  url.hash = '';
+  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Dataset manifest must use credential-free HTTP(S).');
+  return url.href;
+}
+
 /**
  * Database load progress
  */

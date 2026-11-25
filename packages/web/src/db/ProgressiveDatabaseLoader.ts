@@ -1,5 +1,5 @@
 /** Auto-select the published layout; version 3 never falls back to a monolithic download. */
-import type { DatabaseLoaderConfig, DatabaseLoadProgress, PhageRepository } from './types';
+import { databaseManifestUrl, type DatabaseLoaderConfig, type DatabaseLoadProgress, type PhageRepository } from './types';
 import { ProgressiveCatalogLoadError, ProgressivePhageRepository } from './ProgressivePhageRepository';
 import { VerifiedArtifactStore, readBoundedResponse, withArtifactCacheLock, type ArtifactCache, type FetchLike } from './progressive-artifacts';
 import { PROGRESSIVE_LIMITS, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './progressive-manifest';
@@ -43,14 +43,6 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) cancel();
   });
 }
-function manifestAddress(config: DatabaseLoaderConfig): string {
-  const base = typeof location === 'undefined' ? undefined : location.href;
-  const url = new URL(config.manifestUrl ?? config.databaseUrl, base);
-  if (!config.manifestUrl) url.pathname += '.manifest.json';
-  url.hash = '';
-  if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) throw new Error('Dataset manifest must use credential-free HTTP(S).');
-  return url.href;
-}
 
 /** A load owns one immutable dataset version until close; reload uses a new loader. */
 export class ProgressiveDatabaseLoader implements RepositoryLoader {
@@ -66,7 +58,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
   private forced = false;
 
   constructor(private readonly config: DatabaseLoaderConfig, private readonly dependencies: ProgressiveLoaderDependencies = {}) {
-    this.manifestUrl = manifestAddress(config);
+    this.manifestUrl = databaseManifestUrl(config);
     this.fetcher = dependencies.fetch ?? globalThis.fetch.bind(globalThis);
     this.timeout = dependencies.manifestTimeoutMs ?? 10_000;
     if (!Number.isSafeInteger(this.timeout) || this.timeout < 1 || this.timeout > 60_000) throw new Error('Invalid dataset manifest timeout.');

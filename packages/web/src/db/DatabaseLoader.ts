@@ -54,7 +54,7 @@ import type {
   DatabaseLoadProgress,
   DatabaseManifest,
 } from './types';
-import { isDatabaseManifest } from './types';
+import { databaseManifestUrl, isDatabaseManifest } from './types';
 
 const INDEXEDDB_NAME = 'phage-explorer-db';
 const INDEXEDDB_STORE = 'database';
@@ -87,10 +87,7 @@ export function databaseDownloadUrls(config: DatabaseLoaderConfig, manifest: Dat
   if (!isDatabaseManifest(manifest)) throw new Error('A valid database manifest is required.');
   const base = typeof window === 'undefined' ? undefined : window.location.href;
   if (manifest.artifacts) {
-    const manifestUrl = new URL(config.manifestUrl ?? `${config.databaseUrl}.manifest.json`, base);
-    if (!['http:', 'https:'].includes(manifestUrl.protocol) || manifestUrl.username || manifestUrl.password) {
-      throw new Error('Dataset manifest must use credential-free HTTP(S).');
-    }
+    const manifestUrl = databaseManifestUrl(config);
     return {
       sqlite: new URL(manifest.artifacts.sqlite.path, manifestUrl).href,
       gzip: new URL(manifest.artifacts.gzip.path, manifestUrl).href,
@@ -221,32 +218,55 @@ async function setInIndexedDB<T>(key: string, value: T): Promise<void> {
 }
 
 /**
- * Delete value from IndexedDB
+ * Older builds kept one snapshot per dbName. Only adopt those bytes when a
+ * descriptor cached for this address agrees with their logical and byte identity.
+ * A single transaction prevents migration from overwriting a concurrent download.
  */
-async function deleteFromIndexedDB(key: string): Promise<void> {
+async function accessLegacySnapshot(
+  dbName: string, manifestUrl: string, snapshotKey: string, clear = false,
+): Promise<CachedDatabase | null> {
   const db = await openIndexedDB();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction(INDEXEDDB_STORE, 'readwrite');
-    const store = transaction.objectStore(INDEXEDDB_STORE);
-    const request = store.delete(key);
-
-    request.onerror = () => {
-      db.close();
-      reject(request.error);
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error);
-    };
-    transaction.onabort = () => {
-      db.close();
-      reject(new Error('IndexedDB transaction aborted'));
-    };
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-  });
+  try {
+    return await new Promise<CachedDatabase | null>((resolve, reject) => {
+      const transaction = db.transaction(INDEXEDDB_STORE, 'readwrite');
+      const store = transaction.objectStore(INDEXEDDB_STORE);
+      const legacyKey = `${dbName}:snapshot`;
+      const scoped = store.get(snapshotKey);
+      const absolute = store.get(`manifest:${manifestUrl}`);
+      const address = new URL(manifestUrl);
+      // A root-relative old key is unambiguous only on this origin. An old
+      // document-relative key may have referred to any directory on the site.
+      const rooted = typeof location !== 'undefined' && address.origin === location.origin && !address.pathname.startsWith('//')
+        ? store.get(`manifest:${address.pathname}${address.search}`) : undefined;
+      const last = rooted ?? absolute;
+      let result: CachedDatabase | null = null;
+      last.onsuccess = () => {
+        if (clear) store.delete(snapshotKey);
+        else if (scoped.result) { result = scoped.result; return; }
+        const manifests = [absolute.result?.manifest, rooted?.result?.manifest].filter(isDatabaseManifest);
+        if (manifests.length === 0) return;
+        const legacy = store.get(legacyKey);
+        legacy.onsuccess = () => {
+          const entry = legacy.result as CachedDatabase | undefined;
+          if (!entry || entry.version !== 2 || !(entry.data instanceof Uint8Array) ||
+              !manifests.some(manifest => manifest.contentVersion === entry.contentVersion &&
+                manifest.sha256 === entry.sha256 && manifest.size === entry.data.byteLength)) return;
+          if (!clear) {
+            result = entry;
+            store.put(entry, snapshotKey);
+          }
+          store.delete(legacyKey);
+        };
+      };
+      transaction.oncomplete = () => resolve(result);
+      transaction.onabort = () => {
+        // IndexedDB rolls back a failed migration. Keep these source-matched
+        // bytes available to the caller's integrity check even under quota.
+        if (result && !clear) resolve(result);
+        else reject(transaction.error ?? new Error('IndexedDB transaction aborted'));
+      };
+    });
+  } finally { db.close(); }
 }
 
 /**
@@ -333,6 +353,7 @@ async function fetchManifestWithETag(
  */
 export class DatabaseLoader {
   private config: Required<DatabaseLoaderConfig>;
+  private readonly snapshotKey: string;
   private repository: SqlJsRepository | null = null;
   private sqlPromise: Promise<SqlJsStatic> | null = null;
   /** Current timing recorder (dev-only instrumentation) */
@@ -353,10 +374,11 @@ export class DatabaseLoader {
   constructor(config: DatabaseLoaderConfig) {
     this.config = {
       databaseUrl: config.databaseUrl,
-      manifestUrl: config.manifestUrl ?? `${config.databaseUrl}.manifest.json`,
+      manifestUrl: databaseManifestUrl(config),
       dbName: config.dbName ?? 'phage-db',
       onProgress: config.onProgress ?? (() => {}),
     };
+    this.snapshotKey = JSON.stringify([this.config.dbName, this.config.manifestUrl, 'snapshot']);
   }
 
   /**
@@ -418,7 +440,8 @@ export class DatabaseLoader {
   }
 
   private async readVerifiedCache(): Promise<CachedDatabase | null> {
-    const entry = await getFromIndexedDB<CachedDatabase>(`${this.config.dbName}:snapshot`);
+    const entry = await getFromIndexedDB<CachedDatabase>(this.snapshotKey) ??
+      await accessLegacySnapshot(this.config.dbName, this.config.manifestUrl, this.snapshotKey);
     if (!entry || entry.version !== 2 || !(entry.data instanceof Uint8Array) ||
         !this.isValidSqliteData(entry.data) ||
         !/^[a-f0-9]{64}$/.test(entry.contentVersion) || await sha256(entry.data) !== entry.sha256) {
@@ -713,7 +736,7 @@ export class DatabaseLoader {
         const dataResult = await safeCacheWrite(
           idb,
           INDEXEDDB_STORE,
-          `${this.config.dbName}:snapshot`,
+          this.snapshotKey,
           { version: 2, data, contentVersion: manifest.contentVersion, sha256: manifest.sha256 } satisfies CachedDatabase
         );
 
@@ -769,9 +792,7 @@ export class DatabaseLoader {
    * Clear the cache
    */
   async clearCache(): Promise<void> {
-    await deleteFromIndexedDB(`${this.config.dbName}:snapshot`);
-    await deleteFromIndexedDB(`${this.config.dbName}:data`);
-    await deleteFromIndexedDB(`${this.config.dbName}:hash`);
+    await accessLegacySnapshot(this.config.dbName, this.config.manifestUrl, this.snapshotKey, true);
   }
 
   /**
