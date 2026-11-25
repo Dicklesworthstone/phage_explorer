@@ -289,6 +289,9 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
   const renderModeRef = useRef<RenderMode>(coarsePointer ? 'ribbon' : 'ball');
   const structureRef = useRef<Group | null>(null);
   const animationRef = useRef<number | null>(null);
+  const contextLostRef = useRef(false);
+  const [rendererError, setRendererError] = useState<string | null>(null);
+  const [rendererGeneration, setRendererGeneration] = useState(0);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const structureDataRef = useRef<LoadedStructure | null>(null);
   const tickRef = useRef<(now: number) => void>(() => {});
@@ -484,7 +487,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
 
   const requestRender = useMemo(() => {
     return () => {
-      if (animationRef.current !== null) return;
+      if (contextLostRef.current || animationRef.current !== null) return;
       animationRef.current = requestAnimationFrame((now) => tickRef.current(now));
     };
   }, []);
@@ -603,10 +606,14 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
 
   // Handle retry with useCallback to avoid stale closures
   const handleRetry = useCallback(() => {
+    if (rendererError) {
+      setRendererGeneration(generation => generation + 1);
+      return;
+    }
     setError(null);
     setLoadState('loading');
     void refetchStructure();
-  }, [refetchStructure]);
+  }, [refetchStructure, rendererError]);
 
   const rebuildStructure = (mode: RenderMode, preserveOrientation = true) => {
     const data = structureDataRef.current;
@@ -702,10 +709,12 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
         powerPreference: 'high-performance',
       });
     } catch (err) {
-      setLoadState('error');
-      setError(err instanceof Error ? err.message : 'Unable to create WebGL renderer');
+      contextLostRef.current = true;
+      setRendererError(err instanceof Error ? err.message : 'Unable to create the WebGL renderer.');
       return;
     }
+    contextLostRef.current = false;
+    setRendererError(null);
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
@@ -714,12 +723,26 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     sceneRef.current = scene;
     cameraRef.current = camera;
 
-    // Surface context-loss to the user (recovery would require rebuilding the scene)
-    const handleContextLost = () => {
-      setLoadState('error');
-      setError('3D rendering context was lost. WebGL may have been reclaimed by the browser.');
+    const handleContextLost = (event: Event) => {
+      event.preventDefault(); // Let the browser restore this context.
+      contextLostRef.current = true;
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
+      lastTickTimeRef.current = null;
+      wasRotatingRef.current = false;
+      setFps(0);
+      setRendererError('The browser paused 3D rendering. Waiting for graphics to recover.');
+    };
+    const handleContextRestored = () => {
+      // Three.js restores its GPU resources. Repaint even when rotation is paused.
+      contextLostRef.current = false;
+      setRendererError(null);
+      requestRender();
     };
     renderer.domElement.addEventListener('webglcontextlost', handleContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', handleContextRestored);
 
     // Enhanced lighting setup for better 3D perception
     const ambient = new AmbientLight(0xffffff, 0.9);
@@ -843,6 +866,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       controls.removeEventListener('start', requestRender);
       controls.removeEventListener('change', syncHeadlamp);
       renderer.domElement.removeEventListener('webglcontextlost', handleContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', handleContextRestored);
       renderer.domElement.removeEventListener('pointerdown', handlePointerDown);
       renderer.domElement.removeEventListener('pointerup', handlePointerUp);
       controls.dispose();
@@ -859,7 +883,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       structureRef.current = null;
       resizeObserverRef.current = null;
     };
-  }, [coarsePointer, requestRender]);
+  }, [coarsePointer, rendererGeneration, requestRender]);
 
   // Keep the renderer, loaded model and camera alive across manual and adaptive quality changes.
   useEffect(() => {
@@ -868,7 +892,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     renderer.shadowMap.enabled = qualityPreset.shadows;
     renderer.setPixelRatio(Math.min((window.devicePixelRatio || 1) * qualityPreset.pixelRatio, 2));
     requestRender();
-  }, [qualityPreset, requestRender]);
+  }, [qualityPreset, rendererGeneration, requestRender]);
 
   // Render loop (on-demand): keep animating only while rotating or damping is active.
   useEffect(() => {
@@ -992,7 +1016,10 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
   // Ensure pending RAF is cleaned up on unmount.
   useEffect(() => {
     return () => {
-      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+      if (animationRef.current !== null) {
+        cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+      }
     };
   }, []);
 
@@ -1097,7 +1124,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       setLoadState('ready');
       requestRender();
     }
-  }, [coarsePointer, pdbId, show3DModel, structureData, structureError, structureErr, structureFetching, structureLoading, structureProgress, requestRender]);
+  }, [coarsePointer, pdbId, rendererGeneration, show3DModel, structureData, structureError, structureErr, structureFetching, structureLoading, structureProgress, requestRender]);
 
   useEffect(() => {
     if (loadState === 'ready') {
@@ -1185,7 +1212,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     const renderer = rendererRef.current;
     const scene = sceneRef.current;
     const camera = cameraRef.current;
-    if (!renderer || !scene || !camera || !structureRef.current) return;
+    if (contextLostRef.current || !renderer || !scene || !camera || !structureRef.current) return;
     // WebGL may clear its drawing buffer after compositing the previous frame.
     renderer.render(scene, camera);
     const dataUrl = renderer.domElement.toDataURL('image/png');
@@ -1200,7 +1227,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     const camera = cameraRef.current;
     const controls = controlsRef.current;
     const scene = sceneRef.current;
-    if (!data || !camera || !controls || !scene) return;
+    if (contextLostRef.current || !data || !camera || !controls || !scene) return;
     const vFovRad = (camera.fov * Math.PI) / 180;
     const hFovRad = 2 * Math.atan(Math.tan(vFovRad / 2) * camera.aspect);
     const effectiveFov = Math.min(vFovRad, hFovRad);
@@ -1317,11 +1344,12 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     return unregister;
   }, [fullscreen, handleResetView, handleScreenshot, overlaysOpen, requestRender, show3DModel, togglePause]);
 
-  const stateLabel = loadState === 'ready'
+  const viewerState = rendererError ? 'error' : loadState;
+  const stateLabel = viewerState === 'ready'
     ? (fromCache ? 'Cached' : 'Loaded')
-    : loadState === 'loading'
+    : viewerState === 'loading'
       ? 'Loading…'
-      : loadState === 'error'
+      : viewerState === 'error'
         ? 'Error'
         : 'Idle';
 
@@ -1374,7 +1402,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       <div className="panel-header">
         <h3>3D Structure</h3>
         <div className="badge-row">
-          <Badge>{hasNoStructure ? 'No Data' : stateLabel}</Badge>
+          <Badge>{hasNoStructure && !rendererError ? 'No Data' : stateLabel}</Badge>
           {atomCount !== null && (
             <Tooltip
               content={
@@ -1444,7 +1472,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
           type="button"
           className="btn compact"
           onClick={handleScreenshot}
-          disabled={loadState !== 'ready'}
+          disabled={viewerState !== 'ready'}
           style={{ minHeight: '36px', minWidth: '40px' }}
           aria-label="Save screenshot"
           title="Save screenshot"
@@ -1570,7 +1598,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
         }
       >
         {/* Loading state with skeleton */}
-        {loadState === 'loading' && (
+        {viewerState === 'loading' && (
           <div className="three-overlay" aria-busy="true" aria-label="Loading 3D structure">
             <Model3DSkeleton />
             <div
@@ -1597,7 +1625,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
         )}
 
         {/* Error state with retry button */}
-        {loadState === 'error' && (
+        {viewerState === 'error' && (
           <div
             className="three-overlay"
             style={{
@@ -1615,9 +1643,9 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
             <div style={{ opacity: 0.6, color: 'var(--color-error)' }} aria-hidden="true">
               <IconAlertTriangle size={40} />
             </div>
-            <h4 style={{ margin: 0, color: 'var(--color-text)' }}>Unable to Load Structure</h4>
+            <h4 style={{ margin: 0, color: 'var(--color-text)' }}>{rendererError ? '3D Rendering Unavailable' : 'Unable to Load Structure'}</h4>
             <p className="text-dim" style={{ margin: 0, maxWidth: '280px' }}>
-              {error}
+              {rendererError ?? error}
             </p>
             <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
               <button
@@ -1626,7 +1654,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
                 onClick={handleRetry}
                 style={{ minWidth: '80px' }}
               >
-                Retry
+                {rendererError ? 'Restart 3D viewer' : 'Retry'}
               </button>
             </div>
             {rcsbEntryUrl && (
@@ -1650,7 +1678,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
         )}
 
         {/* Empty state - no structure available for this phage */}
-        {hasNoStructure && show3DModel && (
+        {hasNoStructure && !rendererError && show3DModel && (
           <div
             className="three-overlay"
             style={{
