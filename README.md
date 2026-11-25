@@ -120,8 +120,8 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 ### Option 1: Pre-built Binary (Recommended)
 
 ```bash
-# Install latest release (includes database)
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/main/install.sh?$(date +%s)" | bash -s -- --with-database
+# Install the latest release and its catalog on a fresh machine
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/main/install.sh?$(date +%s)" | bash
 
 # Run
 phage-explorer
@@ -403,14 +403,19 @@ curl -fsSL .../install.sh | bash -s -- --version v1.0.0
 # Build from source instead of downloading binary
 curl -fsSL .../install.sh | bash -s -- --from-source
 
-# Include phage database
+# Replace an existing catalog with the release database
 curl -fsSL .../install.sh | bash -s -- --with-database
+
+# Install only the executable for headless commands or private inputs
+curl -fsSL .../install.sh | bash -s -- --without-database
 
 # Auto-add to PATH
 curl -fsSL .../install.sh | bash -s -- --easy-mode
 ```
 
-The installer verifies the binary and the database against the release's
+A fresh install includes the catalog. Running the installer again keeps an existing
+`~/.phage-explorer/phage.db` unless you request `--with-database`.
+The installer verifies the binary and any downloaded database against the release's
 `sha256.txt` (using `sha256sum`, `shasum` or `openssl`) before it replaces
 anything. A missing or mismatched checksum, a missing hash tool, or a failed
 database download exits with an error and leaves any existing install

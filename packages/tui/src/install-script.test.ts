@@ -154,7 +154,7 @@ interface InstallOptions {
   hashTools?: boolean | string[];
   flock?: boolean;
   previous?: boolean;
-  withDb?: boolean;
+  databaseMode?: 'default' | 'skip' | 'replace';
   destName?: string;
   homeName?: string;
   tmpName?: string;
@@ -185,7 +185,9 @@ function prepareInstall(release: Release, opts: InstallOptions = {}) {
     stallMarker,
   });
   opts.before?.(tmp);
-  const argv = [SHELL, INSTALLER, '--dest', dest, ...(opts.withDb === false ? [] : ['--with-database']), ...(opts.args ?? [])];
+  const databaseArgs = opts.databaseMode === 'default' ? [] :
+    [opts.databaseMode === 'skip' ? '--without-database' : '--with-database'];
+  const argv = [SHELL, INSTALLER, '--dest', dest, ...databaseArgs, ...(opts.args ?? [])];
   const env = { PATH: tools, HOME: home, TMPDIR: tmp, VERSION };
   return { argv, env, home, dest, tmp, stallMarker };
 }
@@ -234,6 +236,54 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     expect(leftovers(run)).toEqual([]);
     // The lock directory and the downloaded sha256.txt are both gone.
     expect(readdirSync(run.tmp).filter((name) => name.startsWith('phage-explorer-'))).toEqual([]);
+  });
+
+  test('a fresh default install includes the release catalog and verifies its bytes', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
+    expect(run.code).toBe(0);
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(run.stdout).toContain('Checksum verified: phage.db');
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('a default upgrade keeps an existing catalog even if the release has no database asset', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB, plainDb: false },
+      { previous: true, databaseMode: 'default' });
+    expect(run.code).toBe(0);
+    expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+    expect(run.stdout).toContain('Keeping the existing catalog');
+  });
+
+  test('a binary-only install leaves the catalog directory uncreated', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB, plainDb: false }, { databaseMode: 'skip' });
+    expect(run.code).toBe(0);
+    expect(existsSync(join(run.home, '.phage-explorer'))).toBe(false);
+  });
+
+  test('a catalog created during a first install survives the final rename', () => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
+    const wrapper = join(prepared.tmp, 'concurrent-catalog');
+    mkdirSync(wrapper);
+    writeFileSync(join(wrapper, 'mv'), `#!${SHELL}
+if [ "$1" = "-n" ]; then printf 'concurrent catalog' >"$3"; fi
+exec "${Bun.which('mv')}" "$@"
+`, { mode: 0o755 });
+    prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
+    const run = runPrepared(prepared);
+    expect(run.code).not.toBe(0);
+    expect(installedDb(run).toString()).toBe('concurrent catalog');
+    expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('a fresh default install rejects a corrupt catalog before publishing the binary', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: flipped(GOOD_DB) }, { databaseMode: 'default' });
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('Checksum mismatch for phage.db');
+    expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+    expect(existsSync(join(run.home, '.phage-explorer', 'phage.db'))).toBe(false);
+    expect(leftovers(run)).toEqual([]);
   });
 
   test('refuses a binary whose bytes differ from sha256.txt and changes nothing', () => {
@@ -393,14 +443,14 @@ if [ "${failure}" = term-between-renames ]; then kill -TERM "$PPID"; fi
   test('falls back to the binary\'s .sha256 sidecar and still refuses a wrong one', () => {
     const good = runInstaller(
       { binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(GOOD_BINARY)}  ${ASSET}\n` },
-      { withDb: false }
+      { databaseMode: 'skip' }
     );
     expect(good.code).toBe(0);
     expect(Buffer.compare(installedBinary(good), Buffer.from(GOOD_BINARY))).toBe(0);
 
     const bad = runInstaller(
       { binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(OLD_BINARY)}  ${ASSET}\n` },
-      { withDb: false, previous: true }
+      { databaseMode: 'skip', previous: true }
     );
     expect(bad.code).not.toBe(0);
     expect(bad.stderr).toContain(`Checksum mismatch for ${ASSET}`);

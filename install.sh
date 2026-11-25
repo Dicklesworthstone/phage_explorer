@@ -17,7 +17,8 @@
 #   --dest DIR        Install directory
 #   --system          Install to /usr/local/bin
 #   --from-source     Skip binary download, build from source
-#   --with-database   Also download/build the phage database
+#   --with-database   Replace the installed catalog with the release database
+#   --without-database Install the binary only
 #   --easy-mode       Auto-update PATH in shell rc files
 #   --verify          Accepted for compatibility; checksums are always verified
 #   --insecure-skip-checksums
@@ -38,7 +39,7 @@ BINARY="${BINARY:-phage-explorer}"
 DEST="${DEST:-$HOME/.local/bin}"
 VERSION="${VERSION:-}"
 FROM_SOURCE=0
-WITH_DATABASE=0
+DATABASE_MODE=missing
 EASY_MODE=0
 SKIP_CHECKSUMS=0
 QUIET=0
@@ -100,7 +101,8 @@ ${BOLD}Options:${NC}
   --dest DIR         Install directory (default: ~/.local/bin)
   --system           Install to /usr/local/bin (may require sudo)
   --from-source      Skip binary download, build from source
-  --with-database    Also download/build the phage database
+  --with-database    Install or replace the catalog (default: install if missing)
+  --without-database Install the binary only, leaving the catalog alone
   --easy-mode        Auto-update PATH in shell rc files
   --verify           Accepted for compatibility: the binary and the database
                      are always verified against the release's SHA-256 sums
@@ -124,7 +126,7 @@ ${BOLD}Examples:${NC}
   # Install specific version
   VERSION=v1.0.0 curl -fsSL ... | bash
 
-  # Install with database
+  # Replace the local catalog with the release database
   curl -fsSL ... | bash -s -- --with-database
 
   # Build from source
@@ -157,7 +159,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --with-database)
-      WITH_DATABASE=1
+      DATABASE_MODE=replace
+      shift
+      ;;
+    --without-database)
+      DATABASE_MODE=skip
       shift
       ;;
     --easy-mode)
@@ -553,7 +559,12 @@ fi
 
 log_step 5 "Database setup..."
 
-if [[ $WITH_DATABASE -eq 1 ]]; then
+# A fresh one-line install must support a plain `phage-explorer` launch.
+# Existing catalogs may contain local preferences or user-managed data.
+if [[ "$DATABASE_MODE" == missing && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
+  [[ -f "$DB_PATH" ]] || die "Expected an existing catalog file at $DB_PATH; $NOT_CHANGED"
+  log "Keeping the existing catalog at $DB_PATH (use --with-database to replace it)."
+elif [[ "$DATABASE_MODE" != skip ]]; then
   mkdir -p "$DATA_DIR" || die "Failed to create directory: $DATA_DIR; $NOT_CHANGED"
   STAGED_DB="$(new_staging_file "$DATA_DIR" "phage.db")"
 
@@ -603,8 +614,7 @@ if [[ $WITH_DATABASE -eq 1 ]]; then
   fi
   chmod 644 "$STAGED_DB"
 else
-  log "Skipping database download (use --with-database to include)"
-  log "You can install it later by re-running with --with-database."
+  log "Skipping the catalog (--without-database). Use --with-database to install it later."
 fi
 
 # Reject directories (including symlinks to directories): portable mv would
@@ -615,17 +625,24 @@ check_install_target() {
   fi
 }
 check_install_target "$INSTALL_PATH"
+if [[ "${INSTALL_PATH##*/}" == phage.db && "$DEST" -ef "$DATA_DIR" ]]; then
+  die "The binary and database share a destination at $DB_PATH; $NOT_CHANGED"
+fi
 if [[ -n "$STAGED_DB" ]]; then
   check_install_target "$DB_PATH"
-  if [[ "${INSTALL_PATH##*/}" == phage.db && "$DEST" -ef "$DATA_DIR" ]]; then
-    die "The binary and database share a destination at $DB_PATH; $NOT_CHANGED"
-  fi
-  if [[ -e "$DB_PATH" || -L "$DB_PATH" ]]; then
+  if [[ "$DATABASE_MODE" == replace && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
     DB_BACKUP="$(mktemp "$DATA_DIR/.phage.db.rollback.XXXXXX")" || die "Cannot stage a database backup; $NOT_CHANGED"
     cp -a "$DB_PATH" "$DB_BACKUP" || die "Cannot back up $DB_PATH; $NOT_CHANGED"
   fi
   COMMITTING_PAIR=1
-  mv -f "$STAGED_DB" "$DB_PATH" || die "Could not install $DB_PATH"
+  if [[ "$DATABASE_MODE" == missing ]]; then
+    # A catalog may have appeared while the first download was in flight.
+    # Some mv implementations report success for a skipped no-clobber rename.
+    mv -n "$STAGED_DB" "$DB_PATH" && [[ ! -e "$STAGED_DB" ]] \
+      || die "Could not install the new catalog without overwriting $DB_PATH; $NOT_CHANGED"
+  else
+    mv -f "$STAGED_DB" "$DB_PATH" || die "Could not install $DB_PATH"
+  fi
 fi
 mv -f "$STAGED_BIN" "$INSTALL_PATH" || die "Could not install $INSTALL_PATH"
 COMMITTING_PAIR=0
