@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   applyDiff,
   buildGrid,
+  aminoAcidIndexAtBase,
   SequenceVirtualizer,
   calculateViewportMetrics,
   calculateScrollLimits,
@@ -48,6 +49,26 @@ describe('virtualizer', () => {
       expect(grid[0].type).toBe('aa');
       expect(grid[0].cells.map(c => c.char).join('')).toBe('SI');
       expect(grid[0].cells.map(c => c.position)).toEqual([1, 4]);
+    });
+
+    test('search jumps put the requested base in the first displayed codon across viewport widths', () => {
+      const sequence = 'ACGT'.repeat(16);
+      for (const frame of [0, 1, 2, -1, -2, -3] as const) {
+        const config = { mode: 'aa' as const, frame, totalLength: sequence.length, viewportRows: 1 };
+        const fullGrid = buildGrid(sequence, 0, { ...config, viewportCols: sequence.length });
+        for (let base = 0; base < sequence.length; base++) {
+          const residue = aminoAcidIndexAtBase(base, sequence.length, frame);
+          const expected = fullGrid[0].cells.findIndex(cell => base >= cell.position && base < cell.position + 3);
+          expect(residue).toBe(expected < 0 ? null : expected);
+          if (residue === null) continue;
+          const start = residue * 3, offset = frame < 0 ? -frame - 1 : frame;
+          for (const viewportCols of [1, 4, 12]) {
+            const chunk = sequence.slice(start, start + viewportCols * 3 + offset + 3);
+            const window = buildGrid(chunk, start, { ...config, viewportCols });
+            expect(window[0].cells[0]).toEqual(fullGrid[0].cells[expected]);
+          }
+        }
+      }
     });
 
     test('dual mode handles reverse frames correctly', () => {

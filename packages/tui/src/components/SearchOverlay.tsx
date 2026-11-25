@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useInput, usePaste } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
-import type { PhageFull, PhageSummary } from '@phage-explorer/core';
+import { aminoAcidIndexAtBase, type PhageFull, type PhageSummary } from '@phage-explorer/core';
 import type { PhageRepository } from '@phage-explorer/db-runtime';
 import type { SearchHit, SearchMode, SearchRequest, SearchResponse, StrandOption } from '../../../web/src/workers/types';
 import { loadTerminalSearchSource, runTerminalSearch, TERMINAL_SEARCH_LIMITS, type TerminalSearchSource } from '../terminal-search';
@@ -155,8 +155,12 @@ export function SearchOverlay({ repository, width = 84, height = 22, runSearch =
       state.setCurrentPhageIndex(nextIndex); close(); return;
     }
     const hit = hits[selected];
-    if (!hit || !request.owner || !owns(request.owner)) return;
-    state.setScrollPosition(state.viewMode === 'aa' ? Math.floor(hit.position / 3) : hit.position);
+    if (!hit || !request.scan || !request.owner || !owns(request.owner)) return;
+    const residue = state.viewMode === 'aa'
+      ? aminoAcidIndexAtBase(hit.position, request.scan.sequence.length, state.readingFrame)
+      : null;
+    if (state.viewMode === 'aa' && residue === null) state.setViewMode('dna');
+    state.setScrollPosition(residue ?? hit.position);
     state.setSelectedGeneId(hit.feature?.id ?? null);
     close();
   };

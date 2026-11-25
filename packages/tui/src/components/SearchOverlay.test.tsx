@@ -120,6 +120,28 @@ describe('native genomic search keyboard workflow', () => {
     } finally { test.ui.unmount(); await data.repository.close(); usePhageStore.setState(previous); }
   });
 
+  for (const example of [
+    { frame: 1, query: '15', view: 'aa', position: 4 },
+    { frame: -1, query: '12', view: 'aa', position: 3 },
+    { frame: -3, query: '15', view: 'dna', position: 15 },
+  ] as const) it(`opens position ${example.query} in frame ${example.frame} at its displayed cell`, async () => {
+    const previous = usePhageStore.getState(), data = await fixture();
+    usePhageStore.setState({ viewMode: 'aa', readingFrame: example.frame });
+    const test = terminal(data.repository);
+    try {
+      await waitFor(test.ready);
+      await mode(test, 5, 'Position');
+      test.input(example.query);
+      await waitFor(() => test.frame().includes('1 match'));
+      test.input('\r');
+      await waitFor(() => !usePhageStore.getState().overlays.includes('search'));
+      const state = usePhageStore.getState();
+      assert.equal(state.viewMode, example.view);
+      assert.equal(state.scrollPosition, example.position);
+      assert.equal(state.readingFrame, example.frame);
+    } finally { test.ui.unmount(); await data.repository.close(); usePhageStore.setState(previous); }
+  });
+
   it('preserves catalog lookup and ignores an older catalog reply after the query changes', async () => {
     const previous = usePhageStore.getState(), data = await fixture();
     let first!: (value: typeof data.phages) => void;

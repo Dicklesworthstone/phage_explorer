@@ -345,6 +345,17 @@ export function calculateViewportMetrics(
   };
 }
 
+/** Return the displayed residue index containing a forward base, or null at an untranslated end. */
+export function aminoAcidIndexAtBase(position: number, length: number, frame: ReadingFrame): number | null {
+  const offset = frame < 0 ? -frame - 1 : frame;
+  const translatedLength = Math.max(0, length - offset);
+  const residues = Math.floor(translatedLength / 3);
+  // Reverse translations are displayed left-to-right along the forward genome.
+  const firstBase = frame < 0 ? translatedLength % 3 : offset;
+  const residue = Math.floor((position - firstBase) / 3);
+  return residue >= 0 && residue < residues ? residue : null;
+}
+
 // Calculate scroll limits
 export function calculateScrollLimits(
   totalLength: number,
