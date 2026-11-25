@@ -213,14 +213,14 @@ export function computeDatabaseContentDigest(db: Database): string {
   const identifier = (name: string) => `"${name.replaceAll('"', '""')}"`;
   const tables = db
     .query<{ name: string }, []>(
-      'SELECT name FROM sqlite_master WHERE type="table" AND name NOT LIKE "sqlite_%" ORDER BY name'
+      'SELECT name FROM sqlite_master WHERE type="table" AND name NOT GLOB "sqlite_*" ORDER BY name'
     )
     .all();
 
   const hasher = createHash('sha256');
   hasher.update(JSON.stringify(db.query('PRAGMA user_version').get()));
   const schema = db.query<{ type: string; name: string; sql: string | null }, []>(
-    "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    "SELECT type, name, sql FROM sqlite_master WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
   ).all();
   for (const definition of schema) hasher.update(JSON.stringify(definition) + '\n');
 
@@ -230,7 +230,14 @@ export function computeDatabaseContentDigest(db: Database): string {
       .all()
       .map((c) => c.name)
       .sort();
-    const colExpr = cols.map((c) => `quote(${identifier(c)})`).join(" || ',' || ");
+    const colExpr = cols.map((c) => {
+      const column = identifier(c);
+      // SQLite quote() stops TEXT at its first NUL. JSON string escaping
+      // preserves the complete value, including Unicode and control characters.
+      // The tag is disjoint from SQL literals; ordinary cells keep their
+      // existing serialization so unchanged datasets retain their identity.
+      return `CASE WHEN typeof(${column}) = 'text' AND instr(${column}, char(0)) > 0 THEN 'TEXT:' || json_quote(${column}) ELSE quote(${column}) END`;
+    }).join(" || ',' || ");
     const rows = db.query<{ r: string }, []>(`SELECT ${colExpr} as r FROM ${identifier(t.name)} ORDER BY 1`).all();
     hasher.update(`table:${t.name}:${rows.length}\n`);
     for (const row of rows) {

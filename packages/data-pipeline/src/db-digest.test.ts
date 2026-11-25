@@ -37,6 +37,62 @@ function atlasCoordinate(bytes: Uint8Array): number {
 }
 
 describe('computeDatabaseContentDigest', () => {
+  it('distinguishes complete NUL-bearing text from its prefix, other text and blobs', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE content (value); INSERT INTO content VALUES (NULL)');
+      // SQLite quote() is intentionally lossy for these strings; the logical
+      // dataset identity must not inherit that behavior.
+      expect(db.query('SELECT quote(?) AS quoted').get('prefix\0first')).toEqual({ quoted: "'prefix'" });
+      expect(db.query('SELECT quote(?) AS quoted').get('prefix\0second')).toEqual({ quoted: "'prefix'" });
+      const values = [null, '', 'prefix', 'prefix\0', 'prefix\0first', 'prefix\0second',
+        '\0prefix', 'prefix\0\0first', 'prefix\0"\',\nnext', 'TEXT:"prefix\\u0000first"',
+        new TextEncoder().encode('prefix\0first')];
+      const hashes = values.map(value => {
+        db.query('UPDATE content SET value = ?').run(value);
+        return computeDatabaseContentDigest(db);
+      });
+      expect(new Set(hashes).size).toBe(values.length);
+    } finally { db.close(); }
+  });
+
+  it('preserves Unicode around NUL regardless of the SQLite text encoding', () => {
+    const hashes: string[] = [];
+    for (const encoding of ['UTF-8', 'UTF-16le', 'UTF-16be']) {
+      const db = new Database(':memory:');
+      try {
+        db.exec(`PRAGMA encoding = '${encoding}'; CREATE TABLE content (first TEXT, second TEXT)`);
+        expect(db.query('PRAGMA encoding').get()).toEqual({ encoding });
+        db.query('INSERT INTO content VALUES (?, ?)').run('é\0𝄞\uE000', 'text\0with,"\'\n\\boundaries');
+        hashes.push(computeDatabaseContentDigest(db));
+        db.exec('VACUUM');
+        expect(computeDatabaseContentDigest(db)).toBe(hashes[hashes.length - 1]);
+        db.query('UPDATE content SET first = ?').run('é\0𝄢\uE000');
+        expect(computeDatabaseContentDigest(db)).not.toBe(hashes[hashes.length - 1]);
+      } finally { db.close(); }
+    }
+    expect(new Set(hashes).size).toBe(1);
+  });
+
+  it('includes user tables and indexes whose names resemble the reserved prefix', () => {
+    const db = new Database(':memory:');
+    try {
+      db.exec('CREATE TABLE genes (id INTEGER PRIMARY KEY)');
+      const initial = computeDatabaseContentDigest(db);
+      db.exec('CREATE TABLE sqlitex_annotations (value TEXT)');
+      const tableAdded = computeDatabaseContentDigest(db);
+      expect(tableAdded).not.toBe(initial);
+      db.exec("INSERT INTO sqlitex_annotations VALUES ('first')");
+      const rowAdded = computeDatabaseContentDigest(db);
+      expect(rowAdded).not.toBe(tableAdded);
+      db.exec("UPDATE sqlitex_annotations SET value = 'second'");
+      const rowChanged = computeDatabaseContentDigest(db);
+      expect(rowChanged).not.toBe(rowAdded);
+      db.exec('CREATE INDEX sqlitex_lookup ON sqlitex_annotations(value)');
+      expect(computeDatabaseContentDigest(db)).not.toBe(rowChanged);
+    } finally { db.close(); }
+  });
+
   it('is deterministic and invariant across VACUUM and REINDEX', () => {
     const db = new Database(':memory:');
     db.run(`
@@ -110,6 +166,28 @@ describe('computeDatabaseContentDigest', () => {
 });
 
 describe('verified database publication', () => {
+  it('changes the published identity when an annotation changes after a NUL', async () => {
+    const fixture = await publicationFixture();
+    const update = (value: string) => {
+      const db = new Database(fixture.source);
+      try { db.query('UPDATE genes SET name = ? WHERE id = 1').run(value); }
+      finally { db.close(); }
+    };
+    update('protein\0first');
+    const previous = await buildWebDatabase({ ...fixture, immutable: true });
+    update('protein\0second');
+    const current = await buildWebDatabase({ ...fixture, immutable: true });
+    expect(current.contentVersion).not.toBe(previous.contentVersion);
+    expect(await checkWebDatabase(fixture.outputDirectory)).toEqual(current);
+    const bytes = await readFile(join(fixture.outputDirectory, current.artifacts!.sqlite.path));
+    const published = Database.deserialize(bytes);
+    try {
+      expect(published.query('SELECT name FROM genes WHERE id = 1').get()).toEqual({ name: 'protein\0second' });
+    } finally { published.close(); }
+    // The previous immutable generation remains independently verifiable.
+    expect(await checkWebDatabase(fixture.outputDirectory, previous)).toEqual(previous);
+  });
+
   it('keeps portable release output complete and source bytes unchanged', async () => {
     const fixture = await publicationFixture();
     const original = await readFile(fixture.source);
