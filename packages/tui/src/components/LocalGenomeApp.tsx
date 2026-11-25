@@ -67,8 +67,8 @@ export function installTerminalGenomes(accepted: TerminalGenomeAccepted): void {
  * On return App remounts, dropping old sequence/analysis caches while retaining
  * the accepted store selection and view. No active repository is closed here.
  */
-export function LocalGenomeApp({ session, initiallyOpen = false }: {
-  session: TerminalGenomeSession; initiallyOpen?: boolean;
+export function LocalGenomeApp({ session, initiallyOpen = false, catalogPath }: {
+  session: TerminalGenomeSession; initiallyOpen?: boolean; catalogPath?: string | null;
 }): React.ReactElement {
   const [open, setOpen] = useState(initiallyOpen);
   const [researchOpen, setResearchOpen] = useState(false);
@@ -90,7 +90,7 @@ export function LocalGenomeApp({ session, initiallyOpen = false }: {
     ? researchOpen
       ? <ResearchWorkflowView session={research} genomes={session} onReturn={() => setResearchOpen(false)} onReviewGenomes={() => setResearchOpen(false)} captureView={currentTerminalResearchView} />
       : <TerminalGenomeView session={session} onReturn={() => setOpen(false)} onWorkflow={() => { session.discardReview(); setResearchOpen(true); }} />
-    : <App repository={state.repository} navigation={navigation} />;
+    : <App repository={state.repository} navigation={navigation} catalogPath={catalogPath} />;
 }
 
 export function TerminalGenomeView({ session, onReturn, onWorkflow }: {

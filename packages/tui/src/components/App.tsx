@@ -194,6 +194,7 @@ export function matchesTerminalOverlaySource(
 
 interface AppProps {
   repository: PhageRepository;
+  catalogPath?: string | null;
   foldEmbeddings?: FoldEmbedding[]; // Optional preloaded embeddings
   navigation?: TerminalNavigationSession;
 }
@@ -239,7 +240,7 @@ export function matchModifierBinding(
 }
 
 
-export function App({ repository, foldEmbeddings = [], navigation: suppliedNavigation }: AppProps): React.ReactElement {
+export function App({ repository, foldEmbeddings = [], navigation: suppliedNavigation, catalogPath }: AppProps): React.ReactElement {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const { stdin } = useStdin();
@@ -1289,7 +1290,7 @@ export function App({ repository, foldEmbeddings = [], navigation: suppliedNavig
           marginLeft={Math.max(0, Math.floor((terminalCols - 50) / 2))}
           marginTop={Math.max(0, Math.floor((terminalRows - 20) / 2))}
         >
-          <HelpOverlay />
+          <HelpOverlay catalogPath={catalogPath} />
         </Box>
       )}
 

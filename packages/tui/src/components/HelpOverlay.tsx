@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { usePhageStore } from '@phage-explorer/state';
 import type { HudTheme } from '@phage-explorer/core';
+import { terminalGenomeLabel } from '../local-genome-session';
 
 type HelpRow = { key: string; desc: string; note?: string };
 
@@ -54,7 +55,7 @@ function Section({
   );
 }
 
-export function HelpOverlay(): React.ReactElement {
+export function HelpOverlay({ catalogPath }: { catalogPath?: string | null }): React.ReactElement {
   const theme = usePhageStore(s => s.currentTheme);
   const viewMode = usePhageStore(s => s.viewMode);
   const readingFrame = usePhageStore(s => s.readingFrame);
@@ -262,6 +263,13 @@ export function HelpOverlay(): React.ReactElement {
           ))}
         </Box>
       </Box>
+
+      {helpDetail === 'detailed' && catalogPath !== undefined && (
+        <Box flexDirection="column">
+          <Text color={colors.textMuted}>{catalogPath ? 'Catalog: ' + terminalGenomeLabel(catalogPath) : 'Private workspace (no catalog)'}</Text>
+          {catalogPath && <Text color={colors.textMuted}>From this directory, phage-explorer --catalog-info prints the catalog fingerprint and counts.</Text>}
+        </Box>
+      )}
 
       {/* Footer hint */}
       <Box marginTop={1}>

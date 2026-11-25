@@ -4,7 +4,7 @@
 // JSX here would inject an eager react/jsx-runtime import even with lazy React below.
 import type { LocalGenome } from '@phage-explorer/core';
 import { parseArgs, stripVTControlCharacters } from 'node:util';
-import { lstat } from 'node:fs/promises';
+import { lstat, stat } from 'node:fs/promises';
 import path from 'path';
 import { homedir } from 'os';
 import { version } from '../../../package.json';
@@ -33,10 +33,6 @@ function getCandidateDbPaths(): string[] {
     seen.add(resolved);
     candidates.push(resolved);
   };
-
-  // Explicit override (useful for CI / custom installs)
-  add(process.env.PHAGE_EXPLORER_DB_PATH);
-  add(process.env.PHAGE_DB_PATH);
 
   // Development default: the COMMITTED database.
   //
@@ -73,6 +69,17 @@ function getCandidateDbPaths(): string[] {
 }
 
 async function resolveDbPath(): Promise<string | null> {
+  const variable = process.env.PHAGE_EXPLORER_DB_PATH ? 'PHAGE_EXPLORER_DB_PATH' : 'PHAGE_DB_PATH';
+  const configured = process.env[variable];
+  if (configured) {
+    const selected = path.resolve(configured);
+    try {
+      if (!(await stat(selected)).isFile()) throw new Error('Expected a regular SQLite file.');
+    } catch (cause) {
+      throw new Error(`Cannot use catalog selected by ${variable} at ${selected}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+    return selected;
+  }
   for (const candidate of getCandidateDbPaths()) {
     if (await Bun.file(candidate).exists()) return candidate;
   }
@@ -94,7 +101,7 @@ async function resolveDbPath(): Promise<string | null> {
  */
 async function warnIfShadowedDatabase(inUse: string): Promise<void> {
   const intermediate = path.resolve(path.join(process.cwd(), 'phage.db'));
-  if (path.resolve(inUse) === intermediate) return;
+  if (inUse !== path.resolve('packages', 'web', 'public', 'phage.db')) return;
 
   const other = Bun.file(intermediate);
   if (!(await other.exists())) return;
@@ -114,6 +121,25 @@ async function warnIfShadowedDatabase(inUse: string): Promise<void> {
 export async function main(args: readonly string[] = process.argv.slice(2)): Promise<void> {
   if (args[0] === '--version' || args[0] === '-V') {
     process.stdout.write(`phage-explorer ${version}\n`);
+    return;
+  }
+  if (args[0] === '--catalog-info') {
+    if (args.length !== 1) throw new Error('--catalog-info takes no additional arguments.');
+    const dbPath = await resolveDbPath();
+    if (!dbPath) throw new Error('No catalog found. Install the database or set PHAGE_EXPLORER_DB_PATH.');
+    const { Database } = await import('bun:sqlite');
+    const { computeDatabaseContentDigest } = await import('../../../scripts/build-web-db');
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      // Counts and identity must describe the same snapshot, including committed WAL pages.
+      const info = db.transaction(() => ({
+        path: dbPath,
+        contentVersion: computeDatabaseContentDigest(db),
+        phages: db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM phages').get()!.n,
+        genes: db.query<{ n: number }, []>('SELECT COUNT(*) AS n FROM genes').get()!.n,
+      }))();
+      process.stdout.write(JSON.stringify(info) + '\n');
+    } finally { db.close(); }
     return;
   }
   // Headless scientific workflows must not require a catalog or initialize Ink.
@@ -250,7 +276,9 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     process.stdout.write('Phage Explorer\n\n' +
       'Usage: phage-explorer [--import FILE] [--no-catalog]\n' +
       '                      [--allow-accession-collisions] [--export-bundle NEW_FILE]\n\n' +
-      'phage-explorer --version prints the release version without opening a catalog.\n\n' +
+      'phage-explorer --version prints the release version without opening a catalog.\n' +
+      'phage-explorer --catalog-info prints the selected SQLite path, logical content version and counts as JSON.\n' +
+      'PHAGE_EXPLORER_DB_PATH selects an exact catalog file. --no-catalog bypasses catalog selection.\n\n' +
       'Import DNA FASTA, GenBank or a version 1 local genome bundle (up to 10 MiB).\n' +
       'Local records stay in session memory; the curated database is read-only during import.\n' +
       '--no-catalog opens a private workspace, even without a startup --import file.\n' +
@@ -351,7 +379,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     // accepted repository so no old analysis cache can leak into a new session.
     const { waitUntilExit } = render(
       React.createElement(TerminalSizeGate, null,
-        React.createElement(LocalGenomeApp, { session, initiallyOpen: list.length === 0 })),
+        React.createElement(LocalGenomeApp, { session, catalogPath: dbPath, initiallyOpen: list.length === 0 })),
       { exitOnCtrlC: true, patchConsole: false }
     );
     await waitUntilExit();

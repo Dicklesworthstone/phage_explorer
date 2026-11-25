@@ -127,6 +127,12 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 phage-explorer
 ```
 
+On current `main`, `phage-explorer --catalog-info` prints the resolved SQLite path,
+logical content version, phage count, and gene count as JSON. Detailed terminal help
+shows the active catalog path. Set `PHAGE_EXPLORER_DB_PATH` to select a specific
+database. A missing or invalid selection reports an error. Use `--no-catalog` for a
+private workspace.
+
 ### Option 2: Build from Source
 
 ```bash
