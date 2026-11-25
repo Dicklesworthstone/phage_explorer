@@ -12,6 +12,7 @@ import {
   Color,
   DirectionalLight,
   Fog,
+  Group,
   HemisphereLight,
   PerspectiveCamera,
   Quaternion,
@@ -22,7 +23,6 @@ import {
   WebGLRenderer,
   Vector3,
 } from 'three';
-import type { Group } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import {
   buildBallAndStick,
@@ -288,7 +288,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
   const cameraRef = useRef<PerspectiveCamera | null>(null);
   const renderModeRef = useRef<RenderMode>(coarsePointer ? 'ribbon' : 'ball');
   const structureRef = useRef<Group | null>(null);
-  const highlightRef = useRef<Group | null>(null);
   const animationRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const structureDataRef = useRef<LoadedStructure | null>(null);
@@ -609,20 +608,16 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     void refetchStructure();
   }, [refetchStructure]);
 
-  const rebuildStructure = (mode: RenderMode) => {
+  const rebuildStructure = (mode: RenderMode, preserveOrientation = true) => {
     const data = structureDataRef.current;
     const scene = sceneRef.current;
     if (!data || !scene) return;
 
+    const orientation = preserveOrientation ? structureRef.current?.quaternion.clone() : undefined;
     if (structureRef.current) {
       scene.remove(structureRef.current);
       disposeGroup(structureRef.current);
       structureRef.current = null;
-    }
-    if (highlightRef.current) {
-      scene.remove(highlightRef.current);
-      disposeGroup(highlightRef.current);
-      highlightRef.current = null;
     }
 
     let group: Group | null = null;
@@ -665,22 +660,24 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     }
 
     if (group) {
-      // Center the group at origin by shifting it opposite to the data center
+      // Rotate around the center of the model, including its highlights.
+      const pivot = new Group();
+      if (orientation) pivot.quaternion.copy(orientation);
       const cx = data.center?.x ?? 0;
       const cy = data.center?.y ?? 0;
       const cz = data.center?.z ?? 0;
       group.position.set(-cx, -cy, -cz);
 
-      structureRef.current = group;
-      scene.add(group);
+      pivot.add(group);
+      structureRef.current = pivot;
+      scene.add(pivot);
 
       if (showFunctionalGroups && data.functionalGroups?.length) {
         const fg = buildFunctionalGroupHighlights(data.atoms, data.functionalGroups, {
           style: FUNCTIONAL_GROUP_STYLE,
         });
         fg.position.set(-cx, -cy, -cz);
-        highlightRef.current = fg;
-        scene.add(fg);
+        pivot.add(fg);
       }
     }
 
@@ -692,23 +689,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     const container = containerRef.current;
     if (!container) return;
 
-    // Quality change: update pixel ratio/size without recreating renderer
-    if (rendererRef.current && cameraRef.current && sceneRef.current) {
-      const width = container.clientWidth || 320;
-      const height = container.clientHeight || 260;
-      cameraRef.current.aspect = width / height;
-      cameraRef.current.updateProjectionMatrix();
-      const dpr = window.devicePixelRatio ?? 1;
-      rendererRef.current.shadowMap.enabled = qualityPreset.shadows;
-      rendererRef.current.outputColorSpace = SRGBColorSpace;
-      rendererRef.current.toneMapping = ACESFilmicToneMapping;
-      rendererRef.current.toneMappingExposure = 1.12;
-      rendererRef.current.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
-      rendererRef.current.setSize(width, height);
-      requestRender();
-      return;
-    }
-
     const scene = new Scene();
     scene.background = new Color('#0f1529');
     scene.fog = new Fog(0x0f1529, 120, 2600);
@@ -717,7 +697,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     let renderer: WebGLRenderer;
     try {
       renderer = new WebGLRenderer({
-        antialias: !coarsePointer && quality !== 'low',
+        antialias: !coarsePointer,
         alpha: false,
         powerPreference: 'high-performance',
       });
@@ -728,7 +708,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
     }
     renderer.outputColorSpace = SRGBColorSpace;
     renderer.toneMapping = ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.25;
+    renderer.toneMappingExposure = 1.12;
     renderer.setClearColor('#0f1529', 1);
     rendererRef.current = renderer;
     sceneRef.current = scene;
@@ -849,12 +829,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       const height = container.clientHeight || 260;
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      const dpr = window.devicePixelRatio ?? 1;
-      renderer.shadowMap.enabled = qualityPreset.shadows;
-      renderer.outputColorSpace = SRGBColorSpace;
-      renderer.toneMapping = ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.12;
-      renderer.setPixelRatio(Math.min(dpr * qualityPreset.pixelRatio, 2));
       renderer.setSize(width, height);
       requestRender();
     };
@@ -877,17 +851,24 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       }
       renderer.dispose();
       disposeGroup(structureRef.current);
-      disposeGroup(highlightRef.current);
       structureDataRef.current = null;
       rendererRef.current = null;
       sceneRef.current = null;
       cameraRef.current = null;
       controlsRef.current = null;
       structureRef.current = null;
-      highlightRef.current = null;
       resizeObserverRef.current = null;
     };
-  }, [coarsePointer, quality, qualityPreset.pixelRatio, qualityPreset.shadows, requestRender]);
+  }, [coarsePointer, requestRender]);
+
+  // Keep the renderer, loaded model and camera alive across manual and adaptive quality changes.
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    renderer.shadowMap.enabled = qualityPreset.shadows;
+    renderer.setPixelRatio(Math.min((window.devicePixelRatio || 1) * qualityPreset.pixelRatio, 2));
+    requestRender();
+  }, [qualityPreset, requestRender]);
 
   // Render loop (on-demand): keep animating only while rotating or damping is active.
   useEffect(() => {
@@ -1029,11 +1010,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       }
       disposeGroup(structureRef.current);
       structureRef.current = null;
-      if (highlightRef.current && sceneRef.current) {
-        sceneRef.current.remove(highlightRef.current);
-      }
-      disposeGroup(highlightRef.current);
-      highlightRef.current = null;
       return;
     }
 
@@ -1047,11 +1023,6 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
       }
       disposeGroup(structureRef.current);
       structureRef.current = null;
-      if (highlightRef.current && sceneRef.current) {
-        sceneRef.current.remove(highlightRef.current);
-      }
-      disposeGroup(highlightRef.current);
-      highlightRef.current = null;
       return;
     }
 
@@ -1097,7 +1068,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
 
         // Build immediately in addition to the loadState effect to avoid a race
         // where the renderMode effect fires before loadState flips to "ready".
-        rebuildStructure(mode);
+        rebuildStructure(mode, false);
 
         // ZOOM TO EXTENTS: Calculate optimal camera distance
         // Formula: dist = radius / tan(fov/2), with 1.15 padding for ~10% margin
@@ -1212,7 +1183,11 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
 
   const handleScreenshot = useCallback(() => {
     const renderer = rendererRef.current;
-    if (!renderer) return;
+    const scene = sceneRef.current;
+    const camera = cameraRef.current;
+    if (!renderer || !scene || !camera || !structureRef.current) return;
+    // WebGL may clear its drawing buffer after compositing the previous frame.
+    renderer.render(scene, camera);
     const dataUrl = renderer.domElement.toDataURL('image/png');
     const link = document.createElement('a');
     link.href = dataUrl;
@@ -1469,6 +1444,7 @@ function Model3DViewBase({ phage, repository }: Model3DViewProps): React.ReactEl
           type="button"
           className="btn compact"
           onClick={handleScreenshot}
+          disabled={loadState !== 'ready'}
           style={{ minHeight: '36px', minWidth: '40px' }}
           aria-label="Save screenshot"
           title="Save screenshot"
