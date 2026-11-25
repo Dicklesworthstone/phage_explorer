@@ -208,7 +208,8 @@ fi
 TMP_DIR=""          # source checkout (source builds only)
 CHECKSUMS_FILE=""   # downloaded sha256.txt
 STAGED_BIN=""       # verified binary, renamed into place only at commit
-STAGED_DB=""        # verified database, renamed into place only at commit
+STAGED_DB=""        # verified database, published only at commit
+DB_STAGE_DIR=""     # fresh catalogs need their final basename for no-clobber linking
 DB_BACKUP=""        # original database during the two-file commit
 COMMITTING_PAIR=0
 DB_DOWNLOAD=""      # compressed database download
@@ -220,22 +221,28 @@ LOCK_DIR=""
 cleanup() {
   local path
   trap '' HUP INT TERM
-  # A signal can run immediately after mv, before any shell assignment.
-  # Same-directory rename consumes its staged file, so the paths tell us
-  # whether just the database or both artifacts made it into place.
-  if [[ $COMMITTING_PAIR -eq 1 && ! -e "$STAGED_DB" && -e "$STAGED_BIN" ]]; then
-    if [[ -n "$DB_BACKUP" ]]; then
-      if ! mv -f "$DB_BACKUP" "$DB_PATH"; then
-        log_error "Cannot restore the previous database. Its backup is at $DB_BACKUP"
-        DB_BACKUP=""  # retain it for recovery
+  # A signal can arrive after either publication and before a shell assignment.
+  if [[ $COMMITTING_PAIR -eq 1 && -e "$STAGED_BIN" ]]; then
+    if [[ -n "$DB_STAGE_DIR" ]]; then
+      # The staging hard link identifies a fresh catalog that this run published.
+      if [[ ! -L "$DB_PATH" && "$STAGED_DB" -ef "$DB_PATH" ]]; then
+        rm -f "$DB_PATH" || log_error "Cannot roll back the new database at $DB_PATH"
       fi
-    else
-      rm -f "$DB_PATH" || log_error "Cannot roll back the new database at $DB_PATH"
+    elif [[ ! -e "$STAGED_DB" ]]; then
+      if [[ -n "$DB_BACKUP" ]]; then
+        if ! mv -f "$DB_BACKUP" "$DB_PATH"; then
+          log_error "Cannot restore the previous database. Its backup is at $DB_BACKUP"
+          DB_BACKUP=""  # retain it for recovery
+        fi
+      else
+        rm -f "$DB_PATH" || log_error "Cannot roll back the new database at $DB_PATH"
+      fi
     fi
   fi
   for path in "$CHECKSUMS_FILE" "$STAGED_BIN" "$STAGED_DB" "$DB_DOWNLOAD" "$DB_BACKUP"; do
     if [[ -n "$path" && ( -f "$path" || -L "$path" ) ]]; then rm -f "$path" || true; fi
   done
+  if [[ -n "$DB_STAGE_DIR" ]]; then rmdir "$DB_STAGE_DIR" 2>/dev/null || true; fi
   if [[ -n "$TMP_DIR" && -d "$TMP_DIR" ]]; then rm -rf "$TMP_DIR" || true; fi
   if [[ "$LOCK_KIND" == "mkdir" && -n "$LOCK_DIR" ]]; then
     rm -f "$LOCK_DIR/pid" || true
@@ -566,7 +573,12 @@ if [[ "$DATABASE_MODE" == missing && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
   log "Keeping the existing catalog at $DB_PATH (use --with-database to replace it)."
 elif [[ "$DATABASE_MODE" != skip ]]; then
   mkdir -p "$DATA_DIR" || die "Failed to create directory: $DATA_DIR; $NOT_CHANGED"
-  STAGED_DB="$(new_staging_file "$DATA_DIR" "phage.db")"
+  if [[ "$DATABASE_MODE" == missing ]]; then
+    DB_STAGE_DIR="$(mktemp -d "$DATA_DIR/.phage.db.download.XXXXXX")" || die "Cannot stage a new catalog; $NOT_CHANGED"
+    STAGED_DB="$DB_STAGE_DIR/phage.db"
+  else
+    STAGED_DB="$(new_staging_file "$DATA_DIR" "phage.db")"
+  fi
 
   if [[ $FROM_SOURCE -eq 1 ]]; then
     # The repository ships the release database together with its manifest.
@@ -636,10 +648,15 @@ if [[ -n "$STAGED_DB" ]]; then
   fi
   COMMITTING_PAIR=1
   if [[ "$DATABASE_MODE" == missing ]]; then
-    # A catalog may have appeared while the first download was in flight.
-    # Some mv implementations report success for a skipped no-clobber rename.
-    mv -n "$STAGED_DB" "$DB_PATH" && [[ ! -e "$STAGED_DB" ]] \
-      || die "Could not install the new catalog without overwriting $DB_PATH; $NOT_CHANGED"
+    # link(2) publishes complete verified bytes only if phage.db is absent.
+    # Pass the parent directory so a competing directory or symlink cannot be
+    # interpreted as the directory into which ln should put the staged file.
+    if ! ln "$STAGED_DB" "$DATA_DIR/"; then
+      if [[ -e "$DB_PATH" || -L "$DB_PATH" ]]; then
+        die "A catalog destination appeared at $DB_PATH; $NOT_CHANGED"
+      fi
+      die "Cannot create a hard link in $DATA_DIR for a new catalog. Use --with-database to allow replacement; $NOT_CHANGED"
+    fi
   else
     mv -f "$STAGED_DB" "$DB_PATH" || die "Could not install $DB_PATH"
   fi

@@ -44,7 +44,7 @@ const supported = PLATFORM !== 'unsupported';
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 const BASE_TOOLS = [
-  'awk', 'cat', 'chmod', 'cp', 'gunzip', 'gzip', 'head', 'id', 'mkdir', 'mktemp',
+  'awk', 'cat', 'chmod', 'cp', 'gunzip', 'gzip', 'head', 'id', 'ln', 'mkdir', 'mktemp',
   'mv', 'rm', 'rmdir', 'sed', 'sleep', 'sort', 'tr', 'uname', 'wc', 'grep',
 ];
 const HASH_TOOLS = ['sha256sum', 'shasum', 'openssl', 'perl'];
@@ -261,21 +261,60 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     expect(existsSync(join(run.home, '.phage-explorer'))).toBe(false);
   });
 
-  test('a catalog created during a first install survives the final rename', () => {
-    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
-    const wrapper = join(prepared.tmp, 'concurrent-catalog');
-    mkdirSync(wrapper);
-    writeFileSync(join(wrapper, 'mv'), `#!${SHELL}
-if [ "$1" = "-n" ]; then printf 'concurrent catalog' >"$3"; fi
+  for (const kind of ['file', 'directory', 'symlink'] as const) {
+    test(`a competing ${kind} at the catalog destination survives a first install`, () => {
+      const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
+      const wrapper = join(prepared.tmp, 'concurrent-catalog');
+      mkdirSync(wrapper);
+      // Interpose at publication, after all preflight checks.
+      writeFileSync(join(wrapper, 'ln'), `#!${SHELL}
+target="$HOME/.phage-explorer/phage.db"
+case "${kind}" in
+  file) printf 'concurrent catalog' >"$target" ;;
+  directory) mkdir "$target" ;;
+  symlink) mkdir "$TMPDIR/other"; "${Bun.which('ln')}" -s "$TMPDIR/other" "$target" ;;
+esac
+exec "${Bun.which('ln')}" "$@"
+`, { mode: 0o755 });
+      prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
+      const run = runPrepared(prepared);
+      expect(run.code).not.toBe(0);
+      const target = join(run.home, '.phage-explorer', 'phage.db');
+      if (kind === 'file') expect(installedDb(run).toString()).toBe('concurrent catalog');
+      else {
+        expect(lstatSync(target).isSymbolicLink()).toBe(kind === 'symlink');
+        expect(readdirSync(target)).toEqual([]);
+      }
+      expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+      expect(leftovers(run)).toEqual([]);
+    });
+  }
+
+  for (const replaceLinkedFile of [false, true]) {
+    test(`a failed binary rename rolls back only our own freshly linked catalog (replaced=${replaceLinkedFile})`, () => {
+      const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { databaseMode: 'default' });
+      const wrapper = join(prepared.tmp, 'fail-binary-rename');
+      mkdirSync(wrapper);
+      writeFileSync(join(wrapper, 'mv'), `#!${SHELL}
+case "$2" in
+  */.phage-explorer.download.*)
+    if [ "${replaceLinkedFile}" = true ]; then
+      printf 'concurrent replacement' >"$HOME/.phage-explorer/other.db"
+      "${Bun.which('mv')}" -f "$HOME/.phage-explorer/other.db" "$HOME/.phage-explorer/phage.db"
+    fi
+    exit 1 ;;
+esac
 exec "${Bun.which('mv')}" "$@"
 `, { mode: 0o755 });
-    prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
-    const run = runPrepared(prepared);
-    expect(run.code).not.toBe(0);
-    expect(installedDb(run).toString()).toBe('concurrent catalog');
-    expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
-    expect(leftovers(run)).toEqual([]);
-  });
+      prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
+      const run = runPrepared(prepared);
+      expect(run.code).not.toBe(0);
+      if (replaceLinkedFile) expect(installedDb(run).toString()).toBe('concurrent replacement');
+      else expect(existsSync(join(run.home, '.phage-explorer', 'phage.db'))).toBe(false);
+      expect(existsSync(join(run.dest, 'phage-explorer'))).toBe(false);
+      expect(leftovers(run)).toEqual([]);
+    });
+  }
 
   test('a fresh default install rejects a corrupt catalog before publishing the binary', () => {
     const run = runInstaller({ binary: GOOD_BINARY, db: flipped(GOOD_DB) }, { databaseMode: 'default' });
