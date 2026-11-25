@@ -15,6 +15,8 @@ declare global {
       replyReleased: boolean;
       releaseReply: () => void;
       position: () => number;
+      reopenInFrame: (frame: 0 | 1 | 2 | -1 | -2 | -3) => void;
+      viewMode: () => string;
     };
   }
 }
@@ -125,6 +127,8 @@ test('search owns its input, annotations, circular topology and late worker repl
             select: name => select(name), holdRead: false, readPending: false, releaseRead: () => {},
             holdReply: false, replyPending: false, replyReleased: false, releaseReply: () => {},
             position: () => usePhageStore.getState().scrollPosition,
+            viewMode: () => usePhageStore.getState().viewMode,
+            reopenInFrame: () => {},
           };
           const NativeWorker = window.Worker;
           window.Worker = class extends NativeWorker {
@@ -165,7 +169,15 @@ test('search owns its input, annotations, circular topology and late worker repl
           function Fixture() {
             const [name, setName] = useState('a');
             const { open } = useOverlay();
-            useEffect(() => { select = next => flushSync(() => setName(next)); open('search'); }, []);
+            useEffect(() => {
+              select = next => flushSync(() => setName(next));
+              fixture.reopenInFrame = frame => {
+                usePhageStore.getState().setViewMode('aa');
+                usePhageStore.getState().setReadingFrame(frame);
+                open('search');
+              };
+              open('search');
+            }, []);
             // Deliberately retain the previous PhageFull while its repository
             // changes. Annotations must be read beside bases from that repository.
             return <SearchOverlay repository={entries[name].repository} currentPhage={entries.a.phage} />;
@@ -193,9 +205,23 @@ test('search owns its input, annotations, circular topology and late worker repl
     await overlay.getByRole('button', { name: 'Motif / IUPAC', exact: true }).click();
     await overlay.getByLabel('Strand:').selectOption('+');
     await query.fill('AAA');
-    await expect(hits).toHaveCount(3);
+    const box = overlay.getByRole('combobox', { name: 'Query', exact: true });
+    const results = overlay.getByRole('listbox', { name: 'Search results' });
+    const options = results.getByRole('option');
+    await expect(options).toHaveCount(3);
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await expect(box).toHaveAttribute('aria-controls', await results.getAttribute('id') as string);
+    await expect(options.nth(0)).toHaveAttribute('aria-selected', 'true');
+    await box.press('ArrowDown');
+    await expect(box).toBeFocused();
+    await expect(options.nth(1)).toHaveAttribute('aria-selected', 'true');
+    await expect(box).toHaveAttribute('aria-activedescendant', await options.nth(1).getAttribute('id') as string);
+    await expect(overlay.getByRole('status').filter({ hasText: '3/500 results' })).toBeVisible();
+    await expect(overlay.getByRole('button', { name: 'Motif / IUPAC' })).toHaveAttribute('aria-pressed', 'true');
     await page.evaluate(() => { window.searchIdentityFixture.holdReply = true; });
     await query.fill('AA');
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
+    await expect(box).not.toHaveAttribute('aria-activedescendant', /.+/);
     await expect.poll(() => page.evaluate(() => window.searchIdentityFixture.replyPending)).toBe(true);
     await page.evaluate(() => { window.searchIdentityFixture.holdRead = true; window.searchIdentityFixture.select('b'); });
     await expect.poll(() => page.evaluate(() => window.searchIdentityFixture.readPending)).toBe(true);
@@ -247,6 +273,21 @@ test('search owns its input, annotations, circular topology and late worker repl
     await query.press('Enter');
     await expect(overlay).toBeHidden();
     expect(await page.evaluate(() => window.searchIdentityFixture.position())).toBe(6);
+    // At eight bases in frame -1 the first two bases are untranslated.
+    await page.evaluate(() => window.searchIdentityFixture.reopenInFrame(-1));
+    await overlay.getByRole('button', { name: 'Position', exact: true }).click();
+    await query.fill('4');
+    await expect(options).toHaveCount(1);
+    await options.first().click();
+    await expect(overlay).toBeHidden();
+    expect(await page.evaluate(() => [window.searchIdentityFixture.viewMode(), window.searchIdentityFixture.position()])).toEqual(['aa', 0]);
+
+    await page.evaluate(() => window.searchIdentityFixture.reopenInFrame(1));
+    await query.fill('7');
+    await expect(options.first()).toContainText('7-8');
+    await query.press('Enter');
+    await expect(overlay).toBeHidden();
+    expect(await page.evaluate(() => [window.searchIdentityFixture.viewMode(), window.searchIdentityFixture.position()])).toEqual(['dna', 7]);
     expect(errors).toEqual([]);
   } finally { await server.close(); }
 });

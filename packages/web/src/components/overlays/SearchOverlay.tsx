@@ -4,6 +4,7 @@ import { usePhageStore } from '@phage-explorer/state';
 import { Overlay } from './Overlay';
 import { useOverlay } from './OverlayProvider';
 import { useTheme } from '../../hooks/useTheme';
+import { searchNavigationTarget } from '../../utils/search-navigation';
 import { SearchResultsSkeleton } from '../ui/Skeleton';
 import type { PhageFull } from '@phage-explorer/core';
 import type { PhageRepository } from '../../db';
@@ -124,16 +125,13 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   const hits = currentOutcome?.hits ?? EMPTY_HITS;
   const summary = currentOutcome?.summary ?? '';
   const searchError = currentOutcome?.error ?? null;
+  const showResults = hits.length > 0 && status !== 'searching';
 
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
   const searchSeqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const resultsRef = useRef<HTMLUListElement>(null);
-
-  // Store action to navigate to position
-  const setScrollPosition = usePhageStore((s) => s.setScrollPosition);
-  const viewMode = usePhageStore((s) => s.viewMode);
 
   // Track if we're using a preloaded worker (don't terminate on unmount)
   const usingPreloadedRef = useRef(false);
@@ -230,10 +228,12 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
   // Navigate to selected result
   const navigateToResult = useCallback((hit: SearchHit) => {
     if (!hits.includes(hit)) return;
-    const target = viewMode === 'aa' ? Math.floor(hit.position / 3) : hit.position;
-    setScrollPosition(target);
+    const state = usePhageStore.getState();
+    const target = searchNavigationTarget(hit.position, sequence.length, state.viewMode, state.readingFrame);
+    if (target.viewMode !== state.viewMode) state.setViewMode(target.viewMode);
+    state.setScrollPosition(target.position);
     close('search');
-  }, [close, setScrollPosition, viewMode, hits]);
+  }, [close, hits, sequence.length]);
 
   // Keyboard handler for navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -544,12 +544,13 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
         ) : (
           <>
             {/* Mode selector */}
-            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <div role="group" aria-label="Search mode" style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
               {MODES.map((m) => (
                 <button
                   key={m.id}
                   type="button"
                   onClick={() => setMode(m.id)}
+                  aria-pressed={mode === m.id}
                   style={{
                     padding: '0.625rem 1rem',
                     minHeight: '44px',
@@ -575,6 +576,12 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                 ref={inputRef}
                 data-overlay-autofocus="true"
                 type="text"
+                role="combobox"
+                aria-autocomplete="list"
+                aria-expanded={showResults}
+                aria-controls={showResults ? 'phage-search-results' : undefined}
+                aria-activedescendant={showResults && selectedIndex < hits.length ? `phage-search-hit-${selectedIndex}` : undefined}
+                aria-describedby="phage-search-keys"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={handleKeyDown}
@@ -599,6 +606,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                   color: colors.text,
                 }}
               />
+              <p id="phage-search-keys" style={{ color: colors.textDim, fontSize: '0.9rem', margin: 0 }}>
+                Use the up and down arrows to choose a result, then press Enter to open it.
+              </p>
               {renderOptions()}
               <p style={{ color: colors.textDim, fontSize: '0.9rem', margin: 0 }}>
                 Positions are 0-based; range ends are exclusive. A single position selects one base.
@@ -613,14 +623,9 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
               </p>}
             </div>
 
-            {(summary || status === 'searching') && (
-              <div style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
-                {summary || `Searching “${query.trim()}”…`}
-                {status === 'searching' && summary && (
-                  <span style={{ marginLeft: '0.5rem', color: colors.accent }}>Searching…</span>
-                )}
-              </div>
-            )}
+            <div role="status" aria-atomic="true" style={{ color: colors.textMuted, fontSize: '0.9rem' }}>
+              {summary || (status === 'searching' && query.trim() ? `Searching “${query.trim()}”…` : '')}
+            </div>
 
             <div
               style={{
@@ -649,12 +654,15 @@ export function SearchOverlay({ repository, currentPhage }: SearchOverlayProps):
                   style={{ padding: 'var(--space-4)' }}
                 />
               ) : (
-                <ul ref={resultsRef} style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                <ul id="phage-search-results" role="listbox" aria-label="Search results" ref={resultsRef} style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                   {hits.map((hit, idx) => {
                     const isSelected = idx === selectedIndex;
                     return (
                       <li
                         key={`${hit.position}-${idx}`}
+                        id={`phage-search-hit-${idx}`}
+                        role="option"
+                        aria-selected={isSelected}
                         data-result-index={idx}
                         onClick={() => navigateToResult(hit)}
                         style={{
