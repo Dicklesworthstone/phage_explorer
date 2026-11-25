@@ -17,6 +17,25 @@ async function rehash(record: AnalysisRecord): Promise<string> {
 }
 
 describe('complete portable genome comparison', () => {
+  it('preserves unavailable and true-zero cross-CAI through export/replay and rejects fabricated substitutes', async () => {
+    const a = genome('AAAAAGTTTATGTAA'), b = genome('AAAAAAAAA');
+    const missing = await createGenomeComparisonExperiment(a, b);
+    expect(missing.record.method.version).toBe('5');
+    expect(missing.result.codonUsage.caiA).toBeNull();
+    expect(missing.result.codonUsage.caiCoverageA).toMatchObject({ eligibleCodons: 3, scoredCodons: 2,
+      zeroWeightCodons: 1, missingReferenceFamilies: ['F'], excludedSingletonCodons: 1, excludedStopCodons: 1 });
+    expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(missing.record))).record).toEqual(missing.record);
+    const fabricated = structuredClone(missing.record);
+    const metrics = fabricated.fields.comparison.value as Record<string, AnalysisJson>;
+    (metrics.codonUsage as Record<string, AnalysisJson>).caiA = 0.000001;
+    await expect(replayGenomeComparisonExperiment(await rehash(fabricated))).rejects.toThrow('fresh computation');
+    const former = structuredClone(missing.record); former.method.version = '4';
+    await expect(replayGenomeComparisonExperiment(await rehash(former))).rejects.toThrow('incompatible');
+    const zero = await createGenomeComparisonExperiment(genome('AAAAAG'), b);
+    expect(zero.result.codonUsage.caiA).toBe(0);
+    expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(zero.record))).result.codonUsage.caiA).toBe(0);
+  });
+
   it('recomputes exact sequences, annotations, settings and all results despite identical numeric source IDs', async () => {
     const a = genome('AAAACCCC'), b = genome('AAAAGCCCC');
     b.genes[0].name = 'query-feature';
@@ -113,7 +132,7 @@ describe('complete portable genome comparison', () => {
     // Twelve terminal bases plus six starting bases = 18, on either strand.
     expect(accepted.result.geneContent).toMatchObject({ avgGeneLengthA: 18, avgGeneLengthB: 18,
       genesA: 1, genesB: 1, geneDensityA: 1000 / 60, geneDensityB: 1000 / 60 });
-    expect(accepted.record.method.version).toBe('4');
+    expect(accepted.record.method.version).toBe('5');
     const json = serializeAnalysisRecord(accepted.record);
     const replayed = await replayGenomeComparisonExperiment(json);
     expect(replayed.record).toEqual(accepted.record);
@@ -152,7 +171,7 @@ describe('case-independent comparison evidence', () => {
       expect(accepted.genomeB.sequence).toBe(b.sequence);
       expect((accepted.record.inputs[1].data as unknown as ComparisonGenomeInput).sequence).toBe(b.sequence);
       expect(accepted.record.inputs[0].sha256).not.toBe(accepted.record.inputs[1].sha256);
-      expect(accepted.record.method.version).toBe('4');
+      expect(accepted.record.method.version).toBe('5');
       expect((await replayGenomeComparisonExperiment(serializeAnalysisRecord(accepted.record))).record).toEqual(accepted.record);
     });
   }

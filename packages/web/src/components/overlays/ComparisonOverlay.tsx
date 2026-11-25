@@ -5,7 +5,7 @@ import { Badge } from '../ui/Badge';
 import { AnalysisPanelSkeleton } from '../ui/Skeleton';
 import type { PhageRepository } from '../../db';
 import { serializeAnalysisRecord, type PhageSummary } from '@phage-explorer/core';
-import type { ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantReport } from '@phage-explorer/comparison';
+import type { CodonUsageComparison, ComparisonSummary, GenomeComparisonResult, KmerIdentityEstimate, SequenceDiffResult, StructuralVariantCall, StructuralVariantReport } from '@phage-explorer/comparison';
 import { DEFAULT_GENOME_COMPARISON_OPTIONS, GENOME_COMPARISON_LIMITS, formatSimilarity, resolveGenomeComparisonOptions,
   type GenomeComparisonExperiment, type GenomeComparisonOptions } from '@phage-explorer/comparison';
 import { usePhageStore } from '@phage-explorer/state';
@@ -25,6 +25,23 @@ function formatBpRange(start: number, end: number): string {
 
 function sortSvCalls(a: StructuralVariantCall, b: StructuralVariantCall): number {
   return Math.max(b.sizeA, b.sizeB) - Math.max(a.sizeA, a.sizeB) || a.startA - b.startA || a.startB - b.startB;
+}
+
+/** Cross-genome weights are descriptive; missing reference families are not poor adaptation. */
+export function ComparisonCodonAdaptation({ codon }: { codon: CodonUsageComparison }): React.ReactElement {
+  return <div aria-label="Cross-genome codon adaptation">
+    {([
+      ['A relative to B', codon.caiA, codon.caiCoverageA],
+      ['B relative to A', codon.caiB, codon.caiCoverageB],
+    ] as const).map(([label, value, coverage]) => <div className="text-dim" key={label}>
+      <div>CAI {label}: {value === null ? 'Unavailable' : value > 0 && value < 0.0005 ? value.toExponential(3) : value.toFixed(3)}</div>
+      <div>Scored synonymous codons: {coverage.scoredCodons}/{coverage.eligibleCodons};
+        {' '}zero weights: {coverage.zeroWeightCodons}; excluded Met/Trp: {coverage.excludedSingletonCodons}; stops: {coverage.excludedStopCodons}.</div>
+      {coverage.unavailableReason && <div>{coverage.unavailableReason}</div>}
+    </div>)}
+    <div className="text-dim">Standard genetic code; no pseudocounts. The other genome supplies the weights,
+      {' '}not a validated host expression reference.</div>
+  </div>;
 }
 
 /** The actual Genes-tab indel view, also exercised with sequence-derived reports. */
@@ -609,7 +626,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
             <div className="metric-card">
               <div className="metric-label">Codon usage</div>
               <div className="metric-value">{formatPct(codon.rscuCosineSimilarity * 100)}</div>
-              <div className="text-dim">CAI A/B: {codon.caiA.toFixed(3)} / {codon.caiB.toFixed(3)}</div>
+              <ComparisonCodonAdaptation codon={codon} />
               <div className="text-dim">{codon.chiSquarePValue === null
                 ? `Chi-square unavailable: ${codon.chiSquareUnavailableReason}`
                 : `Chi-square ${codon.chiSquareStatistic.toFixed(1)}, df=${codon.degreesOfFreedom}, asymptotic p=${codon.chiSquarePValue.toExponential(2)}`}</div>

@@ -29,7 +29,7 @@ export interface GenomeComparisonExperiment {
   record: AnalysisRecord;
 }
 export const GENOME_COMPARISON_METHOD = {
-  id: 'genome-comparison', version: '4', implementation: 'typescript-comparison-engine',
+  id: 'genome-comparison', version: '5', implementation: 'typescript-comparison-engine',
 } as const;
 export const GENOME_COMPARISON_LIMITS = {
   sequenceBases: 1_000_000, genes: 20_000, recordBytes: 10 * 1024 * 1024,
@@ -138,6 +138,7 @@ export async function createGenomeComparisonExperiment(genomeA: ComparisonGenome
         'K-mer and composition resemblance do not establish homology. Position-paired information and sampled edit windows depend on the submitted strand and origin.',
         'Within the configured exact edit limit, metrics reuse the bounded exact alignment when available; otherwise a rolling-row exact DP provides counts. Above that limit, sampled windows estimate total distance only and operation counts are unavailable. The separate sequenceDiff and structuralVariants fields contain the bounded exact alignment or its explicit unavailable reason.',
         'Supplied codon counts are used as recorded; null uses frame zero of the complete sequence, not an inferred set of coding genes. Ambiguous triplets are excluded from resolved codon tests, while the rank comparison retains supplied frequency bins. Gene-name overlap does not establish orthology.',
+        'Cross-CAI uses standard-code synonymous families, excluding stops, Met and Trp, with no zero-count replacement. Omitted count bins are zero within an observed family; an entirely unobserved target family makes the score unavailable. The other genome is a descriptive reference, not a host expression reference or prediction of translation efficiency. Weight cosine uses only the reported shared families.',
         'Gene lengths sum the declared annotation segments, including any positions explicitly repeated by a joined transcript. Intervening genomic gaps are excluded; translation frame offsets do not shorten nucleotide annotation lengths.',
         'Runtime and wall-clock timestamps are operational metadata and are excluded from result identity. All numerical outputs, annotations, coordinates and display-mask bytes remain bound.',
       ] } },

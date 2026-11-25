@@ -127,6 +127,17 @@ export interface BiologicalMetrics {
   lengthDifference: number;           // Absolute difference
 }
 
+/** Coverage of the target's synonymous codons against the other genome's counts. */
+export interface CrossCodonAdaptationCoverage {
+  eligibleCodons: number;
+  scoredCodons: number;
+  zeroWeightCodons: number;
+  excludedSingletonCodons: number;
+  excludedStopCodons: number;
+  missingReferenceFamilies: string[];
+  unavailableReason: string | null;
+}
+
 // Codon usage comparison
 export interface CodonUsageComparison {
   // RSCU - Relative Synonymous Codon Usage
@@ -146,9 +157,12 @@ export interface CodonUsageComparison {
   excludedCodonsB: number;
 
   // CAI - Codon Adaptation Index (cross-adaptation)
-  caiA: number;                       // CAI of sequence A using B's codon preference weights
-  caiB: number;                       // CAI of sequence B using A's codon preference weights
-  caiCorrelation: number;             // Cosine similarity of codon preference weights
+  caiA: number | null;                // A relative to B; null without complete target-family coverage
+  caiB: number | null;                // B relative to A; true zero weights produce zero, never a floor
+  caiCoverageA: CrossCodonAdaptationCoverage;
+  caiCoverageB: CrossCodonAdaptationCoverage;
+  caiCorrelation: number | null;      // Weight-vector cosine over shared observed synonymous families
+  caiSharedFamilies: string[];
 
   // Most different codons
   topDifferentCodons: CodonDifference[];

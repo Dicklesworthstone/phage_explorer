@@ -19,6 +19,7 @@ import type {
   KmerIdentityCoverage,
   KmerIdentityEstimate,
   CodonUsageComparison,
+  CrossCodonAdaptationCoverage,
   CodonDifference,
   AminoAcidComparison,
   AminoAcidDifference,
@@ -186,21 +187,25 @@ export function calculateRSCU(codonCounts: Record<string, number>): Record<strin
   return rscu;
 }
 
-// Derive codon preference weights for CAI (frequency / max per amino acid)
-function deriveCodonWeights(codonCounts: Record<string, number>): Record<string, number> {
+// These inputs are complete count distributions (omitted bins are zero), not
+// partially reported external references. An entirely unobserved amino-acid
+// family still has no denominator and cannot supply an adaptation weight.
+function deriveCodonWeights(codonCounts: Record<string, number>): Record<string, number | null> {
   const aaToCodons: Record<string, string[]> = {};
   for (const [codon, aa] of Object.entries(CODON_TABLE)) {
+    if (aa === '*') continue;
     if (!aaToCodons[aa]) aaToCodons[aa] = [];
     aaToCodons[aa].push(codon);
   }
 
-  const weights: Record<string, number> = {};
+  const weights: Record<string, number | null> = {};
   for (const codons of Object.values(aaToCodons)) {
+    // Met and Trp have no synonymous choice under the standard code.
+    if (codons.length === 1) continue;
     const maxCount = Math.max(...codons.map(c => codonCounts[c] ?? 0), 0);
     for (const codon of codons) {
       const count = codonCounts[codon] ?? 0;
-      const weight = maxCount > 0 ? count / maxCount : 0;
-      weights[codon] = Math.max(weight, 1e-6); // avoid zeros for log
+      weights[codon] = maxCount > 0 ? count / maxCount : null;
     }
   }
   return weights;
@@ -209,19 +214,36 @@ function deriveCodonWeights(codonCounts: Record<string, number>): Record<string,
 // CAI computed from codon count distributions (geometric mean of weights)
 function computeCAIFromCounts(
   targetCounts: Record<string, number>,
-  referenceCounts: Record<string, number>
-): number {
-  const weights = deriveCodonWeights(referenceCounts);
-  const totalCodons = Object.values(targetCounts).reduce((sum, c) => sum + c, 0);
-  if (totalCodons === 0) return 0;
-
+  weights: Record<string, number | null>
+): { value: number | null; coverage: CrossCodonAdaptationCoverage } {
+  const coverage: CrossCodonAdaptationCoverage = {
+    eligibleCodons: 0, scoredCodons: 0, zeroWeightCodons: 0,
+    excludedSingletonCodons: 0, excludedStopCodons: 0,
+    missingReferenceFamilies: [], unavailableReason: null,
+  };
+  const missing = new Set<string>();
   let logSum = 0;
   for (const [codon, count] of Object.entries(targetCounts)) {
     if (count <= 0) continue;
-    logSum += count * Math.log(weights[codon] ?? 1e-6);
+    const aa = CODON_TABLE[codon];
+    if (aa === '*') { coverage.excludedStopCodons += count; continue; }
+    if (!Object.hasOwn(weights, codon)) { coverage.excludedSingletonCodons += count; continue; }
+    coverage.eligibleCodons += count;
+    const weight = weights[codon];
+    if (weight === null) { missing.add(aa); continue; }
+    coverage.scoredCodons += count;
+    if (weight === 0) coverage.zeroWeightCodons += count;
+    else logSum += count * Math.log(weight);
   }
-
-  return Math.exp(logSum / totalCodons);
+  coverage.missingReferenceFamilies = [...missing].sort();
+  if (coverage.eligibleCodons === 0) {
+    coverage.unavailableReason = 'No resolved target codons with synonymous alternatives under the standard genetic code.';
+  } else if (missing.size) {
+    coverage.unavailableReason = `The reference has no observations for target amino-acid families: ${coverage.missingReferenceFamilies.join(', ')}.`;
+  }
+  const value = coverage.unavailableReason !== null ? null
+    : coverage.zeroWeightCodons > 0 ? 0 : Math.exp(logSum / coverage.eligibleCodons);
+  return { value, coverage };
 }
 
 function cosineSimilarity(vecA: number[], vecB: number[]): number {
@@ -318,14 +340,15 @@ export function compareCodonUsage(
   const chiSquarePValue = chiSquareUnavailableReason === null ? chiSquareSurvival(chiSquare, df) : null;
 
   // CAI (cross-adaptation): evaluate A with B preferences and vice versa
-  const caiA = computeCAIFromCounts(countsA, countsB);
-  const caiB = computeCAIFromCounts(countsB, countsA);
   const weightA = deriveCodonWeights(countsA);
   const weightB = deriveCodonWeights(countsB);
-  const caiCorrelation = cosineSimilarity(
-    codons.map(c => weightA[c]),
-    codons.map(c => weightB[c])
-  );
+  const caiA = computeCAIFromCounts(countsA, weightB);
+  const caiB = computeCAIFromCounts(countsB, weightA);
+  const sharedCodons = Object.keys(weightA).filter(codon => weightA[codon] !== null && weightB[codon] !== null);
+  const caiSharedFamilies = [...new Set(sharedCodons.map(codon => CODON_TABLE[codon]))].sort();
+  const caiCorrelation = sharedCodons.length > 0 ? cosineSimilarity(
+    sharedCodons.map(c => weightA[c]!), sharedCodons.map(c => weightB[c]!)
+  ) : null;
 
   // Find most different codons (guard against division by zero)
   const safeTotal = (t: number) => t > 0 ? t : 1;
@@ -352,9 +375,12 @@ export function compareCodonUsage(
     resolvedCodonsB: totalB,
     excludedCodonsA: a.excluded,
     excludedCodonsB: b.excluded,
-    caiA,
-    caiB,
+    caiA: caiA.value,
+    caiB: caiB.value,
+    caiCoverageA: caiA.coverage,
+    caiCoverageB: caiB.coverage,
     caiCorrelation,
+    caiSharedFamilies,
     topDifferentCodons: differences.slice(0, 10),
   };
 }

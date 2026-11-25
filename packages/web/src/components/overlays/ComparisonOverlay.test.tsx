@@ -2,10 +2,10 @@ import React from 'react';
 import { describe, expect, it } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComparisonJob, ComparisonWorkerMessage } from '../../workers/types';
-import { analyzeInformationTheory, analyzeStructuralVariants, compareGenomes, computeSequenceDiff, estimateKmerIdentity,
+import { analyzeInformationTheory, analyzeStructuralVariants, compareCodonUsage, compareGenomes, computeSequenceDiff, estimateKmerIdentity,
   createGenomeComparisonExperiment, DEFAULT_GENOME_COMPARISON_OPTIONS } from '@phage-explorer/comparison';
 import { serializeAnalysisRecord } from '@phage-explorer/core';
-import { ComparisonDiffView, ComparisonInformationTheory, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus } from './ComparisonOverlay';
+import { ComparisonCodonAdaptation, ComparisonDiffView, ComparisonInformationTheory, ComparisonKmerIdentity, ComparisonStructuralVariants, ComparisonSummaryStatus } from './ComparisonOverlay';
 import { runWebComparison } from '../../workers/ComparisonSession';
 
 describe('comparison information evidence rendering', () => {
@@ -40,6 +40,23 @@ describe('comparison information evidence rendering', () => {
     expect(missing).toContain('Jointly resolved pairs: 0/3');
     expect(missing).not.toContain('0.000');
     expect(missing).not.toContain('constant');
+  });
+});
+
+describe('comparison codon reference coverage rendering', () => {
+  it('distinguishes missing reference families, exact zero weights and supported scores', () => {
+    const missing = renderToStaticMarkup(<ComparisonCodonAdaptation codon={compareCodonUsage({ AAA: 1, TTT: 1 }, { AAA: 8, AAG: 2 })} />);
+    expect(missing).toContain('CAI A relative to B: Unavailable');
+    expect(missing).toContain('Scored synonymous codons: 1/2');
+    expect(missing).toContain('no observations for target amino-acid families: F');
+    const zero = renderToStaticMarkup(<ComparisonCodonAdaptation codon={compareCodonUsage({ AAA: 1, AAG: 1 }, { AAA: 8 })} />);
+    expect(zero).toContain('CAI A relative to B: 0.000'); expect(zero).toContain('zero weights: 1');
+    const half = renderToStaticMarkup(<ComparisonCodonAdaptation codon={compareCodonUsage({ AAA: 1, AAG: 1, ATG: 10, TAA: 1 }, { AAA: 8, AAG: 2 })} />);
+    expect(half).toContain('CAI A relative to B: 0.500'); expect(half).toContain('excluded Met/Trp: 10; stops: 1');
+    expect(half).toContain('not a validated host expression reference');
+    const small = renderToStaticMarkup(<ComparisonCodonAdaptation codon={compareCodonUsage({ AAG: 1 }, { AAA: 100_000_000, AAG: 1 })} />);
+    expect(small).toContain('CAI A relative to B: 1.000e-8');
+    expect(small).not.toContain('CAI A relative to B: 0.000');
   });
 });
 
@@ -233,6 +250,9 @@ describe('owned browser comparison worker', () => {
       { ...original, result: { ...original.result, informationTheory: {} } },
       { ...original, result: { ...original.result, biological: { ...original.result.biological, kmerIdentity: null } } },
       { ...original, result: { ...original.result, codonUsage: { ...original.result.codonUsage, caiA: undefined } } },
+      { ...original, result: { ...original.result, codonUsage: { ...original.result.codonUsage, caiCoverageA: undefined } } },
+      { ...original, result: { ...original.result, codonUsage: { ...original.result.codonUsage,
+        caiCoverageA: { ...original.result.codonUsage.caiCoverageA, scoredCodons: -1 } } } },
       { ...original, result: { ...original.result, summary: { ...original.result.summary, insights: null } } },
       { ...original, result: { ...original.result, rankCorrelation: { ...original.result.rankCorrelation, spearmanRho: NaN } } },
       { ...original, result: { ...original.result, geneContent: { ...original.result.geneContent, topSharedGenes: [null] } } },

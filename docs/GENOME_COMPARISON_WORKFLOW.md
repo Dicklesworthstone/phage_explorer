@@ -1,7 +1,7 @@
 # Complete genome-comparison experiments
 
 The browser **Comparison** panel and native `comparison` command use the same
-`genome-comparison` method, version 4. A portable experiment retains both complete
+`genome-comparison` method, version 5. A portable experiment retains both complete
 accepted genomes, original annotation rows, supplied codon counts, effective
 settings, and all comparison outputs. Reopening recomputes the experiment before
 accepting the saved evidence.
@@ -40,6 +40,19 @@ counts are `null` with an explicit reason because sampling cannot establish an
 operation breakdown. The terminal displays that reason instead of invented counts.
 Version 3 binds this corrected evidence contract. Earlier comparison records are
 rejected on replay; recompute their original inputs to create a current experiment.
+
+Cross-genome CAI uses only standard-code synonymous codons: Met, Trp and stops
+are excluded. Each direction shows the number of target codons covered by the
+other genome's observed amino-acid families. A target family absent from that
+reference makes the score unavailable; a codon with zero occurrences within an
+observed family has a true zero weight and produces zero CAI. No pseudocount or
+probability floor is added. Empty targets and targets containing only singleton
+or stop codons also have no CAI. Ambiguous triplets remain excluded and are counted
+separately. These are descriptive cross-genome scores, not host expression
+predictions. The weight-vector cosine is restricted to shared observed synonymous
+families, which the export lists explicitly; it is unavailable without any overlap.
+Version 5 binds these corrected scores and coverage. Records from earlier methods
+must be recomputed from their original inputs rather than accepted as equivalent.
 
 ### Navigate the accepted comparison
 

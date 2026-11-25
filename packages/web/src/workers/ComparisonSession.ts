@@ -85,14 +85,26 @@ function validateExperiment(value: unknown): GenomeComparisonExperiment {
     || !numbers(identity.coverageB, ['totalWindows', 'validWindows', 'distinctKmers', 'validWindowFraction'])
     || !strings(identity.warnings) || !nullableText(identity.unavailableReason)) invalid();
   const codon = result.codonUsage, genes = result.geneContent;
-  if (!numbers(codon, ['rscuCosineSimilarity', 'caiA', 'caiB', 'chiSquareStatistic', 'degreesOfFreedom', 'chiSquareExpectedBelowFive',
-    'resolvedCodonsA', 'resolvedCodonsB', 'excludedCodonsA', 'excludedCodonsB']) || !nullableNumbers(codon, ['chiSquarePValue'])
+  if (!numbers(codon, ['rscuCosineSimilarity', 'chiSquareStatistic', 'degreesOfFreedom', 'chiSquareExpectedBelowFive',
+    'resolvedCodonsA', 'resolvedCodonsB', 'excludedCodonsA', 'excludedCodonsB']) || !nullableNumbers(codon, ['chiSquarePValue', 'caiA', 'caiB', 'caiCorrelation'])
+    || !strings(codon.caiSharedFamilies)
     || !nullableText(codon.chiSquareUnavailableReason) || !Array.isArray(codon.topDifferentCodons)
     || codon.topDifferentCodons.some(row => !numbers(row, ['frequencyA', 'frequencyB', 'difference'])
       || typeof row.codon !== 'string' || typeof row.aminoAcid !== 'string')
     || !numbers(result.aminoAcidUsage, ['cosineSimilarity', 'hydrophobicSimilarity'])
     || !numbers(genes, ['genesA', 'genesB', 'sharedGeneNames', 'uniqueToA', 'uniqueToB', 'geneDensityA', 'geneDensityB',
       'geneNameJaccard', 'avgGeneLengthA', 'avgGeneLengthB']) || !strings(genes.topSharedGenes) || !strings(genes.uniqueAGenes) || !strings(genes.uniqueBGenes)) invalid();
+  for (const [score, coverage, total] of [[codon.caiA, codon.caiCoverageA, codon.resolvedCodonsA],
+    [codon.caiB, codon.caiCoverageB, codon.resolvedCodonsB]] as const) {
+    if (!object(coverage) || !['eligibleCodons', 'scoredCodons', 'zeroWeightCodons', 'excludedSingletonCodons', 'excludedStopCodons']
+      .every(key => index(coverage[key], total)) || !strings(coverage.missingReferenceFamilies) || !nullableText(coverage.unavailableReason)
+      || coverage.eligibleCodons + coverage.excludedSingletonCodons + coverage.excludedStopCodons !== total
+      || coverage.scoredCodons > coverage.eligibleCodons || coverage.zeroWeightCodons > coverage.scoredCodons
+      || (coverage.missingReferenceFamilies.length > 0) !== (coverage.scoredCodons < coverage.eligibleCodons)
+      || (score === null) !== (coverage.unavailableReason !== null)
+      || (score === null) !== (coverage.eligibleCodons === 0 || coverage.missingReferenceFamilies.length > 0)
+      || score !== null && (score < 0 || score > 1 || coverage.zeroWeightCodons > 0 && score !== 0)) invalid();
+  }
   const diff = result.sequenceDiff, n = genomeA.sequence.length, m = genomeB.sequence.length;
   if (!object(diff) || typeof diff.method !== 'string') invalid();
   if (diff.status === 'complete') {

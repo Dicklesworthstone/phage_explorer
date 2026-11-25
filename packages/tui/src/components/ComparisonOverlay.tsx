@@ -577,6 +577,16 @@ function BiologicalTab({ result, colors }: TabProps): React.ReactElement {
 
         <Box marginTop={1}><Text color={colors.accent}>Codon Usage (RSCU):</Text></Box>
         <MetricRow label="Cosine Similarity" value={codonUsage.rscuCosineSimilarity * 100} colors={colors} />
+        {([
+          ['A relative to B', codonUsage.caiA, codonUsage.caiCoverageA],
+          ['B relative to A', codonUsage.caiB, codonUsage.caiCoverageB],
+        ] as const).map(([label, value, coverage]) => <Box key={label} flexDirection="column">
+          <Text color={colors.text}>CAI {label}: {value === null ? 'Unavailable' : value > 0 && value < 0.0005 ? value.toExponential(3) : value.toFixed(3)}</Text>
+          <Text color={colors.textDim}>Scored synonymous codons: {coverage.scoredCodons}/{coverage.eligibleCodons};
+            {' '}zero weights: {coverage.zeroWeightCodons}; excluded Met/Trp: {coverage.excludedSingletonCodons}; stops: {coverage.excludedStopCodons}.</Text>
+          {coverage.unavailableReason && <Text color={colors.warning}>{coverage.unavailableReason}</Text>}
+        </Box>)}
+        <Text color={colors.textDim}>Standard code; no pseudocounts. The other genome supplies descriptive weights, not a validated host expression reference.</Text>
         <Text color={colors.textDim}>
           {codonUsage.chiSquarePValue === null ? `Chi-square unavailable: ${codonUsage.chiSquareUnavailableReason}`
             : `Chi-square: ${codonUsage.chiSquareStatistic.toFixed(1)} (df=${codonUsage.degreesOfFreedom}, asymptotic p=${codonUsage.chiSquarePValue.toExponential(2)})`}

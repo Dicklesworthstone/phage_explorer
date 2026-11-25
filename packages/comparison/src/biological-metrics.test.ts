@@ -208,6 +208,54 @@ describe('calculateRSCU', () => {
 });
 
 describe('compareCodonUsage', () => {
+  test('cross-CAI excludes single-codon amino acids and stops from the geometric mean', () => {
+    // Reference Lys weights are 1 and 1/4: two query codons give sqrt(1/4)=1/2.
+    const result = compareCodonUsage({ AAA: 1, AAG: 1, ATG: 20, TGG: 10, TAA: 1 }, { AAA: 8, AAG: 2 });
+    expect(result.caiA).toBeCloseTo(0.5, 12);
+    expect(result.caiCoverageA).toEqual({ eligibleCodons: 2, scoredCodons: 2, zeroWeightCodons: 0,
+      excludedSingletonCodons: 30, excludedStopCodons: 1, missingReferenceFamilies: [], unavailableReason: null });
+  });
+
+  test('cross-CAI preserves true zero weights without an invented probability floor', () => {
+    const result = compareCodonUsage({ AAA: 1, AAG: 1 }, { AAA: 8 });
+    expect(result.caiA).toBe(0);
+    expect(result.caiCoverageA).toMatchObject({ eligibleCodons: 2, scoredCodons: 2, zeroWeightCodons: 1, unavailableReason: null });
+  });
+
+  test('cross-CAI withholds a score when any target family is absent from the reference', () => {
+    const result = compareCodonUsage({ AAA: 1, TTT: 1 }, { AAA: 8, AAG: 2 });
+    expect(result.caiA).toBeNull();
+    expect(result.caiCoverageA).toMatchObject({ eligibleCodons: 2, scoredCodons: 1, missingReferenceFamilies: ['F'] });
+    expect(result.caiCoverageA.unavailableReason).toContain('no observations');
+    // Partial reference coverage outranks an observed zero; the whole-target score remains unavailable.
+    expect(compareCodonUsage({ AAG: 1, TTT: 1 }, { AAA: 8 }).caiA).toBeNull();
+  });
+
+  test('cross-CAI does not turn empty or ineligible targets into adaptation evidence', () => {
+    const cases: Array<Record<string, number>> = [{}, { NNN: 10 }, { ATG: 2, TGG: 3, TAA: 1 }];
+    for (const counts of cases) {
+      expect(compareCodonUsage(counts, { AAA: 8, AAG: 2 }).caiA).toBeNull();
+    }
+  });
+
+  test('cross-CAI compares only shared observed synonymous families', () => {
+    const disjoint = compareCodonUsage({ AAA: 8, AAG: 2 }, { TTT: 8, TTC: 2 });
+    expect(disjoint.caiCorrelation).toBeNull(); expect(disjoint.caiSharedFamilies).toEqual([]);
+    const common = compareCodonUsage({ AAA: 8, AAG: 2, TTT: 8 }, { AAA: 2, AAG: 8, CCC: 8 });
+    // Cos([1,1/4],[1/4,1]) = (1/2)/(17/16) = 8/17; unrelated families do not create similarity.
+    expect(common.caiCorrelation).toBeCloseTo(8 / 17, 12);
+    expect(common.caiSharedFamilies).toEqual(['K']);
+  });
+
+  test('cross-CAI agrees with an independent finite product over all eight-codon Lys compositions', () => {
+    for (let rare = 0; rare <= 8; rare++) {
+      const result = compareCodonUsage({ AAA: 8 - rare, AAG: rare }, { AAA: 8, AAG: 2 });
+      expect(result.caiA).toBeCloseTo(Math.pow(Math.pow(0.25, rare), 1 / 8), 12);
+      const swapped = compareCodonUsage({ AAA: 8, AAG: 2 }, { AAA: 8 - rare, AAG: rare });
+      expect(swapped.caiB).toBe(result.caiA); expect(swapped.caiCoverageB).toEqual(result.caiCoverageA);
+    }
+  });
+
   test('preserves small upper-tail probabilities for strong count differences', () => {
     // Independent chi-square survival values (SciPy 1.17.0 chi2.sf).
     // The two disjoint categories have statistic 2*n and one degree of freedom.
