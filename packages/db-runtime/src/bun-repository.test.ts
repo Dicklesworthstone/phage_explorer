@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { BunSqliteRepository } from './bun-repository';
 
@@ -54,6 +54,34 @@ describe('native sequence-owned vector persistence', () => {
     try {
       expect(await repository.getBiasVector(1)).toEqual(cc);
       expect(await repository.getCodonVector(1)).toEqual(ccc);
+    } finally { await repository.close(); }
+  });
+
+  it('does not carry vectors across a catalog file replacement that reassigns numeric IDs', async () => {
+    // The installer replaces phage.db by renaming a new catalog over it and
+    // leaves the adjacent phage.db.cache.json in place.
+    const path = await fixture();
+    await persist(path);
+    const sidecar = await readFile(path + '.cache.json', 'utf8');
+    const next = join(dirname(path), 'next-catalog.db');
+    const writer = new Database(next);
+    writer.exec(`CREATE TABLE phages (id INTEGER PRIMARY KEY, genome_length INTEGER);
+      CREATE TABLE sequences (phage_id INTEGER, chunk_index INTEGER, sequence TEXT);
+      INSERT INTO phages VALUES (1, 12), (2, 12), (3, 12);
+      INSERT INTO sequences VALUES (1, 0, 'CCCCCCCCCCCC'), (2, 0, 'CCCCCCCCCCCC'), (3, 0, 'AAAAAAAAAAAA');`);
+    writer.close();
+    await rename(next, path);
+    expect(await readFile(path + '.cache.json', 'utf8')).toBe(sidecar);
+    const repository = new BunSqliteRepository(path, { readonly: true });
+    try {
+      // ID 1 now names a different genome; its old genome moved to ID 3.
+      expect(await repository.getBiasVector(1)).toBeNull();
+      expect(await repository.getCodonVector(1)).toBeNull();
+      expect(await repository.getBiasVector(3)).toBeNull();
+      expect(await repository.getCodonVector(3)).toBeNull();
+      // ID 2 is byte-identical in both catalogs, so its vectors stay valid.
+      expect(await repository.getBiasVector(2)).toEqual(cc);
+      expect(await repository.getCodonVector(2)).toEqual(ccc);
     } finally { await repository.close(); }
   });
 
