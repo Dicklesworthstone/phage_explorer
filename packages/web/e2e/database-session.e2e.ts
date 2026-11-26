@@ -121,7 +121,8 @@ const test = base.extend<{ database: Fixture }>({
       server: { host: '127.0.0.1', port: 0, open: false },
       plugins: [{
         name: 'real-database-session-fixture',
-        resolveId(id) { if (id === '/src/database-session-fixture.tsx') return source; },
+        // The React Refresh transform makes the module import itself by its resolved id.
+        resolveId(id) { if (id === '/src/database-session-fixture.tsx' || id === source) return source; },
         load(id) { if (id === source) return VIEW; },
         configureServer(vite) {
           vite.middlewares.use((request, response, next) => {
