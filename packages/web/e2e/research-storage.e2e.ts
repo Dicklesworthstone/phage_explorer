@@ -116,3 +116,60 @@ test.describe('Private research snapshots: native transactions', () => {
     expect(result.ids).toEqual([result.b]); expect(result.text).toBe(payload);
   });
 });
+
+
+test.describe('Portable research collections: native transactions', () => {
+  test('rolls back every collection row after a successful native payload write and preserves the previous library', async ({ page }) => {
+    await loadStorage(page);
+    const result = await page.evaluate(async content => {
+      const source = new window.ResearchStorage('collection-source');
+      await source.save('genomes', 'Source A', content);
+      await source.save('genomes', 'Source B', content);
+      const collection = await source.exportCollection();
+      const target = new window.ResearchStorage('collection-target');
+      const original = await target.save('workflow', 'Previous workflow', JSON.stringify({ format: 'phage-explorer-commands', version: 1 }));
+      const preview = await target.previewCollection(collection);
+      const controller = new AbortController(), add = IDBObjectStore.prototype.add;
+      let successfulPayloads = 0, error = '';
+      IDBObjectStore.prototype.add = function(value: unknown, key?: IDBValidKey) {
+        const request = add.call(this, value, key);
+        if (this.name === 'contents' && this.transaction.db.name === 'collection-target') {
+          request.addEventListener('success', () => { successfulPayloads++; controller.abort(); }, { once: true });
+        }
+        return request;
+      };
+      try { await target.importCollection(preview, controller.signal); }
+      catch (cause) { error = (cause as Error).name; }
+      finally { IDBObjectStore.prototype.add = add; }
+      const afterAbort = await target.list();
+      const prior = await target.read(original.id, 'workflow');
+      const committed = await target.importCollection(preview);
+      const again = await target.importCollection(await target.previewCollection(collection));
+      return { error, successfulPayloads, afterAbortIds: afterAbort.map(row => row.id), original: original.id,
+        priorContent: prior.content, committed, again, rows: await target.list() };
+    }, payload);
+    expect(result.error).toBe('AbortError'); expect(result.successfulPayloads).toBe(1);
+    expect(result.afterAbortIds).toEqual([result.original]);
+    expect(JSON.parse(result.priorContent).format).toBe('phage-explorer-commands');
+    expect(result.committed.added).toBe(2); expect(result.committed.totalSnapshots).toBe(3);
+    expect(result.again.added).toBe(0); expect(result.again.duplicates).toBe(2);
+    expect(result.rows).toHaveLength(3);
+  });
+  test('rejects a stale review after another native client saves without partially importing', async ({ page }) => {
+    await loadStorage(page);
+    const result = await page.evaluate(async content => {
+      const source = new window.ResearchStorage('stale-source');
+      await source.save('genomes', 'Incoming A', content);
+      await source.save('genomes', 'Incoming B', content);
+      const collection = await source.exportCollection();
+      const target = new window.ResearchStorage('stale-target'), otherClient = new window.ResearchStorage('stale-target');
+      const preview = await target.previewCollection(collection);
+      const changed = await otherClient.save('genomes', 'Saved after review', content);
+      let error = '';
+      try { await target.importCollection(preview); } catch (cause) { error = (cause as Error).message; }
+      return { error, ids: (await target.list()).map(row => row.id), changed: changed.id, content: (await target.read(changed.id, 'genomes')).content };
+    }, payload);
+    expect(result.error).toContain('changed after collection review');
+    expect(result.ids).toEqual([result.changed]); expect(result.content).toBe(payload);
+  });
+});

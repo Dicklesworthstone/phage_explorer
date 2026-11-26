@@ -2,6 +2,8 @@
  * Every saved item must reopen through its existing importer or numerical verifier.
  */
 import { test, expect, type Page, type Locator } from '@playwright/test';
+import { createHash, randomUUID } from 'node:crypto';
+import type { ResearchSnapshot } from '../src/db/research-storage';
 import { expectExplorerIdentity, setupTestHarness } from './e2e-harness';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../core/src/analysis-result';
 import { buildAlignmentPangenome, createAlignmentPangenomeRecord, type PangenomeInput } from '../../core/src/analysis/alignment-pangenome';
@@ -234,3 +236,131 @@ for (const journey of ['genomes', 'workflow', 'codon-reference', 'pangenome'] as
     } finally { await finalize(); }
   });
 }
+
+
+/** The manifest deliberately binds saved metadata; per-snapshot hashes retain the
+ * exact original export text. A fresh valid manifest cannot bypass ID conflicts.
+ */
+function collectionFile(snapshots: ResearchSnapshot[]): string {
+  const manifest = { format: 'phage-explorer-research-collection', version: 1,
+    snapshots: snapshots.map(({ id, version, kind, name, createdAt, bytes, sha256 }) =>
+      ({ id, version, kind, name, createdAt, bytes, sha256 })) };
+  return JSON.stringify({ ...manifest, snapshots,
+    manifestSha256: createHash('sha256').update(JSON.stringify(manifest)).digest('hex') });
+}
+async function collectionPanel(saved: Locator) {
+  const collection = saved.getByRole('region', { name: 'Portable saved research collection', exact: true });
+  const toggle = collection.getByRole('button', { name: 'Back up or transfer all saved research', exact: true });
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+  return collection;
+}
+async function reviewCollection(collection: Locator, content: string) {
+  await collection.getByLabel('Choose research collection JSON').setInputFiles({
+    name: 'private-research-collection.json', mimeType: 'application/json', buffer: Buffer.from(content),
+  });
+  await collection.getByRole('button', { name: 'Review collection file', exact: true }).click();
+}
+test('portable research collection transfers private sources and verified results into a clean browser profile through reload', async ({ page, browser }, info) => {
+  test.setTimeout(180000);
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  let leaked = false;
+  const inspectRequest = (request: { url(): string; postData(): string | null }) => {
+    const text = request.url() + ' ' + (request.postData() ?? '');
+    if (text.includes('SAVED_CDS') || text.includes('atgaaaaagtaa') || text.includes('Arithmetic test reference')) leaked = true;
+  };
+  page.on('request', inspectRequest);
+  const receiverContext = await browser.newContext();
+  receiverContext.on('request', inspectRequest);
+  const receiverErrors: string[] = [];
+  try {
+    await page.goto('/?phage=lambda&model=0'); await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    await importGenome(page);
+    const panel = await localPanel(page), genomeSaved = await library(panel, 'local genome workspaces');
+    await save(genomeSaved, 'Original private genome workspace');
+    const reference = panel.getByRole('region', { name: 'Reference-backed codon adaptation', exact: true });
+    await reference.getByLabel('Paste codon reference JSON').fill(REFERENCE);
+    await reference.getByRole('button', { name: 'Analyze against reference', exact: true }).click();
+    await expect(reference).toContainText('Pooled CAI: 0.500000');
+    const referenceSaved = await library(reference, 'reference experiments');
+    await save(referenceSaved, 'Original codon experiment');
+    const collection = await collectionPanel(genomeSaved);
+    const exported = await download(page, () => collection.getByRole('button', { name: 'Export all saved research', exact: true }).click());
+    const original = JSON.parse(exported) as { snapshots: ResearchSnapshot[] };
+    expect(original.snapshots.map(row => row.kind).sort()).toEqual(['codon-reference', 'genomes']);
+    const source = original.snapshots.find(row => row.kind === 'genomes')!;
+    const experiment = original.snapshots.find(row => row.kind === 'codon-reference')!;
+    expect(JSON.parse(source.content).inputs).toEqual([{ name: 'saved.gb', text: GENBANK }]);
+    const receiverUrl = new URL('/?phage=lambda&model=0', page.url()).href;
+    // The transfer no longer needs the source renderer or its database workers.
+    await page.close();
+
+    await receiverContext.addInitScript(() => {
+      // Context initializers also run in the initial opaque about:blank document.
+      if (!['http:', 'https:'].includes(location.protocol)) return;
+      localStorage.setItem('phage-explorer-main-prefs', JSON.stringify({ experienceLevel: 'power' }));
+      Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true });
+    });
+    const receiver = await receiverContext.newPage();
+    receiver.on('pageerror', error => receiverErrors.push(error.message));
+    await receiver.goto(receiverUrl);
+    // A separate profile starts with an empty database cache; wait for real catalog readiness.
+    await expect(receiver.getByRole('heading', { level: 1 }), 'Fresh profile finishes catalog startup')
+      .toContainText('Enterobacteria phage lambda', { timeout: 60000 });
+    await expectExplorerIdentity(receiver, info);
+    const greeting = receiver.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await greeting.isVisible()) await greeting.getByRole('button', { name: 'Skip', exact: true }).click();
+    let target = await localPanel(receiver), saved = await library(target, 'local genome workspaces');
+    let incoming = await collectionPanel(saved);
+    await expect(saved.getByLabel('Saved snapshot').locator('option')).toHaveCount(1);
+    await reviewCollection(incoming, exported);
+    const review = incoming.getByRole('region', { name: 'Research collection import review', exact: true });
+    await expect(review).toContainText('2 new');
+    await expect(review).toContainText('Original private genome workspace');
+    await expect(review).toContainText('Original codon experiment');
+    await expect(review).toContainText('do not authenticate source claims or recompute scientific results');
+    await expect(saved.getByLabel('Saved snapshot').locator('option')).toHaveCount(1);
+    await review.getByRole('button', { name: 'Import reviewed collection', exact: true }).click();
+    await expect(saved.getByRole('status')).toContainText('Imported 2 snapshots');
+    expect(await receiver.getByTestId('phage-list-item-selected').textContent()).not.toContain('Saved private CDS.');
+
+    await receiver.reload(); await expectExplorerIdentity(receiver, info);
+    target = await localPanel(receiver); saved = await library(target, 'local genome workspaces');
+    await openFirst(saved);
+    await expect(saved.getByRole('status')).toContainText('Review and explicitly add');
+    expect(await receiver.getByTestId('phage-list-item-selected').textContent()).not.toContain('Saved private CDS.');
+    expect(await download(receiver, () => saved.getByRole('button', { name: 'Export saved JSON', exact: true }).click())).toBe(source.content);
+    await target.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+    await expect(receiver.getByTestId('phage-list-item-selected')).toContainText('Saved private CDS.');
+    target = await localPanel(receiver);
+    const restoredReference = target.getByRole('region', { name: 'Reference-backed codon adaptation', exact: true });
+    const restoredSaved = await library(restoredReference, 'reference experiments');
+    await openFirst(restoredSaved);
+    await expect(restoredSaved.getByRole('status')).toContainText('recomputed and verified');
+    await expect(restoredReference).toContainText('Pooled CAI: 0.500000');
+    expect(await download(receiver, () => restoredReference.getByRole('button', { name: 'Export reference experiment', exact: true }).click())).toBe(experiment.content);
+
+    saved = await library(target, 'local genome workspaces'); incoming = await collectionPanel(saved);
+    await reviewCollection(incoming, exported);
+    await expect(incoming.getByRole('region', { name: 'Research collection import review', exact: true })).toContainText('0 new');
+    await expect(incoming).toContainText('2 exact duplicates already saved');
+    await incoming.getByRole('button', { name: 'Import reviewed collection', exact: true }).click();
+    await expect(saved.getByRole('status')).toContainText('Imported 0 snapshots');
+    const readBack = () => download(receiver, () => incoming.getByRole('button', { name: 'Export all saved research', exact: true }).click());
+    expect(await readBack()).toBe(exported);
+
+    const tampered = JSON.parse(exported); tampered.snapshots[0].name = 'Unverified changed label';
+    await reviewCollection(incoming, JSON.stringify(tampered));
+    await expect(saved.getByRole('alert')).toContainText('manifest checksum mismatch');
+    await expect(incoming.getByRole('region', { name: 'Research collection import review', exact: true })).toHaveCount(0);
+    expect(await readBack()).toBe(exported);
+    const conflicting = structuredClone(original.snapshots);
+    conflicting.push({ ...conflicting[0], id: randomUUID(), name: 'Must not be partially imported' });
+    conflicting[0].name = 'A valid checksum cannot replace an immutable saved ID';
+    await reviewCollection(incoming, collectionFile(conflicting));
+    await expect(saved.getByRole('alert')).toContainText('identifier conflicts');
+    expect(await readBack()).toBe(exported);
+    expect(leaked).toBe(false); expect(pageErrors).toEqual([]); expect(receiverErrors).toEqual([]);
+  } finally { await receiverContext.close(); await finalize(); }
+});

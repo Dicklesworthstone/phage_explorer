@@ -1,6 +1,6 @@
 import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
-import { ResearchStorage, RESEARCH_STORAGE_LIMITS, researchSnapshotName, validateResearchSnapshotContent, replaySavedResearch } from './research-storage';
+import { ResearchStorage, RESEARCH_STORAGE_LIMITS, researchSnapshotName, validateResearchSnapshotContent, replaySavedResearch, RESEARCH_SNAPSHOT_TYPES, RESEARCH_COLLECTION_FORMAT, RESEARCH_COLLECTION_MAX_BYTES, parseResearchCollection, type ResearchSnapshot, type ResearchSnapshotKind } from './research-storage';
 import { createDemoEnvironmentalDataset, analyzeEnvironmentalDataset, createEnvironmentalAnalysisRecord,
   replayEnvironmentalAnalysisRecord } from '../../../core/src/analysis/environmental-evidence';
 import { createAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
@@ -13,6 +13,8 @@ import { executeHostMetabolismRequest } from '../workers/HostMetabolismSession';
 import { hostGeneWorkflowFixture } from '../../../core/src/analysis/host-gene-knockout.fixture';
 import { createCompatibilityExperiment, replayCompatibilityExperiment } from '../../../core/src/analysis/alignment-compatibility';
 import { executeAttachmentRequest, isProphageExcisionWork } from '../workers/ProphageAttachmentSession';
+
+import { readLocalTextFile } from '../utils/fileSystem';
 
 const content = JSON.stringify({ format: 'phage-explorer-local-genomes', version: 1, inputs: [{ name: 'private.fa', text: '>private\nACGTNN' }] });
 /** Event/rollback fixture for the production client's ownership rules, NOT an IndexedDB engine.
@@ -493,5 +495,263 @@ describe('saved research client transaction ownership (event fixture)', () => {
     const off = store.subscribe(() => { calls++; throw new Error('Observer failed'); });
     const entry = await store.save('genomes', 'Saved', content); off();
     assert.equal(calls, 1); assert.equal((await store.read(entry.id, 'genomes')).content, content);
+  }));
+});
+
+
+/** Independent collection writer for deliberate metadata conflicts. This does not
+ * forge valid scientific evidence: the existing replay boundary remains separate.
+ */
+async function collectionText(snapshots: ResearchSnapshot[]): Promise<string> {
+  const manifest = JSON.stringify({ format: RESEARCH_COLLECTION_FORMAT, version: 1,
+    snapshots: snapshots.map(({ id, version, kind, name, createdAt, bytes, sha256 }) =>
+      ({ id, version, kind, name, createdAt, bytes, sha256 })) });
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(manifest));
+  const manifestSha256 = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+  return JSON.stringify({ format: RESEARCH_COLLECTION_FORMAT, version: 1, snapshots, manifestSha256 });
+}
+async function savedCollection(rows: Array<{ kind: ResearchSnapshotKind; name: string; content: string }>): Promise<string> {
+  let collection = '';
+  await fixture(async ({ store }) => {
+    for (const row of rows) await store.save(row.kind, row.name, row.content);
+    collection = await store.exportCollection();
+  });
+  return collection;
+}
+
+describe('portable saved research collections', () => {
+  it('moves exact private sources and a real experiment into another library, preserving existing snapshots and fresh replay', async () => {
+    const dataset = createDemoEnvironmentalDataset();
+    const record = await createEnvironmentalAnalysisRecord(dataset, analyzeEnvironmentalDataset(dataset));
+    const experiment = serializeAnalysisRecord(record);
+    const genomes = ' \n' + content + '\r\n';
+    const exported = await savedCollection([
+      { kind: 'genomes', name: 'Private source α', content: genomes },
+      { kind: 'environmental', name: 'Complete measured inputs and result', content: experiment },
+    ]);
+    const original = await parseResearchCollection(exported);
+    await fixture(async ({ store }) => {
+      const kept = await store.save('workflow', 'Existing workflow', JSON.stringify({ format: 'phage-explorer-commands', version: 1 }));
+      const preview = await store.previewCollection(exported);
+      assert.equal(preview.additions, 2); assert.equal(preview.duplicates, 0);
+      assert.equal(preview.currentSnapshots, 1); assert.equal(preview.projectedSnapshots, 3);
+      assert(preview.entries.every(entry => !Object.hasOwn(entry, 'content')));
+      const imported = await store.importCollection(preview);
+      assert.equal(imported.added, 2); assert.equal(imported.totalSnapshots, 3);
+      const reopened = new ResearchStorage('isolated-test');
+      for (const snapshot of original.snapshots) assert.deepEqual(await reopened.read(snapshot.id, snapshot.kind), snapshot);
+      assert.equal((await reopened.read(kept.id, 'workflow')).name, kept.name);
+      const snapshot = original.snapshots.find(row => row.kind === 'environmental')!;
+      const replay = await replayEnvironmentalAnalysisRecord((await reopened.read(snapshot.id, 'environmental')).content);
+      assert.equal(replay.record.resultId, record.resultId); assert.deepEqual(replay.dataset, dataset);
+      assert.deepEqual(replay.record.fields, record.fields);
+    });
+  });
+  it('exports every registered kind and preserves separately named identical-content snapshots', async () => {
+    const rows = (Object.keys(RESEARCH_SNAPSHOT_TYPES) as ResearchSnapshotKind[]).map(kind => {
+      const definition = RESEARCH_SNAPSHOT_TYPES[kind], methods: readonly string[] = definition.methods;
+      return { kind, name: 'Named ' + kind, content: JSON.stringify({
+        format: definition.format, version: 1, ...(methods.length ? { method: { id: methods[0] } } : {}),
+      }) };
+    });
+    rows.push({ ...rows[0], name: 'A second named revision with the same body' });
+    const exported = await savedCollection(rows), collection = await parseResearchCollection(exported);
+    assert.equal(collection.snapshots.length, rows.length);
+    assert.equal(new Set(collection.snapshots.map(row => row.kind)).size, Object.keys(RESEARCH_SNAPSHOT_TYPES).length);
+    await fixture(async ({ store }) => {
+      const first = await store.importCollection(await store.previewCollection(exported));
+      assert.equal(first.added, rows.length);
+      assert.equal(await store.exportCollection(), exported);
+      let changes = 0; const off = store.subscribe(() => { changes++; });
+      const preview = await store.previewCollection(exported);
+      assert.equal(preview.additions, 0); assert.equal(preview.duplicates, rows.length);
+      const again = await store.importCollection(preview);
+      assert.equal(again.added, 0); assert.equal(again.duplicates, rows.length);
+      assert.equal((await store.list()).length, rows.length); assert.equal(changes, 0); off();
+      assert.equal((await store.list(rows[0].kind)).length, 2);
+    });
+  });
+  it('routes region comparisons only to their dedicated replay panel', () => {
+    const json = JSON.stringify({ format: 'phage-explorer-analysis', version: 1, method: { id: 'genome-region-comparison' } });
+    assert(validateResearchSnapshotContent('region-comparison', json) > 0);
+    assert.throws(() => validateResearchSnapshotContent('comparison', json), /match/);
+    assert.throws(() => validateResearchSnapshotContent('region-comparison', JSON.stringify({
+      format: 'phage-explorer-analysis', version: 1, method: { id: 'genome-comparison' },
+    })), /match/);
+  });
+  it('rejects unknown fields, future versions, duplicate IDs, changed bodies and changed metadata before any import', async () => {
+    const exported = await savedCollection([{ kind: 'genomes', name: 'Original name', content }]);
+    const original = JSON.parse(exported);
+    const changed = (modify: (value: typeof original) => void) => { const copy = structuredClone(original); modify(copy); return JSON.stringify(copy); };
+    const invalid = [
+      '{}', 'null', '{',
+      changed(value => { value.version = 2; }),
+      changed(value => { value.extra = 'not silently ignored'; }),
+      changed(value => { value.snapshots[0].extra = 'not silently ignored'; }),
+      changed(value => { value.snapshots[0].kind = 'future-kind'; }),
+      changed(value => { value.snapshots.push(value.snapshots[0]); }),
+      changed(value => { value.snapshots[0].name = 'Changed name'; }),
+      changed(value => { value.snapshots[0].createdAt += 1; }),
+      changed(value => { value.snapshots[0].content = content.replace('ACGTNN', 'TCGTNN'); }),
+      changed(value => { value.snapshots[0].bytes += 1; }),
+      changed(value => { value.manifestSha256 = 'f'.repeat(64); }),
+    ];
+    await fixture(async ({ store, data }) => {
+      const kept = await store.save('genomes', 'Kept', content), before = structuredClone(data);
+      for (const json of invalid) {
+        await assert.rejects(store.previewCollection(json));
+        assert.deepEqual(data, before);
+      }
+      assert.equal((await store.read(kept.id, 'genomes')).content, content);
+    });
+  });
+  it('enforces decoded entry/byte limits and rejects an oversized file before reading it', async () => {
+    const exported = await savedCollection([{ kind: 'genomes', name: 'Original', content }]);
+    const original = JSON.parse(exported), snapshot = original.snapshots[0];
+    const entries = (count: number, bytes: number) => JSON.stringify({ ...original,
+      snapshots: Array.from({ length: count }, () => ({ ...snapshot, id: crypto.randomUUID(), bytes })) });
+    await fixture(async ({ store, data }) => {
+      const before = structuredClone(data);
+      await assert.rejects(store.previewCollection(entries(65, snapshot.bytes)), /64 snapshot/);
+      await assert.rejects(store.previewCollection(entries(7, RESEARCH_STORAGE_LIMITS.snapshotBytes)), /64 MiB/);
+      await assert.rejects(store.previewCollection(entries(1, RESEARCH_STORAGE_LIMITS.snapshotBytes + 1)), /metadata/);
+      let reads = 0;
+      await assert.rejects(readLocalTextFile({ size: RESEARCH_COLLECTION_MAX_BYTES + 1,
+        arrayBuffer: async () => { reads++; return new ArrayBuffer(0); } }, RESEARCH_COLLECTION_MAX_BYTES, new AbortController().signal), /129 MiB/);
+      assert.equal(reads, 0); assert.deepEqual(data, before);
+    });
+  });
+  it('rejects an entire collection for a same-ID metadata or body conflict instead of partially adding other rows', async () => {
+    const exported = await savedCollection([
+      { kind: 'genomes', name: 'A', content },
+      { kind: 'genomes', name: 'B', content },
+    ]);
+    const source = await parseResearchCollection(exported);
+    await fixture(async ({ store, data }) => {
+      const firstOnly = await collectionText([source.snapshots[0]]);
+      await store.importCollection(await store.previewCollection(firstOnly));
+      const before = structuredClone(data);
+      const changed = structuredClone(source.snapshots); changed[0].name = 'Same ID, different name';
+      await assert.rejects(store.previewCollection(await collectionText(changed)), /conflicts/);
+      assert.deepEqual(data, before);
+      data.contents.set(changed[0].id, { id: changed[0].id, content: content.replace('ACGTNN', 'TCGTNN') });
+      const corrupted = structuredClone(data);
+      await assert.rejects(store.previewCollection(exported), /different contents/);
+      assert.deepEqual(data, corrupted);
+    });
+  });
+  it('owns preview bodies privately and refuses forged, mutated or foreign-store preview capabilities', async () => {
+    const exported = await savedCollection([{ kind: 'genomes', name: 'Original', content }]);
+    await fixture(async ({ store }) => {
+      const preview = await store.previewCollection(exported);
+      assert(Object.isFrozen(preview)); assert(Object.isFrozen(preview.entries)); assert(Object.isFrozen(preview.entries[0]));
+      assert.equal(Reflect.set(preview.entries[0], 'name', 'Mutated'), false);
+      assert.equal(Reflect.set(preview, 'additions', 0), false);
+      await assert.rejects(store.importCollection(structuredClone(preview)), /Review the collection/);
+      await assert.rejects(new ResearchStorage('isolated-test').importCollection(preview), /Review the collection/);
+      const result = await store.importCollection(preview);
+      assert.equal(result.added, 1); assert.equal((await store.list())[0].name, 'Original');
+      await assert.rejects(store.importCollection(preview), /Review the collection/);
+    });
+  });
+  it('aborts a stale review after another saved-library write and serializes simultaneous imports atomically', async () => {
+    const exported = await savedCollection([
+      { kind: 'genomes', name: 'First source', content },
+      { kind: 'workflow', name: 'Whole workflow', content: JSON.stringify({ format: 'phage-explorer-commands', version: 1 }) },
+    ]);
+    await fixture(async ({ store, data }) => {
+      const stale = await store.previewCollection(exported);
+      const other = await store.save('genomes', 'Saved by another tab', content), before = structuredClone(data);
+      await assert.rejects(store.importCollection(stale), /changed after collection review/);
+      assert.deepEqual(data, before);
+      const a = await store.previewCollection(exported), b = await store.previewCollection(exported);
+      const results = await Promise.allSettled([store.importCollection(a), store.importCollection(b)]);
+      assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+      assert.equal(results.filter(result => result.status === 'rejected').length, 1);
+      assert.equal((await store.list()).length, 3);
+      assert.equal((await store.read(other.id, 'genomes')).content, content);
+    });
+  });
+  it('rechecks duplicate body equality inside the write transaction after review', async () => {
+    const exported = await savedCollection([
+      { kind: 'genomes', name: 'Already present', content },
+      { kind: 'genomes', name: 'New source', content },
+    ]);
+    const source = await parseResearchCollection(exported);
+    await fixture(async ({ store, data }) => {
+      await store.importCollection(await store.previewCollection(await collectionText([source.snapshots[0]])));
+      const preview = await store.previewCollection(exported);
+      data.contents.set(source.snapshots[0].id, { id: source.snapshots[0].id, content: content.replace('ACGTNN', 'TCGTNN') });
+      const before = structuredClone(data);
+      await assert.rejects(store.importCollection(preview), /different contents/);
+      assert.deepEqual(data, before);
+    });
+  });
+  it('checks global quotas across kinds before mutation without dropping named snapshots', async () => {
+    const exported = await savedCollection([{ kind: 'genomes', name: 'Incoming', content }]);
+    await fixture(async ({ store, data }) => {
+      for (let i = 0; i < 64; i++) await store.save('workflow', 'Existing ' + i, JSON.stringify({ format: 'phage-explorer-commands', version: 1 }));
+      const before = structuredClone(data);
+      await assert.rejects(store.previewCollection(exported), /64 snapshots/);
+      assert.deepEqual(data, before);
+    });
+    await fixture(async ({ store, data }) => {
+      const existing = await store.save('genomes', 'Existing accounting fixture', content);
+      // Represent 64 MiB of earlier library usage without allocating it in a control-flow test.
+      let remaining = RESEARCH_STORAGE_LIMITS.totalBytes;
+      data.metadata = new Map(); data.contents = new Map();
+      while (remaining > 0) {
+        const id = crypto.randomUUID(), bytes = Math.min(remaining, RESEARCH_STORAGE_LIMITS.snapshotBytes);
+        data.metadata.set(id, { ...existing, id, bytes }); data.contents.set(id, { id, content }); remaining -= bytes;
+      }
+      const before = structuredClone(data);
+      await assert.rejects(store.previewCollection(exported), /64 MiB/);
+      assert.deepEqual(data, before);
+    });
+  });
+  it('rolls back every metadata and body write on quota failure or cancellation and only notifies committed changes', async () => {
+    const exported = await savedCollection([
+      { kind: 'genomes', name: 'One', content }, { kind: 'genomes', name: 'Two', content },
+    ]);
+    await fixture(async ({ store, data, failNext, before, counts }) => {
+      await store.save('genomes', 'Existing', content);
+      const original = structuredClone(data), preview = await store.previewCollection(exported);
+      let changes = 0; const off = store.subscribe(() => { changes++; });
+      failNext('contents');
+      await assert.rejects(store.importCollection(preview), { name: 'QuotaExceededError' });
+      assert.deepEqual(data, original); assert.equal(changes, 0);
+      const controller = new AbortController(); before(() => controller.abort());
+      await assert.rejects(store.importCollection(preview, controller.signal), { name: 'AbortError' });
+      assert.deepEqual(data, original); assert.equal(changes, 0);
+      const stopped = new AbortController(); stopped.abort();
+      const priorOpens = counts().opens;
+      await assert.rejects(store.previewCollection(exported, stopped.signal), { name: 'AbortError' });
+      await assert.rejects(store.importCollection(preview, stopped.signal), { name: 'AbortError' });
+      assert.equal(counts().opens, priorOpens);
+      const result = await store.importCollection(preview);
+      assert.equal(result.added, 2); assert.equal(changes, 1);
+      assert.equal(counts().opens, counts().closed); off();
+    });
+  });
+  it('reports committed imports even if abort arrives just before the completion notification', async () => {
+    const exported = await savedCollection([{ kind: 'genomes', name: 'One', content }]);
+    await fixture(async ({ store, after }) => {
+      const preview = await store.previewCollection(exported), controller = new AbortController();
+      after(() => controller.abort());
+      const result = await store.importCollection(preview, controller.signal);
+      assert.equal(result.added, 1); assert.equal((await store.list()).length, 1);
+    });
+  });
+  it('refuses complete export when even one stored body or metadata row is damaged or unsupported', () => fixture(async ({ store, data }) => {
+    const intact = await store.save('genomes', 'Intact', content), bad = await store.save('genomes', 'Damaged', content);
+    const original = structuredClone(data);
+    data.contents.set(bad.id, { id: bad.id, content: content.replace('ACGTNN', 'TCGTNN') });
+    await assert.rejects(store.exportCollection(), /checksum/);
+    data.contents.set(bad.id, { id: bad.id, content }); data.metadata.set(bad.id, { ...bad, kind: 'future-kind' });
+    await assert.rejects(store.exportCollection(), /unsupported/);
+    data.metadata.set(bad.id, bad); data.contents.delete(bad.id);
+    await assert.rejects(store.exportCollection(), /incomplete/);
+    assert.equal((await store.read(intact.id, 'genomes')).content, content);
+    assert.equal(data.metadata.size, original.metadata.size);
   }));
 });

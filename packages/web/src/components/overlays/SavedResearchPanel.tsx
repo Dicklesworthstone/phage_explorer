@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { researchStorage, requestResearchPersistence, RESEARCH_SNAPSHOT_TYPES, type ResearchSnapshotInfo, type ResearchSnapshotKind, type ResearchSnapshotProblem } from '../../db/research-storage';
+import { researchStorage, requestResearchPersistence, RESEARCH_SNAPSHOT_TYPES, RESEARCH_COLLECTION_MAX_BYTES, type ResearchCollectionPreview, type ResearchSnapshotInfo, type ResearchSnapshotKind, type ResearchSnapshotProblem } from '../../db/research-storage';
 import { downloadString } from '../../utils/export';
+import { readLocalTextFile } from '../../utils/fileSystem';
 
 interface SavedResearchPanelProps {
   kind: ResearchSnapshotKind;
@@ -10,9 +11,20 @@ interface SavedResearchPanelProps {
   disabled?: boolean;
   onActivityChange?: (active: boolean) => void;
 }
+
+function snapshotKindCounts(entries: readonly ResearchSnapshotInfo[]): Array<{ kind: ResearchSnapshotKind; title: string; count: number }> {
+  return (Object.keys(RESEARCH_SNAPSHOT_TYPES) as ResearchSnapshotKind[]).map(kind => ({
+    kind, title: RESEARCH_SNAPSHOT_TYPES[kind].title, count: entries.filter(entry => entry.kind === kind).length,
+  })).filter(row => row.count > 0);
+}
+
 /** Saving is explicit and append-only. Reopening delegates to the existing parser/replay boundary. */
 export function SavedResearchPanel({ kind, suggestedName, capture, restore, disabled = false, onActivityChange }: SavedResearchPanelProps): React.ReactElement {
   const [entries, setEntries] = useState<ResearchSnapshotInfo[]>([]);
+  const [collectionOpen, setCollectionOpen] = useState(false);
+  const [collectionEntries, setCollectionEntries] = useState<ResearchSnapshotInfo[]>([]);
+  const [collectionFile, setCollectionFile] = useState<File | null>(null);
+  const [collectionPreview, setCollectionPreview] = useState<ResearchCollectionPreview | null>(null);
   const [problems, setProblems] = useState<ResearchSnapshotProblem[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [name, setName] = useState('');
@@ -28,9 +40,11 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
   const selected = entries.find(entry => entry.id === selectedId);
   const refresh = useCallback(() => {
     listing.current?.abort(); const controller = new AbortController(); listing.current = controller;
-    void researchStorage.inspect(kind, controller.signal).then(({ entries: rows, problems: damaged }) => {
+    void researchStorage.inspect(undefined, controller.signal).then(({ entries: rows, problems: damaged }) => {
       if (controller.signal.aborted) return;
-      setEntries(rows); setSelectedId(id => rows.some(row => row.id === id) ? id : '');
+      const matching = rows.filter(row => row.kind === kind);
+      setEntries(matching); setCollectionEntries(rows);
+      setSelectedId(id => matching.some(row => row.id === id) ? id : '');
       setProblems(damaged); setConfirmProblem(null);
     }).catch(cause => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : 'Could not list saved research.'); });
   }, [kind]);
@@ -63,7 +77,7 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
   const title = RESEARCH_SNAPSHOT_TYPES[kind].title;
   return <details aria-label={`Saved ${title}`} style={{ border: '1px solid var(--color-border)', padding: '.75rem', minWidth: 0 }}>
     <summary>Saved {title} on this device</summary>
-    <p>Only Save writes private inputs to this browser profile. Snapshots survive reloads but are not encrypted or synced.
+    <p>Save snapshot and Import collection write private inputs to this browser profile. Snapshots survive reloads but are not encrypted or synced.
       Closing a panel does not save it. Browser data clearing or eviction can remove them; export JSON for a separate backup.</p>
     <label>Snapshot name <input value={name} placeholder={suggestedName.slice(0, 120)} maxLength={120} disabled={locked}
       onChange={event => setName(event.target.value)} /></label>{' '}
@@ -105,6 +119,79 @@ export function SavedResearchPanel({ kind, suggestedName, capture, restore, disa
       })}>Confirm removal</button>{' '}
       <button type="button" disabled={locked} onClick={() => setConfirmId(null)}>Keep snapshot</button>
     </div>}
+
+    <section aria-label="Portable saved research collection" style={{ marginTop: '.75rem' }}>
+      <button type="button" className="btn" aria-expanded={collectionOpen} disabled={locked} onClick={() => setCollectionOpen(value => !value)}>Back up or transfer all saved research</button>
+      {collectionOpen && <>
+      <p>A collection includes every saved panel kind, its names and dates, and the exact original JSON, including any embedded sources and results.
+        Import appends immutable snapshots after review. It preserves existing snapshots and never runs analyses or changes the explorer selection.</p>
+      <p>Saved in this browser: {collectionEntries.length} snapshots · {Math.ceil(collectionEntries.reduce((sum, entry) => sum + entry.bytes, 0) / 1024)} KiB.</p>
+      {collectionEntries.length > 0 && <ul aria-label="Saved collection kinds">
+        {snapshotKindCounts(collectionEntries).map(row => <li key={row.kind}>{row.title}: {row.count}</li>)}
+      </ul>}
+      <button type="button" className="btn" disabled={locked || !collectionEntries.length || problems.length > 0} onClick={() => perform(async signal => {
+        const content = await researchStorage.exportCollection(signal);
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        downloadString(content, 'phage-explorer-research-collection.json', 'application/json');
+        return 'Exported all saved snapshots captured together, including their exact original JSON and metadata. Every stored body checksum was checked.';
+      })}>Export all saved research</button>
+      <p><label>Choose research collection JSON <input type="file" accept=".json,application/json" disabled={locked} onChange={event => {
+        setCollectionFile(event.target.files?.[0] ?? null); setCollectionPreview(null); setError(null);
+        setStatus('Choose Review collection file to validate the complete file. Nothing has been imported.');
+      }} /></label></p>
+      {collectionFile && <p>Selected collection: {collectionFile.name}</p>}
+      <button type="button" className="btn" disabled={locked || !collectionFile || problems.length > 0} onClick={() => perform(async signal => {
+        if (!collectionFile) throw new Error('Choose a research collection JSON file.');
+        setCollectionPreview(null);
+        const content = await readLocalTextFile(collectionFile, RESEARCH_COLLECTION_MAX_BYTES, signal);
+        const preview = await researchStorage.previewCollection(content, signal);
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        setCollectionPreview(preview);
+        return 'Collection checked. Review every snapshot below before importing. Hashes verify metadata and saved bytes, not source authenticity or scientific results.';
+      })}>Review collection file</button>
+      {collectionPreview && <section aria-label="Research collection import review">
+        <h4>Review all {collectionPreview.entries.length} snapshots</h4>
+        <p>{collectionPreview.additions} new · {collectionPreview.duplicates} exact duplicates already saved.
+          {' '}Original contents: {Math.ceil(collectionPreview.totalBytes / 1024)} KiB.
+          {' '}After import: {collectionPreview.projectedSnapshots} snapshots · {Math.ceil(collectionPreview.projectedBytes / 1024)} KiB.</p>
+        <ul aria-label="Incoming collection kinds">
+          {snapshotKindCounts(collectionPreview.entries).map(row => <li key={row.kind}>{row.title}: {row.count}</li>)}
+        </ul>
+        <div style={{ maxHeight: '24rem', overflow: 'auto' }}>
+          <table>
+            <caption>Every snapshot in the collection</caption>
+            <thead><tr><th scope="col">Snapshot</th><th scope="col">Research kind</th><th scope="col">Saved date</th><th scope="col">Contents</th><th scope="col">Import action</th></tr></thead>
+            <tbody>{collectionPreview.entries.map(entry => <tr key={entry.id}>
+              <td>{entry.name}<br /><small>Snapshot ID: <code>{entry.id}</code></small></td>
+              <td>{RESEARCH_SNAPSHOT_TYPES[entry.kind].title}</td>
+              <td>{new Date(entry.createdAt).toLocaleString()}</td>
+              <td>{Math.ceil(entry.bytes / 1024)} KiB</td>
+              <td>{entry.disposition === 'new' ? 'Add snapshot' : 'Keep identical snapshot'}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        <p style={{ overflowWrap: 'anywhere' }}>Collection checksum: <code>{collectionPreview.manifestSha256}</code></p>
+        <p>Integrity checks cover this file’s metadata and exact saved bytes. They do not authenticate source claims or recompute scientific results.
+          Open imported snapshots in their original research panels to parse or freshly verify them.</p>
+        <button type="button" className="btn" disabled={locked} onClick={() => perform(async signal => {
+          const reviewed = collectionPreview;
+          try {
+            const imported = await researchStorage.importCollection(reviewed, signal);
+            setCollectionPreview(null);
+            return 'Imported ' + imported.added + ' snapshots; ' + imported.duplicates + ' identical snapshots were already saved. '
+              + 'Existing snapshots were preserved. Open snapshots in their research panels for parsing or fresh scientific verification.';
+          } catch (cause) {
+            if (!signal.aborted) setCollectionPreview(null);
+            throw cause;
+          }
+        })}>Import reviewed collection</button>{' '}
+        <button type="button" className="btn" disabled={locked} onClick={() => { setCollectionPreview(null); setStatus('Collection review dismissed. Nothing was imported.'); }}>Dismiss collection review</button>
+      </section>}
+      <p>Collections are checked in full before any write. A conflicting ID, unsupported kind, damaged entry, changed saved library or exceeded quota aborts the entire import.
+        Different snapshot IDs remain separate, including matching content saved under different names. Maximum collection file: 129 MiB.</p>
+      </>}
+    </section>
+
     {problems.length > 0 && <section aria-label="Saved library recovery">
       <h4>Saved records needing attention ({problems.length})</h4>
       <p>These records may belong to any research panel. Intact snapshots remain available above.

@@ -13,6 +13,7 @@ export const RESEARCH_SNAPSHOT_TYPES = {
   pangenome: { title: 'pangenome experiments', format: 'phage-explorer-analysis', methods: ['alignment-pangenome'] },
   synteny: { title: 'synteny experiments', format: 'phage-explorer-analysis', methods: ['annotation-order-synteny'] },
   compatibility: { title: 'aligned-site compatibility experiments', format: 'phage-explorer-analysis', methods: ['aligned-dna-site-compatibility'] },
+  'region-comparison': { title: 'genomic region comparisons', format: 'phage-explorer-analysis', methods: ['genome-region-comparison'] },
   comparison: { title: 'genome comparison experiments', format: 'phage-explorer-analysis', methods: ['genome-comparison'] },
   phylogeny: { title: 'phylogeny experiments', format: 'phage-explorer-analysis', methods: ['aligned-dna-neighbor-joining', 'explicit-outgroup-rooted-nj'] },
   temporal: { title: 'temporal diagnostic experiments', format: 'phage-explorer-analysis', methods: ['fixed-root-temporal-signal', 'rooted-nj-temporal-signal'] },
@@ -52,6 +53,45 @@ export interface ResearchSnapshotInventory {
   problems: ResearchSnapshotProblem[];
 }
 export const RESEARCH_STORAGE_LIMITS = { snapshotBytes: 10 * 1024 * 1024, totalBytes: 64 * 1024 * 1024, snapshots: 64 } as const;
+
+export const RESEARCH_COLLECTION_FORMAT = 'phage-explorer-research-collection' as const;
+/** JSON escaping can double the 64 MiB of original saved text, plus metadata. */
+export const RESEARCH_COLLECTION_MAX_BYTES = 129 * 1024 * 1024;
+export interface ResearchCollection {
+  format: typeof RESEARCH_COLLECTION_FORMAT;
+  version: 1;
+  snapshots: ResearchSnapshot[];
+  manifestSha256: string;
+}
+export interface ResearchCollectionPreviewEntry extends ResearchSnapshotInfo {
+  disposition: 'new' | 'existing';
+}
+export interface ResearchCollectionPreview {
+  readonly manifestSha256: string;
+  readonly entries: readonly Readonly<ResearchCollectionPreviewEntry>[];
+  readonly totalBytes: number;
+  readonly additions: number;
+  readonly duplicates: number;
+  readonly currentSnapshots: number;
+  readonly projectedSnapshots: number;
+  readonly projectedBytes: number;
+}
+export interface ResearchCollectionImportResult {
+  added: number;
+  duplicates: number;
+  totalSnapshots: number;
+  totalBytes: number;
+}
+interface ResearchCollectionPlan {
+  entries: ResearchCollectionPreviewEntry[];
+  additions: ResearchSnapshot[];
+  duplicates: ResearchSnapshot[];
+  inventoryToken: string;
+  currentSnapshots: number;
+  totalSnapshots: number;
+  totalBytes: number;
+}
+
 export const RESEARCH_STORAGE_NAME = 'phage-explorer-private-research';
 const kinds = Object.keys(RESEARCH_SNAPSHOT_TYPES) as ResearchSnapshotKind[];
 const stores = ['metadata', 'contents'];
@@ -178,7 +218,138 @@ async function digest(kind: ResearchSnapshotKind, content: string): Promise<stri
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
+
+function exactKeys(value: Record<string, unknown>, expected: readonly string[], description: string): void {
+  const actual = Object.keys(value);
+  if (actual.length !== expected.length || actual.some(key => !expected.includes(key))) {
+    throw new Error(description + ' has unsupported or missing fields. Nothing was imported.');
+  }
+}
+function collectionManifest(snapshots: readonly ResearchSnapshotInfo[]): string {
+  return JSON.stringify({ format: RESEARCH_COLLECTION_FORMAT, version: 1,
+    snapshots: snapshots.map(snapshot => metadata(snapshot)) });
+}
+async function textDigest(content: string): Promise<string> {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+/** Checks the original export text and routing only; it does not rerun a scientific method. */
+async function checkCollectionSnapshots(snapshots: readonly ResearchSnapshot[], signal?: AbortSignal): Promise<void> {
+  if (snapshots.length > RESEARCH_STORAGE_LIMITS.snapshots) throw new Error('A research collection exceeds the 64 snapshot limit.');
+  const ids = new Set<string>();
+  let bytes = 0;
+  // Check all declared limits before allocating or hashing any large body.
+  for (const snapshot of snapshots) {
+    check(signal);
+    const info = metadata(snapshot);
+    if (ids.has(info.id)) throw new Error('The research collection repeats a saved snapshot identifier.');
+    ids.add(info.id);
+    bytes += info.bytes;
+    if (bytes > RESEARCH_STORAGE_LIMITS.totalBytes) throw new Error('A research collection exceeds the 64 MiB saved-content limit.');
+    if (typeof snapshot.content !== 'string' || snapshot.content.length > RESEARCH_STORAGE_LIMITS.snapshotBytes) {
+      throw new Error('A research collection snapshot exceeds 10 MiB or has invalid contents.');
+    }
+  }
+  // Sequential hashes bound temporary buffers to one snapshot instead of the whole library.
+  for (const snapshot of snapshots) {
+    check(signal);
+    const actualBytes = validateResearchSnapshotContent(snapshot.kind, snapshot.content);
+    if (actualBytes !== snapshot.bytes || await digest(snapshot.kind, snapshot.content) !== snapshot.sha256) {
+      throw new Error('Research collection snapshot checksum or byte count mismatch. Nothing was imported.');
+    }
+    check(signal);
+  }
+}
+/** Verify every entry before exposing an import preview. Hashes establish byte integrity,
+ * not source authenticity or the correctness of saved scientific results.
+ */
+export async function parseResearchCollection(content: string, signal?: AbortSignal): Promise<ResearchCollection> {
+  check(signal);
+  if (typeof content !== 'string' || content.length > RESEARCH_COLLECTION_MAX_BYTES
+      || new TextEncoder().encode(content).length > RESEARCH_COLLECTION_MAX_BYTES) {
+    throw new Error('Research collection JSON exceeds the 129 MiB import limit.');
+  }
+  const value: unknown = JSON.parse(content.replace(/^\uFEFF/, ''));
+  if (!object(value)) throw new Error('Invalid saved research collection.');
+  exactKeys(value, ['format', 'version', 'snapshots', 'manifestSha256'], 'The research collection');
+  if (value.format !== RESEARCH_COLLECTION_FORMAT || value.version !== 1 || !Array.isArray(value.snapshots)
+      || typeof value.manifestSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.manifestSha256)) {
+    throw new Error('Unsupported research collection format/version or invalid manifest checksum.');
+  }
+  if (value.snapshots.length > RESEARCH_STORAGE_LIMITS.snapshots) throw new Error('A research collection exceeds the 64 snapshot limit.');
+  const snapshots = value.snapshots.map((entry: unknown): ResearchSnapshot => {
+    if (!object(entry)) throw new Error('Invalid research collection snapshot.');
+    exactKeys(entry, ['id', 'version', 'kind', 'name', 'createdAt', 'bytes', 'sha256', 'content'], 'A collection snapshot');
+    const info = metadata(entry);
+    if (typeof entry.content !== 'string') throw new Error('A collection snapshot has invalid contents.');
+    return { ...info, content: entry.content };
+  });
+  await checkCollectionSnapshots(snapshots, signal);
+  if (await textDigest(collectionManifest(snapshots)) !== value.manifestSha256) {
+    throw new Error('Research collection manifest checksum mismatch. Nothing was imported.');
+  }
+  check(signal);
+  return { format: RESEARCH_COLLECTION_FORMAT, version: 1, snapshots, manifestSha256: value.manifestSha256 };
+}
+function compareSnapshotIds(a: ResearchSnapshotInfo, b: ResearchSnapshotInfo): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+function inventoryToken(entries: readonly ResearchSnapshotInfo[]): string {
+  return JSON.stringify([...entries].sort(compareSnapshotIds).map(entry => metadata(entry)));
+}
+function checkedInventory(inventory: ResearchSnapshotInventory): void {
+  if (inventory.problems.length) {
+    throw new Error('The local library has damaged, incomplete or unsupported records. Review the saved library recovery controls before transferring a collection.');
+  }
+  if (inventory.entries.length > RESEARCH_STORAGE_LIMITS.snapshots
+      || inventory.entries.reduce((sum, entry) => sum + entry.bytes, 0) > RESEARCH_STORAGE_LIMITS.totalBytes) {
+    throw new Error('The saved library exceeds the 64 snapshot / 64 MiB collection limits. No records were omitted.');
+  }
+}
+function collectionPlan(inventory: ResearchSnapshotInventory, snapshots: readonly ResearchSnapshot[]): ResearchCollectionPlan {
+  checkedInventory(inventory);
+  const current = new Map(inventory.entries.map(entry => [entry.id, entry]));
+  const additions: ResearchSnapshot[] = [], duplicates: ResearchSnapshot[] = [], entries: ResearchCollectionPreviewEntry[] = [];
+  for (const snapshot of snapshots) {
+    const info = metadata(snapshot), previous = current.get(info.id);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(info)) {
+      throw new Error('A saved snapshot identifier conflicts with different metadata. The entire collection import was rejected.');
+    }
+    if (previous) duplicates.push(snapshot); else additions.push(snapshot);
+    entries.push({ ...info, disposition: previous ? 'existing' : 'new' });
+  }
+  const totalSnapshots = inventory.entries.length + additions.length;
+  const totalBytes = inventory.entries.reduce((sum, entry) => sum + entry.bytes, 0)
+    + additions.reduce((sum, entry) => sum + entry.bytes, 0);
+  if (totalSnapshots > RESEARCH_STORAGE_LIMITS.snapshots || totalBytes > RESEARCH_STORAGE_LIMITS.totalBytes) {
+    throw new Error('This collection would fill the local research library beyond 64 snapshots / 64 MiB. Nothing was imported or evicted.');
+  }
+  return { entries, additions, duplicates, inventoryToken: inventoryToken(inventory.entries),
+    currentSnapshots: inventory.entries.length, totalSnapshots, totalBytes };
+}
+/** Read only matching IDs during import. Every duplicate must match the exact saved body;
+ * other existing bodies are preserved, not represented as freshly verified.
+ */
+function checkDuplicateBodies(tx: IDBTransaction, snapshots: readonly ResearchSnapshot[], ready: () => void,
+  fail: (cause: unknown) => void): void {
+  if (!snapshots.length) { ready(); return; }
+  let complete = 0;
+  for (const snapshot of snapshots) {
+    const request = tx.objectStore('contents').get(snapshot.id);
+    request.onsuccess = () => {
+      try {
+        const body: unknown = request.result;
+        if (!object(body) || body.id !== snapshot.id || body.content !== snapshot.content) {
+          throw new Error('A saved snapshot identifier conflicts with different contents. The entire collection import was rejected.');
+        }
+        if (++complete === snapshots.length) ready();
+      } catch (cause) { fail(cause); }
+    };
+  }
+}
+
 export class ResearchStorage {
+  private collectionPreviews = new WeakMap<ResearchCollectionPreview, { snapshots: ResearchSnapshot[]; inventoryToken: string }>();
   private listeners = new Set<() => void>();
   private channel: BroadcastChannel | null = null;
   constructor(private readonly name = RESEARCH_STORAGE_NAME) {}
@@ -323,6 +494,100 @@ export class ResearchStorage {
     check(signal);
     return { ...info, content };
   }
+
+  /** Capture one coherent library revision before hashing outside the IDB transaction. */
+  async exportCollection(signal?: AbortSignal): Promise<string> {
+    check(signal);
+    const snapshots = await this.transaction<ResearchSnapshot[]>('readonly', (tx, result, fail) => {
+      readInventory(tx, inventory => {
+        try {
+          checkedInventory(inventory);
+          if (!inventory.entries.length) { result([]); return; }
+          const rows = new Array<ResearchSnapshot>(inventory.entries.length);
+          let complete = 0;
+          for (const [i, info] of inventory.entries.entries()) {
+            const request = tx.objectStore('contents').get(info.id);
+            request.onsuccess = () => {
+              try {
+                const body: unknown = request.result;
+                if (!object(body) || body.id !== info.id || typeof body.content !== 'string') {
+                  throw new Error('Saved collection contents are damaged. No snapshots were omitted or exported.');
+                }
+                rows[i] = { ...info, content: body.content };
+                if (++complete === inventory.entries.length) result(rows);
+              } catch (cause) { fail(cause); }
+            };
+          }
+        } catch (cause) { fail(cause); }
+      }, fail);
+    }, signal);
+    await checkCollectionSnapshots(snapshots, signal);
+    snapshots.sort(compareSnapshotIds);
+    const manifestSha256 = await textDigest(collectionManifest(snapshots));
+    check(signal);
+    const content = JSON.stringify({ format: RESEARCH_COLLECTION_FORMAT, version: 1, snapshots, manifestSha256 });
+    if (new TextEncoder().encode(content).length > RESEARCH_COLLECTION_MAX_BYTES) {
+      throw new Error('Research collection JSON exceeds 129 MiB. No snapshots were omitted.');
+    }
+    return content;
+  }
+  /** Preview is metadata-only. The verified bodies and expected inventory stay privately owned. */
+  async previewCollection(content: string, signal?: AbortSignal): Promise<ResearchCollectionPreview> {
+    const collection = await parseResearchCollection(content, signal);
+    const plan = await this.transaction<ResearchCollectionPlan>('readonly', (tx, result, fail) => {
+      readInventory(tx, inventory => {
+        try {
+          const plan = collectionPlan(inventory, collection.snapshots);
+          checkDuplicateBodies(tx, plan.duplicates, () => result(plan), fail);
+        } catch (cause) { fail(cause); }
+      }, fail);
+    }, signal);
+    check(signal);
+    const preview: ResearchCollectionPreview = Object.freeze({
+      manifestSha256: collection.manifestSha256,
+      entries: Object.freeze(plan.entries.map(entry => Object.freeze({ ...entry }))),
+      totalBytes: collection.snapshots.reduce((sum, snapshot) => sum + snapshot.bytes, 0),
+      additions: plan.additions.length, duplicates: plan.duplicates.length,
+      currentSnapshots: plan.currentSnapshots, projectedSnapshots: plan.totalSnapshots, projectedBytes: plan.totalBytes,
+    });
+    this.collectionPreviews.set(preview, { snapshots: collection.snapshots, inventoryToken: plan.inventoryToken });
+    return preview;
+  }
+  /** Append the whole reviewed collection atomically. Never overwrite or evict an existing ID. */
+  async importCollection(preview: ResearchCollectionPreview, signal?: AbortSignal): Promise<ResearchCollectionImportResult> {
+    check(signal);
+    const prepared = this.collectionPreviews.get(preview);
+    if (!prepared) throw new Error('Review the collection in this library before importing it.');
+    // Recheck our privately captured bodies before starting the write transaction.
+    await checkCollectionSnapshots(prepared.snapshots, signal);
+    check(signal);
+    const imported = await this.transaction<ResearchCollectionImportResult>('readwrite', (tx, result, fail) => {
+      readInventory(tx, inventory => {
+        try {
+          checkedInventory(inventory);
+          if (inventoryToken(inventory.entries) !== prepared.inventoryToken) {
+            throw new Error('The saved library changed after collection review. Review the file again; nothing was imported.');
+          }
+          const plan = collectionPlan(inventory, prepared.snapshots);
+          checkDuplicateBodies(tx, plan.duplicates, () => {
+            try {
+              const index = tx.objectStore('metadata'), bodies = tx.objectStore('contents');
+              for (const snapshot of plan.additions) {
+                index.add(metadata(snapshot));
+                bodies.add({ id: snapshot.id, content: snapshot.content });
+              }
+              result({ added: plan.additions.length, duplicates: plan.duplicates.length,
+                totalSnapshots: plan.totalSnapshots, totalBytes: plan.totalBytes });
+            } catch (cause) { fail(cause); }
+          }, fail);
+        } catch (cause) { fail(cause); }
+      }, fail);
+    }, signal);
+    this.collectionPreviews.delete(preview);
+    if (imported.added) this.changed();
+    return imported;
+  }
+
   /** Explicit per-snapshot removal only. Callers must confirm the selected immutable ID. */
   async remove(id: string, expectedKind: ResearchSnapshotKind, signal?: AbortSignal): Promise<void> {
     validId(id);
