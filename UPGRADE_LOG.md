@@ -125,3 +125,14 @@ Runtime/package manager: Bun 1.4.5 (Linux x64 qualification host). Updated in is
   - `typescript` at `^6.0.3` (`7.0.2` is outside `typescript-eslint@8.73.0` peer range `>=4.8.4 <6.1.0`).
   - `@vercel/og` at exact `1.0.1` (`1.0.3` remains affected by upstream `vercel/satori#801` missing `hb.wasm`).
 - **Security audit**: Reduced from 14 advisories (1 high, 9 moderate, 4 low) to 3 dev/build-tool-only moderate advisories (`glob@11.1.0` and `minimatch` under `workbox-build`/`eslint`, and `satori@0.29.0` under unused `@vercel/og@1.0.1`).
+
+---
+
+## 2026-11-26 Dependency Refresh
+
+Bun 1.4.5 on Linux x64. Each update was installed and gated on its own:
+`bun run check` (ESLint, root and web `tsc --noEmit`, keyboard sync, script
+transpilation, bead closures, 17 comparison gates), plus the web unit suite
+and a production web build where runtime code changed.
+
+- `@types/react` `19.3.0 -> 19.3.3` (root and web). Types only; `bun run check` passes.
