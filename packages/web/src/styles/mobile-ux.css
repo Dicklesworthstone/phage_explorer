@@ -295,6 +295,27 @@ html {
    iOS/Android-style modal that slides up from bottom
    ============================================================================= */
 
+/* The animated sheet supplies the visual backdrop and sizing inside this
+   native top-layer dialog. Reset the browser's default dialog box. */
+dialog.bottom-sheet-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  background: transparent;
+  color: inherit;
+}
+
+dialog.bottom-sheet-dialog::backdrop {
+  background: transparent;
+}
+
 .bottom-sheet {
   position: fixed;
   inset: 0;

@@ -17,6 +17,7 @@ import React, {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -47,6 +48,8 @@ interface BottomSheetProps {
   closeOnBackdropTap?: boolean;
   /** Disable when an overlay stack already owns Escape for this sheet. */
   closeOnEscape?: boolean;
+  /** Isolate a standalone picker from the explorer. Stacked overlays own their focus separately. */
+  nativeModal?: boolean;
   /** Whether to enable swipe-to-dismiss (default: true) */
   swipeToDismiss?: boolean;
   /** Initial snap point (default: 'half') */
@@ -105,12 +108,14 @@ export function BottomSheet({
   showHandle = true,
   closeOnBackdropTap = true,
   closeOnEscape = true,
+  nativeModal = false,
   swipeToDismiss = true,
   initialSnapPoint = 'half',
   minHeight = 30,
   maxHeight = 90,
   onSnapPointChange,
 }: BottomSheetProps): React.ReactElement | null {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const snapPointRef = useRef<SnapPoint>(initialSnapPoint);
@@ -455,8 +460,19 @@ export function BottomSheet({
 
   useModalScrollLock(shouldRender, isLikelyTouchDevice());
 
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!nativeModal || !shouldRender || !dialog) return;
+    // Keep the background inert through the exit animation. close() also
+    // returns focus to the trigger that was active before showModal().
+    dialog.showModal();
+    // Start at the close button so opening by touch does not raise the keyboard.
+    dialog.querySelector<HTMLButtonElement>('.bottom-sheet__close')?.focus({ preventScroll: true });
+    return () => dialog.close();
+  }, [nativeModal, shouldRender]);
+
   useEffect(() => {
-    if (!isOpen || !closeOnEscape) return;
+    if (!isOpen || !closeOnEscape || nativeModal) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
@@ -471,7 +487,7 @@ export function BottomSheet({
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, closeOnEscape, animateToSnapPoint]);
+  }, [isOpen, closeOnEscape, nativeModal, animateToSnapPoint]);
 
   // Handle backdrop click
   const handleBackdropClick = useCallback(
@@ -503,12 +519,12 @@ export function BottomSheet({
 
   const dragBind = bindDrag();
 
-  return createPortal(
+  const sheet = (
     <div
       className={`bottom-sheet ${shouldRender ? 'is-open' : ''} ${isDragging ? 'bottom-sheet--dragging' : ''}`}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={title ? titleId : undefined}
+      role={nativeModal ? undefined : 'dialog'}
+      aria-modal={nativeModal ? undefined : true}
+      aria-labelledby={!nativeModal && title ? titleId : undefined}
     >
       {/* Animated Backdrop */}
       <animated.div
@@ -593,7 +609,30 @@ export function BottomSheet({
           aria-hidden="true"
         />
       </animated.div>
-    </div>,
+    </div>
+  );
+
+  if (!nativeModal) return createPortal(sheet, document.body);
+  return createPortal(
+    <dialog
+      ref={dialogRef}
+      className="bottom-sheet-dialog"
+      aria-labelledby={title ? titleId : undefined}
+      onCancel={event => {
+        event.preventDefault();
+        if (isOpen && closeOnEscape) handleClose();
+      }}
+      onKeyDown={event => {
+        // Events inside a portal still bubble to document-level shortcuts.
+        event.stopPropagation();
+        if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented) {
+          event.preventDefault();
+          if (isOpen && closeOnEscape) handleClose();
+        }
+      }}
+    >
+      {sheet}
+    </dialog>,
     document.body
   );
 }

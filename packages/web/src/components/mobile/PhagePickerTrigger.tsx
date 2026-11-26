@@ -15,7 +15,7 @@ interface PhagePickerTriggerProps {
   /** Total number of phages */
   totalCount: number;
   /** Handler when trigger is tapped */
-  onClick: () => void;
+  onClick: React.MouseEventHandler<HTMLButtonElement>;
   /** Whether the picker sheet is currently open */
   isOpen?: boolean;
 }

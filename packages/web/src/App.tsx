@@ -33,7 +33,6 @@ import {
 } from './keyboard/actionSurfaces';
 import { useTheme } from './hooks/useTheme';
 import { useReducedMotion } from './hooks/useReducedMotion';
-import { useModalScrollLock } from './hooks/useModalScrollLock';
 import { BlockedHotkeyToast } from './components/BlockedHotkeyToast';
 import { useToast } from './components/ui/Toast';
 import type { PhageRepository } from './db';
@@ -233,9 +232,15 @@ export default function App(): React.ReactElement {
   const selectedCdsSource = useMemo<SelectedCdsSource | null>(() => repository && acceptedSelection?.phage === currentPhage
     ? { owner: repository, phage: acceptedSelection.phage, sequence: acceptedSelection.sequence } : null,
   [acceptedSelection, currentPhage, repository]);
-  const [mobileListOpen, setMobileListOpen] = useState(false);
   const [actionDrawerOpen, setActionDrawerOpen] = useState(false);
   const [phagePickerOpen, setPhagePickerOpen] = useState(false);
+  const openPhagePicker = useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
+    // Touch browsers do not always focus a tapped button. Remember the actual
+    // opener for the native dialog's focus restoration.
+    event.currentTarget.focus({ preventScroll: true });
+    setPhagePickerOpen(true);
+  }, []);
+  const closePhagePicker = useCallback(() => setPhagePickerOpen(false), []);
   const [analysisSidebarCollapsed, setAnalysisSidebarCollapsed] = useState(false);
   const swipeStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const sessionSwipeCountRef = useRef(0); // Track successful swipes for learning hint
@@ -477,9 +482,15 @@ export default function App(): React.ReactElement {
   );
   const show3DInLayout = (!isMobile && (!isNarrow || !isLandscape)) || (isMobile && show3DModel);
   const hasSelection = currentPhage !== null || isLoadingPhage;
-  const showList = !isMobile || !hasSelection || mobileListOpen;
+  const showList = !isMobile || !hasSelection;
   const showDetail = !isMobile || hasSelection;
-  useModalScrollLock(isMobile && mobileListOpen, true);
+  useLayoutEffect(() => {
+    if (isMobile || !phagePickerOpen) return;
+    // Both phone triggers disappear at the desktop breakpoint. Continue at
+    // the same catalog item and leave the picker closed on a later rotation.
+    setPhagePickerOpen(false);
+    document.querySelector<HTMLButtonElement>('.column--list button[aria-current="true"]')?.focus({ preventScroll: true });
+  }, [isMobile, phagePickerOpen]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -607,7 +618,6 @@ export default function App(): React.ReactElement {
     async (index: number) => {
       if (!repository) return;
       await loadPhage(repository, index);
-      setMobileListOpen(false);
     },
     [loadPhage, repository]
   );
@@ -665,7 +675,7 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (!isMobile) return;
     if (hasBlockingOverlay) return;
-    if (mobileListOpen) return;
+    if (phagePickerOpen) return;
 
     const container = document.getElementById('main-content');
     if (!container) return;
@@ -737,7 +747,7 @@ export default function App(): React.ReactElement {
       container.removeEventListener('touchend', onTouchEnd);
       container.removeEventListener('touchcancel', onTouchCancel);
     };
-  }, [handleNextPhage, handlePrevPhage, hasBlockingOverlay, hasLearnedMobileSwipe, isMobile, mobileListOpen, setHasLearnedMobileSwipe]);
+  }, [handleNextPhage, handlePrevPhage, hasBlockingOverlay, hasLearnedMobileSwipe, isMobile, phagePickerOpen, setHasLearnedMobileSwipe]);
 
   useEffect(() => {
     if (!isGlossaryOpen) return;
@@ -982,7 +992,7 @@ export default function App(): React.ReactElement {
               phageName={currentPhage?.name ?? 'Select Phage'}
               currentIndex={currentPhageIndex}
               totalCount={phages.length}
-              onClick={() => setPhagePickerOpen(true)}
+              onClick={openPhagePicker}
               isOpen={phagePickerOpen}
             />
           ) : (
@@ -1119,10 +1129,6 @@ export default function App(): React.ReactElement {
                 phages={phages}
                 currentIndex={currentPhageIndex}
                 onSelect={handleSelectPhage}
-                onClose={() => setMobileListOpen(false)}
-                mobileListOpen={mobileListOpen}
-                hasSelection={hasSelection}
-                isMobile={isMobile}
                 loading={!repository || (phages.length === 0 && isLoading)}
               />
             )}
@@ -1134,8 +1140,10 @@ export default function App(): React.ReactElement {
                   {isMobile && (
                     <button 
                       className="btn btn-sm"
-                      onClick={() => setMobileListOpen(true)}
+                      onClick={openPhagePicker}
                       type="button"
+                      aria-haspopup="dialog"
+                      aria-expanded={phagePickerOpen}
                       aria-label="Phages: open list"
                     >
                       Phages
@@ -1328,8 +1336,10 @@ export default function App(): React.ReactElement {
                     <div className="empty-state__action">
                       <button
                         className="btn"
-                        onClick={() => setMobileListOpen(true)}
+                        onClick={openPhagePicker}
                         type="button"
+                        aria-haspopup="dialog"
+                        aria-expanded={phagePickerOpen}
                       >
                         Browse Phages
                       </button>
@@ -1421,14 +1431,10 @@ export default function App(): React.ReactElement {
           {isMobile && (
             <PhagePickerSheet
               isOpen={phagePickerOpen}
-              onClose={() => setPhagePickerOpen(false)}
+              onClose={closePhagePicker}
               phages={phages}
               currentIndex={currentPhageIndex}
-              onSelectPhage={(index) => {
-                if (repository) {
-                  void loadPhage(repository, index);
-                }
-              }}
+              onSelectPhage={handleSelectPhage}
             />
           )}
         </>

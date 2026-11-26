@@ -7,10 +7,6 @@ interface PhageListProps {
   phages: PhageSummary[];
   currentIndex: number;
   onSelect: (index: number) => void;
-  onClose?: () => void;
-  mobileListOpen?: boolean;
-  hasSelection?: boolean;
-  isMobile?: boolean;
   loading?: boolean;
 }
 
@@ -18,10 +14,6 @@ export function PhageList({
   phages,
   currentIndex,
   onSelect,
-  onClose,
-  mobileListOpen,
-  hasSelection,
-  isMobile,
   loading = false,
 }: PhageListProps): React.ReactElement {
   const activeItemRef = useRef<HTMLButtonElement>(null);
@@ -37,7 +29,7 @@ export function PhageList({
 
   if (loading) {
     return (
-      <div className={`column column--list ${isMobile && hasSelection && mobileListOpen ? 'mobile-drawer' : ''}`}>
+      <div className="column column--list">
         <div className="panel-header">
           <h2>Phages</h2>
         </div>
@@ -49,22 +41,10 @@ export function PhageList({
   }
 
   return (
-    <div className={`column column--list ${isMobile && hasSelection && mobileListOpen ? 'mobile-drawer' : ''}`}>
+    <div className="column column--list">
       <div className="panel-header">
         <h2>Phages</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span className="badge">{phages.length}</span>
-          {isMobile && hasSelection && onClose && (
-            <button
-              className="btn btn-sm"
-              onClick={onClose}
-              type="button"
-              aria-label="Close phage list"
-            >
-              Close
-            </button>
-          )}
-        </div>
+        <span className="badge">{phages.length}</span>
       </div>
       <ul className="list" role="list" data-testid="phage-list">
         {phages.map((phage, idx) => {

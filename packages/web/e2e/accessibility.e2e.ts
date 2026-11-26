@@ -18,6 +18,60 @@ type AxeResults = {
   violations: AxeViolation[];
 };
 
+test('mobile catalog entry points isolate keyboard focus and restore the selected item on desktop', async ({ page }) => {
+  await setExperienceLevel(page, 'power');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/?phage=lambda&model=0');
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('Enterobacteria phage lambda');
+  const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+  if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+
+  const detailsTrigger = page.getByRole('button', { name: 'Phages: open list', exact: true });
+  const picker = page.getByRole('dialog', { name: 'Explore phages', exact: true });
+  await detailsTrigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(picker).toBeVisible();
+  const close = picker.getByRole('button', { name: 'Close', exact: true });
+  await expect(close).toBeFocused();
+
+  // Native modal focus prevents both keyboard and script-driven focus from
+  // escaping to the header while controls inside the picker remain usable.
+  await page.locator('.phage-picker-trigger').evaluate(button => {
+    if (button instanceof HTMLButtonElement) button.focus();
+  });
+  await expect(close).toBeFocused();
+  await page.keyboard.press('?');
+  await expect(page.locator('.overlay-help')).toHaveCount(0);
+  await page.keyboard.press('Tab');
+  await expect(picker.getByRole('searchbox', { name: 'Search phages' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+  await expect(detailsTrigger).toBeFocused();
+
+  const headerTrigger = page.locator('.phage-picker-trigger');
+  await headerTrigger.focus();
+  await page.keyboard.press('Enter');
+  const other = picker.locator('.phage-picker-sheet__item-main:not([aria-current="true"])').first();
+  const name = await other.locator('.phage-picker-sheet__item-name').innerText();
+  await other.focus();
+  await page.keyboard.press('Enter');
+  await expect(picker).toBeHidden();
+  await expect(headerTrigger).toContainText(name);
+  await expect(headerTrigger).toBeFocused();
+
+  await headerTrigger.press('Enter');
+  await expect(picker).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const current = page.getByTestId('phage-list-item-selected');
+  await expect(picker).toBeHidden();
+  await expect(current).toContainText(name);
+  await expect(current).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(headerTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(picker).toBeHidden();
+});
+
 const RESEARCH_THEMES = ['holographic', 'cyberpunk', 'classic', 'ocean', 'matrix', 'sunset', 'forest', 'monochrome'];
 
 for (const theme of RESEARCH_THEMES) {

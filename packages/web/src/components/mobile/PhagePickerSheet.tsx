@@ -503,6 +503,7 @@ export function PhagePickerSheet({
       isOpen={isOpen}
       onClose={onClose}
       title="Explore phages"
+      nativeModal
       initialSnapPoint="full"
       minHeight={45}
       maxHeight={92}

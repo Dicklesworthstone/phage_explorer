@@ -300,6 +300,13 @@ export class KeyboardManager {
    */
   private handleKeyDown(event: globalThis.KeyboardEvent): void {
     if (!this.state.isActive) return;
+    // The native picker owns its keyboard until the exit animation finishes.
+    // This check runs before the manager's capture-phase shortcut dispatch.
+    if (typeof Element !== 'undefined' && event.target instanceof Element &&
+      event.target.closest?.('dialog.bottom-sheet-dialog[open]')) {
+      if (this.state.pendingSequence !== null) this.clearSequence();
+      return;
+    }
 
     const typing = isUserTyping(event);
     const typingBlocks = typing;
