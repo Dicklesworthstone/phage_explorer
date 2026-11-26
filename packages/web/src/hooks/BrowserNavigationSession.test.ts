@@ -83,6 +83,43 @@ describe('ordinary browser navigation and portable named views', () => {
     assert.equal(usePhageStore.getState().scrollPosition, 9);
   });
 
+  test('Back after restoring a named view returns to its departure in one step', async () => {
+    const f = await fixture();
+    usePhageStore.setState({ scrollPosition: 12 }); await tick();
+    assert.equal(f.session.saveCurrent('Bookmarked'), true);
+    await f.select(1);
+    const departure = f.session.getSnapshot().historyIndex;
+    assert.equal(await f.session.restoreNamed('Bookmarked'), true);
+    assert.equal(usePhageStore.getState().scrollPosition, 12);
+    assert.equal(await f.session.moveHistory(-1), true);
+    assert.equal(f.session.getSnapshot().historyIndex, departure);
+    assert.equal(usePhageStore.getState().currentPhage?.accession, 'VIEW_2');
+    assert.equal(await f.session.moveHistory(1), true);
+    assert.equal(usePhageStore.getState().scrollPosition, 12);
+  });
+
+  test('jumps past an unavailable intermediate source and rejects discarded history rows', async () => {
+    const f = await fixture();
+    usePhageStore.setState({ scrollPosition: 14 }); await tick();
+    const earlier = f.session.getSnapshot().history.at(-1)!;
+    await f.select(1);
+    const intermediate = f.session.getSnapshot().history.at(-1)!;
+    await f.select(0);
+    const count = f.session.getSnapshot().history.length;
+    f.sequences[1] = 'A'.repeat(120);
+    assert.equal(await f.session.moveHistory(-1), false);
+    assert.match(f.session.getSnapshot().error!, /bases or annotations have changed/);
+    assert.equal(await f.session.restoreHistory(earlier), true);
+    assert.equal(usePhageStore.getState().scrollPosition, 14);
+    assert.equal(f.session.getSnapshot().history.length, count);
+    assert.equal(f.session.getSnapshot().history[f.session.getSnapshot().historyIndex], earlier);
+    usePhageStore.setState({ scrollPosition: 25 }); await tick();
+    assert.equal(await f.session.restoreHistory(intermediate), false);
+    assert.match(f.session.getSnapshot().error!, /no longer available/);
+    assert.equal(usePhageStore.getState().scrollPosition, 25);
+    assert.equal(usePhageStore.getState().currentPhage?.accession, 'VIEW_1');
+  });
+
   test('coalesces scrolling while retaining the departure view and bounds history to 64 entries', async () => {
     let now = 0;
     const f = await fixture({ now: () => now });

@@ -245,10 +245,22 @@ export class BrowserNavigationSession {
     if (!entry) { this.fail(new Error(delta < 0 ? 'No earlier explorer view is available.' : 'No later explorer view is available.')); return false; }
     return this.restore(entry, index);
   };
+  restoreHistory = async (entry: SavedView): Promise<boolean> => {
+    if (this.operation) this.cancel();
+    this.flush();
+    // A scroll burst or a new branch may have replaced the displayed row.
+    // Resolve the selected entry after capture so its old index cannot point elsewhere.
+    const index = this.state.history.indexOf(entry);
+    if (index < 0) {
+      this.fail(new Error('This history position is no longer available. Choose another position.'));
+      return false;
+    }
+    return this.restore(entry, index);
+  };
   restoreNamed = async (name: string): Promise<boolean> => {
     const entry = this.state.saved.find(view => view.name === name);
     if (!entry) { this.fail(new Error('Choose an existing saved view.')); return false; }
-    return this.restore(entry);
+    return this.restore({ source: entry.source, view: entry.view });
   };
   private async restore(value: SavedView, historyIndex?: number): Promise<boolean> {
     this.cancel(); this.flush();

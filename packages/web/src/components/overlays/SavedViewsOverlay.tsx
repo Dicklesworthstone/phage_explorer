@@ -15,6 +15,7 @@ export function SavedViewsOverlay({ session }: { session: BrowserNavigationSessi
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
   const [name, setName] = useState('');
   const [selectedName, setSelectedName] = useState('');
+  const [historyTarget, setHistoryTarget] = useState<SavedView | null>(null);
   const [rename, setRename] = useState('');
   const [fileBusy, setFileBusy] = useState(false);
   const [libraryBusy, setLibraryBusy] = useState(false);
@@ -23,6 +24,7 @@ export function SavedViewsOverlay({ session }: { session: BrowserNavigationSessi
   const fileInput = useRef<HTMLInputElement | null>(null);
   const selected = state.saved.find(view => view.name === selectedName);
   const current = state.history[state.historyIndex];
+  const targetIndex = historyTarget ? state.history.indexOf(historyTarget) : -1;
   const busy = state.busy || fileBusy || libraryBusy;
   useEffect(() => () => { reading.current?.abort(); reading.current = null; session.cancel(); }, [session]);
   useEffect(() => {
@@ -57,6 +59,17 @@ export function SavedViewsOverlay({ session }: { session: BrowserNavigationSessi
           <button className="btn" disabled={busy || state.historyIndex >= state.history.length - 1} onClick={() => void session.moveHistory(1)}>Forward through history</button>
           {state.busy && <button className="btn" onClick={() => session.cancel()}>Cancel view restoration</button>}
         </div>
+        {state.history.length > 1 && <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+          <label style={{ minWidth: 0, maxWidth: '100%' }}>History position <select style={{ maxWidth: '100%' }} value={targetIndex < 0 ? '' : targetIndex} disabled={busy}
+            onChange={event => setHistoryTarget(event.target.value === '' ? null : state.history[Number(event.target.value)] ?? null)}>
+            <option value="">Choose a position</option>
+            {state.history.map((entry, index) => <option key={index} value={index}>
+              {index + 1}. {describe(entry)}{index === state.historyIndex ? ' (current)' : ''}
+            </option>)}
+          </select></label>
+          <button className="btn" disabled={busy || targetIndex < 0 || targetIndex === state.historyIndex}
+            onClick={() => { if (historyTarget) void session.restoreHistory(historyTarget); }}>Go to history position</button>
+        </div>}
         <p>{current ? describe(current) : 'Load a complete genome to start navigation history.'}</p>
         <p>{state.history.length ? state.historyIndex + 1 : 0} of {state.history.length} positions in this tab. Continuous scrolling is grouped; up to 64 positions are retained.</p>
       </section>
