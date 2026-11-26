@@ -1,10 +1,12 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { setupTestHarness } from './e2e-harness';
 import { resolve } from 'node:path';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
 
 declare global {
   interface Window {
+    pickerFailureCount: number;
+    pickerReply: { hold: boolean; pending: boolean; received: number; release: () => void };
     searchIdentityFixture: {
       select: (name: 'a' | 'b') => void;
       holdRead: boolean;
@@ -19,6 +21,110 @@ declare global {
       viewMode: () => string;
     };
   }
+}
+
+async function openMobileCatalog(page: Page) {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/?phage=lambda&model=0');
+  const header = page.locator('button.phage-picker-trigger');
+  await expect(header).toContainText('Enterobacteria phage lambda');
+  const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+  if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+  await header.click();
+  const picker = page.getByRole('dialog', { name: 'Explore phages' });
+  return { header, picker };
+}
+
+test('mobile discovery keeps active queries, worker replies and random selection in the same results', async ({ page }) => {
+  await page.addInitScript(() => {
+    const gate: Window['pickerReply'] = { hold: false, pending: false, received: 0, release: () => {} };
+    window.pickerReply = gate;
+    const BrowserWorker = window.Worker;
+    window.Worker = class extends BrowserWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        this.addEventListener('message', event => {
+          const { type, value } = event.data ?? {};
+          if (type !== 'RAW' || !Array.isArray(value) || typeof value[0]?.meta?.phageId !== 'number') return;
+          gate.received++;
+          if (!gate.hold) return;
+          gate.hold = false;
+          gate.pending = true;
+          event.stopImmediatePropagation();
+          gate.release = () => {
+            gate.pending = false;
+            this.dispatchEvent(new MessageEvent('message', { data: event.data }));
+          };
+        });
+      }
+    };
+  });
+  const { header, picker } = await openMobileCatalog(page);
+  const input = picker.getByRole('searchbox', { name: 'Search phages' });
+  const random = picker.getByRole('button', { name: 'Open a random phage from the current results' });
+
+  await input.fill('lambda');
+  await expect.poll(() => page.evaluate(() => window.pickerReply.received)).toBeGreaterThan(0);
+  await page.evaluate(() => { window.pickerReply.hold = true; });
+  await input.fill('T7');
+  await expect.poll(() => page.evaluate(() => window.pickerReply.pending)).toBe(true);
+  // The T7 response is still held. The current literal match must already own the list.
+  await expect(picker.getByRole('button', { name: 'Open Enterobacteria phage T7', exact: true })).toBeVisible();
+  await expect(picker.getByRole('button', { name: /Open Enterobacteria phage lambda/ })).toHaveCount(0);
+  await input.fill('qzxqzx-absent-record');
+  await expect(picker.getByRole('listitem')).toHaveCount(0);
+  await expect(random).toBeDisabled();
+
+  await page.keyboard.press('Escape');
+  await expect(picker).toBeHidden();
+  await header.click();
+  await input.fill('qzxqzx-absent-record');
+  await page.evaluate(() => window.pickerReply.release());
+  await expect(picker.getByRole('listitem')).toHaveCount(0);
+  await expect(random).toBeDisabled();
+  await expect(header).toContainText('Enterobacteria phage lambda');
+
+  await input.fill('T7');
+  await picker.getByRole('button', { name: 'Save Enterobacteria phage T7', exact: true }).click();
+  await input.fill('');
+  await picker.getByRole('button', { name: /^Saved\s*1$/ }).click();
+  await expect(picker.getByRole('listitem')).toHaveCount(1);
+  await random.click();
+  await expect(picker).toBeHidden();
+  await expect(header).toContainText('Enterobacteria phage T7');
+});
+
+for (const failure of ['worker unavailable', 'index rejected'] as const) {
+  test(`mobile discovery retains literal search with ${failure}`, async ({ page }) => {
+    await page.addInitScript(mode => {
+      window.pickerFailureCount = 0;
+      const BrowserWorker = window.Worker;
+      window.Worker = class extends BrowserWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          if (mode === 'worker unavailable' && String(url).includes('search.worker')) {
+            window.pickerFailureCount++;
+            throw new DOMException('Worker blocked by test policy', 'SecurityError');
+          }
+          super(url, options);
+          const send = this.postMessage.bind(this) as (message: unknown, options?: Transferable[] | StructuredSerializeOptions) => void;
+          this.postMessage = (message, ...args: [Transferable[]] | [StructuredSerializeOptions?]) => {
+            if (mode === 'index rejected' && message?.path?.at(-1) === 'setFuzzyIndex' &&
+              message.argumentList?.[0]?.value?.index === 'phage-picker') {
+              window.pickerFailureCount++;
+              throw new DOMException('Catalog index unavailable', 'DataCloneError');
+            }
+            send(message, args[0]);
+          };
+        }
+      };
+    }, failure);
+    const { header, picker } = await openMobileCatalog(page);
+    await picker.getByRole('searchbox', { name: 'Search phages' }).fill('t7');
+    await expect.poll(() => page.evaluate(() => window.pickerFailureCount)).toBeGreaterThan(0);
+    await picker.getByRole('button', { name: 'Open Enterobacteria phage T7', exact: true }).click();
+    await expect(header).toContainText('Enterobacteria phage T7');
+  });
 }
 
 test.describe('SearchOverlay Keyboard UX', () => {

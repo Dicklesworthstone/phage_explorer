@@ -17,7 +17,6 @@ import {
   getSearchWorker,
   type SearchWorkerAPI,
   type FuzzySearchEntry,
-  type FuzzySearchResult,
 } from '../../workers';
 import { haptics } from '../../utils/haptics';
 import {
@@ -53,6 +52,26 @@ interface PhagePickerSheetProps {
 type LifecycleFilter = 'all' | 'lytic' | 'temperate' | 'other';
 type CollectionFilter = 'all' | 'favorites' | 'recent';
 export type PhageSortMode = 'relevance' | 'name' | 'genomeLength' | 'gcContent';
+
+interface PickerRanking {
+  catalog: PhageListItem[];
+  query: string;
+  ids: number[];
+}
+
+export function getPickerResults(catalog: PhageListItem[], query: string, ranking: PickerRanking | null): PhageListItem[] {
+  const term = query.trim().toLowerCase();
+  if (!term) return catalog;
+  if (ranking && ranking.catalog === catalog && ranking.query === term) {
+    const byId = new Map(catalog.map(phage => [phage.id, phage]));
+    return ranking.ids.map(id => byId.get(id)).filter((phage): phage is PhageListItem => phage !== undefined);
+  }
+  // A new query or catalog can render before the worker effect runs.
+  return catalog.filter(phage =>
+    [phage.name, phage.accession, phage.host, phage.family, phage.lifecycle, phage.morphology]
+      .some(value => value?.toLowerCase().includes(term))
+  );
+}
 
 interface FilterOption<T extends string> {
   id: T;
@@ -205,13 +224,14 @@ export function PhagePickerSheet({
   const { favoriteKeys, recentKeys } = collections;
   const [workerRequested, setWorkerRequested] = useState(false);
   const [workerReady, setWorkerReady] = useState(false);
-  const [rankedIds, setRankedIds] = useState<number[] | null>(null);
+  const [indexedCatalog, setIndexedCatalog] = useState<PhageListItem[] | null>(null);
+  const [ranking, setRanking] = useState<PickerRanking | null>(null);
+  const query = searchQuery.trim().toLowerCase();
   const searchInputRef = useRef<HTMLInputElement>(null);
   const selectedItemRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
   const usingPreloadedRef = useRef(false);
-  const searchSeqRef = useRef(0);
 
   useEffect(() => subscribeToPhageCollections(setCollections), []);
 
@@ -252,7 +272,12 @@ export function PhagePickerSheet({
       try {
         worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url), { type: 'module' });
       } catch {
-        worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url));
+        try {
+          worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url));
+        } catch {
+          // Policy or browser capabilities can disallow both kinds of worker.
+          return;
+        }
       }
       workerInstanceRef.current = worker;
       const wrapped = Comlink.wrap<SearchWorkerAPI>(worker);
@@ -280,7 +305,11 @@ export function PhagePickerSheet({
   }, [workerRequested]);
 
   useEffect(() => {
-    if (!workerReady || !workerRef.current) return;
+    setRanking(null);
+    setIndexedCatalog(null);
+    const worker = workerRef.current;
+    if (!workerReady || !worker) return;
+    let active = true;
     const entries: Array<FuzzySearchEntry<{ phageId: number }>> = phages.map((phage) => ({
       id: String(phage.id),
       text: [
@@ -293,10 +322,13 @@ export function PhagePickerSheet({
       ].filter(Boolean).join(' '),
       meta: { phageId: phage.id },
     }));
-    void workerRef.current.setFuzzyIndex({ index: 'phage-picker', entries });
+    void Promise.resolve().then(() => worker.setFuzzyIndex({ index: 'phage-picker', entries })).then(
+      () => { if (active) setIndexedCatalog(phages); },
+      () => { /* The literal catalog search remains available. */ }
+    );
+    return () => { active = false; };
   }, [phages, workerReady]);
 
-  const phagesById = useMemo(() => new Map(phages.map((phage) => [phage.id, phage])), [phages]);
   const phageIndexById = useMemo(
     () => new Map(phages.map((phage, index) => [phage.id, index])),
     [phages]
@@ -337,29 +369,7 @@ export function PhagePickerSheet({
     ].filter((option) => option.id === 'all' || option.count > 0) as FilterOption<LifecycleFilter>[];
   }, [phages]);
 
-  const searchedPhages = useMemo(() => {
-    const trimmedQuery = searchQuery.trim();
-    if (!trimmedQuery) return phages;
-
-    if (rankedIds && rankedIds.length > 0) {
-      const ranked = rankedIds
-        .map((id) => phagesById.get(id))
-        .filter((phage): phage is PhageListItem => Boolean(phage));
-      if (ranked.length > 0) return ranked;
-    }
-
-    const query = trimmedQuery.toLowerCase();
-    return phages.filter((phage) =>
-      [
-        phage.name,
-        phage.accession,
-        phage.host,
-        phage.family,
-        phage.lifecycle,
-        phage.morphology,
-      ].some((value) => value?.toLowerCase().includes(query))
-    );
-  }, [phages, phagesById, rankedIds, searchQuery]);
+  const searchedPhages = useMemo(() => getPickerResults(phages, query, ranking), [phages, query, ranking]);
 
   const filteredPhages = useMemo(() => {
     let next = searchedPhages;
@@ -390,37 +400,28 @@ export function PhagePickerSheet({
   ]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (!searchQuery.trim()) {
-      setRankedIds(null);
-      return;
-    }
-    if (!workerReady || !workerRef.current) return;
-
-    const seq = ++searchSeqRef.current;
+    const worker = workerRef.current;
+    if (!isOpen || !query || !workerReady || indexedCatalog !== phages || !worker) return;
+    let active = true;
     const timer = window.setTimeout(() => {
-      void (async () => {
-        try {
-          const results = (await workerRef.current!.fuzzySearch({
-            index: 'phage-picker',
-            query: searchQuery,
-            limit: 200,
-          })) as Array<FuzzySearchResult<{ phageId: number }>>;
-          if (searchSeqRef.current !== seq) return;
-          setRankedIds(
-            results
-              .map((result) => Number(result.id))
-              .filter((id) => Number.isFinite(id))
-          );
-        } catch {
-          if (searchSeqRef.current !== seq) return;
-          setRankedIds(null);
-        }
-      })();
+      void Promise.resolve().then(() => worker.fuzzySearch({
+        index: 'phage-picker',
+        query,
+        limit: 200,
+      })).then(results => {
+        if (!active) return;
+        const ids = results.map(result => Number(result.id)).filter(Number.isSafeInteger);
+        setRanking({ catalog: phages, query, ids });
+      }).catch(() => {
+        if (active) setRanking(null);
+      });
     }, 80);
 
-    return () => window.clearTimeout(timer);
-  }, [isOpen, searchQuery, workerReady]);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [indexedCatalog, isOpen, phages, query, workerReady]);
 
   const handleSelect = useCallback(
     (index: number) => {
@@ -429,7 +430,7 @@ export function PhagePickerSheet({
       onSelectPhage(index);
       onClose();
       setSearchQuery('');
-      setRankedIds(null);
+      setRanking(null);
     },
     [onClose, onSelectPhage, phages.length]
   );
@@ -440,21 +441,20 @@ export function PhagePickerSheet({
   }, []);
 
   const handleSurpriseMe = useCallback(() => {
-    const source = filteredPhages.length > 0 ? filteredPhages : phages;
-    const eligible = source.filter((phage) => phageIndexById.get(phage.id) !== currentIndex);
-    const candidates = eligible.length > 0 ? eligible : source;
-    if (candidates.length === 0) return;
+    if (filteredPhages.length === 0) return;
+    const eligible = filteredPhages.filter((phage) => phageIndexById.get(phage.id) !== currentIndex);
+    const candidates = eligible.length > 0 ? eligible : filteredPhages;
 
     const chosen = candidates[Math.floor(Math.random() * candidates.length)];
     const index = phageIndexById.get(chosen.id);
     if (index === undefined) return;
     haptics.medium();
     handleSelect(index);
-  }, [currentIndex, filteredPhages, handleSelect, phageIndexById, phages]);
+  }, [currentIndex, filteredPhages, handleSelect, phageIndexById]);
 
   const resetDiscoveryFilters = useCallback(() => {
     setSearchQuery('');
-    setRankedIds(null);
+    setRanking(null);
     setCollectionFilter('all');
     setLifecycleFilter('all');
     setSortMode('relevance');
@@ -473,7 +473,7 @@ export function PhagePickerSheet({
   useEffect(() => {
     if (!isOpen) {
       setSearchQuery('');
-      setRankedIds(null);
+      setRanking(null);
     }
   }, [isOpen]);
 
@@ -530,7 +530,7 @@ export function PhagePickerSheet({
                 className="phage-picker-sheet__clear"
                 onClick={() => {
                   setSearchQuery('');
-                  setRankedIds(null);
+                  setRanking(null);
                   searchInputRef.current?.focus();
                 }}
                 aria-label="Clear phage search"
@@ -615,7 +615,7 @@ export function PhagePickerSheet({
               type="button"
               className="phage-picker-sheet__surprise"
               onClick={handleSurpriseMe}
-              disabled={phages.length === 0}
+              disabled={filteredPhages.length === 0}
               aria-label="Open a random phage from the current results"
             >
               <ShuffleIcon />

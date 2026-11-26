@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   classifyLifecycle,
   getPhageStorageKey,
+  getPickerResults,
   sortPhageList,
   type PhageListItem,
 } from './PhagePickerSheet';
@@ -116,5 +117,26 @@ describe('sortPhageList', () => {
     const originalOrder = phages.map((phage) => phage.id);
     sortPhageList(phages, 'name');
     expect(phages.map((phage) => phage.id)).toEqual(originalOrder);
+  });
+});
+
+describe('picker search result ownership', () => {
+  const ranking = { catalog: phages, query: 'alpha', ids: [2] };
+
+  it('immediately searches current text while another query is ranked', () => {
+    expect(getPickerResults(phages, '  BETA  ', ranking)).toEqual([phages[2]]);
+    expect(getPickerResults(phages, 'absent', ranking)).toEqual([]);
+    expect(getPickerResults(phages, '', ranking)).toEqual(phages);
+  });
+
+  it('searches a replacement catalog even when IDs and the query are reused', () => {
+    const replacement = [{ ...phages[1], name: 'Omega', accession: 'NEW_02' }];
+    expect(getPickerResults(replacement, 'alpha', ranking)).toEqual([]);
+    expect(getPickerResults(replacement, 'new_02', ranking)).toEqual(replacement);
+  });
+
+  it('accepts fuzzy-only matches and empty results for their exact search', () => {
+    expect(getPickerResults(phages, 'gma', { catalog: phages, query: 'gma', ids: [1] })).toEqual([phages[0]]);
+    expect(getPickerResults(phages, 'gamma', { catalog: phages, query: 'gamma', ids: [] })).toEqual([]);
   });
 });
