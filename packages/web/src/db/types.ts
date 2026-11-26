@@ -154,7 +154,7 @@ export interface DatabaseLoaderConfig {
 
 /** Canonical publication identity, including query-based datasets. */
 export function databaseManifestUrl(config: DatabaseLoaderConfig): string {
-  const base = typeof location === 'undefined' ? undefined : location.href;
+  const base = (globalThis as { location?: { href: string } }).location?.href;
   const url = new URL(config.manifestUrl ?? config.databaseUrl, base);
   if (!config.manifestUrl) url.pathname += '.manifest.json';
   url.hash = '';

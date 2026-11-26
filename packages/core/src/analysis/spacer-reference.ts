@@ -239,12 +239,28 @@ export async function createSpacerRecord(genomeInput: SpacerGenome, libraryInput
     references:spacerRecordReferences(library),
     fields:{matches:field('DNA sequence matches and supplied rule checks',result.hits),coverage:field('Search coverage, host scope and excluded references',{status:result.status,hosts:result.hosts,windows:result.coverage,excluded:result.excluded,distinctSequences:result.distinctSequences,complete:result.complete})}});
 }
-export async function replaySpacerRecord(content:string,selectedGenome:SpacerGenome):Promise<{genome:SpacerGenome;library:SpacerLibrary;result:SpacerSearchResult;record:AnalysisRecord}> {
-  const saved=await parseAnalysisRecord(content,{methodId:SPACER_METHOD.id,methodVersion:SPACER_METHOD.version});
+async function recomputeSpacerRecord(saved:AnalysisRecord,genome:SpacerGenome):Promise<{genome:SpacerGenome;library:SpacerLibrary;result:SpacerSearchResult;record:AnalysisRecord}> {
   if(saved.inputs.length!==2||saved.inputs[0].id!=='genome'||saved.inputs[1].id!=='spacerLibrary')throw new Error('Unsupported spacer evidence input contract.');
-  const genome=validateSpacerGenome(selectedGenome);
   if(JSON.stringify(analysisJson(genome))!==JSON.stringify(analysisJson(saved.inputs[0].data)))throw new Error('Selected genome sequence, identity or topology differs from saved spacer evidence.');
   const library=validateSpacerLibrary(saved.inputs[1].data),result=searchSpacerReferences(genome,library,saved.parameters as Partial<SpacerSearchOptions>),record=await createSpacerRecord(genome,library,result);
   if(record.resultId!==saved.resultId||record.cacheKey!==saved.cacheKey)throw new Error('Fresh spacer evidence differs from the saved result or reference contract.');
   return {genome,library,result,record};
+}
+
+/** Attached replay still requires the exact currently selected genome.
+ * Capture it before asynchronous hashing so later caller edits cannot relabel it.
+ */
+export async function replaySpacerRecord(content:string,selectedGenome:SpacerGenome):Promise<{genome:SpacerGenome;library:SpacerLibrary;result:SpacerSearchResult;record:AnalysisRecord}> {
+  const genome=validateSpacerGenome(selectedGenome);
+  const saved=await parseAnalysisRecord(content,{methodId:SPACER_METHOD.id,methodVersion:SPACER_METHOD.version});
+  return recomputeSpacerRecord(saved,genome);
+}
+
+/** Recompute a portable experiment using only its embedded genome and references.
+ * This does not select, relabel or authenticate any current catalog genome.
+ */
+export async function replayStandaloneSpacerRecord(content:string):Promise<{genome:SpacerGenome;library:SpacerLibrary;result:SpacerSearchResult;record:AnalysisRecord}> {
+  const saved=await parseAnalysisRecord(content,{methodId:SPACER_METHOD.id,methodVersion:SPACER_METHOD.version});
+  if(saved.inputs.length!==2||saved.inputs[0].id!=='genome'||saved.inputs[1].id!=='spacerLibrary')throw new Error('Unsupported spacer evidence input contract.');
+  return recomputeSpacerRecord(saved,validateSpacerGenome(saved.inputs[0].data));
 }

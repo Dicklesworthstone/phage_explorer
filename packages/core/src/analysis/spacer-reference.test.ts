@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../analysis-result';
 import { validateSpacerLibrary, validateSpacerGenome, parseSpacerLibrary, resolveSpacerOptions, searchSpacerReferences,
-  createSpacerRecord, replaySpacerRecord, type SpacerLibrary, type SpacerGenome, type ReferenceSpacer } from './spacer-reference';
+  createSpacerRecord, replaySpacerRecord, replayStandaloneSpacerRecord, type SpacerLibrary, type SpacerGenome, type ReferenceSpacer } from './spacer-reference';
 
 const SEQ='ACGATTCGGTACCTAGTGCA';
 const rc=(s:string)=>s.split('').reverse().map(c=>({A:'T',C:'G',G:'C',T:'A',N:'N'}[c])).join('');
@@ -178,5 +178,65 @@ describe('sourced spacer DNA evidence',()=>{
     const forged=await createAnalysisRecord({...parsed,inputs:parsed.inputs.map(({sha256:_sha,...input})=>input)});
     await assert.rejects(replaySpacerRecord(serializeAnalysisRecord(forged),g),/Fresh spacer evidence/);
     l.spacers=[];const empty=await createSpacerRecord(g,l,run(g,l));assert.equal((await replaySpacerRecord(serializeAnalysisRecord(empty),g)).result.status,'no-spacer-data');
+  });
+});
+
+describe('standalone spacer experiment replay',()=>{
+  it('reopens the exact embedded private genome, reference rules and circular coordinates without another genome input',async()=>{
+    const g=genome(SEQ.slice(10)+'AGGTTTT'+SEQ.slice(0,10),'circular');
+    const l=library({pam:{side:'3prime',motif:'NGG',reference:'Supplied rule'},seed:{start:0,end:5,maxMismatches:0,reference:'Supplied seed'}});
+    l.source.kind='local';
+    const result=run(g,l),record=await createSpacerRecord(g,l,result);
+    const restored=await replayStandaloneSpacerRecord(serializeAnalysisRecord(record));
+    assert.deepEqual(restored.genome,g);assert.deepEqual(restored.library,l);
+    assert.deepEqual(restored.result,result);assert.equal(restored.record.resultId,record.resultId);
+    assert.deepEqual(restored.result.hits.map(hit=>[hit.start,hit.end,hit.strand,hit.wrapsOrigin]),[[17,37,'+',true]]);
+    assert.equal(restored.result.hits[0].pam.sequence,'AGG');
+    assert.equal(restored.record.fields.matches.kind,'sequence-score');
+  });
+  it('retains unavailable reference coverage and explicit demonstration provenance',async()=>{
+    for(const l of [library({target:'RNA'}),{...library(),spacers:[]}]){
+      const g=genome(),record=await createSpacerRecord(g,l,run(g,l));
+      const restored=await replayStandaloneSpacerRecord(serializeAnalysisRecord(record));
+      assert.equal(restored.result.hits.length,0);
+      assert.equal(restored.result.status,l.spacers.length?'unsupported-references':'no-spacer-data');
+      assert.equal(restored.record.fields.matches.kind,'demo');
+      assert.deepEqual(restored.library,l);
+    }
+  });
+  it('rejects damaged inputs, incompatible methods and rehashed invented results',async()=>{
+    const g=genome(),l=library(),record=await createSpacerRecord(g,l,run(g,l));
+    const damaged=structuredClone(record);
+    (damaged.inputs[0].data as Record<string,unknown>).sequence='C'.repeat(g.sequence.length);
+    await assert.rejects(replayStandaloneSpacerRecord(JSON.stringify(damaged)),/checksum mismatch/);
+    const wrongMethod=structuredClone(record);wrongMethod.method.version='unsupported';
+    await assert.rejects(replayStandaloneSpacerRecord(JSON.stringify(wrongMethod)),/method\/version/);
+    for(const change of [
+      (r:typeof record)=>{(r.fields.matches.value as Array<Record<string,unknown>>)[0].start=999;},
+      (r:typeof record)=>{r.fields.matches.value=[];},
+      (r:typeof record)=>{(r.inputs[0].data as Record<string,unknown>).sequence='C'.repeat(g.sequence.length);},
+    ]){
+      const altered=structuredClone(record);change(altered);
+      const forged=await createAnalysisRecord({...altered,inputs:altered.inputs.map(({sha256:_sha,...input})=>input)});
+      await assert.rejects(replayStandaloneSpacerRecord(serializeAnalysisRecord(forged)),/Fresh spacer evidence/);
+    }
+  });
+  it('rejects rehashed input contract changes instead of searching the wrong embedded data',async()=>{
+    const g=genome(),l=library(),record=await createSpacerRecord(g,l,run(g,l));
+    for(const inputs of [record.inputs.slice().reverse(),record.inputs.slice(0,1),
+      record.inputs.map((input,index)=>index===0?{...input,id:'otherGenome'}:input)]){
+      const changed=await createAnalysisRecord({...record,inputs:inputs.map(({sha256:_sha,...input})=>input)});
+      await assert.rejects(replayStandaloneSpacerRecord(serializeAnalysisRecord(changed)),/input contract/);
+    }
+  });
+  it('captures the selected genome before awaiting attached replay and keeps its mismatch guard',async()=>{
+    const g=genome(),l=library(),record=await createSpacerRecord(g,l,run(g,l)),content=serializeAnalysisRecord(record);
+    const selected={...g},pending=replaySpacerRecord(content,selected);
+    selected.sequence='C'.repeat(g.sequence.length);selected.name='Changed selection';
+    assert.deepEqual((await pending).genome,g);
+    await assert.rejects(replaySpacerRecord(content,selected),/Selected genome/);
+    await assert.rejects(replaySpacerRecord(content,undefined as never));
+    await assert.rejects(replaySpacerRecord(content,null as never));
+    assert.equal((await replayStandaloneSpacerRecord(content)).record.resultId,record.resultId);
   });
 });

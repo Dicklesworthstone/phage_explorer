@@ -1,12 +1,13 @@
 /** Selection-scoped private reference evidence; no numeric-ID sequence cache. */
 import { parseSpacerLibrary, validateSpacerGenome, validateSpacerLibrary, resolveSpacerOptions,
-  searchSpacerReferences, createSpacerRecord, replaySpacerRecord, SPACER_LIMITS,
+  searchSpacerReferences, createSpacerRecord, replaySpacerRecord, replayStandaloneSpacerRecord, SPACER_LIMITS,
   type SpacerLibrary, type SpacerGenome, type SpacerSearchOptions, type SpacerSearchResult } from '../../../core/src/analysis/spacer-reference';
 import type { AnalysisRecord } from '../../../core/src/analysis-result';
 
 export type SpacerRequest = { kind:'library'; content:string }
   | { kind:'analyze'; genome:SpacerGenome; library:SpacerLibrary; options:Partial<SpacerSearchOptions> }
-  | { kind:'replay'; content:string; genome:SpacerGenome };
+  | { kind:'replay'; content:string; genome:SpacerGenome }
+  | { kind:'replay-standalone'; content:string };
 export interface SpacerWorkResult { library:SpacerLibrary; genome:SpacerGenome|null; result:SpacerSearchResult|null; record:AnalysisRecord|null; verified:boolean }
 export type SpacerMessage = {kind:'progress';phase:string}|{kind:'result';value:SpacerWorkResult}|{kind:'error';message:string};
 export async function executeSpacerRequest(request:SpacerRequest,progress:(phase:string)=>void=()=>{}):Promise<SpacerWorkResult> {
@@ -15,10 +16,12 @@ export async function executeSpacerRequest(request:SpacerRequest,progress:(phase
     progress('Validating spacer reference provenance and host records');
     return {library:parseSpacerLibrary(request.content),genome:null,result:null,record:null,verified:false};
   }
-  if(request.kind==='replay'){
+  if(request.kind==='replay'||request.kind==='replay-standalone'){
     if(typeof request.content!=='string'||new TextEncoder().encode(request.content).length>10*1024*1024)throw new Error('Saved spacer evidence exceeds the 10 MiB limit.');
     progress('Checking saved identities and recomputing spacer evidence');
-    return {...await replaySpacerRecord(request.content.replace(/^\uFEFF/,''),request.genome),verified:true};
+    const content=request.content.replace(/^\uFEFF/,'');
+    return {...await (request.kind==='replay'
+      ?replaySpacerRecord(content,request.genome):replayStandaloneSpacerRecord(content)),verified:true};
   }
   if(request.kind!=='analyze')throw new Error('Unsupported spacer operation.');
   const genome=validateSpacerGenome(request.genome),library=validateSpacerLibrary(request.library),options=resolveSpacerOptions(request.options);

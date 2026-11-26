@@ -161,9 +161,10 @@ export const SPACER_COMMAND_HELP = `Sourced CRISPR spacer DNA evidence (local fi
   phage-explorer spacer inspect LIBRARY_JSON
   phage-explorer spacer analyze GENOME --library LIBRARY_JSON [--host HOST_ID] [--mismatches 0..5] [--topology unknown|linear|circular]
   phage-explorer spacer replay SAVED_ANALYSIS --genome GENOME [--topology unknown|linear|circular]
+  phage-explorer spacer replay-standalone SAVED_ANALYSIS
 
 Common options:
-  --format json|tsv    analyze/replay output format (default json)
+  --format json|tsv    evidence output format (default json)
   --output NEW_FILE    write a new file; existing files are never replaced
   -                    use stdin for at most one input
 
@@ -175,14 +176,17 @@ identity/topology and cannot be relabeled by --topology.
 
 analyze searches the exact supplied library with the same bounded complete Hamming
 matcher as the browser/TUI overlay. replay requires the genome again and rejects
-any sequence, identity or topology mismatch with the saved experiment. TSV exports
+any sequence, identity or topology mismatch with the saved experiment.
+replay-standalone uses the exact genome, library and settings embedded in the saved
+experiment; it accepts no input or search-setting overrides. Both replay modes
+recompute all evidence and verify the complete saved result identity. TSV exports
 every accepted hit and its guide-oriented mismatch/PAM/seed evidence.
 
 Sequence similarity and supplied PAM/seed rules do not establish interference,
 immunity, susceptibility, host range or anti-CRISPR activity.
 `;
 
-export type SpacerCommandOperation = 'inspect' | 'analyze' | 'replay';
+export type SpacerCommandOperation = 'inspect' | 'analyze' | 'replay' | 'replay-standalone';
 export interface SpacerCommand {
   operation: SpacerCommandOperation;
   input: string;
@@ -245,9 +249,18 @@ function spacerOutput(value: SpacerWorkResult): SpacerHeadlessResult {
     identity: value.record.resultId, verified: value.verified };
 }
 
+/** Standalone replay is explicit and cannot relabel or override the embedded experiment. */
+function standaloneSpacerRequest(job: SpacerHeadlessJob): SpacerRequest {
+  if (job.genome !== undefined || job.library !== undefined || job.hostId !== undefined
+    || job.maxMismatches !== 0 || job.topologyExplicit || job.topology !== 'unknown') {
+    throw new Error('Standalone spacer replay uses only saved inputs and settings; overrides are not allowed.');
+  }
+  return { kind: 'replay-standalone', content: job.input.text };
+}
+
 export async function executeSpacerHeadlessJob(job: SpacerHeadlessJob,
   progress: (phase: string) => void = () => {}): Promise<SpacerHeadlessResult> {
-  if (!job || !['inspect','analyze','replay'].includes(job.operation) || !job.input || typeof job.input.text !== 'string') {
+  if (!job || !['inspect','analyze','replay','replay-standalone'].includes(job.operation) || !job.input || typeof job.input.text !== 'string') {
     throw new Error('Unsupported spacer command job.');
   }
   if (job.operation === 'inspect') {
@@ -262,6 +275,7 @@ export async function executeSpacerHeadlessJob(job: SpacerHeadlessJob,
     const options: Partial<SpacerSearchOptions> = { hostId: job.hostId ?? null, maxMismatches: job.maxMismatches };
     return spacerOutput(await executeSpacerRequest({ kind: 'analyze', genome, library: loaded.library, options }, progress));
   }
+  if (job.operation === 'replay-standalone') return spacerOutput(await executeSpacerRequest(standaloneSpacerRequest(job), progress));
   if (!job.genome || job.library) throw new Error('Spacer replay requires exactly one --genome input and no library override.');
   const genome = parseHeadlessGenome(job.genome.text, job.genome.name, job.topology, job.topologyExplicit);
   return spacerOutput(await executeSpacerRequest({ kind: 'replay', content: job.input.text, genome }, progress));
@@ -272,6 +286,7 @@ export function runSpacerHeadlessJob(job: SpacerHeadlessJob, signal?: AbortSigna
   if (signal?.aborted) return Promise.reject(new DOMException('Spacer operation cancelled.', 'AbortError'));
   const request = async (): Promise<SpacerRequest> => {
     if (job.operation === 'inspect') return { kind: 'library', content: job.input.text };
+    if (job.operation === 'replay-standalone') return standaloneSpacerRequest(job);
     if (job.operation === 'analyze') {
       if (!job.library) throw new Error('Spacer analysis requires --library.');
       const library = (await executeSpacerRequest({ kind: 'library', content: job.library.text }, progress)).library;
@@ -319,8 +334,8 @@ export function parseSpacerCommand(args: string[]): SpacerCommand | null {
   } });
   if (values.help || args.length === 0) return null;
   const [operation, input] = positionals;
-  if (positionals.length !== 2 || !['inspect','analyze','replay'].includes(operation)) {
-    throw new Error('Expected spacer inspect|analyze|replay INPUT. See spacer --help.');
+  if (positionals.length !== 2 || !['inspect','analyze','replay','replay-standalone'].includes(operation)) {
+    throw new Error('Expected spacer inspect|analyze|replay|replay-standalone INPUT. See spacer --help.');
   }
   if (!input.trim() || [values.library, values.genome, values.host, values.output].some(value => value !== undefined && !value.trim())) {
     throw new Error('Spacer paths and host IDs must not be empty.');
@@ -337,6 +352,11 @@ export function parseSpacerCommand(args: string[]): SpacerCommand | null {
       || values.topology !== undefined || format !== 'json') throw new Error('spacer inspect takes one library JSON and no search settings.');
   } else if (operation === 'analyze') {
     if (values.library === undefined || values.genome !== undefined) throw new Error('spacer analyze requires --library and uses its positional input as the genome.');
+  } else if (operation === 'replay-standalone') {
+    if (values.genome !== undefined || values.library !== undefined || values.host !== undefined
+      || values.mismatches !== undefined || values.topology !== undefined) {
+      throw new Error('spacer replay-standalone uses only saved inputs and settings; overrides are not allowed.');
+    }
   } else {
     if (values.genome === undefined || values.library !== undefined || values.host !== undefined || values.mismatches !== undefined) {
       throw new Error('spacer replay requires --genome and cannot override the saved library or search settings.');
@@ -382,7 +402,7 @@ export async function runSpacerCommand(args: string[], io: SpacerCommandIO): Pro
     const read = (filename: string, limit: number) => filename === '-'
       ? readAbundanceStdin(io.stdin, limit, io.signal) : readTerminalSpacerFile(filename, limit, io.signal);
     const primaryLimit = command.operation === 'inspect' ? SPACER_LIMITS.libraryBytes
-      : command.operation === 'replay' ? SPACER_RECORD_LIMIT : SPACER_GENOME_FILE_LIMIT;
+      : command.operation === 'replay' || command.operation === 'replay-standalone' ? SPACER_RECORD_LIMIT : SPACER_GENOME_FILE_LIMIT;
     const input = await read(command.input, primaryLimit);
     const library = command.library === undefined ? undefined
       : { name: basename(command.library), text: await read(command.library, SPACER_LIMITS.libraryBytes) };

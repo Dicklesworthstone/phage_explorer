@@ -4,9 +4,10 @@ import { Readable, Writable } from 'node:stream';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseAnalysisRecord } from '../../../core/src/analysis-result';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
 import {
-  executeSpacerHeadlessJob, parseSpacerCommand, runSpacerCommand, type SpacerCommandIO,
+  executeSpacerHeadlessJob, parseSpacerCommand, runSpacerCommand, runSpacerHeadlessJob,
+  type SpacerCommandIO, type SpacerHeadlessJob,
 } from './spacer-reference';
 
 const spacer='ACGTACGTACGTACGTACGT';
@@ -74,6 +75,81 @@ describe('headless spacer evidence command',()=>{
       genome:{name:'changed.fa',text:genome.replace('GGGG','GGGA')},maxMismatches:0,topology:'linear',topologyExplicit:true}),/differs/);
     await assert.rejects(executeSpacerHeadlessJob({operation:'replay',input:{name:'saved.json',text:result.content},
       genome:{name:'same.fa',text:genome},maxMismatches:0,topology:'circular',topologyExplicit:true}),/differs/);
+  });
+
+  it('requires an explicit standalone operation and refuses every evidence override',()=>{
+    const command=parseSpacerCommand(['replay-standalone','saved.json','--format','tsv']);
+    assert.equal(command?.operation,'replay-standalone');
+    assert.equal(command?.input,'saved.json');
+    assert.equal(command?.genome,undefined);
+    assert.equal(command?.format,'tsv');
+    assert.throws(()=>parseSpacerCommand(['replay','saved.json']),/requires --genome/);
+    for(const [option,value] of [
+      ['--genome','genome.fa'],['--library','spacers.json'],['--host','host-1'],
+      ['--mismatches','0'],['--topology','unknown'],
+    ]) assert.throws(()=>parseSpacerCommand(['replay-standalone','saved.json',option,value]),/overrides/);
+  });
+
+  it('reopens a private experiment from its saved inputs alone in both native and inline executors',async()=>{
+    const original=await executeSpacerHeadlessJob({operation:'analyze',input:{name:'private.fa',text:genome},
+      library:{name:'library.json',text:library},hostId:'host-1',maxMismatches:1,topology:'circular',topologyExplicit:true});
+    const record=await parseAnalysisRecord(original.content);
+    const job:SpacerHeadlessJob={operation:'replay-standalone',input:{name:'saved.json',text:original.content},
+      maxMismatches:0,topology:'unknown',topologyExplicit:false};
+    for(const execute of [executeSpacerHeadlessJob,runSpacerHeadlessJob]){
+      const replay=await execute(job),verified=await parseAnalysisRecord(replay.content);
+      assert.equal(replay.verified,true);
+      assert.equal(replay.identity,record.resultId);
+      assert.equal(verified.cacheKey,record.cacheKey);
+      assert.deepEqual(verified.inputs,record.inputs);
+      assert.deepEqual(verified.parameters,record.parameters);
+      assert.deepEqual(verified.references,record.references);
+      assert.deepEqual(verified.fields,record.fields);
+      assert.equal(replay.tsv,original.tsv);
+    }
+    for(const override of [
+      {genome:{name:'unused.fa',text:genome}},{library:{name:'unused.json',text:library}},
+      {hostId:'host-1'},{maxMismatches:1},{topologyExplicit:true},{topology:'linear' as const},
+    ]){
+      await assert.rejects(executeSpacerHeadlessJob({...job,...override}),/overrides/);
+      await assert.rejects(runSpacerHeadlessJob({...job,...override}),/overrides/);
+    }
+  });
+
+  it('standalone replay recomputes saved evidence and rejects even a rehashed invented hit',async()=>{
+    const original=await executeSpacerHeadlessJob({operation:'analyze',input:{name:'private.fa',text:genome},
+      library:{name:'library.json',text:library},maxMismatches:0,topology:'linear',topologyExplicit:true});
+    const record=await parseAnalysisRecord(original.content);
+    (record.fields.matches.value as Array<Record<string,unknown>>)[0].start=100;
+    const forged=await createAnalysisRecord({...record,inputs:record.inputs.map(({sha256:_sha,...input})=>input)});
+    const job:SpacerHeadlessJob={operation:'replay-standalone',input:{name:'saved.json',text:serializeAnalysisRecord(forged)},
+      maxMismatches:0,topology:'unknown',topologyExplicit:false};
+    await assert.rejects(executeSpacerHeadlessJob(job),/Fresh spacer evidence/);
+    await assert.rejects(runSpacerHeadlessJob(job),/Fresh spacer evidence/);
+  });
+
+  it('standalone command accepts saved JSON on stdin and preserves source labels in TSV',async()=>{
+    const original=await executeSpacerHeadlessJob({operation:'analyze',input:{name:'private.fa',text:genome},
+      library:{name:'library.json',text:library},maxMismatches:0,topology:'linear',topologyExplicit:true});
+    const streams=io(original.content);
+    assert.equal(await runSpacerCommand(['replay-standalone','-','--format','tsv'],{...streams,execute:inline}),0);
+    assert.equal(streams.output(),original.tsv);
+    assert.match(streams.errors(),/"operation":"replay-standalone"/);
+    assert.ok(!streams.errors().includes(spacer));
+    const metadata=JSON.parse(streams.output().split('\n')[0].slice(2));
+    assert.equal(metadata.genome,'private genome');
+    assert.equal(metadata.source.reference,'Lab spacer table');
+  });
+
+  it('cancels a standalone native replay without returning unverified output',async()=>{
+    const original=await executeSpacerHeadlessJob({operation:'analyze',input:{name:'private.fa',text:genome},
+      library:{name:'library.json',text:library},maxMismatches:0,topology:'linear',topologyExplicit:true});
+    const job:SpacerHeadlessJob={operation:'replay-standalone',input:{name:'saved.json',text:original.content},
+      maxMismatches:0,topology:'unknown',topologyExplicit:false};
+    const controller=new AbortController();
+    await assert.rejects(runSpacerHeadlessJob(job,controller.signal,()=>controller.abort()),{name:'AbortError'});
+    const alreadyCancelled=new AbortController();alreadyCancelled.abort();
+    await assert.rejects(runSpacerHeadlessJob(job,alreadyCancelled.signal),{name:'AbortError'});
   });
 
   it('command emits complete TSV while structured progress contains no private sequence',async()=>{
