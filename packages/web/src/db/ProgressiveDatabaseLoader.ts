@@ -233,10 +233,10 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
     });
     if (cached) store.pin(cached.manifest.catalog);
     this.store = store;
-    const manifestResponse = () => {
+    const manifestResponse = (value = selectedManifest, tag = etag) => {
       const headers = new Headers({ 'content-type': 'application/json' });
-      if (etag) headers.set('etag', etag);
-      return new Response(JSON.stringify(selectedManifest), { headers });
+      if (tag) headers.set('etag', tag);
+      return new Response(JSON.stringify(value), { headers });
     };
     const offlineManifest = {
       available: async () => (await this.cached(cache))?.manifest.contentVersion === selectedManifest.contentVersion,
@@ -263,26 +263,44 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
             // A second tab may have finished loading a different generation while
             // we were fetching or opening this catalog. Compare under the write lock.
             const current = await this.cached(cache, true);
-            if (current?.manifest.contentVersion !== cached?.manifest.contentVersion) {
-              persisted = current?.manifest.contentVersion === selectedManifest.contentVersion;
-              superseded = !persisted;
+            const currentVersion = current?.manifest.contentVersion;
+            const sameGeneration = currentVersion === selectedManifest.contentVersion;
+            const changedDuringLoad = currentVersion !== cached?.manifest.contentVersion;
+            if (changedDuringLoad && !sameGeneration) {
+              superseded = true;
               return;
             }
-            if (current?.manifest.contentVersion === selectedManifest.contentVersion && current.etag === etag) {
+            // Another tab can evict a candidate between downloading it and acquiring this
+            // lock. A network result or a new generation needs verified *stored* bytes
+            // before its manifest can become the offline startup pointer. An ordinary
+            // hit on the accepted catalog has already read and hashed those cached bytes.
+            if (forceDownload || !sameGeneration || store.getTransferLedger().networkBytes > 0) {
+              const [catalogStatus] = await store.inspect([selectedManifest.catalog], this.lifetime.signal);
+              if (catalogStatus !== 'available') return;
+            }
+            if (sameGeneration && (changedDuringLoad || current?.etag === etag)) {
               persisted = true;
               return;
             }
             this.assertOpen();
             // Cache.put cannot be cancelled. Keep the lock until the write settles
             // even if closing this tab has already released the loader's caller.
-            await cache!.put(this.manifestUrl, manifestResponse());
-            persisted = await offlineManifest.available();
+            try { await cache!.put(this.manifestUrl, manifestResponse()); }
+            catch { /* Read back the actual pointer even if the writer reported failure. */ }
+            const saved = await this.cached(cache, true);
+            persisted = saved?.manifest.contentVersion === selectedManifest.contentVersion;
+            if (!persisted && !saved && current) {
+              // A missing or malformed replacement must not strand a previously
+              // usable offline catalog. Do not replace a valid concurrent pointer.
+              this.assertOpen();
+              await cache!.put(this.manifestUrl, manifestResponse(current.manifest, current.etag));
+            }
           }), this.lifetime.signal);
         } catch { /* Verified in-memory data remain usable; offline availability is reported separately. */ }
       }
       this.assertOpen();
       if (forceDownload && superseded) throw new Error('Another tab changed the saved dataset during refresh. Reload to use the saved version.');
-      if (forceDownload && !persisted) throw new Error('The refreshed catalog could not be saved for offline use; the previous manifest was preserved.');
+      if (forceDownload && !persisted) throw new Error('The refreshed catalog could not be saved and verified for offline use.');
       if (this.dependencies.acceptVersion) {
         await abortable(Promise.resolve(this.dependencies.acceptVersion(manifest.contentVersion)), this.lifetime.signal);
       } else {

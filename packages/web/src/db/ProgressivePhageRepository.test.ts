@@ -502,6 +502,79 @@ describe('published-layout browser startup', () => {
     assert.equal((await repo.getGenes(1))[0].id, 10);
     assert.equal(h.progress.at(-1)?.cacheStatus, 'unavailable'); assert.equal(h.progress.at(-1)?.stage, 'ready'); await loader.close();
   });
+  test('a new startup pointer requires verified catalog bytes under the publication lock', async () => {
+    for (const forceDownload of [false, true]) {
+      for (const damage of ['missing', 'corrupt']) {
+        const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+        const previous = await (await h.manifestCache.match(BASE))!.text();
+        const text = 'catalog-next'.padEnd(512, ' ');
+        h.f.manifest.catalog = descriptor(text); identity(h.f.manifest);
+        const url = dataArtifactUrl(BASE, h.f.manifest.catalog);
+        h.f.responses.set(url, text);
+        // Evict or damage the candidate after transfer, while its in-memory SQL
+        // catalog is being opened and before the startup pointer is published.
+        h.f.behaviors.set('0:list', async () => {
+          if (damage === 'missing') await h.f.cache.delete(url);
+          else await h.f.cache.put(url, new Response('x'.repeat(text.length)));
+          return h.f.lists;
+        });
+        const loader = h.create();
+        try {
+          if (forceDownload) await assert.rejects(loader.load({ forceDownload }), /could not be saved/);
+          else {
+            assert.equal((await (await loader.load()).listPhages()).length, 3);
+            assert.equal(h.progress.at(-1)?.cacheStatus, 'unavailable');
+          }
+          assert.equal(await (await h.manifestCache.match(BASE))!.text(), previous);
+        } finally { await loader.close(); }
+        h.f.behaviors.clear(); h.f.responses.clear();
+        h.service.respond = async () => { throw new Error('offline'); };
+        const offline = h.create();
+        try {
+          assert.equal((await (await offline.load()).listPhages()).length, 3);
+          assert.equal(h.versions.at(-1), JSON.parse(previous).contentVersion);
+        } finally { await offline.close(); }
+      }
+    }
+  });
+  test('forced refresh rechecks retained catalog bytes even for an unchanged manifest and ETag', async () => {
+    const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+    const catalogUrl = dataArtifactUrl(BASE, h.f.manifest.catalog);
+    h.f.behaviors.set('0:list', async () => {
+      await h.f.cache.delete(catalogUrl);
+      return h.f.lists;
+    });
+    const loader = h.create();
+    try {
+      await assert.rejects(loader.load({ forceDownload: true }), /could not be saved/);
+      assert.equal(h.versions.length, 1);
+    } finally { await loader.close(); }
+  });
+  test('refresh checks the actual startup pointer after a failed or damaged manifest write', async () => {
+    for (const outcome of ['corrupt', 'reported failure after write']) {
+      const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
+      const previous = await (await h.manifestCache.match(BASE))!.text();
+      addAtlas(h.f);
+      const put = h.manifestCache.put.bind(h.manifestCache);
+      h.manifestCache.put = async (key, response) => {
+        h.manifestCache.put = put;
+        if (outcome === 'corrupt') { await put(key, new Response('{')); return; }
+        await put(key, response);
+        throw new Error('writer failed after commit');
+      };
+      const loader = h.create();
+      try {
+        if (outcome === 'corrupt') {
+          await assert.rejects(loader.load({ forceDownload: true }), /could not be saved/);
+          assert.equal(await (await h.manifestCache.match(BASE))!.text(), previous);
+        } else {
+          await loader.load({ forceDownload: true });
+          assert.equal((await (await h.manifestCache.match(BASE))!.json()).contentVersion, h.f.manifest.contentVersion);
+          assert.equal(h.progress.at(-1)?.cacheStatus, 'saved');
+        }
+      } finally { await loader.close(); }
+    }
+  });
   test('a failed new snapshot commit cannot evict the previous catalog', async () => {
     const h = loaderFixture(), initial = h.create(); await initial.load(); await initial.close();
     const old = h.f.manifest.catalog, before = await (await h.manifestCache.match(BASE))!.text();
