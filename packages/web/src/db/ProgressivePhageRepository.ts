@@ -11,6 +11,8 @@ import type { VerifiedArtifactStore } from './progressive-artifacts';
 export interface ProgressiveRepositoryOptions {
   manifest: unknown;
   store: Pick<VerifiedArtifactStore, 'read' | 'pin' | 'close' | 'getTransferLedger'> & Partial<OfflineDatasetStore>;
+  /** Explicit refresh redownloads the catalog. Later immutable shard reads can still use verified offline bytes. */
+  forceDownloadCatalog?: boolean;
   /** Startup manifest is separate from cached dataset files. */
   offlineManifest?: OfflineManifestAccess;
   /** Synchronous SQL opening; the repository owns and closes every returned handle. */
@@ -98,7 +100,9 @@ export class ProgressivePhageRepository implements PhageRepository {
       }
       options.store.pin(manifest.catalog);
       let data: Uint8Array;
-      try { ({ data } = await abortable(options.store.read(manifest.catalog), options.signal)); }
+      try {
+        ({ data } = await abortable(options.store.read(manifest.catalog, { forceDownload: options.forceDownloadCatalog }), options.signal));
+      }
       catch (error) {
         assertActive(options.signal);
         throw new ProgressiveCatalogLoadError(error);

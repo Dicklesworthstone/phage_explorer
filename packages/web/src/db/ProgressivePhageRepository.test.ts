@@ -665,6 +665,24 @@ describe('user-selectable offline datasets through the application repository', 
       await assert.rejects(repo.getGenes(1), /offline/);
     } finally { await next.close(); }
   });
+  test('a forced catalog refresh retains offline access to selected genomes and atlas pages in the same session', async () => {
+    const h = await offlineFixture(true);
+    const selected = selection([2], ['model']);
+    await h.offline.prepare(selected);
+    await h.loader.close();
+    const before = h.f.network.length;
+    const next = h.create();
+    try {
+      const repo = await next.load({ forceDownload: true });
+      assert.equal(h.manifestRequests.at(-1)?.cache, 'reload');
+      assert.deepEqual(h.f.network.slice(before), [dataArtifactUrl(BASE, h.f.manifest.catalog)]);
+      h.f.responses.clear();
+      assert.equal(await repo.getSequenceWindow(2, 0, 8), 'GGGGCCCC');
+      assert.equal((await repo.getLatentSpaceAtlas!({ model: 'model' })).length, 3);
+      assert.equal(h.f.network.length, before + 1);
+      await assert.rejects(repo.getGenes(1), /offline/);
+    } finally { await next.close(); }
+  });
   test('changing caller-owned selections during download cannot add another genome', async () => {
     const h = await offlineFixture(), draft = selection([1]);
     try {

@@ -214,7 +214,7 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
       }
     };
     const store = new VerifiedArtifactStore({ manifestUrl: this.manifestUrl, fetch: this.fetcher,
-      openCache: this.dependencies.openArtifactCache, forceDownload, assertSelectionWritable,
+      openCache: this.dependencies.openArtifactCache, assertSelectionWritable,
       startupCatalogs: async () => {
         if (!cache) throw new Error('Offline startup catalog storage is unavailable.');
         // A live old tab or a different dataset address may share this artifact
@@ -248,7 +248,9 @@ export class ProgressiveDatabaseLoader implements RepositoryLoader {
         if (!(await offlineManifest.available())) throw new Error('Offline startup manifest could not be verified after saving.');
       },
     };
-    const repository = await ProgressivePhageRepository.open({ manifest, store, openRepository, offlineManifest, signal: this.lifetime.signal });
+    const repository = await ProgressivePhageRepository.open({
+      manifest, store, openRepository, offlineManifest, signal: this.lifetime.signal, forceDownloadCatalog: forceDownload,
+    });
     try {
       this.assertOpen();
       // Artifact persistence precedes the manifest pointer: a failed catalog never replaces the old snapshot.

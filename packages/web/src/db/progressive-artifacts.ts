@@ -22,7 +22,6 @@ export interface ArtifactStoreOptions {
   assertSelectionWritable?: () => Promise<void>;
   /** Accepted startup catalogs, reread under the write lock before any eviction. */
   startupCatalogs?: () => Promise<Array<{ manifestUrl: string; catalog: DataArtifact }>>;
-  forceDownload?: boolean;
   cacheBudget?: number;
 }
 export type ArtifactAvailability = 'available' | 'missing' | 'corrupt' | 'unavailable';
@@ -291,7 +290,7 @@ export class VerifiedArtifactStore {
       await cache.put(key, new Response(text, { headers: { 'content-type': 'application/json' } }));
       await this.makeRoom(cache, protectedItems);
     });
-    const job = new VerifiedArtifactStore({ ...this.options, forceDownload: false, openCache: () => this.cachePromise });
+    const job = new VerifiedArtifactStore({ ...this.options, openCache: () => this.cachePromise });
     // A download cancellation never aborts unrelated foreground repository reads.
     const stop = () => { void job.close(); };
     signal.addEventListener('abort', stop, { once: true });
@@ -319,18 +318,20 @@ export class VerifiedArtifactStore {
     } finally { signal.removeEventListener('abort', stop); await job.close(); }
   }
 
-  read(item: DataArtifact): Promise<{ data: Uint8Array; cached: boolean }> {
+  read(item: DataArtifact, { forceDownload = false }: { forceDownload?: boolean } = {}): Promise<{ data: Uint8Array; cached: boolean }> {
     if (this.closed) return Promise.reject(new Error('Dataset loader is closed.'));
     try { item = descriptor(this.options.manifestUrl, item); }
     catch (error) { return Promise.reject(error); }
     const url = dataArtifactUrl(this.options.manifestUrl, item);
-    const existing = this.inFlight.get(url);
+    // A forced transfer cannot join a normal read that might resolve from cache.
+    const key = forceDownload ? `reload:${url}` : url;
+    const existing = this.inFlight.get(key);
     if (existing) return existing;
-    const promise = this.readOnce(url, item).finally(() => { this.inFlight.delete(url); });
-    this.inFlight.set(url, promise);
+    const promise = this.readOnce(url, item, forceDownload).finally(() => { this.inFlight.delete(key); });
+    this.inFlight.set(key, promise);
     return promise;
   }
-  private async readOnce(url: string, item: DataArtifact): Promise<{ data: Uint8Array; cached: boolean }> {
+  private async readOnce(url: string, item: DataArtifact, forceDownload: boolean): Promise<{ data: Uint8Array; cached: boolean }> {
     while (this.active >= PROGRESSIVE_LIMITS.concurrentLoads) {
       await new Promise<void>(resolve => this.waiting.push(resolve));
       this.assertOpen();
@@ -339,7 +340,7 @@ export class VerifiedArtifactStore {
     try {
       const cache = await wait(this.cachePromise, this.controller.signal);
       this.assertOpen();
-      if (cache && !this.options.forceDownload) {
+      if (cache && !forceDownload) {
         let cached: Response | undefined;
         try { cached = await wait(cache.match(url), this.controller.signal); } catch (error) { this.assertOpen(); this.unavailable(error); }
         if (cached) {
@@ -352,7 +353,7 @@ export class VerifiedArtifactStore {
       }
       this.requests++;
       const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60_000)]);
-      const response = await wait(this.fetcher(url, { signal, cache: this.options.forceDownload ? 'reload' : 'default' }), signal);
+      const response = await wait(this.fetcher(url, { signal, cache: forceDownload ? 'reload' : 'default' }), signal);
       const data = await this.verified(response, item, signal);
       this.networkBytes += data.length;
       if (cache) await this.save(cache, url, data);

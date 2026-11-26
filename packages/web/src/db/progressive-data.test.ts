@@ -116,11 +116,16 @@ describe('verified on-demand artifacts', () => {
     const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => new MemoryCache(), fetch: noNetwork });
     await assert.rejects(store.read(asset('[1]')), /offline/); await store.close();
   });
-  test('a forced refresh does not silently return old offline data', async () => {
+  test('a forced transfer cannot be satisfied by a concurrent cached read', async () => {
     const item = asset('[1]'); const cache = new MemoryCache();
     await cache.put(dataArtifactUrl(base, item), new Response('[1]'));
-    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: noNetwork, forceDownload: true });
-    await assert.rejects(store.read(item), /offline/); await store.close();
+    const store = new VerifiedArtifactStore({ manifestUrl: base, openCache: async () => cache, fetch: noNetwork });
+    const cached = store.read(item);
+    const forced = store.read(item, { forceDownload: true });
+    await assert.rejects(forced, /offline/);
+    assert.equal((await cached).cached, true);
+    assert.equal((await store.read(item)).cached, true);
+    await store.close();
   });
   test('storage failure preserves usable verified data and is reported', async () => {
     let warnings = 0;
