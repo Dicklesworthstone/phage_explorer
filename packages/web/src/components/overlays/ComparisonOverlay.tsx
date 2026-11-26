@@ -17,6 +17,7 @@ import { downloadString } from '../../utils/export';
 import { SavedResearchPanel } from './SavedResearchPanel';
 import { replaySavedResearch } from '../../db/research-storage';
 import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
+import { RegionComparisonPanel } from './RegionComparisonPanel';
 
 function formatBpRange(start: number, end: number): string {
   if (start === end) return start === 0 ? 'before base 1' : `after base ${start.toLocaleString()}`;
@@ -173,6 +174,7 @@ export function ComparisonDiffView({ diff, sequenceA, sequenceB }: {
   if (diff.status === 'unavailable') return <div role="status">
     <h3>Exact sequence diff unavailable</h3><p>{diff.reason}</p>
     <p className="text-dim">Other comparison metrics remain available. No partial or approximate diff is displayed.</p>
+    <p>Open “Compare source regions and strands” above to submit smaller source intervals and choose each strand.</p>
   </div>;
   const changes = diff.runs.filter(run => run.operation !== 'match');
   const interval = (start: number, end: number) => start === end ? `between bases ${start} and ${start + 1}`
@@ -225,6 +227,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     editDistanceWindowCount: String(DEFAULT_GENOME_COMPARISON_OPTIONS.editDistanceWindowCount) }));
   const [mode, setMode] = useState<'live' | 'saved'>('live');
   const [libraryBusy, setLibraryBusy] = useState(false), [fileError, setFileError] = useState<string | null>(null);
+  const [regionBusy, setRegionBusy] = useState(false);
   const replaySession = useMemo(() => new ComparisonReplaySession(), []);
   const replayScope = useMemo(() => ({}), []);
   const replay = useSyncExternalStore(replaySession.subscribe, replaySession.getSnapshot, replaySession.getSnapshot);
@@ -243,7 +246,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
   const accepted = mode === 'saved' ? replay.accepted : owned?.payload ?? null;
   const comparisonResult = accepted?.result ?? null;
   const comparisonLoading = mode === 'live' && overlayOpen && canCompare && (!owned || owned.loading);
-  const busy = comparisonLoading || replay.busy || libraryBusy;
+  const busy = comparisonLoading || replay.busy || libraryBusy || regionBusy;
   const error = mode === 'live' ? owned?.error ?? null : null;
   const diff = comparisonResult?.sequenceDiff ?? null;
   const sequenceA = accepted?.genomeA.sequence ?? '';
@@ -298,6 +301,22 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       setRevision(value => value + 1);
     } catch (cause) { setFileError(cause instanceof Error ? cause.message : 'Invalid comparison settings.'); }
   }, [draft]);
+
+  // Region work can take ownership while a full-genome read or worker is still
+  // pending. Clearing the store flag alone cannot clear the owned loading state.
+  const cancelComparison = useCallback(() => {
+    if (!comparisonLoading) return;
+    operation.current?.abort();
+    setComparison(previous => {
+      const current = previous?.repository === repository && previous.phageA === phageA
+        && previous.phageB === phageB && previous.revision === revision ? previous : null;
+      if (current && !current.loading) return current;
+      if (!repository || !phageA || !phageB) return null;
+      return { repository, phageA, phageB, revision, payload: current?.payload ?? null, loading: false,
+        error: current?.payload ? null : 'Comparison cancelled. Select Run to retry.' };
+    });
+    setComparisonLoading(false);
+  }, [comparisonLoading, repository, phageA, phageB, revision, setComparisonLoading]);
 
   const handleClose = useCallback(() => {
     operation.current?.abort();
@@ -388,7 +407,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         >
           <option value="">Select Phage A</option>
           {phages.map((p, idx) => (
-            <option key={p.id} value={idx} disabled={idx === phageBIndex}>
+            <option key={p.id} value={idx}>
               A: {p.name}
             </option>
           ))}
@@ -402,7 +421,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         >
           <option value="">Select Phage B</option>
           {phages.map((p, idx) => (
-            <option key={p.id} value={idx} disabled={idx === phageAIndex}>
+            <option key={p.id} value={idx}>
               B: {p.name}
             </option>
           ))}
@@ -410,15 +429,11 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         <button className="btn" type="button" onClick={() => void runComparison()} disabled={busy || !canCompare}>
           {comparisonLoading ? 'Comparing…' : 'Run'}
         </button>
-        {comparisonLoading && <button type="button" className="btn" onClick={() => {
-          operation.current?.abort();
-          setComparison(previous => previous ? { ...previous, loading: false, error: 'Comparison cancelled. Select Run to retry.' } : null);
-          setComparisonLoading(false);
-        }}>Cancel comparison</button>}
+        {comparisonLoading && <button type="button" className="btn" onClick={cancelComparison}>Cancel comparison</button>}
       </div>
     );
   }, [accepted, mode, replay.busy, libraryBusy, busy, canCompare, comparisonLoading, phageAIndex, phageBIndex, phages,
-    runComparison, setComparisonLoading, setComparisonPhageA, setComparisonPhageB]);
+    runComparison, cancelComparison, setComparisonPhageA, setComparisonPhageB]);
 
   const tabs = useMemo(
     () => [
@@ -473,7 +488,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
       return (
         <OverlayEmptyState
           message="Pick two different phages."
-          hint="Comparison requires two distinct genomes."
+          hint="Whole-genome metrics require two distinct genomes. Source-region comparison above also accepts two intervals from the same source."
         />
       );
     }
@@ -743,6 +758,8 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
     >
       <OverlayStack gap="sm">
         {header}
+        <RegionComparisonPanel repository={repository} phageA={phageA ?? null} phageB={phageB ?? null} active={overlayOpen}
+          externalBusy={replay.busy || libraryBusy} onStart={cancelComparison} onActivityChange={setRegionBusy} />
         {mode === 'live' && <details className="panel" aria-label="Comparison settings">
           <summary>Comparison settings</summary>
           <p>Draft changes apply when you select Run. A newly selected pair uses the last applied settings.</p>
@@ -779,7 +796,7 @@ export const ComparisonOverlay: React.FC<ComparisonOverlayProps> = ({ repository
         </section>
         <SavedResearchPanel kind="comparison" suggestedName={accepted
           ? `${accepted.genomeA.phage.name} vs ${accepted.genomeB.phage.name}` : 'Genome comparison'}
-          disabled={comparisonLoading || replay.busy} onActivityChange={setLibraryBusy}
+          disabled={comparisonLoading || replay.busy || regionBusy} onActivityChange={setLibraryBusy}
           capture={accepted ? () => serializeAnalysisRecord(accepted.record) : null} restore={restore} />
         {accepted && <AnalysisRecordDetails record={accepted.record} />}
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
