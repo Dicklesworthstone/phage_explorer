@@ -714,6 +714,11 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       const { replayMosaicExperiment, exportMosaicTsv } = await import('../../core/src/analysis/recombination-radar');
       fresh = (await replayMosaicExperiment(request.content)).record;
       table = exportMosaicTsv;
+    } else if (saved.method.id === 'annotation-order-synteny') {
+      const { replaySyntenyExperiment, exportSyntenyTsv } = await import('../../comparison/src/synteny-experiment');
+      const experiment = await replaySyntenyExperiment(request.content);
+      fresh = experiment.record;
+      table = () => exportSyntenyTsv(experiment, 'blocks');
     } else if (saved.method.id === 'aligned-dna-site-compatibility') {
       const { replayCompatibilityExperiment, exportCompatibilityPairsTsv } = await import('../../core/src/analysis/alignment-compatibility');
       const experiment = await replayCompatibilityExperiment(request.content);
@@ -742,7 +747,7 @@ export async function executeTerminalResearchRequest(request: TerminalResearchRe
       fresh = experiment.record;
       table = () => terminalSpacerHitsTsv({ ...experiment, verified: true });
     } else {
-      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, attachment integration, prophage excision, mosaic reference similarity, aligned-DNA site compatibility, aligned-codon dN/dS, abundance CLR/NMF, sourced spacer comparisons, supplied protein alignment diversity, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
+      throw new Error('Unsupported experiment method. Supported: self/pairwise dot plots, restriction digests, portable GC skew, exact repeat pairs, RNA interval pairing, attachment integration, prophage excision, mosaic reference similarity, annotation-order synteny, aligned-DNA site compatibility, aligned-codon dN/dS, abundance CLR/NMF, sourced spacer comparisons, supplied protein alignment diversity, reference protein structure, plaque-count and corrected-PFU growth, and measured inactivation.');
     }
     // The native path reuses embedded metadata too, so a complete match is
     // required. Never call a merely valid checksum a numerical verification.

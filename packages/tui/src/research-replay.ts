@@ -15,8 +15,8 @@ import { WorkflowResultCollector, parseWorkflowResults } from '../../core/src/wo
 const IDS = { view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats,
   codons: ActionIds.OverlayCodonAdaptation, pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
   dotPlot: ActionIds.OverlayDotPlot, comparison: ActionIds.OverlayComparison, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
-  spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure };
-const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.phylogeny, IDS.gcSkew, IDS.dotPlot, IDS.comparison, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna];
+  spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure, synteny: ActionIds.OverlaySynteny };
+const SUPPORTED: readonly string[] = [IDS.view, IDS.codons, IDS.pangenome, IDS.phylogeny, IDS.gcSkew, IDS.dotPlot, IDS.comparison, IDS.digest, IDS.mosaic, IDS.spacers, IDS.rna, IDS.synteny];
 const REPEAT_LIMIT = 'Legacy repeat recordings bind a browser transport and kernel implementation. Replay this tape in the browser; terminal execution will not relabel a different backend as verified.';
 export interface ReplayProgress { phase: 'inputs' | 'commands'; completed: number; total: number; actionId: string | null }
 export interface ReplayStep {
@@ -113,6 +113,13 @@ function host(bundle: string) {
       const { createGenomeComparisonExperiment } = await import('../../comparison/src/comparison-experiment');
       abort(signal);
       const { record } = await createGenomeComparisonExperiment(genomeA, genomeB, options);
+      abort(signal); return record;
+    },
+    synteny: async (input, signal) => {
+      abort(signal);
+      const { analyzeSyntenyExperiment } = await import('../../comparison/src/synteny-experiment');
+      abort(signal);
+      const { record } = await analyzeSyntenyExperiment(input);
       abort(signal); return record;
     },
     digest: async (genome, options, signal) => {

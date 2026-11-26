@@ -8,6 +8,10 @@ export const SYNTENY_EXPERIMENT_METHOD = {
   id: 'annotation-order-synteny', version: '1.0.0',
   implementation: 'Phage Explorer annotation-distance DTW, reversed-order and local reverse-chain search',
 } as const;
+export const SYNTENY_EXPERIMENT_PARAMETERS = {
+  order: 'supplied', similarity: 'informative-name-or-domain-jaccard', matchDistanceBelow: 0.8,
+  matrixPrecision: 'float32', reverseMinimumGenes: 2, coordinateConvention: 'zero-based-half-open',
+} as const;
 export const SYNTENY_EXPERIMENT_LIMITS = { genes: 2000, cells: 500000, inputBytes: 2 * 1024 * 1024 } as const;
 export const SYNTENY_EXPERIMENT_LIMITATIONS = [
   'Similarity uses informative product/name tokens and supplied domain identifiers; it does not align nucleotide or protein sequences or establish homology.',
@@ -153,8 +157,7 @@ export async function analyzeSyntenyExperiment(value: unknown): Promise<SyntenyE
     inputs: (['query', 'reference'] as const).map(role => ({ id: role, source: input[role].source, accession: input[role].accession,
       description: (role === 'query' ? 'Query' : 'Reference') + ': exact ordered annotations for ' + input[role].name + '; no genome bases included',
       data: analysisJson({ genome: input[role], genes: role === 'query' ? input.genesQuery : input.genesReference }) })),
-    parameters: { order: 'supplied', similarity: 'informative-name-or-domain-jaccard', matchDistanceBelow: 0.8,
-      matrixPrecision: 'float32', reverseMinimumGenes: 2, coordinateConvention: 'zero-based-half-open' },
+    parameters: SYNTENY_EXPERIMENT_PARAMETERS,
     seed: null, references: [], fields: {
       synteny: { label: 'Complete annotation-order comparison', kind: 'sequence-score', units: 'records', value: analysisJson(result),
         coverage: { available: input.genesQuery.length + input.genesReference.length,

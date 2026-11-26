@@ -9,7 +9,7 @@ import { DEFAULT_AFFINE_PENALTIES, type AlignmentGraphOptions } from '../../../c
 import type { PhylogenyOptions } from '../../../core/src/analysis/aligned-phylogeny';
 import { parseRNAInterval } from '../../../core/src/analysis/rna-structure-experiment';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
-import { researchPangenomeParameters, researchPhylogenyParameters, researchRNAParameters, researchMosaicParameters, researchComparisonParameters,
+import { researchPangenomeParameters, researchPhylogenyParameters, researchRNAParameters, researchMosaicParameters, researchComparisonParameters, researchSyntenyParameters,
   type ResearchView, type ResearchPangenomeParameters, type ResearchPhylogenyParameters, type ResearchMosaicParameters } from '../../../web/src/keyboard/ResearchWorkflow';
 import { terminalGenomeLabel, terminalGenomePath, type TerminalGenomeSession } from '../local-genome-session';
 import type { TerminalResearchSession, TerminalResearchDraft, TerminalResearchDraftSource, TerminalResearchStep, TerminalResearchRNASource } from '../terminal-research-session';
@@ -31,6 +31,7 @@ const editorActions = [
   { kind: 'spacers', id: ActionIds.OverlayCRISPR, label: 'Sourced CRISPR spacer matches with explicit PAM and seed rules' },
   { kind: 'phylogeny', id: ActionIds.OverlayPhylodynamics, label: 'Pangenome-backed phylogeny with explicit homology provenance' },
   { kind: 'comparison', id: ActionIds.OverlayComparison, label: 'Complete ordered genome comparison with captured annotations' },
+  { kind: 'synteny', id: ActionIds.OverlaySynteny, label: 'Annotation-order synteny between captured genomes' },
 ] as const;
 type EditorKind = (typeof editorActions)[number]['kind'];
 interface Setting { key: string; label: string; initial: string }
@@ -47,7 +48,7 @@ function stepSettings(kind: EditorKind, source: TerminalResearchDraftSource, ini
       field('maxGap', 'Maximum gap (0–100000 bases)', 1000), field('maxPairs', 'Maximum reported pairs (1–20000)', 500),
       field('topology', 'Search topology (linear or circular; explicit assumption if unknown)',
         initial.method === 'exact-pairs' ? 'linear' : source.topology === 'circular' ? 'circular' : 'linear')];
-    case 'codons': return [];
+    case 'codons': case 'synteny': return [];
     case 'digest': return [{ key: 'enzymes', label: 'Enzymes (exact names separated by commas; none for uncut control)',
       initial: Array.isArray(initial.enzymes) ? initial.enzymes.join(',') || 'none' : 'EcoRI,BamHI' },
       field('topology', 'Molecule topology (linear or circular; explicit assumption if unknown)', source.topology === 'circular' ? 'circular' : 'linear')];
@@ -410,6 +411,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
     }
     else if (action.kind === 'digest') value = { contentId, ...resolveRestrictionDigestOptions({ topology: entered.topology,
       enzymes: entered.enzymes === 'none' ? [] : entered.enzymes.split(',').map(name => name.trim()) }) };
+    else if (action.kind === 'synteny') value = researchSyntenyParameters(contentId,
+      comparisonIndex ? draft.sources[comparisonIndex - 1].contentId : contentId);
     else if (action.kind === 'comparison') value = researchComparisonParameters(contentId,
       comparisonIndex ? draft.sources[comparisonIndex - 1].contentId : contentId, {
         kmerSizes: entered.kmerSizes.split(',').map(value => integer(value.trim(), 'K-mer size')),
@@ -422,7 +425,7 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
     onSave({ actionId: action.id, parameters: analysisJson(value) });
   };
   const beginSettings = (selectedGene = geneId) => {
-    if (action.kind === 'codons') { save({}, selectedGene); return; }
+    if (action.kind === 'codons' || action.kind === 'synteny') { save({}, selectedGene); return; }
     const prior = initial?.actionId === action.id && parameters.contentId === source.contentId
       && (action.kind !== 'rna' || parameters.geneId === selectedGene) ? parameters : {};
     const remembered = draft.initialView?.contentId === source.contentId ? draft.initialView : null;
@@ -436,7 +439,8 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
   };
   const choices = stage === 'method' ? editorActions.map(item => item.label)
     : stage === 'source' ? draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession) + ' · ' + item.bases + ' bp · ' + item.topology)
-      : stage === 'comparison' ? [action.kind === 'comparison' ? 'Use genome A again (explicit two-input control)' : 'Self comparison (one input)',
+      : stage === 'comparison' ? [action.kind === 'synteny' ? 'Use query annotations again (explicit two-input control)'
+        : action.kind === 'comparison' ? 'Use genome A again (explicit two-input control)' : 'Self comparison (one input)',
         ...draft.sources.map(item => terminalGenomeLabel(item.name + ' · ' + item.accession))]
         : [action.kind === 'codons' ? 'All captured CDS' : action.kind === 'rna' ? 'Forward genome coordinates (choose an interval and strand)' : 'No selected feature', ...genes.map(gene =>
           terminalGenomeLabel((gene.name || gene.locusTag || gene.type) + ' · feature ' + gene.id) + ' · ' + (gene.startPos + 1) + '–' + gene.endPos)];
@@ -454,7 +458,7 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
         setError(null);
         if (stage === 'method') setStage('source');
         else if (stage === 'source') {
-          if (action.kind === 'dot-plot' || action.kind === 'comparison') setStage('comparison');
+          if (action.kind === 'dot-plot' || action.kind === 'comparison' || action.kind === 'synteny') setStage('comparison');
           else if (action.kind === 'view' || action.kind === 'codons' || action.kind === 'rna') {
             if (action.kind === 'codons' && !genes.length) throw new Error('This captured genome has no CDS annotations. Choose another source or analysis.');
             const selected = initial?.actionId === action.id && parameters.contentId === source.contentId ? parameters.geneId
@@ -515,6 +519,10 @@ function ResearchStepEditor({ draft, initial, rows, describeRNA, onSave, onCance
       <Text color={colors.textDim}>Up/Down select · Left/Right page · Enter continues · Esc discards</Text>
       {action.kind === 'codons' && <Text color={colors.textDim}>CDS counts use the captured annotation. Host-model scores remain illustrative.</Text>}
       {action.kind === 'rna' && <Text color={colors.textDim}>Unit-weight pairing scores are descriptive; no folding energy or functional prediction.</Text>}
+      {action.kind === 'synteny' && <>
+        <Text color={colors.textDim}>Exact supplied annotation order and fixed matching settings are captured.</Text>
+        <Text color={colors.textDim}>Requires annotated sources; no sequence homology or validated rearrangement calls.</Text>
+      </>}
     </>}
   </Box>;
 }

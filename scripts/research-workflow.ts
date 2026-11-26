@@ -116,6 +116,18 @@ Both check complete-archive integrity, but neither claims numerical replay or
 method availability. Extracted records retain their original private inputs and
 can be used with the existing compatible analysis viewers/replay-experiment.
 
+Annotation-order synteny workflows use action overlay.synteny with explicit
+contentId (query), comparisonContentId (reference), and settings:
+{ "order": "supplied", "similarity": "informative-name-or-domain-jaccard",
+  "matchDistanceBelow": 0.8, "matrixPrecision": "float32",
+  "reverseMinimumGenes": 2, "coordinateConvention": "zero-based-half-open" }.
+Both sources must be annotated genomes in the embedded input bundle. The supplied
+row order, annotations and source identities are preserved; no catalog or network
+lookup is performed. Self comparison is an explicit two-input control. Bounds are
+2,000 annotation rows per source, 500,000 pair cells and 2 MiB of annotation input.
+These heuristic annotation-order matches do not establish sequence homology or
+validated rearrangements. The terminal draft editor can author the same action.
+
 analyze-attachment accepts version-1 phage-explorer-attachment-reconstruction JSON
 with complete host/phage sequences, explicit topology and source declarations,
 attB/attP core coordinates/strands/evidence, and an explicit circularization choice.
@@ -353,7 +365,7 @@ export is the residue table. All analysis settings are resolved before dispatch.
 
 replay-experiment accepts self/pairwise dot-plot, restriction-digest, portable
 GC-skew v2, linear/circular exact-repeat-pairs, RNA maximum-pairing intervals,
-attachment integration, declared prophage excision, mosaic reference-similarity, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
+attachment integration, declared prophage excision, mosaic reference-similarity, annotation-order synteny, aligned-DNA site compatibility, sourced spacer-comparison, reference protein-structure,
 supplied protein-alignment diversity, aligned-codon dN/dS, abundance CLR/NMF,
 plaque-count-growth, corrected-PFU growth and measured inactivation JSON. Supplied
 protein alignment TSV preserves every target residue, alignment column and missing
@@ -363,6 +375,8 @@ Legacy accelerated GC-skew
 v1 and sampled-repeat overview records are not relabeled as portable methods.
 Aligned-site compatibility TSV contains every compared pair and original alignment
 coordinates; use the alignment-compatibility command's sites export for excluded columns.
+Synteny TSV exports every annotation-order block; JSON retains all input rows,
+matrix cells, blocks, spans and limitations for the browser synteny workspace.
 These records may be produced by the terminal or
 exported by the browser. Pairwise replay preserves both ordered row/Y and column/X
 inputs, sampled coordinates and independent coverage. It recomputes embedded inputs/settings with the same core

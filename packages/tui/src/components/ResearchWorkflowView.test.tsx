@@ -16,6 +16,7 @@ import { replayAlignmentPangenome } from '../../../core/src/analysis/alignment-p
 import { replayAlignedPhylogenyExperiment } from '../../../core/src/analysis/aligned-phylogeny';
 import { replayRNAStructureRecord } from '../../../core/src/analysis/rna-structure-experiment';
 import { replayGenomeComparisonExperiment } from '../../../comparison/src/comparison-experiment';
+import { replaySyntenyExperiment, SYNTENY_EXPERIMENT_PARAMETERS } from '../../../comparison/src/synteny-experiment';
 import { mosaicResultFromRecord } from '../../../core/src/analysis/recombination-radar';
 import type { ReferenceSpacerHit } from '../../../core/src/analysis/spacer-reference';
 import { ActionIds } from '../../../web/src/keyboard/actionRegistry';
@@ -69,6 +70,52 @@ function terminal(session: TerminalResearchSession, genomes: TerminalGenomeSessi
     resize: (rows: number) => { stdout.rows = rows; stdout.emit('resize'); } };
 }
 describe('Ink research workflow workspace', () => {
+  it('authors and reopens ordered annotation synteny, then records and verifies the same evidence', async () => {
+    const source = (name: string, labels: string[]) => `LOCUS       ${name} 60 bp DNA linear\nACCESSION   ${name}\nFEATURES             Location/Qualifiers\n`
+      + labels.map((label, index) => `     CDS             ${index * 20 + 1}..${index * 20 + 10}\n                     /product="${label}"\n`).join('')
+      + `ORIGIN\n        1 ${'acgt'.repeat(15)}\n//\n`;
+    const imported = await importLocalGenomes({ name: 'ordered-annotations.gb',
+      text: source('query', ['capsid', 'terminase', 'lysin']) + source('reference', ['lysin', 'terminase', 'capsid']) });
+    const genomes = new TerminalGenomeSession(null, imported.genomes), session = new TerminalResearchSession();
+    assert(await session.createDraft('Annotation synteny keyboard journey', genomes.exportBundle()));
+    const test = terminal(session, genomes, () => assert.fail('the editor owns its keys'), () => assert.fail('drafting cannot install sources'));
+    const press = async (key: string, expected: string) => {
+      const start = test.output().length; test.input(key);
+      try { await waitFor(() => test.output().slice(start).includes(expected)); }
+      catch (cause) { throw new Error(`Expected terminal stage: ${expected}. Last rendering: ${test.output().slice(-1600)}`, { cause }); }
+    };
+    const down = async () => { test.input('\u001b[B'); await new Promise(resolve => setTimeout(resolve, 20)); };
+    try {
+      await waitFor(test.ready); await press('i', 'Choose a workflow action');
+      for (let position = 0; position < 13; position++) await down();
+      await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose the ordered comparison genome');
+      assert(test.output().includes('Use query annotations again (explicit two-input control)'));
+      await down(); await down(); await press('\r', '[I] Add');
+      const step = structuredClone(session.getSnapshot().draft!.plan.commands[0]);
+      assert.equal(step.actionId, ActionIds.OverlaySynteny);
+      assert.deepEqual(step.parameters, analysisJson({ contentId: imported.genomes[0].phage.localGenome!.contentId,
+        comparisonContentId: imported.genomes[1].phage.localGenome!.contentId, settings: SYNTENY_EXPERIMENT_PARAMETERS }));
+      assert.equal(session.getSnapshot().document, null); assert.equal(session.availableResults(), null);
+      await press('e', 'Choose a workflow action'); await press('\r', 'Choose a captured source genome');
+      await press('\r', 'Choose the ordered comparison genome'); await press('\r', '[I] Add');
+      assert.deepEqual(session.getSnapshot().draft!.plan.commands, [step]);
+      test.input('c'); await waitFor(() => !session.getSnapshot().busy && !!(session.getSnapshot().document || session.getSnapshot().error));
+      assert.equal(session.getSnapshot().error, null);
+      const experiment = await replaySyntenyExperiment(JSON.stringify(session.analysis(1)));
+      assert.deepEqual(experiment.result.heatmap.values, [0, 0, 1, 0, 1, 0, 1, 0, 0]);
+      assert.equal(experiment.result.blocksBp[0].orientation, 'reverse');
+      assert.deepEqual(experiment.input.genesReference.map(row => row.product), ['lysin', 'terminase', 'capsid']);
+      const archive = session.availableResults()!.json;
+      assert.equal(session.availableResults()?.provenance, 'recorded');
+      test.input('r'); await waitFor(() => !session.getSnapshot().busy && !!(session.getSnapshot().completedRun || session.getSnapshot().error));
+      assert.equal(session.getSnapshot().error, null); assert.equal(session.availableResults()?.provenance, 'verified');
+      assert.equal(session.availableResults()!.json, archive);
+      assert.equal(genomes.getSnapshot().localCount, 2); assert.equal(genomes.getSnapshot().review, null);
+      assert(!test.output().includes(imported.genomes[0].sequence));
+    } finally { test.ui.unmount(); session.cancel(); await genomes.close(); }
+  });
+
   it('authors and edits a complete ordered genome comparison, then records and verifies the same evidence', async () => {
     const imported = await importLocalGenomes({ name: 'ordered.fa', text: '>A\nAAAACCCC\n>B\nAAAATCCCC\n' });
     const genomes = new TerminalGenomeSession(null, imported.genomes), session = new TerminalResearchSession();

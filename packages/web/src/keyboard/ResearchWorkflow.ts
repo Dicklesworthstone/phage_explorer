@@ -24,9 +24,11 @@ import { PANGENOME_PHYLOGENY_METHOD, PHYLOGENY_LIMITS, resolvePhylogenyOptions,
 import { pangenomeRequestFromLocalGenomes, type PangenomeRequest } from '../workers/PangenomeSession';
 import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, resolveGenomeComparisonOptions,
   type ComparisonGenomeInput, type GenomeComparisonOptions } from '../../../comparison/src/comparison-experiment';
+import { SYNTENY_EXPERIMENT_METHOD, SYNTENY_EXPERIMENT_PARAMETERS, validateSyntenyInput,
+  type SyntenyExperimentInput } from '../../../comparison/src/synteny-experiment';
 
 export interface ResearchView extends LocalGenomeView { geneId: number | null }
-export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; phylogeny?: string; gcSkew?: string; dotPlot?: string; comparison?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
+export interface ResearchActionIds { view: string; repeats: string; codons: string; pangenome?: string; phylogeny?: string; gcSkew?: string; dotPlot?: string; comparison?: string; synteny?: string; digest?: string; mosaic?: string; spacers?: string; rna?: string }
 export interface ResearchPangenomeParameters {
   contentIds: string[];
   options: AlignmentGraphOptions;
@@ -58,6 +60,7 @@ export interface ResearchEnvironment {
   gcSkew?: (genome: LocalGenome, options: ResolvedGCSkewOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   dotPlot?: (genome: LocalGenome, comparison: LocalGenome | null, options: { bins: number; window: number }, signal: AbortSignal) => Promise<AnalysisRecord>;
   comparison?: (genomeA: ComparisonGenomeInput, genomeB: ComparisonGenomeInput, options: GenomeComparisonOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
+  synteny?: (input: SyntenyExperimentInput, signal: AbortSignal) => Promise<AnalysisRecord>;
   digest?: (genome: LocalGenome, options: RestrictionDigestOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
   mosaic?: (dataset: MosaicDataset, options: Required<MosaicRadarConfig>, signal: AbortSignal) => Promise<AnalysisRecord>;
   spacers?: (genome: SpacerGenome, library: SpacerLibrary, options: SpacerSearchOptions, signal: AbortSignal) => Promise<AnalysisRecord>;
@@ -238,6 +241,34 @@ export function researchComparisonGenome(genome: LocalGenome): ComparisonGenomeI
   }
   return structuredClone({ phage: { id: genome.phage.id, name: genome.phage.name, accession: genome.phage.accession },
     source: 'local' as const, sequence: genome.sequence, genes: genome.phage.genes, codonUsage: genome.phage.codonUsage });
+}
+/** Annotation order and duplicate gene/CDS rows are part of the input. Never
+ * sort, select a different catalog revision, or substitute sequence homology.
+ */
+export interface ResearchSyntenyParameters {
+  contentId: string; comparisonContentId: string; settings: typeof SYNTENY_EXPERIMENT_PARAMETERS;
+}
+export function validateResearchSynteny(value: CommandValue): void {
+  fields(value, ['contentId', 'comparisonContentId', 'settings']);
+  contentId(value.contentId); contentId(value.comparisonContentId);
+  if (!commandValuesEqual(value.settings, SYNTENY_EXPERIMENT_PARAMETERS)) {
+    throw new Error('Record the supported annotation-order synteny settings explicitly.');
+  }
+}
+export function researchSyntenyParameters(id: string, comparisonId: string): ResearchSyntenyParameters {
+  const value = { contentId: id, comparisonContentId: comparisonId, settings: { ...SYNTENY_EXPERIMENT_PARAMETERS } };
+  validateResearchSynteny(analysisJson(value));
+  return value;
+}
+export function researchSyntenyInput(query: LocalGenome, reference: LocalGenome): SyntenyExperimentInput {
+  const descriptor = (genome: LocalGenome) => {
+    if (!genome.phage.localGenome) throw new Error('Synteny workflows require captured local annotation sources.');
+    return { id: genome.phage.id, name: genome.phage.name, accession: genome.phage.accession,
+      length: genome.sequence.length, source: 'local' as const,
+      contentId: genome.phage.localGenome.contentId, annotationMetadata: null };
+  };
+  return validateSyntenyInput({ query: descriptor(query), reference: descriptor(reference),
+    genesQuery: query.phage.genes, genesReference: reference.phage.genes });
 }
 export interface ResearchDigestParameters extends RestrictionDigestOptions { contentId: string }
 export function researchDigestParameters(id: string, options: RestrictionDigestOptions): ResearchDigestParameters {
@@ -622,6 +653,30 @@ export class ResearchWorkflow {
         return this.result(record, genomes, signal);
       },
     });
+    if ((ids.synteny === undefined) !== (environment.synteny === undefined)) throw new Error('Synteny action and executor must be supplied together.');
+    if (ids.synteny !== undefined) adapters.set(ids.synteny, {
+      validate: validateResearchSynteny,
+      prepare: async (parameters, signal) => {
+        const values = parameters as unknown as ResearchSyntenyParameters;
+        const genomes = await this.selectedGenomes([values.contentId, values.comparisonContentId], signal);
+        const input = researchSyntenyInput(genomes[0], genomes[1]);
+        const result = await environment.synteny!(structuredClone(input), signal);
+        abort(signal);
+        const record = await parseAnalysisRecord(serializeAnalysisRecord(result));
+        abort(signal);
+        if (!commandValuesEqual(record.method, SYNTENY_EXPERIMENT_METHOD) || record.inputs.length !== 2
+          || record.inputs.some((row, index) => {
+            const role = index === 0 ? 'query' : 'reference';
+            return row.id !== role || row.source !== 'local' || row.accession !== input[role].accession
+              || !commandValuesEqual(row.data, analysisJson({ genome: input[role],
+                genes: index === 0 ? input.genesQuery : input.genesReference }));
+          }) || !commandValuesEqual(record.parameters, values.settings) || record.seed !== null || record.references.length !== 0
+          || record.fields.synteny?.kind !== 'sequence-score' || record.fields.synteny.units !== 'records') {
+          throw new Error('Synteny evidence does not match the ordered captured annotations, source identities, method or settings.');
+        }
+        return this.result(record, genomes, signal);
+      },
+    });
     if ((ids.digest === undefined) !== (environment.digest === undefined)) throw new Error('Digest action and executor must be supplied together.');
     if (ids.digest !== undefined) adapters.set(ids.digest, {
       validate: validateResearchDigest,
@@ -714,7 +769,8 @@ export class ResearchWorkflow {
     });
     if (adapters.size !== 3 + Number(ids.pangenome !== undefined) + Number(ids.gcSkew !== undefined)
       + Number(ids.dotPlot !== undefined) + Number(ids.comparison !== undefined) + Number(ids.digest !== undefined) + Number(ids.mosaic !== undefined)
-      + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined) + Number(ids.phylogeny !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
+      + Number(ids.spacers !== undefined) + Number(ids.rna !== undefined) + Number(ids.phylogeny !== undefined)
+      + Number(ids.synteny !== undefined)) throw new Error('Research actions must use distinct canonical IDs.');
     this.commands = new CommandSession(adapters, (context, signal) => this.validateContext(context, signal));
     this.commands.subscribe(() => {
       this.commandRevision++;

@@ -6,7 +6,7 @@ import { ActionIds, ActionRegistry } from '../../keyboard/actionRegistry';
 import { ResearchWorkflow, researchPangenomeParameters, researchPhylogenyParameters, researchReferenceCodonParameters, validateResearchDotPlot,
   researchMosaicParameters, researchMosaicDataset, researchSpacerParameters, researchSpacerGenome,
   researchRNAParameters, researchRNARequest, researchRNASource,
-  researchComparisonParameters,
+  researchComparisonParameters, researchSyntenyParameters, researchSyntenyInput,
   readWorkflowResultsFile, type ResearchView } from '../../keyboard/ResearchWorkflow';
 import { workflowResultIndex } from '../../../../core/src/workflow-results';
 import { parseCommandTape } from '../../../../core/src/command-session';
@@ -36,6 +36,7 @@ import { AnalysisRecordDetails } from './primitives/OverlayProvenance';
 import { SavedResearchPanel } from './SavedResearchPanel';
 import { GENOME_COMPARISON_METHOD, GENOME_COMPARISON_LIMITS, DEFAULT_GENOME_COMPARISON_OPTIONS, type ComparisonGenomeInput } from '../../../../comparison/src/comparison-experiment';
 import type { GenomeComparisonResult } from '../../../../comparison/src/types';
+import { SYNTENY_EXPERIMENT_METHOD, exportSyntenyTsv, type SyntenyExperiment } from '../../../../comparison/src/synteny-experiment';
 
 const SPACER_STATUS: Record<SpacerSearchResult['status'], string> = {
   'no-spacer-data': 'No spacer records for this host scope. Nothing was searched.',
@@ -80,7 +81,7 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
   const workflow = new ResearchWorkflow({ view: ActionIds.NavGoto, repeats: ActionIds.OverlayRepeats, codons: ActionIds.OverlayCodonAdaptation,
     pangenome: ActionIds.OverlayPangenomeGraph, phylogeny: ActionIds.OverlayPhylodynamics, gcSkew: ActionIds.OverlayGCSkew,
     dotPlot: ActionIds.OverlayDotPlot, comparison: ActionIds.OverlayComparison, digest: ActionIds.OverlayGel, mosaic: ActionIds.OverlayMosaicRadar,
-    spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure }, {
+    spacers: ActionIds.OverlayCRISPR, rna: ActionIds.OverlayRNAStructure, synteny: ActionIds.OverlaySynteny }, {
     genomes: () => useLocalGenomes.getState().genomes,
     bundle: () => exportLocalGenomeBundle(useLocalGenomes.getState().genomes),
     parseBundle: async (content, signal) => {
@@ -146,6 +147,11 @@ export function createBrowserResearchWorkflow(selectPhage: (index: number) => Pr
     comparison: async (genomeA, genomeB, options, signal) => {
       const response = await runResearchWorker({ type: 'comparison', genomeA, genomeB, options }, signal);
       if (response.type !== 'analysis') throw new Error('Expected complete genome comparison evidence.');
+      return response.record;
+    },
+    synteny: async (input, signal) => {
+      const response = await runResearchWorker({ type: 'synteny', input }, signal);
+      if (response.type !== 'analysis') throw new Error('Expected complete annotation-order synteny evidence.');
       return response.record;
     },
     digest: async (genome, options, signal) => {
@@ -270,6 +276,23 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
     && acceptedAnalysis.method.version === GENOME_COMPARISON_METHOD.version
     ? { record: acceptedAnalysis, inputs: acceptedAnalysis.inputs.map(input => input.data as unknown as ComparisonGenomeInput),
       result: acceptedAnalysis.fields.comparison.value as unknown as Pick<GenomeComparisonResult, 'editDistance' | 'biological' | 'kmerAnalysis' | 'geneContent'> } : null;
+  const [syntenyId, setSyntenyId] = useState('');
+  const syntenyDraft = useMemo(() => {
+    try {
+      const reference = genomes.find(item => item.phage.localGenome?.contentId === syntenyId);
+      if (!genome || !reference) throw new Error('Choose both captured annotation sources.');
+      researchSyntenyInput(genome, reference);
+      return { parameters: researchSyntenyParameters(selected, syntenyId), error: null };
+    } catch (cause) { return { parameters: null, error: cause instanceof Error ? cause.message : String(cause) }; }
+  }, [genome, genomes, selected, syntenyId]);
+  const syntenyResult = useMemo((): SyntenyExperiment | null => {
+    if (acceptedAnalysis?.method.id !== SYNTENY_EXPERIMENT_METHOD.id
+      || acceptedAnalysis.method.version !== SYNTENY_EXPERIMENT_METHOD.version) return null;
+    const query = acceptedAnalysis.inputs[0].data as unknown as { genome: SyntenyExperiment['input']['query']; genes: SyntenyExperiment['input']['genesQuery'] };
+    const reference = acceptedAnalysis.inputs[1].data as unknown as typeof query;
+    return { record: acceptedAnalysis, result: acceptedAnalysis.fields.synteny.value as unknown as SyntenyExperiment['result'],
+      input: { query: query.genome, reference: reference.genome, genesQuery: query.genes, genesReference: reference.genes } };
+  }, [acceptedAnalysis]);
   const [digestNames, setDigestNames] = useState('EcoRI');
   const [digestTopology, setDigestTopology] = useState<'' | 'linear' | 'circular'>('');
   const [mosaicIds, setMosaicIds] = useState<string[]>([]);
@@ -601,7 +624,7 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
   };
   return <section aria-label="Saved research workflows" style={{ borderTop: '1px solid var(--color-border)', paddingTop: '1rem', display: 'grid', gap: '.7rem' }}>
     <h3>Saved research workflows</h3>
-    <p>Record explicit navigation, complete genome comparisons, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, multi-genome pangenomes and their linked phylogenies below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
+    <p>Record explicit navigation, complete genome comparisons, annotation-order synteny, RNA pairing intervals, self/pairwise dot plots, restriction digests, mosaic reference similarity, sourced spacer comparisons, GC skew, repeats, reference-backed or illustrative single-genome CDS, multi-genome pangenomes and their linked phylogenies below, save their private inputs, and replay with fresh result verification. Actions in other panels are not recorded. Import every required query and reference genome before starting; nothing is uploaded.</p>
     <SavedResearchPanel kind="workflow" suggestedName={state.tape.name} disabled={commandBusy || active}
       capture={state.tape.commands.length && !active ? workflow.commands.export : null} restore={restoreLocal} onActivityChange={setLibraryBusy} />
     <label>Workflow name <input value={name} disabled={busy || active} onChange={event => setName(event.target.value)} /></label>
@@ -683,6 +706,26 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         const task = workflow.commands.dispatch(ActionIds.OverlayComparison, analysisJson(comparisonDraft.parameters));
         invoke(() => task);
       }}>Run and record complete comparison</button>
+    </fieldset>
+    <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record annotation-order synteny</legend>
+      <p>Query: {genome?.phage.name ?? 'select a workflow genome above'}. Compare the exact captured annotation rows in their original order.
+        Both inputs need annotations; FASTA alone supplies none. Selecting the same source in both roles is an explicit control.</p>
+      <label htmlFor="workflow-synteny-reference">Workflow synteny reference</label>
+      <select id="workflow-synteny-reference" value={syntenyId} onChange={event => setSyntenyId(event.target.value)}>
+        <option value="">Choose captured reference annotations</option>
+        {syntenyId && !genomes.some(item => item.phage.localGenome?.contentId === syntenyId) && <option value={syntenyId}>Unavailable reference — choose an input</option>}
+        {genomes.map(item => <option key={item.phage.localGenome!.contentId} value={item.phage.localGenome!.contentId}>
+          {item.phage.name} · {item.phage.genes.length} annotations · {item.phage.localGenome!.contentId.slice(0, 12)}
+        </option>)}
+      </select>
+      <p>The fixed annotation-name/domain matching settings are recorded with each command. Results describe annotation similarity and order;
+        they do not establish sequence homology or validated rearrangements. At most 2,000 rows per source and 500,000 comparison cells are supported.</p>
+      {syntenyDraft.error && <p>{syntenyDraft.error}</p>}
+      <button type="button" disabled={busy || !active || !syntenyDraft.parameters} onClick={() => {
+        if (busy || !active || !syntenyDraft.parameters) return;
+        const task = workflow.commands.dispatch(ActionIds.OverlaySynteny, analysisJson(syntenyDraft.parameters));
+        invoke(() => task);
+      }}>Run and record annotation synteny</button>
     </fieldset>
     <fieldset disabled={busy || !active || !genome} style={{ display: 'grid', gap: '.5rem' }}><legend>Record restriction digests</legend>
       <p>Input: {genome?.phage.name ?? 'select a workflow genome above'}. Ideal complete digestion only, not measured gel mobility, partial digestion or methylation sensitivity.</p>
@@ -968,6 +1011,20 @@ export function ResearchWorkflowPanel({ onSelectPhage }: { onSelectPhage?: (inde
         <p>Draft inputs and settings never relabel this accepted result. Analysis JSON and complete workflow archives retain every metric,
           unavailable reason, exact alignment operation and display-mask value. The analysis JSON also reopens in the comparison workspace.</p>
         <details><summary>Comparison coverage and interpretation</summary><ul>{comparisonResult.record.fields.comparison.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul></details>
+      </section>}
+      {syntenyResult && <section aria-label="Recorded annotation synteny results">
+        <h4>Accepted annotation comparison: {syntenyResult.input.query.name} → {syntenyResult.input.reference.name}</h4>
+        <p>{syntenyResult.input.genesQuery.length} query rows × {syntenyResult.input.genesReference.length} reference rows.
+          {' '}{syntenyResult.result.stats.blockCount} annotation-order blocks; similarity {syntenyResult.result.stats.globalScore.toFixed(6)};
+          {' '}forward DTW cost {syntenyResult.result.stats.dtwDistance.toFixed(6)}.</p>
+        <p>Block spans cover {syntenyResult.result.stats.coverageQuery} query bases and {syntenyResult.result.stats.coverageReference} reference bases,
+          including intervening sequence. These are annotation spans, not aligned bases or measured rearrangement counts.</p>
+        {(['blocks', 'matrix', 'annotations'] as const).map(table => <button key={table} type="button" disabled={busy}
+          onClick={() => invoke(() => downloadString(exportSyntenyTsv(syntenyResult, table), `workflow-synteny-${table}.tsv`, 'text/tab-separated-values'))}>
+          Export workflow synteny {table} TSV
+        </button>)}
+        <p>The complete analysis JSON reopens in the synteny workspace. Source rows, ordered roles, every matrix cell and block remain in exports and complete workflow results.</p>
+        <details><summary>Annotation comparison coverage and interpretation</summary><ul>{syntenyResult.record.fields.synteny.limitations.map((limitation, index) => <li key={index}>{limitation}</li>)}</ul></details>
       </section>}
       {treeResult && <section aria-label="Recorded phylogeny results">
         <h4>{treeResult.source.name}: accepted unrooted phylogeny</h4>

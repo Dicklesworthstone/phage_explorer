@@ -7,6 +7,14 @@ import { analysisJson, createAnalysisRecord, parseAnalysisRecord } from '../../c
 import { parseWorkflowResults, workflowAnalysisAt } from '../../core/src/workflow-results';
 import type { SpacerLibrary, ReferenceSpacerHit } from '../../core/src/analysis/spacer-reference';
 import type { RNAStructureAnalysis } from '../../core/src/analysis/rna-structure';
+import type { SyntenyExperimentResult } from '../../comparison/src/synteny-experiment';
+
+const SYNTENY_GENBANK = [
+  ['synteny-query', ['capsid', 'terminase', 'lysin']],
+  ['synteny-reference', ['lysin', 'terminase', 'capsid']],
+].map(([name, labels]) => `LOCUS       ${name} 60 bp DNA linear\nACCESSION   ${name}\nFEATURES             Location/Qualifiers\n`
+  + (labels as string[]).map((label, index) => `     CDS             ${index * 20 + 1}..${index * 20 + 10}\n                     /product="${label}"\n`).join('')
+  + `ORIGIN\n        1 ${'acgt'.repeat(15)}\n//\n`).join('');
 
 // Independent coordinate oracle: [4,24) forward then AGG; [34,54)
 // reverse-complement target preceded by CCT, which is guide-oriented AGG.
@@ -30,6 +38,7 @@ interface WorkflowFixture extends Window {
   workflowReplyHeld: boolean;
   releaseWorkflowReply(): void;
   removeWorkflowComparison(): void;
+  addSyntenySources(): Promise<string[]>;
 }
 let fixtureConfig: UserConfig | undefined;
 
@@ -64,6 +73,11 @@ const test = base.extend<{ workflowFixture: void }>({
             useLocalGenomes.getState().acknowledgeSelection(parsed.genomes[0].phage.id);
             window.workflowIds = parsed.genomes.map(g => g.phage.localGenome.contentId);
             window.removeWorkflowComparison = () => useLocalGenomes.setState({ genomes: [parsed.genomes[0]] });
+            window.addSyntenySources = async () => {
+              const annotations = await importLocalGenomes({ name: 'workflow-annotations.gb', text: ${JSON.stringify(SYNTENY_GENBANK)} });
+              useLocalGenomes.getState().add(annotations, false, []);
+              return annotations.genomes.map(g => g.phage.localGenome.contentId);
+            };
             const NativeWorker = window.Worker;
             window.Worker = class extends NativeWorker {
               constructor(url, options) {
@@ -163,6 +177,64 @@ async function configureSpacers(page: Page) {
   await page.getByLabel('Workflow spacer host scope', { exact: true }).selectOption('one');
   return { id, text };
 }
+
+test('records captured annotation synteny, retains accepted evidence on cancellation and verifies archives after reload', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => requests.push(`${request.url()} ${request.postData() ?? ''}`));
+  const ids = await page.evaluate(() => (window as unknown as WorkflowFixture).addSyntenySources());
+  await start(page);
+  const run = page.getByRole('button', { name: 'Run and record annotation synteny', exact: true });
+  await page.getByLabel('Workflow synteny reference', { exact: true }).selectOption(ids[1]);
+  await expect(run).toBeDisabled(); // The initial FASTA query has no annotations.
+  await page.getByLabel('Workflow genome', { exact: true }).selectOption(ids[0]);
+  await expect(run).toBeEnabled(); await run.click(); await recorded(page, 1);
+  const region = page.getByRole('region', { name: 'Recorded annotation synteny results', exact: true });
+  await expect(region).toContainText('synteny-query → synteny-reference');
+  await expect(region).toContainText('3 query rows × 3 reference rows');
+  const pair = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  const result = pair.fields.synteny.value as unknown as SyntenyExperimentResult;
+  expect(result.heatmap.values).toEqual([0, 0, 1, 0, 1, 0, 1, 0, 0]);
+  expect(result.blocksBp).toEqual([{ startIdxQuery: 0, endIdxQuery: 2, startIdxReference: 0, endIdxReference: 2,
+    startBpQuery: 0, endBpQuery: 50, startBpReference: 0, endBpReference: 50, score: 1, orientation: 'reverse' }]);
+  expect(pair.inputs.map(row => row.id)).toEqual(['query', 'reference']);
+  expect(await download(page, 'Export workflow synteny blocks TSV')).toContain('\t0\t50\t0\t50\treverse\t1\n');
+  const matrix = await download(page, 'Export workflow synteny matrix TSV');
+  expect(matrix.trim().split('\n').filter(row => !row.startsWith('#'))).toHaveLength(10);
+  expect(await download(page, 'Export workflow synteny annotations TSV')).toContain('terminase');
+  await page.getByLabel('Workflow synteny reference', { exact: true }).selectOption(ids[0]);
+  await expect(region).toContainText('synteny-query → synteny-reference');
+  await page.evaluate(() => { (window as unknown as WorkflowFixture).holdWorkflowReply = true; });
+  await run.click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as WorkflowFixture).workflowReplyHeld)).toBe(true);
+  await page.getByRole('button', { name: 'Cancel workflow', exact: true }).click();
+  await page.evaluate(() => (window as unknown as WorkflowFixture).releaseWorkflowReply());
+  await recorded(page, 1);
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', pair.resultId);
+  await run.click(); await recorded(page, 2);
+  const self = await parseAnalysisRecord(await download(page, 'Export workflow analysis'));
+  expect((self.fields.synteny.value as unknown as SyntenyExperimentResult).heatmap.values).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  await page.getByRole('button', { name: 'Stop workflow recording', exact: true }).click();
+  const tape = parseCommandTape(await download(page, 'Export research workflow'));
+  expect(tape.commands.map(command => command.actionId)).toEqual(['overlay.synteny', 'overlay.synteny']);
+  expect(tape.commands[0].parameters).toMatchObject({ contentId: ids[0], comparisonContentId: ids[1], settings: pair.parameters });
+  await page.getByLabel('Workflow replay repetitions', { exact: true }).fill('2');
+  await page.getByRole('button', { name: 'Replay and retain all results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  const archive = await download(page, 'Export complete workflow results JSON');
+  expect((await parseWorkflowResults(archive)).records).toEqual([pair, self]);
+  await page.reload();
+  await page.evaluate(() => (window as unknown as WorkflowFixture).addSyntenySources());
+  await page.getByLabel('Load complete workflow results JSON (up to 32 MiB)', { exact: true }).setInputFiles({
+    name: 'synteny-results.json', mimeType: 'application/json', buffer: Buffer.from(archive),
+  });
+  await expect(page.getByTestId('workflow-results-review')).toContainText('2 distinct analyses and 2 repetitions');
+  await expect(page.getByTestId('workflow-result')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Replay and verify loaded complete results', exact: true }).click();
+  await expect(page.getByTestId('workflow-results-status')).toContainText('Every command completed');
+  expect(await download(page, 'Export complete workflow results JSON')).toBe(archive);
+  await expect(page.getByTestId('workflow-result')).toHaveAttribute('data-result-id', self.resultId);
+  expect(requests.join('\n')).not.toContain('ACGT'.repeat(15));
+});
 
 test('records RNA interval structures, preserves accepted source on cancellation and verifies the archive after reload', async ({ page }) => {
   await start(page);
