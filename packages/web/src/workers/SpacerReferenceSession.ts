@@ -46,7 +46,7 @@ export interface SpacerWorker {
   postMessage:(request:SpacerRequest)=>void;terminate:()=>void;
   onmessage:((event:MessageEvent<SpacerMessage>)=>void)|null;onerror:((event:ErrorEvent)=>void)|null;onmessageerror:((event:MessageEvent)=>void)|null;
 }
-interface Snapshot { library:SpacerLibrary|null; accepted:SpacerWorkResult|null; acceptedScope:object|null; busy:boolean; phase:string; error:string|null; notice:string|null }
+interface Snapshot { library:SpacerLibrary|null; accepted:SpacerWorkResult|null; acceptedScope:object|null; acceptedOrigin:'selected-genome'|'standalone'|null; busy:boolean; phase:string; error:string|null; notice:string|null }
 function abortable<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
   return new Promise((resolve,reject)=>{
     const cancel=()=>reject(abortError());
@@ -58,7 +58,7 @@ function abortable<T>(promise:Promise<T>,signal:AbortSignal):Promise<T>{
 export class SpacerReferenceSession {
   private active=false;private scope:object|null=null;private operation:AbortController|null=null;
   private listeners=new Set<()=>void>();
-  private snapshot:Snapshot={library:null,accepted:null,acceptedScope:null,busy:false,phase:'',error:null,notice:null};
+  private snapshot:Snapshot={library:null,accepted:null,acceptedScope:null,acceptedOrigin:null,busy:false,phase:'',error:null,notice:null};
   constructor(private readonly factory:()=>SpacerWorker){}
   getSnapshot=():Snapshot=>this.snapshot;
   subscribe=(listener:()=>void):(()=>void)=>{this.listeners.add(listener);return()=>{this.listeners.delete(listener);};};
@@ -67,7 +67,7 @@ export class SpacerReferenceSession {
   deactivate=():void=>{this.active=false;this.cancel();};
   setScope=(scope:object):void=>{
     if(this.scope===scope)return;this.scope=scope;this.cancel();
-    this.publish({accepted:null,acceptedScope:null,error:null,notice:this.snapshot.library?'Genome selection changed. Loaded reference library retained; run a fresh comparison.':null});
+    this.publish({accepted:null,acceptedScope:null,acceptedOrigin:null,error:null,notice:this.snapshot.library?'Genome selection changed. Loaded reference library retained; run a fresh comparison.':null});
   };
   cancel=():void=>{
     const old=this.operation;this.operation=null;old?.abort();
@@ -99,6 +99,7 @@ export class SpacerReferenceSession {
         try{if(owner.signal.aborted)cancel();else worker.postMessage(request);}catch(cause){finish(undefined,cause instanceof Error?cause:new Error(String(cause)));}
       });
       if(current())this.publish({library:value.library,accepted:value.result?value:null,acceptedScope:value.result?scope:null,
+        acceptedOrigin:value.result?(request.kind==='replay-standalone'?'standalone':'selected-genome'):null,
         notice:value.verified?'Verified spacer replay: fresh matches, references and complete result identity agree.':value.result?'Spacer comparison complete. Inspect coverage and rule limitations.':'Spacer library loaded. Select hosts and run a comparison; no sequence has been searched yet.'});
     }catch(cause){if(current())this.publish({error:cause instanceof Error?cause.message:String(cause)});}
     finally{if(current()){this.operation=null;this.publish({busy:false,phase:''});}}

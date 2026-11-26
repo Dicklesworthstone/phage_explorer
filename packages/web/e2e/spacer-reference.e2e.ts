@@ -1,6 +1,6 @@
 import {test,expect,type Page} from '@playwright/test';
 import {createAnalysisRecord,parseAnalysisRecord,serializeAnalysisRecord} from '../../core/src/analysis-result';
-import type {SpacerLibrary,ReferenceSpacerHit} from '../../core/src/analysis/spacer-reference';
+import {createSpacerRecord,searchSpacerReferences,type SpacerLibrary,type ReferenceSpacerHit,type SpacerGenome} from '../../core/src/analysis/spacer-reference';
 import {expectExplorerIdentity,setupTestHarness} from './e2e-harness';
 
 // Hand-constructed exact targets: forward [4,24) followed by AGG, reverse
@@ -71,4 +71,75 @@ test('local host references reach strand-correct workers and verified evidence a
     await expect(panel.getByRole('alert')).toContainText('topology differs');await expect(panel.getByTestId('spacer-result')).toHaveAttribute('data-result-id',record.resultId);
     expect(requests.some(value=>value.includes(DNA)||value.includes('private-spacers')||value.includes('literal host'))).toBe(false);expect(pageErrors).toEqual([]);
   }finally{release?.();await finalize();}
+});
+
+test.describe('standalone spacer experiments',()=>{
+  test.use({serviceWorkers:'block'});
+  test('restores exact private evidence without a catalog and keeps unrelated selected genomes separate',async({page},info)=>{
+    test.setTimeout(180000);const {pageErrors,finalize}=setupTestHarness(page,info),requests:string[]=[];
+    page.on('request',request=>requests.push(`${request.url()} ${request.postData()??''}`));
+    await page.addInitScript(()=>localStorage.setItem('phage-explorer-main-prefs',JSON.stringify({experienceLevel:'power'})));
+    const genome:SpacerGenome={name:'STANDALONE_PRIVATE_FIXTURE',accession:'synthetic:standalone',source:'local',topology:'linear',sequence:DNA};
+    const record=await createSpacerRecord(genome,LIBRARY,searchSpacerReferences(genome,LIBRARY,{hostId:'one',maxMismatches:0}));
+    const content=serializeAnalysisRecord(record);
+    const catalog=(url:URL)=>/\/phage\.db(?:\.gz|\.manifest\.json)?$/.test(url.pathname)||url.pathname.startsWith('/phage-data/');
+    await page.route(catalog,route=>route.fulfill({status:503,body:'Catalog deliberately unavailable'}));
+    let release:(()=>void)|undefined;
+    try{
+      await page.goto('/?model=0');
+      await expect(page.getByRole('heading',{name:'Database load failed',exact:true})).toBeVisible();
+      await page.getByTestId('database-startup').getByRole('button',{name:'Open local genomes',exact:true}).click();
+      await expect(page.getByTestId('overlay-genomeImport')).toBeVisible();await page.keyboard.press('Escape');
+      let panel=await open(page);
+      const standalone=(text:string)=>panel.getByLabel('Open standalone spacer evidence JSON',{exact:true}).setInputFiles({name:'private-evidence.json',mimeType:'application/json',buffer:Buffer.from(text)});
+      const accepted=()=>panel.getByTestId('spacer-result');
+      const inspect=()=>panel.getByRole('button',{name:'Inspect locus',exact:true});
+      const exported=()=>download(page,()=>panel.getByRole('button',{name:'Export spacer evidence',exact:true}).click());
+      await expect(panel.getByLabel('Restore and verify spacer evidence JSON',{exact:true})).toBeDisabled();
+      await expect(panel.getByLabel('Open standalone spacer evidence JSON',{exact:true})).toBeEnabled();
+      await standalone(content);
+      await expect(accepted()).toHaveAttribute('data-result-id',record.resultId);
+      await expect(accepted()).toHaveAttribute('data-result-origin','standalone');
+      await expect(panel.getByTestId('spacer-genome-source')).toContainText('STANDALONE_PRIVATE_FIXTURE; accession: synthetic:standalone; 58 bp; linear topology; local source');
+      await expect(panel.getByRole('table',{name:'Sourced spacer matches',exact:true}).locator('tbody tr')).toHaveCount(2);
+      await expect(inspect()).toHaveCount(0);
+      await expect(panel.getByRole('img',{name:'Spacer match positions on the saved experiment genome',exact:true})).toBeVisible();
+      await expect(page.locator('[data-testid^="phage-list-item"]')).toHaveCount(0);
+      expect((await parseAnalysisRecord(await exported())).inputs[0].data).toEqual(genome);
+      await panel.getByLabel('Search genome topology',{exact:true}).selectOption('circular');
+      await expect(accepted()).toHaveAttribute('data-result-origin','standalone');await expect(inspect()).toHaveCount(0);
+      expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+
+      await panel.getByLabel('Open standalone spacer evidence JSON',{exact:true}).setInputFiles({name:'invalid-utf8.json',mimeType:'application/json',buffer:Buffer.from([0xff,0xfe])});
+      await expect(panel.getByRole('alert')).toContainText('invalid UTF-8');
+      await expect(accepted()).toHaveAttribute('data-result-id',record.resultId);
+      await expect(accepted()).toHaveAttribute('data-result-origin','standalone');
+      const forged=await parseAnalysisRecord(content);(forged.fields.matches.value as unknown as ReferenceSpacerHit[])[0].start=123;
+      const resigned=await createAnalysisRecord({...forged,inputs:forged.inputs.map(({sha256:_sha,...input})=>input)});
+      await standalone(serializeAnalysisRecord(resigned));await expect(panel.getByRole('alert')).toContainText('Fresh spacer evidence differs');
+      await expect(accepted()).toHaveAttribute('data-result-id',record.resultId);await expect(inspect()).toHaveCount(0);
+
+      let requested=false;const gate=new Promise<void>(resolve=>{release=resolve;});
+      await page.route(/spacer-reference\.worker[^/]*\.(?:js|ts)/,async route=>{requested=true;await gate;await route.continue().catch(()=>{});});
+      await standalone(content);await expect.poll(()=>requested).toBe(true);
+      await panel.getByRole('button',{name:'Cancel spacer work',exact:true}).click();release?.();
+      await expect(panel.getByTestId('spacer-status')).toContainText('Spacer work cancelled');
+      await expect(accepted()).toHaveAttribute('data-result-origin','standalone');await expect(inspect()).toHaveCount(0);
+      await page.unroute(/spacer-reference\.worker[^/]*\.(?:js|ts)/);
+
+      await page.unroute(catalog);await page.goto('/?phage=lambda&model=0');await expectExplorerIdentity(page,info);
+      const welcome=page.getByRole('dialog',{name:'Welcome to Phage Explorer'});if(await welcome.isVisible())await welcome.getByRole('button',{name:'Skip',exact:true}).click();
+      panel=await open(page);await standalone(content);
+      await expect(accepted()).toHaveAttribute('data-result-id',record.resultId);
+      await expect(panel.getByTestId('spacer-result-origin')).toContainText('Standalone saved experiment');
+      await expect(inspect()).toHaveCount(0);
+      await expect(page.getByRole('heading',{level:1})).toContainText('Enterobacteria phage lambda');
+      await panel.getByLabel('Restore and verify spacer evidence JSON',{exact:true}).setInputFiles({name:'private-evidence.json',mimeType:'application/json',buffer:Buffer.from(content)});
+      await expect(panel.getByRole('alert')).toContainText('Selected genome');
+      await expect(accepted()).toHaveAttribute('data-result-origin','standalone');await expect(inspect()).toHaveCount(0);
+      expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+      expect(requests.some(value=>value.includes(DNA)||value.includes('STANDALONE_PRIVATE_FIXTURE')||value.includes('private-evidence'))).toBe(false);
+      expect(pageErrors).toEqual([]);
+    }finally{release?.();await finalize();}
+  });
 });

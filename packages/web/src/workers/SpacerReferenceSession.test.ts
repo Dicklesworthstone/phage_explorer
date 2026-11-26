@@ -34,6 +34,40 @@ describe('private spacer workspace',()=>{
     await assert.rejects(executeSpacerRequest({kind:'replay',content:serializeAnalysisRecord(forged),genome}),/Fresh spacer evidence/);
     await assert.rejects(executeSpacerRequest({kind:'replay',content,genome:{...genome,sequence:genome.sequence+'A'}}),/Selected genome/);
   });
+  it('accepts standalone saved inputs without a genome selection and captures their origin',async()=>{
+    const f=fixture(),saved=await executeSpacerRequest(analysisRequest());
+    assert.equal(f.session.getSnapshot().acceptedOrigin,null);
+    const restored=await accept(f,{kind:'replay-standalone',content:serializeAnalysisRecord(saved.record!)});
+    assert.equal(restored.verified,true);assert.deepEqual(restored.genome,genome);
+    assert.equal(f.session.getSnapshot().acceptedOrigin,'standalone');
+    assert.equal(restored.record!.resultId,saved.record!.resultId);
+    await accept(f,analysisRequest());assert.equal(f.session.getSnapshot().acceptedOrigin,'selected-genome');
+  });
+  it('keeps the accepted origin through failed or cancelled attempts to switch replay modes',async()=>{
+    const f=fixture(),saved=await accept(f),content=serializeAnalysisRecord(saved.record!);
+    const standalone:SpacerRequest={kind:'replay-standalone',content};
+    const attached:SpacerRequest={kind:'replay',content,genome};
+    for(const [replacement,origin] of [[standalone,'selected-genome'],[attached,'standalone']] as const){
+      const before=f.session.getSnapshot().accepted;
+      const failed=f.session.run(f.scope,replacement);await flush();
+      assert.equal(f.session.getSnapshot().acceptedOrigin,origin);
+      f.workers.at(-1)!.send({kind:'error',message:'Rejected replacement'});await failed;
+      assert.strictEqual(f.session.getSnapshot().accepted,before);assert.equal(f.session.getSnapshot().acceptedOrigin,origin);
+      const cancelled=f.session.run(f.scope,replacement);await flush();const worker=f.workers.at(-1)!;
+      f.session.cancel();await cancelled;worker.send({kind:'result',value:await executeSpacerRequest(replacement)});
+      assert.strictEqual(f.session.getSnapshot().accepted,before);assert.equal(f.session.getSnapshot().acceptedOrigin,origin);
+      await accept(f,replacement);
+    }
+    assert.equal(f.session.getSnapshot().acceptedOrigin,'selected-genome');
+  });
+  it('clears standalone origin with a new source scope and rejects a late replay reply',async()=>{
+    const f=fixture(),saved=await executeSpacerRequest(analysisRequest());
+    const request:SpacerRequest={kind:'replay-standalone',content:serializeAnalysisRecord(saved.record!)};
+    await accept(f,request);const pending=f.session.run(f.scope,request);await flush();const worker=f.workers.at(-1)!;
+    f.session.setScope({});await pending;worker.send({kind:'result',value:await executeSpacerRequest(request)});
+    assert.equal(worker.terminated,true);assert.equal(f.session.getSnapshot().accepted,null);
+    assert.equal(f.session.getSnapshot().acceptedOrigin,null);
+  });
   it('reads from each repository even when numeric genome IDs collide',async()=>{
     const phage={id:1,name:'same',accession:'same'},signal=new AbortController().signal;
     const a={getFullGenomeLength:async()=>20,getSequenceWindow:async()=>sequence};
@@ -76,7 +110,7 @@ describe('private spacer workspace',()=>{
   });
   it('successful replacement library invalidates old comparisons',async()=>{
     const f=fixture();await accept(f);await accept(f,{kind:'library',content:JSON.stringify({...library,name:'replacement'})});
-    assert.equal(f.session.getSnapshot().accepted,null);assert.equal(f.session.getSnapshot().library!.name,'replacement');
+    assert.equal(f.session.getSnapshot().accepted,null);assert.equal(f.session.getSnapshot().acceptedOrigin,null);assert.equal(f.session.getSnapshot().library!.name,'replacement');
   });
   it('handles worker construction, clone, decode and protocol failures without stranded requests',async()=>{
     const f=fixture();await accept(f);const before=f.session.getSnapshot().accepted;
