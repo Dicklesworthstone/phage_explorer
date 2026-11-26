@@ -718,3 +718,122 @@ test('recorded private-genome workflow reopens, navigates, recomputes and reject
     await info.attach('workflow-verification-identities', { body: JSON.stringify({ commands: tape.commands.map(c => c.actionId), resultId: fresh.resultId, acceptedCdsCount: 1 }), contentType: 'application/json' });
   } finally { releaseWorker?.(); await finalize(); }
 });
+
+const CDS_EXPORT_INPUT = `LOCUS       CDS_ALPHA 18 bp DNA circular
+DEFINITION  CDS export alpha.
+ACCESSION   CDS_ALPHA
+FEATURES             Location/Qualifiers
+     CDS             1..9
+                     /locus_tag="duplicate"
+     CDS             complement(10..18)
+                     /locus_tag="duplicate"
+                     /pseudo
+     CDS             REMOTE.1:1..9
+ORIGIN
+        1 atgaaataattatttcat
+//
+`;
+
+test('local CDS and proteome export uses real workers, replays portable evidence and preserves accepted results on cancellation', async ({ page }, info) => {
+  test.setTimeout(120000);
+  const { pageErrors, finalize } = setupTestHarness(page, info);
+  const requests: string[] = [];
+  page.on('request', request => requests.push(`${request.url()} ${request.postData() ?? ''}`));
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    let created = 0, terminated = 0;
+    window.Worker = class extends NativeWorker {
+      private tracked: boolean;
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options); this.tracked = String(url).includes('genome-cds.worker');
+        if (this.tracked) created++;
+      }
+      terminate() { if (this.tracked) { terminated++; this.tracked = false; } super.terminate(); }
+    };
+    (window as unknown as { genomeCdsWorkerStats: () => { created: number; terminated: number } }).genomeCdsWorkerStats = () => ({ created, terminated });
+  });
+  let releaseWorker: (() => void) | undefined;
+  try {
+    await page.goto('/?phage=lambda&model=0');
+    await expectExplorerIdentity(page, info);
+    const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+    if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+    let overlay = await importPanel(page);
+    const source = CDS_EXPORT_INPUT + CDS_EXPORT_INPUT.replaceAll('CDS_ALPHA', 'CDS_BETA')
+      .replace('CDS export alpha.', 'CDS export beta.').replace('atgaaa', 'atgccc');
+    await parseInput(overlay, source);
+    await overlay.getByRole('button', { name: 'Add records to explorer', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('CDS export alpha.');
+    overlay = await importPanel(page);
+    const panel = overlay.getByRole('region', { name: 'Annotated CDS and proteome export', exact: true });
+    const button = (name: string) => panel.getByRole('button', { name, exact: true });
+    const status = panel.getByTestId('genome-cds-status');
+    const result = panel.getByTestId('genome-cds-result');
+    await button('Prepare CDS and protein export').click();
+    await expect(status).toContainText('Annotated CDS export prepared');
+    await expect(result).toContainText('2 DNA available / 0 unavailable');
+    await expect(result).toContainText('1 proteins available / 1 unavailable');
+    await expect(result).toContainText('Unsupported /pseudo qualifier');
+    const saved = await downloadText(page, () => button('Export CDS analysis JSON').click());
+    const record = await parseAnalysisRecord(saved);
+    expect(record.method.id).toBe('genome-annotated-cds-export');
+    expect(record.inputs[0].data).toEqual({ name: 'pasted-genomes.txt', text: source });
+    const rows = (record.fields.cds.value as { rows: Array<{ cds: string | null; protein: string | null }> }).rows;
+    expect(rows.map(row => row.cds)).toEqual(['ATGAAATAA', 'ATGAAATAA']);
+    expect(rows.map(row => row.protein)).toEqual(['MK*', null]);
+    const dna = await downloadText(page, () => button('Export CDS DNA FASTA').click());
+    expect(dna.split('\n').filter(line => line === 'ATGAAATAA')).toHaveLength(2);
+    expect(new Set(dna.split('\n').filter(line => line.startsWith('>')).map(line => line.split(' ')[0])).size).toBe(2);
+    const proteins = await downloadText(page, () => button('Export protein FASTA').click());
+    expect(proteins).toContain('exported=1 omitted=1'); expect(proteins).toMatch(/\nMK\*\n$/);
+    const tsv = await downloadText(page, () => button('Export CDS table TSV').click());
+    expect(tsv).toContain('Unsupported /pseudo qualifier'); expect(tsv).toContain('REMOTE.1:1..9');
+    const replay = (content: string) => panel.getByLabel('Replay CDS export JSON', { exact: true })
+      .setInputFiles({ name: 'saved-cds.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+    await replay(saved);
+    await expect(status).toContainText('Verified CDS replay');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    await replay('{');
+    await expect(panel.getByRole('alert')).toBeVisible();
+    await expect(status).toContainText('Previous accepted export preserved');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    await expect(button('Export CDS analysis JSON')).toBeEnabled();
+
+    const workerUrl = /genome-cds\.worker(?:-[^/]+\.js|\.ts)/;
+    let requested = false;
+    const holdWorker = async () => {
+      requested = false;
+      const gate = new Promise<void>(resolve => { releaseWorker = resolve; });
+      await page.route(workerUrl, async route => { requested = true; await gate; await route.continue().catch(() => {}); });
+    };
+    await holdWorker();
+    await button('Prepare CDS and protein export').click();
+    await expect.poll(() => requested).toBe(true);
+    await button('Cancel CDS export').click();
+    await expect(status).toContainText('Previous accepted export preserved');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    releaseWorker!(); await page.unroute(workerUrl);
+    await expect(button('Export protein FASTA')).toBeEnabled();
+
+    await holdWorker();
+    await button('Prepare CDS and protein export').click();
+    await expect.poll(() => requested).toBe(true);
+    const choose = panel.getByLabel('CDS export genome', { exact: true });
+    const otherId = await choose.locator('option').filter({ hasText: 'CDS export beta.' }).getAttribute('value');
+    await choose.selectOption(otherId!);
+    await expect(result).toHaveCount(0);
+    releaseWorker!(); await page.unroute(workerUrl);
+    await replay(saved);
+    await expect(panel.getByRole('alert')).toContainText('different genome');
+    await expect(result).toHaveCount(0);
+    await choose.selectOption(String(record.parameters.record));
+    await replay(saved);
+    await expect(status).toContainText('Verified CDS replay');
+    await expect(result).toHaveAttribute('data-result-id', record.resultId);
+    const workers = await page.evaluate(() => (window as unknown as { genomeCdsWorkerStats: () => { created: number; terminated: number } }).genomeCdsWorkerStats());
+    expect(workers.created).toBeGreaterThanOrEqual(5); expect(workers.terminated).toBe(workers.created);
+    expect(requests.some(request => request.includes('atgaaataattatttcat') || request.includes('ATGAAATAATTATTTCAT') || request.includes('CDS export alpha'))).toBe(false);
+    expect(pageErrors).toEqual([]);
+    await info.attach('cds-export-identities', { body: JSON.stringify({ resultId: record.resultId, workers, selectedCds: 2, proteinsAvailable: 1 }), contentType: 'application/json' });
+  } finally { releaseWorker?.(); await finalize(); }
+});

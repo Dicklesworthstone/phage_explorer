@@ -11,6 +11,7 @@ import { useOverlay } from './OverlayProvider';
 import { ResearchWorkflowPanel, runResearchWorker } from './ResearchWorkflowPanel';
 import { CodonReferencePanel } from './CodonReferencePanel';
 import { SavedResearchPanel } from './SavedResearchPanel';
+import { GenomeCdsPanel } from './GenomeCdsPanel';
 
 export function GenomeImportOverlay({ repository = null, onSelectPhage }: {
   repository?: PhageRepository | null;
@@ -246,6 +247,7 @@ export function GenomeImportOverlay({ repository = null, onSelectPhage }: {
           <button type="button" className="btn btn-primary" onClick={commit}>Add records to explorer</button>
         </>}
         {genomes.length > 0 && <p>{genomes.length} local records in this session. Deposited structures, protein embeddings and pre-computed host-reference annotations are unavailable for imported records. Supply your own codon-count reference below for reference-relative CDS scoring.</p>}
+        <GenomeCdsPanel />
         <CodonReferencePanel />
         <ResearchWorkflowPanel onSelectPhage={onSelectPhage} />
       </div>

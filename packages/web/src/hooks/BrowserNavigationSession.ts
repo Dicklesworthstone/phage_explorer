@@ -5,7 +5,7 @@ import {
   type SavedView, type NamedSavedView, type SavedViewSource,
 } from '../../../core/src/saved-views';
 import { commandValuesEqual } from '../../../core/src/command-session';
-import { PhageSelectionSession, type PhageSelection } from './PhageSelectionSession';
+import type { PhageSelectionSession, PhageSelection } from './PhageSelectionSession';
 import type { PhageRepository } from '../db/types';
 import { readLocalTextFile } from '../utils/fileSystem';
 

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { SAVED_VIEW_LIMITS, type SavedView } from '../../../../core/src/saved-views';
-import { BrowserNavigationSession, readSavedViewsFile } from '../../hooks/BrowserNavigationSession';
+import { type BrowserNavigationSession, readSavedViewsFile } from '../../hooks/BrowserNavigationSession';
 import { downloadString } from '../../utils/export';
 import { Overlay } from './Overlay';
 import { SavedResearchPanel } from './SavedResearchPanel';

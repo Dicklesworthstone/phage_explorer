@@ -7,7 +7,6 @@ import { usePhageStore } from '@phage-explorer/state';
 import { importLocalGenomes, exportLocalGenomeBundle } from '../../core/src/genome-import';
 import { createLocalGenomeRepository } from '../../db-runtime/src/local-genomes';
 import type { PhageRepository } from '../../db-runtime/src/types';
-import type { PhageFull } from '../../core/src/types';
 import { TerminalNavigationSession, parseTerminalViews, serializeTerminalViews, TERMINAL_VIEW_LIMITS } from './terminal-navigation-session';
 
 const tick = () => new Promise<void>(resolve => queueMicrotask(resolve));

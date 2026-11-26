@@ -5,6 +5,7 @@ import { resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer, loadConfigFromFile, mergeConfig, type InlineConfig } from 'vite';
 import type { ProgressiveManifest } from '../src/db/progressive-manifest';
+import type * as DatabaseLoaderModule from '../src/db/DatabaseLoader';
 
 interface Publication { directory: string; manifest: ProgressiveManifest; name: string; sequence: string }
 interface Fixture {
@@ -241,7 +242,7 @@ test('two v2 dataset URLs with the same dbName keep separate offline snapshots',
   await page.route(url => url.searchParams.has('tenant'), route => route.abort('internetdisconnected'));
   const observed = await page.evaluate(async () => {
     const moduleUrl = '/src/db/DatabaseLoader.ts';
-    const { DatabaseLoader } = await import(moduleUrl) as typeof import('../src/db/DatabaseLoader');
+    const { DatabaseLoader } = await import(moduleUrl) as typeof DatabaseLoaderModule;
     const dataResponse = await fetch('/phage.db');
     const manifestResponse = await fetch('/phage.db.manifest.json');
     if (!dataResponse.ok || !manifestResponse.ok) throw new Error('Version-2 fixture is unavailable.');
