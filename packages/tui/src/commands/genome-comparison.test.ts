@@ -7,7 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { PassThrough, Readable, Writable } from 'node:stream';
 import { importLocalGenomes } from '../../../core/src/genome-import';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { createGenomeComparisonExperiment, replayGenomeComparisonExperiment, type ComparisonGenomeInput } from '@phage-explorer/comparison';
+import {
+  createGenomeComparisonExperiment, replayGenomeComparisonExperiment, type ComparisonGenomeInput,
+  createRegionComparisonExperiment, replayRegionComparisonExperiment,
+  exportRegionComparisonFasta, exportRegionComparisonTsv, REGION_COMPARISON_METHOD,
+} from '@phage-explorer/comparison';
 import { parseGenomeComparisonCommand, runGenomeComparisonJob, runGenomeComparisonCommand } from './genome-comparison';
 
 const sequenceA = 'ATGAAACCCCCCGGGTTT', sequenceB = sequenceA + 'A';
@@ -88,7 +92,7 @@ describe('portable genome comparison command', () => {
     assert.equal(parseGenomeComparisonCommand([]), null);
     assert.deepEqual(parseGenomeComparisonCommand(['run', 'a.gb', '-', '--params', 'parameters.json', '--output', '-']),
       { operation: 'run', inputA: 'a.gb', inputB: '-', parameters: 'parameters.json', output: undefined });
-    assert.deepEqual(parseGenomeComparisonCommand(['replay', '-']), { operation: 'replay', input: '-', output: undefined });
+    assert.deepEqual(parseGenomeComparisonCommand(['replay', '-']), { operation: 'replay', input: '-', output: undefined, format: 'json' });
     assert.throws(() => parseGenomeComparisonCommand(['run', '-', '-']), /one input/);
     assert.throws(() => parseGenomeComparisonCommand(['run', 'a.fa', '-', '--params', '-']), /one input/);
     assert.throws(() => parseGenomeComparisonCommand(['replay', 'record.json', '--params', 'new.json']), /override/);
@@ -170,5 +174,104 @@ describe('portable genome comparison command', () => {
     try { assert.equal(await command, 130); }
     finally { clearTimeout(timer); blocked.end(); }
     assert.equal(streams.output(), ''); await assert.rejects(stat(destination), /ENOENT/);
+  });
+});
+
+describe('source-coordinate region comparison command', () => {
+  const inputA = { name: 'source-a.fa', text: '>ALPHA\nTTACGTAACC\n>UNSELECTED\nGGGG\n' };
+  const inputB = { name: 'source-b.fa', text: '>BETA\nGGTTACGTAA\n' };
+  const regionOptions = {
+    recordA: 'ALPHA', regionA: { start: 2, end: 8, strand: '+' as const },
+    regionB: { start: 2, end: 8, strand: '-' as const },
+  };
+
+  it('requires explicit valid ranges and keeps replay selections immutable', () => {
+    assert.deepEqual(parseGenomeComparisonCommand(['regions', 'a.fa', '-', '--record-a', 'ALPHA',
+      '--region-a', '3:8', '--region-b', '3:8', '--strand-b', '-', '--format', 'fasta']), {
+      operation: 'regions', inputA: 'a.fa', inputB: '-', output: undefined, format: 'fasta',
+      options: { ...regionOptions, recordB: undefined },
+    });
+    for (const args of [
+      ['regions', 'a.fa', 'b.fa'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '0:8', '--region-b', '1:8'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '8:3', '--region-b', '1:8'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '1:9007199254740992', '--region-b', '1:8'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '1:8', '--region-b', '1:8', '--strand-a', 'reverse'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '1:8', '--region-b', '1:8', '--params', 'settings.json'],
+      ['regions', '-', '-', '--region-a', '1:8', '--region-b', '1:8'],
+      ['regions', 'a.fa', 'b.fa', '--region-a', '1:8', '--region-a', '2:8', '--region-b', '1:8'],
+      ['replay', '-', '--record-a', 'ALPHA'],
+      ['replay', '-', '--strand-b', '-'],
+      ['run', 'a.fa', 'b.fa', '--region-a', '1:8'],
+      ['run', 'a.fa', 'b.fa', '--format', 'fasta'],
+      ['inspect', 'a.fa', '--format', 'tsv'],
+    ]) assert.throws(() => parseGenomeComparisonCommand(args), args.join(' '));
+  });
+
+  it('real native workers align selected reverse-strand source intervals and replay both complete exports', async () => {
+    const content = await runGenomeComparisonJob({ operation: 'regions', genomeA: inputA, genomeB: inputB, options: regionOptions });
+    const expected = await createRegionComparisonExperiment(inputA, inputB, regionOptions);
+    assert.equal(content.trimEnd(), serializeAnalysisRecord(expected.record));
+    const replayed = await replayRegionComparisonExperiment(content);
+    assert.equal(replayed.result.stats.distance, 0);
+    assert.equal(replayed.result.alignedA, 'ACGTAA');
+    assert.equal(replayed.result.alignedB, 'ACGTAA');
+    assert.equal(replayed.inputA.text, inputA.text, 'the unselected original record remains embedded, not a derivative FASTA');
+    assert.equal(replayed.result.sourceA.genomeLength, 10);
+    assert.equal(replayed.result.sourceB.genomeLength, 10);
+    assert.equal(await runGenomeComparisonJob({ operation: 'replay', content }), content);
+    assert.equal(await runGenomeComparisonJob({ operation: 'replay', content, format: 'fasta' }), exportRegionComparisonFasta(expected));
+    assert.equal(await runGenomeComparisonJob({ operation: 'replay', content, format: 'tsv' }), exportRegionComparisonTsv(expected));
+    await assert.rejects(runGenomeComparisonJob({ operation: 'regions', genomeA: inputA, genomeB: inputB,
+      options: { regionA: regionOptions.regionA, regionB: regionOptions.regionB } }), /record|multiple|choose/i);
+    await assert.rejects(runGenomeComparisonJob({ operation: 'regions', genomeA: inputA, genomeB: inputB,
+      options: { ...regionOptions, regionB: { ...regionOptions.regionB, end: 11 } } }), /region|interval|range|length|bounds|outside/i);
+    const controller = new AbortController();
+    const active = runGenomeComparisonJob({ operation: 'regions', genomeA: inputA, genomeB: inputB, options: regionOptions }, controller.signal);
+    controller.abort();
+    await assert.rejects(active, /cancelled/);
+  });
+
+  it('inspects multi-record sources and runs the real launcher with exclusive output and portable replay', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'phage-region-cli-'));
+    const alpha = join(directory, inputA.name), beta = join(directory, inputB.name), destination = join(directory, 'regions.json');
+    await writeFile(alpha, inputA.text); await writeFile(beta, inputB.text);
+    const inspected = await processRun(['inspect', alpha], directory);
+    assert.equal(inspected.code, 0, inspected.stderr);
+    const records = JSON.parse(inspected.stdout).records as Array<{ accession: string; genomeLength: number; contentId: string }>;
+    assert.deepEqual(records.map(record => [record.accession, record.genomeLength]), [['ALPHA', 10], ['UNSELECTED', 4]]);
+    const args = ['regions', alpha, beta, '--record-a', records[0].contentId,
+      '--region-a', '3:8', '--region-b', '3:8', '--strand-b', '-', '--output', destination];
+    const created = await processRun(args, directory);
+    assert.equal(created.code, 0, created.stderr); assert.equal(created.stdout, '');
+    assert.equal((await stat(destination)).mode & 0o777, 0o600);
+    const saved = await readFile(destination, 'utf8');
+    assert.equal((await parseAnalysisRecord(saved)).method.id, REGION_COMPARISON_METHOD.id);
+    const restored = await processRun(['replay', '-', '--format', 'fasta'], directory, saved);
+    assert.equal(restored.code, 0, restored.stderr);
+    assert.equal(restored.stdout, exportRegionComparisonFasta(await replayRegionComparisonExperiment(saved)));
+    const collision = await processRun(args, directory);
+    assert.equal(collision.code, 1); assert.match(collision.stderr, /already exists/);
+    assert.equal(await readFile(destination, 'utf8'), saved);
+  }, 15000);
+
+  it('rejects rehashed false region evidence before creating a requested output', async () => {
+    const accepted = await createRegionComparisonExperiment(inputA, inputB, regionOptions);
+    const old = accepted.record;
+    const fields = structuredClone(old.fields);
+    const resultField = fields.comparison;
+    assert.equal(resultField.kind, 'sequence-score');
+    (resultField.value as { stats: { distance: number } }).stats.distance = 9;
+    const forged = await createAnalysisRecord({ method: old.method,
+      inputs: old.inputs.map(({ id, accession, source, description, data }) => ({ id, accession, source, description, data })),
+      parameters: old.parameters, seed: old.seed, references: old.references, fields });
+    const content = serializeAnalysisRecord(forged);
+    await parseAnalysisRecord(content);
+    const directory = await mkdtemp(join(tmpdir(), 'phage-region-forgery-')), destination = join(directory, 'refused.tsv');
+    const streams = io(content);
+    assert.equal(await runGenomeComparisonCommand(['replay', '-', '--format', 'tsv', '--output', destination], streams), 1);
+    assert.equal(streams.output(), '');
+    assert.match(streams.errors(), /match|recomput|evidence|differ/i);
+    await assert.rejects(stat(destination), /ENOENT/);
   });
 });

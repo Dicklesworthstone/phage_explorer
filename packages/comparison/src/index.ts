@@ -92,6 +92,7 @@ export {
   createSimilarityBar,
 } from './comparison-engine';
 export * from './comparison-experiment';
+export * from './region-comparison-experiment';
 
 // HGT provenance tracer
 export {

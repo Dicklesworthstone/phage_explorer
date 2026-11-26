@@ -293,7 +293,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       '--export-bundle saves the complete original inputs and selected local view on exit.\n' +
       'The destination must not exist. Input/view bundles are separate from command recordings.\n\n' +
       'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
-      '  phage-explorer comparison run|replay ...\n' +
+      '  phage-explorer comparison inspect|run|regions|replay ...\n' +
       '  phage-explorer genome-cds inspect|export|replay ...\n' +
       '  phage-explorer alignment-compatibility prepare|inspect|analyze|replay ...\n' +
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +

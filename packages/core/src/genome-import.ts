@@ -207,11 +207,14 @@ export function parseLocalFeatureLocation(location: string, length: number, dept
 }
 
 function validateSequence(sequence: string, accession: string): string {
-  const normalized = sequence.replace(/\s/g, '').toUpperCase();
-  if (!normalized) throw new Error(`${accession}: sequence is empty`);
-  if (/[^ACGTRYSWKMBDHVN]/.test(normalized)) {
+  const symbols = sequence.replace(/\s/g, '');
+  if (!symbols) throw new Error(`${accession}: sequence is empty`);
+  // Validate ASCII symbols before uppercasing: Unicode case mappings can
+  // otherwise turn one invalid source character into multiple apparent bases.
+  if (/[^ACGTRYSWKMBDHVNacgtryswkmbdhvn]/.test(symbols)) {
     throw new Error(`${accession}: expected IUPAC DNA bases (ACGT and ambiguity codes); RNA U, gaps, digits and protein letters are not accepted`);
   }
+  const normalized = symbols.toUpperCase();
   if (normalized.length > GENOME_IMPORT_LIMITS.bases) throw new Error('Input exceeds the 5,000,000-base limit');
   return normalized;
 }
