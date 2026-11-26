@@ -421,6 +421,8 @@ curl -fsSL .../install.sh | bash -s -- --easy-mode
 
 A fresh install includes the catalog. Running the installer again keeps an existing
 `~/.phage-explorer/phage.db` unless you request `--with-database`.
+When the kept catalog differs from the one the release ships, the installer says so and
+prints the `--with-database` command that replaces it.
 The installer verifies the binary and any downloaded database against the release's
 `sha256.txt` (using `sha256sum`, `shasum` or `openssl`) before it replaces
 anything. A missing or mismatched checksum, a missing hash tool, or a failed

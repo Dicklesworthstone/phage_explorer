@@ -508,6 +508,24 @@ release_sha256() {
   expected_sha256 "$1" || true
 }
 
+# Warn, and change nothing, when the catalog being kept is not the one this
+# release ships. Only the sha256.txt already downloaded for the binary is
+# read: no extra download. A source build, an unresolved version, skipped
+# checksums, a missing or ambiguous phage.db entry, or no hash tool leaves
+# nothing reliable to compare against, so the installer stays silent.
+warn_if_kept_catalog_differs() {
+  local expected actual
+  [[ $FROM_SOURCE -eq 0 && -n "$VERSION" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
+  [[ -n "$CHECKSUMS_FILE" && -s "$CHECKSUMS_FILE" ]] || return 0
+  expected="$(awk 'length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == "phage.db" || $2 == "*phage.db") {print tolower($1)}' "$CHECKSUMS_FILE" | sort -u)"
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 0
+  actual="$(sha256_of "$DB_PATH")" || return 0
+  [[ "$actual" != "$expected" ]] || return 0
+  log_warn "The kept catalog at $DB_PATH differs from the catalog shipped with $VERSION."
+  log_warn "To replace it with the $VERSION catalog, re-run the installer with the same options plus --with-database, e.g.:"
+  log_warn "  curl -fsSL https://raw.githubusercontent.com/$OWNER/$REPO/main/install.sh | bash -s -- --with-database"
+}
+
 if [[ $FROM_SOURCE -eq 0 && -n "$VERSION" ]]; then
   STAGED_BIN="$(new_staging_file "$DEST" "$BINARY")"
   log "Downloading $ASSET_NAME..."
@@ -571,6 +589,7 @@ log_step 5 "Database setup..."
 if [[ "$DATABASE_MODE" == missing && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
   [[ -f "$DB_PATH" ]] || die "Expected an existing catalog file at $DB_PATH; $NOT_CHANGED"
   log "Keeping the existing catalog at $DB_PATH (use --with-database to replace it)."
+  warn_if_kept_catalog_differs
 elif [[ "$DATABASE_MODE" != skip ]]; then
   mkdir -p "$DATA_DIR" || die "Failed to create directory: $DATA_DIR; $NOT_CHANGED"
   if [[ "$DATABASE_MODE" == missing ]]; then

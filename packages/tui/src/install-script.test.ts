@@ -255,6 +255,48 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     expect(run.stdout).toContain('Keeping the existing catalog');
   });
 
+  test('a default upgrade over a different catalog keeps it, warns and names the replacing command', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true, databaseMode: 'default' });
+    expect(run.code).toBe(0);
+    expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+    expect(run.stderr).toContain(`differs from the catalog shipped with ${VERSION}`);
+    expect(run.stderr).toContain('install.sh | bash -s -- --with-database');
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('a default upgrade over the release catalog keeps it without a warning', () => {
+    const prepared = prepareInstall({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true, databaseMode: 'default' });
+    writeFileSync(join(prepared.home, '.phage-explorer', 'phage.db'), GOOD_DB);
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(run.stdout).toContain('Keeping the existing catalog');
+    expect(run.stderr).not.toContain('differs from the catalog');
+  });
+
+  test('stays silent about a kept catalog when the release gives nothing reliable to compare', () => {
+    const cases: [Release, string[]][] = [
+      [{ binary: GOOD_BINARY, db: GOOD_DB, sums: [`${sha256(GOOD_BINARY)}  ${ASSET}`] }, []],
+      [{ binary: GOOD_BINARY, db: GOOD_DB, sums: null, sidecar: `${sha256(GOOD_BINARY)}  ${ASSET}\n` }, []],
+      [{ binary: GOOD_BINARY, db: GOOD_DB }, ['--insecure-skip-checksums']],
+    ];
+    for (const [release, args] of cases) {
+      const run = runInstaller(release, { previous: true, databaseMode: 'default', args });
+      expect(run.code).toBe(0);
+      expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+      expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+      expect(run.stderr).not.toContain('differs from the catalog');
+    }
+  });
+
+  test('--with-database replaces a different catalog without the kept-catalog warning', () => {
+    const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB }, { previous: true });
+    expect(run.code).toBe(0);
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(run.stderr).not.toContain('differs from the catalog');
+  });
+
   test('a binary-only install leaves the catalog directory uncreated', () => {
     const run = runInstaller({ binary: GOOD_BINARY, db: GOOD_DB, plainDb: false }, { databaseMode: 'skip' });
     expect(run.code).toBe(0);
