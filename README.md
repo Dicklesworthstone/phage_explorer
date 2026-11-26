@@ -127,6 +127,12 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/phage_explorer/m
 phage-explorer
 ```
 
+Rerun the one-liner to upgrade. The installer checks the existing catalog against
+published release checksums and updates an unmodified older release catalog
+alongside the binary. It keeps custom catalogs and catalogs with SQLite
+journals. Use `--without-database` for a binary-only upgrade or
+`--with-database` to explicitly replace the catalog.
+
 On current `main`, `phage-explorer --catalog-info` prints the resolved SQLite path,
 logical content version, phage count, and gene count as JSON. Detailed terminal help
 shows the active catalog path. Set `PHAGE_EXPLORER_DB_PATH` to select a specific

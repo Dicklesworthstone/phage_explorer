@@ -58,7 +58,7 @@ const HASH_TOOLS = ['sha256sum', 'shasum', 'openssl', 'perl'];
 function toolDir(
   root: string,
   releaseDir: string,
-  opts: { hashTools: boolean | string[]; flock?: boolean; stallOn?: string; stallMarker?: string }
+  opts: { hashTools: boolean | string[]; flock?: boolean; stallOn?: string; stallMarker?: string; version: string }
 ) {
   const dir = join(root, 'tools');
   mkdirSync(dir);
@@ -81,7 +81,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$url" in
-  https://github.com/Dicklesworthstone/phage_explorer/releases/download/${VERSION}/*) ;;
+  https://github.com/Dicklesworthstone/phage_explorer/releases/download/${opts.version}/*) ;;
   *) exit 22 ;;
 esac
 src="${releaseDir}/\${url##*/}"
@@ -155,6 +155,7 @@ interface InstallOptions {
   flock?: boolean;
   previous?: boolean;
   databaseMode?: 'default' | 'skip' | 'replace';
+  version?: string;
   destName?: string;
   homeName?: string;
   tmpName?: string;
@@ -179,6 +180,7 @@ function prepareInstall(release: Release, opts: InstallOptions = {}) {
   }
   const releaseDir = makeRelease(root, release);
   const tools = toolDir(root, releaseDir, {
+    version: opts.version ?? VERSION,
     hashTools: opts.hashTools ?? true,
     flock: opts.flock,
     stallOn: opts.stallOn,
@@ -188,8 +190,29 @@ function prepareInstall(release: Release, opts: InstallOptions = {}) {
   const databaseArgs = opts.databaseMode === 'default' ? [] :
     [opts.databaseMode === 'skip' ? '--without-database' : '--with-database'];
   const argv = [SHELL, INSTALLER, '--dest', dest, ...databaseArgs, ...(opts.args ?? [])];
-  const env = { PATH: tools, HOME: home, TMPDIR: tmp, VERSION };
+  const env = { PATH: tools, HOME: home, TMPDIR: tmp, VERSION: opts.version ?? VERSION };
   return { argv, env, home, dest, tmp, stallMarker };
+}
+
+const V141_DB_SHA = '245d0b5115a28d780637816f1b9524b253620d11363a1ab4fcd9749043694b99';
+
+// Model the identity of the old release without checking a 3 MB binary into the
+// test suite. The opt-in published upgrade below exercises the actual v1.4.1 bytes.
+function prepareReleasedCatalog(release: Release, opts: InstallOptions = {}) {
+  const prepared = prepareInstall(release, { ...opts, previous: true, databaseMode: 'default' });
+  const wrapper = join(prepared.tmp, 'old-release');
+  mkdirSync(wrapper);
+  const hashTool = Bun.which('sha256sum');
+  const command = hashTool ? `"${hashTool}"` : `"${Bun.which('shasum')}" -a 256`;
+  writeFileSync(join(wrapper, 'sha256sum'), `#!${SHELL}
+sum="$(${command})" || exit 1
+case "\${sum%% *}" in
+  ${sha256(OLD_DB)}) echo '${V141_DB_SHA}  -' ;;
+  *) echo "$sum" ;;
+esac
+`, { mode: 0o755 });
+  prepared.env.PATH = wrapper + ':' + prepared.env.PATH;
+  return prepared;
 }
 
 function runPrepared(prepared: ReturnType<typeof prepareInstall>): Run {
@@ -253,6 +276,79 @@ describe.skipIf(!supported)('install.sh on a stock shell without flock', () => {
     expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
     expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
     expect(run.stdout).toContain('Keeping the existing catalog');
+  });
+
+  test('a default upgrade replaces an unmodified older release catalog with verified bytes', () => {
+    const run = runPrepared(prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB }));
+    expect(run.code).toBe(0);
+    expect(run.stdout).toContain('Updating the unmodified release catalog');
+    expect(installedDb(run)).toEqual(Buffer.from(GOOD_DB));
+    expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('failure to publish the binary restores the automatically upgraded catalog', () => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB });
+    const wrapper = join(prepared.tmp, 'old-release');
+    writeFileSync(join(wrapper, 'mv'), `#!${SHELL}
+case "$2" in */.phage-explorer.download.*) exit 1 ;; esac
+exec "${Bun.which('mv')}" "$@"
+`, { mode: 0o755 });
+    const run = runPrepared(prepared);
+    expect(run.code).not.toBe(0);
+    expect(run.stdout).toContain('Updating the unmodified release catalog');
+    expectUnchanged(run);
+  });
+
+  test('a pinned downgrade and a release missing its database checksum both preserve a known catalog', () => {
+    const release = { binary: GOOD_BINARY, db: GOOD_DB };
+    const cases = [
+      prepareReleasedCatalog(release, { version: 'v1.4.0' }),
+      prepareReleasedCatalog({ ...release, sums: [`${sha256(GOOD_BINARY)}  ${ASSET}`] }),
+      prepareReleasedCatalog(release, { args: ['--insecure-skip-checksums'] }),
+    ];
+    for (const prepared of cases) {
+      const run = runPrepared(prepared);
+      expect(run.code).toBe(0);
+      expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+      expect(installedBinary(run)).toEqual(Buffer.from(GOOD_BINARY));
+    }
+  });
+
+  test('a catalog edited while the new database downloads survives the upgrade', () => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB });
+    const wrapper = join(prepared.tmp, 'old-release');
+    writeFileSync(join(wrapper, 'cp'), `#!${SHELL}
+case "$1" in */release/phage.db) echo 'local edits' > "$HOME/.phage-explorer/phage.db" ;; esac
+exec "${Bun.which('cp')}" "$@"
+`, { mode: 0o755 });
+    const run = runPrepared(prepared);
+    expect(run.code).not.toBe(0);
+    expect(run.stderr).toContain('catalog changed during the upgrade');
+    expect(installedDb(run).toString()).toBe('local edits\n');
+    expect(installedBinary(run)).toEqual(Buffer.from(OLD_BINARY));
+    expect(leftovers(run)).toEqual([]);
+  });
+
+  test('a symlink to an older catalog remains a symlink', () => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB });
+    const catalog = join(prepared.home, '.phage-explorer', 'phage.db');
+    renameSync(catalog, catalog + '.managed');
+    symlinkSync(catalog + '.managed', catalog);
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(lstatSync(catalog).isSymbolicLink()).toBe(true);
+    expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+  });
+
+  test('an older catalog with a local SQLite journal is preserved', () => {
+    const prepared = prepareReleasedCatalog({ binary: GOOD_BINARY, db: GOOD_DB });
+    const journal = join(prepared.home, '.phage-explorer', 'phage.db-wal');
+    writeFileSync(journal, 'pending local updates');
+    const run = runPrepared(prepared);
+    expect(run.code).toBe(0);
+    expect(installedDb(run)).toEqual(Buffer.from(OLD_DB));
+    expect(readFileSync(journal, 'utf8')).toBe('pending local updates');
   });
 
   test('a default upgrade over a different catalog keeps it, warns and names the replacing command', () => {
@@ -690,21 +786,20 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
   // Defaults to the release this tree is versioned as.
   const liveVersion = process.env.PHAGE_INSTALLER_LIVE_VERSION ?? `v${treeVersion}`;
 
-  function runLive(extra: string[]) {
-    const root = mkdtempSync(join(tmpdir(), 'phage-install-live-'));
+  function runLive(extra: string[], version = liveVersion, root = mkdtempSync(join(tmpdir(), 'phage-install-live-'))) {
     const home = join(root, 'home');
     const dest = join(root, 'bin');
-    mkdirSync(home);
-    const result = Bun.spawnSync([SHELL, INSTALLER, '--dest', dest, '--version', liveVersion, ...extra], {
+    mkdirSync(home, { recursive: true });
+    const result = Bun.spawnSync([SHELL, INSTALLER, '--dest', dest, '--version', version, ...extra], {
       env: { PATH: '/usr/bin:/bin', HOME: home, TMPDIR: root },
       stdin: 'ignore',
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    return { result, home, dest };
+    return { result, home, dest, root };
   }
 
-  test('installs the published binary and database with their published checksums', async () => {
+  test.each(['fresh', 'upgrade'] as const)('verifies the published binary and catalog on %s install', async (mode) => {
     const sums = await (
       await fetch(`https://github.com/Dicklesworthstone/phage_explorer/releases/download/${liveVersion}/sha256.txt`, {
         headers: { 'User-Agent': 'OpenAI File Downloader, XaiImageApiFetch/1.0' },
@@ -716,7 +811,14 @@ describe.skipIf(!supported || process.env.PHAGE_INSTALLER_LIVE !== '1')('install
         return [name.replace(/^\*/, ''), sum.toLowerCase()] as const;
       })
     );
-    const { result, home, dest } = runLive(['--with-database']);
+    let previousRoot: string | undefined;
+    if (mode === 'upgrade') {
+      const previous = runLive(['--with-database'], 'v1.4.1');
+      expect(previous.result.exitCode).toBe(0);
+      expect(sha256(readFileSync(join(previous.home, '.phage-explorer', 'phage.db')))).toBe(V141_DB_SHA);
+      previousRoot = previous.root;
+    }
+    const { result, home, dest } = runLive(mode === 'fresh' ? ['--with-database'] : [], liveVersion, previousRoot);
     expect(result.stderr.toString()).not.toContain('Another installation');
     expect(result.exitCode).toBe(0);
     expect(sha256(readFileSync(join(dest, 'phage-explorer')))).toBe(published.get(ASSET)!);

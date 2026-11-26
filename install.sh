@@ -101,8 +101,9 @@ ${BOLD}Options:${NC}
   --dest DIR         Install directory (default: ~/.local/bin)
   --system           Install to /usr/local/bin (may require sudo)
   --from-source      Skip binary download, build from source
-  --with-database    Install or replace the catalog (default: install if missing)
+  --with-database    Replace the catalog, including a locally modified one
   --without-database Install the binary only, leaving the catalog alone
+                     By default, install a missing catalog or update a known older release.
   --easy-mode        Auto-update PATH in shell rc files
   --verify           Accepted for compatibility: the binary and the database
                      are always verified against the release's SHA-256 sums
@@ -508,19 +509,57 @@ release_sha256() {
   expected_sha256 "$1" || true
 }
 
-# Warn, and change nothing, when the catalog being kept is not the one this
-# release ships. Only the sha256.txt already downloaded for the binary is
-# read: no extra download. A source build, an unresolved version, skipped
-# checksums, a missing or ambiguous phage.db entry, or no hash tool leaves
-# nothing reliable to compare against, so the installer stays silent.
-warn_if_kept_catalog_differs() {
-  local expected actual
+# Last stable release to ship each distinct phage.db (GitHub release asset SHA-256).
+# Require a forward version transition, even when the user pins an older binary.
+catalog_predates_release() {
+  local last
+  case "$1" in
+    7c1ca2c973c2ad2ce704dfcb209aa9f31de64c603ea43168d64d284384e9977d) last=1.1.0 ;;
+    fbcf23cb2cddb01ac6524d521064eecab30b98755710d3de2a9700d81008fbd5) last=1.2.0 ;;
+    0fecd0ad60df3570039d3a0696854704551e168eeb86d05a225b1d8cc3c204b1) last=1.3.0 ;;
+    1eac7c6fb8d578ae5ea0077e5281e068ada6957e3ff0c323c26fd138f2814a91) last=1.3.1 ;;
+    2023229a666bb626cda85e32045e10fc157937686ea2137395994d43f8168235) last=1.4.0 ;;
+    245d0b5115a28d780637816f1b9524b253620d11363a1ab4fcd9749043694b99) last=1.4.1 ;;
+    c07f30d2019fea6ca5d9b5d244a5f9aea84d01e2997580a49bfa9dcb4783e9b9) last=1.9.0 ;;
+    *) return 1 ;;
+  esac
+  [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  awk -v target="${VERSION#v}" -v previous="$last" 'BEGIN {
+    split(target, t, /[.]/)
+    split(previous, p, /[.]/)
+    for (i = 1; i <= 3; i++) {
+      if (t[i]+0 != p[i]+0) exit !(t[i]+0 > p[i]+0)
+    }
+    exit 1
+  }'
+}
+
+# A symlink may be intentional, and a SQLite sidecar may hold local writes
+# that are not represented in the main file's checksum.
+standalone_catalog() {
+  local suffix
+  [[ -f "$DB_PATH" && ! -L "$DB_PATH" ]] || return 1
+  for suffix in -wal -shm -journal; do
+    [[ ! -e "$DB_PATH$suffix" && ! -L "$DB_PATH$suffix" ]] || return 1
+  done
+}
+
+AUTO_PREVIOUS_SHA=""
+EXPECTED_DB=""
+select_existing_catalog() {
+  local actual
+  DATABASE_MODE=keep
   [[ $FROM_SOURCE -eq 0 && -n "$VERSION" && $SKIP_CHECKSUMS -eq 0 ]] || return 0
-  [[ -n "$CHECKSUMS_FILE" && -s "$CHECKSUMS_FILE" ]] || return 0
-  expected="$(awk 'length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ && ($2 == "phage.db" || $2 == "*phage.db") {print tolower($1)}' "$CHECKSUMS_FILE" | sort -u)"
-  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 0
+  EXPECTED_DB="$(release_sha256 phage.db)"
+  [[ -n "$EXPECTED_DB" ]] || return 0
   actual="$(sha256_of "$DB_PATH")" || return 0
-  [[ "$actual" != "$expected" ]] || return 0
+  [[ "$actual" != "$EXPECTED_DB" ]] || return 0
+  if [[ "$OWNER/$REPO" == Dicklesworthstone/phage_explorer ]] && standalone_catalog && catalog_predates_release "$actual"; then
+    DATABASE_MODE=replace
+    AUTO_PREVIOUS_SHA="$actual"
+    log "Updating the unmodified release catalog at $DB_PATH to the catalog shipped with $VERSION."
+    return 0
+  fi
   log_warn "The kept catalog at $DB_PATH differs from the catalog shipped with $VERSION."
   log_warn "To replace it with the $VERSION catalog, re-run the installer with the same options plus --with-database, e.g.:"
   log_warn "  curl -fsSL https://raw.githubusercontent.com/$OWNER/$REPO/main/install.sh | bash -s -- --with-database"
@@ -588,8 +627,10 @@ log_step 5 "Database setup..."
 # Existing catalogs may contain local preferences or user-managed data.
 if [[ "$DATABASE_MODE" == missing && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
   [[ -f "$DB_PATH" ]] || die "Expected an existing catalog file at $DB_PATH; $NOT_CHANGED"
+  select_existing_catalog
+fi
+if [[ "$DATABASE_MODE" == keep ]]; then
   log "Keeping the existing catalog at $DB_PATH (use --with-database to replace it)."
-  warn_if_kept_catalog_differs
 elif [[ "$DATABASE_MODE" != skip ]]; then
   mkdir -p "$DATA_DIR" || die "Failed to create directory: $DATA_DIR; $NOT_CHANGED"
   if [[ "$DATABASE_MODE" == missing ]]; then
@@ -616,7 +657,7 @@ elif [[ "$DATABASE_MODE" != skip ]]; then
     # Whatever the transport, the installed bytes must be the phage.db the
     # release publishes a checksum for.
     fetch_release_checksums
-    EXPECTED_DB="$(release_sha256 phage.db)"
+    if [[ -z "$EXPECTED_DB" ]]; then EXPECTED_DB="$(release_sha256 phage.db)"; fi
     [[ $SKIP_CHECKSUMS -eq 1 || -n "$EXPECTED_DB" ]] \
       || die "Release $VERSION publishes no SHA-256 for phage.db; refusing to install an unverified database; $NOT_CHANGED"
 
@@ -664,6 +705,14 @@ if [[ -n "$STAGED_DB" ]]; then
   if [[ "$DATABASE_MODE" == replace && ( -e "$DB_PATH" || -L "$DB_PATH" ) ]]; then
     DB_BACKUP="$(mktemp "$DATA_DIR/.phage.db.rollback.XXXXXX")" || die "Cannot stage a database backup; $NOT_CHANGED"
     cp -a "$DB_PATH" "$DB_BACKUP" || die "Cannot back up $DB_PATH; $NOT_CHANGED"
+  fi
+  if [[ -n "$AUTO_PREVIOUS_SHA" ]]; then
+    # Downloading the target can take time. Check both the rollback copy and
+    # the live file before replacing a catalog the user did not explicitly select.
+    if ! standalone_catalog || [[ -z "$DB_BACKUP" || -L "$DB_BACKUP" ]] \
+      || [[ "$(sha256_of "$DB_BACKUP")" != "$AUTO_PREVIOUS_SHA" || "$(sha256_of "$DB_PATH")" != "$AUTO_PREVIOUS_SHA" ]]; then
+      die "The existing catalog changed during the upgrade; $NOT_CHANGED"
+    fi
   fi
   COMMITTING_PAIR=1
   if [[ "$DATABASE_MODE" == missing ]]; then
