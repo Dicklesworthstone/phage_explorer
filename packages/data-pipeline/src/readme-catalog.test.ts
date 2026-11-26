@@ -7,6 +7,7 @@ import { gunzipSync } from 'node:zlib';
 import { Database } from 'bun:sqlite';
 import { PHAGE_CATALOG } from './phage-catalog';
 import { computeDatabaseContentDigest } from '../../../scripts/build-web-db';
+import { artifactToolchain, declaredBindgen, readProducers } from '../../../scripts/verify-wasm-toolchain';
 
 /**
  * The README's "Included Phages" table is a hand-maintained list of 24 genome
@@ -323,5 +324,118 @@ describe('the shipped database is the current one', () => {
     expect(count('protein_domains')).toBeGreaterThan(1000);
     expect(count('fold_embeddings')).toBeGreaterThan(1000);
     expect(count('codon_adaptation')).toBeGreaterThan(1000);
+  });
+});
+
+/**
+ * `bun run wasm:verify` used to search the raw bytes for `rustc/<hash>` and
+ * `wasm-bindgen-<version>` source-path spellings and compared bindgen with an
+ * untracked Cargo.lock. The committed artifacts contain no `wasm-bindgen-x.y.z`
+ * path at all, so the check could not pass on a fresh checkout. It now decodes
+ * the standard producers section and compares with the exact pin in Cargo.toml.
+ */
+describe('the WASM toolchain verifier', () => {
+  const crate = join(REPO_ROOT, 'packages/wasm-compute');
+  const leb = (value: number): number[] => {
+    const out: number[] = [];
+    do {
+      let byte = value % 128;
+      value = Math.floor(value / 128);
+      if (value > 0) byte |= 0x80;
+      out.push(byte);
+    } while (value > 0);
+    return out;
+  };
+  const text = (value: string | number[]): number[] => {
+    const bytes = typeof value === 'string' ? [...new TextEncoder().encode(value)] : value;
+    return [...leb(bytes.length), ...bytes];
+  };
+  const custom = (name: string, body: number[]): number[] => {
+    const payload = [...text(name), ...body];
+    return [0, ...leb(payload.length), ...payload];
+  };
+  type Fields = [string | number[], [string | number[], string][]][];
+  const producers = (fields: Fields): number[] => [
+    ...leb(fields.length),
+    ...fields.flatMap(([field, tools]) => [
+      ...text(field), ...leb(tools.length), ...tools.flatMap(([tool, version]) => [...text(tool), ...text(version)]),
+    ]),
+  ];
+  const wasm = (...sections: number[][]) => new Uint8Array([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0, ...sections.flat()]);
+  const RUSTC = '1.98.0 (88d9e12ae 2026-08-18)';
+  const standard = (bindgen = '0.2.128 (246946fdd)'): Fields => [
+    ['language', [['Rust', '']]],
+    ['processed-by', [['rustc', RUSTC], ['wasm-bindgen', bindgen], ['walrus', '0.26.5']]],
+  ];
+  // Text a source-path search would mistake for producer records.
+  const decoy = custom('.debug_str', [...new TextEncoder().encode(
+    '/rustc/88d9e12ae178fab0fb5cc050a94da85685d449ea/library wasm-bindgen-0.2.999/src/lib.rs')]);
+
+  it('reads both committed variants from their producers sections, matching the Cargo.toml pin', () => {
+    const pinned = declaredBindgen(readFileSync(join(crate, 'Cargo.toml'), 'utf8'));
+    const variants = ['pkg', 'pkg-simd'].map(variant =>
+      artifactToolchain(readFileSync(join(crate, variant, 'wasm_compute_bg.wasm'))));
+    for (const variant of variants) {
+      expect(variant.bindgenVersion).toBe(pinned);
+      expect(variant.rustcVersion).toMatch(/^\d+\.\d+\.\d+/);
+      expect(variant.rustcCommit).toMatch(/^[0-9a-f]{7,40}$/);
+    }
+    expect(variants[1]).toEqual(variants[0]);
+    // The spelling the old check searched for is absent from the shipped bytes.
+    for (const variant of ['pkg', 'pkg-simd']) {
+      expect(readFileSync(join(crate, variant, 'wasm_compute_bg.wasm')).toString('latin1'))
+        .not.toMatch(/wasm-bindgen-\d+\.\d+\.\d+/);
+    }
+  });
+
+  it('uses the producers record, not tool names that appear elsewhere in the binary', () => {
+    expect(artifactToolchain(wasm(decoy, custom('producers', producers(standard('0.2.127 (a579ee62b)'))))))
+      .toEqual({ rustcVersion: '1.98.0', rustcCommit: '88d9e12ae', bindgenVersion: '0.2.127' });
+    // A renamed section is not a producers record, whatever strings remain.
+    const renamed = wasm(decoy, custom('producerz', producers(standard())));
+    expect(readProducers(renamed)).toBeNull();
+    expect(() => artifactToolchain(renamed)).toThrow('no producers section');
+  });
+
+  it('requires both rustc and wasm-bindgen in processed-by', () => {
+    const missing = (tools: [string, string][]) =>
+      () => artifactToolchain(wasm(custom('producers', producers([['processed-by', tools]]))));
+    expect(missing([['rustc', RUSTC]])).toThrow('no wasm-bindgen');
+    expect(missing([['wasm-bindgen', '0.2.128 (246946fdd)']])).toThrow('no rustc');
+    // A tool recorded under another field did not process the module.
+    expect(() => artifactToolchain(wasm(custom('producers', producers([
+      ['sdk', [['wasm-bindgen', '0.2.128']]], ['processed-by', [['rustc', RUSTC]]]]))))).toThrow('no wasm-bindgen');
+  });
+
+  it('rejects malformed modules and producers sections', () => {
+    const body = producers(standard());
+    const valid = wasm(custom('producers', body));
+    expect(readProducers(valid)?.get('processed-by')?.get('wasm-bindgen')).toBe('0.2.128 (246946fdd)');
+    const rejects = (bytes: Uint8Array, message: string) => expect(() => readProducers(bytes)).toThrow(message);
+    rejects(valid.subarray(0, valid.length - 3), 'runs past the end of the module');
+    rejects(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 2, 0, 0, 0]), 'unsupported binary version');
+    rejects(wasm(custom('producers', body), custom('producers', body)), 'more than one producers section');
+    rejects(wasm(custom('producers', [...body, 0])), 'trailing bytes');
+    rejects(wasm(custom('producers', producers([['processed-by', []], ['processed-by', []]]))), 'appears twice');
+    rejects(wasm(custom('producers', producers([['processed-by', [['rustc', RUSTC], ['rustc', RUSTC]]]]))),
+      'lists "rustc" twice');
+    rejects(wasm(custom('producers', producers([['compiled-by', []]]))), 'unknown producers field');
+    rejects(wasm(custom('producers', producers([['processed-by', [[[0xff, 0xfe], '1']]]]))), 'not valid UTF-8');
+    // Section size and field count beyond u32.
+    rejects(new Uint8Array([0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x7f]), 'exceeds u32');
+    rejects(wasm(custom('producers', [0x80, 0x80, 0x80, 0x80, 0x10])), 'exceeds u32');
+    // A field count larger than the section holds.
+    rejects(wasm(custom('producers', [5, ...body.slice(1)])), 'truncated');
+  });
+
+  it('requires an exact wasm-bindgen pin in Cargo.toml', () => {
+    expect(declaredBindgen('[dependencies]\nwasm-bindgen = "=0.2.128"\n')).toBe('0.2.128');
+    expect(declaredBindgen('[dependencies]\nwasm-bindgen = { version = "=0.2.128", default-features = false }\n'))
+      .toBe('0.2.128');
+    expect(() => declaredBindgen('[dependencies]\nwasm-bindgen = "0.2"\n')).toThrow('pin the version');
+    expect(() => declaredBindgen('[dependencies]\nwasm-bindgen = "^0.2.128"\n')).toThrow('pin the version');
+    // A dev-dependency or a similarly named crate is not the build's bindgen.
+    expect(() => declaredBindgen('[dev-dependencies]\nwasm-bindgen = "=0.2.128"\n')).toThrow('no wasm-bindgen');
+    expect(() => declaredBindgen('[dependencies]\nwasm-bindgen-futures = "=0.4.1"\n')).toThrow('no wasm-bindgen');
   });
 });
