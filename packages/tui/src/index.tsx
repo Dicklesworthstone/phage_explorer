@@ -233,6 +233,11 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
     await runResistanceSimProcess(args.slice(1));
     return;
   }
+  if (args[0] === 'genome-cds') {
+    const { runGenomeCdsProcess } = await import('./commands/genome-cds');
+    await runGenomeCdsProcess(args.slice(1));
+    return;
+  }
   if (args[0] === 'spacer') {
     const { runSpacerProcess } = await import('./commands/spacer-reference');
     await runSpacerProcess(args.slice(1));
@@ -289,6 +294,7 @@ export async function main(args: readonly string[] = process.argv.slice(2)): Pro
       'The destination must not exist. Input/view bundles are separate from command recordings.\n\n' +
       'Database-free research commands (also work without an installed Bun or source checkout in a compiled build):\n' +
       '  phage-explorer comparison run|replay ...\n' +
+      '  phage-explorer genome-cds inspect|export|replay ...\n' +
       '  phage-explorer alignment-compatibility prepare|inspect|analyze|replay ...\n' +
       '  phage-explorer pangenome inspect|inspect-annotations|build|annotate|verify|export ...\n' +
       '  phage-explorer codon-reference inspect|analyze|verify ...\n' +

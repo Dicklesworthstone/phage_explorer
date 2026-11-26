@@ -152,3 +152,6 @@ export * from './protein-reference';
 
 // Exact annotated CDS inspection and source-bound sequence exports on both surfaces.
 export * from './selected-cds';
+
+// Complete source-bound annotated CDS DNA and conceptual-protein exports.
+export * from './genome-cds-export';
