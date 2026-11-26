@@ -168,6 +168,8 @@ reached by use over time or by manual promotion.
 
 | Key | Action | Tier |
 |---|---|---|
+| `Ctrl+B` | Back to the previous explorer view | — |
+| `Ctrl+N` | Forward to the next explorer view | — |
 | `]` | Jump to next gene start | — |
 | `[` | Jump to previous gene start | — |
 | `End` | Jump to sequence end | — |

@@ -91,7 +91,9 @@ describe('TUI overlay wiring', () => {
   });
 
   it('gates normal global input while retaining error recovery', () => {
-    expect(APP_SOURCE).toContain('{ isActive: !activeOverlay || Boolean(error) }');
+    // The saved-views screen replaces the whole app and owns its own input,
+    // including Escape and its errors, so global input stays off while it is open.
+    expect(APP_SOURCE).toContain('{ isActive: !savedViewsOpen && (!activeOverlay || Boolean(error)) }');
     const handler = APP_SOURCE.slice(APP_SOURCE.indexOf('useInput((input, key) => {'));
     const errorBranch = handler.slice(0, handler.indexOf('// Check for F-key'));
     expect(errorBranch).toContain('if (error)');

@@ -92,6 +92,8 @@ export const TUI_KEYMAP: readonly TuiBinding[] = [
   { keys: ['S'], display: 'Shift+S', action: 'Simulation hub', category: 'Analysis', tier: 'power', handler: 'SIMULATION_MENU_ID' },
   { keys: ['f', 'F'], display: 'Ctrl+F', action: 'Fold quickview', category: 'Analysis', tier: 'power', handler: "'foldQuickview'" },
   { keys: ['p', 'P'], display: 'Ctrl+P', action: 'Command palette', category: 'System', handler: "'commandPalette'" },
+  { keys: ['b', 'B'], display: 'Ctrl+B', action: 'Back to the previous explorer view', category: 'Navigation', handler: 'moveHistory(-1)' },
+  { keys: ['n', 'N'], display: 'Ctrl+N', action: 'Forward to the next explorer view', category: 'Navigation', handler: 'moveHistory(1)' },
 
   // --- 3D fullscreen mode ---------------------------------------------------
   // Active only while the 3D model is fullscreen; the handler returns early in
