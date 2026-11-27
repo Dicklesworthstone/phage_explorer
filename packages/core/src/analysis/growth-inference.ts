@@ -25,6 +25,11 @@ export interface GrowthObservation {
 export interface GrowthConditions {
   initialBacteria: number;
   initialPhage: number;
+  /** Independently measured freshly infected cells/mL at time zero, all in stage 1.
+   * Omitted/zero retains the original initially-uninfected experiment.
+   * This is separate from susceptible cells and extracellular phage, not an MOI estimate.
+   */
+  initialInfected?: number;
   bacterialGrowthRate: number;
   phageDecayRate: number;
   odCellsPerMl: number;
@@ -100,7 +105,9 @@ function number(v: unknown, min: number, max: number, context: string): number {
 }
 export function validateGrowthConditions(value: unknown): GrowthConditions {
   if (!object(value)) throw new Error('Explicit experimental initial conditions are required.');
-  keys(value, Object.keys(DEFAULT_GROWTH_CONDITIONS), 'Conditions');
+  keys(value, [...Object.keys(DEFAULT_GROWTH_CONDITIONS), ...('initialInfected' in value ? ['initialInfected'] : [])], 'Conditions');
+  const initialInfected = 'initialInfected' in value
+    ? number(value.initialInfected, 0, 1e9, 'Initial freshly infected cells/mL') : 0;
   const stages = number(value.stages, 1, 8, 'Infected stages');
   if (!Number.isInteger(stages)) throw new Error('Infected stages must be an integer.');
   return {
@@ -109,6 +116,8 @@ export function validateGrowthConditions(value: unknown): GrowthConditions {
     bacterialGrowthRate: number(value.bacterialGrowthRate, 0, 0.05, 'Bacterial growth rate /min'),
     phageDecayRate: number(value.phageDecayRate, 0, 0.1, 'Phage decay rate /min'),
     odCellsPerMl: number(value.odCellsPerMl, 1e4, 1e12, 'OD calibration cells/mL per OD'), stages,
+    // Canonical zero preserves old dataset and result identities exactly.
+    ...(initialInfected > 0 ? { initialInfected } : {}),
   };
 }
 export function validateGrowthDataset(value: unknown): GrowthDataset {
@@ -187,8 +196,11 @@ export function simulateGrowth(
   number(tolerance, 1e-9, 1e-3, 'Integration tolerance');
   if (!times.length || times.length > 1024 || times.some(t => !Number.isFinite(t) || t < 0 || t > GROWTH_LIMITS.minutes)) throw new Error('Invalid growth trajectory times.');
   const ordered = [...new Set(times)].sort((a, b) => a - b);
-  const scale = Math.max(1, c.initialBacteria, c.initialPhage), rate = c.stages / mean, last = c.stages + 1;
-  let y = [c.initialBacteria / scale, ...Array(c.stages).fill(0), c.initialPhage / scale];
+  const initialInfected = c.initialInfected ?? 0;
+  const scale = Math.max(1, c.initialBacteria, c.initialPhage, initialInfected), rate = c.stages / mean, last = c.stages + 1;
+  // The independently supplied cohort starts in the first infection-age stage;
+  // it is not created by adsorption and is not counted as susceptible or free phage.
+  let y = [c.initialBacteria / scale, initialInfected / scale, ...Array(c.stages - 1).fill(0), c.initialPhage / scale];
   let time = 0, h = 0.25, steps = 0;
   const derivative = (v: number[]): number[] => {
     const adsorption = k * scale * v[0] * v[last];
@@ -415,6 +427,9 @@ export function fitGrowthDataset(input: GrowthDataset, options: GrowthFitOptions
     'Observation errors are independent Gaussian with the supplied SDs: log10 PFU/CFU, linear OD. Censored counts, correlated time-series errors and unknown error scales are unsupported.',
     'Intervals are local 95% Gaussian/Wald approximations in log parameters using inverse JᵀJ and known observation SDs. They are not bootstrap or Bayesian credible intervals, and do not establish global identifiability.',
   ];
+  if (dataset.conditions.initialInfected) {
+    warnings.push('The supplied initially infected cohort enters stage 1 at time zero. Its infection age and concentration are fixed, independently supplied assumptions; no age distribution or MOI conversion is inferred. Susceptible cells exclude this cohort, PFU excludes intracellular particles, and OD includes intact infected cells. Uncertainty in the initial cohort is not propagated.');
+  }
   if (censoring) {
     warnings[3] = 'Independent Gaussian errors use supplied known SDs: log10 PFU/CFU, linear OD. A left-censored PFU/CFU row contributes the probability of being below its positive detection limit; no exact concentration is imputed. Limits must be fixed by the assay independently of model fitting. Right/interval censoring, OD censoring, correlated errors and unknown error scales are unsupported.';
     warnings[4] = 'Local Wald intervals are withheld for censored fits: the Gram matrix of transformed likelihood residuals is not the censored likelihood information. Use nuisance-refitted profile likelihood; its asymptotic intervals require enough independently quantified observations and regular numerical support.';
@@ -460,10 +475,20 @@ const GROWTH_REFERENCES = [{ id: 'infection-stage-model', version: '1', descript
 const CENSORED_GROWTH_METHOD = { id: 'mechanistic-growth-fit', version: '2', implementation: 'Erlang infection chain; adaptive RK4 step-doubling; bounded multistart damped likelihood minimization in log parameters; explicit left-censored log-count Gaussian probabilities; no censored Wald intervals' };
 const CENSORED_GROWTH_REFERENCES = [GROWTH_REFERENCES[0],
   { id: 'observation-likelihood', version: '2', description: 'Known independent Gaussian SDs in linear OD/log10 counts. Exact residual squared; left-censored PFU/CFU contributes -2 log Phi((log10(limit)-log10(prediction))/sigma). Fixed positive assay limits; no imputation or local Wald interval. DLMF 7.6.2/7.9.1; USGS OFR 2012-1181 section 3.1.' }];
-/** Exact-only inputs retain their original v1 identities and replay semantics. */
+const COHORT_GROWTH_METHOD = { ...GROWTH_METHOD, version: '3',
+  implementation: 'Erlang infection chain with an explicit stage-1 initial infected cohort; adaptive RK4 step-doubling; bounded multistart damped least squares in log parameters; local known-SD Wald intervals' };
+const CENSORED_COHORT_GROWTH_METHOD = { ...CENSORED_GROWTH_METHOD, version: '4',
+  implementation: 'Erlang infection chain with an explicit stage-1 initial infected cohort; adaptive RK4 step-doubling; bounded multistart damped likelihood minimization in log parameters; explicit left-censored log-count Gaussian probabilities; no censored Wald intervals' };
+const COHORT_GROWTH_REFERENCE = { id: 'infection-stage-model', version: '2',
+  description: 'dB=mu B-k BP; dI1=k BP-m I1/L; dIj=m(Ij-1-Ij)/L; dP=b m Im/L-k BP-delta P. I1(0)=supplied initialInfected cells/mL; all later infected stages start at zero. B(0) is susceptible cells only; P(0) is extracellular infectious phage only. The cohort is freshly infected at time zero; its known concentration is not inferred from MOI and its uncertainty is not propagated.' };
+/** Initially uninfected inputs retain their original v1/v2 identities and replay semantics. */
 export function growthFitContract(dataset: GrowthDataset): { method: typeof GROWTH_METHOD; references: typeof GROWTH_REFERENCES } {
-  return dataset.observations.some(row => row.censoring === 'left')
-    ? { method: CENSORED_GROWTH_METHOD, references: CENSORED_GROWTH_REFERENCES }
+  const censored = dataset.observations.some(row => row.censoring === 'left');
+  if (dataset.conditions.initialInfected) return {
+    method: censored ? CENSORED_COHORT_GROWTH_METHOD : COHORT_GROWTH_METHOD,
+    references: [COHORT_GROWTH_REFERENCE, (censored ? CENSORED_GROWTH_REFERENCES : GROWTH_REFERENCES)[1]],
+  };
+  return censored ? { method: CENSORED_GROWTH_METHOD, references: CENSORED_GROWTH_REFERENCES }
     : { method: GROWTH_METHOD, references: GROWTH_REFERENCES };
 }
 export async function createGrowthRecord(dataset: GrowthDataset, options: GrowthFitOptions, result: GrowthFitResult): Promise<AnalysisRecord> {
@@ -474,7 +499,7 @@ export async function createGrowthRecord(dataset: GrowthDataset, options: Growth
     ? { label, value: analysisJson(value), kind: 'demo' as const, units: 'records' as const, coverage, limitations: result.warnings,
       assumptions: ['Explicit synthetic input; parameter recovery does not validate the model for experimental data.'] }
     : { label, value: analysisJson(value), kind: 'fitted-estimate' as const, units: 'records' as const, coverage, limitations: result.warnings,
-      fit: { dataInput: 'growthData', objective: contract.method.version === '1'
+      fit: { dataInput: 'growthData', objective: !data.observations.some(row => row.censoring === 'left')
         ? 'Weighted sum of squared log10 count/linear OD residuals under known observation SDs.'
         : 'Minus twice the known-SD Gaussian log likelihood, omitting parameter-independent exact-observation constants; left-censored log-counts contribute Gaussian CDF probabilities.', uncertainty: { kind: 'not-estimated' as const } } };
   // Parameter-specific interval status is in estimates. No scalar interval is assigned to the aggregate record field.

@@ -240,3 +240,49 @@ it('checks profile coverage on 24 independent-noise controls with fixed nuisance
   }
   assert.ok(covered>=19&&covered<=24,`coverage ${covered}/24; withheld ${withheld}/24`);
 });
+
+
+describe('initially infected cohort profile likelihood', () => {
+  const times = [2,5,10,15,20,30,50,80];
+  const cohortData = (): GrowthDataset => validateGrowthDataset({
+    format: 'phage-explorer-growth', version: 1, name: 'Analytic cohort profile',
+    source: { kind: 'demo', description: 'Synthetic Erlang release with exact log-yield likelihood', reference: null },
+    conditions: { ...DEFAULT_GROWTH_CONDITIONS, initialBacteria: 0, initialPhage: 0, initialInfected: 200000, stages: 3 },
+    observations: times.map(timeMin => {
+      // For three stages, survival is exp(-x) * (1+x+x*x/2).
+      const x = 3 * timeMin / 20;
+      return { timeMin, type: 'PFU', value: 35 * 200000 * (1 - Math.exp(-x) * (1 + x + x*x/2)), sigma: .03 };
+    }),
+  });
+  const fitOptions = () => resolveGrowthOptions({ initial: { adsorptionRate: 2e-9, latentPeriod: 20, burstSize: 20 },
+    starts: 1, freeParameters: ['burstSize'] });
+
+  it('matches an independent analytic log-yield interval with and without an uninformative detection-limit row', async () => {
+    // With no susceptible hosts, no free phage at t=0 and fixed lysis mean,
+    // PFU(t)=burst*I0*F(t). log10(burst) is a normal location parameter;
+    // known-SD likelihood crossings are exact, not fitted by a second optimizer.
+    const radius = Math.LN10 * .03 * Math.sqrt(GROWTH_PROFILE_CUTOFF / times.length);
+    const expected: [number, number] = [35 * Math.exp(-radius), 35 * Math.exp(radius)];
+    for (const censored of [false, true]) {
+      const data = cohortData();
+      if (censored) data.observations.unshift({ timeMin: 0, type: 'PFU', value: 100, sigma: .03, censoring: 'left' });
+      const result = await profileGrowthDataset(data, fitOptions(), 'burstSize');
+      assert.equal(result.record.method.version, censored ? '4' : '3');
+      assert.equal(result.profileRecord.method.version, censored ? '4' : '3');
+      assert.ok(result.profile.interval95);
+      near(result.profile.interval95[0], expected[0], .002);
+      near(result.profile.interval95[1], expected[1], .002);
+      assert.equal(result.profile.lower.status, 'crossed');
+      assert.equal(result.profile.upper.status, 'crossed');
+      near(result.profile.lower.delta!, GROWTH_PROFILE_CUTOFF, .003);
+      near(result.profile.upper.delta!, GROWTH_PROFILE_CUTOFF, .003);
+      const fresh = await replayGrowthProfile(serializeAnalysisRecord(result.profileRecord));
+      assert.equal(fresh.dataset.conditions.initialInfected, 200000);
+      assert.equal(fresh.profileRecord.resultId, result.profileRecord.resultId);
+      const downgraded = await createAnalysisRecord({ ...result.profileRecord,
+        method: { ...result.profileRecord.method, version: censored ? '2' : '1' },
+        inputs: result.profileRecord.inputs.map(({ sha256: _sha, ...input }) => input) });
+      await assert.rejects(replayGrowthProfile(serializeAnalysisRecord(downgraded)), /contract/);
+    }
+  });
+});

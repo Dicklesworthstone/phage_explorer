@@ -31,8 +31,13 @@ Common options:
 Delimited INPUT uses header timeMin,type,value,sigma with optional censoring.
 PFU/CFU are concentrations per mL with known log10 SD; OD uses ordinary SD.
 CSV/TSV requires --conditions JSON with initialBacteria, initialPhage,
-bacterialGrowthRate, phageDecayRate, odCellsPerMl and stages. Canonical
-phage-explorer-growth JSON already embeds conditions/source and cannot be relabeled.
+bacterialGrowthRate, phageDecayRate, odCellsPerMl and stages. Optional
+initialInfected is an independently measured freshly infected cohort (cells/mL)
+entering stage 1 at time zero; omitted/zero means none. Susceptible cells exclude
+this cohort; extracellular PFU excludes intracellular particles. Infection age
+and initial-count uncertainty are not inferred. With no susceptible hosts, keep
+adsorption fixed. Canonical phage-explorer-growth JSON already embeds
+conditions/source and cannot be relabeled.
 
 --params is a partial fit-options JSON object accepted by the core model. The fit
 uses the same bounded multistart mechanistic producer as the browser. profile first

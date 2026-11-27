@@ -12,6 +12,7 @@ import { AnalysisRecordDetails } from '../overlays/primitives/OverlayProvenance'
 const CONDITIONS: Array<{ key: keyof GrowthConditions; label: string; min: number; max: number; step: number | 'any' }> = [
   { key: 'initialBacteria', label: 'Initial susceptible cells/mL', min: 0, max: 1e9, step: 'any' },
   { key: 'initialPhage', label: 'Initial extracellular PFU/mL', min: 0, max: 1e9, step: 'any' },
+  { key: 'initialInfected', label: 'Initially infected cells/mL (start of stage 1)', min: 0, max: 1e9, step: 'any' },
   { key: 'bacterialGrowthRate', label: 'Fixed bacterial growth rate /min', min: 0, max: .05, step: 'any' },
   { key: 'phageDecayRate', label: 'Fixed phage decay rate /min', min: 0, max: .1, step: 'any' },
   { key: 'odCellsPerMl', label: 'OD calibration cells/mL per OD', min: 1e4, max: 1e12, step: 'any' },
@@ -22,6 +23,12 @@ const LABELS: Record<GrowthParameter, string> = {
 };
 const strings = <T extends string>(value: Record<T, number>): Record<T, string> => Object.fromEntries(Object.entries(value).map(([k,v]) => [k,String(v)])) as Record<T,string>;
 const numeric = <T extends string>(value: Record<T, string>): Record<T, number> => Object.fromEntries(Object.entries(value).map(([k,v]) => [k,String(v).trim() === '' ? NaN : Number(v)])) as Record<T,number>;
+const conditionStrings = (value: GrowthConditions) => strings({ ...value, initialInfected: value.initialInfected ?? 0 });
+function conditionValues(value: ReturnType<typeof conditionStrings>): GrowthConditions {
+  const { initialInfected, ...conditions } = numeric(value);
+  // Preserve legacy zero-cohort identities without treating a blank/invalid field as zero.
+  return { ...conditions, ...(initialInfected === 0 ? {} : { initialInfected }) };
+}
 
 function GrowthPlot({ accepted, measurement }: { accepted: GrowthWorkResult; measurement: GrowthMeasurement }): React.ReactElement | null {
   const { theme } = useTheme();
@@ -110,7 +117,7 @@ function ProfileDetails({ profile }: { profile: GrowthProfileResult }): React.Re
 export function GrowthInferencePanel(): React.ReactElement {
   const id = useId();
   const [accepted, setAccepted] = useState<GrowthWorkResult | null>(null);
-  const [conditions, setConditions] = useState(() => strings(DEFAULT_GROWTH_CONDITIONS));
+  const [conditions, setConditions] = useState(() => conditionStrings(DEFAULT_GROWTH_CONDITIONS));
   const [initial, setInitial] = useState(() => strings(resolveGrowthOptions().initial));
   const [free, setFree] = useState<GrowthParameter[]>([...GROWTH_PARAMETERS]);
   const [seed, setSeed] = useState('42');
@@ -130,7 +137,7 @@ export function GrowthInferencePanel(): React.ReactElement {
     try {
       const result = await runGrowthWork(request, owner.signal, message => { if (controller.current === owner) setStatus(message); });
       if (owner.signal.aborted || controller.current !== owner) return;
-      setAccepted(result); setConditions(strings(result.dataset.conditions)); setInitial(strings(result.options.initial));
+      setAccepted(result); setConditions(conditionStrings(result.dataset.conditions)); setInitial(strings(result.options.initial));
       setFree(result.options.freeParameters); setProfileParameter(result.profile?.parameter ?? result.options.freeParameters[0]); setSeed(String(result.options.seed));
       setStarts(String(result.options.starts)); setIterations(String(result.options.maxIterations));
       setMeasurement(result.dataset.observations[0].type);
@@ -146,13 +153,13 @@ export function GrowthInferencePanel(): React.ReactElement {
   };
   const cancel = () => { controller.current?.abort(); controller.current = null; setBusy(false); setError(null); setStatus('Growth work cancelled; previous accepted data and fit preserved.'); };
   const options: GrowthFitOptions = { initial: numeric(initial), freeParameters: free, seed: seed.trim() === '' ? NaN : Number(seed), starts: starts.trim() === '' ? NaN : Number(starts), maxIterations: iterations.trim() === '' ? NaN : Number(iterations) };
-  const changed = accepted && (JSON.stringify(numeric(conditions)) !== JSON.stringify(accepted.dataset.conditions)
+  const changed = accepted && (JSON.stringify(conditionValues(conditions)) !== JSON.stringify(accepted.dataset.conditions)
     || JSON.stringify(options) !== JSON.stringify(accepted.options));
   const result = accepted?.result;
   const inputStyle = { width: '100%', minHeight:44, padding:'.4rem', background:'var(--color-background)', color:'inherit', border:'1px solid var(--color-border)' };
   const load = (file?: File) => {
     if (!file) return;
-    const submitted = numeric(conditions);
+    const submitted = conditionValues(conditions);
     void perform(file.size > 10*1024*1024 ? Promise.reject(new Error('Growth file exceeds 10 MiB.'))
       : file.text().then(content => ({ kind: 'load' as const, content, name: file.name, conditions: submitted })));
   };
@@ -173,7 +180,7 @@ export function GrowthInferencePanel(): React.ReactElement {
     <form onSubmit={event => {
       event.preventDefault();
       if (!accepted || !confirmed || busy) return;
-      void perform({ kind:'fit', dataset:{ ...accepted.dataset, conditions:numeric(conditions) }, options });
+      void perform({ kind:'fit', dataset:{ ...accepted.dataset, conditions:conditionValues(conditions) }, options });
     }}>
       <fieldset disabled={busy} style={{ display:'grid', gap:'.6rem' }}>
         <legend>Fixed experimental conditions — defaults are not measurements</legend>
@@ -181,8 +188,11 @@ export function GrowthInferencePanel(): React.ReactElement {
           {CONDITIONS.map(({key,label,min,max,step}) => <label key={key}>{label}<input type="number" min={min} max={max} step={step} required style={inputStyle}
             value={conditions[key]} onChange={e => { setConditions({...conditions,[key]:e.target.value}); setConfirmed(false); }} /></label>)}
         </div>
-        <p>Initially infected cells are zero. The stage count fixes an Erlang infection-to-lysis distribution; the fitted time is its mean, not the onset of a fixed-delay burst.
-          No nutrient limitation, resistance, infected-cell adsorption or OD contribution from debris is modeled.</p>
+        <p>Initially infected cells are an independently measured cohort entering stage 1 at time zero; leave this at zero for an initially uninfected culture.
+          Susceptible cells exclude this cohort, and extracellular PFU excludes intracellular particles. OD includes intact susceptible and infected cells.
+          The cohort must start at the beginning of infection; an unknown infection age or age distribution cannot be inferred from this setting. Its concentration uncertainty is not propagated.
+          The stage count fixes an Erlang infection-to-lysis distribution; the fitted time is its mean, not the onset of a fixed-delay burst.
+          With no susceptible hosts, adsorption cannot be estimated; keep it fixed. No nutrient limitation, resistance, infected-cell adsorption or OD contribution from debris is modeled.</p>
       </fieldset>
       <fieldset disabled={busy} style={{ display:'grid', gap:'.6rem' }}>
         <legend>Fit selection and starting values</legend>

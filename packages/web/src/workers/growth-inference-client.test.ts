@@ -152,3 +152,29 @@ it('profiles an accepted fit, replays its separate record and rejects altered fi
   await assert.rejects(executeGrowthRequest({...profileRequest,baselineResultId:'not-a-digest'}),/identity/);
   await assert.rejects(executeGrowthRequest({...profileRequest,baselineResultId:'0'.repeat(64)}),/differ from the accepted fit/);
 });
+
+
+it('imports, fits, profiles and replays an explicit initial infected cohort without a catalog lookup', async () => {
+  const conditions = { ...DEFAULT_GROWTH_CONDITIONS, stages: 1, initialBacteria: 0, initialPhage: 1000, initialInfected: 100000 };
+  // Exact one-stage release: susceptible hosts absent, no decay/reinfection.
+  const content = ['timeMin,type,value,sigma', ...[0,5,10,20,40,80].map(time =>
+    [time, 'PFU', 1000 + 50 * 100000 * -Math.expm1(-time / 20), .03].join(','))].join('\n');
+  const loaded = await executeGrowthRequest({ kind: 'load', name: 'cohort.csv', content, conditions });
+  assert.equal(loaded.result, null);
+  assert.deepEqual(loaded.dataset.conditions, conditions);
+  const options = resolveGrowthOptions({ initial: { adsorptionRate: 2e-9, latentPeriod: 20, burstSize: 20 },
+    freeParameters: ['burstSize'], starts: 1 });
+  const fitted = await executeGrowthRequest({ kind: 'fit', dataset: loaded.dataset, options });
+  assert.ok(Math.abs(fitted.result!.parameters.burstSize - 50) < .002);
+  assert.equal(fitted.result!.trajectory[0].infected, 100000);
+  assert.equal(fitted.result!.trajectory[0].bacteria, 0);
+  assert.equal(fitted.result!.trajectory[0].phage, 1000);
+  assert.equal(fitted.record!.method.version, '3');
+  const profiled = await executeGrowthRequest({ kind: 'profile', dataset: loaded.dataset, options,
+    parameter: 'burstSize', baselineResultId: fitted.record!.resultId });
+  assert.ok(profiled.profile!.interval95);
+  const restored = await executeGrowthRequest({ ...request, content: serializeAnalysisRecord(profiled.profileRecord!) });
+  assert.equal(restored.verified, true);
+  assert.equal(restored.dataset.conditions.initialInfected, 100000);
+  assert.equal(restored.profileRecord!.resultId, profiled.profileRecord!.resultId);
+});

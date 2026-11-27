@@ -60,9 +60,15 @@ const CENSORED_METHOD = { id: 'mechanistic-growth-profile', version: '2',
   implementation: 'Accepted growth-fit-v2 with left-censored Gaussian likelihood; bounded nuisance refits; log-space expansion and bisection; individual likelihood-ratio component with quantified-data support checks' };
 const CENSORED_REFERENCE = { id: 'growth-profile-likelihood', version: 'Raue-2009/component-v2',
   description: 'Refit nuisance parameters under the same exact/censored likelihood. Individual 95% asymptotic cutoff -2 log LR=3.841458820694124. Require full-rank quantified observations with positive residual degrees of freedom and resolved crossings; trace only the local connected component.' };
+const COHORT_METHOD = { ...METHOD, version: '3',
+  implementation: 'Accepted growth-fit-v3 with a fixed initial infected cohort; bounded nuisance refits; bidirectional log-space expansion and bisection; individual known-SD likelihood-ratio component' };
+const CENSORED_COHORT_METHOD = { ...CENSORED_METHOD, version: '4',
+  implementation: 'Accepted growth-fit-v4 with a fixed initial infected cohort and left-censored Gaussian likelihood; bounded nuisance refits; log-space expansion and bisection; individual likelihood-ratio component with quantified-data support checks' };
 function profileContract(dataset: GrowthDataset): { method: typeof METHOD; reference: typeof REFERENCE } {
-  return dataset.observations.some(row => row.censoring === 'left')
-    ? { method: CENSORED_METHOD, reference: CENSORED_REFERENCE } : { method: METHOD, reference: REFERENCE };
+  const censored = dataset.observations.some(row => row.censoring === 'left');
+  if (dataset.conditions.initialInfected) return { method: censored ? CENSORED_COHORT_METHOD : COHORT_METHOD,
+    reference: censored ? CENSORED_REFERENCE : REFERENCE };
+  return censored ? { method: CENSORED_METHOD, reference: CENSORED_REFERENCE } : { method: METHOD, reference: REFERENCE };
 }
 
 /** Refit from original observations; never trust a saved candidate as the optimum. */

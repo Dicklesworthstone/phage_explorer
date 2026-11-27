@@ -2,7 +2,7 @@ import { describe, it } from 'bun:test';
 import assert from 'node:assert/strict';
 import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord, type AnalysisJson } from '../analysis-result';
 import { DEFAULT_GROWTH_CONDITIONS, GROWTH_PARAMETERS, GROWTH_BOUNDS, GROWTH_LIMITS, validateGrowthDataset, parseGrowthData,
-  resolveGrowthOptions, simulateGrowth, fitGrowthDataset, createGrowthRecord, replayGrowthRecord, growthLogNormalCdf, growthObservationResidual,
+  resolveGrowthOptions, simulateGrowth, fitGrowthDataset, createGrowthRecord, replayGrowthRecord, growthLogNormalCdf, growthObservationResidual, validateGrowthConditions,
   type GrowthDataset, type GrowthConditions, type GrowthMeasurement } from './growth-inference';
 
 // Independent SciPy 1.17 solve_ivp(method='DOP853', rtol=1e-12, atol=1e-7).
@@ -346,6 +346,161 @@ describe('explicit left-censored extracellular and colony counts', () => {
     const record = await createGrowthRecord(data, settings, fitGrowthDataset(data, settings));
     assert.equal(record.method.version, '1');
     assert.equal(record.resultId, 'd2d508e8f9943658f10084ddc7b50d1931d9d81a8ab6283281ab16e9b9444115');
+    assert.equal((await replayGrowthRecord(serializeAnalysisRecord(record))).record.resultId, record.resultId);
+  });
+});
+
+
+describe('independently supplied initial infected cohorts', () => {
+  // With no susceptible hosts or decay, infection-age stages have the exact
+  // Erlang survival function. These fixtures do not call the production ODE.
+  const surviving = (timeMin: number, stages: number, mean: number): number => {
+    const x = stages * timeMin / mean;
+    let term = 1, sum = 1;
+    for (let j = 1; j < stages; j++) { term *= x / j; sum += term; }
+    return Math.exp(-x) * sum;
+  };
+  const cohortConditions: GrowthConditions = { ...DEFAULT_GROWTH_CONDITIONS,
+    initialBacteria: 0, initialPhage: 10000, initialInfected: 200000, stages: 3 };
+  const cohortData = (): GrowthDataset => validateGrowthDataset({
+    format: 'phage-explorer-growth', version: 1, name: 'Analytic infected cohort',
+    source: { kind: 'demo', description: 'Synthetic Erlang survival oracle, not experimental observations', reference: null },
+    conditions: cohortConditions,
+    observations: [0,4,8,12,18,24,36,50,70].map(timeMin => ({ timeMin, type: 'PFU',
+      value: 10000 + 35 * 200000 * (1 - surviving(timeMin, 3, 20)), sigma: .02 })),
+  });
+  const cohortOptions = () => resolveGrowthOptions({ initial: { adsorptionRate: 2e-9, latentPeriod: 28, burstSize: 20 },
+    freeParameters: ['latentPeriod', 'burstSize'], starts: 2, maxIterations: 80 });
+
+  it('validates independent cell concentrations and canonicalizes zero without guessing from other inputs', () => {
+    assert.deepEqual(validateGrowthConditions(DEFAULT_GROWTH_CONDITIONS), DEFAULT_GROWTH_CONDITIONS);
+    assert.deepEqual(validateGrowthConditions({ ...DEFAULT_GROWTH_CONDITIONS, initialInfected: 0 }), DEFAULT_GROWTH_CONDITIONS);
+    assert.equal(validateGrowthConditions(cohortConditions).initialInfected, 200000);
+    for (const invalid of [-1, Infinity, NaN, 1e9 + 1, '200000', null, undefined]) {
+      assert.throws(() => validateGrowthConditions({ ...cohortConditions, initialInfected: invalid }), /Initial freshly infected/);
+    }
+    assert.throws(() => validateGrowthConditions({ ...cohortConditions, infectedAge: 5 }), /unsupported/);
+  });
+
+  it('keeps susceptible, infected and extracellular counts distinct at the initial observation', () => {
+    const c = { ...cohortConditions, initialBacteria: 4000000, initialPhage: 5000, initialInfected: 2000000 };
+    const first = simulateGrowth(truth, c, [0])[0];
+    assert.equal(first.bacteria, 4000000);
+    assert.equal(first.infected, 2000000);
+    assert.equal(first.phage, 5000);
+    assert.equal(first.od, 6000000 / c.odCellsPerMl);
+  });
+
+  it('matches exact Erlang survival and phage-yield conservation across stage counts and times', () => {
+    for (const stages of [1,2,4,8]) {
+      const c = { ...cohortConditions, initialInfected: 2000000, initialPhage: 250000, stages };
+      for (const row of simulateGrowth(truth, c, [0,.05,1,5,20,40,80], 1e-8)) {
+        const infected = c.initialInfected * surviving(row.timeMin, stages, truth.latentPeriod);
+        const phage = c.initialPhage + truth.burstSize * (c.initialInfected - infected);
+        near(row.infected, infected, Math.max(1e-4, infected * 2e-6));
+        near(row.phage, phage, Math.max(1e-3, phage * 2e-7));
+        near(row.od, infected / c.odCellsPerMl, 1e-9);
+        near(row.phage + truth.burstSize * row.infected, c.initialPhage + truth.burstSize * c.initialInfected, .001);
+        assert.equal(row.bacteria, 0);
+      }
+    }
+  });
+
+  it('matches the analytic one-stage release/decay convolution including equal rate constants', () => {
+    const rate = 1 / truth.latentPeriod;
+    for (const decay of [.01, rate]) {
+      const c = { ...cohortConditions, stages: 1, phageDecayRate: decay };
+      for (const row of simulateGrowth(truth, c, [0,5,20,50,80], 1e-8)) {
+        const expected = decay === rate
+          ? (c.initialPhage + truth.burstSize * c.initialInfected! * rate * row.timeMin) * Math.exp(-rate * row.timeMin)
+          : c.initialPhage * Math.exp(-decay * row.timeMin) + truth.burstSize * c.initialInfected! * rate / (rate - decay)
+            * (Math.exp(-decay * row.timeMin) - Math.exp(-rate * row.timeMin));
+        near(row.phage, expected, Math.max(.001, expected * 2e-7));
+      }
+    }
+  });
+
+  it('combines an initial cohort with subsequent adsorption without reclassifying the cohort as susceptible', () => {
+    const c = { ...cohortConditions, initialBacteria: 10000000, initialPhage: 100000 };
+    const parameters = { ...truth, burstSize: 0 };
+    const times = [0,5,20,50];
+    const mixed = simulateGrowth(parameters, c, times, 1e-8);
+    const newlyInfected = simulateGrowth(parameters, { ...c, initialInfected: 0 }, times, 1e-8);
+    mixed.forEach((row, i) => {
+      near(row.bacteria, newlyInfected[i].bacteria, .001);
+      near(row.phage, newlyInfected[i].phage, .001);
+      near(row.infected, newlyInfected[i].infected + c.initialInfected! * surviving(row.timeMin, c.stages, truth.latentPeriod), .01);
+    });
+  });
+
+  it('recovers mean lysis time and burst yield from independent cohort observations with adsorption fixed', () => {
+    const result = fitGrowthDataset(cohortData(), cohortOptions());
+    assert.equal(result.converged, true);
+    assert.equal(result.sensitivityRank, 2);
+    assert.ok(result.objective < 1e-6);
+    near(result.parameters.latentPeriod, 20, .001);
+    near(result.parameters.burstSize, 35, .002);
+    assert.equal(result.estimates.adsorptionRate.status, 'fixed');
+    assert.equal(result.estimates.adsorptionRate.interval95, null);
+    assert.ok(result.warnings.some(warning => warning.includes('stage 1 at time zero')));
+  });
+
+  it('does not manufacture an adsorption estimate when no susceptible cells remain', () => {
+    const result = fitGrowthDataset(cohortData(), resolveGrowthOptions({ ...cohortOptions(), freeParameters: [...GROWTH_PARAMETERS] }));
+    assert.equal(result.sensitivityRank, 2);
+    assert.equal(result.estimates.adsorptionRate.status, 'unresolved');
+    assert.equal(result.estimates.adsorptionRate.interval95, null);
+    assert.match(result.estimates.adsorptionRate.reason, /rank deficient/);
+  });
+
+  it('retains original exact/censored record identities when initial infected cells are explicitly zero', async () => {
+    for (const censored of [false, true]) {
+      const data = dataset(['PFU']);
+      if (censored) data.observations[0] = { ...data.observations[0], censoring: 'left' };
+      const config = resolveGrowthOptions({ initial: truth, starts: 1, freeParameters: ['burstSize'] });
+      const explicitZero = { ...data, conditions: { ...data.conditions, initialInfected: 0 } };
+      assert.deepEqual(validateGrowthDataset(explicitZero), data);
+      const first = fitGrowthDataset(data, config), second = fitGrowthDataset(explicitZero, config);
+      assert.deepEqual(second, first);
+      const record = await createGrowthRecord(data, config, first);
+      const zeroRecord = await createGrowthRecord(explicitZero, config, second);
+      assert.equal(record.method.version, censored ? '2' : '1');
+      assert.equal(zeroRecord.resultId, record.resultId);
+    }
+  });
+
+  it('binds the initial cohort to exported fits and rejects changed conditions or downgraded method contracts', async () => {
+    const data = cohortData(), config = cohortOptions();
+    const fit = fitGrowthDataset(data, config);
+    const record = await createGrowthRecord(data, config, fit);
+    assert.equal(record.method.version, '3');
+    assert.equal(record.references[0].version, '2');
+    const replay = await replayGrowthRecord(serializeAnalysisRecord(record));
+    assert.equal(replay.dataset.conditions.initialInfected, 200000);
+    assert.equal(replay.record.resultId, record.resultId);
+    const changed = await createAnalysisRecord({ ...record, inputs: record.inputs.map(({ sha256: _sha, ...input }) => ({
+      ...input, data: { ...data, conditions: { ...data.conditions, initialInfected: 400000 } } as unknown as AnalysisJson,
+    })) });
+    await assert.rejects(replayGrowthRecord(serializeAnalysisRecord(changed)), /differs/);
+    const downgraded = await createAnalysisRecord({ ...record, method: { ...record.method, version: '1' },
+      inputs: record.inputs.map(({ sha256: _sha, ...input }) => input) });
+    await assert.rejects(replayGrowthRecord(serializeAnalysisRecord(downgraded)), /contract/);
+  });
+
+  it('supports an initially undetectable free-phage concentration without treating infected cells as extracellular PFU', async () => {
+    const data = cohortData();
+    data.conditions.initialPhage = 0;
+    data.observations = data.observations.map(row => row.timeMin === 0
+      ? { ...row, value: 100, censoring: 'left' } : { ...row, value: row.value - 10000 });
+    const config = cohortOptions(), fit = fitGrowthDataset(data, config);
+    near(fit.parameters.latentPeriod, 20, .001);
+    near(fit.parameters.burstSize, 35, .002);
+    assert.equal(fit.residuals[0].predicted, 0);
+    assert.equal(fit.residuals[0].standardizedResidual, null);
+    assert.equal(fit.residuals[0].likelihoodDeviance, 0);
+    assert.equal(fit.estimates.burstSize.interval95, null);
+    const record = await createGrowthRecord(data, config, fit);
+    assert.equal(record.method.version, '4');
     assert.equal((await replayGrowthRecord(serializeAnalysisRecord(record))).record.resultId, record.resultId);
   });
 });
