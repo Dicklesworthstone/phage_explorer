@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 /** The production web build: canonical annotated SQLite -> verified shards -> Vite. */
+import type { Database } from 'bun:sqlite';
 import { constants, createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
@@ -7,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { publishProgressiveDatasetToDirectory } from '../../scripts/build-progressive-web-db';
+import { computeDatabaseContentDigest } from '../../scripts/build-web-db';
+import { isDatabaseManifest } from './src/db/types';
 import type { DatasetSqlite } from '../../scripts/progressive-dataset';
 import { PROGRESSIVE_LIMITS, datasetArtifacts, parseProgressiveManifest, verifyProgressiveManifest, type ProgressiveManifest } from './src/db/progressive-manifest';
 
@@ -32,7 +35,7 @@ async function copyPublicTree(source: string, destination: string, top = true): 
 /** Production and integration tests both use the real snapshot publisher through this function. */
 export async function prepareWebPublicAssets(options: {
   publicDirectory: string;
-  openSource: (path: string) => DatasetSqlite;
+  openSource: (path: string) => Database;
   createDatabase: () => DatasetSqlite;
   stagingParent?: string;
 }): Promise<{ directory: string; manifest: ProgressiveManifest }> {
@@ -41,11 +44,30 @@ export async function prepareWebPublicAssets(options: {
   if (!(await lstat(publicDirectory)).isDirectory() || !(await lstat(sourcePath)).isFile()) {
     throw new Error('The canonical public/phage.db must be a regular file in the public directory.');
   }
+  const descriptorPath = join(publicDirectory, 'phage.db.manifest.json');
+  const descriptor = await lstat(descriptorPath);
+  if (!descriptor.isFile() || descriptor.size > PROGRESSIVE_LIMITS.manifestBytes) {
+    throw new Error('The canonical database descriptor must be a regular file within the manifest byte budget.');
+  }
+  const expected: unknown = JSON.parse(await readFile(descriptorPath, 'utf8'));
+  if (!isDatabaseManifest(expected)) {
+    throw new Error('The canonical database requires a valid v2 descriptor. Prepare the database and descriptor together before building.');
+  }
   const directory = await mkdtemp(join(options.stagingParent ?? tmpdir(), 'phage-web-public-'));
   await copyPublicTree(publicDirectory, directory);
   const source = options.openSource(sourcePath);
   try {
-    const manifest = await publishProgressiveDatasetToDirectory({ source, createDatabase: options.createDatabase, outputDirectory: directory });
+    const manifest = await publishProgressiveDatasetToDirectory({
+      source: source as unknown as DatasetSqlite, createDatabase: options.createDatabase, outputDirectory: directory,
+      verifySourceSnapshot: async () => {
+        await verifyArtifactFile(sourcePath, expected.size, expected.sha256);
+        // The sharder already holds the read snapshot. This also catches committed
+        // pages present only in a WAL even when the raw file's checksum matches.
+        if (computeDatabaseContentDigest(source) !== expected.contentVersion) {
+          throw new Error('Canonical SQLite snapshot differs from the content version in its release descriptor.');
+        }
+      },
+    });
     await verifyWebDataset(directory, manifest);
     return { directory, manifest };
   } finally { source.close(); }
@@ -60,16 +82,21 @@ export async function verifyWebDataset(directory: string, expected: ProgressiveM
   await verifyProgressiveManifest(actual);
   if (actual.contentVersion !== expected.contentVersion) throw new Error('Built dataset differs from the verified source snapshot.');
   for (const artifact of datasetArtifacts(actual)) {
-    const path = join(directory, artifact.path), stat = await lstat(path);
-    if (!stat.isFile() || stat.size !== artifact.bytes) throw new Error(`Built dataset artifact size/type mismatch: ${artifact.path}`);
-    const digest = createHash('sha256'); let bytes = 0;
-    for await (const chunk of createReadStream(path)) {
-      bytes += chunk.length;
-      if (bytes > artifact.bytes) throw new Error(`Built artifact grew during verification: ${artifact.path}`);
-      digest.update(chunk);
-    }
-    if (bytes !== artifact.bytes || digest.digest('hex') !== artifact.sha256) throw new Error(`Built artifact checksum mismatch: ${artifact.path}`);
+    await verifyArtifactFile(join(directory, artifact.path), artifact.bytes, artifact.sha256);
   }
+}
+
+async function verifyArtifactFile(path: string, expectedSize: number, expectedHash: string): Promise<void> {
+  const stat = await lstat(path);
+  if (!stat.isFile() || stat.size !== expectedSize) throw new Error(`Database artifact size/type mismatch: ${path}`);
+  const digest = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of createReadStream(path)) {
+    bytes += chunk.length;
+    if (bytes > expectedSize) throw new Error(`Database artifact grew during verification: ${path}`);
+    digest.update(chunk);
+  }
+  if (bytes !== expectedSize || digest.digest('hex') !== expectedHash) throw new Error(`Database artifact checksum mismatch: ${path}`);
 }
 
 export async function buildWebApplication(): Promise<void> {
@@ -78,7 +105,7 @@ export async function buildWebApplication(): Promise<void> {
   // Publication must complete before Vite can replace a previously successful dist.
   const { directory, manifest } = await prepareWebPublicAssets({
     publicDirectory: join(root, 'public'),
-    openSource: path => new Database(path, { readonly: true }) as unknown as DatasetSqlite,
+    openSource: path => new Database(path, { readonly: true }),
     createDatabase: () => new Database(':memory:') as unknown as DatasetSqlite,
   });
   const { build } = await import('vite');

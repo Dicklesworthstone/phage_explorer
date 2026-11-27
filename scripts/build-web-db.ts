@@ -238,8 +238,10 @@ export function computeDatabaseContentDigest(db: Database): string {
       // existing serialization so unchanged datasets retain their identity.
       return `CASE WHEN typeof(${column}) = 'text' AND instr(${column}, char(0)) > 0 THEN 'TEXT:' || json_quote(${column}) ELSE quote(${column}) END`;
     }).join(" || ',' || ");
-    const rows = db.query<{ r: string }, []>(`SELECT ${colExpr} as r FROM ${identifier(t.name)} ORDER BY 1`).all();
-    hasher.update(`table:${t.name}:${rows.length}\n`);
+    const table = identifier(t.name);
+    const count = db.query<{ n: number }, []>(`SELECT COUNT(*) AS n FROM ${table}`).get()!;
+    hasher.update(`table:${t.name}:${count.n}\n`);
+    const rows = db.query<{ r: string }, []>(`SELECT ${colExpr} as r FROM ${table} ORDER BY 1`).iterate();
     for (const row of rows) {
       hasher.update(row.r);
       hasher.update('\n');

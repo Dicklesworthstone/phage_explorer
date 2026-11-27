@@ -6,13 +6,25 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { prepareWebPublicAssets, verifyWebDataset } from '../../build';
+import { computeDatabaseContentDigest, createDatabaseManifest } from '../../../../scripts/build-web-db';
 import { publishProgressiveDatasetToDirectory } from '../../../../scripts/build-progressive-web-db';
 import type { DatasetSqlite } from '../../../../scripts/progressive-dataset';
 import { datasetArtifacts } from './progressive-manifest';
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const createDatabase = (): DatasetSqlite => new Database(':memory:') as unknown as DatasetSqlite;
-const openSource = (path: string): DatasetSqlite => new Database(path, { readonly: true }) as unknown as DatasetSqlite;
+const openSource = (path: string): Database => new Database(path, { readonly: true });
+
+async function recordDescriptor(path: string): Promise<string> {
+  const db = openSource(path);
+  try {
+    const manifest = createDatabaseManifest(computeDatabaseContentDigest(db), await readFile(path));
+    const text = JSON.stringify(manifest);
+    await writeFile(path + '.manifest.json', text);
+    return text;
+  } finally { db.close(); }
+}
+
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'phage-build-test-'));
   const publicDirectory = join(root, 'public'), stagingParent = join(root, 'staged');
@@ -38,7 +50,7 @@ async function fixture() {
     }
   } finally { db.close(); }
   await writeFile(join(root, 'phage.db'), 'wrong build intermediate');
-  await writeFile(join(publicDirectory, 'phage.db.manifest.json'), '{"version":2,"old":true}');
+  const descriptor = await recordDescriptor(path);
   await writeFile(join(publicDirectory, 'phage.db.gz'), 'old gzip');
   // An empty inactive journal is valid. A forged hot journal requires recovery
   // writes and would correctly make a read-only source unusable.
@@ -48,7 +60,7 @@ async function fixture() {
   await writeFile(join(publicDirectory, 'offline.html'), '<h1>Offline page</h1>');
   await mkdir(join(publicDirectory, 'images'));
   await writeFile(join(publicDirectory, 'images', 'icon.png'), new Uint8Array([137, 80, 78, 71]));
-  return { root, path, publicDirectory, stagingParent, openSource, createDatabase };
+  return { root, path, descriptor, publicDirectory, stagingParent, openSource, createDatabase };
 }
 
 describe('production catalog-first publication', () => {
@@ -63,7 +75,7 @@ describe('production catalog-first publication', () => {
     assert.equal(await readFile(join(result.directory, 'offline.html'), 'utf8'), '<h1>Offline page</h1>');
     assert.deepEqual(await readFile(join(result.directory, 'images', 'icon.png')), Buffer.from([137, 80, 78, 71]));
     assert.equal(hash(await readFile(input.path)), sourceBefore);
-    assert.equal(await readFile(join(input.publicDirectory, 'phage.db.manifest.json'), 'utf8'), '{"version":2,"old":true}');
+    assert.equal(await readFile(join(input.publicDirectory, 'phage.db.manifest.json'), 'utf8'), input.descriptor);
     assert.equal(await readFile(join(input.publicDirectory, 'phage.db.gz'), 'utf8'), 'old gzip');
     assert.equal(await readFile(join(input.publicDirectory, 'phage-data', 'old-generation.json'), 'utf8'), 'old unreferenced data');
     assert.equal(await readFile(join(input.root, 'phage.db'), 'utf8'), 'wrong build intermediate');
@@ -99,16 +111,49 @@ describe('production catalog-first publication', () => {
     await assert.rejects(prepareWebPublicAssets(input), /ENOENT/);
     assert.deepEqual(await readdir(input.stagingParent), []);
   });
+  test('rejects stale release bytes and wrong logical identities before publishing a shard', async () => {
+    const input = await fixture();
+    const db = new Database(input.path);
+    try { db.exec("UPDATE annotation_meta SET value='Modified synthetic reference'"); } finally { db.close(); }
+    const expected = JSON.parse(input.descriptor);
+    const bytes = await readFile(input.path);
+    assert.equal(bytes.length, expected.size);
+    await assert.rejects(prepareWebPublicAssets(input), /checksum mismatch/);
+
+    // Updating only the transport checksum cannot bless different logical data.
+    await writeFile(input.path + '.manifest.json', JSON.stringify({ ...expected, sha256: hash(bytes) }));
+    await assert.rejects(prepareWebPublicAssets(input), /content version/);
+    for (const stage of await readdir(input.stagingParent)) {
+      assert.ok(!(await readdir(join(input.stagingParent, stage))).includes('phage-data'));
+    }
+    await recordDescriptor(input.path);
+    assert.equal((await prepareWebPublicAssets(input)).manifest.genomes.length, 2);
+  });
+
+  test('checks the live SQLite snapshot when uncheckpointed changes leave the raw checksum intact', async () => {
+    const input = await fixture();
+    const writer = new Database(input.path);
+    try {
+      writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;');
+      const expected = JSON.parse(await recordDescriptor(input.path));
+      writer.exec("INSERT INTO preferences VALUES ('test','wal-only')");
+      assert.equal(hash(await readFile(input.path)), expected.sha256);
+      await assert.rejects(prepareWebPublicAssets(input), /content version/);
+      assert.equal((writer.query('SELECT value FROM preferences').get() as {value:string}).value, 'wal-only');
+    } finally { writer.close(); }
+  });
+
   test('incomplete sequences fail before any new usable manifest or source overwrite', async () => {
     const input = await fixture(); const db = new Database(input.path);
     try { db.exec("UPDATE sequences SET sequence='A' WHERE phage_id=2"); } finally { db.close(); }
+    const descriptor = await recordDescriptor(input.path);
     const before = hash(await readFile(input.path));
     await assert.rejects(prepareWebPublicAssets(input), /chunks|declares/);
     for (const stage of await readdir(input.stagingParent)) {
       await assert.rejects(readFile(join(input.stagingParent, stage, 'phage.db.manifest.json')), /ENOENT/);
     }
     assert.equal(hash(await readFile(input.path)), before);
-    assert.equal(await readFile(join(input.publicDirectory, 'phage.db.manifest.json'), 'utf8'), '{"version":2,"old":true}');
+    assert.equal(await readFile(join(input.publicDirectory, 'phage.db.manifest.json'), 'utf8'), descriptor);
   });
   test('a post-build verification detects truncated and same-size corrupted artifacts', async () => {
     const input = await fixture(); const { directory, manifest } = await prepareWebPublicAssets(input);
@@ -122,6 +167,7 @@ describe('production catalog-first publication', () => {
     const input = await fixture(); const first = await prepareWebPublicAssets(input);
     const db = new Database(input.path);
     try { db.exec("UPDATE extra_annotations SET evidence='Changed source' WHERE phage_id=2"); } finally { db.close(); }
+    await recordDescriptor(input.path);
     const second = await prepareWebPublicAssets(input);
     assert.notEqual(first.manifest.contentVersion, second.manifest.contentVersion);
     await assert.rejects(verifyWebDataset(first.directory, second.manifest), /differs/);
@@ -137,7 +183,7 @@ describe('production catalog-first publication', () => {
     const path = join(directory, manifest.catalog.path), bytes = await readFile(path);
     bytes[bytes.length - 1] ^= 1; await writeFile(path, bytes);
     const source = openSource(input.path);
-    try { await assert.rejects(publishProgressiveDatasetToDirectory({ source, createDatabase, outputDirectory: directory }), /immutable artifact is corrupt/); }
+    try { await assert.rejects(publishProgressiveDatasetToDirectory({ source: source as unknown as DatasetSqlite, createDatabase, outputDirectory: directory }), /immutable artifact is corrupt/); }
     finally { source.close(); }
     assert.equal(await readFile(join(directory, 'phage.db.manifest.json'), 'utf8'), pointer);
   });

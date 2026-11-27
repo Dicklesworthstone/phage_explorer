@@ -30,6 +30,8 @@ export interface PublishDatasetOptions {
   source: DatasetSqlite;
   createDatabase: () => DatasetSqlite;
   writeArtifact: (artifact: DataArtifact, bytes: Uint8Array) => Promise<void>;
+  /** Optional source contract, checked inside the read transaction before the first artifact. */
+  verifySourceSnapshot?: () => Promise<void>;
   generatedAt?: string;
   onProgress?: (completed: number, total: number) => void;
 }
@@ -61,6 +63,7 @@ export async function publishProgressiveDataset(options: PublishDatasetOptions):
     if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok') {
       throw new Error('Source SQLite integrity check failed; no dataset artifacts were emitted.');
     }
+    await options.verifySourceSnapshot?.();
     const foreignKey = source.query('PRAGMA foreign_key_check').get();
     if (foreignKey) {
       throw new Error('Source SQLite foreign key check failed; no dataset artifacts were emitted.');

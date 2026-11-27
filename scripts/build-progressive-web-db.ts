@@ -19,6 +19,7 @@ export async function publishProgressiveDatasetToDirectory(
     createDatabase: options.createDatabase,
     generatedAt: options.generatedAt,
     onProgress: options.onProgress,
+    verifySourceSnapshot: options.verifySourceSnapshot,
     writeArtifact: async (artifact, bytes) => {
       const path = resolve(output, artifact.path);
       await mkdir(dirname(path), { recursive: true });
