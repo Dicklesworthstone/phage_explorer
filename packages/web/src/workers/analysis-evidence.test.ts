@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { parseAnalysisRecord, serializeAnalysisRecord } from '@phage-explorer/core';
-import { createWorkerAnalysisRecord } from './analysis-evidence';
+import { createWorkerAnalysisRecord, parseRepeatReplay } from './analysis-evidence';
 import type { AnalysisResult } from './types';
 
 test('every worker result property has an evidence adapter and retains its payload', async () => {
@@ -46,4 +46,18 @@ test('zero GC denominator and insufficient sequence remain unavailable in export
   const record = await createWorkerAnalysisRecord(zero, 'AT'.repeat(500), { windowSize: 500 }, { accession: 'NO_GC', source: 'local' }, 'shared');
   expect(record.fields.originPosition.kind).toBe('unavailable');
   expect(record.fields.skew.kind === 'unavailable' && record.fields.skew.missingInputs.join()).toContain('denominator is zero');
+});
+
+
+test('repeat replay rejects invalid and oversized nucleotide inputs before restoring parameters', async () => {
+  const fixture: AnalysisResult = {
+    type: 'repeats', repeats: [], search: { step: 1, minLength: 8, maxGap: 0, minArmLength: 4,
+      palindromeMaxGap: 0, detailedScan: true, maxResults: 50, maxPairedResults: 30, maxPerDetail: 10 },
+  };
+  const makeRecord = async (sequence: string) => serializeAnalysisRecord(await createWorkerAnalysisRecord(
+    fixture, sequence, { minLength: 8, maxGap: 0 }, { accession: 'PRIVATE', source: 'local' }, 'shared'));
+  expect((await parseRepeatReplay(await makeRecord('ACGTNRY'))).sequence).toBe('ACGTNRY');
+  for (const sequence of ['ACGT\\n', 'ACGT-', 'ACGT💥', 'A'.repeat(5_000_001)]) {
+    await expect(parseRepeatReplay(await makeRecord(sequence))).rejects.toThrow(/bounded.*IUPAC/);
+  }
 });

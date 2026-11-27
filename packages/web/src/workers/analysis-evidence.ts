@@ -102,8 +102,9 @@ export async function parseRepeatReplay(content: string): Promise<RepeatReplay> 
   const record = await parseAnalysisRecord(content, { methodId: 'sequence-repeats', methodVersion: REPEAT_METHOD_VERSION });
   if (record.inputs.length !== 1 || record.inputs[0].id !== 'sequence' ||
     !['catalog', 'local'].includes(record.inputs[0].source) ||
-    typeof record.inputs[0].data !== 'string' || record.inputs[0].data.length === 0) {
-    throw new Error('Repeat replay requires one exact, non-demo nucleotide sequence.');
+    typeof record.inputs[0].data !== 'string' || record.inputs[0].data.length === 0 ||
+    record.inputs[0].data.length > 5_000_000 || /[^ACGTURYSWKMBDHVN]/i.test(record.inputs[0].data)) {
+    throw new Error('Repeat replay requires one bounded (1–5,000,000 bp), non-demo IUPAC nucleotide sequence.');
   }
   if (record.seed !== null || canonical(record.references) !== canonical([WORKER_METHOD_REFERENCE])) {
     throw new Error('Repeat replay seed or reference versions are incompatible with this method.');
