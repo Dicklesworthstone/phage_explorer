@@ -1,8 +1,9 @@
-import { describe, it } from 'bun:test';
+import { describe, it, spyOn } from 'bun:test';
 import assert from 'node:assert/strict';
 import { analyzeHostMetabolism, validateHostModelInput, parseCobraHostModel, resolveHostFluxOptions,
   createHostFluxRecord, replayHostFluxRecord, type HostModelInput, type HostFluxChange } from './host-metabolism';
 import { createAnalysisRecord, serializeAnalysisRecord, parseAnalysisRecord } from '../analysis-result';
+import { FBASimplexSolver, type FBAStatus } from './amg-flux';
 
 export function hostFixture(): HostModelInput {
   return { format:'phage-explorer-host-model',version:1,
@@ -124,6 +125,148 @@ describe('conditional host scenarios and alternative optima',()=>{
     const data=hostFixture();raw(data).reactions[3].id='__proto__';const result=analyzeHostMetabolism(data,{variability:['__proto__']}); // ubs:ignore[js.security.prototype-pollution] Adversarial fixture assigns an ordinary string ID, not a prototype.
     assert(Object.hasOwn(result.baseline.fluxes,'__proto__'));
     close(result.baseline.fluxes.__proto__,10);close(result.baseline.ranges[0].minimum.value,10);assert.equal(({} as any).polluted,undefined); // ubs:ignore[js.security.prototype-pollution] Read the verified own data property; assert unrelated prototypes stay unchanged.
+  });
+});
+
+describe('parsimonious host flux selection',()=>{
+  function routeFixture():HostModelInput {
+    const data=hostFixture();
+    data.source.name='Analytical short and long routes';
+    data.source.reference='uptake=direct+long1=biomass; long1=long2. At biomass 10, total absolute flux=30+long1.';
+    raw(data).metabolites.push({id:'middle',compartment:'c'});
+    raw(data).reactions[1].metabolites={a:-1,middle:1};
+    raw(data).reactions[2].metabolites={middle:-1,b:1};
+    raw(data).reactions.push({id:'direct',metabolites:{a:-1,b:1},lower_bound:0,upper_bound:10});
+    return data;
+  }
+  it('selects the independently minimal short route while preserving the ordinary optimum and full FVA',()=>{
+    const data=routeFixture();
+    const original=analyzeHostMetabolism(data,{variability:['A','direct']});
+    const result=analyzeHostMetabolism(data,{parsimonious:true,variability:['A','direct']});
+    const selected=result.baseline.parsimonious!;
+    assert.equal(selected.status,'optimal');close(selected.primaryObjective,10,2e-6);close(selected.totalAbsoluteFlux,30,4e-6);
+    close(selected.fluxes.EX,-10,2e-6);close(selected.fluxes.direct,10,2e-6);close(selected.fluxes.A,0);close(selected.fluxes.B,0);
+    close(-selected.fluxes.EX-selected.fluxes.direct-selected.fluxes.A,0);
+    close(selected.fluxes.A-selected.fluxes.B,0);close(selected.fluxes.B+selected.fluxes.direct-selected.fluxes.BIO,0);
+    assert(selected.certificate!.maxBalanceResidual<1e-8);assert(selected.certificate!.objectiveResidual<1e-8);
+    assert.equal(selected.objectiveFloorTolerance,result.baseline.objectiveSlack!);
+    assert.equal(selected.objectiveSlack,result.baseline.objectiveSlack!+selected.objectiveFloorTolerance);
+    assert(selected.primaryObjective!>=result.baseline.objective!-selected.objectiveSlack);
+    assert.deepEqual(result.baseline.fluxes,original.baseline.fluxes);assert.deepEqual(result.baseline.ranges,original.baseline.ranges);
+    close(result.baseline.ranges[0].minimum.value,0);close(result.baseline.ranges[0].maximum.value,10);
+    close(result.baseline.ranges[1].minimum.value,0);close(result.baseline.ranges[1].maximum.value,10);
+  });
+  it('charges reverse-only flux positively and retains the original signed bounds',()=>{
+    const data=routeFixture(),direct=raw(data).reactions.at(-1)!;
+    direct.metabolites={a:1,b:-1};direct.lower_bound=-10;direct.upper_bound=0;
+    const result=analyzeHostMetabolism(data,{parsimonious:true,changes:[change('direct',-3,0)]});
+    const base=result.baseline.parsimonious!,changed=result.perturbed!.parsimonious!;
+    close(base.fluxes.direct,-10,2e-6);close(base.totalAbsoluteFlux,30,4e-6);
+    // The three-unit short route plus seven units of the two-step route still produce ten biomass units.
+    close(changed.fluxes.direct,-3);close(changed.fluxes.A,7,2e-6);close(changed.fluxes.B,7,2e-6);
+    close(changed.totalAbsoluteFlux,37,5e-6);close(result.objectiveDelta,0);
+    assert(base.certificate!.maxBoundViolation<1e-8);assert(changed.certificate!.maxBoundViolation<1e-8);
+  });
+  it('does not trade primary objective for the allowed FVA objective loss',()=>{
+    const result=analyzeHostMetabolism(routeFixture(),{parsimonious:true,variability:['BIO'],objectiveLoss:5});
+    close(result.baseline.ranges[0].minimum.value,5,2e-6);
+    close(result.baseline.parsimonious!.primaryObjective,10,2e-6);
+    assert.equal(result.baseline.parsimonious!.objectiveFloor,result.baseline.objective!-result.baseline.objectiveSlack!);
+    assert(result.baseline.parsimonious!.objectiveFloor>result.baseline.objectiveFloor!);
+  });
+  it('preserves negative weighted primary objectives and forced positive flux',()=>{
+    const data=routeFixture();raw(data).reactions[3].lower_bound=2;raw(data).reactions[3].objective_coefficient=-2;
+    const result=analyzeHostMetabolism(data,{parsimonious:true,objectiveLoss:2,variability:['BIO']});
+    close(result.baseline.objective,-4);close(result.baseline.parsimonious!.primaryObjective,-4);
+    close(result.baseline.parsimonious!.totalAbsoluteFlux,6);close(result.baseline.parsimonious!.fluxes.BIO,2);
+    close(result.baseline.ranges[0].maximum.value,3);assert(result.baseline.parsimonious!.objectiveFloor< -4);
+  });
+  it('removes dispensable cycles but retains mandatory cycles without claiming looplessness',()=>{
+    const data=routeFixture();raw(data).metabolites.push({id:'cycle1',compartment:'c'},{id:'cycle2',compartment:'c'});
+    raw(data).reactions.push(
+      {id:'cycle-forward',metabolites:{cycle1:-1,cycle2:1},lower_bound:0,upper_bound:10},
+      {id:'cycle-return',metabolites:{cycle1:1,cycle2:-1},lower_bound:0,upper_bound:10});
+    const result=analyzeHostMetabolism(data,{parsimonious:true,changes:[change('cycle-forward',2,10)]});
+    const base=result.baseline.parsimonious!,forced=result.perturbed!.parsimonious!;
+    close(base.fluxes['cycle-forward'],0);close(base.fluxes['cycle-return'],0);close(base.totalAbsoluteFlux,30,4e-6);
+    close(forced.fluxes['cycle-forward'],2);close(forced.fluxes['cycle-return'],2);close(forced.totalAbsoluteFlux,34,4e-6);
+    assert(result.warnings.some(w=>w.includes('not measured enzyme allocation')));
+  });
+  it('keeps equal-length alternatives nonunique and tolerates IDs resembling internal columns',()=>{
+    const data=hostFixture();raw(data).reactions[1].id='forward:0';raw(data).reactions[2].id='objective-floor';
+    raw(data).reactions[0].id='__proto__';
+    const result=analyzeHostMetabolism(data,{parsimonious:true,variability:['forward:0','objective-floor']});
+    const selected=result.baseline.parsimonious!;
+    close(selected.totalAbsoluteFlux,30,4e-6);close(selected.fluxes['forward:0']+selected.fluxes['objective-floor'],10,2e-6);
+    assert(Object.hasOwn(selected.fluxes,'__proto__'));close(selected.fluxes.__proto__,-10,2e-6);
+    for(const range of result.baseline.ranges){close(range.minimum.value,0);close(range.maximum.value,10);}
+    assert(result.warnings.some(w=>w.includes('can remain nonunique')));
+  });
+  it('does not run a secondary optimization when the primary model is infeasible',()=>{
+    const data=routeFixture();data.medium.bounds=[{reactionId:'EX',lowerBound:0,upperBound:0},{reactionId:'BIO',lowerBound:1,upperBound:100}];
+    const phases:string[]=[];
+    const result=analyzeHostMetabolism(data,{parsimonious:true},phase=>phases.push(phase));
+    assert.equal(result.baseline.status,'infeasible');assert.equal(result.baseline.parsimonious,null);
+    assert(!phases.some(phase=>phase.includes('Minimizing')));assert.equal(result.baseline.objective,null);
+  });
+  it('preserves a successful primary result when the secondary solver reports failure',()=>{
+    // Controlled solver-failure routing; numerical correctness is checked by the separate analytical cases.
+    const solve=FBASimplexSolver.prototype.solve;
+    for(const status of ['infeasible','unbounded','iteration_limit','numerical_error','invalid_input'] as const){
+      let calls=0;
+      const mock=spyOn(FBASimplexSolver.prototype,'solve').mockImplementation(function(this:FBASimplexSolver){
+        return ++calls===2?{optimal:false,status:status as FBAStatus,objective:null,fluxes:{}}:solve.call(this);
+      });
+      try{
+        const result=analyzeHostMetabolism(routeFixture(),{parsimonious:true});
+        close(result.baseline.objective,10);assert.equal(result.baseline.status,'optimal');
+        assert.equal(result.baseline.parsimonious!.status,status);assert.equal(result.baseline.parsimonious!.primaryObjective,null);
+        assert.equal(result.baseline.parsimonious!.totalAbsoluteFlux,null);assert.equal(result.baseline.parsimonious!.certificate,null);
+        assert.deepEqual(result.baseline.parsimonious!.fluxes,{});
+      }finally{mock.mockRestore();}
+    }
+  });
+  it('rejects a secondary objective inconsistent with the reconstructed absolute flux',()=>{
+    const solve=FBASimplexSolver.prototype.solve;let calls=0;
+    const mock=spyOn(FBASimplexSolver.prototype,'solve').mockImplementation(function(this:FBASimplexSolver){
+      const result=solve.call(this);return ++calls===2?{...result,objective:result.objective!+1}:result;
+    });
+    try{
+      const result=analyzeHostMetabolism(routeFixture(),{parsimonious:true});
+      assert.equal(result.baseline.status,'optimal');assert.equal(result.baseline.parsimonious!.status,'numerical_error');
+      assert.equal(result.baseline.parsimonious!.totalAbsoluteFlux,null);assert.deepEqual(result.baseline.parsimonious!.fluxes,{});
+    }finally{mock.mockRestore();}
+  });
+  it('validates the opt-in flag and retains zero-cost legacy options when disabled',()=>{
+    for(const parsimonious of [null,0,1,'true',{},[]])assert.throws(()=>resolveHostFluxOptions({parsimonious}),/boolean/);
+    assert.deepEqual(resolveHostFluxOptions({parsimonious:false}),resolveHostFluxOptions());
+    assert.deepEqual(analyzeHostMetabolism(hostFixture(),{parsimonious:false}),analyzeHostMetabolism(hostFixture()));
+    assert(!Object.hasOwn(analyzeHostMetabolism(hostFixture()).baseline,'parsimonious'));
+  });
+  it('exports the independent L1 result, binds its method, and recomputes it on replay',async()=>{
+    const input=routeFixture(),result=analyzeHostMetabolism(input,{parsimonious:true,changes:[change('direct',0,3)],variability:['A']});
+    const record=await createHostFluxRecord(input,result),replay=await replayHostFluxRecord(serializeAnalysisRecord(record));
+    assert.equal(record.method.version,'2');assert.equal(replay.record.resultId,record.resultId);assert.deepEqual(replay.result,result);
+    assert.equal(record.parameters.parsimonious,true);assert(record.references.some(reference=>reference.id==='parsimonious-fba'));
+    const forged=await parseAnalysisRecord(serializeAnalysisRecord(record));
+    ((forged.fields.baseline.value as Record<string,unknown>).parsimonious as Record<string,unknown>).totalAbsoluteFlux=29;
+    const rehashed=await createAnalysisRecord({...forged,inputs:forged.inputs.map(({sha256:_hash,...row})=>row)});
+    await assert.rejects(replayHostFluxRecord(serializeAnalysisRecord(rehashed)),/Fresh host-model results differ/);
+    const wrongVersion=await createAnalysisRecord({...record,method:{...record.method,version:'1'},inputs:record.inputs.map(({sha256:_hash,...row})=>row)});
+    await assert.rejects(replayHostFluxRecord(serializeAnalysisRecord(wrongVersion)),/incompatible/);
+  });
+  it('preserves the pinned pre-pFBA version-1 identity when omitted or explicitly disabled',async()=>{
+    const input:HostModelInput={format:'phage-explorer-host-model',version:1,
+      source:{kind:'demo',name:'Legacy two-reaction fixture',version:'1',organism:'Synthetic',strain:'None',accession:'legacy',reference:'One pool, source=sink<=4.',license:'CC0',fluxUnits:'arbitrary',objectiveUnits:'arbitrary'},
+      medium:{name:'Original bounds',reference:'No overrides',bounds:[]},cobra:{id:'legacy',metabolites:[{id:'a',compartment:'c'}],reactions:[
+        {id:'source',metabolites:{a:1},lower_bound:0,upper_bound:4},{id:'sink',metabolites:{a:-1},lower_bound:0,upper_bound:9,objective_coefficient:1}]}};
+    // Captured from d2e01e884b84793ab130121ba13678f365dcd402 before this feature was implemented.
+    for(const options of [{},{parsimonious:false}]){
+      const record=await createHostFluxRecord(input,analyzeHostMetabolism(input,options));
+      assert.equal(record.method.version,'1');assert.equal(record.resultId,'7ddee32581f1ca41db0e3b8ec0e9b528ec23346eb588a303d8434025286e79c6');
+      assert.equal(record.cacheKey,'d4519c75a165972aeaa137d5610c9084b2c2e06bcc112fed351a9dc1966f51c0');
+      assert.equal((await replayHostFluxRecord(serializeAnalysisRecord(record))).record.resultId,record.resultId);
+    }
   });
 });
 

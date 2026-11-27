@@ -16,7 +16,7 @@ const SOURCE_LABELS: Record<Exclude<keyof HostModelSource, 'kind'>, string> = {
 };
 const sourceKeys = Object.keys(SOURCE_LABELS) as Array<Exclude<keyof HostModelSource, 'kind'>>;
 const number = (v: number | null | undefined): string => v === null || v === undefined ? 'Unavailable' : v.toPrecision(7);
-const pointValue = (value: HostFluxScenario | null, id: string): number | undefined => value && Object.hasOwn(value.fluxes, id) ? value.fluxes[id] : undefined;
+const pointValue = (value: Pick<HostFluxScenario, 'fluxes'> | null | undefined, id: string): number | undefined => value && Object.hasOwn(value.fluxes, id) ? value.fluxes[id] : undefined;
 const boundsText = (value: HostFluxScenario | null, id: string): string => {
   const range = value?.ranges.find(row => row.reactionId === id);
   return range ? `${number(range.minimum.value)} … ${number(range.maximum.value)} (${range.minimum.status}/${range.maximum.status})` : 'Not requested';
@@ -33,6 +33,7 @@ export function HostMetabolismPanel(): React.ReactElement {
   const [cobraFile, setCobraFile] = useState<File | null>(null), [cobraText, setCobraText] = useState('');
   const [mediumName, setMediumName] = useState(''), [mediumReference, setMediumReference] = useState(''), [mediumBounds, setMediumBounds] = useState('[]');
   const [changes, setChanges] = useState<HostFluxChange[]>([]), [variability, setVariability] = useState<string[]>([]), [loss, setLoss] = useState('0');
+  const [parsimonious, setParsimonious] = useState(false);
   const [reaction, setReaction] = useState(''), [lower, setLower] = useState(''), [upper, setUpper] = useState('');
   const [evidenceKind, setEvidenceKind] = useState<'assumption' | 'annotation'>('assumption');
   const [mappingReference, setMappingReference] = useState(''), [mappingDescription, setMappingDescription] = useState('');
@@ -42,6 +43,7 @@ export function HostMetabolismPanel(): React.ReactElement {
   useEffect(() => {
     if (!accepted) return;
     setChanges(accepted.options.changes); setVariability(accepted.options.variability); setLoss(String(accepted.options.objectiveLoss));
+    setParsimonious(accepted.options.parsimonious === true);
     setReaction(accepted.network.reactions[0]?.id ?? ''); setLocalError(null); setPage(0);
   }, [accepted]);
   useEffect(() => {
@@ -60,7 +62,8 @@ export function HostMetabolismPanel(): React.ReactElement {
   const field: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: '.25rem' };
   const result = accepted?.result;
   const draftChanged = accepted && (JSON.stringify(changes) !== JSON.stringify(accepted.options.changes)
-    || JSON.stringify(variability) !== JSON.stringify(accepted.options.variability) || loss !== String(accepted.options.objectiveLoss));
+    || JSON.stringify(variability) !== JSON.stringify(accepted.options.variability) || loss !== String(accepted.options.objectiveLoss)
+    || parsimonious !== (accepted.options.parsimonious === true));
   const reactions = accepted?.network.reactions ?? [], currentPage = Math.min(page, Math.max(0, Math.ceil(reactions.length / 40) - 1));
   return <section aria-label="Sourced host metabolism" style={{ display: 'grid', gap: '1rem', overflowWrap: 'anywhere' }}>
     <h3>Sourced host-model scenarios</h3>
@@ -164,12 +167,15 @@ export function HostMetabolismPanel(): React.ReactElement {
         <tbody>{changes.map(row => <tr key={row.reactionId}><td>{row.reactionId}</td><td>{row.lowerBound} … {row.upperBound}</td>
           <td>{row.evidence.reference}: {row.evidence.description}{row.evidence.gene && ` (${row.evidence.gene.accession}/${row.evidence.gene.locusTag})`}</td>
           <td><button type="button" disabled={busy} onClick={() => setChanges(changes.filter(other => other.reactionId !== row.reactionId))}>Remove {row.reactionId}</button></td></tr>)}</tbody></table>
-      <form onSubmit={event => { event.preventDefault(); run({ kind: 'analyze', input: accepted.input, options: { changes, variability, objectiveLoss: Number(loss) } }); }}>
+      <form onSubmit={event => { event.preventDefault(); run({ kind: 'analyze', input: accepted.input, options: { changes, variability, objectiveLoss: Number(loss), parsimonious } }); }}>
         <fieldset disabled={busy}><legend>Scenario and flux-range calculation</legend>
           <label htmlFor={`${id}-variability`}>Flux-range reactions (up to 12)</label><select id={`${id}-variability`} multiple value={variability} onChange={event => setVariability(Array.from(event.target.selectedOptions, option => option.value))}>
             {reactions.map(row => <option key={row.id} value={row.id}>{row.id}</option>)}</select>
           <label style={field}>Allowed absolute objective loss<input type="number" required step="any" min={0} max={1000000} value={loss} onChange={event => setLoss(event.target.value)} /></label>
           <p>Each range uses its own scenario optimum minus the allowed loss and reported numerical slack. Ranges are not confidence intervals; cycles are allowed.</p>
+          <label><input type="checkbox" checked={parsimonious} onChange={event => setParsimonious(event.target.checked)} /> Compute minimum-total-flux solutions (pFBA)</label>
+          <p>pFBA minimizes the sum of absolute reaction fluxes while retaining the primary optimum within its reported numerical tolerance.
+            The allowed objective loss applies only to flux ranges. Equal minimum-flux solutions and forced cycles may remain.</p>
           {draftChanged && <p>Draft changes are not applied. Displayed results and exports retain the last accepted settings.</p>}
           <button type="submit">Run host-model scenarios</button>
         </fieldset>
@@ -186,10 +192,26 @@ export function HostMetabolismPanel(): React.ReactElement {
         const scenario = value as HostFluxScenario | null; return scenario && <p key={String(label)}>{String(label)} objective floor: {number(scenario.objectiveFloor)}; numerical slack: {number(scenario.objectiveSlack)}.
           Max stoichiometric residual: {number(scenario.certificate?.maxBalanceResidual)}; bound violation: {number(scenario.certificate?.maxBoundViolation)}; objective residual: {number(scenario.certificate?.objectiveResidual)}.</p>;
       })}
-      <div style={{ overflowX: 'auto' }}><table aria-label="Host fluxes and alternative-optimum ranges"><thead><tr><th>Reaction</th><th>Baseline point</th><th>Scenario point</th><th>Baseline range</th><th>Scenario range</th><th>Range difference</th></tr></thead>
+      {result.options.parsimonious && <section aria-label="Parsimonious flux selection" data-testid="host-pfba-result">
+        <h5>Minimum total absolute flux at the primary optimum</h5>
+        {[{ label: 'Baseline', scenario: result.baseline }, { label: 'Scenario', scenario: result.perturbed }].map(({ label, scenario }) => {
+          if (!scenario) return null;
+          const selected = scenario.parsimonious;
+          return <p key={label} data-testid={'host-pfba-' + label.toLowerCase()}>{label} pFBA: <strong>{selected?.status ?? 'Not computed: primary solve failed'}</strong>.
+            Primary objective: {number(selected?.primaryObjective)}; total absolute flux: {number(selected?.totalAbsoluteFlux)}.
+            Objective floor: {number(selected?.objectiveFloor)}; floor feasibility tolerance: {number(selected?.objectiveFloorTolerance)};
+            total permitted primary-objective loss: {number(selected?.objectiveSlack)}.
+            Max stoichiometric residual: {number(selected?.certificate?.maxBalanceResidual)}; bound violation: {number(selected?.certificate?.maxBoundViolation)};
+            L1 objective residual: {number(selected?.certificate?.objectiveResidual)}; floor violation: {number(selected?.certificate?.objectiveFloorViolation)}.</p>;
+        })}
+        <p>Original optimal points and flux ranges remain below. The ranges are over ordinary objective-constrained solutions, not only minimum-flux solutions.
+          pFBA fluxes are model choices, not measured enzyme usage or a guarantee of a unique or thermodynamically feasible solution.</p>
+      </section>}
+      <div style={{ overflowX: 'auto' }}><table aria-label="Host fluxes and alternative-optimum ranges"><thead><tr><th>Reaction</th><th>Baseline point</th><th>Scenario point</th>{result.options.parsimonious && <><th>Baseline pFBA point</th><th>Scenario pFBA point</th></>}<th>Baseline range</th><th>Scenario range</th><th>Range difference</th></tr></thead>
         <tbody>{reactions.slice(currentPage * 40, (currentPage + 1) * 40).map(row => {
           const delta = result.rangeChanges.find(item => item.reactionId === row.id);
           return <tr key={row.id}><td>{row.id}<br />{row.name}</td><td>{number(pointValue(result.baseline, row.id))}</td><td>{number(pointValue(result.perturbed, row.id))}</td>
+            {result.options.parsimonious && <><td>{number(pointValue(result.baseline.parsimonious, row.id))}</td><td>{number(pointValue(result.perturbed?.parsimonious, row.id))}</td></>}
             <td>{boundsText(result.baseline, row.id)}</td><td>{boundsText(result.perturbed, row.id)}</td><td>{delta ? `${number(delta.lower)} … ${number(delta.upper)}: ${delta.interpretation}` : 'Not requested'}</td></tr>;
         })}</tbody></table></div>
       {reactions.length > 40 && <div><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>Previous reactions</button>{' '}{currentPage + 1}/{Math.ceil(reactions.length / 40)}{' '}

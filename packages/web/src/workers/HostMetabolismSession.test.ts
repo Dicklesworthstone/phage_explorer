@@ -81,6 +81,20 @@ describe('host-model worker requests', () => {
     const restored = await executeHostMetabolismRequest({ kind: 'import', content: '\uFEFF' + serializeAnalysisRecord(result.record!) });
     assert.equal(restored.verified, true); assert.deepEqual(restored.result, result.result); assert.equal(restored.record!.resultId, result.record!.resultId);
   });
+  it('transports separate minimum-total-flux solutions and replays their recorded method', async () => {
+    const result = await executeHostMetabolismRequest({ kind: 'analyze', input, options: { ...settings, parsimonious: true } });
+    assert.equal(result.options.parsimonious, true); assert.equal(result.record!.method.version, '2');
+    const baseline = result.result!.baseline, scenario = result.result!.perturbed!;
+    assert.equal(baseline.objective, 7); assert.equal(scenario.objective, 2);
+    assert.equal(baseline.parsimonious!.status, 'optimal'); assert.equal(scenario.parsimonious!.status, 'optimal');
+    assert(Math.abs(baseline.parsimonious!.totalAbsoluteFlux! - 14) < 2e-6);
+    assert(Math.abs(scenario.parsimonious!.totalAbsoluteFlux! - 4) < 1e-6);
+    assert(Math.abs(baseline.parsimonious!.fluxes.supply - 7) < 1e-6);
+    assert(Math.abs(scenario.parsimonious!.fluxes.out - 2) < 1e-6);
+    const restored = await executeHostMetabolismRequest({ kind: 'import', content: serializeAnalysisRecord(result.record!) });
+    assert.equal(restored.verified, true); assert.deepEqual(restored.result, result.result);
+    assert.equal(restored.options.parsimonious, true); assert.equal(restored.record!.resultId, result.record!.resultId);
+  });
   it('rejects internally rehashed false output before returning accepted evidence', async () => {
     const result = await executeHostMetabolismRequest({ kind: 'analyze', input, options: settings });
     const forged = await parseAnalysisRecord(serializeAnalysisRecord(result.record!));

@@ -126,3 +126,56 @@ test('private COBRA models reach actual workers, simultaneous scenario ranges an
     expect(privateRequests).toEqual([]); expect(errors).toEqual([]);
   } finally { release?.(); }
 });
+
+test('minimum-total-flux selection retains the primary optimum, ordinary ranges, draft isolation and replay identity', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/?workspace=host-metabolism');
+  const panel = page.getByRole('region', { name: 'Sourced host metabolism', exact: true });
+  await expect(panel).toBeVisible();
+  const input = { format: 'phage-explorer-host-model', version: 1,
+    source: { kind: 'demo', name: 'Independent pFBA fixture', version: '1', organism: 'Synthetic', strain: 'Not biological', accession: 'pfba-control',
+      reference: 'EX=-10, A+B=BIO=10; all minimum-flux points have total absolute flux 30.', license: 'CC0', fluxUnits: 'arbitrary flux', objectiveUnits: 'arbitrary flux' },
+    medium: { name: 'Ten-unit supplied medium', reference: 'Preserve explicit input bounds', bounds: [] }, cobra: COBRA };
+  const load = (content: string) => panel.getByLabel('Import host-model dataset or saved experiment JSON', { exact: true })
+    .setInputFiles({ name: 'minimum-flux.json', mimeType: 'application/json', buffer: Buffer.from(content) });
+  const exported = () => download(page, () => panel.getByRole('button', { name: 'Export accepted host experiment', exact: true }).click());
+  await load(JSON.stringify(input));
+  await expect(panel.getByTestId('host-model-status')).toContainText('Host model loaded');
+  await panel.getByLabel('Flux-range reactions (up to 12)', { exact: true }).selectOption(['A', 'B', 'BIO']);
+  await panel.getByLabel('Allowed absolute objective loss', { exact: true }).fill('5');
+  const choice = panel.getByLabel('Compute minimum-total-flux solutions (pFBA)', { exact: true });
+  await choice.check();
+  await panel.getByRole('button', { name: 'Run host-model scenarios', exact: true }).click();
+  await expect(panel.getByTestId('host-pfba-baseline')).toContainText('optimal');
+  await expect(panel.getByRole('columnheader', { name: 'Baseline pFBA point', exact: true })).toBeVisible();
+  const content = await exported(), record = await parseAnalysisRecord(content);
+  const baseline = record.fields.baseline.value as {
+    objective: number; parsimonious: { status: string; primaryObjective: number; totalAbsoluteFlux: number; fluxes: Record<string, number> };
+    ranges: Array<{ reactionId: string; minimum: { value: number }; maximum: { value: number } }>;
+  };
+  expect(record.method.version).toBe('2'); expect(record.parameters.parsimonious).toBe(true);
+  expect(baseline.objective).toBe(10); expect(baseline.parsimonious.status).toBe('optimal');
+  expect(baseline.parsimonious.primaryObjective).toBeCloseTo(10, 5);
+  expect(baseline.parsimonious.totalAbsoluteFlux).toBeCloseTo(30, 5);
+  expect(baseline.parsimonious.fluxes.EX).toBeCloseTo(-10, 5);
+  expect(baseline.parsimonious.fluxes.A + baseline.parsimonious.fluxes.B).toBeCloseTo(10, 5);
+  expect(baseline.ranges.find(range => range.reactionId === 'BIO')!.minimum.value).toBeCloseTo(5, 5);
+  for (const reaction of ['A', 'B']) expect(baseline.ranges.find(range => range.reactionId === reaction)!.maximum.value).toBeCloseTo(10, 5);
+
+  await choice.uncheck();
+  expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+  await load(content);
+  await expect(panel.getByTestId('host-model-status')).toContainText('Verified host-model replay');
+  await expect(choice).toBeChecked();
+  await expect(panel.getByLabel('Allowed absolute objective loss', { exact: true })).toHaveValue('5');
+  expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+
+  const forged = await parseAnalysisRecord(content);
+  ((forged.fields.baseline.value as Record<string, unknown>).parsimonious as Record<string, unknown>).totalAbsoluteFlux = 1;
+  const rehashed = await createAnalysisRecord({ ...forged, inputs: forged.inputs.map(({ sha256: _hash, ...row }) => row) });
+  await load(serializeAnalysisRecord(rehashed));
+  await expect(panel.getByRole('alert')).toContainText('Fresh host-model results differ');
+  expect((await parseAnalysisRecord(await exported())).resultId).toBe(record.resultId);
+  expect(errors).toEqual([]);
+});

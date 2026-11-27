@@ -6,6 +6,22 @@ All notable changes to [Phage Explorer](https://github.com/Dicklesworthstone/pha
 
 ## Unreleased
 
+### Parsimonious flux selection for sourced host models
+
+- Optional pFBA minimizes total absolute signed reaction flux while preserving
+  the primary objective within an explicitly recorded numerical budget.
+  Reverse-only bounds, balance, objective agreement and feasibility are checked.
+- Browser controls and native parameter files enable the same core method.
+  Primary, secondary and FVA outputs retain separate statuses and certificates;
+  FVA's allowed objective loss does not relax the pFBA optimum.
+- Complete exports and fresh replay retain the exact model and settings.
+  Existing unselected records keep version-1 identities; pFBA uses version 2.
+  Native `--require-optimal` includes requested secondary-solver failures.
+- Minimum-flux solutions may remain nonunique and permit forced cycles.
+  This is not measured enzyme usage or a loopless/thermodynamic certificate.
+  [Usage and limits](README.md#parsimonious-host-model-flux).
+  [Solver implementation](https://github.com/Dicklesworthstone/phage_explorer/commit/f6db61fe5fd5775d858626c92ad1453c5167492d).
+
 ### Browser execution of portable research command plans
 
 - Import and review terminal-authored plans with their exact embedded genomes,

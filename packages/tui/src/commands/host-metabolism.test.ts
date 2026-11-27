@@ -5,8 +5,8 @@ import { mkdtemp, readFile, writeFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { analyzeHostMetabolism, createHostFluxRecord, replayHostFluxRecord, type HostModelInput } from '../../../core/src/analysis/host-metabolism';
-import { parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
-import { executeHostMetabolismJob, parseHostMetabolismCommand, runHostMetabolismCommand, runHostMetabolismJob } from './host-metabolism';
+import { createAnalysisRecord, parseAnalysisRecord, serializeAnalysisRecord } from '../../../core/src/analysis-result';
+import { executeHostMetabolismJob, hostExperimentFailures, parseHostMetabolismCommand, runHostMetabolismCommand, runHostMetabolismJob } from './host-metabolism';
 
 const model = (): HostModelInput => ({
   format: 'phage-explorer-host-model', version: 1,
@@ -67,6 +67,21 @@ describe('host metabolism command grammar and shared core', () => {
     const reopened = await executeHostMetabolismJob({ operation: 'replay', input: executed.content });
     expect(reopened.verified).toBe(true); expect(reopened.resultId).toBe(executed.resultId);
   });
+  it('retains primary objectives and independently known minimum total fluxes through native jobs and replay', async () => {
+    const created = await runHostMetabolismJob({ operation: 'analyze', input: JSON.stringify(model()),
+      parameters: JSON.stringify({ ...options, parsimonious: true }) });
+    const replay = await replayHostFluxRecord(created.content);
+    expect(replay.record.method.version).toBe('2');
+    expect(replay.result.baseline.objective).toBe(4); expect(replay.result.perturbed!.objective).toBe(8);
+    expect(replay.result.baseline.parsimonious!.totalAbsoluteFlux).toBeCloseTo(8, 5);
+    expect(replay.result.perturbed!.parsimonious!.totalAbsoluteFlux).toBeCloseTo(16, 5);
+    expect(replay.result.baseline.parsimonious!.fluxes.source).toBeUndefined();
+    expect(replay.result.baseline.parsimonious!.fluxes.uptake).toBeCloseTo(4, 5);
+    expect(replay.result.perturbed!.parsimonious!.fluxes.sink).toBeCloseTo(8, 5);
+    expect(hostExperimentFailures(replay.record)).toEqual([]);
+    const restored = await runHostMetabolismJob({ operation: 'replay', input: created.content });
+    expect(restored.verified).toBe(true); expect(restored.resultId).toBe(created.resultId);
+  });
   it('preserves infeasibility rather than fabricating an objective', async () => {
     const input = model(); input.medium.bounds = [{ reactionId: 'uptake', lowerBound: 8, upperBound: 10 }];
     const executed = await executeHostMetabolismJob({ operation: 'analyze', input: JSON.stringify(input) });
@@ -92,6 +107,24 @@ describe('host metabolism terminal publication', () => {
     expect(record.method.id).toBe('sourced-host-flux');
     expect(streams.err.text()).toContain('publishing');
     expect(streams.err.text()).not.toContain('Analytical two-reaction fixture');
+  });
+  it('includes a secondary solver failure in require-optimal while still publishing its complete record', async () => {
+    const input = model(), record = await createHostFluxRecord(input, analyzeHostMetabolism(input, { parsimonious: true }));
+    // Controlled worker-result failure: this tests CLI status propagation, not the numerical method.
+    const baseline = record.fields.baseline.value as Record<string, unknown>;
+    const selected = baseline.parsimonious as Record<string, unknown>;
+    selected.status = 'iteration_limit'; selected.primaryObjective = null; selected.totalAbsoluteFlux = null;
+    selected.fluxes = {}; selected.certificate = null;
+    const failed = await createAnalysisRecord({ ...record, inputs: record.inputs.map(({ sha256: _hash, ...row }) => row) });
+    expect(hostExperimentFailures(failed)).toEqual(['baseline/parsimonious: iteration_limit']);
+    const streams = io(JSON.stringify(input));
+    expect(await runHostMetabolismCommand(['analyze','-','--require-optimal'], { ...streams, execute: async () => ({
+      content: serializeAnalysisRecord(failed), resultId: failed.resultId, verified: false,
+    }) })).toBe(2);
+    expect((await parseAnalysisRecord(streams.out.text())).resultId).toBe(failed.resultId);
+    expect(streams.err.text()).toContain('baseline/parsimonious: iteration_limit');
+    selected.status = 'optimal'; delete baseline.parsimonious;
+    expect(() => hostExperimentFailures(record)).toThrow('Missing requested parsimonious');
   });
   it('does not open input or start work when an output already exists', async () => {
     const folder = await mkdtemp(join(tmpdir(), 'host-existing-')), file = join(folder, 'keep.json');

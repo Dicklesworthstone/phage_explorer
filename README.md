@@ -1305,6 +1305,36 @@ explicit actions in their panel; actions in other panels are not recorded.
 Broader overlay coverage, TUI evidence display and complete action replay remain
 open work.
 
+### Parsimonious host-model flux
+
+The sourced host-model workbench accepts an explicitly attributed COBRA JSON
+model and medium. Enable **Compute minimum-total-flux solutions (pFBA)** to
+minimize the equally weighted sum of absolute reaction fluxes while retaining
+the primary objective within the reported numerical tolerance.
+
+The original FBA solution, ordinary flux-variability ranges and the pFBA solution
+are retained separately. The pFBA report includes its own solver status, signed
+fluxes, total absolute flux, achieved primary objective, objective floor,
+feasibility tolerance and residual certificates. The **allowed objective loss**
+setting applies to FVA; it does not relax the pFBA primary optimum.
+
+For the native command, save `{"parsimonious":true}` as `parameters.json`, then:
+
+```bash
+phage-explorer host-metabolism analyze host-model.json \
+  --params parameters.json --require-optimal --output new-result.json
+```
+
+The complete JSON export retains the supplied model, medium and settings for
+fresh replay. `--require-optimal` also reports a failed requested pFBA solve;
+the complete failure record is still written. Omitted or false pFBA preserves
+existing version-1 records; enabled pFBA uses version 2.
+
+This is a model-dependent L1 selection, not measured enzyme allocation.
+Equivalent minimum-flux solutions and forced cycles can remain; pFBA does not
+establish loopless or thermodynamic feasibility. Reaction representation and
+scaling affect the selected sum.
+
 ### Run command plans in the browser
 
 The browser can compute portable plans authored by the terminal workflow editor

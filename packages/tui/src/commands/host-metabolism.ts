@@ -26,13 +26,17 @@ The BiGG license permits educational, research and nonprofit use; commercial use
 requires permission from the publisher. Inspect the saved source.license field.
 inspect/analyze/knockout accept a portable host-model dataset, or raw COBRA JSON together
 with BOTH --source and --medium JSON objects matching the browser import fields.
---params is the browser's JSON object: changes, variability, objectiveLoss.
+--params is the browser's JSON object: changes, variability, objectiveLoss,
+parsimonious (optional boolean). pFBA minimizes total absolute flux while retaining
+the primary optimum within its recorded tolerance; objectiveLoss only affects FVA.
+Primary and pFBA statuses, signed fluxes and certificates are retained separately.
 All changes apply simultaneously. No gene/host/capacity mapping is guessed.
 knockout settings: genes (1-32 exact model IDs), mode (joint or single), reference
 (source or explicit assumption), variability and objectiveLoss. Boolean AND/OR
 rules determine disabled reactions; no measured essentiality claim is made.
 Use --require-optimal with analyze/knockout/replay for exit 2 on non-optimal
-scenarios or flux-range endpoints; the complete failure record is still written.
+scenarios, requested pFBA solutions or flux-range endpoints; the complete failure
+record is still written.
 Use --timeout-ms N (1..86400000) to cancel before publication with exit 124.
 replay verifies and recomputes a saved browser/terminal experiment; overrides
 are forbidden. A valid computation can contain infeasible solver statuses.
@@ -177,6 +181,12 @@ export function hostExperimentFailures(record: AnalysisRecord): string[] {
   const scenario = (value: unknown, label: string): void => {
     if (!object(value) || typeof value.status !== 'string' || !Array.isArray(value.ranges)) throw new Error('Malformed experiment solver status.');
     if (value.status !== 'optimal') failures.push(`${label}: ${value.status}`);
+    if (record.parameters.parsimonious === true && value.status === 'optimal' && value.parsimonious == null) throw new Error('Missing requested parsimonious solver status.');
+    if (Object.hasOwn(value, 'parsimonious') && value.parsimonious !== null) {
+      const selected = value.parsimonious;
+      if (!object(selected) || typeof selected.status !== 'string') throw new Error('Malformed parsimonious solver status.');
+      if (selected.status !== 'optimal') failures.push(label + '/parsimonious: ' + selected.status);
+    }
     for (const range of value.ranges) {
       if (!object(range)) throw new Error('Malformed flux range.');
       for (const end of ['minimum', 'maximum']) {
