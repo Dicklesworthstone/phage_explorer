@@ -70,6 +70,7 @@ interface Command {
   category: string;
   shortcut?: string;
   action: () => void;
+  matchIndices?: number[];
   // New fields for filtering
   minLevel?: ExperienceLevel;        // Minimum experience level to show
   contexts?: CommandContext[];       // Show only in these contexts (empty = always)
@@ -88,8 +89,7 @@ interface Command {
 
 type CommandPaletteFuzzyMeta =
   | { kind: 'phage'; phageId: number; host?: string | null }
-  | { kind: 'gene'; phageId: number; startPos: number; endPos?: number; locusTag?: string | null }
-  | { kind: 'command'; commandId: string };
+  | { kind: 'gene'; phageId: number; startPos: number; endPos?: number; locusTag?: string | null };
 
 // Fuzzy search scoring
 function fuzzyMatch(pattern: string, str: string): { match: boolean; score: number; indices: number[] } {
@@ -265,16 +265,21 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
   const paletteOpen = isOpen('commandPalette');
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const [query, setQuery] = useState('');
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [requestedIndex, setSelectedIndex] = useState(0);
   const [recentCommandIds, setRecentCommandIds] = useState<string[]>([]);
-  const [fuzzyCommands, setFuzzyCommands] = useState<Command[]>([]);
+  type PaletteEntries = Array<FuzzySearchEntry<CommandPaletteFuzzyMeta>>;
+  const [indexedEntries, setIndexedEntries] = useState<PaletteEntries | null>(null);
+  const [catalogMatches, setCatalogMatches] = useState<{
+    query: string;
+    entries: PaletteEntries;
+    commands: Command[];
+  } | null>(null);
   const [workerReady, setWorkerReady] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Comlink.Remote<SearchWorkerAPI> | null>(null);
   const workerInstanceRef = useRef<Worker | null>(null);
   const usingPreloadedRef = useRef(false);
-  const workerSeqRef = useRef(0);
 
   // Get user's experience level from main store
   const experienceLevel = usePhageStore((s) => s.experienceLevel) as ExperienceLevel;
@@ -347,7 +352,12 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
     try {
       worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url), { type: 'module' });
     } catch {
-      worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url));
+      try {
+        worker = new Worker(new URL('../../workers/search.worker.ts', import.meta.url));
+      } catch {
+        // A browser may disallow workers entirely. Registered commands still work.
+        return;
+      }
     }
     workerInstanceRef.current = worker;
     const wrapped = Comlink.wrap<SearchWorkerAPI>(worker);
@@ -598,11 +608,11 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
 
   const allCommands = customCommands ?? registryCommands;
 
-  // Keep worker index in sync with current phage list + current phage genes.
-  useEffect(() => {
-    if (!workerReady || !workerRef.current) return;
-
-    const entries: Array<FuzzySearchEntry<CommandPaletteFuzzyMeta>> = [];
+  // The worker indexes the catalog. Registered commands are immediately searchable
+  // by title, category and description even while the worker is starting.
+  const entries = useMemo(() => {
+    const entries: PaletteEntries = [];
+    if (!paletteOpen) return entries;
 
     for (const p of phageSummaries) {
       entries.push({
@@ -630,18 +640,20 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
       }
     }
 
-    for (const cmd of allCommands) {
-      if (!meetsLevelRequirement(experienceLevel, cmd.minLevel)) continue;
-      if (!matchesContext(cmd, appContext)) continue;
-      entries.push({
-        id: `cmd:${cmd.id}`,
-        text: cmd.label,
-        meta: { kind: 'command', commandId: cmd.id },
-      });
-    }
+    return entries;
+  }, [currentPhage?.genes, currentPhage?.id, paletteOpen, phageSummaries]);
 
-    void workerRef.current.setFuzzyIndex({ index: 'command-palette', entries }).catch(() => {});
-  }, [allCommands, appContext, currentPhage?.genes, currentPhage?.id, experienceLevel, phageSummaries, workerReady]);
+  useEffect(() => {
+    const worker = workerRef.current;
+    if (!paletteOpen || !workerReady || !worker) return;
+    let active = true;
+    void worker.setFuzzyIndex({ index: 'command-palette', entries }).then(() => {
+      if (active) setIndexedEntries(entries);
+    }).catch(() => {
+      if (active) setIndexedEntries(null);
+    });
+    return () => { active = false; };
+  }, [entries, paletteOpen, workerReady]);
 
   // Filter commands by experience level and context
   const commands = useMemo(() => {
@@ -666,135 +678,82 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
       .slice(0, 5);
   }, [recentCommandIds, commands]);
 
-  // Filter and sort commands based on query
+  const searchTerm = query.trim();
+  const matchingCommands = useMemo(() => {
+    if (!searchTerm) return commands;
+
+    return commands.flatMap(command => {
+      const label = fuzzyMatch(searchTerm, command.label);
+      const category = fuzzyMatch(searchTerm, command.category);
+      const description = fuzzyMatch(searchTerm, command.description ?? '');
+      const matches = [label, category, description].filter(result => result.match);
+      if (!matches.length) return [];
+      return [{
+        command: { ...command, matchIndices: label.match ? label.indices : [] },
+        titleMatch: label.match,
+        score: Math.max(...matches.map(result => result.score)),
+      }];
+    }).sort((a, b) => Number(b.titleMatch) - Number(a.titleMatch) || b.score - a.score)
+      .map(result => result.command);
+  }, [commands, searchTerm]);
+
+  // Append catalog results so an asynchronous reply cannot move the highlighted
+  // command. Tag replies with their query AND source to exclude stale targets
+  // during rendering, even before the previous effect's cleanup has run.
   const filteredCommands = useMemo(() => {
-    if (!query.trim()) {
-      return commands;
-    }
+    if (!workerReady || !searchTerm || catalogMatches?.query !== searchTerm ||
+        catalogMatches.entries !== entries || indexedEntries !== entries) return matchingCommands;
+    return [...matchingCommands, ...catalogMatches.commands];
+  }, [catalogMatches, entries, indexedEntries, matchingCommands, searchTerm, workerReady]);
 
-    if (workerReady) {
-      return fuzzyCommands;
-    }
-
-    const results = commands
-      .map(cmd => {
-        const labelMatch = fuzzyMatch(query, cmd.label);
-        const categoryMatch = fuzzyMatch(query, cmd.category);
-        const descMatch = cmd.description ? fuzzyMatch(query, cmd.description) : { match: false, score: 0, indices: [] };
-
-        const bestMatch = [labelMatch, categoryMatch, descMatch].reduce((best, curr) =>
-          curr.match && curr.score > best.score ? curr : best
-        );
-
-        return {
-          command: cmd,
-          match: labelMatch.match || categoryMatch.match || descMatch.match,
-          score: bestMatch.score,
-          labelIndices: labelMatch.indices,
-        };
-      })
-      .filter(r => r.match)
-      .sort((a, b) => b.score - a.score);
-
-    return results.map(r => ({ ...r.command, _indices: r.labelIndices }));
-  }, [commands, fuzzyCommands, query, workerReady]);
-
-  // Run off-main-thread fuzzy search (phages + current genes) as the user types.
   useEffect(() => {
-    if (!paletteOpen) return;
-    if (!workerReady || !workerRef.current) return;
-    if (!query.trim()) {
-      setFuzzyCommands([]);
-      return;
-    }
-
-    const seq = ++workerSeqRef.current;
+    const worker = workerRef.current;
+    if (!paletteOpen || !workerReady || !worker || indexedEntries !== entries || !searchTerm) return;
+    let active = true;
     const timer = window.setTimeout(() => {
       void (async () => {
         try {
-          const results = (await workerRef.current!.fuzzySearch({
-            index: 'command-palette',
-            query,
-            limit: 30,
-          })) as Array<FuzzySearchResult<CommandPaletteFuzzyMeta>>;
-          if (workerSeqRef.current !== seq) return;
+          const results = await worker.fuzzySearch({
+            index: 'command-palette', query: searchTerm, limit: 30,
+          }) as Array<FuzzySearchResult<CommandPaletteFuzzyMeta>>;
+          if (!active) return;
 
-          const commandById = new Map(commands.map((c) => [c.id, c] as const));
-
-          const cmds = results
-            .map((r) => {
-              if (r.meta?.kind === 'command') {
-                const base = commandById.get(r.meta.commandId);
-                if (!base) return null;
-                const cmd: Command = { ...base };
-                (cmd as any)._indices = r.indices;
-                return cmd;
-              }
-
-            if (r.meta?.kind === 'phage') {
-              const phageId = r.meta.phageId;
-              const cmd: Command = {
-                id: `nav:phage:${phageId}`,
-                label: r.text,
-                description: r.meta.host ? `Host: ${r.meta.host}` : undefined,
+          const catalogCommands: Command[] = [];
+          for (const result of results) {
+            const meta = result.meta;
+            if (meta?.kind === 'phage') {
+              catalogCommands.push({
+                id: `nav:phage:${meta.phageId}`, label: result.text, matchIndices: result.indices,
+                description: meta.host ? `Host: ${meta.host}` : undefined,
                 category: 'Phages',
                 action: () => {
-                  const state = usePhageStore.getState();
-                  const idx = state.phages.findIndex((p) => p.id === phageId);
+                  const idx = usePhageStore.getState().phages.findIndex(p => p.id === meta.phageId);
                   if (idx >= 0) void onSelectPhage(idx);
                 },
-                minLevel: 'novice',
-              };
-              (cmd as any)._indices = r.indices;
-              return cmd;
-            }
-
-            if (r.meta?.kind === 'gene') {
-              const startBase = r.meta.startPos;
-              const cmd: Command = {
-                id: `nav:gene:${r.id}`,
-                label: r.text,
-                description: `Jump to ${startBase.toLocaleString()} bp${r.meta.locusTag ? ` · ${r.meta.locusTag}` : ''}`,
+              });
+            } else if (meta?.kind === 'gene') {
+              catalogCommands.push({
+                id: `nav:gene:${result.id}`, label: result.text, matchIndices: result.indices,
+                description: `Jump to ${meta.startPos.toLocaleString()} bp${meta.locusTag ? ` · ${meta.locusTag}` : ''}`,
                 category: 'Genes',
                 action: () => {
                   const state = usePhageStore.getState();
-                  const target = state.viewMode === 'aa' ? Math.floor(startBase / 3) : startBase;
+                  if (state.currentPhage?.id !== meta.phageId) return;
+                  const target = state.viewMode === 'aa' ? Math.floor(meta.startPos / 3) : meta.startPos;
                   state.setScrollPosition(target);
                 },
-                minLevel: 'novice',
-                contexts: ['has-phage'],
-              };
-              (cmd as any)._indices = r.indices;
-              return cmd;
+              });
             }
-
-            const cmd: Command = {
-              id: `nav:fuzzy:${r.id}`,
-              label: r.text,
-              category: 'Search',
-              action: () => {},
-              minLevel: 'novice',
-            };
-            (cmd as any)._indices = r.indices;
-            return cmd;
-            })
-            .filter((c): c is Command => Boolean(c));
-
-          setFuzzyCommands(cmds);
+          }
+          setCatalogMatches({ query: searchTerm, entries, commands: catalogCommands });
         } catch {
-          if (workerSeqRef.current !== seq) return;
-          setFuzzyCommands([]);
+          if (active) setCatalogMatches(null);
         }
       })();
     }, 80);
 
-    return () => window.clearTimeout(timer);
-  }, [commands, onSelectPhage, paletteOpen, query, workerReady]);
-
-  // Reset selection when results change
-  useEffect(() => {
-    setSelectedIndex(0);
-  }, [filteredCommands.length]);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [entries, indexedEntries, onSelectPhage, paletteOpen, searchTerm, workerReady]);
 
   // Focus input when opened
   useEffect(() => {
@@ -823,6 +782,7 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
     ...groupedCommands.flatMap(([, group]) => group),
   ], [groupedCommands, recentCommands, showRecent]);
   const totalItems = visibleCommands.length;
+  const selectedIndex = Math.min(requestedIndex, Math.max(0, totalItems - 1));
 
   // Handle keyboard navigation
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -838,12 +798,12 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
       case 'ArrowDown':
         if (totalItems === 0) break;
         e.preventDefault();
-        setSelectedIndex(prev => Math.min(prev + 1, totalItems - 1));
+        setSelectedIndex(Math.min(selectedIndex + 1, totalItems - 1));
         break;
       case 'ArrowUp':
         if (totalItems === 0) break;
         e.preventDefault();
-        setSelectedIndex(prev => Math.max(prev - 1, 0));
+        setSelectedIndex(Math.max(selectedIndex - 1, 0));
         break;
       case 'Enter':
         e.preventDefault();
@@ -853,12 +813,13 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
         }
         break;
       case 'Tab':
-        if (totalItems === 0) break;
+        if (e.shiftKey || totalItems === 0) break;
         e.preventDefault();
         // Tab completion: fill in the selected command's label
         const tabCmd = visibleCommands[selectedIndex];
         if (tabCmd) {
           setQuery(tabCmd.label);
+          setSelectedIndex(0);
         }
         break;
     }
@@ -918,7 +879,7 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
             return (
               <button
                 key={level}
-                onClick={() => setExperienceLevel(level)}
+                onClick={() => { setExperienceLevel(level); setSelectedIndex(0); }}
                 aria-pressed={active}
                 aria-label={`${level} experience level: ${descriptions[level]}`}
                 className={`btn command-palette__experience-btn ${active ? 'is-active' : ''}`}
@@ -939,7 +900,7 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
           data-overlay-autofocus="true"
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { setQuery(e.target.value); setSelectedIndex(0); }}
           onKeyDown={handleKeyDown}
           placeholder="Type to search commands..."
           className="input"
@@ -1058,8 +1019,8 @@ export function CommandPalette({ repository, onSelectPhage, navigationSession, c
                   >
                     <div>
                       <span className={isSelected ? 'text-text' : 'text-dim'}>
-                        {(cmd as any)._indices
-                          ? highlightMatch(cmd.label, (cmd as any)._indices, colors.accent)
+                        {cmd.matchIndices
+                          ? highlightMatch(cmd.label, cmd.matchIndices, colors.accent)
                           : cmd.label}
                       </span>
                       {cmd.description && (

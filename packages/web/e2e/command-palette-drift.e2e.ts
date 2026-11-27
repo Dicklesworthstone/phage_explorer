@@ -60,6 +60,48 @@ test.describe('Command Palette Drift', () => {
     }
   });
 
+  test('changing the query cannot execute a previous result while catalog search is pending', async ({ page }, testInfo) => {
+    const { finalize } = setupTestHarness(page, testInfo);
+    // Leave the second catalog query in flight. Keystrokes and command execution
+    // should work independently of when the search worker returns.
+    await page.addInitScript(() => {
+      const send = Worker.prototype.postMessage;
+      Worker.prototype.postMessage = function (message, ...args: unknown[]) {
+        if (message?.path?.[0] === 'fuzzySearch' && message.argumentList?.[0]?.value?.query === 'no-such-palette-result') {
+          document.documentElement.dataset.paletteQueryPending = 'true';
+          return;
+        }
+        return Reflect.apply(send, this, [message, ...args]);
+      };
+    });
+    try {
+      await page.goto('/?phage=lambda&model=0');
+      await expectExplorerIdentity(page, testInfo);
+      const welcome = page.getByRole('dialog', { name: 'Welcome to Phage Explorer' });
+      if (await welcome.isVisible()) await welcome.getByRole('button', { name: 'Skip', exact: true }).click();
+      await page.getByRole('button', { name: /command palette/i }).first().click();
+      const palette = page.getByTestId('overlay-commandPalette');
+      const input = palette.getByRole('combobox');
+      await input.fill('lambda');
+      await expect(palette.getByRole('group', { name: 'Phages commands' }).getByRole('option').first()).toBeVisible();
+
+      await input.fill('no-such-palette-result');
+      await expect(page.locator('html')).toHaveAttribute('data-palette-query-pending', 'true');
+      await expect(palette.getByRole('option')).toHaveCount(0);
+      await input.press('Enter');
+      await expect(palette).toBeVisible();
+
+      // This phrase occurs only in the saved-views action description.
+      await input.fill('name, restore, import and export exact explorer views');
+      const row = palette.getByRole('option', { name: /Saved views and navigation history/i });
+      await expect(row).toHaveAttribute('aria-selected', 'true');
+      await input.press('Enter');
+      await expect(page.getByTestId('overlay-savedViews')).toBeVisible();
+    } finally {
+      await finalize();
+    }
+  });
+
   test('should display shortcuts matching ActionRegistry', async ({ page }, testInfo) => {
     const { finalize } = setupTestHarness(page, testInfo);
 
