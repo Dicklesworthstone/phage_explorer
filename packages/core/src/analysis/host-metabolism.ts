@@ -28,13 +28,20 @@ export interface HostFluxChange extends ReactionBounds {
   evidence: { kind: 'assumption' | 'annotation'; reference: string; description: string;
     gene: { accession: string; locusTag: string } | null };
 }
-export interface HostFluxOptions { changes: HostFluxChange[]; variability: string[]; objectiveLoss: number }
+export interface HostFluxOptions { changes: HostFluxChange[]; variability: string[]; objectiveLoss: number; parsimonious?: boolean }
 export interface FluxCertificate { maxBalanceResidual: number; maxBoundViolation: number; objectiveResidual: number }
 export interface FluxEndpoint { status: FBAStatus; value: number | null; certificate: FluxCertificate | null }
 export interface FluxRange { reactionId: string; minimum: FluxEndpoint; maximum: FluxEndpoint }
+export interface ParsimoniousFlux {
+  status: FBAStatus; objectiveFloor: number; objectiveSlack: number; objectiveFloorTolerance: number;
+  primaryObjective: number | null; totalAbsoluteFlux: number | null; fluxes: Record<string, number>;
+  certificate: (FluxCertificate & { objectiveFloorViolation: number }) | null;
+}
 export interface HostFluxScenario {
   status: FBAStatus; objective: number | null; fluxes: Record<string, number>; certificate: FluxCertificate | null;
   bounds: ReactionBounds[]; objectiveFloor: number | null; objectiveSlack: number | null; ranges: FluxRange[];
+  /** Absent unless requested; null means the primary solve failed, so no secondary solve ran. */
+  parsimonious?: ParsimoniousFlux | null;
 }
 export interface HostFluxResult {
   options: HostFluxOptions; baseline: HostFluxScenario; perturbed: HostFluxScenario | null;
@@ -122,7 +129,8 @@ export function validateHostModelInput(value: unknown): HostModelInput {
 }
 export function resolveHostFluxOptions(value: unknown = {}): HostFluxOptions {
   if (!obj(value)) throw new Error('Host flux settings must be an object.');
-  keys(value,['changes','variability','objectiveLoss'],'host-flux parameter');
+  keys(value,['changes','variability','objectiveLoss','parsimonious'],'host-flux parameter');
+  if(value.parsimonious!==undefined&&typeof value.parsimonious!=='boolean')throw new Error('Parsimonious flux selection must be a boolean.');
   const rawChanges=value.changes ?? [], rawVariability=value.variability ?? [], objectiveLoss=finite(value.objectiveLoss ?? 0,'Allowed objective loss');
   if (objectiveLoss<0 || !Array.isArray(rawChanges) || rawChanges.length>HOST_FLUX_LIMITS.changes || !Array.isArray(rawVariability) || rawVariability.length>HOST_FLUX_LIMITS.variability) throw new Error('Use at most 50 changes and 12 variability reactions, with nonnegative objective loss.');
   const changes=rawChanges.map(c => {
@@ -139,7 +147,7 @@ export function resolveHostFluxOptions(value: unknown = {}): HostFluxOptions {
   });
   unique(changes.map(c=>c.reactionId),'changed reaction');
   const variability=rawVariability.map(id=>text(id,'Variability reaction',256));unique(variability,'variability reaction');
-  return {changes,variability,objectiveLoss};
+  return {changes,variability,objectiveLoss,...(value.parsimonious?{parsimonious:true}:{})};
 }
 function mediumNetwork(input:HostModelInput):HostNetwork {
   const model=parseCobraHostModel(input.cobra),bounds=new Map(input.medium.bounds.map(b=>[b.reactionId,b]));
@@ -166,13 +174,63 @@ function solve(model:HostNetwork,objective:number[],floor?:number):{status:FBASt
   if(floor!==undefined&&achieved<floor-1e-7*Math.max(1,Math.abs(floor)))return {status:'numerical_error',value:null,fluxes:{},certificate:null};
   return {status:'optimal',value:objectiveValue,fluxes:Object.fromEntries(model.reactions.map((r,j)=>[r.id,flux[j]])),certificate};
 }
+/** L1 pFBA: preserve the primary optimum, then minimize total absolute reaction flux.
+ * Every original signed interval is represented exactly by nonnegative forward/reverse
+ * variables. At an L1 optimum both directions need not run together: reducing them
+ * equally preserves every balance and primary objective while lowering the cost.
+ * COBRApy: https://cobrapy.readthedocs.io/en/latest/autoapi/cobra/flux_analysis/parsimonious/
+ */
+function parsimoniousFlux(model:HostNetwork,optimum:number,slack:number):ParsimoniousFlux {
+  const objectiveFloor=optimum-slack;
+  // The floor is relaxed by slack and its feasibility check allows a further slack.
+  // Report both components and the combined maximum loss from the primary optimum.
+  const objectiveFloorTolerance=slack,objectiveSlack=slack+objectiveFloorTolerance;
+  const failure=(status:FBAStatus):ParsimoniousFlux=>({status:status==='optimal'?'numerical_error':status,
+    objectiveFloor,objectiveSlack,objectiveFloorTolerance,primaryObjective:null,totalAbsoluteFlux:null,fluxes:{},certificate:null});
+  // Internal IDs never derive from model IDs, including prototype-looking identifiers.
+  const ids=model.reactions.flatMap((_,i)=>['forward:'+i,'reverse:'+i]);
+  const lower=model.reactions.flatMap(r=>[Math.max(0,r.lowerBound),Math.max(0,-r.upperBound)]);
+  const upper=model.reactions.flatMap(r=>[Math.max(0,r.upperBound),Math.max(0,-r.lowerBound)]);
+  const primary=model.reactions.flatMap(r=>[r.objective,-r.objective]);
+  const matrix=model.metabolites.map(m=>model.reactions.flatMap(r=>{
+    const coefficient=Object.hasOwn(r.stoichiometry,m.id)?r.stoichiometry[m.id]:0;
+    return [coefficient,-coefficient];
+  }));
+  const cost=ids.map(()=>-1);
+  ids.push('objective-floor');lower.push(objectiveFloor);
+  upper.push(Math.max(objectiveFloor,model.reactions.reduce((sum,r)=>sum+Math.max(r.objective*r.lowerBound,r.objective*r.upperBound),0)));
+  matrix.forEach(row=>row.push(0));matrix.push([...primary,-1]);cost.push(0);
+  const answer=new FBASimplexSolver(matrix,lower,upper,cost,ids).solve();
+  if(answer.status!=='optimal'||answer.objective===null)return failure(answer.status);
+  const flux=model.reactions.map((_,i)=>answer.fluxes['forward:'+i]-answer.fluxes['reverse:'+i]);
+  const totalAbsoluteFlux=flux.reduce((sum,v)=>sum+Math.abs(v),0);
+  const primaryObjective=flux.reduce((sum,v,j)=>sum+model.reactions[j].objective*v,0);
+  const balanceTerms=model.metabolites.map(m=>model.reactions.map((r,j)=>(Object.hasOwn(r.stoichiometry,m.id)?r.stoichiometry[m.id]:0)*flux[j]));
+  const balances=balanceTerms.map(terms=>terms.reduce((sum,v)=>sum+v,0));
+  const certificate={maxBalanceResidual:Math.max(0,...balances.map(Math.abs)),
+    maxBoundViolation:Math.max(0,...flux.flatMap((v,j)=>[model.reactions[j].lowerBound-v,v-model.reactions[j].upperBound])),
+    objectiveResidual:Math.abs(totalAbsoluteFlux+answer.objective),objectiveFloorViolation:Math.max(0,objectiveFloor-primaryObjective)};
+  const tolerance=1e-7;
+  const balanceOK=balances.every((value,i)=>Math.abs(value)<=tolerance*Math.max(1,balanceTerms[i].reduce((sum,v)=>sum+Math.abs(v),0)));
+  const boundsOK=flux.every((v,j)=>Number.isFinite(v)&&v>=model.reactions[j].lowerBound-tolerance*Math.max(1,Math.abs(model.reactions[j].lowerBound))&&
+    v<=model.reactions[j].upperBound+tolerance*Math.max(1,Math.abs(model.reactions[j].upperBound)));
+  if(!Number.isFinite(totalAbsoluteFlux)||!Number.isFinite(primaryObjective)||!balanceOK||!boundsOK||
+    certificate.objectiveResidual>tolerance*Math.max(1,totalAbsoluteFlux)||certificate.objectiveFloorViolation>objectiveFloorTolerance||primaryObjective>optimum+slack)return failure('numerical_error');
+  return {status:'optimal',objectiveFloor,objectiveSlack,objectiveFloorTolerance,primaryObjective,totalAbsoluteFlux,
+    fluxes:Object.fromEntries(model.reactions.map((r,j)=>[r.id,flux[j]])),certificate};
+}
 function scenario(model:HostNetwork,options:HostFluxOptions,progress:(phase:string)=>void):HostFluxScenario {
   const answer=solve(model,model.reactions.map(r=>r.objective));
   const bounds=model.reactions.map(r=>({reactionId:r.id,lowerBound:r.lowerBound,upperBound:r.upperBound}));
-  const result:HostFluxScenario={status:answer.status,objective:answer.value,fluxes:answer.fluxes,certificate:answer.certificate,bounds,objectiveFloor:null,objectiveSlack:null,ranges:[]};
+  const result:HostFluxScenario={status:answer.status,objective:answer.value,fluxes:answer.fluxes,certificate:answer.certificate,bounds,objectiveFloor:null,objectiveSlack:null,ranges:[],
+    ...(options.parsimonious?{parsimonious:null}:{})};
   if(answer.status!=='optimal'||answer.value===null)return result;
   const slack=1e-7*Math.max(1,Math.abs(answer.value));
   result.objectiveSlack=slack;result.objectiveFloor=answer.value-options.objectiveLoss-slack;
+  if(options.parsimonious){
+    progress('Minimizing total absolute flux while retaining the primary optimum');
+    result.parsimonious=parsimoniousFlux(model,answer.value,slack);
+  }
   options.variability.forEach((id,i)=>{
     progress(`Flux ranges ${i+1}/${options.variability.length}`);
     const vector=model.reactions.map(r=>r.id===id?1:0);
@@ -206,24 +264,35 @@ export function analyzeHostMetabolism(value:HostModelInput,settings:Partial<Host
     'Gene-reaction rules and chemical annotations are retained as metadata, not evaluated as kinetic, regulatory or thermodynamic constraints.',
     'A displayed flux vector is one optimum and may not be unique. Ranges constrain the objective within the recorded absolute loss plus numerical slack; they are not confidence intervals.',
     'Flux ranges permit cycles; no loopless or thermodynamic feasibility constraint is imposed. Stoichiometric balance is not a chemical element/charge balance certificate.',
+    ...(options.parsimonious?[
+      'Parsimonious FBA minimizes the equally weighted sum of absolute fluxes, including exchanges and objective reactions, while retaining the primary optimum within the reported total objective slack (floor relaxation plus floor feasibility tolerance). It does not use the allowed FVA objective loss.',
+      'Parsimonious fluxes can remain nonunique, depend on reaction representation and scaling, and are not measured enzyme allocation or a loopless/thermodynamic certificate. Original point solutions and FVA ranges are retained; these ranges are not restricted to parsimonious optima.',
+    ]:[]),
     ...(input.source.kind==='demo'?['Explicit synthetic demonstration model; no organism-specific prediction is made.']:[]),
   ]};
 }
 const METHOD={id:'sourced-host-flux',version:'1',implementation:'COBRA JSON finite-bounded linear objective; existing two-phase simplex; explicit simultaneous bound edits; objective-floor FVA'};
+const PARSIMONIOUS_METHOD={...METHOD,version:'2',implementation:METHOD.implementation+'; secondary split-direction L1 flux minimization preserving the primary optimum'};
 export function createHostFluxRecord(input:HostModelInput,result:HostFluxResult):Promise<AnalysisRecord>{
   const dataset=validateHostModelInput(input),network=parseCobraHostModel(dataset.cobra);
   const field=(label:string,value:unknown)=>({label,kind:dataset.source.kind==='demo'?'demo' as const:'simulation' as const,units:'model-flux' as const,value:analysisJson(value),
     coverage:{available:network.reactions.length,total:network.reactions.length,unit:'reactions' as const},assumptions:['Maximize the supplied linear objective with S.v=0 and the exact recorded medium/scenario bounds.'],limitations:result.warnings});
-  return createAnalysisRecord({method:METHOD,inputs:[{id:'hostModel',accession:dataset.source.accession,source:dataset.source.kind==='reference'?'external':dataset.source.kind,
+  return createAnalysisRecord({method:result.options.parsimonious?PARSIMONIOUS_METHOD:METHOD,inputs:[{id:'hostModel',accession:dataset.source.accession,source:dataset.source.kind==='reference'?'external':dataset.source.kind,
     description:dataset.source.name,data:analysisJson(dataset)}],parameters:analysisJson(result.options) as AnalysisRecord['parameters'],seed:null,
-    references:[{id:'host-model',version:dataset.source.version,description:dataset.source.reference},{id:'flux-variability',version:'Mahadevan-Schilling-2003',description:'Conditional flux ranges over alternative objective-constrained solutions; no unique flux-vector claim.'}],
+    references:[{id:'host-model',version:dataset.source.version,description:dataset.source.reference},{id:'flux-variability',version:'Mahadevan-Schilling-2003',description:'Conditional flux ranges over alternative objective-constrained solutions; no unique flux-vector claim.'},
+      ...(result.options.parsimonious?[{id:'parsimonious-fba',version:'Lewis-et-al-2010-L1',description:'Secondary minimization of total absolute reaction flux at the primary optimum; https://doi.org/10.1038/msb.2010.47; https://cobrapy.readthedocs.io/en/latest/autoapi/cobra/flux_analysis/parsimonious/'}]:[])],
     fields:{baseline:field('Supplied host and medium baseline (status included)',result.baseline),perturbed:field('Simultaneous mapped-bound scenario (null when no changes)',result.perturbed),
       comparison:field('Conditional objective difference and alternative-flux ranges',{objectiveDelta:result.objectiveDelta,percentChange:result.percentChange,rangeChanges:result.rangeChanges})}});
 }
 export async function replayHostFluxRecord(content:string,progress:(phase:string)=>void=()=>{}):Promise<{input:HostModelInput;result:HostFluxResult;record:AnalysisRecord}>{
-  const saved=await parseAnalysisRecord(content,{methodId:METHOD.id,methodVersion:METHOD.version});
+  if(new TextEncoder().encode(content).length>10*1024*1024)throw new Error('Analysis record exceeds the 10 MiB limit.');
+  const claimed:unknown=JSON.parse(content);
+  const version=obj(claimed)&&obj(claimed.method)&&claimed.method.version===PARSIMONIOUS_METHOD.version?PARSIMONIOUS_METHOD.version:METHOD.version;
+  const saved=await parseAnalysisRecord(content,{methodId:METHOD.id,methodVersion:version});
+  const options=resolveHostFluxOptions(saved.parameters);
+  if(saved.method.version!==(options.parsimonious?PARSIMONIOUS_METHOD.version:METHOD.version))throw new Error('Saved host-model method version is incompatible with its recorded flux settings.');
   if(saved.inputs.length!==1||saved.inputs[0].id!=='hostModel')throw new Error('Unsupported host experiment input contract.');
-  const input=validateHostModelInput(saved.inputs[0].data),result=analyzeHostMetabolism(input,saved.parameters as Partial<HostFluxOptions>,progress),record=await createHostFluxRecord(input,result);
+  const input=validateHostModelInput(saved.inputs[0].data),result=analyzeHostMetabolism(input,options,progress),record=await createHostFluxRecord(input,result);
   if(record.resultId!==saved.resultId||record.cacheKey!==saved.cacheKey)throw new Error('Fresh host-model results differ from the saved experiment.');
   return {input,result,record};
 }
